@@ -5,6 +5,15 @@
 #![deny(missing_docs)]
 
 mod module;
+pub mod modules;
+#[doc(hidden)]
+mod private {
+    /// A marker trait that can only be implemented in this crate.
+    ///
+    /// This prevents consumers from creating their own implementation of certain traits and
+    /// potentially violating assumptions or invariants.
+    pub trait Sealed {}
+}
 
 // -------------------------------
 //  Exports

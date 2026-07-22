@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 
 mod hid;
+mod macros;
 mod module;
 pub mod modules;
 #[doc(hidden)]
@@ -15,6 +16,7 @@ mod private {
     /// potentially violating assumptions or invariants.
     pub trait Sealed {}
 }
+mod types;
 
 // -------------------------------
 //  Exports
@@ -22,6 +24,7 @@ mod private {
 
 pub use hid::ModuleHandle;
 pub use module::Module;
+pub use types::{ProductId, ProductIdError, VendorId, VendorIdError};
 
 // -------------------------------
 //  Re-exports

@@ -1,5 +1,10 @@
 use hidapi::{HidDevice, HidError};
 
+use crate::{
+    types::{ProductId, VendorId},
+    vendor_id,
+};
+
 /// Represents a discrete module in the MasterHUB ecosystem.
 ///
 /// Modules are Human Interface Devices (HIDs) that expose input controls (knobs, buttons, dials,
@@ -17,18 +22,20 @@ use hidapi::{HidDevice, HidError};
 /// ## Examples
 ///
 /// ```
+/// use cooltek_sdk_masterhub::{ProductId, VendorId, product_id, vendor_id};
+///
 /// struct MyModule;
 /// impl cooltek_sdk_masterhub::Module for MyModule {
-///     const PRODUCT_ID: u16 = 0xBAD;
+///     const PRODUCT_ID: ProductId = product_id!(0xBAD);
 ///     const PRODUCT_NAME: Option<&'static str> = Some("My Module");
-///     const VENDOR_ID: u16 = 0xBAD;
+///     const VENDOR_ID: VendorId = vendor_id!(0xBAD);
 /// }
 /// ```
 pub trait Module: Sized {
     /// The ID of the product or product family of the device.
     ///
     /// This is specified by the vendor or manufacturer.
-    const PRODUCT_ID: u16;
+    const PRODUCT_ID: ProductId;
 
     /// The name of the product or product family of the device.
     ///
@@ -39,7 +46,7 @@ pub trait Module: Sized {
     ///
     /// This is assigned to a particular vendor or manufacturer by the
     /// [USB Implementers Forum (USB-IF)](https://www.usb.org/about).
-    const VENDOR_ID: u16 = 0x2516;
+    const VENDOR_ID: VendorId = vendor_id!(0x2516);
 
     /// Attempts to perform the initialization procedure for the device.
     ///
@@ -62,16 +69,17 @@ pub trait Module: Sized {
     ///
     /// ```no_run
     /// use cooltek_sdk_masterhub::Module;
+    /// # use cooltek_sdk_masterhub::{ProductId, product_id};
     /// use hidapi::{HidApi, HidDevice};
     ///
     /// struct MyModule;
     /// impl Module for MyModule {
     ///     // ...
-    /// #   const PRODUCT_ID: u16 = 0xBAD;
+    /// #   const PRODUCT_ID: ProductId = product_id!(0xBAD);
     /// }
     ///
     /// let context = HidApi::new().expect("Failed to initialize HidApi");
-    /// let device = context.open(MyModule::VENDOR_ID, MyModule::PRODUCT_ID).expect("Failed to connect to device");
+    /// let device = context.open(MyModule::VENDOR_ID.into(), MyModule::PRODUCT_ID.into()).expect("Failed to connect to device");
     /// MyModule::initialize(&device).expect("Failed to initialize the device");
     /// ```
     fn initialize(_device: &HidDevice) -> Result<(), HidError> {

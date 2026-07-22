@@ -1,10 +1,12 @@
 use hidapi::{HidDevice, HidError};
 
+use crate::{ProductId, product_id};
+
 /// 1xDial w/ IPS (2x2) module
 pub struct M131E;
 
 impl crate::Module for M131E {
-    const PRODUCT_ID: u16 = 0x0206;
+    const PRODUCT_ID: ProductId = product_id!(0x0206);
     const PRODUCT_NAME: Option<&'static str> = Some("1xDial w/ IPS (2x2)");
 
     fn initialize(device: &HidDevice) -> Result<(), HidError> {

@@ -1,8 +1,10 @@
+use crate::{ProductId, product_id};
+
 /// Base (4x6) module
 pub struct M0064;
 
 impl crate::Module for M0064 {
-    const PRODUCT_ID: u16 = 0x01F6;
+    const PRODUCT_ID: ProductId = product_id!(0x01F6);
     const PRODUCT_NAME: Option<&'static str> = Some("Base (4x6)");
 }
 

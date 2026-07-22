@@ -24,11 +24,12 @@ use crate::Module;
 ///
 /// ```no_run
 /// use cooltek_sdk_masterhub::{Module, ModuleHandle};
+/// # use cooltek_sdk_masterhub::{ProductId, product_id};
 ///
 /// struct MyModule {}
 /// impl Module for MyModule {
 ///     // ...
-/// #   const PRODUCT_ID: u16 = 0xBAD;
+/// #   const PRODUCT_ID: ProductId = product_id!(0xBAD);
 /// }
 ///
 /// let mut handle = ModuleHandle::<MyModule>::new();
@@ -103,7 +104,7 @@ impl<M: Module> ModuleHandle<M> {
     /// ```
     pub fn connect(&mut self) -> Result<(), HidError> {
         let context = HidApi::new()?;
-        let device = context.open(M::VENDOR_ID, M::PRODUCT_ID)?;
+        let device = context.open(M::VENDOR_ID.into(), M::PRODUCT_ID.into())?;
         M::initialize(&device)?;
 
         self.device = Some(device);

@@ -16,6 +16,7 @@ mod m005s;
 mod m0064;
 mod m032le;
 mod m131e;
+mod m4315;
 
 // -------------------------------
 //  Exports
@@ -26,3 +27,4 @@ pub use m005s::M005S;
 pub use m032le::M032LE;
 pub use m0064::M0064;
 pub use m131e::M131E;
+pub use m4315::M4315;

@@ -14,6 +14,7 @@ pub mod capabilities;
 mod m003k;
 mod m005s;
 mod m0064;
+mod m032le;
 
 // -------------------------------
 //  Exports
@@ -21,4 +22,5 @@ mod m0064;
 
 pub use m003k::M003K;
 pub use m005s::M005S;
+pub use m032le::M032LE;
 pub use m0064::M0064;

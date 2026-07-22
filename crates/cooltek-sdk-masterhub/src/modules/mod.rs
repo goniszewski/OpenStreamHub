@@ -11,3 +11,10 @@
 //! different report IDs).
 
 pub mod capabilities;
+mod m0064;
+
+// -------------------------------
+//  Exports
+// -------------------------------
+
+pub use m0064::M0064;

@@ -5,9 +5,15 @@ authors = ["Josiah Egner <projectzero7@gmail.com>"]
 categories = []
 description = "An unofficial SDK for Cooler Master products."
 edition = "2024"
-keywords = ["cooler master", "cooltek"]
+keywords = ["cooler master", "cooltek", "masterhub"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/projectzero7/cooltek-sdk"
 rust-version = "1.97.0"
 
+[features]
+default = ["full"]
+masterhub = ["dep:cooltek-sdk-masterhub"]
+full = ["masterhub"]
+
 [dependencies]
+cooltek-sdk-masterhub = { path = "../cooltek-sdk-masterhub", optional = true }

@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "cooltek-sdk"
 version = "0.1.0"
+dependencies = [
+ "cooltek-sdk-masterhub",
+]
+
+[[package]]
+name = "cooltek-sdk-masterhub"
+version = "0.1.0"

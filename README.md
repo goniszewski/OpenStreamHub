@@ -5,6 +5,12 @@
 
 An unofficial SDK for [Cooler Master](https://www.coolermaster.com/) products.
 
+## Supported Integrations
+
+| Product | Status | Feature |
+| --- | --- | --- |
+| [MasterHUB](https://www.coolermaster.com/products/masterhub.html) | partial | `masterhub` |
+
 ## Getting Started
 
 Add the following to your `Cargo.toml` file:

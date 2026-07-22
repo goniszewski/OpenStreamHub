@@ -21,9 +21,11 @@
 //! and grammatically correct.
 
 mod can_get_serial_number;
+mod can_set_software_mode;
 
 // -------------------------------
 //  Exports
 // -------------------------------
 
 pub use can_get_serial_number::CanGetSerialNumber;
+pub use can_set_software_mode::CanSetSoftwareMode;

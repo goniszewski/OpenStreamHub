@@ -8,4 +8,6 @@ impl crate::Module for M005S {
 
 impl crate::private::Sealed for M005S {}
 
-impl super::capabilities::CanGetSerialNumber for M005S {}
+impl super::capabilities::CanGetSerialNumber for M005S {
+    const REPORT_ID: u8 = 0x30;
+}

@@ -3,7 +3,7 @@ use hidapi::{HidDevice, HidError};
 /// Represents the capability to read the serial number of the device.
 pub trait CanGetSerialNumber: crate::Module + crate::private::Sealed {
     /// The feature report ID to read the serial number of the device.
-    const REPORT_ID: u8 = 0x30;
+    const REPORT_ID: u8;
 
     /// Reads the serial number of the device.
     ///

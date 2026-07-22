@@ -1,7 +1,7 @@
 use cooltek_sdk_masterhub::{
     Module,
     modules::{
-        M003K, M005S, M032LE, M0064,
+        M003K, M005S, M032LE, M0064, M131E,
         capabilities::{CanGetSerialNumber, CanSetSoftwareMode},
     },
 };
@@ -54,4 +54,5 @@ fn main() {
     print_serial_number_for::<M003K>();
     print_serial_number_for::<M005S>();
     print_serial_number_for::<M032LE>();
+    print_serial_number_for_ips::<M131E>();
 }

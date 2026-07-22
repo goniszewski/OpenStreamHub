@@ -1,6 +1,6 @@
 use cooltek_sdk_masterhub::{
     Module,
-    modules::{M0064, capabilities::CanGetSerialNumber},
+    modules::{M003K, M0064, capabilities::CanGetSerialNumber},
 };
 
 fn print_serial_number_for<M: Module + CanGetSerialNumber>() {
@@ -14,9 +14,14 @@ fn print_serial_number_for<M: Module + CanGetSerialNumber>() {
         Err(_) => return, // silently swallow errors; probably transient error
     };
 
-    println!("{}", serial_number.unwrap_or("".to_string()));
+    println!(
+        "{}: {}",
+        M::PRODUCT_NAME.unwrap_or("Unknown"),
+        serial_number.unwrap_or("".to_string())
+    );
 }
 
 fn main() {
     print_serial_number_for::<M0064>();
+    print_serial_number_for::<M003K>();
 }

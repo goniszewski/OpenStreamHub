@@ -1,0 +1,73 @@
+# CoolTEK SDK
+
+[![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](https://github.com/projectzero7/cooltek-sdk#License)
+[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white)](https://conventionalcommits.org)
+
+An unofficial SDK for [Cooler Master](https://www.coolermaster.com/) products.
+
+## Getting Started
+
+Add the following to your `Cargo.toml` file:
+
+```toml, no_run
+[dependencies]
+cooltek-sdk = { git = "https://github.com/projectzero7/cooltek-sdk" }
+```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+### Guidelines
+
+* Follow Rust conventions and idioms
+
+* Follow [Rust Patterns & Engineering How-Tos](https://microsoft.github.io/RustTraining/rust-patterns-book/ch00-introduction.html) where appropriate
+
+* Add tests for new features
+
+* Update documentation and examples where appropriate
+
+* Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages.
+
+* Run `cargo fmt` and `cargo clippy` before submitting
+
+### Development Setup
+
+1. Clone the repository:
+
+    ```bash, no_run
+    git 'clone' 'https://github.com/projectzero7/cooltek-sdk'
+    ```
+
+1. Navigate to the repository root directory:
+
+    ```bash, no_run
+    cd 'cooltek-sdk'
+    ```
+
+1. Install dependencies and build:
+
+    ```bash, no_run
+    cargo build
+    ```
+
+### Development Actions
+
+* Run tests:
+
+    ```bash, no_run
+    cargo test
+    ```
+
+* Run doctests:
+
+    ```bash, no_run
+    cargo test --doc
+    ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](./LICENSE-APACHE) or [MIT License](./LICENSE-MIT) at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 License, shall be dual licensed as above, without any additional terms or conditions.

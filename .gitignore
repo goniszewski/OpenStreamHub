@@ -1,0 +1,11 @@
+# Rust build artifacts
+/target
+
+# OS-specific files
+.DS_Store
+[Dd]esktop.ini
+[Tt]humbs.db
+
+# IDE files
+.vscode/
+.zed/

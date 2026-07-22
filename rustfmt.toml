@@ -1,0 +1,11 @@
+# https://github.com/rust-lang/rustfmt/issues/3348
+# format_code_in_doc_comments = true
+
+# https://github.com/rust-lang/rustfmt/issues/5083
+# group_imports = "StdExternalCrate"
+
+newline_style = "Unix"
+
+style_edition = "2024"
+
+use_field_init_shorthand = true

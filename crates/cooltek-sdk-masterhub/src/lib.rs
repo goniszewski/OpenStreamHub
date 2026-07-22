@@ -4,6 +4,7 @@
 
 #![deny(missing_docs)]
 
+mod hid;
 mod module;
 pub mod modules;
 #[doc(hidden)]
@@ -19,6 +20,7 @@ mod private {
 //  Exports
 // -------------------------------
 
+pub use hid::ModuleHandle;
 pub use module::Module;
 
 // -------------------------------

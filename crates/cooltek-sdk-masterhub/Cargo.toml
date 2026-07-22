@@ -11,3 +11,4 @@ repository = "https://github.com/projectzero7/cooltek-sdk"
 rust-version = "1.97.0"
 
 [dependencies]
+hidapi = { version = "2", features = ["macos-shared-device"] }

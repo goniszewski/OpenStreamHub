@@ -104,6 +104,7 @@ impl<M: Module> ModuleHandle<M> {
     pub fn connect(&mut self) -> Result<(), HidError> {
         let context = HidApi::new()?;
         let device = context.open(M::VENDOR_ID, M::PRODUCT_ID)?;
+        M::initialize(&device)?;
 
         self.device = Some(device);
 

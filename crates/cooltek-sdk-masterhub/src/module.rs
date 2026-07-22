@@ -1,3 +1,5 @@
+use hidapi::{HidDevice, HidError};
+
 /// Represents a discrete module in the MasterHUB ecosystem.
 ///
 /// Modules are Human Interface Devices (HIDs) that expose input controls (knobs, buttons, dials,
@@ -38,4 +40,41 @@ pub trait Module: Sized {
     /// This is assigned to a particular vendor or manufacturer by the
     /// [USB Implementers Forum (USB-IF)](https://www.usb.org/about).
     const VENDOR_ID: u16 = 0x2516;
+
+    /// Attempts to perform the initialization procedure for the device.
+    ///
+    /// This allows implementations to define some operations that should be attempted before the
+    /// [`Module`] is used.
+    ///
+    /// # Parameters
+    ///
+    /// * `device` - The [`HidDevice`] handle.
+    ///
+    /// # Returns
+    ///
+    /// A [`Result`] containing either the unit type or a [`HidError`].
+    ///
+    /// # Errors
+    ///
+    /// * [`HidError`] when the underlying [`HidDevice`] returns an error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use cooltek_sdk_masterhub::Module;
+    /// use hidapi::{HidApi, HidDevice};
+    ///
+    /// struct MyModule;
+    /// impl Module for MyModule {
+    ///     // ...
+    /// #   const PRODUCT_ID: u16 = 0xBAD;
+    /// }
+    ///
+    /// let context = HidApi::new().expect("Failed to initialize HidApi");
+    /// let device = context.open(MyModule::VENDOR_ID, MyModule::PRODUCT_ID).expect("Failed to connect to device");
+    /// MyModule::initialize(&device).expect("Failed to initialize the device");
+    /// ```
+    fn initialize(_device: &HidDevice) -> Result<(), HidError> {
+        Ok(())
+    }
 }

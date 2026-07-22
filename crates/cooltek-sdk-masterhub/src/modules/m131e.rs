@@ -1,9 +1,19 @@
+use hidapi::{HidDevice, HidError};
+
 /// 1xDial w/ IPS (2x2) module
 pub struct M131E;
 
 impl crate::Module for M131E {
     const PRODUCT_ID: u16 = 0x0206;
     const PRODUCT_NAME: Option<&'static str> = Some("1xDial w/ IPS (2x2)");
+
+    fn initialize(device: &HidDevice) -> Result<(), HidError> {
+        use super::capabilities::CanSetSoftwareMode;
+
+        // No interactions appear to have any effect until we enter software mode, so treat it as
+        // an initialization requirement.
+        Self::set_software_mode(device)
+    }
 }
 
 impl crate::private::Sealed for M131E {}

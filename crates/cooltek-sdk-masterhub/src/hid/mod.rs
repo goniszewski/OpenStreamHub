@@ -2,6 +2,7 @@
 //! hardware on a module.
 
 mod handle;
+mod handle_state;
 
 // -------------------------------
 //  Exports

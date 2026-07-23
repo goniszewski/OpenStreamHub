@@ -1,8 +1,11 @@
 use std::marker::PhantomData;
 
-use hidapi::{HidApi, HidDevice, HidError};
+use hidapi::{HidApi, HidError};
 
-use crate::Module;
+use crate::{
+    Module,
+    hid::handle_state::{Connected, Disconnected, HandleState},
+};
 
 /// Serves as a strongly-typed wrapper around [`Module`] information and functionality.
 ///
@@ -13,8 +16,7 @@ use crate::Module;
 /// ```no_run
 /// use cooltek_sdk_masterhub::{ModuleHandle, modules::M0064};
 ///
-/// let mut handle = ModuleHandle::<M0064>::new();
-/// handle.connect().expect("Failed to connect to module");
+/// let handle = ModuleHandle::<M0064>::new().connect().expect("Failed to connect to module");
 ///
 /// let serial_number = handle.get_serial_number().expect("Failed to get serial number");
 /// println!("{}", serial_number.unwrap_or("".to_string()));
@@ -32,18 +34,18 @@ use crate::Module;
 /// #   const PRODUCT_ID: ProductId = product_id!(0xBAD);
 /// }
 ///
-/// let mut handle = ModuleHandle::<MyModule>::new();
-/// handle.connect().expect("Failed to connect to module");
+/// let handle = ModuleHandle::<MyModule>::new().connect().expect("Failed to connect to module");
 /// ```
 #[derive(Debug)]
-pub struct ModuleHandle<M: Module> {
+pub struct ModuleHandle<M: Module, S: HandleState = Disconnected> {
     /// The type of the module to operate on.
     _module: PhantomData<M>,
 
     /// The instance-specific connection to the physical hardware.
-    device: Option<HidDevice>,
+    data: S::Data,
 }
 
+// Functionality available to any module in the Disconnected state.
 impl<M: Module> ModuleHandle<M> {
     /// Constructs a new [`ModuleHandle`] by inferring the [`Module`].
     ///
@@ -74,9 +76,9 @@ impl<M: Module> ModuleHandle<M> {
     /// ```
     pub fn new() -> Self {
         let _module = PhantomData;
-        let device = None;
+        let data = ();
 
-        Self { _module, device }
+        Self { _module, data }
     }
 
     /// Attempts to connect to the physical hardware using [`hidapi`].
@@ -99,34 +101,39 @@ impl<M: Module> ModuleHandle<M> {
     /// ```no_run
     /// # use cooltek_sdk_masterhub::{ModuleHandle, modules::M0064};
     /// #
-    /// let mut handle = ModuleHandle::<M0064>::new();
-    /// handle.connect().expect("Failed to connect to module");
+    /// let handle = ModuleHandle::<M0064>::new().connect().expect("Failed to connect to module");
     /// ```
-    pub fn connect(&mut self) -> Result<(), HidError> {
+    pub fn connect(self) -> Result<ModuleHandle<M, Connected>, HidError> {
         let context = HidApi::new()?;
         let device = context.open(M::VENDOR_ID.into(), M::PRODUCT_ID.into())?;
         M::initialize(&device)?;
 
-        self.device = Some(device);
+        let _module = self._module;
+        let data = device;
 
-        Ok(())
+        Ok(ModuleHandle { _module, data })
     }
+}
 
+// Functionality available to any module in the Connected state.
+impl<M: Module> ModuleHandle<M, Connected> {
     /// Disconnects from the physical hardware.
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```compile_fail
     /// # use cooltek_sdk_masterhub::{ModuleHandle, modules::M0064};
     /// #
-    /// let mut handle = ModuleHandle::<M0064>::new();
-    /// handle.connect().expect("Failed to connect to module");
-    /// handle.disconnect();
+    /// let handle = ModuleHandle::<M0064>::new().connect().expect("Failed to connect to module");
+    /// let handle = handle.disconnect();
     ///
-    /// handle.get_serial_number(); // panics
+    /// handle.get_serial_number(); // fails to compile
     /// ```
-    pub fn disconnect(&mut self) {
-        self.device = None;
+    pub fn disconnect(self) -> ModuleHandle<M, Disconnected> {
+        let _module = self._module;
+        let data = ();
+
+        ModuleHandle { _module, data }
     }
 }
 
@@ -142,7 +149,7 @@ impl<M: Module> Default for ModuleHandle<M> {
 
 use crate::modules::capabilities::{CanGetSerialNumber, CanSetSoftwareMode};
 
-impl<M: Module + CanGetSerialNumber> ModuleHandle<M> {
+impl<M: Module + CanGetSerialNumber> ModuleHandle<M, Connected> {
     /// Attempts to read the serial number of the module.
     ///
     /// # Returns
@@ -167,18 +174,16 @@ impl<M: Module + CanGetSerialNumber> ModuleHandle<M> {
     /// ```no_run
     /// # use cooltek_sdk_masterhub::{ModuleHandle, modules::M0064};
     /// #
-    /// let mut handle = ModuleHandle::<M0064>::new();
-    /// handle.connect().expect("Failed to connect to module");
-    ///
+    /// let handle = ModuleHandle::<M0064>::new().connect().expect("Failed to connect to module");
     /// let serial_number = handle.get_serial_number().expect("Failed to get serial number");
     /// println!("{}", serial_number.unwrap_or("".to_string()));
     /// ```
     pub fn get_serial_number(&self) -> Result<Option<String>, HidError> {
-        M::get_serial_number(self.device.as_ref().expect("Handle not connected"))
+        M::get_serial_number(&self.data)
     }
 }
 
-impl<M: Module + CanSetSoftwareMode> ModuleHandle<M> {
+impl<M: Module + CanSetSoftwareMode> ModuleHandle<M, Connected> {
     /// Attempts to enter software mode on the device.
     ///
     /// This allows the program to drive device state.
@@ -196,11 +201,10 @@ impl<M: Module + CanSetSoftwareMode> ModuleHandle<M> {
     /// ```no_run
     /// # use cooltek_sdk_masterhub::{ModuleHandle, modules::M4315};
     /// #
-    /// let mut handle = ModuleHandle::<M4315>::new();
-    /// handle.connect().expect("Failed to connect to module");
+    /// let handle = ModuleHandle::<M4315>::new().connect().expect("Failed to connect to module");
     /// handle.set_software_mode().expect("Failed to set software mode");
     /// ```
     pub fn set_software_mode(&self) -> Result<(), HidError> {
-        M::set_software_mode(self.device.as_ref().expect("Handle not connected"))
+        M::set_software_mode(&self.data)
     }
 }

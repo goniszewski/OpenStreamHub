@@ -4,12 +4,10 @@ use cooltek_sdk_masterhub::{
 };
 
 fn print_serial_number_for<M: Module + CanGetSerialNumber>() {
-    let mut handle = ModuleHandle::<M>::new();
-    match handle.connect() {
-        Ok(_) => (),
+    let handle = match ModuleHandle::<M>::new().connect() {
+        Ok(handle) => handle,
         Err(_) => return, // silently swallow errors; module probably not connected
     };
-
     let serial_number = match handle.get_serial_number() {
         Ok(serial_number) => serial_number,
         Err(_) => return, // silently swallow errors; probably transient error

@@ -21,7 +21,7 @@ The table lists implemented capabilities, offline test coverage, and remaining h
 | M131E display | `JpegPackets`, explicit `display_jpeg`; 240×240 baseline JFIF JPEG; `02 45`, sequence/length, final flag, payload offset 8 | Static source trace; real encoder-generated image fixture; packet reassembly, bounds, zero-fill policy and short-write stop tested; typed upload uses descriptor-derived size | Requires byte 6, pacing, orientation and acceptance evidence |
 | Explicit dial lifecycle | `DialSession`: activate/suspend/resume/advance/shutdown; caller supplies notifications and time | Fake transport mode writes, idempotence, two-second resume policy, failures and decoder reset | Requires physical acceptance; no automatic macOS observer or reconnect |
 | Dial diagnostic commands | Identity-routed replay, default feature previews, offline JPEG plans; live writes require an exact path | Synthetic aliases/events/gestures; complete feature bytes; 31-packet JPEG reconstruction; no-overwrite/preflight; failed enable/footer cleanup tests | Live queries, writes and cleanup require physical acceptance |
-| Mac shortcuts/volume/profiles | Planned application layer | None | Pending later work |
+| Mac shortcuts/volume/profiles | `cooltek-sdk-service` and `masterhub-service`; strict JSON profiles, serial precedence, output volume/mute, shortcuts, app launch | Synthetic action plans, mock host processes, bounded subprocess monitoring, input/gesture reset, failed-action stop and one-shot mode cleanup tests | Physical input and actual macOS effects/permissions pending; synchronous throughput unverified |
 
 Source references:
 
@@ -31,4 +31,5 @@ Source references:
 - [Synthetic capture provenance](../crates/cooltek-sdk-cli/tests/fixtures/README.md)
 - [Official software static-analysis evidence and hashes](research/masterhub-1.0.0.113-static-analysis.md)
 - [Implementation status](masterhub-implementation-status.md)
+- [Binding and action service](masterhub-service.md)
 - [Roadmap](masterhub-macos-plan.md)

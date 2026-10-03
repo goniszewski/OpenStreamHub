@@ -1,6 +1,6 @@
 # MasterHUB implementation status
 
-Updated on 3 October 2026. The SDK implements discovery, input decoding, dial controls, JPEG output, and session lifecycle hooks. Tests use synthetic reports and simulated transports; hardware compatibility remains unverified. See the [roadmap](masterhub-macos-plan.md) and [command guide](masterhub-diagnostics.md).
+Updated on 3 October 2026. The SDK implements discovery, input decoding, dial controls, JPEG output, and session lifecycle hooks. A separate binding service adds profiles and explicit macOS actions. Tests use synthetic reports, simulated transports, and mock host processes; hardware compatibility and actual action effects remain unverified. See the [roadmap](masterhub-macos-plan.md), [diagnostic guide](masterhub-diagnostics.md), and [service guide](masterhub-service.md).
 
 ## References
 
@@ -31,6 +31,15 @@ Updated on 3 October 2026. The SDK implements discovery, input decoding, dial co
 - Opt-in recording attempts hardware-mode restoration after success, read failure, or even a failed initial software-mode write. Primary capture/enable errors, footer failures, and cleanup failures remain visible. The input footer alone does not establish successful cleanup.
 - Help, examples, fixture provenance, and command constraints are documented in [masterhub-diagnostics.md](masterhub-diagnostics.md). Offline paths do not enumerate or open hardware.
 
+## Binding and action service
+
+- Separate `cooltek-sdk-service` crate with strict schema-1 profiles, bounded action validation, serial-specific precedence, input normalization, and the host dispatcher boundary.
+- `masterhub-service validate`, `replay`, and `run`. Replay constructs no HID context and always plans actions. Live runs own one exact selected interface, log planned actions by default, and require `--execute` for host operations. Dial software mode is a separate explicit option.
+- macOS system output volume/mute, ASCII keyboard shortcuts through System Events, and application launch by bundle ID. The backend uses absolute system binaries with argument validation, five-second subprocess timeouts, bounded output, and no retries.
+- Live termination after a duration/report limit, Ctrl-C/SIGTERM, or failure. Cancellation is checked between actions. Requested dial hardware-mode cleanup runs once after any software-mode attempt, including failed enabling; primary and cleanup errors are preserved.
+- Diagnostic path parsing now treats a lossless path as one required value, avoiding a Clap type mismatch on valid live arguments. Existing diagnostic commands remain the Cargo default binary.
+- Synchronous dispatch and blocking output mean high-rate input, timestamp accuracy under action latency, and stalled-output termination remain runtime limitations. No automatic reconnect, native sleep/wake observer, or UI is provided.
+
 ## Validation evidence
 
 Validated on Apple Silicon macOS with Rust 1.98.1.
@@ -38,20 +47,22 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | Check | Result |
 | --- | --- |
 | Workspace/all-target compilation | Passed `cargo check --workspace --all-targets --locked` |
-| Workspace unit/integration tests | Passed 107: 79 SDK unit, 6 CLI unit, 22 CLI integration |
+| Workspace unit/integration tests | Passed 160: 79 SDK unit, 16 CLI unit, 34 CLI integration, 31 service unit |
 | Documentation tests | Passed 12, including compile-fail type-state coverage |
 | Formatting and diff whitespace | Passed `cargo fmt --all -- --check` and `git diff --check` |
 | Clippy across workspace/all targets with warnings denied | Passed |
 | API documentation build with warnings denied | Passed |
 | CLI help, synthetic replay, and offline planning smoke checks | Passed four feature previews, 16 dial reports, both gesture thresholds, and 31 JPEG packets at a synthetic 65-byte output length |
 | Documentation links | Passed local link checks |
+| Binding service | Passed strict profiles, serial precedence, knob/dial replay plans, gesture boundaries, mock host commands/timeouts, live cleanup and cancellation tests |
+| macOS script syntax | Seven backend AppleScript forms compiled with `osacompile`; none executed |
 
 The JPEG smoke plan reconstructs the generated 1,725-byte fixture exactly (SHA-256 `cd46c629dc680404454dc55dd564b815b5c225bed40c5e7af9e498bd0ab69600`). The 65-byte descriptor is synthetic and does not establish the device's real output size. Gesture smoke checks classify 600,000 µs as long and 599,999 µs as short.
 
-Validation used pure parsers, simulated transports, and synthetic captures. Physical devices, native Intel Mac, Windows, and Linux builds have not been tested.
+Validation used pure parsers, simulated transports, synthetic captures, and mock action subprocesses. Physical devices, actual volume/shortcut/app actions, native Intel Mac, Windows, and Linux builds have not been tested.
 
 ## Remaining gates
 
 The first hardware session must establish descriptors/topology, interface selection, actual serial/report framing, physical control order and gestures, required initialization, and native HID timeout/open behavior. Complete dial payloads, descriptor sizes, physical direction, color order, feature-field semantics, image acceptance/orientation, header byte 6, and pacing still require captures or device tests. Implemented aliases, decoders, commands, and packet construction are not hardware acceptance.
 
-Automatic macOS sleep/wake observation and reconnect, base/knob lighting, macOS actions, profiles, UI, packaging, and firmware compatibility acceptance remain later roadmap milestones. Explicit lifecycle hooks do not constitute automatic device recovery. JPEG encoding, arbitrary image conversion, BMP, progressive JPEG, and GIF animation are not implemented. Firmware flashing/recovery remains excluded.
+Automatic macOS sleep/wake observation and reconnect, base/knob lighting, action/permission runtime acceptance, UI, packaging, and firmware compatibility acceptance remain later roadmap milestones. Explicit lifecycle hooks do not constitute automatic device recovery. JPEG encoding, arbitrary image conversion, BMP, progressive JPEG, and GIF animation are not implemented. Firmware flashing/recovery remains excluded.

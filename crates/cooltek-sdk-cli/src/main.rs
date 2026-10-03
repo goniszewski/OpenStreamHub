@@ -1,5 +1,3 @@
-mod capture;
-
 use std::{
     error::Error,
     fs::{File, OpenOptions},
@@ -21,7 +19,7 @@ use cooltek_sdk_masterhub::{
 };
 use serde_json::json;
 
-use capture::{
+use cooltek_sdk_cli::capture::{
     CaptureReader, Descriptor, End, EndReason, Identity, MAX_REPORT_BYTES, Record, Report,
     SCHEMA_VERSION, Session, Source, decode_hex, encode_hex, write_record,
 };
@@ -38,6 +36,16 @@ struct Cli {
     command: Command,
 }
 
+#[derive(Clone, Debug)]
+struct DevicePath(Vec<u8>);
+
+impl std::ops::Deref for DevicePath {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Print a JSON device inventory without opening or initializing devices.
@@ -46,7 +54,7 @@ enum Command {
     Record {
         /// Hexadecimal device path copied from `list` (no trailing NUL).
         #[arg(long, value_parser = parse_path)]
-        path_hex: Vec<u8>,
+        path_hex: DevicePath,
         /// Destination; existing files are never overwritten.
         #[arg(long)]
         output: PathBuf,
@@ -84,26 +92,26 @@ enum DialCommand {
     Mode {
         mode: DialMode,
         #[arg(long, value_parser = parse_path)]
-        path_hex: Option<Vec<u8>>,
+        path_hex: Option<DevicePath>,
     },
     /// Preview backlight control; --path-hex explicitly sends the command.
     Backlight {
         #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
         value: u8,
         #[arg(long, value_parser = parse_path)]
-        path_hex: Option<Vec<u8>>,
+        path_hex: Option<DevicePath>,
     },
     /// Preview three raw color channels in SDK order (six hexadecimal digits).
     Color {
         #[arg(value_parser = parse_color)]
         channels: [u8; 3],
         #[arg(long, value_parser = parse_path)]
-        path_hex: Option<Vec<u8>>,
+        path_hex: Option<DevicePath>,
     },
     /// Explicitly query current firmware fields and backlight on a selected dial.
     Info {
         #[arg(long, value_parser = parse_path)]
-        path_hex: Vec<u8>,
+        path_hex: DevicePath,
     },
     /// Plan a 240x240 baseline JFIF JPEG offline, or explicitly send it to a dial.
     Jpeg {
@@ -117,7 +125,7 @@ enum DialCommand {
         descriptor: Option<PathBuf>,
         /// Exact dial path for a live write; report size comes from its descriptor.
         #[arg(long, value_parser = parse_path, required_unless_present = "descriptor")]
-        path_hex: Option<Vec<u8>>,
+        path_hex: Option<DevicePath>,
         /// New JSONL plan file; existing files are never overwritten.
         #[arg(
             long,
@@ -177,12 +185,12 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
         .map_err(|_| "color must contain exactly six hexadecimal digits".into())
 }
 
-fn parse_path(raw: &str) -> Result<Vec<u8>, String> {
+fn parse_path(raw: &str) -> Result<DevicePath, String> {
     let bytes = decode_hex(raw, MAX_REPORT_BYTES)?;
     if bytes.is_empty() || bytes.contains(&0) {
         return Err("device path must be nonempty and contain no NUL bytes".into());
     }
-    Ok(bytes)
+    Ok(DevicePath(bytes))
 }
 
 fn identity(device: &ModuleIdentity) -> Identity {
@@ -217,7 +225,7 @@ fn open_dial(path: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
 
 fn feature_command(
     report: [u8; dial::FEATURE_REPORT_LENGTH],
-    path: Option<Vec<u8>>,
+    path: Option<DevicePath>,
 ) -> Result<(), Box<dyn Error>> {
     let sent = if let Some(path) = path {
         open_dial(&path)?.send_feature_report(&report)?;
@@ -669,6 +677,75 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    #[test]
+    fn exact_paths_parse_as_single_required_values_without_opening_hid() {
+        let cli = Cli::try_parse_from([
+            "masterhub-diag",
+            "record",
+            "--path-hex",
+            "61ff",
+            "--output",
+            "capture.jsonl",
+        ])
+        .unwrap();
+        let Command::Record { path_hex, .. } = cli.command else {
+            panic!("expected record")
+        };
+        assert_eq!(path_hex.0, vec![0x61, 0xff]);
+        assert!(
+            Cli::try_parse_from(["masterhub-diag", "record", "--output", "capture.jsonl"]).is_err()
+        );
+        for arguments in [
+            vec![
+                "masterhub-diag",
+                "dial",
+                "mode",
+                "software",
+                "--path-hex",
+                "61ff",
+            ],
+            vec![
+                "masterhub-diag",
+                "dial",
+                "backlight",
+                "50",
+                "--path-hex",
+                "61ff",
+            ],
+            vec![
+                "masterhub-diag",
+                "dial",
+                "color",
+                "abcdef",
+                "--path-hex",
+                "61ff",
+            ],
+            vec!["masterhub-diag", "dial", "info", "--path-hex", "61ff"],
+            vec![
+                "masterhub-diag",
+                "dial",
+                "jpeg",
+                "picture.jpg",
+                "--path-hex",
+                "61ff",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            let Command::Dial { command } = cli.command else {
+                panic!("expected dial")
+            };
+            let path = match command {
+                DialCommand::Info { path_hex } => path_hex,
+                DialCommand::Mode { path_hex, .. }
+                | DialCommand::Backlight { path_hex, .. }
+                | DialCommand::Color { path_hex, .. }
+                | DialCommand::Jpeg { path_hex, .. } => path_hex.unwrap(),
+            };
+            assert_eq!(path.0, vec![0x61, 0xff]);
+        }
+        assert!(Cli::try_parse_from(["masterhub-diag", "dial", "info"]).is_err());
+    }
 
     enum Read {
         Data(Vec<u8>),

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "name": "macOS controls",
+  "bindings": [
+    {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}},
+    {"module":"m003k","control":0,"gesture":"counter_clockwise","action":{"type":"volume","delta":-5}},
+    {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"toggle_mute"}},
+    {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"shortcut","key":"c","modifiers":["command"]}},
+    {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"shortcut","key":"v","modifiers":["command"]}},
+    {"module":"m131e","control":0,"gesture":"right","action":{"type":"volume","delta":5}},
+    {"module":"m131e","control":0,"gesture":"left","action":{"type":"volume","delta":-5}},
+    {"module":"m131e","control":0,"gesture":"short_press","action":{"type":"toggle_mute"}},
+    {"module":"m131e","control":0,"gesture":"long_press","action":{"type":"launch_app","bundle_id":"com.apple.finder"}}
+  ]
+}

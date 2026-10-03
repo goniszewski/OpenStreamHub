@@ -1,6 +1,6 @@
 # MasterHUB implementation status
 
-Updated on 3 October 2026. The SDK implements discovery, input decoding, dial controls, JPEG output, and session lifecycle hooks. A separate binding service adds profiles and explicit macOS actions. Tests use synthetic reports, simulated transports, and mock host processes; hardware compatibility and actual action effects remain unverified. See the [roadmap](masterhub-macos-plan.md), [diagnostic guide](masterhub-diagnostics.md), and [service guide](masterhub-service.md).
+Updated on 3 October 2026. The SDK implements discovery, input decoding, dial controls, JPEG output, and session lifecycle hooks. The CLI prepares static images offline. A separate binding service adds profiles and explicit macOS actions. Automated tests use synthetic reports, simulated transports, and mock host processes; limited device-free macOS checks are recorded in the [smoke guide](masterhub-macos-smoke.md). Hardware compatibility and complete action acceptance remain pending. See the [roadmap](masterhub-macos-plan.md), [diagnostic guide](masterhub-diagnostics.md), and [service guide](masterhub-service.md).
 
 ## References
 
@@ -28,6 +28,7 @@ Updated on 3 October 2026. The SDK implements discovery, input decoding, dial co
 - Replay selects M003K or M131E decoding using actual VID/PID, including legacy and newer aliases, rather than a potentially incorrect model label. Dial output preserves raw bytes and includes optional host gestures at the 600 ms boundary.
 - `dial mode`, `dial backlight`, and `dial color` preview complete feature reports by default. Only an explicit `--path-hex` opens and writes to an exact selected dial. `dial info` explicitly queries firmware fields and backlight.
 - `dial jpeg` plans packets offline from a saved HID descriptor and encoded JPEG, or explicitly writes to a selected dial using its descriptor. The JSONL plan has separate provenance/schema from input captures. Inputs are validated before plan creation or the first display write; existing output files are never overwritten.
+- `dial prepare-image` decodes static PNG/JPEG, fits and optionally rotates/mattes the image, and encodes 240×240 RGB baseline JFIF. Source bytes, dimensions, and decoded pixel buffers are bounded; APNG and unsupported formats are rejected. EXIF orientation and color profiles are not automatically applied. Full conversion and framing validation precede no-overwrite file creation; no HID context is constructed.
 - Opt-in recording attempts hardware-mode restoration after success, read failure, or even a failed initial software-mode write. Primary capture/enable errors, footer failures, and cleanup failures remain visible. The input footer alone does not establish successful cleanup.
 - Help, examples, fixture provenance, and command constraints are documented in [masterhub-diagnostics.md](masterhub-diagnostics.md). Offline paths do not enumerate or open hardware.
 
@@ -36,6 +37,7 @@ Updated on 3 October 2026. The SDK implements discovery, input decoding, dial co
 - Separate `cooltek-sdk-service` crate with strict schema-1 profiles, bounded action validation, serial-specific precedence, input normalization, and the host dispatcher boundary.
 - `masterhub-service validate`, `replay`, and `run`. Replay constructs no HID context and always plans actions. Live runs own one exact selected interface, log planned actions by default, and require `--execute` for host operations. Dial software mode is a separate explicit option.
 - macOS system output volume/mute, ASCII keyboard shortcuts through System Events, and application launch by bundle ID. The backend uses absolute system binaries with argument validation, five-second subprocess timeouts, bounded output, and no retries.
+- Public `AudioSnapshot`, `audio_snapshot()`, and `restore_audio_snapshot()` helpers support bounded state queries and exact best-effort restoration. Device-free smoke examples verify audio effects and restoration, or request a TextEdit launch/plain scratch keystroke; explicit execution is required. Native command completion is distinguished from independently observed effects.
 - Live input is timestamped and normalized independently of the action worker. Owned reports enter a 64-report FIFO queue; overflow ends the session with explicit received/queued/processed/discarded counts. Actions remain ordered and serialized.
 - Live logging uses a 500 ms total record deadline and bounded records on terminals, pipes, or sockets. A failed/partial record cannot be retried; regular-file redirection is rejected and an active `tee` pipeline can save output. The owned stdout duplicate restores status flags when dropped.
 - Normal input limits allow a ten-second worker drain, followed by cancellation when necessary. Ctrl-C/SIGTERM and failures cancel queued work and in-flight native subprocesses; completion is observed before joining. Requested dial hardware-mode cleanup runs once after the finite worker phase and any software-mode attempt, including failed enabling. Primary, action, drain, output, and cleanup errors are preserved in the final status.
@@ -49,7 +51,7 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | Check | Result |
 | --- | --- |
 | Workspace/all-target compilation | Passed `cargo check --workspace --all-targets --locked` |
-| Workspace unit/integration tests | Passed 181: 79 SDK unit, 33 CLI unit, 34 CLI integration, 35 service unit |
+| Workspace/all-target tests | Passed 208: 79 SDK unit, 43 CLI unit, 38 CLI integration, 39 service unit, 9 audio example tests |
 | Documentation tests | Passed 12, including compile-fail type-state coverage |
 | Formatting and diff whitespace | Passed `cargo fmt --all -- --check` and `git diff --check` |
 | Clippy across workspace/all targets with warnings denied | Passed |
@@ -58,14 +60,18 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | Documentation links | Passed local link checks |
 | Binding service | Passed strict profiles, serial precedence, knob/dial replay plans, gesture boundaries, mock host commands/timeouts, live cleanup and cancellation tests |
 | Live runtime | Passed independent input/gesture timing, rapid bursts, overflow counts, bounded drain/cancellation, panic handling, one-shot cleanup, and 13 stdout deadline/descriptor tests |
-| macOS script syntax | Seven backend AppleScript forms compiled with `osacompile`; none executed |
+| macOS script syntax | Seven backend AppleScript forms compiled with `osacompile`; live execution is scoped separately below |
+| Image preparation | Ten unit and four CLI integration checks passed: entropy decoding, alpha/matte, fit/crop, all quarter-turns, corrupt/animated/limited sources, packet reassembly, preflight, and no-overwrite |
+| Device-free macOS runtime | Passed volume/mute effects with one-point target tolerance and exact restoration on this host; TextEdit launch request completed; scratch keyboard effect remains unverified. See [masterhub-macos-smoke.md](masterhub-macos-smoke.md) |
 
 The JPEG smoke plan reconstructs the generated 1,725-byte fixture exactly (SHA-256 `cd46c629dc680404454dc55dd564b815b5c225bed40c5e7af9e498bd0ab69600`). The 65-byte descriptor is synthetic and does not establish the device's real output size. Gesture smoke checks classify 600,000 µs as long and 599,999 µs as short.
 
-Validation used pure parsers, simulated transports, synthetic captures, and mock action subprocesses. Physical devices, actual volume/shortcut/app actions, native Intel Mac, Windows, and Linux builds have not been tested.
+An additional offline smoke converted an original synthetic 480×240 RGBA pattern with contain fit, 90-degree clockwise rotation, quality 90, and matte `202020`. Its 5,834-byte JPEG reconstructed exactly from 103 packets using the synthetic 65-byte descriptor (SHA-256 `c54a75f7ed8a582e888dd62b8135d74a3be44d794a47fed526812b0414fa5a02`). This is image-conversion and packet evidence, not a device capture or display acceptance.
+
+Automated validation uses pure parsers, simulated transports, synthetic captures, and mock action subprocesses. Device-free host observations are scoped in the smoke guide. Physical devices, native Intel Mac, Windows, and Linux builds have not been tested.
 
 ## Remaining gates
 
 The first hardware session must establish descriptors/topology, interface selection, actual serial/report framing, physical control order and gestures, required initialization, and native HID timeout/open behavior. Complete dial payloads, descriptor sizes, physical direction, color order, feature-field semantics, image acceptance/orientation, header byte 6, and pacing still require captures or device tests. Implemented aliases, decoders, commands, and packet construction are not hardware acceptance.
 
-Automatic macOS sleep/wake observation and reconnect, base/knob lighting, action/permission runtime acceptance, UI, packaging, and firmware compatibility acceptance remain later roadmap milestones. Explicit lifecycle hooks do not constitute automatic device recovery. JPEG encoding, arbitrary image conversion, BMP, progressive JPEG, and GIF animation are not implemented. Firmware flashing/recovery remains excluded.
+Automatic macOS sleep/wake observation and reconnect, base/knob lighting, complete action/permission runtime acceptance, UI, packaging, and firmware compatibility acceptance remain later roadmap milestones. Explicit lifecycle hooks do not constitute automatic device recovery. Static PNG/JPEG conversion is implemented; BMP, animation, and progressive JPEG output remain unsupported. Firmware flashing/recovery remains excluded.

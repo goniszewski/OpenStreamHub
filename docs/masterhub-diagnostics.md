@@ -1,6 +1,6 @@
 # MasterHUB diagnostic tools
 
-`masterhub-diag` inventories Cooler Master HID interfaces, records raw input for one explicitly selected interface, and replays captures without hardware. It also previews dial feature commands and plans JPEG output offline. M003K decoding comes from public protocol notes; M131E decoding and commands come from static analysis of the official Windows software. Physical-device behavior is not yet verified.
+`masterhub-diag` inventories Cooler Master HID interfaces, records raw input for one explicitly selected interface, and replays captures without hardware. It also previews dial feature commands, converts static artwork, and plans JPEG output offline. M003K decoding comes from public protocol notes; M131E decoding and commands come from static analysis of the official Windows software. Physical-device behavior is not yet verified.
 
 ## Build and replay without a device
 
@@ -94,7 +94,22 @@ cargo run -p cooltek-sdk-cli --locked -- dial info --path-hex DIAL_PATH_HEX_FROM
 
 The result preserves four raw firmware bytes and eleven text bytes, as well as a lossy text interpretation. Query reply byte 1 is opaque; only actual returned lengths and required fields are checked.
 
-An offline display plan requires an already encoded 240×240, 8-bit, three-component baseline JFIF JPEG with one interleaved scan, and a binary HID descriptor containing output report ID `02`. The packet builder checks JPEG markers, tables, dimensions, and framing, but does not entropy-decode the image. It does not resize images or support progressive JPEG/GIF. A generated JPEG and synthetic descriptor are included for offline testing:
+Prepare a static PNG or JPEG without a device:
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- dial prepare-image artwork.png \
+  --output /tmp/prepared-240x240.jpg
+
+cargo run -p cooltek-sdk-cli --locked -- dial prepare-image artwork.png \
+  --output /tmp/prepared-rotated.jpg --fit cover --rotate 270 \
+  --quality 90 --background 202020
+```
+
+Preparation defaults to quality 100, no rotation, and `contain`: preserve the complete image with centered black margins. `cover` crops a centered square; `stretch` scales both axes independently. Rotation accepts 0, 90, 180, or 270 degrees clockwise, applied after fitting. `--background` is an RGB matte for transparency and contain-mode margins. Alpha is composited before filtering. EXIF orientation and color profiles are not automatically applied or copied. Progressive JPEG source images are decoded and re-encoded as baseline output. APNG, GIF, BMP, and other formats are rejected.
+
+Source files are bounded to 16 MiB; decoded dimensions cannot exceed 4096 on either axis and raw decoded pixels cannot exceed 64 MiB. Decoder allocation limits are also requested, but are [best effort](https://docs.rs/image/0.25.10/image/struct.Limits.html), not a total process-memory cap. Complete decoding, fitting, encoding, and dial-framing validation finish before a new output file is created. Existing files are never overwritten. Preparation does not enumerate HID or establish physical image orientation, color calibration, or device acceptance.
+
+An offline display plan requires a prepared 240×240, 8-bit, three-component baseline JFIF JPEG with one interleaved scan, and a binary HID descriptor containing output report ID `02`. The packet builder checks JPEG markers, tables, dimensions, and framing, but does not entropy-decode or resize the image; use `prepare-image` for conversion. A generated JPEG and synthetic descriptor are included for offline testing:
 
 ```sh
 cargo run -p cooltek-sdk-cli --locked -- dial jpeg \
@@ -126,7 +141,7 @@ The live path reads the selected interface's descriptor, validates the image and
 - `dial` exposes pure feature builders, bounded query parsers, `JpegPackets`, and explicit transport operations. Typed M131E handles expose the corresponding commands and descriptor-sized `display_jpeg()`.
 - `DialSession` provides explicit activation, suspension, resume after a caller-timed two-second delay, input reads, and shutdown; drop performs no commands. `DialGestureTracker` accepts monotonic timestamps and classifies known releases at 600 ms.
 
-Automatic macOS sleep/wake observers, reconnect, action dispatch, image encoding/animation, and firmware writing remain later work. Lifecycle hooks and packet builders have offline validation; device acceptance remains pending.
+Automatic macOS sleep/wake observers, reconnect, animation, and firmware writing remain later work. The separate [binding service](masterhub-service.md) handles explicit host actions; image preparation is offline. Lifecycle hooks and packet builders have offline validation; device acceptance remains pending.
 
 ## Validation
 

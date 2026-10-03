@@ -1,6 +1,6 @@
 # MasterHUB binding and action service
 
-`masterhub-service` maps M003K knob and M131E dial events to a small set of macOS actions. Profiles and replay work without a device. Live runs read one explicitly selected HID interface and default to logging planned actions. Physical input behavior and actual macOS action execution remain untested.
+`masterhub-service` maps M003K knob and M131E dial events to a small set of macOS actions. Profiles and replay work without a device. Live runs read one explicitly selected HID interface and default to logging planned actions. Physical input remains untested. Device-free host checks and their observed limitations are documented in the [macOS smoke guide](masterhub-macos-smoke.md).
 
 ## Validate and replay
 
@@ -109,6 +109,8 @@ The backend validates actions again before execution. It invokes absolute `/usr/
 Shortcut execution may require Accessibility and Automation permissions. The identity shown by macOS depends on the launching context, such as Terminal versus a bundled application. Only explicit execution can invoke these tools or prompt for permissions; validation, replay, and dry runs do not. Permission failures preserve the system tool's diagnostic and end the session. No permission settings are changed automatically.
 
 Apple documents the underlying [volume commands](https://developer.apple.com/library/archive/documentation/AppleScript/Conceptual/AppleScriptLangGuide/reference/ASLR_cmds.html), [System Events UI scripting and Accessibility](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html), and [Automation permissions](https://support.apple.com/en-hk/guide/mac-help/mchl108e1718/mac). These sources establish syntax and permission requirements; they do not verify this service's execution on a particular Mac or audio output.
+
+The [controlled smoke examples](masterhub-macos-smoke.md) use the same dispatcher without HID. Audio checks restore and verify an exact snapshot; scratch keystroke checks require independent observation. Neither example upgrades a successful system-tool return to verified host or hardware behavior.
 
 ## Output, failures, and integration
 

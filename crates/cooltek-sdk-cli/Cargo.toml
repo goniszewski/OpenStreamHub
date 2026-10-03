@@ -1,0 +1,17 @@
+[package]
+name = "cooltek-sdk-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.0"
+license = "MIT OR Apache-2.0"
+description = "MasterHUB device inventory, bounded raw recording, and offline replay."
+
+[[bin]]
+name = "masterhub-diag"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+cooltek-sdk-masterhub = { path = "../cooltek-sdk-masterhub" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,9 @@
+{"type":"session","schema_version":1,"source":"synthetic","started_unix_micros":0,"identity":{"path_hex":"73796e7468657469632d6d3030336b","vendor_id":9494,"product_id":514,"serial_number":null,"manufacturer_string":null,"product_string":"Synthetic M003K protocol example","release_number":0,"interface_number":0,"usage_page":65280,"usage":1,"module":"M003K"},"software_mode_requested":false,"report_descriptor":{"status":"error","message":"Synthetic fixture; no hardware descriptor was obtained"}}
+{"type":"report","timestamp_micros":1000,"raw_hex":"012a0500000301ff00"}
+{"type":"report","timestamp_micros":2000,"raw_hex":"012a05000303010001"}
+{"type":"report","timestamp_micros":3000,"raw_hex":"012a05000303010001"}
+{"type":"report","timestamp_micros":4000,"raw_hex":"012a05000303000102"}
+{"type":"report","timestamp_micros":5000,"raw_hex":"012a05000303000000"}
+{"type":"report","timestamp_micros":6000,"raw_hex":"012bffff"}
+{"type":"report","timestamp_micros":7000,"raw_hex":"012a0500000301"}
+{"type":"end","timestamp_micros":7001,"report_count":7,"reason":"max_reports"}

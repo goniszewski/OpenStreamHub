@@ -4,7 +4,12 @@
 
 #![deny(missing_docs)]
 
+pub mod descriptor;
+pub mod dial;
+mod dial_session;
+mod discovery;
 mod hid;
+pub mod input;
 mod macros;
 mod module;
 pub mod modules;
@@ -16,14 +21,18 @@ mod private {
     /// potentially violating assumptions or invariants.
     pub trait Sealed {}
 }
+mod transport;
 mod types;
 
 // -------------------------------
 //  Exports
 // -------------------------------
 
+pub use dial_session::{DialGesture, DialGestureTracker, DialSession, DialSessionState};
+pub use discovery::{DeviceRegistry, ModuleIdentity, ModuleKind};
 pub use hid::ModuleHandle;
 pub use module::Module;
+pub use transport::{InputReader, ReportTransport};
 pub use types::{ProductId, ProductIdError, VendorId, VendorIdError};
 
 // -------------------------------

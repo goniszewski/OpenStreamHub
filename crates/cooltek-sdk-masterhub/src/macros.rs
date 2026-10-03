@@ -1,9 +1,9 @@
-/// Attempts to construct a new [`ProductId`] value object from a primitive value at compile time.
+/// Attempts to construct a new [`ProductId`](crate::ProductId) value object from a primitive value at compile time.
 ///
 /// # Usage:
 ///
-/// This macro attempts to construct a [`ProductId`] from a `u16` literal, raising a compilation
-/// error if it does not succeed. This enables [`ProductId`]s to be used in `const` scenarios.
+/// This macro attempts to construct a [`ProductId`](crate::ProductId) from a `u16` literal, raising a compilation
+/// error if it does not succeed. This enables [`ProductId`](crate::ProductId)s to be used in `const` scenarios.
 ///
 /// # Examples:
 ///
@@ -24,12 +24,12 @@ macro_rules! product_id {
     }};
 }
 
-/// Attempts to construct a new [`VendorId`] value object from a primitive value at compile time.
+/// Attempts to construct a new [`VendorId`](crate::VendorId) value object from a primitive value at compile time.
 ///
 /// # Usage:
 ///
-/// This macro attempts to construct a [`VendorId`] from a `u16` literal, raising a compilation
-/// error if it does not succeed. This enables [`VendorId`]s to be used in `const` scenarios.
+/// This macro attempts to construct a [`VendorId`](crate::VendorId) from a `u16` literal, raising a compilation
+/// error if it does not succeed. This enables [`VendorId`](crate::VendorId)s to be used in `const` scenarios.
 ///
 /// # Examples:
 ///

@@ -23,13 +23,14 @@ use cooltek_sdk_cli::capture::{
     CaptureReader, Descriptor, End, EndReason, Identity, MAX_REPORT_BYTES, Record, Report,
     SCHEMA_VERSION, Session, Source, decode_hex, encode_hex, write_record,
 };
+use cooltek_sdk_cli::image_prep::{FitMode, MAX_ENCODED_BYTES, PrepareOptions, prepare_image};
 
 #[derive(Parser)]
 #[command(
     name = "masterhub-diag",
     version,
     about = "Discover MasterHUB devices, record raw reports, and replay offline",
-    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. Dial setters preview reports unless --path-hex explicitly selects a device. JPEG plans can be generated offline with a saved HID descriptor."
+    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. Dial setters preview reports unless --path-hex explicitly selects a device. Images can be converted offline; JPEG packet plans require a saved HID descriptor."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -86,8 +87,33 @@ enum DialMode {
     Software,
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ImageFit {
+    Contain,
+    Cover,
+    Stretch,
+}
+
 #[derive(Subcommand)]
 enum DialCommand {
+    /// Convert a static PNG/JPEG to a 240x240 baseline JFIF JPEG, without HID.
+    PrepareImage {
+        file: PathBuf,
+        /// New JPEG file; existing files are never overwritten.
+        #[arg(long)]
+        output: PathBuf,
+        /// Preserve the full image, center-crop, or ignore aspect ratio.
+        #[arg(long, value_enum, default_value_t = ImageFit::Contain)]
+        fit: ImageFit,
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(1..=100))]
+        quality: u8,
+        /// Clockwise rotation in degrees, applied after fitting.
+        #[arg(long, default_value = "0", value_parser = ["0", "90", "180", "270"])]
+        rotate: String,
+        /// RGB matte for transparency and contain-mode margins.
+        #[arg(long, default_value = "000000", value_parser = parse_color)]
+        background: [u8; 3],
+    },
     /// Preview mode control; --path-hex explicitly sends the command.
     Mode {
         mode: DialMode,
@@ -253,6 +279,44 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Box<dyn Error>> {
 
 fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
     match command {
+        DialCommand::PrepareImage {
+            file,
+            output,
+            fit,
+            quality,
+            rotate,
+            background,
+        } => {
+            let bytes = read_bounded(&file, MAX_ENCODED_BYTES)?;
+            let rotation_degrees = rotate.parse::<u16>()?;
+            let options = PrepareOptions {
+                quality,
+                fit: match fit {
+                    ImageFit::Contain => FitMode::Contain,
+                    ImageFit::Cover => FitMode::Cover,
+                    ImageFit::Stretch => FitMode::Stretch,
+                },
+                quarter_turns: u8::try_from(rotation_degrees / 90)?,
+                background,
+            };
+            let jpeg = prepare_image(&bytes, options)?;
+            // Decode, fit, encode and validate before creating an output file.
+            let mut writer = BufWriter::new(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&output)?,
+            );
+            writer.write_all(&jpeg)?;
+            writer.flush()?;
+            print_json(&json!({
+                "type":"image_prepared", "schema_version":1,
+                "output":output, "width":240, "height":240,
+                "jpeg_length":jpeg.len(), "quality":quality,
+                "fit": match fit { ImageFit::Contain => "contain", ImageFit::Cover => "cover", ImageFit::Stretch => "stretch" },
+                "clockwise_rotation_degrees":rotation_degrees, "background_rgb":background,
+            }))
+        }
         DialCommand::Mode { mode, path_hex } => feature_command(
             dial::software_mode_report(matches!(mode, DialMode::Software)),
             path_hex,
@@ -736,6 +800,7 @@ mod tests {
                 panic!("expected dial")
             };
             let path = match command {
+                DialCommand::PrepareImage { .. } => panic!("expected a hardware-capable command"),
                 DialCommand::Info { path_hex } => path_hex,
                 DialCommand::Mode { path_hex, .. }
                 | DialCommand::Backlight { path_hex, .. }

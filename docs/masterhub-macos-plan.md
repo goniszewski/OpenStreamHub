@@ -76,7 +76,7 @@ The [Windows software analysis](research/masterhub-1.0.0.113-static-analysis.md)
 
 Discovery accepts both PID generations; the dial decoder uses the application's RIGHT/LEFT labels. Commands support mode, backlight and raw color channels, plus backlight/firmware queries with actual returned-length validation. Feature reply byte 1 remains opaque, and firmware bytes retain unresolved meanings.
 
-JPEG upload accepts an already encoded 240×240, 8-bit, three-component baseline JFIF image with one interleaved scan. The builder checks framing and dimensions but does not entropy-decode the image. Typed upload reads the selected interface's descriptor and derives output report capacity; unavailable or unsupported descriptor information fails rather than using a fixed guess. Packets deliberately zero header byte 6 and final padding, check write completion, and do not infer acknowledgements or add pacing delays. JPEG encoding/conversion, BMP, progressive JPEG and GIF animation remain unimplemented.
+JPEG upload accepts an encoded 240×240, 8-bit, three-component baseline JFIF image with one interleaved scan. The builder checks framing and dimensions but does not entropy-decode the image. Typed upload reads the selected interface's descriptor and derives output report capacity; unavailable or unsupported descriptor information fails rather than using a fixed guess. Packets deliberately zero header byte 6 and final padding, check write completion, and do not infer acknowledgements or add pacing delays. The offline CLI now converts static PNG/JPEG artwork with explicit fit, alpha matte, quality, and rotation; progressive JPEG input is re-encoded as baseline. EXIF/color profiles are not automatically applied. BMP, progressive output, and animation remain unsupported. Physical display acceptance remains pending.
 
 Complete input payloads, physical direction, color order, opaque feature fields, header byte 6 and device pacing still require observation. The dial implementation follows its own recovered packet layout and direction convention.
 
@@ -99,6 +99,8 @@ Gate: base unplug/replug, module reinsertion, app restart, and sleep/wake recove
 ### 6. Everyday macOS application and release
 
 The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. Add reliable sessions and a small menu-bar UI once physical input and action behavior have been validated. Document permissions only for actions that require them. Tauri is an option; defer the GUI choice until device APIs are usable. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
+
+The [controlled macOS smoke guide](masterhub-macos-smoke.md) provides device-free audio snapshot/restore checks and a scratch keystroke procedure. Observed effects, system-tool completion, and unresolved focus/output behavior are recorded separately from physical-device acceptance.
 
 Add useful dial content after the display milestone. Package, sign/notarize, and document compatible firmware and tested Mac architectures.
 

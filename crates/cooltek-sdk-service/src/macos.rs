@@ -14,6 +14,26 @@ const OPEN: &str = "/usr/bin/open";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_LIMIT: usize = 16 * 1024;
 
+/// The system output's volume and mute state, suitable for exact restoration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AudioSnapshot {
+    /// Output volume in percentage points, between 0 and 100 inclusive.
+    pub output_volume: u8,
+    /// Whether the system output is muted.
+    pub output_muted: bool,
+}
+
+impl AudioSnapshot {
+    /// Checks the volume before a caller-provided snapshot reaches system tools.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.output_volume > 100 {
+            Err("audio snapshot output volume must be between 0 and 100".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 /// Executes validated actions on macOS. Shortcut execution may require the user's
 /// Accessibility and Automation permissions for the invoking application.
 ///
@@ -40,6 +60,41 @@ impl MacOsDispatcher {
             runner: Box::new(SystemProcessRunner {
                 cancellation: Some(cancellation),
             }),
+        }
+    }
+
+    /// Queries current output volume and mute state through bounded subprocesses.
+    ///
+    /// This performs no setter operations. A fixed-volume output can return an
+    /// unsupported value; malformed or unavailable state is reported as an error.
+    pub fn audio_snapshot(&mut self) -> Result<AudioSnapshot, String> {
+        Ok(AudioSnapshot {
+            output_volume: self.output_volume()?,
+            output_muted: self.output_muted()?,
+        })
+    }
+
+    /// Attempts to restore both fields of a validated snapshot independently.
+    ///
+    /// A failed volume setter does not prevent the mute setter from being
+    /// attempted. Errors are combined; neither setter is retried. Existing
+    /// cancellation remains effective, including during restoration. A successful
+    /// return reports system-tool completion, not a fresh state verification.
+    pub fn restore_audio_snapshot(&mut self, snapshot: &AudioSnapshot) -> Result<(), String> {
+        snapshot.validate()?;
+        let volume = self
+            .apple_script(format!(
+                "set volume output volume {}",
+                snapshot.output_volume
+            ))
+            .map_err(|error| format!("restoring output volume failed: {error}"));
+        let muted = self
+            .apple_script(format!("set volume output muted {}", snapshot.output_muted))
+            .map_err(|error| format!("restoring output mute failed: {error}"));
+        match (volume, muted) {
+            (Ok(_), Ok(_)) => Ok(()),
+            (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+            (Err(volume), Err(muted)) => Err(format!("{volume}; {muted}")),
         }
     }
 
@@ -78,6 +133,26 @@ impl MacOsDispatcher {
             .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in {property} response"))?;
         Ok(text.trim().to_owned())
     }
+
+    fn output_volume(&mut self) -> Result<u8, String> {
+        let response = self.query("output volume")?;
+        response
+            .parse::<u8>()
+            .ok()
+            .filter(|value| *value <= 100)
+            .ok_or_else(|| format!("{OSASCRIPT}: invalid output volume response {response:?}"))
+    }
+
+    fn output_muted(&mut self) -> Result<bool, String> {
+        let response = self.query("output muted")?;
+        match response.as_str() {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(format!(
+                "{OSASCRIPT}: invalid output muted response {response:?}"
+            )),
+        }
+    }
 }
 
 impl Default for MacOsDispatcher {
@@ -92,28 +167,12 @@ impl ActionDispatcher for MacOsDispatcher {
         action.validate()?;
         match action {
             Action::Volume { delta } => {
-                let response = self.query("output volume")?;
-                let current = response
-                    .parse::<i16>()
-                    .ok()
-                    .filter(|value| (0..=100).contains(value))
-                    .ok_or_else(|| {
-                        format!("{OSASCRIPT}: invalid output volume response {response:?}")
-                    })?;
+                let current = self.output_volume()?;
                 let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
                 self.apple_script(format!("set volume output volume {target}"))?;
             }
             Action::ToggleMute => {
-                let response = self.query("output muted")?;
-                let target = match response.as_str() {
-                    "true" => "false",
-                    "false" => "true",
-                    _ => {
-                        return Err(format!(
-                            "{OSASCRIPT}: invalid output muted response {response:?}"
-                        ));
-                    }
-                };
+                let target = !self.output_muted()?;
                 self.apple_script(format!("set volume output muted {target}"))?;
             }
             Action::Shortcut { key, modifiers } => {
@@ -784,6 +843,90 @@ mod tests {
             requests[0].args[1],
             "output volume of (get volume settings)"
         );
+    }
+
+    #[test]
+    fn audio_snapshot_queries_both_fields_without_setters() {
+        let (mut dispatcher, requests) = fake(vec![success("40\n"), success("true\n")]);
+        assert_eq!(
+            dispatcher.audio_snapshot().unwrap(),
+            AudioSnapshot {
+                output_volume: 40,
+                output_muted: true,
+            }
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.requests.len(), 2);
+        assert_eq!(
+            requests.requests[0].args[1],
+            "output volume of (get volume settings)"
+        );
+        assert_eq!(
+            requests.requests[1].args[1],
+            "output muted of (get volume settings)"
+        );
+    }
+
+    #[test]
+    fn restore_snapshot_validates_before_any_process_request() {
+        let (mut dispatcher, requests) = fake(vec![]);
+        for volume in [101, 255] {
+            assert!(
+                dispatcher
+                    .restore_audio_snapshot(&AudioSnapshot {
+                        output_volume: volume,
+                        output_muted: false,
+                    })
+                    .is_err()
+            );
+        }
+        assert!(requests.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn restore_snapshot_sets_exact_volume_and_mute_independently() {
+        let (mut dispatcher, requests) = fake(vec![
+            Err("synthetic volume failure".into()),
+            Err("synthetic mute failure".into()),
+        ]);
+        let error = dispatcher
+            .restore_audio_snapshot(&AudioSnapshot {
+                output_volume: 0,
+                output_muted: true,
+            })
+            .unwrap_err();
+        assert!(error.contains("restoring output volume failed: synthetic volume failure"));
+        assert!(error.contains("restoring output mute failed: synthetic mute failure"));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.requests.len(), 2);
+        assert_eq!(requests.requests[0].args[1], "set volume output volume 0");
+        assert_eq!(requests.requests[1].args[1], "set volume output muted true");
+    }
+
+    #[test]
+    fn restore_snapshot_does_not_bypass_cancellation() {
+        struct CancelledRunner(AtomicBool);
+        impl ProcessRunner for CancelledRunner {
+            fn run(&mut self, _: &ProcessRequest) -> Result<ProcessOutput, String> {
+                panic!("cancelled restoration must not reach subprocess runner");
+            }
+
+            fn cancellation(&self) -> Option<&AtomicBool> {
+                Some(&self.0)
+            }
+        }
+        let mut dispatcher = MacOsDispatcher {
+            runner: Box::new(CancelledRunner(AtomicBool::new(true))),
+        };
+        let error = dispatcher
+            .restore_audio_snapshot(&AudioSnapshot {
+                output_volume: 50,
+                output_muted: false,
+            })
+            .unwrap_err();
+        assert!(error.contains("restoring output volume failed"));
+        assert!(error.contains("restoring output mute failed"));
+        assert!(error.contains("action execution cancelled"));
     }
 
     #[test]

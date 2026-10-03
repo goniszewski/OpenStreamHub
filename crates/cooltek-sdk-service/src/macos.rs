@@ -1,7 +1,13 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
 use crate::{Action, ActionDispatcher, Modifier};
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 const OSASCRIPT: &str = "/usr/bin/osascript";
 const OPEN: &str = "/usr/bin/open";
@@ -21,11 +27,24 @@ impl MacOsDispatcher {
     /// Creates a dispatcher without launching subprocesses or requesting permissions.
     pub fn new() -> Self {
         Self {
-            runner: Box::new(SystemProcessRunner),
+            runner: Box::new(SystemProcessRunner { cancellation: None }),
+        }
+    }
+
+    /// Creates a dispatcher that stops starting actions when the shared flag is set.
+    ///
+    /// Cancellation also stops monitoring an in-flight system-tool process and
+    /// attempts bounded kill/reap cleanup. An action may already have taken effect.
+    pub fn with_cancellation(cancellation: Arc<AtomicBool>) -> Self {
+        Self {
+            runner: Box::new(SystemProcessRunner {
+                cancellation: Some(cancellation),
+            }),
         }
     }
 
     fn run(&mut self, program: &'static str, args: Vec<String>) -> Result<Vec<u8>, String> {
+        check_cancellation(self.runner.cancellation(), program)?;
         let output = self.runner.run(&ProcessRequest {
             program,
             args,
@@ -140,16 +159,35 @@ struct ProcessOutput {
     stderr: Vec<u8>,
 }
 
-trait ProcessRunner {
+trait ProcessRunner: Send {
     fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String>;
+
+    fn cancellation(&self) -> Option<&AtomicBool> {
+        None
+    }
 }
 
-struct SystemProcessRunner;
+struct SystemProcessRunner {
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+fn check_cancellation(cancellation: Option<&AtomicBool>, program: &str) -> Result<(), String> {
+    if cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        Err(format!("{program}: action execution cancelled"))
+    } else {
+        Ok(())
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 impl ProcessRunner for SystemProcessRunner {
-    fn run(&mut self, _request: &ProcessRequest) -> Result<ProcessOutput, String> {
+    fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
+        check_cancellation(self.cancellation(), request.program)?;
         Err("macOS action execution is unsupported on this platform".into())
+    }
+
+    fn cancellation(&self) -> Option<&AtomicBool> {
+        self.cancellation.as_deref()
     }
 }
 
@@ -157,6 +195,7 @@ impl ProcessRunner for SystemProcessRunner {
 impl ProcessRunner for SystemProcessRunner {
     fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
         use std::process::{Command, Stdio};
+        check_cancellation(self.cancellation(), request.program)?;
         let mut child = Command::new(request.program)
             .args(&request.args)
             .stdin(Stdio::null())
@@ -164,7 +203,7 @@ impl ProcessRunner for SystemProcessRunner {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("{}: could not start process: {error}", request.program))?;
-        let result = collect_child_output(&mut child, request);
+        let result = collect_child_output(&mut child, request, self.cancellation());
         if let Err(error) = result {
             // Stop the direct system-tool process on all monitoring failures. No retry
             // is safe: a partially completed action could otherwise execute twice.
@@ -176,6 +215,10 @@ impl ProcessRunner for SystemProcessRunner {
             };
         }
         result
+    }
+
+    fn cancellation(&self) -> Option<&AtomicBool> {
+        self.cancellation.as_deref()
     }
 }
 
@@ -219,6 +262,7 @@ fn stop_child(child: &mut std::process::Child) -> Result<(), String> {
 fn collect_child_output(
     child: &mut std::process::Child,
     request: &ProcessRequest,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<ProcessOutput, String> {
     use std::time::Instant;
     let mut stdout_pipe = child
@@ -244,6 +288,7 @@ fn collect_child_output(
         },
         || start.elapsed(),
         || std::thread::sleep(Duration::from_millis(10)),
+        || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)),
     )
 }
 
@@ -255,12 +300,19 @@ fn collect_output(
     mut poll_status: impl FnMut() -> Result<Option<(bool, String)>, String>,
     mut elapsed: impl FnMut() -> Duration,
     mut pause: impl FnMut(),
+    mut cancelled: impl FnMut() -> bool,
 ) -> Result<ProcessOutput, String> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut stdout_closed = false;
     let mut stderr_closed = false;
     loop {
+        if cancelled() {
+            return Err(format!(
+                "{}: action execution cancelled; action may already have taken effect",
+                request.program
+            ));
+        }
         if !stdout_closed {
             stdout_closed = drain_pipe(stdout_pipe, &mut stdout, request.output_limit)
                 .map_err(|error| format!("{}: stdout: {error}", request.program))?;
@@ -268,6 +320,12 @@ fn collect_output(
         if !stderr_closed {
             stderr_closed = drain_pipe(stderr_pipe, &mut stderr, request.output_limit)
                 .map_err(|error| format!("{}: stderr: {error}", request.program))?;
+        }
+        if cancelled() {
+            return Err(format!(
+                "{}: action execution cancelled; action may already have taken effect",
+                request.program
+            ));
         }
         if let Some((success, status)) = poll_status()
             .map_err(|error| format!("{}: could not inspect process: {error}", request.program))?
@@ -337,17 +395,17 @@ fn drain_pipe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+    use std::{collections::VecDeque, sync::Mutex};
 
     #[derive(Default)]
     struct FakeState {
         requests: Vec<ProcessRequest>,
         results: VecDeque<Result<ProcessOutput, String>>,
     }
-    struct FakeRunner(Rc<RefCell<FakeState>>);
+    struct FakeRunner(Arc<Mutex<FakeState>>);
     impl ProcessRunner for FakeRunner {
         fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             state.requests.push(ProcessRequest {
                 program: request.program,
                 args: request.args.clone(),
@@ -369,8 +427,8 @@ mod tests {
 
     fn fake(
         results: Vec<Result<ProcessOutput, String>>,
-    ) -> (MacOsDispatcher, Rc<RefCell<FakeState>>) {
-        let state = Rc::new(RefCell::new(FakeState {
+    ) -> (MacOsDispatcher, Arc<Mutex<FakeState>>) {
+        let state = Arc::new(Mutex::new(FakeState {
             requests: Vec::new(),
             results: results.into(),
         }));
@@ -385,7 +443,7 @@ mod tests {
         for (initial, delta, target) in [("98\n", 5, 100), ("2\n", -5, 0), ("40\n", 4, 44)] {
             let (mut dispatcher, state) = fake(vec![success(initial), success("")]);
             dispatcher.dispatch(&Action::Volume { delta }).unwrap();
-            let state = state.borrow();
+            let state = state.lock().unwrap();
             assert_eq!(state.requests.len(), 2);
             assert_eq!(state.requests[0].program, OSASCRIPT);
             assert_eq!(
@@ -419,7 +477,7 @@ mod tests {
                     .unwrap_err()
                     .contains("invalid output volume")
             );
-            assert_eq!(state.borrow().requests.len(), 1);
+            assert_eq!(state.lock().unwrap().requests.len(), 1);
         }
     }
 
@@ -428,7 +486,7 @@ mod tests {
         for (current, target) in [("true\n", "false"), ("false\n", "true")] {
             let (mut dispatcher, state) = fake(vec![success(current), success("")]);
             dispatcher.dispatch(&Action::ToggleMute).unwrap();
-            let state = state.borrow();
+            let state = state.lock().unwrap();
             assert_eq!(
                 state.requests[0].args[1],
                 "output muted of (get volume settings)"
@@ -440,7 +498,7 @@ mod tests {
         }
         let (mut dispatcher, state) = fake(vec![success("missing value")]);
         assert!(dispatcher.dispatch(&Action::ToggleMute).is_err());
-        assert_eq!(state.borrow().requests.len(), 1);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
     }
 
     #[test]
@@ -463,7 +521,7 @@ mod tests {
                 modifiers: vec![],
             })
             .unwrap();
-        let state = state.borrow();
+        let state = state.lock().unwrap();
         assert_eq!(
             state.requests[0].args[1],
             "tell application \"System Events\" to keystroke \"s\" using {command down, control down, option down, shift down}"
@@ -482,7 +540,7 @@ mod tests {
                 bundle_id: "com.apple.TextEdit".into(),
             })
             .unwrap();
-        let state = state.borrow();
+        let state = state.lock().unwrap();
         assert_eq!(state.requests[0].program, OPEN);
         assert_eq!(state.requests[0].args, ["-b", "com.apple.TextEdit"]);
     }
@@ -508,7 +566,7 @@ mod tests {
         for action in actions {
             assert!(dispatcher.dispatch(&action).is_err());
         }
-        assert!(state.borrow().requests.is_empty());
+        assert!(state.lock().unwrap().requests.is_empty());
     }
 
     #[test]
@@ -526,13 +584,13 @@ mod tests {
         let error = dispatcher.dispatch(&action).unwrap_err();
         assert!(error.contains("exit status: 1"));
         assert!(error.contains("not allowed assistive access (-1719)"));
-        assert_eq!(state.borrow().requests.len(), 1);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
         let (mut dispatcher, state) = fake(vec![Err("subprocess timed out after 5000 ms".into())]);
         assert_eq!(
             dispatcher.dispatch(&action).unwrap_err(),
             "subprocess timed out after 5000 ms"
         );
-        assert_eq!(state.borrow().requests.len(), 1);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
     }
 
     #[test]
@@ -544,7 +602,7 @@ mod tests {
                 .unwrap_err()
                 .contains("output exceeded")
         );
-        assert_eq!(state.borrow().requests.len(), 1);
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
     }
 
     #[test]
@@ -614,6 +672,7 @@ mod tests {
                 || Ok(exited.then(|| (true, "exit status: 0".into()))),
                 || clock.get(),
                 || clock.set(clock.get() + Duration::from_secs(1)),
+                || false,
             )
             .err()
             .unwrap();
@@ -637,6 +696,7 @@ mod tests {
             || Ok(Some((false, "exit status: 1".into()))),
             || Duration::ZERO,
             || panic!("completed process should not pause"),
+            || false,
         )
         .unwrap();
         assert!(!result.success);
@@ -654,6 +714,116 @@ mod tests {
             }
         }
         assert!(!drain_pipe(&mut Interrupted, &mut Vec::new(), OUTPUT_LIMIT).unwrap());
+    }
+
+    #[test]
+    fn dispatcher_can_move_to_an_action_worker() {
+        fn assert_send<T: Send>() {}
+        assert_send::<MacOsDispatcher>();
+    }
+
+    #[test]
+    fn cancellation_prevents_process_start_without_real_actions() {
+        let cancellation = Arc::new(AtomicBool::new(true));
+        let mut dispatcher = MacOsDispatcher::with_cancellation(cancellation.clone());
+        let error = dispatcher.run("/not/an/executable", vec![]).unwrap_err();
+        assert!(error.contains("action execution cancelled"));
+        let mut runner = SystemProcessRunner {
+            cancellation: Some(cancellation),
+        };
+        let error = runner
+            .run(&ProcessRequest {
+                program: "/not/an/executable",
+                args: vec![],
+                timeout: PROCESS_TIMEOUT,
+                output_limit: OUTPUT_LIMIT,
+            })
+            .err()
+            .unwrap();
+        assert!(error.contains("action execution cancelled"));
+    }
+
+    #[test]
+    fn cancellation_between_query_and_setter_prevents_the_setter() {
+        struct CancellingRunner {
+            cancellation: Arc<AtomicBool>,
+            requests: Arc<Mutex<Vec<ProcessRequest>>>,
+        }
+        impl ProcessRunner for CancellingRunner {
+            fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
+                self.requests.lock().unwrap().push(ProcessRequest {
+                    program: request.program,
+                    args: request.args.clone(),
+                    timeout: request.timeout,
+                    output_limit: request.output_limit,
+                });
+                self.cancellation.store(true, Ordering::Release);
+                success("40")
+            }
+
+            fn cancellation(&self) -> Option<&AtomicBool> {
+                Some(&self.cancellation)
+            }
+        }
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MacOsDispatcher {
+            runner: Box::new(CancellingRunner {
+                cancellation: Arc::new(AtomicBool::new(false)),
+                requests: requests.clone(),
+            }),
+        };
+        assert!(
+            dispatcher
+                .dispatch(&Action::Volume { delta: 5 })
+                .unwrap_err()
+                .contains("action execution cancelled")
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].args[1],
+            "output volume of (get volume settings)"
+        );
+    }
+
+    #[test]
+    fn monitoring_cancels_a_running_process_before_timeout() {
+        use std::cell::Cell;
+        struct OpenPipe;
+        impl std::io::Read for OpenPipe {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+        }
+        let cancellation = AtomicBool::new(false);
+        let polls = Cell::new(0);
+        let elapsed = Cell::new(Duration::ZERO);
+        let error = collect_output(
+            &mut OpenPipe,
+            &mut std::io::empty(),
+            &ProcessRequest {
+                program: OSASCRIPT,
+                args: vec![],
+                timeout: PROCESS_TIMEOUT,
+                output_limit: OUTPUT_LIMIT,
+            },
+            || {
+                polls.set(polls.get() + 1);
+                Ok(None)
+            },
+            || elapsed.get(),
+            || {
+                elapsed.set(Duration::from_millis(10));
+                cancellation.store(true, Ordering::Release);
+            },
+            || cancellation.load(Ordering::Acquire),
+        )
+        .err()
+        .unwrap();
+        assert!(error.contains("action execution cancelled"));
+        assert!(error.contains("action may already have taken effect"));
+        assert_eq!(polls.get(), 1);
+        assert_eq!(elapsed.get(), Duration::from_millis(10));
     }
 
     #[cfg(not(target_os = "macos"))]

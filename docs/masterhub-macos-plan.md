@@ -66,7 +66,7 @@ Gate: the three target modules can be identified and their raw reports associate
 
 The [binding and action service](masterhub-service.md) connects SDK decoders to strict JSON profiles and an explicit macOS action backend. It normalizes module/control/gesture/timestamp events, preserves unknown and malformed reports in logs, and supports system output volume, mute, keyboard shortcuts, and app launching. Serial-specific bindings override module-wide bindings. Replay always plans actions; live execution is opt-in and selects one exact interface.
 
-Offline tests cover decoding, matching, duplicate filtering, gesture boundaries, simulated action failures, and cleanup. Connect these paths to observed device framing, then verify actual macOS actions and physical control order. Volume/shortcut execution uses synchronous host subprocesses; sustained rotation throughput and read-time gesture accuracy remain runtime acceptance work.
+Offline tests cover decoding, matching, duplicate filtering, gesture boundaries, simulated action failures, and cleanup. Live input normalization runs independently of serialized actions through a bounded queue, with explicit overflow failure and bounded log writes. Connect these paths to observed device framing, then verify actual macOS actions and physical control order. Sustained rotation throughput, HID buffering, and physical timing remain runtime acceptance work.
 
 Gate: an agreed physical gesture sequence gives correct events/actions, including fast and simultaneous movement. Validate press/release state without duplicate actions.
 
@@ -89,6 +89,8 @@ Gate: macOS reads dial gestures and repeatedly displays known patterns while inp
 ### 5. Reliable device sessions
 
 Use a single owner for each device session to coordinate input and commands. Add bounded queues, explicit overflow reporting, bounded retries/timeouts, reconnect, and reinitialization. Identify modules by serial where available, with documented fallback when serials are missing or duplicated; paths may change.
+
+The live service owns input and mode cleanup on one thread, normalizes arrival-timestamped reports before a 64-report queue, and uses one action/log worker. Overflow, action failure, or stalled output cancels pending work. Normal limits use a finite drain; subprocess cancellation and one-shot dial cleanup are explicit. Worker/log deadlines do not bound synchronous native HID feature cleanup. Reconnection and OS lifecycle observation remain pending.
 
 `DialSession` now provides explicit activation, suspension, caller-timed two-second resume and shutdown, clearing stale decoder state on transport failure. It does not subscribe to macOS notifications or reconnect automatically; firmware queries and display refresh remain caller operations. Optional host gesture tracking classifies a press/release at the application's 600 ms threshold. Actual lifecycle reliability and the remaining automatic service behavior are pending.
 

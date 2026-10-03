@@ -36,9 +36,11 @@ Updated on 3 October 2026. The SDK implements discovery, input decoding, dial co
 - Separate `cooltek-sdk-service` crate with strict schema-1 profiles, bounded action validation, serial-specific precedence, input normalization, and the host dispatcher boundary.
 - `masterhub-service validate`, `replay`, and `run`. Replay constructs no HID context and always plans actions. Live runs own one exact selected interface, log planned actions by default, and require `--execute` for host operations. Dial software mode is a separate explicit option.
 - macOS system output volume/mute, ASCII keyboard shortcuts through System Events, and application launch by bundle ID. The backend uses absolute system binaries with argument validation, five-second subprocess timeouts, bounded output, and no retries.
-- Live termination after a duration/report limit, Ctrl-C/SIGTERM, or failure. Cancellation is checked between actions. Requested dial hardware-mode cleanup runs once after any software-mode attempt, including failed enabling; primary and cleanup errors are preserved.
+- Live input is timestamped and normalized independently of the action worker. Owned reports enter a 64-report FIFO queue; overflow ends the session with explicit received/queued/processed/discarded counts. Actions remain ordered and serialized.
+- Live logging uses a 500 ms total record deadline and bounded records on terminals, pipes, or sockets. A failed/partial record cannot be retried; regular-file redirection is rejected and an active `tee` pipeline can save output. The owned stdout duplicate restores status flags when dropped.
+- Normal input limits allow a ten-second worker drain, followed by cancellation when necessary. Ctrl-C/SIGTERM and failures cancel queued work and in-flight native subprocesses; completion is observed before joining. Requested dial hardware-mode cleanup runs once after the finite worker phase and any software-mode attempt, including failed enabling. Primary, action, drain, output, and cleanup errors are preserved in the final status.
 - Diagnostic path parsing now treats a lossless path as one required value, avoiding a Clap type mismatch on valid live arguments. Existing diagnostic commands remain the Cargo default binary.
-- Synchronous dispatch and blocking output mean high-rate input, timestamp accuracy under action latency, and stalled-output termination remain runtime limitations. No automatic reconnect, native sleep/wake observer, or UI is provided.
+- Tests cover input continuing during blocked actions, both gesture thresholds, rapid ordered bursts, queue overflow, blocked pipes, subprocess cancellation, failed-action stopping, and uncooperative-worker deadlines. Host arrival timestamps and queues do not establish device timing, sustained hardware throughput, or absence of HID buffering loss. HIDAPI feature cleanup is synchronous without an exposed timeout. No automatic reconnect, native sleep/wake observer, or UI is provided.
 
 ## Validation evidence
 
@@ -47,7 +49,7 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | Check | Result |
 | --- | --- |
 | Workspace/all-target compilation | Passed `cargo check --workspace --all-targets --locked` |
-| Workspace unit/integration tests | Passed 160: 79 SDK unit, 16 CLI unit, 34 CLI integration, 31 service unit |
+| Workspace unit/integration tests | Passed 181: 79 SDK unit, 33 CLI unit, 34 CLI integration, 35 service unit |
 | Documentation tests | Passed 12, including compile-fail type-state coverage |
 | Formatting and diff whitespace | Passed `cargo fmt --all -- --check` and `git diff --check` |
 | Clippy across workspace/all targets with warnings denied | Passed |
@@ -55,6 +57,7 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | CLI help, synthetic replay, and offline planning smoke checks | Passed four feature previews, 16 dial reports, both gesture thresholds, and 31 JPEG packets at a synthetic 65-byte output length |
 | Documentation links | Passed local link checks |
 | Binding service | Passed strict profiles, serial precedence, knob/dial replay plans, gesture boundaries, mock host commands/timeouts, live cleanup and cancellation tests |
+| Live runtime | Passed independent input/gesture timing, rapid bursts, overflow counts, bounded drain/cancellation, panic handling, one-shot cleanup, and 13 stdout deadline/descriptor tests |
 | macOS script syntax | Seven backend AppleScript forms compiled with `osacompile`; none executed |
 
 The JPEG smoke plan reconstructs the generated 1,725-byte fixture exactly (SHA-256 `cd46c629dc680404454dc55dd564b815b5c225bed40c5e7af9e498bd0ab69600`). The 65-byte descriptor is synthetic and does not establish the device's real output size. Gesture smoke checks classify 600,000 µs as long and 599,999 µs as short.

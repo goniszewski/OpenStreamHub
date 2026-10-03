@@ -150,6 +150,7 @@ dependencies = [
  "cooltek-sdk-masterhub",
  "cooltek-sdk-service",
  "ctrlc",
+ "libc",
  "serde",
  "serde_json",
 ]

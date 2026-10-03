@@ -48,6 +48,15 @@ pub trait Module: Sized {
     /// [USB Implementers Forum (USB-IF)](https://www.usb.org/about).
     const VENDOR_ID: VendorId = vendor_id!(0x2516);
 
+    /// Returns whether a product identifier belongs to this module.
+    ///
+    /// The default recognizes only [`Self::PRODUCT_ID`]. Modules with multiple
+    /// hardware revisions can override this without changing their original ID.
+    /// The vendor identifier must be checked separately against [`Self::VENDOR_ID`].
+    fn accepts_product_id(product_id: ProductId) -> bool {
+        product_id == Self::PRODUCT_ID
+    }
+
     /// Attempts to perform the initialization procedure for the device.
     ///
     /// This allows implementations to define some operations that should be attempted before the
@@ -84,5 +93,41 @@ pub trait Module: Sized {
     /// ```
     fn initialize(_device: &HidDevice) -> Result<(), HidError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::product_id;
+
+    struct OriginalModule;
+
+    impl Module for OriginalModule {
+        const PRODUCT_ID: ProductId = product_id!(0x1234);
+    }
+
+    struct RevisedModule;
+
+    impl Module for RevisedModule {
+        const PRODUCT_ID: ProductId = product_id!(0x1234);
+
+        fn accepts_product_id(product_id: ProductId) -> bool {
+            product_id == Self::PRODUCT_ID || product_id == product_id!(0x5678)
+        }
+    }
+
+    #[test]
+    fn accepts_only_the_original_product_id_by_default() {
+        assert!(OriginalModule::accepts_product_id(product_id!(0x1234)));
+        assert!(!OriginalModule::accepts_product_id(product_id!(0x5678)));
+    }
+
+    #[test]
+    fn permits_custom_modules_to_recognize_multiple_revisions() {
+        assert!(RevisedModule::accepts_product_id(product_id!(0x1234)));
+        assert!(RevisedModule::accepts_product_id(product_id!(0x5678)));
+        assert!(!RevisedModule::accepts_product_id(product_id!(0x9999)));
+        assert_eq!(RevisedModule::PRODUCT_ID, product_id!(0x1234));
     }
 }

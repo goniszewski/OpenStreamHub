@@ -1,0 +1,2144 @@
+{
+  "schema_version": 1,
+  "retrieved_date": "2026-10-03",
+  "official_page": "https://www.coolermaster.com/en-global/software-masterhub.html",
+  "download_url": "https://coolermaster.egnyte.com/dd/4qMpfQw9jqkr",
+  "version": "1.0.0.113",
+  "files": [
+    {
+      "path": "MasterHUB-Setup_1.0.0.113.zip",
+      "bytes": 332445419,
+      "sha256": "cf9aef839255b2144b4c6268b274429be054f33a37e12cbf7537542cdaa0d83f"
+    },
+    {
+      "path": "installer/MasterHUB-Setup_1.0.0.113.exe",
+      "bytes": 333029040,
+      "sha256": "014c5f5899c4ec9327c6cfcb85df1cdfb8744fe08d9f2b9b476ae79012e7cbcb"
+    }
+  ],
+  "payload_files": [
+    {
+      "msi_file_id": "MasterHUB.exe",
+      "installed_path": "MasterHUB.exe",
+      "bytes": 152067024,
+      "sha256": "199e97060e3bfdbe7df5c0210b8ebe9f1ed1225d6329a310f848dc2a524c2e67"
+    },
+    {
+      "msi_file_id": "demo.zip",
+      "installed_path": "demo.zip",
+      "bytes": 4472572,
+      "sha256": "b9b29236517ab4dec5b85d3bd194e29b7b0c88d236568292b0e7998464de968a"
+    },
+    {
+      "msi_file_id": "fonts.zip",
+      "installed_path": "fonts.zip",
+      "bytes": 22760026,
+      "sha256": "7f79f4557dcc7cf74ae4578521967caf399fc516bdcb9cd581dbca78e922aef8"
+    },
+    {
+      "msi_file_id": "DaemonFile_chrome_100_percent_pak",
+      "installed_path": "daemon/chrome_100_percent.pak",
+      "bytes": 129653,
+      "sha256": "9f79f46ca911543ead096a5ee28a34bf1fbe56ec9ba956032a6a2892b254857e"
+    },
+    {
+      "msi_file_id": "DaemonFile_chrome_200_percent_pak",
+      "installed_path": "daemon/chrome_200_percent.pak",
+      "bytes": 179934,
+      "sha256": "1408387e87cb5308530def6ce57bdc4e0abbbaa9e70f687fd6c3a02a56a0536c"
+    },
+    {
+      "msi_file_id": "DaemonFile_d3dcompiler_47_dll",
+      "installed_path": "daemon/d3dcompiler_47.dll",
+      "bytes": 4891080,
+      "sha256": "5653bc7b0e2701561464ef36602ff6171c96bffe96e4c3597359cd7addcba88a"
+    },
+    {
+      "msi_file_id": "DaemonFile_ffmpeg_dll",
+      "installed_path": "daemon/ffmpeg.dll",
+      "bytes": 2767872,
+      "sha256": "aad7e7ac9d74ac18892801950c9728e9c4eacd3b676cbb5d6f63382da2ce0559"
+    },
+    {
+      "msi_file_id": "DaemonFile_icudtl_dat",
+      "installed_path": "daemon/icudtl.dat",
+      "bytes": 10462432,
+      "sha256": "97b978a19edd4746e9a44d9a44bb4bc519e127a203c247837ec0922f573449e3"
+    },
+    {
+      "msi_file_id": "DaemonFile_libEGL_dll",
+      "installed_path": "daemon/libEGL.dll",
+      "bytes": 484352,
+      "sha256": "85f238fb7ace3cbdf7c29c72b01307c440f13491b07a509cbc5b9f257a637164"
+    },
+    {
+      "msi_file_id": "DaemonFile_libGLESv2_dll",
+      "installed_path": "daemon/libGLESv2.dll",
+      "bytes": 7535616,
+      "sha256": "25d49934fc220b169cadeb21fc99dc2a8fb1dd5a4f244265799392f0f5f2f8f8"
+    },
+    {
+      "msi_file_id": "DaemonFile_LICENSE_electron_txt",
+      "installed_path": "daemon/LICENSE.electron.txt",
+      "bytes": 1096,
+      "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+    },
+    {
+      "msi_file_id": "DaemonFile_LICENSES_chromium_html",
+      "installed_path": "daemon/LICENSES.chromium.html",
+      "bytes": 6813275,
+      "sha256": "9f3f2b4d9bbd3113486839eca85de119fab766450cdca08a4574b80748885708"
+    },
+    {
+      "msi_file_id": "DaemonFile_af_pak",
+      "installed_path": "daemon/locales/af.pak",
+      "bytes": 348321,
+      "sha256": "d63222c4a20fa9741f5262634cf9751f22fbb4fcd9d3138d7c8d49e0efb57fba"
+    },
+    {
+      "msi_file_id": "DaemonFile_am_pak",
+      "installed_path": "daemon/locales/am.pak",
+      "bytes": 564794,
+      "sha256": "55357baf28716a73f79ac9a6af1ae63972eb79f93c415715518027fc5c528504"
+    },
+    {
+      "msi_file_id": "DaemonFile_ar_pak",
+      "installed_path": "daemon/locales/ar.pak",
+      "bytes": 616572,
+      "sha256": "e34d5cabaed4634c672591074057c12947bc9e728004228a9e75f87829f4a48a"
+    },
+    {
+      "msi_file_id": "DaemonFile_bg_pak",
+      "installed_path": "daemon/locales/bg.pak",
+      "bytes": 647156,
+      "sha256": "fc4a59ea60d04b224765be4916090e97ed8ddda6b136a92a3827ed0fcc64bb0e"
+    },
+    {
+      "msi_file_id": "DaemonFile_bn_pak",
+      "installed_path": "daemon/locales/bn.pak",
+      "bytes": 832270,
+      "sha256": "e325d936cd97c3f9ddfca2d87caefb8b6e7465ffa31d0386ae2456b18f7a92da"
+    },
+    {
+      "msi_file_id": "DaemonFile_ca_pak",
+      "installed_path": "daemon/locales/ca.pak",
+      "bytes": 394131,
+      "sha256": "e1d6b5fd0bc411f2895eaaa1409916f5ffe39a5c6bd1bafe8af7ce33da5be17d"
+    },
+    {
+      "msi_file_id": "DaemonFile_cs_pak",
+      "installed_path": "daemon/locales/cs.pak",
+      "bytes": 403106,
+      "sha256": "936466784a55b965d23b016bc49377655bc5d281d012c8369c0809c961e05c74"
+    },
+    {
+      "msi_file_id": "DaemonFile_da_pak",
+      "installed_path": "daemon/locales/da.pak",
+      "bytes": 364767,
+      "sha256": "1b0793b1cbeb6a56ff1e64523c37ba753457320aa29f9718022caa07b4981d8f"
+    },
+    {
+      "msi_file_id": "DaemonFile_de_pak",
+      "installed_path": "daemon/locales/de.pak",
+      "bytes": 391110,
+      "sha256": "e0f632ce324951002c80e019dd0169be9f6b0640533fa434cd6ca80f28a1d3f7"
+    },
+    {
+      "msi_file_id": "DaemonFile_el_pak",
+      "installed_path": "daemon/locales/el.pak",
+      "bytes": 707669,
+      "sha256": "92403b6160e38746597d4dd7f64d64cf19e30b5e7862901263c39679187b2c91"
+    },
+    {
+      "msi_file_id": "DaemonFile_en_GB_pak",
+      "installed_path": "daemon/locales/en-GB.pak",
+      "bytes": 318332,
+      "sha256": "463af7da8418d7fb374ebf690e2aa79ee7cb2acc11c28a67f3ba837cf7a0937b"
+    },
+    {
+      "msi_file_id": "DaemonFile_en_US_pak",
+      "installed_path": "daemon/locales/en-US.pak",
+      "bytes": 321156,
+      "sha256": "bb165eaa51456b52fcbdf7639ee727280e335a1f6b4cfb91afc45222895b564f"
+    },
+    {
+      "msi_file_id": "DaemonFile_es_419_pak",
+      "installed_path": "daemon/locales/es-419.pak",
+      "bytes": 389323,
+      "sha256": "5aff3762747a6e8c6df9f2a3b470bf231b44163006b17ce87e2a03694be27b81"
+    },
+    {
+      "msi_file_id": "DaemonFile_es_pak",
+      "installed_path": "daemon/locales/es.pak",
+      "bytes": 389410,
+      "sha256": "267e7b6376e7e5ab806b16fde93bbbcd961bf0c3a7b3a2cabccab37faa9a1d16"
+    },
+    {
+      "msi_file_id": "DaemonFile_et_pak",
+      "installed_path": "daemon/locales/et.pak",
+      "bytes": 350873,
+      "sha256": "d984aee4d18ca24a88846b1b6e0294d373733430f30bb4f1b97bc7d50d512c2e"
+    },
+    {
+      "msi_file_id": "DaemonFile_fa_pak",
+      "installed_path": "daemon/locales/fa.pak",
+      "bytes": 570801,
+      "sha256": "221bbbde078d135f6daca4978a31cc6a82f8f46536467ebc9a0cd322c58a7785"
+    },
+    {
+      "msi_file_id": "DaemonFile_fi_pak",
+      "installed_path": "daemon/locales/fi.pak",
+      "bytes": 360305,
+      "sha256": "5339b8ca52500bd0082e0ba5a5f440c5f04733803da47963280479760c7fff2c"
+    },
+    {
+      "msi_file_id": "DaemonFile_fil_pak",
+      "installed_path": "daemon/locales/fil.pak",
+      "bytes": 404177,
+      "sha256": "4cd3fa70487e894400ad29e3bfbfba3e1c5edd799aab12c62c3aff3c2580ce5e"
+    },
+    {
+      "msi_file_id": "DaemonFile_fr_pak",
+      "installed_path": "daemon/locales/fr.pak",
+      "bytes": 420116,
+      "sha256": "1f6bc09499ee37456968a28b67b81bbf5b9df4f0c6035a388242d2037a3b65a1"
+    },
+    {
+      "msi_file_id": "DaemonFile_gu_pak",
+      "installed_path": "daemon/locales/gu.pak",
+      "bytes": 806228,
+      "sha256": "c36a20730d5f2b91cb61b5b2a5912db2ea5a328a9b8abe0fca0af300446d3c20"
+    },
+    {
+      "msi_file_id": "DaemonFile_he_pak",
+      "installed_path": "daemon/locales/he.pak",
+      "bytes": 499985,
+      "sha256": "875712bb852c698f677c0c74e088f62d31adb2bce65648fc390607aad8705c45"
+    },
+    {
+      "msi_file_id": "DaemonFile_hi_pak",
+      "installed_path": "daemon/locales/hi.pak",
+      "bytes": 841654,
+      "sha256": "1e9623c7407ae8b8a88df3f69a47ae8117f74c4dcb56897bb794a9c38ee5805b"
+    },
+    {
+      "msi_file_id": "DaemonFile_hr_pak",
+      "installed_path": "daemon/locales/hr.pak",
+      "bytes": 390595,
+      "sha256": "3d7685163c5eb6a11e745ff934312b8681c5f85dfa8d9ea701e9dcaee1e7a285"
+    },
+    {
+      "msi_file_id": "DaemonFile_hu_pak",
+      "installed_path": "daemon/locales/hu.pak",
+      "bytes": 421056,
+      "sha256": "3ec43893c6de5ec0f9433841afd5fa9feaaf59ddcef05f7e1cab14dba799887f"
+    },
+    {
+      "msi_file_id": "DaemonFile_id_pak",
+      "installed_path": "daemon/locales/id.pak",
+      "bytes": 344400,
+      "sha256": "9210c4c4c33e7ceb5f70005a92a4fd36ca4facdd41701fdc1d2ce638db8adf22"
+    },
+    {
+      "msi_file_id": "DaemonFile_it_pak",
+      "installed_path": "daemon/locales/it.pak",
+      "bytes": 382436,
+      "sha256": "c0dc0a4a87f7bb054a30eb1174c3228ea2014bd94668a7d22995b99c4937d817"
+    },
+    {
+      "msi_file_id": "DaemonFile_ja_pak",
+      "installed_path": "daemon/locales/ja.pak",
+      "bytes": 467624,
+      "sha256": "3accfd9a1833ddeedb2082fb94101beb59b555c60f42e3070e9e04a372eba84a"
+    },
+    {
+      "msi_file_id": "DaemonFile_kn_pak",
+      "installed_path": "daemon/locales/kn.pak",
+      "bytes": 932385,
+      "sha256": "90b2df3338468e84e2cf2f2f67597cba5c3ceb5dba9c59ebd072ec15a70ce741"
+    },
+    {
+      "msi_file_id": "DaemonFile_ko_pak",
+      "installed_path": "daemon/locales/ko.pak",
+      "bytes": 392823,
+      "sha256": "b04c1b91cab31054be70cb851dc6716065545445801045daceb96eeee4d2334a"
+    },
+    {
+      "msi_file_id": "DaemonFile_lt_pak",
+      "installed_path": "daemon/locales/lt.pak",
+      "bytes": 422255,
+      "sha256": "9200a9509bd77834d9912f4ba8f4219d2b9bd2cdad49a11873db30e99b9d1350"
+    },
+    {
+      "msi_file_id": "DaemonFile_lv_pak",
+      "installed_path": "daemon/locales/lv.pak",
+      "bytes": 420273,
+      "sha256": "b5a31cbfcb40ad8d911de1618c4eb7e8cc67b97eb8878220f15d40eb014d8ac8"
+    },
+    {
+      "msi_file_id": "DaemonFile_ml_pak",
+      "installed_path": "daemon/locales/ml.pak",
+      "bytes": 971210,
+      "sha256": "61a372f170de0a22712be980c3c78b22035ebf40ce79332fab75cdcc4208c9e6"
+    },
+    {
+      "msi_file_id": "DaemonFile_mr_pak",
+      "installed_path": "daemon/locales/mr.pak",
+      "bytes": 791455,
+      "sha256": "481faf7dd66cf10a476d8b156fb4ea452f920322d8007f7e25d41b2837bdbc09"
+    },
+    {
+      "msi_file_id": "DaemonFile_ms_pak",
+      "installed_path": "daemon/locales/ms.pak",
+      "bytes": 360077,
+      "sha256": "fe58cc4f62fc31e32c1fb9a0893a5483391ab6a91b1c92ed4a5e3103a962da7a"
+    },
+    {
+      "msi_file_id": "DaemonFile_nb_pak",
+      "installed_path": "daemon/locales/nb.pak",
+      "bytes": 353073,
+      "sha256": "d565c6c95dad89d3f2b7210de4ec3fc437633de4dcfc994fde0704b92bb53ff8"
+    },
+    {
+      "msi_file_id": "DaemonFile_nl_pak",
+      "installed_path": "daemon/locales/nl.pak",
+      "bytes": 364917,
+      "sha256": "55413d5eddb3300e0ae0fa5d79d26fdf1e5a12922d7018c8054b1faa9d660301"
+    },
+    {
+      "msi_file_id": "DaemonFile_pl_pak",
+      "installed_path": "daemon/locales/pl.pak",
+      "bytes": 406111,
+      "sha256": "53b59486361b11512fb90f15065104b15ee2322bb7804f859cde2f2ecf9581fb"
+    },
+    {
+      "msi_file_id": "DaemonFile_pt_BR_pak",
+      "installed_path": "daemon/locales/pt-BR.pak",
+      "bytes": 383845,
+      "sha256": "c9ec3822044365457b8736348cf95a8e39bdfe3ed36267449bf3ed739accef2e"
+    },
+    {
+      "msi_file_id": "DaemonFile_pt_PT_pak",
+      "installed_path": "daemon/locales/pt-PT.pak",
+      "bytes": 385779,
+      "sha256": "c89170385b3afb2ec89fbd61b8470ac718713c7296441c8430f173dac218e74b"
+    },
+    {
+      "msi_file_id": "DaemonFile_ro_pak",
+      "installed_path": "daemon/locales/ro.pak",
+      "bytes": 396852,
+      "sha256": "7247470057a936d03bfa2a8776508ab66aa1040c41a4eb8f79c1e93551c74bb8"
+    },
+    {
+      "msi_file_id": "DaemonFile_ru_pak",
+      "installed_path": "daemon/locales/ru.pak",
+      "bytes": 649385,
+      "sha256": "b4223b56ec88235819a427d60bb937eb3984076523f02a018f57819e0429bea9"
+    },
+    {
+      "msi_file_id": "DaemonFile_sk_pak",
+      "installed_path": "daemon/locales/sk.pak",
+      "bytes": 409304,
+      "sha256": "75f179897cad221ca6e36b47f53cead7f3fb4159ee196f1d10a5181b84e1b5b7"
+    },
+    {
+      "msi_file_id": "DaemonFile_sl_pak",
+      "installed_path": "daemon/locales/sl.pak",
+      "bytes": 394536,
+      "sha256": "6002c129a56558832e9bd260c427c0bd2e1566e0aea3ad999f89c8e479534f9b"
+    },
+    {
+      "msi_file_id": "DaemonFile_sr_pak",
+      "installed_path": "daemon/locales/sr.pak",
+      "bytes": 610139,
+      "sha256": "524acc64e70918a77cda43fd9b27a727645b28ad2d4cce16b327105101c8bbeb"
+    },
+    {
+      "msi_file_id": "DaemonFile_sv_pak",
+      "installed_path": "daemon/locales/sv.pak",
+      "bytes": 355553,
+      "sha256": "3420a1fbcca5bf8c2d65d6dcb0db78b03f95f7f2fc56479a0de6e3312333ce6f"
+    },
+    {
+      "msi_file_id": "DaemonFile_sw_pak",
+      "installed_path": "daemon/locales/sw.pak",
+      "bytes": 373906,
+      "sha256": "690027c4a31c4aea00b7d1b32ec6cd3fa50b1eac412ae273ab15e72eb485dd6e"
+    },
+    {
+      "msi_file_id": "DaemonFile_ta_pak",
+      "installed_path": "daemon/locales/ta.pak",
+      "bytes": 959344,
+      "sha256": "7e818deedd50a533851bbf08e056bf2ad8d45f442a1a61d9b48e66804ea848db"
+    },
+    {
+      "msi_file_id": "DaemonFile_te_pak",
+      "installed_path": "daemon/locales/te.pak",
+      "bytes": 890208,
+      "sha256": "d839531c4ff4a2885c993e0d358f78667215b0950c77a06ef01a6acff9221c5b"
+    },
+    {
+      "msi_file_id": "DaemonFile_th_pak",
+      "installed_path": "daemon/locales/th.pak",
+      "bytes": 748585,
+      "sha256": "cd80bf232f2f128a3d411f52c8039987559dbc1055f746eed6e0e8478b116dc1"
+    },
+    {
+      "msi_file_id": "DaemonFile_tr_pak",
+      "installed_path": "daemon/locales/tr.pak",
+      "bytes": 380144,
+      "sha256": "b22fc7b75c52cc142f201d5cf107d17c1b173a494a6add022127f559fb46bcb0"
+    },
+    {
+      "msi_file_id": "DaemonFile_uk_pak",
+      "installed_path": "daemon/locales/uk.pak",
+      "bytes": 649248,
+      "sha256": "28ea88f19b2c34699d535ca0c691449b7e4001c12e8aed8d04b2078916e88a37"
+    },
+    {
+      "msi_file_id": "DaemonFile_ur_pak",
+      "installed_path": "daemon/locales/ur.pak",
+      "bytes": 565721,
+      "sha256": "4c7affdcc324cd791d10e235da809ce7501e8005be64340b6e8bf5595647a707"
+    },
+    {
+      "msi_file_id": "DaemonFile_vi_pak",
+      "installed_path": "daemon/locales/vi.pak",
+      "bytes": 449888,
+      "sha256": "b75694e390bd2e20780b3bc72f6e1473ba45d7537c27642a7d888dfd3bb6c3bb"
+    },
+    {
+      "msi_file_id": "DaemonFile_zh_CN_pak",
+      "installed_path": "daemon/locales/zh-CN.pak",
+      "bytes": 327259,
+      "sha256": "a7ac9fda6f4cd189b75fdadc4b70cd0d369a09b66eaeb5d032678cb97ffc98f6"
+    },
+    {
+      "msi_file_id": "DaemonFile_zh_TW_pak",
+      "installed_path": "daemon/locales/zh-TW.pak",
+      "bytes": 324394,
+      "sha256": "c5061ec00bd969f76f3c0c6ff15ddacafed7491260bd8ced78118691ba57bdff"
+    },
+    {
+      "msi_file_id": "DaemonFile_MasterDaemon_exe",
+      "installed_path": "daemon/MHDaemon.exe",
+      "bytes": 157986256,
+      "sha256": "b3e5d267eaa0e405d2691aaf5679fbaf242d1350db13b2387b04a00198b3e0fe"
+    },
+    {
+      "msi_file_id": "DaemonFile_app_asar",
+      "installed_path": "daemon/resources/app.asar",
+      "bytes": 2139779,
+      "sha256": "fc851dbe3b13608ae23533cd938ee2339bb0306a118096310f7bf242849b9420"
+    },
+    {
+      "msi_file_id": "DaemonFile_cpuidsdk64_dll",
+      "installed_path": "daemon/resources/build/Release/cpuidsdk64.dll",
+      "bytes": 3288280,
+      "sha256": "6bb88761978ede611eaaffc5baade93860860bc3a252be9724a9313b15a673f6"
+    },
+    {
+      "msi_file_id": "DaemonFile_nothing_lib",
+      "installed_path": "daemon/resources/build/Release/nothing.lib",
+      "bytes": 88502,
+      "sha256": "5be8967396246982268425a3781e6f25759124bb310178cd09b3d48e15af0cc6"
+    },
+    {
+      "msi_file_id": "DaemonFile_stackaddon_iobj",
+      "installed_path": "daemon/resources/build/Release/stackaddon.iobj",
+      "bytes": 1303587,
+      "sha256": "ec8aba8c98e1c1e1266b90693772794e2972a0179f3552e32482ebd9bd981d5a"
+    },
+    {
+      "msi_file_id": "DaemonFile_stackaddon_ipdb",
+      "installed_path": "daemon/resources/build/Release/stackaddon.ipdb",
+      "bytes": 430832,
+      "sha256": "6ea8104f3a8f4dbf3d0c26135133ea4898203a43c16196185877c1a173c5e318"
+    },
+    {
+      "msi_file_id": "DaemonFile_stackaddon_node",
+      "installed_path": "daemon/resources/build/Release/stackaddon.node",
+      "bytes": 317952,
+      "sha256": "36e2794d23e9f027f9d1411e3bf96faa04b3273cc1edbee3ac5a462f77924b1f",
+      "native": {
+        "machine": "0x8664",
+        "export_name": null,
+        "exports": [],
+        "import_dlls": [
+          "KERNEL32.dll",
+          "ole32.dll",
+          "OLEAUT32.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "DaemonFile_stackaddon_pdb",
+      "installed_path": "daemon/resources/build/Release/stackaddon.pdb",
+      "bytes": 5648384,
+      "sha256": "9c29b585cfed13cdccad1cf52bccbee9e1c88998f03c4e9b0120cec18bd8339d"
+    },
+    {
+      "msi_file_id": "DaemonFile_elevate_exe",
+      "installed_path": "daemon/resources/elevate.exe",
+      "bytes": 107520,
+      "sha256": "9b1fbf0c11c520ae714af8aa9af12cfd48503eedecd7398d8992ee94d1b4dc37"
+    },
+    {
+      "msi_file_id": "DaemonFile_resources_pak",
+      "installed_path": "daemon/resources.pak",
+      "bytes": 5374622,
+      "sha256": "4f29587bcd952de1dbc0b98df0aa506bd9fcf447e6a7258c5eb7e9eb780e6d6c"
+    },
+    {
+      "msi_file_id": "DaemonFile_snapshot_blob_bin",
+      "installed_path": "daemon/snapshot_blob.bin",
+      "bytes": 172048,
+      "sha256": "8613412ebcf462373d4d50f5729f5b9a61ef2b5c599b267f750276c8e29caf25"
+    },
+    {
+      "msi_file_id": "DaemonFile_v8_context_snapshot_bin",
+      "installed_path": "daemon/v8_context_snapshot.bin",
+      "bytes": 483224,
+      "sha256": "add78f3f85f0b173cbe917871821f74c5afe0a6562462762b181180d16df4470"
+    },
+    {
+      "msi_file_id": "DaemonFile_vk_swiftshader_dll",
+      "installed_path": "daemon/vk_swiftshader.dll",
+      "bytes": 5133824,
+      "sha256": "a32c3fbbf74699a10e7642bf4901191f29c88c5aec93ae7ba28c79ab28462a69"
+    },
+    {
+      "msi_file_id": "DaemonFile_vk_swiftshader_icd_json",
+      "installed_path": "daemon/vk_swiftshader_icd.json",
+      "bytes": 106,
+      "sha256": "32d83ff113fef532a9f97e0d2831f8656628ab1c99e9060f0332b1532839afd9"
+    },
+    {
+      "msi_file_id": "DaemonFile_vulkan_1_dll",
+      "installed_path": "daemon/vulkan-1.dll",
+      "bytes": 915456,
+      "sha256": "1f8b647f161f20d45d554e349b3e5ef0b7b5da8c7bdbc1ff631d37dc9c819503"
+    },
+    {
+      "msi_file_id": "chrome_100_percent.pak",
+      "installed_path": "chrome_100_percent.pak",
+      "bytes": 129228,
+      "sha256": "662a9db6ef4197cb4b6c50648a2cafceb7fd903015828df3fee605a602370be0"
+    },
+    {
+      "msi_file_id": "chrome_200_percent.pak",
+      "installed_path": "chrome_200_percent.pak",
+      "bytes": 179318,
+      "sha256": "d4282ae977f23afe252e19e421c8d09696ea3b83a1e73a6aaebaaa5547c74cbc"
+    },
+    {
+      "msi_file_id": "d3dcompiler_47.dll",
+      "installed_path": "d3dcompiler_47.dll",
+      "bytes": 4891080,
+      "sha256": "5653bc7b0e2701561464ef36602ff6171c96bffe96e4c3597359cd7addcba88a"
+    },
+    {
+      "msi_file_id": "version.txt",
+      "installed_path": "version.txt",
+      "bytes": 9,
+      "sha256": "1b1975650a13ca7531392355afefd3079f5026120b978d5c548c0df560c94237"
+    },
+    {
+      "msi_file_id": "ffmpeg.dll",
+      "installed_path": "ffmpeg.dll",
+      "bytes": 2787840,
+      "sha256": "d1ce4ad591e6dc885cab8713ec846370e473a04e30f7db900a694dc6f52c030d"
+    },
+    {
+      "msi_file_id": "icudtl.dat",
+      "installed_path": "icudtl.dat",
+      "bytes": 10454784,
+      "sha256": "cb73d42d36839708013393ad0e4e932fdda9a1acda9275ecdbe74fe89eea8366"
+    },
+    {
+      "msi_file_id": "libEGL.dll",
+      "installed_path": "libEGL.dll",
+      "bytes": 468992,
+      "sha256": "7fa70afa2445d13564a68ab00d7a3b7d213bd527324300053abe9e5877f97cde"
+    },
+    {
+      "msi_file_id": "libGLESv2.dll",
+      "installed_path": "libGLESv2.dll",
+      "bytes": 7410688,
+      "sha256": "e8cd07af374c4b683f86ac1f0c7f5112c4ef8f5d40850e83ccaf63edf833005b"
+    },
+    {
+      "msi_file_id": "LICENSE.electron.txt",
+      "installed_path": "LICENSE.electron.txt",
+      "bytes": 1096,
+      "sha256": "5154e165bd6c2cc0cfbcd8916498c7abab0497923bafcd5cb07673fe8480087d"
+    },
+    {
+      "msi_file_id": "LICENSES.chromium.html",
+      "installed_path": "LICENSES.chromium.html",
+      "bytes": 6514283,
+      "sha256": "d3bf6dd8892c6d77555e0b55efe98bfd18f08987ea39668bc5d0c419877aef1f"
+    },
+    {
+      "msi_file_id": "resources.pak",
+      "installed_path": "resources.pak",
+      "bytes": 5367165,
+      "sha256": "54a6f32a288069872561bae115d211fe3b2701d55a5048311d1cfcd541fe4659"
+    },
+    {
+      "msi_file_id": "snapshot_blob.bin",
+      "installed_path": "snapshot_blob.bin",
+      "bytes": 411024,
+      "sha256": "2590aa136bc101f1075e42cd8939c7679ceb35b773c989be2ada49acaffd01a5"
+    },
+    {
+      "msi_file_id": "v8_context_snapshot.bin",
+      "installed_path": "v8_context_snapshot.bin",
+      "bytes": 733672,
+      "sha256": "f59fa568139442c7f547fc8a5a0fd090ddc8427cc409e2fcef0518a9dcb47a96"
+    },
+    {
+      "msi_file_id": "vk_swiftshader.dll",
+      "installed_path": "vk_swiftshader.dll",
+      "bytes": 4873728,
+      "sha256": "c64b093d2f49b88f792f34cdac8c36b42b9fafd9c2800011c78ea69fc10ba5f9"
+    },
+    {
+      "msi_file_id": "vk_swiftshader_icd.json",
+      "installed_path": "vk_swiftshader_icd.json",
+      "bytes": 106,
+      "sha256": "32d83ff113fef532a9f97e0d2831f8656628ab1c99e9060f0332b1532839afd9"
+    },
+    {
+      "msi_file_id": "vulkan_1.dll",
+      "installed_path": "vulkan-1.dll",
+      "bytes": 869888,
+      "sha256": "e84a8d034b7bbfbd9a7db07d5a104357bd788b98fd52a7b29c336293df0a9c31"
+    },
+    {
+      "msi_file_id": "af.pak",
+      "installed_path": "locales/af.pak",
+      "bytes": 328789,
+      "sha256": "e6db19247e92d007323f9e0ee776c423a6a8a64ab321c9d5c964cf137e390a4d"
+    },
+    {
+      "msi_file_id": "am.pak",
+      "installed_path": "locales/am.pak",
+      "bytes": 532301,
+      "sha256": "9aa0bee97cd6957d3fa1dc43e3bc45b7fc4f55df6df9a33faa7aeaf6e2c46a71"
+    },
+    {
+      "msi_file_id": "ar.pak",
+      "installed_path": "locales/ar.pak",
+      "bytes": 574489,
+      "sha256": "88645be62d0421ace7b2c44df7de67a4a83b04977049bef82b465f60f06d5560"
+    },
+    {
+      "msi_file_id": "bg.pak",
+      "installed_path": "locales/bg.pak",
+      "bytes": 611287,
+      "sha256": "4a7d229dbd7ca53bac0438d5705a8ecad9e33213f6752e58624da1b9e9cd571b"
+    },
+    {
+      "msi_file_id": "bn.pak",
+      "installed_path": "locales/bn.pak",
+      "bytes": 783992,
+      "sha256": "6ad844d2b22c8fbf3587ea603140deb1475dab934ac62e402dbf1c6946dc882e"
+    },
+    {
+      "msi_file_id": "ca.pak",
+      "installed_path": "locales/ca.pak",
+      "bytes": 372133,
+      "sha256": "2b4281c355f0ef19417c3b944ef40642f2e4d0fa3730c626f77f00cef70a6d7e"
+    },
+    {
+      "msi_file_id": "cs.pak",
+      "installed_path": "locales/cs.pak",
+      "bytes": 378902,
+      "sha256": "dee2f88b85753600284bb4acc844be1f0edd5688f98340770bc042aecbd73fb9"
+    },
+    {
+      "msi_file_id": "da.pak",
+      "installed_path": "locales/da.pak",
+      "bytes": 343538,
+      "sha256": "19444d709ff0b9343aef93a640c505566572a0f3121012716d2af937c08d6dd1"
+    },
+    {
+      "msi_file_id": "de.pak",
+      "installed_path": "locales/de.pak",
+      "bytes": 368878,
+      "sha256": "6e8983727e035e77652fb453192871e435dbab03ffb3088a86ec918ef01b7f37"
+    },
+    {
+      "msi_file_id": "el.pak",
+      "installed_path": "locales/el.pak",
+      "bytes": 666105,
+      "sha256": "b4bdd19191dc4bc22f8a3ecab032f034b0c0c0669e9a5ba1b42717ec0b5b418b"
+    },
+    {
+      "msi_file_id": "en_GB.pak",
+      "installed_path": "locales/en-GB.pak",
+      "bytes": 300728,
+      "sha256": "e252661d412a068610ac2e2a64609f21f71c64602c579a14d7e6ee59d08fdfc1"
+    },
+    {
+      "msi_file_id": "en_US.pak",
+      "installed_path": "locales/en-US.pak",
+      "bytes": 303106,
+      "sha256": "bd67fc968d75e77f2bae7ad552c398ccc4dad8635d74814c2046f813010c45e7"
+    },
+    {
+      "msi_file_id": "es_419.pak",
+      "installed_path": "locales/es-419.pak",
+      "bytes": 367532,
+      "sha256": "376cb23e273650f9b81fd531fe8c2f6ab4f2dbc1badf02327669489a654143ca"
+    },
+    {
+      "msi_file_id": "es.pak",
+      "installed_path": "locales/es.pak",
+      "bytes": 368288,
+      "sha256": "e1a9180677d2989137e8dd381e6c847c47b385a6d3e965a047829479317736ae"
+    },
+    {
+      "msi_file_id": "et.pak",
+      "installed_path": "locales/et.pak",
+      "bytes": 331753,
+      "sha256": "8e75989893f0d59f6ccae2042231ec8e7dea6fbc78210700d0d1d3a67f6b1d59"
+    },
+    {
+      "msi_file_id": "fa.pak",
+      "installed_path": "locales/fa.pak",
+      "bytes": 537039,
+      "sha256": "59695da5aa5c468d85f998c9f27dcc6e68bc1a9b12792355069b7cac4d223c31"
+    },
+    {
+      "msi_file_id": "fi.pak",
+      "installed_path": "locales/fi.pak",
+      "bytes": 340066,
+      "sha256": "0b41ce33c0036aee83989ce4ffc2d096b2f6fab77634e4bb500ec70a51b4e0bd"
+    },
+    {
+      "msi_file_id": "fil.pak",
+      "installed_path": "locales/fil.pak",
+      "bytes": 381115,
+      "sha256": "742705b1c87900f6e8f02fa112d2cf13ffaa6c09c62a7dc34a2cd6a29608dd10"
+    },
+    {
+      "msi_file_id": "fr.pak",
+      "installed_path": "locales/fr.pak",
+      "bytes": 396851,
+      "sha256": "b7b3e4f04dadde5c228408c32c55f088372181cad5b71df515cdad8dd1ef9e6d"
+    },
+    {
+      "msi_file_id": "gu.pak",
+      "installed_path": "locales/gu.pak",
+      "bytes": 758768,
+      "sha256": "984aed687408ebdeb291a57893034490d6acfe9d34546dcc3715f33c8907ca61"
+    },
+    {
+      "msi_file_id": "he.pak",
+      "installed_path": "locales/he.pak",
+      "bytes": 469977,
+      "sha256": "4e972808f0a25619462a0390105e8a869037341a30b3481b3c80d918009efdb2"
+    },
+    {
+      "msi_file_id": "hi.pak",
+      "installed_path": "locales/hi.pak",
+      "bytes": 789698,
+      "sha256": "ba422906b81ebbcc2177459f7a0303f428590dd5008dbfc1430265dc008290ba"
+    },
+    {
+      "msi_file_id": "hr.pak",
+      "installed_path": "locales/hr.pak",
+      "bytes": 367033,
+      "sha256": "66e85a46152b7baa26b2fd8d6af3df0ca67f54b75281aa08cf6a0f7e769aee8c"
+    },
+    {
+      "msi_file_id": "hu.pak",
+      "installed_path": "locales/hu.pak",
+      "bytes": 396619,
+      "sha256": "df6c21a38bedd4c6d02ab60650f4c34537e238d4c72b96b2857973027542c3d8"
+    },
+    {
+      "msi_file_id": "id.pak",
+      "installed_path": "locales/id.pak",
+      "bytes": 325687,
+      "sha256": "788a4e41a8e6b70e714913b4894a48fdf24799f7a20320565c523b233a41a8be"
+    },
+    {
+      "msi_file_id": "it.pak",
+      "installed_path": "locales/it.pak",
+      "bytes": 361785,
+      "sha256": "94652279dd554461d91613fd2cf295e0c68a7fa46855c53172781b15a5b2bcb7"
+    },
+    {
+      "msi_file_id": "ja.pak",
+      "installed_path": "locales/ja.pak",
+      "bytes": 441015,
+      "sha256": "1b3bcb7b6482cd9b005aaf30ccde3b4f3603f0a9e1d0f2209d70ecc74f7353de"
+    },
+    {
+      "msi_file_id": "kn.pak",
+      "installed_path": "locales/kn.pak",
+      "bytes": 875223,
+      "sha256": "c06445ffccb52fca884686db4eda33d315d8340fd653c199c0fd8a07d1872720"
+    },
+    {
+      "msi_file_id": "ko.pak",
+      "installed_path": "locales/ko.pak",
+      "bytes": 370340,
+      "sha256": "7b87b2795f4bee5d4ea37b959ef9d7815b4cc39ba3470d97006370337c3e5997"
+    },
+    {
+      "msi_file_id": "lt.pak",
+      "installed_path": "locales/lt.pak",
+      "bytes": 396480,
+      "sha256": "da21c47633640002d0eb397d9f2685df542b6f5e53ee3ca655340750de2f3217"
+    },
+    {
+      "msi_file_id": "lv.pak",
+      "installed_path": "locales/lv.pak",
+      "bytes": 395364,
+      "sha256": "1af1ac2692035d502e772f976c977936d0feb42f65a9096e0af2fcf8b7df03bf"
+    },
+    {
+      "msi_file_id": "ml.pak",
+      "installed_path": "locales/ml.pak",
+      "bytes": 918540,
+      "sha256": "c990dd02ea8ccad94f5002b2b05e74ad258a9b13ec1168732cde06d0723e2a91"
+    },
+    {
+      "msi_file_id": "mr.pak",
+      "installed_path": "locales/mr.pak",
+      "bytes": 745965,
+      "sha256": "c20543bde56b4ba78b7efd8a1fd4d6990e751ea7e243c91a2e83ca78dc0d9289"
+    },
+    {
+      "msi_file_id": "ms.pak",
+      "installed_path": "locales/ms.pak",
+      "bytes": 340680,
+      "sha256": "d51d9f4fd2be492a751db6898b4c2843b2b6cbfe893bb66ffa4eb8e1a66e7e5f"
+    },
+    {
+      "msi_file_id": "nb.pak",
+      "installed_path": "locales/nb.pak",
+      "bytes": 333768,
+      "sha256": "fee60b6eff88716fd8ad4a9b2da8b16827753c819671831e2d7dc2723aee3bf8"
+    },
+    {
+      "msi_file_id": "nl.pak",
+      "installed_path": "locales/nl.pak",
+      "bytes": 344961,
+      "sha256": "361d54411d890d26fbe6d1f8e8f8258e72afca143783f9f16145b9f4f5f9333d"
+    },
+    {
+      "msi_file_id": "pl.pak",
+      "installed_path": "locales/pl.pak",
+      "bytes": 382414,
+      "sha256": "fb1dc5b556f59b6ad642167f1df9e654517ad494559eb3f441ca8f79d56a86e0"
+    },
+    {
+      "msi_file_id": "pt_BR.pak",
+      "installed_path": "locales/pt-BR.pak",
+      "bytes": 361626,
+      "sha256": "1054376071aba92b165cf561b7931a18ae0b29c9ca22eda85c5c9c7e6721e49b"
+    },
+    {
+      "msi_file_id": "pt_PT.pak",
+      "installed_path": "locales/pt-PT.pak",
+      "bytes": 364796,
+      "sha256": "e5c382258030217591f439a4020069378c3362677258d5129c69ef8e25abd6c2"
+    },
+    {
+      "msi_file_id": "ro.pak",
+      "installed_path": "locales/ro.pak",
+      "bytes": 374216,
+      "sha256": "d56825b2ad81fa419b428855d8b3cff01015a446b7cc989d7b17fe1b3b5f45cd"
+    },
+    {
+      "msi_file_id": "ru.pak",
+      "installed_path": "locales/ru.pak",
+      "bytes": 608216,
+      "sha256": "f6b76bf79ea9f03d6bf8a399778a387029baf9a94ad274788514b2086b612bd8"
+    },
+    {
+      "msi_file_id": "sk.pak",
+      "installed_path": "locales/sk.pak",
+      "bytes": 385173,
+      "sha256": "fe43904bfb0072add943ee8d44e9f92a80eb2aa55ce7157de52ea625c277db53"
+    },
+    {
+      "msi_file_id": "sl.pak",
+      "installed_path": "locales/sl.pak",
+      "bytes": 370800,
+      "sha256": "5015c0685b66ef38c92ffc4963e144e913b646d8e855f3976e50c8039879cccf"
+    },
+    {
+      "msi_file_id": "sr.pak",
+      "installed_path": "locales/sr.pak",
+      "bytes": 574041,
+      "sha256": "a0ef17a572ce510796886b844226b65991bbddcc71b763b91569a07ef23d2070"
+    },
+    {
+      "msi_file_id": "sv.pak",
+      "installed_path": "locales/sv.pak",
+      "bytes": 336183,
+      "sha256": "21c7d459c55f255c6da5a6454eafc836a3bcdba9c99c76bad0f0d6fbbe7a33ef"
+    },
+    {
+      "msi_file_id": "sw.pak",
+      "installed_path": "locales/sw.pak",
+      "bytes": 352653,
+      "sha256": "a8d904e4871efa01c72ef64bab601e6cb1de216db4a696966e90fe1b733bef17"
+    },
+    {
+      "msi_file_id": "ta.pak",
+      "installed_path": "locales/ta.pak",
+      "bytes": 902127,
+      "sha256": "fafe173abc2ca773026b0caa24e693a0ac4c9d0ad7c40258bece10e4714dcb15"
+    },
+    {
+      "msi_file_id": "te.pak",
+      "installed_path": "locales/te.pak",
+      "bytes": 838909,
+      "sha256": "7fc98e50ecf3bbc04ff70a85c1157e4b02e7fc40562f996c4ea25582bb9f4ee7"
+    },
+    {
+      "msi_file_id": "th.pak",
+      "installed_path": "locales/th.pak",
+      "bytes": 706916,
+      "sha256": "bb8b656b1d2c4cf5f361f59b44abd4809cd774e664dbd0f90b62b97ea125e3c6"
+    },
+    {
+      "msi_file_id": "tr.pak",
+      "installed_path": "locales/tr.pak",
+      "bytes": 359296,
+      "sha256": "e31a9cefcbef64d082b77a16a2d5dff11673f74363cf9fc34e36004a62e308d6"
+    },
+    {
+      "msi_file_id": "uk.pak",
+      "installed_path": "locales/uk.pak",
+      "bytes": 606934,
+      "sha256": "d10af321c33d48f5e97abb1c74b76e43e63390b9022bed58437fa4d271283900"
+    },
+    {
+      "msi_file_id": "ur.pak",
+      "installed_path": "locales/ur.pak",
+      "bytes": 535020,
+      "sha256": "ae2457b6f347d34fa8ecf524d91154ba9b80ee160196d774546c1b8924049495"
+    },
+    {
+      "msi_file_id": "vi.pak",
+      "installed_path": "locales/vi.pak",
+      "bytes": 425606,
+      "sha256": "2ca9eb9d04ab45f479b392ca9067d353e5472f863d3b784acfcb1361c6da30d7"
+    },
+    {
+      "msi_file_id": "zh_CN.pak",
+      "installed_path": "locales/zh-CN.pak",
+      "bytes": 308972,
+      "sha256": "3e63b6f4557d7ad41138dff35760e301ecf08e403e95bae8d7789e2ecd620aa8"
+    },
+    {
+      "msi_file_id": "zh_TW.pak",
+      "installed_path": "locales/zh-TW.pak",
+      "bytes": 306097,
+      "sha256": "54469b7be7f1c7cd972e77d9853813d41b515b2ef8a3824e7fad2646b3ebb3a4"
+    },
+    {
+      "msi_file_id": "mhz_icon.png",
+      "installed_path": "resources/mhz_icon.png",
+      "bytes": 8399,
+      "sha256": "dd3f900623d6589397feb44d922c324f1b26a9e2c375aa8c5c83f06b311da1cc"
+    },
+    {
+      "msi_file_id": "nircmd.exe",
+      "installed_path": "resources/nircmd.exe",
+      "bytes": 46080,
+      "sha256": "cf29b37e1ff595120c23245a6e43a15c5c7bf3e59f0f675456b255d402f4bae7"
+    },
+    {
+      "msi_file_id": "adjust_app_volume.exe",
+      "installed_path": "resources/adjust_app_volume.exe",
+      "bytes": 90548,
+      "sha256": "097c2eaae7baa490506a48fe20bde3c717eeb8620954b771d9556d9a2472ff63"
+    },
+    {
+      "msi_file_id": "get_audio_output_app.exe",
+      "installed_path": "resources/get_audio_output_app.exe",
+      "bytes": 6252555,
+      "sha256": "e27a7eedaad1cdd79266d5906e3d73434ded4a128571e0d1189a9aee6dd7ae32"
+    },
+    {
+      "msi_file_id": "app.asar",
+      "installed_path": "resources/app.asar",
+      "bytes": 139596453,
+      "sha256": "a80844ac26e9478023213095006bf88db178712fb7a2e1be7b244d8445202f3f"
+    },
+    {
+      "msi_file_id": "app_update.yml",
+      "installed_path": "resources/app-update.yml",
+      "bytes": 90,
+      "sha256": "769fa8043ed306f7919c4e097f2256f8f381fbb7facd470b5b8e5e7ccec8bd68"
+    },
+    {
+      "msi_file_id": "elevate.exe",
+      "installed_path": "resources/elevate.exe",
+      "bytes": 107520,
+      "sha256": "9b1fbf0c11c520ae714af8aa9af12cfd48503eedecd7398d8992ee94d1b4dc37"
+    },
+    {
+      "msi_file_id": "icon.png",
+      "installed_path": "resources/icon.png",
+      "bytes": 7087,
+      "sha256": "ab918ee4d4d9363fb280e840036a608b139642e783d8e8f76ba4b537c4070281"
+    },
+    {
+      "msi_file_id": "initial.mp4",
+      "installed_path": "resources/initial.mp4",
+      "bytes": 616526,
+      "sha256": "ff98bae03e8661550e8f7cfab68b49f5ce195f0e196ac31fcb9d517fd5e7edbe"
+    },
+    {
+      "msi_file_id": "initial_no_border.mp4",
+      "installed_path": "resources/initial_no_border.mp4",
+      "bytes": 446059,
+      "sha256": "89b7eec884cb48e89ace87678683ba8b542e8d18d67d1775fdc6d3f6acdad654"
+    },
+    {
+      "msi_file_id": "plugin_connect_success.html",
+      "installed_path": "resources/plugin_connect_success.html",
+      "bytes": 1929,
+      "sha256": "ff4c82027951ee7bbf780053e011226ecc28c8d66ee72f6c0cdeb50dd02f8160"
+    },
+    {
+      "msi_file_id": "masterHubConfig_profile_Default.mhz",
+      "installed_path": "resources/masterHubConfig_profile_Default.mhz",
+      "bytes": 1524940,
+      "sha256": "6416bb2e0c4111ddc06ef9320d9626877b2ea5ceaba5561aeae5b8f5370e8502"
+    },
+    {
+      "msi_file_id": "masterHubConfig_profile_Photoshop.mhz",
+      "installed_path": "resources/masterHubConfig_profile_Photoshop.mhz",
+      "bytes": 1010076,
+      "sha256": "91ce3df75b0a259de5d8b551cf7182f10ed062536a445c1bcd04463f9da26b02"
+    },
+    {
+      "msi_file_id": "done_icon.json",
+      "installed_path": "resources/assets/done_icon.json",
+      "bytes": 36240,
+      "sha256": "896d19084522db25de4154e778d93b85a3798a8d91d0130a53bfb71192bced25"
+    },
+    {
+      "msi_file_id": "exit.png",
+      "installed_path": "resources/assets/tray/exit.png",
+      "bytes": 416,
+      "sha256": "6446b03d522c4af823a463786cc16835adf2a3d9e813ed7cc49b74c2582b7fa8"
+    },
+    {
+      "msi_file_id": "logo.png",
+      "installed_path": "resources/assets/tray/logo.png",
+      "bytes": 409,
+      "sha256": "8d9e6c5a8a98a3c6a6ebad889f36a36e294dab00bbc899e0975b16c71d9acb93"
+    },
+    {
+      "msi_file_id": "open.png",
+      "installed_path": "resources/assets/tray/open.png",
+      "bytes": 409,
+      "sha256": "8d9e6c5a8a98a3c6a6ebad889f36a36e294dab00bbc899e0975b16c71d9acb93"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_heap_l1_1_0.dll",
+      "installed_path": "resources/build/Release/api-ms-win-crt-heap-l1-1-0.dll",
+      "bytes": 19768,
+      "sha256": "a57d8275c34c1094f6a4535e23c7bee4759532e08776ff84c5fe487c0f925eb4"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_runtime_l1_1_0.dll",
+      "installed_path": "resources/build/Release/api-ms-win-crt-runtime-l1-1-0.dll",
+      "bytes": 22464,
+      "sha256": "6e794d0fad29cc5bdd5d0511fd923d3434ed122cff0ed697903900c93c807582"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_string_l1_1_0.dll",
+      "installed_path": "resources/build/Release/api-ms-win-crt-string-l1-1-0.dll",
+      "bytes": 24888,
+      "sha256": "63de06332e8ff15a5bff699e70ed2537a9d273ba62463fa16265d261f3c5bb31"
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M0_V01.05.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M0_V02.05.00.dll",
+      "bytes": 67584,
+      "sha256": "8e97c1f78d6231d70fc4a8e74958dab30ed1ab7710f69713e9b96aa6ea3d0f93",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M0_V02.05.00.dll",
+        "exports": [
+          "Adjust_LED_Brightness_CM_M0",
+          "Adjust_LED_Color_CM_M0",
+          "Adjust_LED_Mode_CM_M0",
+          "Adjust_LED_Speed_CM_M0",
+          "Calibrate_Direction_CM_M0",
+          "Check_Rcv_Data_CM_M0",
+          "Connect_Device_CM_M0",
+          "Connect_Device_byPath_CM_M0",
+          "Disconnect_Device_CM_M0",
+          "Get_Config_Data_CM_M0",
+          "Get_Config_Info_CM_M0",
+          "Get_Device_Direction_CM_M0",
+          "Get_Device_Infos_CM_M0",
+          "Get_FW_Infos_CM_M0",
+          "Get_LED_Brightness_CM_M0",
+          "Get_LED_Mode_CM_M0",
+          "Get_Serial_Number_CM_M0",
+          "Get_Slider_Value_CM_M0",
+          "Save_Factory_Data_CM_M0",
+          "Set_Serial_Number_CM_M0",
+          "Test_FW_Recovery_Process_CM_M0",
+          "Test_Factory_Reset_Process_CM_M0",
+          "Update_FW_CM_M0",
+          "Update_FW_by_type_CM_M0",
+          "get_FW_Infos_by_type_CM_M0",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M131E_V02.00.01.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M131E_V03.02.00.dll",
+      "bytes": 75264,
+      "sha256": "8fff167ab7c162cfd73883ec1245050ab9a34a080bb4d0e5c6ebbeff68b353e1",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M131E_V03.02.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM",
+          "Adjust_Backlight_CM_M131E",
+          "Check_Rcv_Data_CM",
+          "Check_Rcv_Data_CM_M131E",
+          "Connect_Device_CM",
+          "Connect_Device_CM_M131E",
+          "Connect_Device_byPath_CM",
+          "Connect_Device_byPath_CM_M131E",
+          "Disconnect_Device_CM",
+          "Disconnect_Device_CM_M131E",
+          "Display_Color_On_Screen_CM",
+          "Display_Color_On_Screen_CM_M131E",
+          "Display_Picture_On_Screen_CM",
+          "Display_Picture_On_Screen_CM_M131E",
+          "Get_Animation_Infos",
+          "Get_Backlight_CM",
+          "Get_Backlight_CM_M131E",
+          "Get_Config_Data_CM",
+          "Get_Config_Data_CM_M131E",
+          "Get_Config_Infos_CM",
+          "Get_Config_Infos_CM_M131E",
+          "Get_Device_Infos_CM",
+          "Get_Device_Infos_CM_M131E",
+          "Get_FW_Infos_CM_M131E",
+          "Get_FW_Infos_by_type_CM",
+          "Get_FW_Infos_by_type_CM_M131E",
+          "Get_Serial_Number_CM",
+          "Get_Serial_Number_CM_M131E",
+          "Save_Factory_Data_CM",
+          "Save_Factory_Data_CM_M131E",
+          "Save_Screen_Picture_CM",
+          "Set_Serial_Number_CM",
+          "Set_Serial_Number_CM_M131E",
+          "Set_Sw_Mode_CM",
+          "Set_Sw_Mode_CM_M131E",
+          "Test_Animation_Recovery_Process_CM",
+          "Test_Animation_Recovery_Process_CM_M131E",
+          "Test_FW_Recovery_Process_CM",
+          "Test_FW_Recovery_Process_CM_M131E",
+          "Test_Factory_Reset_Process_CM",
+          "Test_Factory_Reset_Process_CM_M131E",
+          "Update_FW_CM",
+          "Update_FW_CM_M131E",
+          "Update_FW_by_type_CM",
+          "Update_FW_by_type_CM_M131E",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M4300_V01.01.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M4300_V01.01.00.dll",
+      "bytes": 27136,
+      "sha256": "3a14b3f387ec2a0355920702a3300cd868c200f8e774860d27e1d668ebb53c21",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M4300_V01.01.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM_M4300",
+          "Check_IO_Status_CM_M4300",
+          "Connect_Device_CM_M4300",
+          "Disconnect_Device_CM_M4300",
+          "Display_Color_On_Button_CM_M4300",
+          "Display_Color_On_Screen_CM_M4300",
+          "Display_Logo_CM_M4300",
+          "Display_Picture_On_Button_CM_M4300",
+          "Display_Picture_On_Screen_CM_M4300",
+          "Get_Backlight_CM_M4300",
+          "Get_Device_Infos",
+          "Get_FW_Infos_CM_M4300",
+          "Get_Serial_Number_CM_M4300",
+          "Replace_Logo_CM_M4300",
+          "Set_Serial_Number_CM_M4300",
+          "Test_FW_Recovery_Process",
+          "Test_sub_FW_Recovery_Process",
+          "Update_FW_CM_M4300",
+          "Update_FW_by_type",
+          "Update_sub_FW",
+          "get_FW_Infos_by_type",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140.dll",
+          "api-ms-win-crt-string-l1-1-0.dll",
+          "api-ms-win-crt-heap-l1-1-0.dll",
+          "api-ms-win-crt-convert-l1-1-0.dll",
+          "api-ms-win-crt-stdio-l1-1-0.dll",
+          "api-ms-win-crt-runtime-l1-1-0.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M4315_V02.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M4315_V03.02.00.dll",
+      "bytes": 77824,
+      "sha256": "21a49758faf86ea9808cec870f5db6434f9a78e7441d9184e272e9a435e2f35d",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M4315_V03.02.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM",
+          "Adjust_Backlight_CM_M4315",
+          "Check_Rcv_Data_CM",
+          "Check_Rcv_Data_CM_M4315",
+          "Connect_Device_CM",
+          "Connect_Device_CM_M4315",
+          "Connect_Device_byPath_CM",
+          "Connect_Device_byPath_CM_M4315",
+          "Disconnect_Device_CM",
+          "Disconnect_Device_CM_M4315",
+          "Display_Color_On_Button_CM",
+          "Display_Color_On_Button_CM_M4315",
+          "Display_Color_On_Screen_CM",
+          "Display_Color_On_Screen_CM_M4315",
+          "Display_Picture_On_Button_CM",
+          "Display_Picture_On_Button_CM_M4315",
+          "Display_Picture_On_Screen_CM",
+          "Display_Picture_On_Screen_CM_M4315",
+          "Get_Animation_Infos",
+          "Get_Backlight_CM",
+          "Get_Backlight_CM_M4315",
+          "Get_Config_Data_CM",
+          "Get_Config_Data_CM_M4315",
+          "Get_Config_Infos_CM",
+          "Get_Config_Infos_CM_M4315",
+          "Get_Device_Infos_CM",
+          "Get_Device_Infos_CM_M4315",
+          "Get_FW_Infos_CM_M4315",
+          "Get_FW_Infos_by_type_CM",
+          "Get_FW_Infos_by_type_CM_M4315",
+          "Get_Serial_Number_CM",
+          "Get_Serial_Number_CM_M4315",
+          "Save_Factory_Data_CM",
+          "Save_Factory_Data_CM_M4315",
+          "Save_Screen_Picture_CM",
+          "Set_Serial_Number_CM",
+          "Set_Serial_Number_CM_M4315",
+          "Set_Sw_Mode_CM",
+          "Set_Sw_Mode_CM_M4315",
+          "Test_Animation_Recovery_Process_CM",
+          "Test_Animation_Recovery_Process_CM_M4315",
+          "Test_FW_Recovery_Process_CM",
+          "Test_FW_Recovery_Process_CM_M4315",
+          "Test_Factory_Reset_Process_CM",
+          "Test_Factory_Reset_Process_CM_M4315",
+          "Update_FW_CM",
+          "Update_FW_CM_M4315",
+          "Update_FW_by_type_CM",
+          "Update_FW_by_type_CM_M4315",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M4600_V02.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M4600_V02.00.00.dll",
+      "bytes": 65024,
+      "sha256": "7859daa075f6e1a15743b4a3a9956bb06df10993196a9a9d436049ee12c8458d",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M4600_V02.00.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM_M4600",
+          "Check_IO_Status_CM_M4600",
+          "Connect_Device_CM_M4600",
+          "Connect_Device_byPath_CM",
+          "Connect_Device_byPath_CM_M4600",
+          "Disconnect_Device_CM_M4600",
+          "Display_Color_On_Screen_CM_M4600",
+          "Display_Logo_CM_M4600",
+          "Display_Picture_On_Screen_CM_M4600",
+          "Get_Device_Infos_CM_M4600",
+          "Get_FW_Infos_CM_M4600",
+          "Get_FW_Infos_by_type_CM_M4600",
+          "Get_Serial_Number_CM_M4600",
+          "Replace_Logo_CM_M4600",
+          "Set_Serial_Number_CM_M4600",
+          "Test_FW_Recovery_Process_CM_M4600",
+          "Update_FW_CM_M4600",
+          "Update_FW_by_type_CM_M4600",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M5000_V01.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M5000_V01.00.00.dll",
+      "bytes": 62976,
+      "sha256": "a86ea9859b27807f6239e3dbe94bb6f961e6e8ee079775b8fd619bcb49b17d6e",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M5000_V01.00.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM_M5000",
+          "Check_IO_Status_CM_M5000",
+          "Connect_Device_CM_M5000",
+          "Disconnect_Device_CM_M5000",
+          "Display_Color_On_Screen_CM_M5000",
+          "Display_Logo_CM_M5000",
+          "Display_Picture_On_Screen_CM_M5000",
+          "Get_Device_Infos_CM_M5000",
+          "Get_FW_Infos_CM_M5000",
+          "Get_Serial_Number_CM_M5000",
+          "Replace_Logo_CM_M5000",
+          "Set_Serial_Number_CM_M5000",
+          "Test_FW_Recovery_Process_CM_M5000",
+          "Update_FW_CM_M5000",
+          "Update_FW_by_type_CM_M5000",
+          "get_FW_Infos_by_type_CM_M5000",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_V01.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_V01.00.00.dll",
+      "bytes": 65024,
+      "sha256": "6319eef253619ae768d0795332ab274c4d9b8f3570881041499328d583c5bb1e",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_V01.00.00.dll",
+        "exports": [
+          "Adjust_Backlight",
+          "Check_Button_Status",
+          "Connect_Device",
+          "Disconnect_Device",
+          "Display_Color_On_Button",
+          "Display_Color_On_Screen",
+          "Display_Logo",
+          "Display_Picture_On_Button",
+          "Display_Picture_On_Screen",
+          "Get_Device_Infos",
+          "Get_FW_Infos",
+          "Get_Serial_Number",
+          "Replace_Logo",
+          "Set_Serial_Number",
+          "Update_FW",
+          "Update_FW_by_type",
+          "get_FW_Infos_by_type",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M3700_V01.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M3700_V01.00.00.dll",
+      "bytes": 65024,
+      "sha256": "954166b6536c13f29f55b6c2b59a4b9a9ff6ecb4025283325d3bc8c88fa71caa",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M3700_V01.00.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM_M3700",
+          "Check_IO_Status_CM_M3700",
+          "Connect_Device_CM_M3700",
+          "Connect_Device_byPath_CM",
+          "Connect_Device_byPath_CM_M3700",
+          "Disconnect_Device_CM_M3700",
+          "Display_Color_On_Screen_CM_M3700",
+          "Display_Logo_CM_M3700",
+          "Display_Picture_On_Screen_CM_M3700",
+          "Get_Device_Infos_CM_M3700",
+          "Get_FW_Infos_CM_M3700",
+          "Get_FW_Infos_by_type_CM_M3700",
+          "Get_Serial_Number_CM_M3700",
+          "Replace_Logo_CM_M3700",
+          "Set_Serial_Number_CM_M3700",
+          "Test_FW_Recovery_Process_CM_M3700",
+          "Update_FW_CM_M3700",
+          "Update_FW_by_type_CM_M3700",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "CoolTEK_SDK_CM_M3704_V01.00.00.dll",
+      "installed_path": "resources/build/Release/CoolTEK_SDK_CM_M3704_V01.00.00.dll",
+      "bytes": 68096,
+      "sha256": "5aa76d397ea8b4f8792129f54392cd50eacdbea340655ddc2fe4d64ef2f04993",
+      "native": {
+        "machine": "0x8664",
+        "export_name": "CoolTEK_SDK_CM_M3704_V01.00.00.dll",
+        "exports": [
+          "Adjust_Backlight_CM_M3704",
+          "Check_IO_Status_CM_M3704",
+          "Connect_Device_CM_M3704",
+          "Connect_Device_byPath_CM",
+          "Connect_Device_byPath_CM_M3704",
+          "Disconnect_Device_CM_M3704",
+          "Display_Color_On_Button_CM_M3704",
+          "Display_Color_On_Screen_CM_M3704",
+          "Display_Logo_CM_M3704",
+          "Display_Picture_On_Button_CM_M3704",
+          "Display_Picture_On_Screen_CM_M3704",
+          "Get_Device_Infos_CM_M3704",
+          "Get_FW_Infos_CM_M3704",
+          "Get_FW_Infos_by_type_CM_M3704",
+          "Get_Serial_Number_CM_M3704",
+          "Replace_Logo_CM_M3704",
+          "Set_Serial_Number_CM_M3704",
+          "Test_FW_Recovery_Process_CM_M3704",
+          "Update_FW_CM_M3704",
+          "Update_FW_by_type_CM_M3704",
+          "hid_close",
+          "hid_enumerate",
+          "hid_error",
+          "hid_exit",
+          "hid_free_enumeration",
+          "hid_get_MaxLengthOfInputReport",
+          "hid_get_MaxLengthOfOutputReport",
+          "hid_get_feature_report",
+          "hid_get_indexed_string",
+          "hid_get_manufacturer_string",
+          "hid_get_product_string",
+          "hid_get_serial_number_string",
+          "hid_init",
+          "hid_open",
+          "hid_open_path",
+          "hid_read",
+          "hid_read_timeout",
+          "hid_send_feature_report",
+          "hid_set_nonblocking",
+          "hid_write"
+        ],
+        "import_dlls": [
+          "SETUPAPI.dll",
+          "HID.DLL",
+          "KERNEL32.dll",
+          "VCRUNTIME140D.dll",
+          "ucrtbased.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "libcrypto_1_1_x64_2.dll",
+      "installed_path": "resources/build/Release/libcrypto-1_1-x64.dll",
+      "bytes": 3416576,
+      "sha256": "4c9f09799eced7d9d51b2b0b44c2090ed73b10d635556d6b06a8258236e69f83"
+    },
+    {
+      "msi_file_id": "libcurl_x64_2.dll",
+      "installed_path": "resources/build/Release/libcurl-x64.dll",
+      "bytes": 5426760,
+      "sha256": "d4b085eb7f59a90872e9cfcde77f6b9ecb886f878f46ce4a499585906fa59ca4"
+    },
+    {
+      "msi_file_id": "libnut.lib",
+      "installed_path": "resources/build/Release/libnut.lib",
+      "bytes": 1698,
+      "sha256": "c7f3fd847c3474bc948d5512eb859f1b3c2a14b7b3a5478ddc8b99e054c2cd62"
+    },
+    {
+      "msi_file_id": "libnut.node",
+      "installed_path": "resources/build/Release/libnut.node",
+      "bytes": 172544,
+      "sha256": "005c7cbdced3e050dedc9b9714bc298d8e12a5ed4f6153b2316199d44de60bf2"
+    },
+    {
+      "msi_file_id": "libssl_1_1_x64_2.dll",
+      "installed_path": "resources/build/Release/libssl-1_1-x64.dll",
+      "bytes": 686080,
+      "sha256": "a7a05c37103d93bbe301e65079908f35f2c959ae67a0395a75c8bcc9f9e675fe"
+    },
+    {
+      "msi_file_id": "MCSDK.dll",
+      "installed_path": "resources/build/Release/MCSDK.dll",
+      "bytes": 666624,
+      "sha256": "fa35624ff40f6ff408685a2a0110c82f30dd6f2ab5e32431fdeacbb61b01b10b"
+    },
+    {
+      "msi_file_id": "mcsdk_api.lib",
+      "installed_path": "resources/build/Release/mcsdk-api.lib",
+      "bytes": 1746,
+      "sha256": "b045161f34f038105c012c43055c43d145adbeea702679c098e2b6a4e9562f04"
+    },
+    {
+      "msi_file_id": "mcsdk_api.node",
+      "installed_path": "resources/build/Release/mcsdk-api.node",
+      "bytes": 372736,
+      "sha256": "fc62163a07fa4793da51e98b70d5583f5981213f51d0c2bc8329d9809f34adcc"
+    },
+    {
+      "msi_file_id": "mosquitto_2.dll",
+      "installed_path": "resources/build/Release/mosquitto.dll",
+      "bytes": 218112,
+      "sha256": "1dc4ac5925790fd2fc67de4ed3d2b589974deb2fffb8eb3b5fbc01f6af374b0b"
+    },
+    {
+      "msi_file_id": "nothing.lib",
+      "installed_path": "resources/build/Release/nothing.lib",
+      "bytes": 105960,
+      "sha256": "0c67a267755f45edaced2c7293f03477c1f5d54ab8df99c4d271b9dd989d2bda"
+    },
+    {
+      "msi_file_id": "pthread_dll_x64_2.dll",
+      "installed_path": "resources/build/Release/pthread_dll-x64.dll",
+      "bytes": 59904,
+      "sha256": "acf2b8f97a584d7e9b07a33ba8a2c83381578d0823d7126c4db1bab262475ee6"
+    },
+    {
+      "msi_file_id": "stackaddon.node",
+      "installed_path": "resources/build/Release/stackaddon.node",
+      "bytes": 417792,
+      "sha256": "005ee05adbdcf313a15c1232cef90688ec151d61b8963abf148ea66eb4acfd87",
+      "native": {
+        "machine": "0x8664",
+        "export_name": null,
+        "exports": [],
+        "import_dlls": [
+          "KERNEL32.dll",
+          "USER32.dll",
+          "ole32.dll",
+          "OLEAUT32.dll",
+          "CoolTEK_SDK_CM_M0_V02.05.00.dll",
+          "CoolTEK_SDK_CM_M131E_V03.02.00.dll",
+          "CoolTEK_SDK_CM_M4300_V01.01.00.dll",
+          "CoolTEK_SDK_CM_M4600_V02.00.00.dll",
+          "CoolTEK_SDK_CM_M5000_V01.00.00.dll",
+          "CoolTEK_SDK_CM_M4315_V03.02.00.dll",
+          "CoolTEK_SDK_CM_M3700_V01.00.00.dll",
+          "CoolTEK_SDK_CM_M3704_V01.00.00.dll",
+          "CoolTEK_SDK_V01.00.00.dll"
+        ]
+      }
+    },
+    {
+      "msi_file_id": "vcruntime140_app_2.dll",
+      "installed_path": "resources/build/Release/vcruntime140_app.dll",
+      "bytes": 86784,
+      "sha256": "26b6774a44dd2481a34daa4467176408cb7b0bdbec420b7a95686d8ae2e0d5ec"
+    },
+    {
+      "msi_file_id": "keypadBuffer.js",
+      "installed_path": "worker/keypadBuffer.js",
+      "bytes": 1102,
+      "sha256": "504cd8a1162ea7cd4c6edf9d5a1420083f22cdfe6ab7b5da85e238e6b3dc7dff"
+    },
+    {
+      "msi_file_id": "Ctrl.js",
+      "installed_path": "worker/Ctrl.js",
+      "bytes": 1044,
+      "sha256": "caa1486e5a5a0940cad70f91954f0412140249a0c1423ce01f6703bc150d5ba9"
+    },
+    {
+      "msi_file_id": "MasterCtrl.js",
+      "installed_path": "worker/MasterCtrl.js",
+      "bytes": 11673,
+      "sha256": "29a2ae968292720f538824e5a529add714ba60406aa60957198643ad7a7fdd99"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_heap_l1_1_0_3.dll",
+      "installed_path": "worker/api-ms-win-crt-heap-l1-1-0.dll",
+      "bytes": 19768,
+      "sha256": "a57d8275c34c1094f6a4535e23c7bee4759532e08776ff84c5fe487c0f925eb4"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_runtime_l1_1_0_3.dll",
+      "installed_path": "worker/api-ms-win-crt-runtime-l1-1-0.dll",
+      "bytes": 22464,
+      "sha256": "6e794d0fad29cc5bdd5d0511fd923d3434ed122cff0ed697903900c93c807582"
+    },
+    {
+      "msi_file_id": "api_ms_win_crt_string_l1_1_0_3.dll",
+      "installed_path": "worker/api-ms-win-crt-string-l1-1-0.dll",
+      "bytes": 24888,
+      "sha256": "63de06332e8ff15a5bff699e70ed2537a9d273ba62463fa16265d261f3c5bb31"
+    },
+    {
+      "msi_file_id": "libcrypto_1_1_x64_3.dll",
+      "installed_path": "worker/libcrypto-1_1-x64.dll",
+      "bytes": 3416576,
+      "sha256": "4c9f09799eced7d9d51b2b0b44c2090ed73b10d635556d6b06a8258236e69f83"
+    },
+    {
+      "msi_file_id": "libcurl_x64_3.dll",
+      "installed_path": "worker/libcurl-x64.dll",
+      "bytes": 5426760,
+      "sha256": "d4b085eb7f59a90872e9cfcde77f6b9ecb886f878f46ce4a499585906fa59ca4"
+    },
+    {
+      "msi_file_id": "libnut_3.lib",
+      "installed_path": "worker/libnut.lib",
+      "bytes": 1698,
+      "sha256": "c7f3fd847c3474bc948d5512eb859f1b3c2a14b7b3a5478ddc8b99e054c2cd62"
+    },
+    {
+      "msi_file_id": "libnut_3.node",
+      "installed_path": "worker/libnut.node",
+      "bytes": 172544,
+      "sha256": "005c7cbdced3e050dedc9b9714bc298d8e12a5ed4f6153b2316199d44de60bf2"
+    },
+    {
+      "msi_file_id": "libssl_1_1_x64_3.dll",
+      "installed_path": "worker/libssl-1_1-x64.dll",
+      "bytes": 686080,
+      "sha256": "a7a05c37103d93bbe301e65079908f35f2c959ae67a0395a75c8bcc9f9e675fe"
+    },
+    {
+      "msi_file_id": "MCSDK_3.dll",
+      "installed_path": "worker/MCSDK.dll",
+      "bytes": 666624,
+      "sha256": "fa35624ff40f6ff408685a2a0110c82f30dd6f2ab5e32431fdeacbb61b01b10b"
+    },
+    {
+      "msi_file_id": "mcsdk_api_3.lib",
+      "installed_path": "worker/mcsdk-api.lib",
+      "bytes": 1746,
+      "sha256": "b045161f34f038105c012c43055c43d145adbeea702679c098e2b6a4e9562f04"
+    },
+    {
+      "msi_file_id": "mcsdk_api_3.node",
+      "installed_path": "worker/mcsdk-api.node",
+      "bytes": 372736,
+      "sha256": "fc62163a07fa4793da51e98b70d5583f5981213f51d0c2bc8329d9809f34adcc"
+    },
+    {
+      "msi_file_id": "mosquitto_3.dll",
+      "installed_path": "worker/mosquitto.dll",
+      "bytes": 218112,
+      "sha256": "1dc4ac5925790fd2fc67de4ed3d2b589974deb2fffb8eb3b5fbc01f6af374b0b"
+    },
+    {
+      "msi_file_id": "nothing_3.lib",
+      "installed_path": "worker/nothing.lib",
+      "bytes": 105960,
+      "sha256": "0c67a267755f45edaced2c7293f03477c1f5d54ab8df99c4d271b9dd989d2bda"
+    },
+    {
+      "msi_file_id": "pthread_dll_x64_3.dll",
+      "installed_path": "worker/pthread_dll-x64.dll",
+      "bytes": 59904,
+      "sha256": "acf2b8f97a584d7e9b07a33ba8a2c83381578d0823d7126c4db1bab262475ee6"
+    },
+    {
+      "msi_file_id": "vcruntime140_app_3.dll",
+      "installed_path": "worker/vcruntime140_app.dll",
+      "bytes": 86784,
+      "sha256": "26b6774a44dd2481a34daa4467176408cb7b0bdbec420b7a95686d8ae2e0d5ec"
+    },
+    {
+      "msi_file_id": "SevenZ.exe",
+      "installed_path": "resources/7z.exe",
+      "bytes": 557056,
+      "sha256": "8cebb25e240db3b6986fcaed6bc0b900fa09dad763a56fb71273529266c5c525"
+    },
+    {
+      "msi_file_id": "SevenZ.dll",
+      "installed_path": "resources/7z.dll",
+      "bytes": 1841664,
+      "sha256": "77222e81cb7004e8c3e077aada02b555a3d38fb05b50c64afd36ca230a8fd5b9"
+    },
+    {
+      "msi_file_id": "gifsicle.exe",
+      "installed_path": "resources/gifsicle.exe",
+      "bytes": 408064,
+      "sha256": "839226b95887c0911e3b8ed562a9971d8ae5c0bea2515e266d8fa5a4d0754186"
+    },
+    {
+      "msi_file_id": "concrt140d.dll",
+      "installed_path": "resources/build/Release/concrt140d.dll",
+      "bytes": 731528,
+      "sha256": "fd7d3aca1708e215b7d8a485ed3c60d3df0114a1a4b4531a2353acb12dce8c4c"
+    },
+    {
+      "msi_file_id": "msvcp140_1d.dll",
+      "installed_path": "resources/build/Release/msvcp140_1d.dll",
+      "bytes": 30600,
+      "sha256": "85dc823c83f7c1df549a0bd60a65fd827addf246d04c81ba1cc9d27c15bf5812"
+    },
+    {
+      "msi_file_id": "msvcp140_2d.dll",
+      "installed_path": "resources/build/Release/msvcp140_2d.dll",
+      "bytes": 381832,
+      "sha256": "cade066552c54b72d34e98bcd175d9ace51bd06e49a94a1db865087ca4ea98c9"
+    },
+    {
+      "msi_file_id": "msvcp140d.dll",
+      "installed_path": "resources/build/Release/msvcp140d.dll",
+      "bytes": 921008,
+      "sha256": "28f8667adc93e666bd0718039d40e9bfa3e4304efc14d11c36f8fad979a4f83b"
+    },
+    {
+      "msi_file_id": "msvcp140d_atomic_wait.dll",
+      "installed_path": "resources/build/Release/msvcp140d_atomic_wait.dll",
+      "bytes": 107400,
+      "sha256": "1cda18445d53a40c07572aa03fcaf2e6bbd89edd858cbeac4c9813641a189ff0"
+    },
+    {
+      "msi_file_id": "msvcp140d_codecvt_ids.dll",
+      "installed_path": "resources/build/Release/msvcp140d_codecvt_ids.dll",
+      "bytes": 25488,
+      "sha256": "cbf6a86633a713d9ee0fe1660e45792d6cf3e610dbf7b897d90b40588a8f477d"
+    },
+    {
+      "msi_file_id": "ucrtbased.dll",
+      "installed_path": "resources/build/Release/ucrtbased.dll",
+      "bytes": 2237936,
+      "sha256": "82dbb65236d41d6eead3f7baab464e3d2fbb9f8bad1d38489560a2f0fc9feab5"
+    },
+    {
+      "msi_file_id": "vccorlib140d.dll",
+      "installed_path": "resources/build/Release/vccorlib140d.dll",
+      "bytes": 1465736,
+      "sha256": "0880a6a5bb1366e700c5705e6ce9245951bd53684dc379cc4b6aa56e9948d984"
+    },
+    {
+      "msi_file_id": "vcruntime140_1d.dll",
+      "installed_path": "resources/build/Release/vcruntime140_1d.dll",
+      "bytes": 54192,
+      "sha256": "8caaca1bfc909fcb972ceade7be7b80b5855a4621562ee32a10c9903b616d49a"
+    },
+    {
+      "msi_file_id": "vcruntime140d.dll",
+      "installed_path": "resources/build/Release/vcruntime140d.dll",
+      "bytes": 166792,
+      "sha256": "7ed89c668d8ec04c1a0a73f35702b8e0d9819e13e6e7c51c4ac0e0abda6683e6"
+    },
+    {
+      "msi_file_id": "concrt140.dll",
+      "installed_path": "resources/build/Release/concrt140.dll",
+      "bytes": 327576,
+      "sha256": "de1d1bf38090094b702833ddf3a68ee1f5d4ae20ca57f5392fabcf4c49c5b807"
+    },
+    {
+      "msi_file_id": "msvcp140_1.dll",
+      "installed_path": "resources/build/Release/msvcp140_1.dll",
+      "bytes": 35704,
+      "sha256": "a3a1199de32bbbc8318ec33e2e1ce556247d012851e4b367fe853a51e74ce4ee"
+    },
+    {
+      "msi_file_id": "msvcp140_2.dll",
+      "installed_path": "resources/build/Release/msvcp140_2.dll",
+      "bytes": 267160,
+      "sha256": "63f1a20cb17ec5e0ca4ebea870b68740f24e063e28b235c3c8b58a3d8f57a9c4"
+    },
+    {
+      "msi_file_id": "msvcp140.dll",
+      "installed_path": "resources/build/Release/msvcp140.dll",
+      "bytes": 578384,
+      "sha256": "74892d9b4028c05debaf0b9b5d9dc6d22f7956fa7d7eee00c681318c26792823"
+    },
+    {
+      "msi_file_id": "msvcp140_atomic_wait.dll",
+      "installed_path": "resources/build/Release/msvcp140_atomic_wait.dll",
+      "bytes": 50072,
+      "sha256": "7e02efe075b7dd385992f621fde34728ef7c2d4cf090b127b093d0835345f8fe"
+    },
+    {
+      "msi_file_id": "msvcp140_codecvt_ids.dll",
+      "installed_path": "resources/build/Release/msvcp140_codecvt_ids.dll",
+      "bytes": 31640,
+      "sha256": "3bd90db2f147899c65fe279f3e44ac48f5598cd0c23a09c0410be072a4c96070"
+    },
+    {
+      "msi_file_id": "vccorlib140.dll",
+      "installed_path": "resources/build/Release/vccorlib140.dll",
+      "bytes": 346008,
+      "sha256": "986a9f1dccabce249a0db23b9f5e2057ab644081cd04c647f2711884cff2b346"
+    },
+    {
+      "msi_file_id": "vcruntime140_1.dll",
+      "installed_path": "resources/build/Release/vcruntime140_1.dll",
+      "bytes": 49560,
+      "sha256": "6fd366a691ed68430bcd0a3de3d8d19a0cb2102952bfc140bbef4354ed082c47"
+    },
+    {
+      "msi_file_id": "vcruntime140.dll",
+      "installed_path": "resources/build/Release/vcruntime140.dll",
+      "bytes": 109440,
+      "sha256": "69320f278d90efaaeb67e2a1b55e5b0543883125834c812c8d9c39676e0494fc"
+    },
+    {
+      "msi_file_id": "concrt140d_3.dll",
+      "installed_path": "worker/concrt140d.dll",
+      "bytes": 731528,
+      "sha256": "fd7d3aca1708e215b7d8a485ed3c60d3df0114a1a4b4531a2353acb12dce8c4c"
+    },
+    {
+      "msi_file_id": "msvcp140_1d_3.dll",
+      "installed_path": "worker/msvcp140_1d.dll",
+      "bytes": 30600,
+      "sha256": "85dc823c83f7c1df549a0bd60a65fd827addf246d04c81ba1cc9d27c15bf5812"
+    },
+    {
+      "msi_file_id": "msvcp140_2d_3.dll",
+      "installed_path": "worker/msvcp140_2d.dll",
+      "bytes": 381832,
+      "sha256": "cade066552c54b72d34e98bcd175d9ace51bd06e49a94a1db865087ca4ea98c9"
+    },
+    {
+      "msi_file_id": "msvcp140d_3.dll",
+      "installed_path": "worker/msvcp140d.dll",
+      "bytes": 921008,
+      "sha256": "28f8667adc93e666bd0718039d40e9bfa3e4304efc14d11c36f8fad979a4f83b"
+    },
+    {
+      "msi_file_id": "msvcp140d_atomic_wait_3.dll",
+      "installed_path": "worker/msvcp140d_atomic_wait.dll",
+      "bytes": 107400,
+      "sha256": "1cda18445d53a40c07572aa03fcaf2e6bbd89edd858cbeac4c9813641a189ff0"
+    },
+    {
+      "msi_file_id": "msvcp140d_codecvt_ids_3.dll",
+      "installed_path": "worker/msvcp140d_codecvt_ids.dll",
+      "bytes": 25488,
+      "sha256": "cbf6a86633a713d9ee0fe1660e45792d6cf3e610dbf7b897d90b40588a8f477d"
+    },
+    {
+      "msi_file_id": "ucrtbased_3.dll",
+      "installed_path": "worker/ucrtbased.dll",
+      "bytes": 2237936,
+      "sha256": "82dbb65236d41d6eead3f7baab464e3d2fbb9f8bad1d38489560a2f0fc9feab5"
+    },
+    {
+      "msi_file_id": "vccorlib140d_3.dll",
+      "installed_path": "worker/vccorlib140d.dll",
+      "bytes": 1465736,
+      "sha256": "0880a6a5bb1366e700c5705e6ce9245951bd53684dc379cc4b6aa56e9948d984"
+    },
+    {
+      "msi_file_id": "vcruntime140_1d_3.dll",
+      "installed_path": "worker/vcruntime140_1d.dll",
+      "bytes": 54192,
+      "sha256": "8caaca1bfc909fcb972ceade7be7b80b5855a4621562ee32a10c9903b616d49a"
+    },
+    {
+      "msi_file_id": "vcruntime140d_3.dll",
+      "installed_path": "worker/vcruntime140d.dll",
+      "bytes": 166792,
+      "sha256": "7ed89c668d8ec04c1a0a73f35702b8e0d9819e13e6e7c51c4ac0e0abda6683e6"
+    },
+    {
+      "msi_file_id": "concrt140_3.dll",
+      "installed_path": "worker/concrt140.dll",
+      "bytes": 327576,
+      "sha256": "de1d1bf38090094b702833ddf3a68ee1f5d4ae20ca57f5392fabcf4c49c5b807"
+    },
+    {
+      "msi_file_id": "msvcp140_1_3.dll",
+      "installed_path": "worker/msvcp140_1.dll",
+      "bytes": 35704,
+      "sha256": "a3a1199de32bbbc8318ec33e2e1ce556247d012851e4b367fe853a51e74ce4ee"
+    },
+    {
+      "msi_file_id": "msvcp140_2_3.dll",
+      "installed_path": "worker/msvcp140_2.dll",
+      "bytes": 267160,
+      "sha256": "63f1a20cb17ec5e0ca4ebea870b68740f24e063e28b235c3c8b58a3d8f57a9c4"
+    },
+    {
+      "msi_file_id": "msvcp140_3.dll",
+      "installed_path": "worker/msvcp140.dll",
+      "bytes": 578384,
+      "sha256": "74892d9b4028c05debaf0b9b5d9dc6d22f7956fa7d7eee00c681318c26792823"
+    },
+    {
+      "msi_file_id": "msvcp140_atomic_wait_3.dll",
+      "installed_path": "worker/msvcp140_atomic_wait.dll",
+      "bytes": 50072,
+      "sha256": "7e02efe075b7dd385992f621fde34728ef7c2d4cf090b127b093d0835345f8fe"
+    },
+    {
+      "msi_file_id": "msvcp140_codecvt_ids_3.dll",
+      "installed_path": "worker/msvcp140_codecvt_ids.dll",
+      "bytes": 31640,
+      "sha256": "3bd90db2f147899c65fe279f3e44ac48f5598cd0c23a09c0410be072a4c96070"
+    },
+    {
+      "msi_file_id": "vccorlib140_3.dll",
+      "installed_path": "worker/vccorlib140.dll",
+      "bytes": 346008,
+      "sha256": "986a9f1dccabce249a0db23b9f5e2057ab644081cd04c647f2711884cff2b346"
+    },
+    {
+      "msi_file_id": "vcruntime140_1_3.dll",
+      "installed_path": "worker/vcruntime140_1.dll",
+      "bytes": 49560,
+      "sha256": "6fd366a691ed68430bcd0a3de3d8d19a0cb2102952bfc140bbef4354ed082c47"
+    },
+    {
+      "msi_file_id": "vcruntime140_3.dll",
+      "installed_path": "worker/vcruntime140.dll",
+      "bytes": 109440,
+      "sha256": "69320f278d90efaaeb67e2a1b55e5b0543883125834c812c8d9c39676e0494fc"
+    }
+  ],
+  "extraction": {
+    "method": "ZIP + WiX Burn CAB containers + MSI File/Component/Directory tables + external CAB files",
+    "windows_code_executed": false,
+    "extractor": "7-Zip26.03macOSarm64",
+    "pe_reader": "pefile2024.8.26",
+    "disassembler": "Capstone5.0.9",
+    "file_count": 254
+  },
+  "analysis_date": "2026-10-03",
+  "local_workspace": "/Users/<user>/Documents/masterhub-analysis/1.0.0.113",
+  "analysis_sources": [
+    {
+      "local_relative_path": "app-analysis/background.js",
+      "bytes": 1764819,
+      "sha256": "d3139e7214cb8195c3026165bb1c4b22324c18fca6bedf3b10aa85eba941d0ef"
+    },
+    {
+      "local_relative_path": "app-analysis/js/app.c762092d.js.map",
+      "bytes": 5482626,
+      "sha256": "79da9c6d60fca74ce4eb7842257f15e92139a8acbc9b38c29e2e332f89658435"
+    }
+  ],
+  "dial_firmware_metadata": {
+    "retrieved_date": "2026-10-03",
+    "url": "https://dev.pms.masterctrl.coolermaster.com/api/devices/93e23f53-b0b2-509c-8777-09f51522dab7/firmwares/stable",
+    "response": {
+      "version": "1.0.4.0",
+      "uri": "/assets/devices/93e23f53-b0b2-509c-8777-09f51522dab7/firmwares/1.0.4.0.sys"
+    }
+  },
+  "validation": {
+    "fresh_extraction": "passed",
+    "matching_payload_files": 254,
+    "matching_source_hashes": true,
+    "native_pe_files_inventoried": 96,
+    "m131e_export_count": 65,
+    "independent_input_display_review": "passed",
+    "hardware_validation": false
+  }
+}

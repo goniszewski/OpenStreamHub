@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/cooltek-sdk",
     "crates/cooltek-sdk-masterhub",
+    "crates/cooltek-sdk-cli",
 ]

@@ -9,6 +9,10 @@ impl crate::Module for M131E {
     const PRODUCT_ID: ProductId = product_id!(0x0206);
     const PRODUCT_NAME: Option<&'static str> = Some("1xDial w/ IPS (2x2)");
 
+    fn accepts_product_id(product_id: ProductId) -> bool {
+        product_id == Self::PRODUCT_ID || product_id == product_id!(0x9994)
+    }
+
     fn initialize(device: &HidDevice) -> Result<(), HidError> {
         use super::capabilities::CanSetSoftwareMode;
 

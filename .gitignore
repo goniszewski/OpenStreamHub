@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target
 
+# Local device captures can contain serial numbers and large display transfers.
+/captures
+
 # OS-specific files
 .DS_Store
 [Dd]esktop.ini

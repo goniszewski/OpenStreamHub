@@ -12,6 +12,10 @@ Windows capture procedure, and Raspberry Pi USB limitations. The [diagnostic gui
 describes device inventory, bounded raw recording, dial command previews, JPEG packet plans,
 and offline replay.
 
+The [binding service guide](docs/masterhub-service.md) covers JSON profiles,
+offline action plans, and explicit macOS volume, mute, shortcut, and app actions.
+The [sample profile](examples/profiles/macos.json) works with both knob and dial captures.
+
 The SDK builds on macOS and recognizes both USB ID generations for these modules. It includes
 dial input decoding, explicit feature controls and firmware queries, descriptor-sized JPEG packets, and session
 lifecycle hooks. Tests use synthetic reports and fake transports. Physical input, display acceptance,

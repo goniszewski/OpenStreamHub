@@ -64,7 +64,9 @@ Gate: the three target modules can be identified and their raw reports associate
 
 ### 3. Three-knob input and first action
 
-Connect documented decoders to observed raw framing. Expose typed events with module identity, control index, rotation direction/delta, press state, and timestamps. Keep raw unknown reports for investigation. Implement one macOS action above the SDK, such as volume adjustment and mute.
+The [binding and action service](masterhub-service.md) connects SDK decoders to strict JSON profiles and an explicit macOS action backend. It normalizes module/control/gesture/timestamp events, preserves unknown and malformed reports in logs, and supports system output volume, mute, keyboard shortcuts, and app launching. Serial-specific bindings override module-wide bindings. Replay always plans actions; live execution is opt-in and selects one exact interface.
+
+Offline tests cover decoding, matching, duplicate filtering, gesture boundaries, simulated action failures, and cleanup. Connect these paths to observed device framing, then verify actual macOS actions and physical control order. Volume/shortcut execution uses synchronous host subprocesses; sustained rotation throughput and read-time gesture accuracy remain runtime acceptance work.
 
 Gate: an agreed physical gesture sequence gives correct events/actions, including fast and simultaneous movement. Validate press/release state without duplicate actions.
 
@@ -94,7 +96,7 @@ Gate: base unplug/replug, module reinsertion, app restart, and sleep/wake recove
 
 ### 6. Everyday macOS application and release
 
-Layer a reusable Rust device/action service above the SDK, then a small menu-bar UI for bindings and profiles. Implement permissions only for actions that require them. Tauri is an option; defer the GUI choice until device APIs are usable. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
+The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. Add reliable sessions and a small menu-bar UI once physical input and action behavior have been validated. Document permissions only for actions that require them. Tauri is an option; defer the GUI choice until device APIs are usable. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
 
 Add useful dial content after the display milestone. Package, sign/notarize, and document compatible firmware and tested Mac architectures.
 
@@ -160,3 +162,4 @@ Captures can establish how to reproduce existing hardware operations. They do no
 - Device communication and physical control/display/lifecycle tests: pending hardware.
 - Diagnostic implementation: complete; see the [diagnostic guide](masterhub-diagnostics.md), [implementation status](masterhub-implementation-status.md), and [protocol evidence](masterhub-protocol-evidence.md).
 - Official-software static analysis, recovered SDK capabilities, and CLI integration: complete and offline-validated. Hardware-dependent milestones remain pending.
+- Binding/action service: implemented with synthetic replay, simulated transports, and mock host processes. Device input, actual host actions, throughput, and permissions require runtime acceptance.

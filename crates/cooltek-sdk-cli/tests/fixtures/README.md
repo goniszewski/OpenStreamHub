@@ -36,6 +36,24 @@ used to reconstruct an encoded image from the offline packet plan. Its SHA-256 i
 Packet construction is software-derived; these fixtures do not validate display
 acceptance, orientation, pacing, or device acknowledgements.
 
+`m4315-software-derived-synthetic.jsonl`,
+`m005s-software-derived-synthetic.jsonl`, and
+`m032le-software-derived-synthetic.jsonl` exercise the additional input modules
+described in the [protocol evidence](../../../../docs/research/masterhub-additional-modules-1.0.0.113.md).
+Their headers use legacy identities; tests also substitute the newer IDs and
+misleading module labels to verify routing by VID/PID. They include unknown and
+malformed reports, which are deliberately constructed diagnostics.
+
+The key fixture has eight reports, six press/release events (including the
+renderer's legacy selector), one unknown class and two malformed reports.
+The fader fixture has eight reports and seven position events: all five initial
+positions, then index 0 changing to 60 and 100. Duplicate snapshots generate no
+events; positions above 100 are invalid, and the probe's contradictory selector
+`00` remains unknown. The roller fixture has seven reports and five discrete
+direction events, including repeated updates and `ff` idle controls. Neither
+roller distance nor physical control placement is asserted. The fader and roller
+fixtures each also contain one unknown and two malformed reports.
+
 Synthetic paths, timestamps, identities, and missing descriptors are explicitly
 recorded in their session headers. Every fixture has a schema version and a
 mandatory end record. A malformed HID report inside a complete capture is a

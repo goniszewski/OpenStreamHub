@@ -1,4 +1,4 @@
-//! Pure input parsing for M003K knobs and the M131E IPS dial.
+//! Pure input parsing for MasterHUB control modules.
 //!
 //! These formats come from the public `cooltek-sdk-probe` protocol notes and
 //! have not yet been verified with this SDK on real hardware. The M131E formats
@@ -15,6 +15,14 @@ use std::fmt;
 
 mod m131e;
 pub use m131e::*;
+mod m4315;
+pub use m4315::*;
+mod m005s;
+pub use m005s::*;
+mod m032le;
+pub use m032le::*;
+#[cfg(test)]
+mod control_tests;
 
 /// A malformed report whose known fields could not be safely decoded.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +57,28 @@ pub enum InputError {
         /// Unrecognized raw value.
         value: u8,
     },
+    /// A known key, fader, or roller payload has an invalid count or length.
+    InvalidControlLength {
+        /// Module identifier, independent of the raw report bytes.
+        module: &'static str,
+        /// Expected number of control bytes.
+        expected: u8,
+        /// Number of controls declared by the payload.
+        declared: u8,
+        /// Number of control bytes actually received.
+        actual: usize,
+    },
+    /// A known key, fader, or roller payload contains an undocumented value.
+    InvalidControlValue {
+        /// Module identifier, independent of the raw report bytes.
+        module: &'static str,
+        /// Logical report selector.
+        report_id: u8,
+        /// Zero-based control index in wire order.
+        control_index: u8,
+        /// Unsupported raw value.
+        value: u8,
+    },
 }
 
 impl fmt::Display for InputError {
@@ -77,11 +107,88 @@ impl fmt::Display for InputError {
                 formatter,
                 "M003K report 0x{report_id:02x}, knob {knob_index}: unknown value 0x{value:02x}"
             ),
+            Self::InvalidControlLength {
+                module,
+                expected,
+                declared,
+                actual,
+            } => write!(
+                formatter,
+                "{module} payload must declare and contain {expected} control bytes (declared {declared}, actual {actual})"
+            ),
+            Self::InvalidControlValue {
+                module,
+                report_id,
+                control_index,
+                value,
+            } => write!(
+                formatter,
+                "{module} report 0x{report_id:02x}, control {control_index}: unknown value 0x{value:02x}"
+            ),
         }
     }
 }
 
 impl std::error::Error for InputError {}
+
+fn control_bytes<'a>(
+    payload: &'a [u8],
+    module: &'static str,
+    expected: u8,
+) -> Result<&'a [u8], InputError> {
+    if payload.len() < 2 {
+        return Err(InputError::ShortHeader {
+            required: 2,
+            received: payload.len(),
+        });
+    }
+    if payload[1] != expected || payload.len() != usize::from(expected) + 2 {
+        return Err(InputError::InvalidControlLength {
+            module,
+            expected,
+            declared: payload[1],
+            actual: payload.len() - 2,
+        });
+    }
+    Ok(&payload[2..])
+}
+
+fn channel_zero_payload(raw: &[u8], tag: u8) -> Result<Option<&[u8]>, InputError> {
+    let Some(&id) = raw.first() else {
+        return Err(InputError::ShortHeader {
+            required: 1,
+            received: 0,
+        });
+    };
+    if id != 0x01 {
+        return Ok(None);
+    }
+    let Some(&received_tag) = raw.get(1) else {
+        return Err(InputError::ShortHeader {
+            required: 2,
+            received: raw.len(),
+        });
+    };
+    // Other channels keep their entire raw bytes; their framing is not assumed.
+    if received_tag != tag {
+        return Ok(None);
+    }
+    if raw.len() < 4 {
+        return Err(InputError::ShortHeader {
+            required: 4,
+            received: raw.len(),
+        });
+    }
+    let declared = usize::from(u16::from_le_bytes([raw[2], raw[3]]));
+    let available = raw.len() - 4;
+    if declared > available {
+        return Err(InputError::TruncatedPayload {
+            declared,
+            available,
+        });
+    }
+    Ok(Some(&raw[4..4 + declared]))
+}
 
 /// A recognized outer M0 frame or an uninterpreted raw HID report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

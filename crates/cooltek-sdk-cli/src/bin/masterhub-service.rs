@@ -31,7 +31,7 @@ use serde_json::{Value, json};
     name = "masterhub-service",
     version,
     about = "Bind MasterHUB gestures to macOS actions",
-    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables dial software mode. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM ends the session and attempts requested dial cleanup."
+    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables software mode for the IPS dial or keys. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM ends the session and attempts requested mode cleanup."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -61,7 +61,7 @@ enum Command {
         /// Enable real macOS actions. Without this flag actions are only logged.
         #[arg(long)]
         execute: bool,
-        /// Explicitly request dial software mode and restore hardware mode on exit.
+        /// Request IPS dial/key software mode and restore hardware mode on exit.
         #[arg(long)]
         software_mode: bool,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86_400))]
@@ -183,7 +183,10 @@ fn device_context(
     let module = match ModuleKind::from_ids(vendor_id, product_id) {
         Some(ModuleKind::M003K) => ServiceModule::M003K,
         Some(ModuleKind::M131E) => ServiceModule::M131E,
-        _ => return Err("the binding service supports only M003K and M131E interfaces".into()),
+        Some(ModuleKind::M4315) => ServiceModule::M4315,
+        Some(ModuleKind::M005S) => ServiceModule::M005S,
+        Some(ModuleKind::M032LE) => ServiceModule::M032LE,
+        _ => return Err("the binding service supports only the five control modules".into()),
     };
     Ok(DeviceContext {
         module,
@@ -210,8 +213,8 @@ fn select_device<'a>(
         selected.product_id,
         selected.serial_number.clone(),
     )?;
-    if software_mode && context.module != ServiceModule::M131E {
-        return Err("--software-mode is supported only for the M131E dial".into());
+    if software_mode && !matches!(context.module, ServiceModule::M131E | ServiceModule::M4315) {
+        return Err("--software-mode is supported only for M131E and M4315".into());
     }
     Ok(selected)
 }
@@ -240,7 +243,7 @@ impl Dispatcher {
 impl ActionDispatcher for Dispatcher {
     fn dispatch(&mut self, action: &cooltek_sdk_service::Action) -> Result<(), String> {
         match self {
-            Self::Preview => action.validate(),
+            Self::Preview => action.validate_executable(),
             Self::MacOs(dispatcher) => dispatcher.dispatch(action),
         }
     }
@@ -316,24 +319,25 @@ impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
             }
             self.event_count += 1;
             let binding = self.engine.binding_for(&self.device, &event);
+            let action = self.engine.action_for(&self.device, &event)?;
             // Publish the intended action before invoking the host. A failed log
             // write must never cause an unrecorded action.
             emit(
                 self.output,
                 json!({
                     "type":"event", "schema_version":1, "event":event,
-                    "binding":binding, "status":if binding.is_some() {"planned"} else {"unbound"},
+                    "binding":binding, "action":action, "status":if action.is_some() {"planned"} else {"unbound"},
                 }),
             )?;
-            if let Some(binding) = binding {
+            if let Some(action) = action {
                 if stopped.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
                     return Ok(false);
                 }
-                if let Err(error) = self.dispatcher.dispatch(&binding.action) {
+                if let Err(error) = self.dispatcher.dispatch(&action) {
                     let log = emit(
                         self.output,
                         json!({
-                            "type":"action_failed", "event":event, "action":binding.action, "error":error,
+                            "type":"action_failed", "event":event, "action":action, "error":error,
                         }),
                     );
                     return combine(Err(format!("action failed: {error}")), log).map(|_| true);
@@ -342,7 +346,7 @@ impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
                 if self.execute {
                     emit(
                         self.output,
-                        json!({"type":"action_executed", "event":event, "action":binding.action}),
+                        json!({"type":"action_executed", "event":event, "action":action}),
                     )?;
                 }
             }

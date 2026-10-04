@@ -1,0 +1,109 @@
+import type { Action, Binding, BindingAction, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
+
+export type ModuleId = ServiceModule;
+export type Appearance = 'system' | 'light' | 'dark';
+export type Page = 'devices' | 'profiles' | 'compatibility' | 'settings';
+
+export const appearanceStorageKey = 'open-stream-hub.appearance';
+
+export function readAppearance(storage: Pick<Storage, 'getItem'>): Appearance {
+  try {
+    const saved = storage.getItem(appearanceStorageKey) ?? storage.getItem('masterhub.appearance');
+    return saved === 'dark' || saved === 'light' ? saved : 'system';
+  } catch { return 'system'; }
+}
+
+export const modules: { id: ModuleId; name: string; shortName: string; art: string; supported: boolean; input: string }[] = [
+  { id: 'm131e', name: 'Encoder with IPS Display', shortName: 'Encoder IPS display', art: 'encoder', supported: true, input: 'Rotate · Press · Release' },
+  { id: 'm4315', name: '15x Key IPS Display', shortName: '15-key IPS display', art: 'keys', supported: true, input: 'Press · Release' },
+  { id: 'm003k', name: '3x Knob', shortName: '3-knob module', art: 'knob', supported: true, input: 'Rotate · Press · Release' },
+  { id: 'm005s', name: '5x Fader Precision', shortName: '5-fader precision module', art: 'faders', supported: true, input: 'Position · 0–100' },
+  { id: 'm032le', name: '2x Roller Scroll', shortName: '2-roller scroll module', art: 'rollers', supported: true, input: 'Up · Down' },
+];
+
+export const gestureLabels: Record<Gesture, string> = {
+  clockwise: 'Clockwise', counter_clockwise: 'Counter-clockwise', pressed: 'Press', released: 'Release',
+  right: 'Right', left: 'Left', short_press: 'Short press', long_press: 'Long press',
+  position_changed: 'Position', up: 'Up', down: 'Down',
+};
+
+export const gestures: Record<ServiceModule, Gesture[]> = {
+  m003k: ['clockwise', 'counter_clockwise', 'pressed', 'released'],
+  m131e: ['right', 'left', 'pressed', 'released', 'short_press', 'long_press'],
+  m4315: ['pressed', 'released'],
+  m005s: ['position_changed'],
+  m032le: ['up', 'down'],
+};
+
+export const controlCounts: Record<ServiceModule, number> = { m003k: 3, m131e: 1, m4315: 15, m005s: 5, m032le: 2 };
+export const faderMaximum = 100;
+export const replayLabels: Record<ReplayKind, string> = {
+  knobs: '3-knob synthetic capture', dial: 'Encoder synthetic capture', keys: '15-key synthetic capture',
+  faders: '5-fader synthetic capture', rollers: '2-roller synthetic capture',
+};
+
+export function moduleNote(module: ServiceModule) {
+  switch (module) {
+    case 'm003k': case 'm4315': case 'm005s': return 'Control positions will be checked with the device.';
+    case 'm131e': return 'Physical Right/Left rotation will be checked with the device.';
+    case 'm032le': return 'Roller order and physical Up/Down direction will be checked with the device.';
+  }
+}
+
+export function controlLabel(module: ServiceModule, control: number) {
+  switch (module) {
+    case 'm003k': return `Knob ${control + 1}`;
+    case 'm131e': return 'Encoder';
+    case 'm4315': return `Key ${control + 1}`;
+    case 'm005s': return `Fader ${control + 1}`;
+    case 'm032le': return `Roller ${control + 1}`;
+  }
+}
+
+export function actionLabel(action: Action | BindingAction | null) {
+  if (!action) return 'Unbound';
+  switch (action.type) {
+    case 'volume': return `Output volume ${action.delta > 0 ? '+' : ''}${action.delta} points`;
+    case 'toggle_mute': return 'Toggle output mute';
+    case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${action.key === ' ' ? 'Space' : action.key.toUpperCase()}`;
+    case 'launch_app': return `Open ${action.bundle_id}`;
+    case 'volume_from_position': return 'Follow fader position for output volume';
+    case 'set_volume': return `Set output volume to ${action.percent}%`;
+  }
+}
+
+export interface BindingSelection { module: ServiceModule; control: number; gesture: Gesture; serial: string }
+
+export function sameSelector(binding: Binding, selection: BindingSelection) {
+  return binding.module === selection.module && binding.control === selection.control &&
+    binding.gesture === selection.gesture && (binding.serial_number ?? '') === selection.serial;
+}
+
+// This edits the exact selector in a draft. Matching precedence and validation stay in Rust.
+export function editBinding(profile: Profile, selection: BindingSelection, action: BindingAction | null): Profile {
+  const index = profile.bindings.findIndex(binding => sameSelector(binding, selection));
+  const bindings = [...profile.bindings];
+  if (!action) {
+    if (index !== -1) bindings.splice(index, 1);
+  } else {
+    const binding: Binding = {
+      module: selection.module, control: selection.control, gesture: selection.gesture,
+      ...(selection.serial ? { serial_number: selection.serial } : {}), action,
+    };
+    if (index === -1) bindings.push(binding); else bindings[index] = binding;
+  }
+  return { ...profile, bindings };
+}
+
+export const browserProfile: Profile = {
+  schema_version: 1, name: 'Everyday', bindings: [
+    { module: 'm003k', control: 0, gesture: 'clockwise', action: { type: 'volume', delta: 5 } },
+    { module: 'm003k', control: 0, gesture: 'counter_clockwise', action: { type: 'volume', delta: -5 } },
+    { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } },
+    { module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 5 } },
+  ],
+};
+
+export function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}

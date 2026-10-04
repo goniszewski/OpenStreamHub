@@ -1,12 +1,12 @@
 # MasterHUB macOS support plan
 
-Updated on 3 October 2026. This roadmap covers macOS support for the M0064 base, M003K three-knob module, and M131E IPS dial. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
+Updated on 3 October 2026. This roadmap covers macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
 
 ## Scope and intended outcome
 
-Build direct macOS support for the M0064 base, M003K three-knob module, and M131E IPS dial. The first release should read their controls and dispatch configurable macOS actions. Add dial display content once its protocol is validated. Keep profiles, action integrations, and the GUI separate from the reusable SDK.
+Build direct macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The first release should read their controls and dispatch configurable macOS actions. Add dial display content once its protocol is validated. Keep profiles, action integrations, and the GUI separate from the reusable SDK.
 
-Firmware flashing/recovery, additional module types, and complete MasterCTRL parity are later projects. Capture traffic to reproduce existing device capabilities; new shortcuts, profiles, and application integrations can live in the macOS application without modifying firmware.
+Firmware flashing/recovery, other hardware types, and complete MasterCTRL parity are later projects. Capture traffic to reproduce existing device capabilities; new shortcuts, profiles, and application integrations can live in the macOS application without modifying firmware.
 
 Windows captures can resolve protocol questions left open by static analysis. Verify VM passthrough and capture-driver compatibility, particularly on Windows on ARM, before relying on a virtualized capture setup.
 
@@ -26,7 +26,7 @@ The baseline workspace contains `cooltek-sdk` and `cooltek-sdk-masterhub`, requi
 | Three-knob M003K | `2516:0202` | Identity and serial feature report `0x30` | Rotation/press decoding and lighting |
 | IPS dial M131E | `2516:0206` | Identity, serial feature report `0x4a`, automatic software mode | Dial input and screen control |
 
-The SDK also recognizes M005S, M032LE, and M4315, which are outside this roadmap. At baseline, only serial-number and software-mode capabilities were implemented.
+At baseline, the SDK also recognized M005S, M032LE and M4315 through serial-number capabilities and keypad software mode. Initial input, binding and replay support for those three modules is now implemented; see the [additional-module evidence](research/masterhub-additional-modules-1.0.0.113.md).
 
 Baseline limitations:
 
@@ -54,13 +54,13 @@ For each capability, record module/firmware, report type and ID, endpoint/interf
 
 The CLI provides enumeration, exact interface selection, timestamped input recording, replay, dial command previews, and JPEG packet planning. HID operations are isolated behind a testable transport; configuration writes require explicit selection.
 
-Serial parsing and M003K/M131E decoders validate received lengths and preserve unknown reports. Tests cover malformed packets, rotations, button transitions, and transport failures. Workspace tests, formatting, Clippy, and documentation checks pass; see [implementation status](masterhub-implementation-status.md).
+Serial parsing and all five control-module decoders validate received lengths and preserve unknown reports. Tests cover malformed packets, rotations, button transitions, absolute fader positions, roller direction updates, and transport failures. Workspace tests, formatting, Clippy, and documentation checks pass; see [implementation status](masterhub-implementation-status.md).
 
 ### 2. First macOS hardware session
 
 Enumerate all matching interfaces and record descriptors, topology, paths, usage pages, serials, and firmware versions where safely available. Record physical controls separately before initialization, then explicitly enable any required mode and repeat. Record module removal and reattachment.
 
-Gate: the three target modules can be identified and their raw reports associated with gestures. Establish actual macOS access before expanding protocol work.
+Gate: all connected modules can be identified, and control-module raw reports can be associated with physical gestures. Apply the same checks to additional modules when available. Confirm actual macOS access before claiming hardware support.
 
 ### 3. Three-knob input and first action
 
@@ -98,7 +98,9 @@ Gate: base unplug/replug, module reinsertion, app restart, and sleep/wake recove
 
 ### 6. Everyday macOS application and release
 
-The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. Add reliable sessions and a small menu-bar UI once physical input and action behavior have been validated. Document permissions only for actions that require them. Tauri is an option; defer the GUI choice until device APIs are usable. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
+The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. The [OpenStreamHub desktop app](../apps/open-stream-hub/README.md) now adds profile editing, strict validation, atomic local storage, and synthetic capture replay. It shares the service's profile schema, decoder and binding engine. All five modules appear in its catalog; all five control modules support binding editing and synthetic replay. Faders carry absolute positions into volume actions; rollers expose discrete directions without an inferred magnitude. Its previews use the dry-run dispatcher and open no HID interface.
+
+Keep the desktop package alongside the SDK under `apps/open-stream-hub`, with separate npm and Cargo workspaces. Add focused-app profile rules and integrations as separate milestones. Connect reliable live sessions and explicit host action execution after physical input and action behavior have been validated. Document permissions only for actions that require them. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
 
 The [controlled macOS smoke guide](masterhub-macos-smoke.md) provides device-free audio snapshot/restore checks and a scratch keystroke procedure. Observed effects, system-tool completion, and unresolved focus/output behavior are recorded separately from physical-device acceptance.
 

@@ -68,7 +68,7 @@ enum Command {
         /// End capture after this many nonempty reports.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_reports: Option<u64>,
-        /// Explicitly send the software-mode feature report (M131E only).
+        /// Explicitly enter software mode (M131E dial or M4315 keys).
         #[arg(long)]
         software_mode: bool,
     },
@@ -245,7 +245,7 @@ fn print_json(value: &serde_json::Value) -> Result<(), Box<dyn Error>> {
 fn open_dial(path: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
     let registry = DeviceRegistry::new()?;
     let devices = registry.devices();
-    let selected = select_device(&devices, path, true)?;
+    let selected = select_dial(&devices, path)?;
     Ok(registry.open(selected)?)
 }
 
@@ -446,7 +446,14 @@ fn record(
             report_descriptor,
         }),
     )?;
-    begin_record_mode(reader.transport(), software_mode, &mut writer, started)?;
+    let module = ModuleKind::from_ids(selected.vendor_id, selected.product_id);
+    begin_record_mode(
+        reader.transport(),
+        module,
+        software_mode,
+        &mut writer,
+        started,
+    )?;
     let result = capture_input(
         &mut reader,
         &mut writer,
@@ -455,11 +462,12 @@ fn record(
         timeout_ms,
         max_reports,
     );
-    cleanup_record_mode(reader.transport(), software_mode, result)
+    cleanup_record_mode(reader.transport(), module, software_mode, result)
 }
 
 fn begin_record_mode<T: ReportTransport>(
     transport: &T,
+    module: Option<ModuleKind>,
     software_mode: bool,
     writer: &mut impl Write,
     started: Instant,
@@ -467,7 +475,7 @@ fn begin_record_mode<T: ReportTransport>(
     if !software_mode {
         return Ok(());
     }
-    if let Err(error) = dial::set_software_mode(transport, true) {
+    if let Err(error) = cooltek_sdk_cli::mode::set(transport, module, true) {
         let message = format!("software-mode feature report failed: {error}");
         let failure: Box<dyn Error> = match finish(
             writer,
@@ -483,20 +491,21 @@ fn begin_record_mode<T: ReportTransport>(
         };
         // A failed write can have changed device mode. Cleanup is authorized by
         // the opt-in flag and must run even if writing the footer also failed.
-        return cleanup_record_mode(transport, true, Err(failure));
+        return cleanup_record_mode(transport, module, true, Err(failure));
     }
     Ok(())
 }
 
 fn cleanup_record_mode<T: ReportTransport>(
     transport: &T,
+    module: Option<ModuleKind>,
     software_mode: bool,
     result: Result<(), Box<dyn Error>>,
 ) -> Result<(), Box<dyn Error>> {
     if !software_mode {
         return result;
     }
-    match (result, dial::set_software_mode(transport, false)) {
+    match (result, cooltek_sdk_cli::mode::set(transport, module, false)) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
         (Ok(()), Err(error)) => {
@@ -525,11 +534,23 @@ fn select_device<'a>(
         );
     }
     if software_mode
-        && ModuleKind::from_ids(selected.vendor_id, selected.product_id) != Some(ModuleKind::M131E)
+        && !cooltek_sdk_cli::mode::supported(ModuleKind::from_ids(
+            selected.vendor_id,
+            selected.product_id,
+        ))
     {
-        return Err(
-            "software mode is supported only for the M131E (2516:0206 or 2516:9994)".into(),
-        );
+        return Err("software mode is supported only for M131E and M4315".into());
+    }
+    Ok(selected)
+}
+
+fn select_dial<'a>(
+    devices: &'a [ModuleIdentity],
+    path: &[u8],
+) -> Result<&'a ModuleIdentity, Box<dyn Error>> {
+    let selected = select_device(devices, path, false)?;
+    if ModuleKind::from_ids(selected.vendor_id, selected.product_id) != Some(ModuleKind::M131E) {
+        return Err("dial commands require an M131E (2516:0206 or 2516:9994)".into());
     }
     Ok(selected)
 }
@@ -632,6 +653,18 @@ fn replay(file: PathBuf) -> Result<(), Box<dyn Error>> {
     let mut dial_decoder = M131EDecoder::default();
     let mut gestures = DialGestureTracker::new();
     let module = ModuleKind::from_ids(session.identity.vendor_id, session.identity.product_id);
+    let mut other_input = match module {
+        Some(ModuleKind::M4315) => Some(cooltek_sdk_service::InputSession::new(
+            cooltek_sdk_service::ServiceModule::M4315,
+        )),
+        Some(ModuleKind::M005S) => Some(cooltek_sdk_service::InputSession::new(
+            cooltek_sdk_service::ServiceModule::M005S,
+        )),
+        Some(ModuleKind::M032LE) => Some(cooltek_sdk_service::InputSession::new(
+            cooltek_sdk_service::ServiceModule::M032LE,
+        )),
+        _ => None,
+    };
     let mut output = io::stdout().lock();
     while let Some(report) = reader.next_report()? {
         let raw = decode_hex(&report.raw_hex, MAX_REPORT_BYTES)?;
@@ -707,6 +740,18 @@ fn replay(file: PathBuf) -> Result<(), Box<dyn Error>> {
                 Err(error) => {
                     item["type"] = json!("parse_error");
                     item["error"] = json!(error.to_string());
+                }
+            }
+        } else if let Some(input) = &mut other_input {
+            match input.decode(&raw, report.timestamp_micros) {
+                Ok(cooltek_sdk_service::InputUpdate::Events(events)) => {
+                    item["type"] = json!("events");
+                    item["events"] = json!(events);
+                }
+                Ok(cooltek_sdk_service::InputUpdate::Unknown) => item["type"] = json!("unknown"),
+                Err(error) => {
+                    item["type"] = json!("parse_error");
+                    item["error"] = json!(error);
                 }
             }
         } else {
@@ -884,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn selection_requires_exact_unambiguous_path_and_explicit_dial_mode() {
+    fn selection_requires_exact_unambiguous_path_and_explicit_ips_mode() {
         let devices = [device(b"first", 0x0202, 0), device(b"second", 0x0206, 0)];
         assert_eq!(
             select_device(&devices, b"second", false)
@@ -898,9 +943,52 @@ mod tests {
         let ambiguous = [device(b"same", 0x0206, 0), device(b"same", 0x0206, 1)];
         assert!(select_device(&ambiguous, b"same", false).is_err());
         assert!(select_device(&[device(b"new-dial", 0x9994, 0)], b"new-dial", true).is_ok());
+        for product_id in [0x01fe, 0x9997] {
+            assert!(select_device(&[device(b"keys", product_id, 0)], b"keys", true).is_ok());
+        }
         let mut wrong_vendor = device(b"wrong-vendor", 0x9994, 0);
         wrong_vendor.vendor_id = 1;
         assert!(select_device(&[wrong_vendor], b"wrong-vendor", true).is_err());
+    }
+
+    #[test]
+    fn dial_selection_accepts_both_m131e_product_ids() {
+        for product_id in [0x0206, 0x9994] {
+            let mut dial = device(b"dial", product_id, 0);
+            dial.module = Some(ModuleKind::M4315);
+            let devices = [dial];
+            let selected = select_dial(&devices, b"dial").unwrap();
+            assert_eq!(selected.product_id, product_id);
+        }
+    }
+
+    #[test]
+    fn dial_selection_rejects_keypad_other_modules_and_wrong_vendor() {
+        for product_id in [0x01fe, 0x9997, 0x0202, 0x9991, 0x9995, 0xffff] {
+            let mut other_module = device(b"other-module", product_id, 0);
+            other_module.module = Some(ModuleKind::M131E);
+            let devices = [device(b"dial", 0x0206, 0), other_module];
+            let error = select_dial(&devices, b"other-module").unwrap_err();
+            assert!(error.to_string().contains("dial commands require an M131E"));
+        }
+        let mut wrong_vendor = device(b"wrong-vendor", 0x9994, 0);
+        wrong_vendor.vendor_id = 1;
+        let devices = [wrong_vendor];
+        let error = select_dial(&devices, b"wrong-vendor").unwrap_err();
+        assert!(error.to_string().contains("dial commands require an M131E"));
+    }
+
+    #[test]
+    fn dial_selection_requires_an_exact_unambiguous_path() {
+        let devices = [device(b"dial", 0x0206, 0), device(b"other-dial", 0x9994, 0)];
+        assert!(select_dial(&devices, b"absent").is_err());
+        assert!(select_dial(&devices, b"dia").is_err());
+        assert_eq!(
+            select_dial(&devices, b"other-dial").unwrap().product_id,
+            0x9994
+        );
+        let ambiguous = [device(b"same", 0x0206, 0), device(b"same", 0x9994, 1)];
+        assert!(select_dial(&ambiguous, b"same").is_err());
     }
 
     #[test]
@@ -931,11 +1019,16 @@ mod tests {
             writes: RefCell::new(Vec::new()),
             fail: false,
         };
-        cleanup_record_mode(&transport, false, Ok(())).unwrap();
+        cleanup_record_mode(&transport, Some(ModuleKind::M131E), false, Ok(())).unwrap();
         assert!(transport.writes.borrow().is_empty());
-        cleanup_record_mode(&transport, true, Ok(())).unwrap();
-        let error =
-            cleanup_record_mode(&transport, true, Err("capture failed".into())).unwrap_err();
+        cleanup_record_mode(&transport, Some(ModuleKind::M131E), true, Ok(())).unwrap();
+        let error = cleanup_record_mode(
+            &transport,
+            Some(ModuleKind::M131E),
+            true,
+            Err("capture failed".into()),
+        )
+        .unwrap_err();
         assert_eq!(error.to_string(), "capture failed");
         assert_eq!(
             *transport.writes.borrow(),
@@ -946,14 +1039,19 @@ mod tests {
             fail: true,
         };
         assert!(
-            cleanup_record_mode(&failed, true, Ok(()))
+            cleanup_record_mode(&failed, Some(ModuleKind::M131E), true, Ok(()))
                 .unwrap_err()
                 .to_string()
                 .contains("capture completed")
         );
-        let error = cleanup_record_mode(&failed, true, Err("capture failed".into()))
-            .unwrap_err()
-            .to_string();
+        let error = cleanup_record_mode(
+            &failed,
+            Some(ModuleKind::M131E),
+            true,
+            Err("capture failed".into()),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("capture failed") && error.contains("cleanup disconnected"));
     }
 
@@ -991,9 +1089,21 @@ mod tests {
             let transport = FailedEnable(RefCell::new(Vec::new()));
             let mut bytes = Vec::new();
             let result = if fail_footer {
-                begin_record_mode(&transport, true, &mut FailedWriter, Instant::now())
+                begin_record_mode(
+                    &transport,
+                    Some(ModuleKind::M131E),
+                    true,
+                    &mut FailedWriter,
+                    Instant::now(),
+                )
             } else {
-                begin_record_mode(&transport, true, &mut bytes, Instant::now())
+                begin_record_mode(
+                    &transport,
+                    Some(ModuleKind::M131E),
+                    true,
+                    &mut bytes,
+                    Instant::now(),
+                )
             };
             let error = result.unwrap_err().to_string();
             assert!(error.contains("enable failed"));

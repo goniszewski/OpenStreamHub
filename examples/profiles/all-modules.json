@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "name": "All module controls",
+  "bindings": [
+    {
+      "module": "m003k",
+      "control": 0,
+      "gesture": "clockwise",
+      "action": {
+        "type": "volume",
+        "delta": 5
+      }
+    },
+    {
+      "module": "m131e",
+      "control": 0,
+      "gesture": "right",
+      "action": {
+        "type": "volume",
+        "delta": 5
+      }
+    },
+    {
+      "module": "m4315",
+      "control": 0,
+      "gesture": "pressed",
+      "action": {
+        "type": "toggle_mute"
+      }
+    },
+    {
+      "module": "m4315",
+      "control": 14,
+      "gesture": "pressed",
+      "action": {
+        "type": "shortcut",
+        "key": "k",
+        "modifiers": [
+          "command"
+        ]
+      }
+    },
+    {
+      "module": "m005s",
+      "control": 0,
+      "gesture": "position_changed",
+      "action": {
+        "type": "volume_from_position"
+      }
+    },
+    {
+      "module": "m032le",
+      "control": 0,
+      "gesture": "up",
+      "action": {
+        "type": "volume",
+        "delta": 5
+      }
+    },
+    {
+      "module": "m032le",
+      "control": 0,
+      "gesture": "down",
+      "action": {
+        "type": "volume",
+        "delta": -5
+      }
+    },
+    {
+      "module": "m032le",
+      "control": 1,
+      "gesture": "up",
+      "action": {
+        "type": "shortcut",
+        "key": "c",
+        "modifiers": [
+          "command"
+        ]
+      }
+    },
+    {
+      "module": "m032le",
+      "control": 1,
+      "gesture": "down",
+      "action": {
+        "type": "shortcut",
+        "key": "v",
+        "modifiers": [
+          "command"
+        ]
+      }
+    }
+  ]
+}

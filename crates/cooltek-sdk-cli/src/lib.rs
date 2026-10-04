@@ -4,3 +4,4 @@ pub mod capture;
 pub mod image_prep;
 pub mod live_output;
 pub mod live_runtime;
+pub mod mode;

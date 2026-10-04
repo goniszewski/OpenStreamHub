@@ -4,6 +4,9 @@
 # Local device captures can contain serial numbers and large display transfers.
 /captures
 
+# Local design studies and other temporary project artifacts.
+/scratch/
+
 # OS-specific files
 .DS_Store
 [Dd]esktop.ini

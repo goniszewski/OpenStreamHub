@@ -1,4 +1,4 @@
-use crate::{Action, Binding, InputEvent, Profile, ServiceModule};
+use crate::{Action, Binding, InputEvent, InputValue, Profile, ServiceModule};
 
 /// Independently identified device attributes used when matching a binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -45,6 +45,37 @@ impl BindingEngine {
         wildcard
     }
 
+    /// Selects a binding and resolves its input-dependent action to a host operation.
+    ///
+    /// Fader positions map to the nearest whole output percentage. Missing,
+    /// unsupported, or out-of-range values fail before dispatch; an unmatched
+    /// valid event returns `None`.
+    pub fn action_for(
+        &self,
+        device: &DeviceContext,
+        event: &InputEvent,
+    ) -> Result<Option<Action>, String> {
+        event.validate_for(device.module)?;
+        let Some(binding) = self.binding_for(device, event) else {
+            return Ok(None);
+        };
+        let action = match binding.action {
+            Action::VolumeFromPosition => {
+                let Some(InputValue::Position { raw, maximum }) = event.value else {
+                    return Err("volume_from_position requires an absolute fader value".into());
+                };
+                // validate_for has rejected zero scale or out-of-range input.
+                let percent = (u32::from(raw) * 100 + u32::from(maximum) / 2) / u32::from(maximum);
+                Action::SetVolume {
+                    percent: percent as u8,
+                }
+            }
+            _ => binding.action.clone(),
+        };
+        action.validate_executable()?;
+        Ok(Some(action))
+    }
+
     /// Returns the validated profile for status and preview output.
     pub fn profile(&self) -> &Profile {
         &self.profile
@@ -66,7 +97,7 @@ pub struct DryRunDispatcher {
 
 impl ActionDispatcher for DryRunDispatcher {
     fn dispatch(&mut self, action: &Action) -> Result<(), String> {
-        action.validate()?;
+        action.validate_executable()?;
         self.actions.push(action.clone());
         Ok(())
     }
@@ -101,6 +132,7 @@ mod tests {
             timestamp_micros: 0,
             control: 1,
             gesture: Gesture::Clockwise,
+            value: None,
         }
     }
 
@@ -176,5 +208,73 @@ mod tests {
             dispatcher.actions,
             [Action::Volume { delta: 5 }, Action::ToggleMute]
         );
+    }
+
+    #[test]
+    fn fader_binding_resolves_actual_absolute_position_instead_of_fixed_delta() {
+        let engine = engine(vec![Binding {
+            module: ServiceModule::M005S,
+            control: 2,
+            gesture: Gesture::PositionChanged,
+            serial_number: None,
+            action: Action::VolumeFromPosition,
+        }]);
+        let device = DeviceContext {
+            module: ServiceModule::M005S,
+            serial_number: None,
+        };
+        for raw in [0, 1, 25, 50, 99, 100] {
+            let input = InputEvent {
+                timestamp_micros: 0,
+                control: 2,
+                gesture: Gesture::PositionChanged,
+                value: Some(InputValue::Position { raw, maximum: 100 }),
+            };
+            assert_eq!(
+                engine.action_for(&device, &input).unwrap(),
+                Some(Action::SetVolume { percent: raw as u8 })
+            );
+            assert_eq!(
+                engine.binding_for(&device, &input).unwrap().action,
+                Action::VolumeFromPosition
+            );
+        }
+    }
+
+    #[test]
+    fn resolution_validates_values_even_for_unmatched_events() {
+        let engine = engine(vec![]);
+        let device = DeviceContext {
+            module: ServiceModule::M005S,
+            serial_number: None,
+        };
+        let mut input = InputEvent {
+            timestamp_micros: 0,
+            control: 0,
+            gesture: Gesture::PositionChanged,
+            value: None,
+        };
+        assert!(engine.action_for(&device, &input).is_err());
+        input.value = Some(InputValue::Position {
+            raw: 50,
+            maximum: 100,
+        });
+        assert_eq!(engine.action_for(&device, &input).unwrap(), None);
+        input.value = Some(InputValue::Position {
+            raw: 50,
+            maximum: 255,
+        });
+        assert!(engine.action_for(&device, &input).is_err());
+    }
+
+    #[test]
+    fn dry_dispatch_rejects_unresolved_marker_without_recording() {
+        let mut dispatcher = DryRunDispatcher::default();
+        assert!(dispatcher.dispatch(&Action::VolumeFromPosition).is_err());
+        assert!(dispatcher.actions.is_empty());
+        dispatcher
+            .dispatch(&Action::SetVolume { percent: 50 })
+            .unwrap();
+        assert_eq!(dispatcher.actions, [Action::SetVolume { percent: 50 }]);
     }
 }

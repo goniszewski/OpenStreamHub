@@ -164,12 +164,18 @@ impl Default for MacOsDispatcher {
 impl ActionDispatcher for MacOsDispatcher {
     fn dispatch(&mut self, action: &Action) -> Result<(), String> {
         // Validate even when the caller did not use the profile loader.
-        action.validate()?;
+        action.validate_executable()?;
         match action {
             Action::Volume { delta } => {
                 let current = self.output_volume()?;
                 let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
                 self.apple_script(format!("set volume output volume {target}"))?;
+            }
+            Action::SetVolume { percent } => {
+                self.apple_script(format!("set volume output volume {percent}"))?;
+            }
+            Action::VolumeFromPosition => {
+                unreachable!("unresolved templates are rejected before host operations")
             }
             Action::ToggleMute => {
                 let target = !self.output_muted()?;
@@ -524,6 +530,36 @@ mod tests {
                         && request.output_limit == OUTPUT_LIMIT)
             );
         }
+    }
+
+    #[test]
+    fn absolute_volume_sets_the_resolved_value_without_query_or_delta() {
+        for percent in [0, 1, 50, 100] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher.dispatch(&Action::SetVolume { percent }).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            assert_eq!(state.requests[0].program, OSASCRIPT);
+            assert_eq!(
+                state.requests[0].args,
+                [
+                    "-e".to_string(),
+                    format!("set volume output volume {percent}")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn unresolved_fader_template_or_invalid_absolute_volume_never_starts_host_tools() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for action in [
+            Action::VolumeFromPosition,
+            Action::SetVolume { percent: 101 },
+        ] {
+            assert!(dispatcher.dispatch(&action).is_err());
+        }
+        assert!(state.lock().unwrap().requests.is_empty());
     }
 
     #[test]

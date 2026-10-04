@@ -1,6 +1,6 @@
 # MasterHUB diagnostic tools
 
-`masterhub-diag` inventories Cooler Master HID interfaces, records raw input for one explicitly selected interface, and replays captures without hardware. It also previews dial feature commands, converts static artwork, and plans JPEG output offline. M003K decoding comes from public protocol notes; M131E decoding and commands come from static analysis of the official Windows software. Physical-device behavior is not yet verified.
+`masterhub-diag` inventories Cooler Master HID interfaces, records raw input for one explicitly selected interface, and replays captures without hardware. It also previews dial feature commands, converts static artwork, and plans JPEG output offline. M003K decoding comes from public protocol notes; M131E, M4315, M005S and M032LE decoding and IPS mode commands come from static analysis of the official Windows software. Physical-device behavior is not yet verified.
 
 ## Build and replay without a device
 
@@ -14,7 +14,7 @@ cargo run -p cooltek-sdk-cli --locked -- replay crates/cooltek-sdk-cli/tests/fix
 cargo run -p cooltek-sdk-cli --locked -- replay crates/cooltek-sdk-cli/tests/fixtures/m131e-software-derived-synthetic.jsonl
 ```
 
-Replay constructs no HIDAPI context, opens no USB interfaces, and sends no commands. `m003k-synthetic.jsonl` covers clockwise/counterclockwise rotation, press/release transitions, unchanged snapshots, and unknown/malformed packets. `m131e-synthetic.jsonl` covers an unsupported channel. `m131e-software-derived-synthetic.jsonl` covers RIGHT/LEFT rotation, button transitions, malformed/unknown packets, and the 600 ms gesture threshold. All input fixtures are synthetic.
+Replay constructs no HIDAPI context, opens no USB interfaces, and sends no commands. `m003k-synthetic.jsonl` covers clockwise/counterclockwise rotation, press/release transitions, unchanged snapshots, and unknown/malformed packets. `m131e-synthetic.jsonl` covers an unsupported channel. `m131e-software-derived-synthetic.jsonl` covers RIGHT/LEFT rotation, button transitions, malformed/unknown packets, and the 600 ms gesture threshold. The three additional-module fixtures exercise keys, absolute fader positions and roller directions; see their [provenance](../crates/cooltek-sdk-cli/tests/fixtures/README.md). All input fixtures are synthetic.
 
 Decoded output retains the source label, module identity, relative timestamp, and raw hex bytes. Knob indices are zero-based (0, 1, 2); their physical placement still needs checking. Consecutive identical rotation reports are separate events. Repeated press snapshots produce only state transitions. A new decoder assumes all buttons are released and is scoped to a single recording.
 
@@ -47,7 +47,7 @@ The tool refuses to overwrite existing files or fall back to a first VID/PID mat
 
 Recording stops at its deadline even when no reports arrive. Add `--max-reports 100` to stop earlier after 100 nonempty reports. Only the actual received bytes are saved, with a maximum of 4096 bytes per input report. Timeouts mean idle; transport failures end the recording with an error footer and a failing exit status.
 
-For the M131E dial, after a neutral baseline has been saved, this explicit option enables its existing software mode:
+For either IPS module, after a neutral baseline has been saved, `--software-mode` explicitly enables software mode. For example:
 
 ```sh
 cargo run -p cooltek-sdk-cli --locked -- record \
@@ -57,7 +57,7 @@ cargo run -p cooltek-sdk-cli --locked -- record \
   --software-mode
 ```
 
-`--software-mode` is accepted only for `2516:0206` or `2516:9994` and sends the 32-byte feature report `03 49 01` plus zero padding. The session records that initialization was requested. After recording ends, including an ordinary read failure, the tool attempts `03 49 00` to restore hardware mode. A cleanup failure produces a failing exit status and an explanatory stderr message; the capture footer describes input recording, not successful mode restoration. Process termination cannot guarantee cleanup. Default captures send neither command. Physical recovery behavior still needs checking.
+`--software-mode` is accepted only for M131E (`2516:0206` or `2516:9994`) or M4315 (`2516:01fe` or `2516:9997`) and sends a 32-byte feature report: `03 49 01` for the dial or `03 3a 01` for keys, followed by zero padding. The session records that initialization was requested. After recording ends, including an ordinary read failure, the tool attempts `03 49 00` (dial) or `03 3a 00` (keys) to restore hardware mode. A cleanup failure produces a failing exit status and an explanatory stderr message; the capture footer describes input recording, not successful mode restoration. Process termination cannot guarantee cleanup. Default captures send neither command. Physical recovery behavior still needs checking.
 
 Record one physical action at a time and keep a timestamped action log. macOS input recording captures the SDK's reads; it is not a sniffer of another application's USB traffic. Use the [Windows USBPcap procedure](masterhub-macos-plan.md#windows-capture-procedure) to investigate official-app commands.
 

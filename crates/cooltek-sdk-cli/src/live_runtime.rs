@@ -7,7 +7,7 @@
 //! establish a bound on a backend's synchronous device operations.
 
 use crate::capture::encode_hex;
-use cooltek_sdk_masterhub::{InputReader, ReportTransport, dial};
+use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
     ActionDispatcher, Binding, BindingEngine, DeviceContext, InputEvent, InputSession, InputUpdate,
     ServiceModule,
@@ -27,7 +27,7 @@ use std::{
 /// Bounds for a single live interface.
 #[derive(Clone, Copy, Debug)]
 pub struct LiveOptions {
-    /// Explicitly enable dial software mode and attempt hardware-mode cleanup.
+    /// Explicitly enable IPS module software mode and attempt hardware-mode cleanup.
     pub software_mode: bool,
     /// Stop accepting reports after this duration, if set.
     pub duration: Option<Duration>,
@@ -91,7 +91,11 @@ struct Work {
     timestamp_micros: u64,
     status: &'static str,
     error: Option<String>,
-    events: Vec<(InputEvent, Option<Binding>)>,
+    events: Vec<(
+        InputEvent,
+        Option<Binding>,
+        Option<cooltek_sdk_service::Action>,
+    )>,
 }
 
 struct WorkerOutcome<W> {
@@ -210,7 +214,7 @@ where
         }
         if options.software_mode {
             mode_attempted = true;
-            dial::set_software_mode(reader.transport(), true).map_err(|error| error.to_string())?;
+            crate::mode::set(reader.transport(), mode_module(device.module), true)?;
         }
         loop {
             if interrupted.load(Ordering::SeqCst) {
@@ -243,11 +247,12 @@ where
                     .into_iter()
                     .map(|event| {
                         let binding = engine.binding_for(&device, &event).cloned();
+                        let action = engine.action_for(&device, &event)?;
                         counts.decoded_events += 1;
-                        counts.matched_actions += u64::from(binding.is_some());
-                        (event, binding)
+                        counts.matched_actions += u64::from(action.is_some());
+                        Ok((event, binding, action))
                     })
-                    .collect();
+                    .collect::<Result<Vec<_>, String>>()?;
                 let work = Work {
                     raw: raw.to_vec(),
                     timestamp_micros: now,
@@ -314,8 +319,8 @@ where
         Err(error) => counts.error = combine_errors(counts.error.take(), Some(error)),
     }
     let cleanup = if mode_attempted {
-        dial::set_software_mode(reader.transport(), false)
-            .map_err(|error| format!("restoring dial hardware mode failed: {error}"))
+        crate::mode::set(reader.transport(), mode_module(device.module), false)
+            .map_err(|error| format!("restoring module hardware mode failed: {error}"))
     } else {
         Ok(())
     };
@@ -368,10 +373,18 @@ fn validate_options(options: LiveOptions, device: &DeviceContext) -> Result<(), 
     {
         return Err("input limits must be positive".into());
     }
-    if options.software_mode && device.module != ServiceModule::M131E {
-        return Err("software mode requires an M131E session".into());
+    if options.software_mode && !crate::mode::supported(mode_module(device.module)) {
+        return Err("software mode requires an M131E or M4315 session".into());
     }
     Ok(())
+}
+
+fn mode_module(module: ServiceModule) -> Option<ModuleKind> {
+    match module {
+        ServiceModule::M131E => Some(ModuleKind::M131E),
+        ServiceModule::M4315 => Some(ModuleKind::M4315),
+        _ => None,
+    }
 }
 
 fn await_worker<W>(
@@ -506,27 +519,27 @@ fn process_work<D: ActionDispatcher, W: Write>(
         }),
     )?;
     summary.processed_report_count += 1;
-    for (event, binding) in work.events {
+    for (event, binding, action) in work.events {
         if abort.load(Ordering::SeqCst) {
             break;
         }
         emit(
             output,
             json!({
-                "type":"event", "schema_version":1, "event":event, "binding":binding,
-                "status":if binding.is_some() {"planned"} else {"unbound"},
+                "type":"event", "schema_version":1, "event":event, "binding":binding, "action":action,
+                "status":if action.is_some() {"planned"} else {"unbound"},
             }),
         )?;
         summary.event_count += 1;
-        if let Some(binding) = binding {
+        if let Some(action) = action {
             if abort.load(Ordering::SeqCst) {
                 break;
             }
-            if let Err(error) = dispatcher.dispatch(&binding.action) {
+            if let Err(error) = dispatcher.dispatch(&action) {
                 abort.store(true, Ordering::SeqCst);
                 let logged = emit(
                     output,
-                    json!({"type":"action_failed", "event":event, "action":binding.action, "error":error}),
+                    json!({"type":"action_failed", "event":event, "action":action, "error":error}),
                 );
                 return Err(
                     combine_errors(Some(format!("action failed: {error}")), logged.err()).unwrap(),
@@ -536,7 +549,7 @@ fn process_work<D: ActionDispatcher, W: Write>(
             if execute {
                 emit(
                     output,
-                    json!({"type":"action_executed", "event":event, "action":binding.action}),
+                    json!({"type":"action_executed", "event":event, "action":action}),
                 )?;
             }
         }
@@ -572,6 +585,7 @@ fn combine_errors(first: Option<String>, second: Option<String>) -> Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cooltek_sdk_masterhub::dial;
     use cooltek_sdk_masterhub::hidapi::{HidError, HidResult};
     use cooltek_sdk_service::{Action, Profile};
     use std::{
@@ -784,6 +798,118 @@ mod tests {
             move |stop| Ok((factory(stop), output)),
             || clock.load(Ordering::SeqCst),
         )
+    }
+
+    #[test]
+    fn new_modules_preserve_values_and_resolve_actions_before_worker_dispatch() {
+        for (module, tag, payload, expected) in [
+            (
+                ServiceModule::M4315,
+                0x34,
+                {
+                    let mut payload = vec![2, 15];
+                    payload.extend([0; 15]);
+                    payload[2] = 1;
+                    payload
+                },
+                vec![Action::ToggleMute],
+            ),
+            (
+                ServiceModule::M005S,
+                0x2a,
+                vec![2, 5, 63, 25, 50, 75, 100],
+                vec![Action::SetVolume { percent: 63 }],
+            ),
+            (
+                ServiceModule::M032LE,
+                0x2a,
+                vec![1, 2, 0, 0xff],
+                vec![Action::Volume { delta: 5 }],
+            ),
+        ] {
+            let mut raw = vec![1, tag, payload.len() as u8, 0];
+            raw.extend(payload);
+            let transport = Transport::new([Step::Raw(raw, 123)]);
+            let clock = Arc::clone(&transport.clock);
+            let writes = Arc::clone(&transport.writes);
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let actions = Arc::clone(&received);
+            let output = Output::default();
+            let writer = output.clone();
+            let engine = BindingEngine::new(
+                Profile::from_json(include_bytes!(
+                    "../../../examples/profiles/all-modules.json"
+                ))
+                .unwrap(),
+            )
+            .unwrap();
+            let result = run_with_clock(
+                &mut InputReader::new(transport),
+                engine,
+                DeviceContext {
+                    module,
+                    serial_number: None,
+                },
+                false,
+                json!({"source":"synthetic"}),
+                options(),
+                Arc::new(AtomicBool::new(false)),
+                move |stop| Ok((simple_actions(stop, actions), writer)),
+                || clock.load(Ordering::SeqCst),
+            )
+            .unwrap();
+            assert_eq!(*received.lock().unwrap(), expected);
+            assert_eq!(result.action_count, 1);
+            assert!(writes.lock().unwrap().is_empty());
+            let rows = output.rows();
+            let planned = rows.iter().find(|row| row["status"] == "planned").unwrap();
+            assert_eq!(
+                planned["action"],
+                serde_json::to_value(&expected[0]).unwrap()
+            );
+            if module == ServiceModule::M005S {
+                assert_eq!(planned["binding"]["action"]["type"], "volume_from_position");
+                assert_eq!(planned["event"]["value"]["raw"], 63);
+            }
+        }
+    }
+
+    #[test]
+    fn key_mode_is_explicit_and_restored_even_when_enabling_fails() {
+        for fail_enable in [false, true] {
+            let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+            raw.extend([0; 15]);
+            let mut transport = Transport::new([Step::Raw(raw, 123)]);
+            transport.fail_enable = fail_enable;
+            let clock = Arc::clone(&transport.clock);
+            let writes = Arc::clone(&transport.writes);
+            let output = Output::default();
+            let actions = Arc::new(Mutex::new(Vec::new()));
+            let mut configuration = options();
+            configuration.software_mode = true;
+            let result = run_with_clock(
+                &mut InputReader::new(transport),
+                profile(),
+                DeviceContext {
+                    module: ServiceModule::M4315,
+                    serial_number: None,
+                },
+                false,
+                json!({"source":"synthetic"}),
+                configuration,
+                Arc::new(AtomicBool::new(false)),
+                move |stop| Ok((simple_actions(stop, actions), output)),
+                || clock.load(Ordering::SeqCst),
+            );
+            assert_eq!(result.is_err(), fail_enable);
+            assert_eq!(
+                *writes.lock().unwrap(),
+                vec![
+                    cooltek_sdk_masterhub::keypad::software_mode_report(true).to_vec(),
+                    cooltek_sdk_masterhub::keypad::software_mode_report(false).to_vec(),
+                ]
+            );
+        }
     }
 
     #[test]

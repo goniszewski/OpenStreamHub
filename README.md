@@ -14,10 +14,15 @@ and offline replay.
 
 The [binding service guide](docs/masterhub-service.md) covers JSON profiles,
 offline action plans, and explicit macOS volume, mute, shortcut, and app actions.
-The [sample profile](examples/profiles/macos.json) works with both knob and dial captures.
+The [sample profile](examples/profiles/macos.json) works with knob and dial captures; the [all-module profile](examples/profiles/all-modules.json) also covers keys, faders and rollers.
+
+The [OpenStreamHub desktop app](apps/open-stream-hub/README.md) provides a macOS profile editor,
+light/dark appearance, and synthetic capture replay through the Rust service. Its module
+catalog and binding editor support all five control modules. The app previews actions without connecting to hardware or
+executing them. Run `npm ci` and `npm run desktop` from `apps/open-stream-hub`.
 
 The SDK builds on macOS and recognizes both USB ID generations for these modules. It includes
-dial input decoding, explicit feature controls and firmware queries, descriptor-sized JPEG packets, and session
+input decoding for all five control modules, explicit IPS mode controls and firmware queries, descriptor-sized JPEG packets, and session
 lifecycle hooks. Tests use synthetic reports and fake transports. Physical input, display acceptance,
 and sleep/wake recovery still require hardware validation. See the
 [implementation status](docs/masterhub-implementation-status.md) and

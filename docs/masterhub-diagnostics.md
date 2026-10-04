@@ -129,6 +129,29 @@ cargo run -p cooltek-sdk-cli --locked -- dial jpeg prepared-240x240.jpg \
 
 The live path reads the selected interface's descriptor, validates the image and packet sizes before the first output write, and stops on a short write or transport failure. It does not automatically enter software mode, retry, wait for a protocol acknowledgement, or guess a fixed report size. Hardware captures must establish the correct interface, mode, byte 6, image acceptance/orientation, and any required pacing.
 
+## Offline keypad image preparation and plans
+
+The 15-key IPS module uses a separate per-key header and 72×72 images. Prepare static PNG/JPEG artwork with the same fit, matte, rotation, source limits, and no-overwrite rules as dial preparation:
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- keypad prepare-image artwork.png \
+  --output /tmp/prepared-72x72.jpg
+
+cargo run -p cooltek-sdk-cli --locked -- keypad jpeg \
+  crates/cooltek-sdk-cli/tests/fixtures/keypad-72x72-baseline.jpg \
+  --key-index 0 \
+  --descriptor crates/cooltek-sdk-cli/tests/fixtures/dial-report2-65-byte.hid \
+  --output /tmp/masterhub-keypad-plan.jsonl
+```
+
+Key indices are zero-based, 0–14; their physical positions remain unverified. Preparation defaults to quality 100, contain fit, black background, and no rotation. Its baseline JFIF output policy follows the pinned Windows renderer's 72×72 JPEG path. The packet builder validates an 8-bit, three-component baseline JFIF JPEG with one interleaved scan; it checks framing and dimensions without decoding entropy data. These conservative constraints do not establish every format the firmware accepts.
+
+`keypad jpeg` requires a saved binary descriptor containing output report ID `02` and a new output path. It has no live-device option, constructs no HIDAPI context, and sends no packets. Image, key index, and descriptor validation complete before file creation. The example reuses a synthetic 65-byte descriptor; its filename reflects the original dial tests, and its length is not hardware evidence.
+
+Plans identify `module: m4315` and `key_index` in their header, packet records, and footer. The eight-byte header is `02 36`, followed by a little-endian 16-bit sequence, a little-endian 16-bit payload length, the key index in byte 6, and the final flag in byte 7. Payload starts at byte 8; unused bytes are zeroed. Report lengths are bounded to 9–65,535 bytes and images to 16 MiB, with at most 65,536 chunks to prevent sequence wrap. The JSONL plan is separate from input captures and cannot be passed to `replay`.
+
+Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app does not yet expose display uploads.
+
 ## SDK building blocks
 
 - `DeviceRegistry` shares enumeration context and opens exact identities without initialization.
@@ -139,6 +162,7 @@ The live path reads the selected interface's descriptor, validates the image and
 - `input::parse_m0_report()` handles the documented outer framing; `parse_m003k_payload()` handles logical knob payloads. `M003KDecoder` adds stateful press transitions.
 - `input::parse_m131e_report()`, `parse_m131e_payload()`, and `M131EDecoder` decode the recovered dial queue without I/O.
 - `dial` exposes pure feature builders, bounded query parsers, `JpegPackets`, and explicit transport operations. Typed M131E handles expose the corresponding commands and descriptor-sized `display_jpeg()`.
+- `keypad` exposes software-mode builders/setters, 72×72 image constants, `validate_jpeg()`, and a pure `JpegPackets` iterator with a required key index. Packet planning performs no I/O; a live keypad upload API is not yet provided.
 - `DialSession` provides explicit activation, suspension, resume after a caller-timed two-second delay, input reads, and shutdown; drop performs no commands. `DialGestureTracker` accepts monotonic timestamps and classifies known releases at 600 ms.
 
 Automatic macOS sleep/wake observers, reconnect, animation, and firmware writing remain later work. The separate [binding service](masterhub-service.md) handles explicit host actions; image preparation is offline. Lifecycle hooks and packet builders have offline validation; device acceptance remains pending.

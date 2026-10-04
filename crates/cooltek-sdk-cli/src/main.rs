@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use cooltek_sdk_masterhub::{
     DeviceRegistry, DialGesture, DialGestureTracker, InputReader, ModuleIdentity, ModuleKind,
     ReportTransport, descriptor, dial,
@@ -16,6 +16,7 @@ use cooltek_sdk_masterhub::{
         DecodedM003K, DecodedM131E, DialDirection, KnobEventKind, M003KDecoder, M131EDecoder,
         M131EEvent, RotationDirection,
     },
+    keypad,
 };
 use serde_json::json;
 
@@ -23,14 +24,16 @@ use cooltek_sdk_cli::capture::{
     CaptureReader, Descriptor, End, EndReason, Identity, MAX_REPORT_BYTES, Record, Report,
     SCHEMA_VERSION, Session, Source, decode_hex, encode_hex, write_record,
 };
-use cooltek_sdk_cli::image_prep::{FitMode, MAX_ENCODED_BYTES, PrepareOptions, prepare_image};
+use cooltek_sdk_cli::image_prep::{
+    FitMode, MAX_ENCODED_BYTES, PrepareOptions, prepare_image, prepare_keypad_image,
+};
 
 #[derive(Parser)]
 #[command(
     name = "masterhub-diag",
     version,
     about = "Discover MasterHUB devices, record raw reports, and replay offline",
-    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. Dial setters preview reports unless --path-hex explicitly selects a device. Images can be converted offline; JPEG packet plans require a saved HID descriptor."
+    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. Dial setters preview reports unless --path-hex explicitly selects a device. Images can be converted offline; JPEG packet plans require a saved HID descriptor. Keypad image conversion and JPEG packet planning are offline only."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -79,6 +82,11 @@ enum Command {
         #[command(subcommand)]
         command: DialCommand,
     },
+    /// Prepare M4315 key images and JPEG packet plans offline, without HID.
+    Keypad {
+        #[command(subcommand)]
+        command: KeypadCommand,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -94,26 +102,29 @@ enum ImageFit {
     Stretch,
 }
 
+#[derive(Args)]
+struct ImagePreparationArgs {
+    file: PathBuf,
+    /// New JPEG file; existing files are never overwritten.
+    #[arg(long)]
+    output: PathBuf,
+    /// Preserve the full image, center-crop, or ignore aspect ratio.
+    #[arg(long, value_enum, default_value_t = ImageFit::Contain)]
+    fit: ImageFit,
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(1..=100))]
+    quality: u8,
+    /// Clockwise rotation in degrees, applied after fitting.
+    #[arg(long, default_value = "0", value_parser = ["0", "90", "180", "270"])]
+    rotate: String,
+    /// RGB matte for transparency and contain-mode margins.
+    #[arg(long, default_value = "000000", value_parser = parse_color)]
+    background: [u8; 3],
+}
+
 #[derive(Subcommand)]
 enum DialCommand {
     /// Convert a static PNG/JPEG to a 240x240 baseline JFIF JPEG, without HID.
-    PrepareImage {
-        file: PathBuf,
-        /// New JPEG file; existing files are never overwritten.
-        #[arg(long)]
-        output: PathBuf,
-        /// Preserve the full image, center-crop, or ignore aspect ratio.
-        #[arg(long, value_enum, default_value_t = ImageFit::Contain)]
-        fit: ImageFit,
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(1..=100))]
-        quality: u8,
-        /// Clockwise rotation in degrees, applied after fitting.
-        #[arg(long, default_value = "0", value_parser = ["0", "90", "180", "270"])]
-        rotate: String,
-        /// RGB matte for transparency and contain-mode margins.
-        #[arg(long, default_value = "000000", value_parser = parse_color)]
-        background: [u8; 3],
-    },
+    PrepareImage(ImagePreparationArgs),
     /// Preview mode control; --path-hex explicitly sends the command.
     Mode {
         mode: DialMode,
@@ -162,6 +173,31 @@ enum DialCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum KeypadCommand {
+    /// Convert a static PNG/JPEG to a 72x72 baseline JFIF JPEG, without HID.
+    PrepareImage(ImagePreparationArgs),
+    /// Plan a 72x72 baseline JFIF JPEG for one M4315 key, without HID.
+    Jpeg {
+        file: PathBuf,
+        /// Zero-based key index, from 0 through 14.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(0..=14))]
+        key_index: u8,
+        /// Saved binary HID descriptor; output report ID 2 supplies the size.
+        #[arg(long)]
+        descriptor: PathBuf,
+        /// New JSONL plan file; existing files are never overwritten.
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum ImagePreparationTarget {
+    Dial,
+    Keypad,
+}
+
 fn main() -> ExitCode {
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
@@ -202,6 +238,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         ),
         Command::Replay { file } => replay(file),
         Command::Dial { command } => dial_command(command),
+        Command::Keypad { command } => keypad_command(command),
     }
 }
 
@@ -279,43 +316,8 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Box<dyn Error>> {
 
 fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
     match command {
-        DialCommand::PrepareImage {
-            file,
-            output,
-            fit,
-            quality,
-            rotate,
-            background,
-        } => {
-            let bytes = read_bounded(&file, MAX_ENCODED_BYTES)?;
-            let rotation_degrees = rotate.parse::<u16>()?;
-            let options = PrepareOptions {
-                quality,
-                fit: match fit {
-                    ImageFit::Contain => FitMode::Contain,
-                    ImageFit::Cover => FitMode::Cover,
-                    ImageFit::Stretch => FitMode::Stretch,
-                },
-                quarter_turns: u8::try_from(rotation_degrees / 90)?,
-                background,
-            };
-            let jpeg = prepare_image(&bytes, options)?;
-            // Decode, fit, encode and validate before creating an output file.
-            let mut writer = BufWriter::new(
-                OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&output)?,
-            );
-            writer.write_all(&jpeg)?;
-            writer.flush()?;
-            print_json(&json!({
-                "type":"image_prepared", "schema_version":1,
-                "output":output, "width":240, "height":240,
-                "jpeg_length":jpeg.len(), "quality":quality,
-                "fit": match fit { ImageFit::Contain => "contain", ImageFit::Cover => "cover", ImageFit::Stretch => "stretch" },
-                "clockwise_rotation_degrees":rotation_degrees, "background_rgb":background,
-            }))
+        DialCommand::PrepareImage(arguments) => {
+            prepare_image_command(arguments, ImagePreparationTarget::Dial)
         }
         DialCommand::Mode { mode, path_hex } => feature_command(
             dial::software_mode_report(matches!(mode, DialMode::Software)),
@@ -407,6 +409,127 @@ fn dial_command(command: DialCommand) -> Result<(), Box<dyn Error>> {
                     "output":output, "output_report_length":report_length, "report_count":count,
                 }))
             }
+        }
+    }
+}
+
+fn prepare_image_command(
+    arguments: ImagePreparationArgs,
+    target: ImagePreparationTarget,
+) -> Result<(), Box<dyn Error>> {
+    let ImagePreparationArgs {
+        file,
+        output,
+        fit,
+        quality,
+        rotate,
+        background,
+    } = arguments;
+    let bytes = read_bounded(&file, MAX_ENCODED_BYTES)?;
+    let rotation_degrees = rotate.parse::<u16>()?;
+    let options = PrepareOptions {
+        quality,
+        fit: match fit {
+            ImageFit::Contain => FitMode::Contain,
+            ImageFit::Cover => FitMode::Cover,
+            ImageFit::Stretch => FitMode::Stretch,
+        },
+        quarter_turns: u8::try_from(rotation_degrees / 90)?,
+        background,
+    };
+    let (jpeg, width, height) = match target {
+        ImagePreparationTarget::Dial => (
+            prepare_image(&bytes, options)?,
+            dial::IMAGE_WIDTH,
+            dial::IMAGE_HEIGHT,
+        ),
+        ImagePreparationTarget::Keypad => (
+            prepare_keypad_image(&bytes, options)?,
+            keypad::IMAGE_WIDTH,
+            keypad::IMAGE_HEIGHT,
+        ),
+    };
+    // Decode, fit, encode and validate before creating an output file.
+    let mut writer = BufWriter::new(
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&output)?,
+    );
+    writer.write_all(&jpeg)?;
+    writer.flush()?;
+    let mut metadata = json!({
+        "type":"image_prepared", "schema_version":1,
+        "output":output, "width":width, "height":height,
+        "jpeg_length":jpeg.len(), "quality":quality,
+        "fit": match fit { ImageFit::Contain => "contain", ImageFit::Cover => "cover", ImageFit::Stretch => "stretch" },
+        "clockwise_rotation_degrees":rotation_degrees, "background_rgb":background,
+    });
+    if matches!(target, ImagePreparationTarget::Keypad) {
+        metadata["module"] = json!("m4315");
+    }
+    print_json(&metadata)
+}
+
+fn keypad_command(command: KeypadCommand) -> Result<(), Box<dyn Error>> {
+    match command {
+        KeypadCommand::PrepareImage(arguments) => {
+            prepare_image_command(arguments, ImagePreparationTarget::Keypad)
+        }
+        KeypadCommand::Jpeg {
+            file,
+            key_index,
+            descriptor: descriptor_path,
+            output,
+        } => {
+            let jpeg = read_bounded(&file, keypad::MAX_JPEG_LENGTH)?;
+            let raw_descriptor = read_bounded(&descriptor_path, MAX_REPORT_DESCRIPTOR_SIZE)?;
+            let report_length = descriptor::output_report_length(&raw_descriptor, 2)?;
+            let packets = keypad::JpegPackets::new(key_index, &jpeg, report_length)?;
+            // Complete validation precedes output creation. This is a packet
+            // plan for a saved descriptor, with no device discovery or writes.
+            let mut writer = BufWriter::new(
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&output)?,
+            );
+            serde_json::to_writer(
+                &mut writer,
+                &json!({
+                    "type":"jpeg_plan", "schema_version":1, "source":"software_derived",
+                    "module":"m4315", "key_index":key_index,
+                    "output_report_length":report_length, "jpeg_length":jpeg.len(),
+                    "report_descriptor_hex":encode_hex(&raw_descriptor),
+                }),
+            )?;
+            writeln!(writer)?;
+            let mut count = 0;
+            for (sequence, packet) in packets.enumerate() {
+                serde_json::to_writer(
+                    &mut writer,
+                    &json!({
+                        "type":"output_report", "module":"m4315", "key_index":key_index,
+                        "sequence":sequence, "raw_hex":encode_hex(&packet),
+                    }),
+                )?;
+                writeln!(writer)?;
+                count += 1;
+            }
+            serde_json::to_writer(
+                &mut writer,
+                &json!({
+                    "type":"jpeg_plan_end", "module":"m4315", "key_index":key_index,
+                    "report_count":count,
+                }),
+            )?;
+            writeln!(writer)?;
+            writer.flush()?;
+            print_json(&json!({
+                "type":"jpeg_plan_created", "source":"software_derived",
+                "module":"m4315", "key_index":key_index,
+                "output":output, "output_report_length":report_length, "report_count":count,
+            }))
         }
     }
 }
@@ -845,7 +968,7 @@ mod tests {
                 panic!("expected dial")
             };
             let path = match command {
-                DialCommand::PrepareImage { .. } => panic!("expected a hardware-capable command"),
+                DialCommand::PrepareImage(_) => panic!("expected a hardware-capable command"),
                 DialCommand::Info { path_hex } => path_hex,
                 DialCommand::Mode { path_hex, .. }
                 | DialCommand::Backlight { path_hex, .. }

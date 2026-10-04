@@ -29,12 +29,25 @@ application labels; physical clockwise/counter-clockwise mapping is unverified.
 `85 02 75 08 95 40 91 02`: report ID 2, 64 eight-bit output fields. HIDAPI's
 report-ID byte makes each output report 65 bytes. This descriptor tests deriving
 packet lengths and does not describe a captured device descriptor.
+The offline keypad plan tests reuse this descriptor; it is not a real M4315
+descriptor either.
 
 `dial-240x240-baseline.jpg` is a generated 240×240 baseline JFIF JPEG,
 used to reconstruct an encoded image from the offline packet plan. Its SHA-256 is
 `cd46c629dc680404454dc55dd564b815b5c225bed40c5e7af9e498bd0ab69600` (1725 bytes).
 Packet construction is software-derived; these fixtures do not validate display
 acceptance, orientation, pacing, or device acknowledgements.
+
+`keypad-72x72-baseline.jpg` is an original 72×72 RGB grid converted by
+`keypad prepare-image` using `image` 0.25.10 at default quality 100, contain fit,
+no rotation, and black matte. A Python standard-library PNG/zlib generator
+created the source pixels: red = x × 3, green = y × 3, and blue = 180 or 30 in
+alternating 12-pixel blocks. Its SHA-256 is
+`c26a2265f62da383c977b1d5838bba6292719d254d407fd07886788e50db58d7`
+(4479 bytes). Tests entropy-decode it and reconstruct its exact bytes from
+per-key packet plans. It contains no proprietary artwork or hardware capture;
+display acceptance remains unverified. The SDK uses a separate black-image
+[fixture](../../../cooltek-sdk-masterhub/tests/fixtures/README.md).
 
 `m4315-software-derived-synthetic.jsonl`,
 `m005s-software-derived-synthetic.jsonl`, and

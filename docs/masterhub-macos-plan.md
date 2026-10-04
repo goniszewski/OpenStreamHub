@@ -1,6 +1,6 @@
 # MasterHUB macOS support plan
 
-Updated on 3 October 2026. This roadmap covers macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
+Updated on 4 October 2026. This roadmap covers macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
 
 ## Scope and intended outcome
 
@@ -45,6 +45,8 @@ Use `projectzero7/cooltek-sdk` as the architectural foundation and `projectzero7
 The probe documents M003K rotation and press reports. Its rotation payload uses `0x00` for counterclockwise, `0x01` for clockwise, and apparently `0xff` for unchanged; press state uses `0x00` and `0x01`. The notes include logical channel tags. Confirm raw USB/HID framing and report-ID behavior before treating these logical examples as exact HIDAPI input buffers.
 
 The probe also documents useful base, fader, roller, and 15-key operations, including chunked per-key JPEG transfer. It has unfinished whole-screen and firmware operations. There is no corresponding M131E protocol section in the probe tree inspected at revision `0e72f87547537193309c3a5f2eae9ef483d80d7f`. Do not infer that the IPS dial shares the 15-key image protocol.
+
+The 15-key module now has pure 72×72 JPEG packet construction and offline CLI preparation/planning from a saved descriptor. The [additional-module analysis](research/masterhub-additional-modules-1.0.0.113.md#keypad-software-mode-and-display-boundary) records the native header and renderer dimensions. Physical key order, image acceptance, mode requirements and pacing remain unresolved; no live keypad upload API is provided.
 
 For each capability, record module/firmware, report type and ID, endpoint/interface, framing, payload, acknowledgements, timing, evidence fixture/capture, and status. Distinguish documented, implemented, fixture-validated, and hardware-validated behavior.
 

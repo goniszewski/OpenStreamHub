@@ -1,4 +1,4 @@
-//! Offline static-image preparation for the dial's first JPEG implementation.
+//! Offline static-image preparation for dial and keypad JPEG packet plans.
 //!
 //! EXIF orientation and embedded color profiles are not automatically applied.
 //! Alpha is composited in the source's converted eight-bit channel values before
@@ -7,7 +7,7 @@
 
 use std::io::Cursor;
 
-use cooltek_sdk_masterhub::dial;
+use cooltek_sdk_masterhub::{dial, keypad};
 use image::{
     DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat, Limits, Rgb,
     RgbImage,
@@ -29,7 +29,7 @@ pub const MAX_DIMENSION: u32 = 4096;
 /// independently before pixel decoding. Resampling uses bounded smaller buffers.
 pub const MAX_DECODED_BYTES: u64 = 64 * 1024 * 1024;
 
-/// How source artwork fits the square dial image.
+/// How source artwork fits the square module image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FitMode {
     /// Preserve the complete image with centered background bars.
@@ -74,6 +74,53 @@ impl Default for PrepareOptions {
 /// checked before transformation. The output is entropy-encoded by `image` and
 /// then checked against the dial's conservative JPEG framing requirements.
 pub fn prepare_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, String> {
+    prepare_for_target(input, options, ImageTarget::Dial)
+}
+
+/// Converts a single static PNG or JPEG to an encoded 72×72 RGB baseline JFIF.
+///
+/// Applies the same bounded decoding, matte, fit, explicit clockwise rotation,
+/// and metadata handling as [`prepare_image`]. Validates the encoded image for
+/// an offline M4315 keypad packet plan without opening a device.
+pub fn prepare_keypad_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, String> {
+    prepare_for_target(input, options, ImageTarget::Keypad)
+}
+
+#[derive(Clone, Copy)]
+enum ImageTarget {
+    Dial,
+    Keypad,
+}
+
+impl ImageTarget {
+    fn dimensions(self) -> (u32, u32) {
+        match self {
+            Self::Dial => (u32::from(dial::IMAGE_WIDTH), u32::from(dial::IMAGE_HEIGHT)),
+            Self::Keypad => (
+                u32::from(keypad::IMAGE_WIDTH),
+                u32::from(keypad::IMAGE_HEIGHT),
+            ),
+        }
+    }
+
+    fn validate(self, jpeg: &[u8]) -> Result<(), String> {
+        match self {
+            // This legal maximum container is only an offline framing check.
+            // Actual packet plans still require a HID descriptor.
+            Self::Dial => dial::JpegPackets::new(jpeg, usize::from(u16::MAX))
+                .map(|_| ())
+                .map_err(|error| format!("Encoded JPEG does not match the dial format: {error}")),
+            Self::Keypad => keypad::validate_jpeg(jpeg)
+                .map_err(|error| format!("Encoded JPEG does not match the keypad format: {error}")),
+        }
+    }
+}
+
+fn prepare_for_target(
+    input: &[u8],
+    options: PrepareOptions,
+    target: ImageTarget,
+) -> Result<Vec<u8>, String> {
     if !(1..=100).contains(&options.quality) {
         return Err("JPEG quality must be between 1 and 100".into());
     }
@@ -105,7 +152,8 @@ pub fn prepare_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, S
         }
         _ => return Err("Only static PNG and JPEG source images are supported".into()),
     };
-    let fitted = fit_and_matte(&source, options);
+    let (output_width, output_height) = target.dimensions();
+    let fitted = fit_and_matte(&source, options, output_width);
     drop(source);
     let rotated = match options.quarter_turns {
         0 => fitted,
@@ -115,18 +163,19 @@ pub fn prepare_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, S
         _ => unreachable!("rotation was validated before decoding"),
     };
     let mut encoded = Vec::new();
+    let target_name = match target {
+        ImageTarget::Dial => "dial",
+        ImageTarget::Keypad => "keypad",
+    };
     JpegEncoder::new_with_quality(&mut encoded, options.quality)
         .encode(
             rotated.as_raw(),
-            u32::from(dial::IMAGE_WIDTH),
-            u32::from(dial::IMAGE_HEIGHT),
+            output_width,
+            output_height,
             ExtendedColorType::Rgb8,
         )
-        .map_err(|error| format!("Could not encode dial JPEG: {error}"))?;
-    // This legal maximum container is only an offline framing check. It is not
-    // a device report length: actual packet plans still require a HID descriptor.
-    dial::JpegPackets::new(&encoded, usize::from(u16::MAX))
-        .map_err(|error| format!("Encoded JPEG does not match the dial format: {error}"))?;
+        .map_err(|error| format!("Could not encode {target_name} JPEG: {error}"))?;
+    target.validate(&encoded)?;
     Ok(encoded)
 }
 
@@ -179,13 +228,12 @@ impl GenericImageView for MatteView<'_> {
     }
 }
 
-fn fit_and_matte(source: &DynamicImage, options: PrepareOptions) -> RgbImage {
+fn fit_and_matte(source: &DynamicImage, options: PrepareOptions, side: u32) -> RgbImage {
     let matte = MatteView {
         source,
         background: options.background,
     };
     let (width, height) = matte.dimensions();
-    let side = u32::from(dial::IMAGE_WIDTH);
     match options.fit {
         FitMode::Cover => {
             let crop_side = width.min(height);
@@ -413,6 +461,69 @@ mod tests {
         let black = decoded(&source, PrepareOptions::default());
         color_near(&black, 40, 120, [128, 0, 0]);
         color_near(&black, 200, 120, [0, 0, 0]);
+    }
+
+    #[test]
+    fn keypad_preparation_preserves_matte_contain_and_clockwise_rotation_at_72_pixels() {
+        let source = png(&RgbaImage::from_fn(80, 40, |x, _| {
+            if x < 40 {
+                Rgba([255, 0, 0, 128])
+            } else {
+                Rgba([0, 255, 0, 0])
+            }
+        }));
+        let jpeg = prepare_keypad_image(
+            &source,
+            PrepareOptions {
+                quarter_turns: 1,
+                background: [0, 0, 200],
+                ..PrepareOptions::default()
+            },
+        )
+        .unwrap();
+        keypad::validate_jpeg(&jpeg).unwrap();
+        assert!(dial::JpegPackets::new(&jpeg, 65).is_err());
+        let output = image::load_from_memory_with_format(&jpeg, ImageFormat::Jpeg)
+            .unwrap()
+            .into_rgb8();
+        assert_eq!(output.dimensions(), (72, 72));
+        color_near(&output, 36, 10, [128, 0, 100]);
+        color_near(&output, 36, 62, [0, 0, 200]);
+        color_near(&output, 10, 36, [0, 0, 200]);
+        color_near(&output, 62, 36, [0, 0, 200]);
+    }
+
+    #[test]
+    fn keypad_cover_and_stretch_keep_their_expected_aspect_ratio_behavior() {
+        let source = png(&RgbaImage::from_fn(300, 100, |x, _| {
+            Rgba(match x {
+                0..100 => [240, 20, 20, 255],
+                100..200 => [20, 20, 240, 255],
+                _ => [20, 240, 20, 255],
+            })
+        }));
+        for fit in [FitMode::Cover, FitMode::Stretch] {
+            let jpeg = prepare_keypad_image(
+                &source,
+                PrepareOptions {
+                    fit,
+                    ..PrepareOptions::default()
+                },
+            )
+            .unwrap();
+            let output = image::load_from_memory_with_format(&jpeg, ImageFormat::Jpeg)
+                .unwrap()
+                .into_rgb8();
+            assert_eq!(output.dimensions(), (72, 72));
+            let expected = match fit {
+                FitMode::Cover => [[20, 20, 240]; 3],
+                FitMode::Stretch => [[240, 20, 20], [20, 20, 240], [20, 240, 20]],
+                FitMode::Contain => unreachable!(),
+            };
+            for (x, color) in [8, 36, 64].into_iter().zip(expected) {
+                color_near(&output, x, 36, color);
+            }
+        }
     }
 
     #[test]

@@ -9,8 +9,8 @@ An unofficial SDK for [Cooler Master](https://www.coolermaster.com/) products.
 
 The [macOS roadmap](docs/masterhub-macos-plan.md) covers target modules,
 Windows capture procedure, and Raspberry Pi USB limitations. The [diagnostic guide](docs/masterhub-diagnostics.md)
-describes device inventory, bounded raw recording, dial command previews, JPEG packet plans,
-and offline replay.
+describes device inventory, bounded raw recording, dial command previews, static image preparation,
+JPEG packet plans for the dial and 15-key displays, and offline replay.
 
 The [binding service guide](docs/masterhub-service.md) covers JSON profiles,
 offline action plans, and explicit macOS volume, mute, shortcut, and app actions.
@@ -22,7 +22,7 @@ catalog and binding editor support all five control modules. The app previews ac
 executing them. Run `npm ci` and `npm run desktop` from `apps/open-stream-hub`.
 
 The SDK builds on macOS and recognizes both USB ID generations for these modules. It includes
-input decoding for all five control modules, explicit IPS mode controls and firmware queries, descriptor-sized JPEG packets, and session
+input decoding for all five control modules, explicit IPS mode controls and firmware queries, descriptor-sized JPEG packets for both IPS modules, and session
 lifecycle hooks. Tests use synthetic reports and fake transports. Physical input, display acceptance,
 and sleep/wake recovery still require hardware validation. See the
 [implementation status](docs/masterhub-implementation-status.md) and

@@ -5,7 +5,7 @@ The table lists implemented capabilities, offline test coverage, and remaining h
 | Capability | Reference or implementation | Offline evidence | Hardware status |
 | --- | --- | --- | --- |
 | Neutral HID inventory and exact-path open | SDK `DeviceRegistry`; HIDAPI enumeration | Identity matching and stale-selection tests; source review of no-initialization path | Pending |
-| Module PID generations | `ModuleKind`, `Module::accepts_product_id`, typed handle selection; base `01f6`/`9999`, knobs `0202`/`9996`, dial `0206`/`9994` with VID `2516` | Version-pinned source evidence and tests for aliases, wrong vendor, unsupported IDs, and custom module overrides | Pending |
+| Module PID generations | `ModuleKind`, `Module::accepts_product_id`, typed handle selection; base `01f6`/`9999`, knobs `0202`/`9996`, dial `0206`/`9994`, keys `01fe`/`9997`, faders `0200`/`9991`, rollers `0204`/`9995` with VID `2516` | Version-pinned source evidence and tests for aliases, wrong vendor, unsupported IDs, and custom module overrides | Pending |
 | Serial feature response | `CanGetSerialNumber`, report `30` for M0 models and `4a` for M131E | Header/ID/length/padding tests and fake transport; actual received length used | Pending |
 | M131E software/hardware mode | `dial::software_mode_report`, explicit transport/typed-handle methods; `03 49 <bool>`, 32 bytes total | Exact construction and fake writer tests; explicit lifecycle transitions | Pending |
 | M131E backlight and solid color | `dial` builders/setters; `03 44 <0..100>` and `03 46 <three channel bytes>` | Bounds validation before writes, zero-padding policy, fake transport failures | Color channel order and visible effect pending |
@@ -13,6 +13,11 @@ The table lists implemented capabilities, offline test coverage, and remaining h
 | M0 raw input frame | Probe `src/m0.rs`: ID `01`, tag `2a`, little-endian length, payload at offset 4 | Pure framing tests including truncated headers/payloads and outer padding | Pending |
 | M003K rotation | Probe channel-0 logical payload `00 03` plus three direction bytes | Synthetic reports; `00` counterclockwise, `01` clockwise, `ff` unchanged | Pending |
 | M003K press/release | Probe logical payload `03 03` plus three states | Synthetic state transitions, simultaneous controls, malformed/unknown state preservation | Pending |
+| M4315 key input | Native queue-0 frame `01 34 u16LE length`; 15-state snapshot, selectors `02` and legacy `00` | Native/renderer/probe evidence; transitions, duplicates, all controls, malformed state preservation and reset | Physical order, complete reports and startup pending |
+| M005S fader input | M0 frame, logical `02 05` plus five positions 0–100 | Native/renderer/probe evidence; initial positions, changed-only events, endpoints, reset and invalid value checks | Physical range, jitter and startup pending |
+| M032LE roller input | M0 frame, logical `01 02`; `00` Up, `01` Down, `ff` idle | Native/renderer/probe evidence; simultaneous/repeated directions, no invented magnitude, unknown/malformed preservation | Physical direction/order pending |
+| M4315 software mode | `keypad::software_mode_report` and explicit setter; `03 3a <bool>`, 32 bytes | Native true/false construction, fake writer failures, CLI identity routing and failed-enable cleanup | Pending |
+| Value-aware fader binding | `volume_from_position` → concrete `set_volume`; position/max retained | Strict profile/event validation, no unresolved marker dispatch, mock native setter and simulated live queue tests | Actual audio/device response pending |
 | Other input channels/report IDs | Documented but not mapped to knob actions; channel 3 has a different layout | Raw unknown retention | Pending |
 | M131E input | `parse_m131e_report`, `parse_m131e_payload`, `M131EDecoder`; queue-0 raw `01 44 u16LE length` | Static SDK/addon/source trace; bounds, application RIGHT/LEFT labels, legacy selectors, duplicate press filtering, repeated rotations, unknown retention and state preservation tested | Requires actual payload/direction capture |
 | M131E host gestures | `DialGestureTracker`, 600 ms long-press threshold from app policy | Fake monotonic timestamps, exact threshold, duplicate presses, unmatched release, backward time and reset | Physical sequences pending; gesture is not a firmware event |
@@ -30,6 +35,7 @@ Source references:
 - [M003K logical input reports](https://github.com/projectzero7/cooltek-sdk-probe/blob/main/docs/MasterHUB/modules/m003k/input_reports.md)
 - [M003K feature reports](https://github.com/projectzero7/cooltek-sdk-probe/blob/main/docs/MasterHUB/modules/m003k/feature_reports.md)
 - [Synthetic capture provenance](../crates/cooltek-sdk-cli/tests/fixtures/README.md)
+- [Additional-module evidence and native hashes](research/masterhub-additional-modules-1.0.0.113.md)
 - [Official software static-analysis evidence and hashes](research/masterhub-1.0.0.113-static-analysis.md)
 - [Implementation status](masterhub-implementation-status.md)
 - [Binding and action service](masterhub-service.md)

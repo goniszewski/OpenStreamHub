@@ -46,7 +46,7 @@ fn planned_actions(records: &[Value]) -> Vec<Value> {
     records
         .iter()
         .filter(|record| record["type"] == "event" && record["status"] == "planned")
-        .map(|record| record["binding"]["action"].clone())
+        .map(|record| record["action"].clone())
         .collect()
 }
 
@@ -106,6 +106,77 @@ fn validates_example_profile_without_starting_a_service() {
     assert_eq!(records[0]["type"], "profile_valid");
     assert_eq!(records[0]["name"], "macOS controls");
     assert_eq!(records[0]["binding_count"], 9);
+}
+
+#[test]
+fn all_new_modules_replay_offline_and_log_concrete_actions_under_both_pid_generations() {
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/all-modules.json");
+    for (name, aliases, expected_events, expected_actions) in [
+        (
+            "m4315-software-derived-synthetic.jsonl",
+            [0x01fe, 0x9997],
+            6,
+            vec![
+                json!({"type":"toggle_mute"}),
+                json!({"type":"shortcut","key":"k","modifiers":["command"]}),
+            ],
+        ),
+        (
+            "m005s-software-derived-synthetic.jsonl",
+            [0x0200, 0x9991],
+            7,
+            vec![
+                json!({"type":"set_volume","percent":0}),
+                json!({"type":"set_volume","percent":60}),
+                json!({"type":"set_volume","percent":100}),
+            ],
+        ),
+        (
+            "m032le-software-derived-synthetic.jsonl",
+            [0x0204, 0x9995],
+            5,
+            vec![
+                json!({"type":"volume","delta":5}),
+                json!({"type":"shortcut","key":"v","modifiers":["command"]}),
+                json!({"type":"volume","delta":5}),
+                json!({"type":"shortcut","key":"v","modifiers":["command"]}),
+                json!({"type":"shortcut","key":"c","modifiers":["command"]}),
+            ],
+        ),
+    ] {
+        for product_id in aliases {
+            let mut source = capture_records(name);
+            source[0]["identity"]["product_id"] = json!(product_id);
+            source[0]["identity"]["module"] = json!("M131E"); // VID/PID controls routing.
+            let capture = TempFile::records(&source);
+            let output = run(&[
+                "replay",
+                "--profile",
+                profile.to_str().unwrap(),
+                capture.0.to_str().unwrap(),
+            ]);
+            assert!(
+                output.status.success(),
+                "{name}, PID {product_id:x}: {output:?}"
+            );
+            let rows = output_records(&output);
+            assert_eq!(planned_actions(&rows), expected_actions);
+            assert_eq!(rows.last().unwrap()["event_count"], expected_events);
+            assert_eq!(rows.last().unwrap()["action_count"], expected_actions.len());
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row["status"] == "parse_error")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                rows.iter().filter(|row| row["status"] == "unknown").count(),
+                1
+            );
+            assert!(!rows.iter().any(|row| row["type"] == "action_executed"));
+        }
+    }
 }
 
 #[test]
@@ -254,7 +325,7 @@ fn replay_rejects_a_matching_product_id_from_another_vendor() {
     records[0]["identity"]["vendor_id"] = json!(0x1234);
     let capture = TempFile::records(&records);
     let output = replay(&capture.0);
-    assert_failure(&output, "supports only M003K and M131E interfaces");
+    assert_failure(&output, "supports only the five control modules");
     assert!(output.stdout.is_empty());
 }
 
@@ -394,5 +465,9 @@ fn run_requires_an_explicit_interface_and_help_states_separate_opt_ins() {
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(help.contains("Replay always plans actions without HID or macOS access"));
     assert!(help.contains("--execute enables actions"));
-    assert!(help.contains("--software-mode independently enables dial software mode"));
+    assert!(
+        help.contains(
+            "--software-mode independently enables software mode for the IPS dial or keys"
+        )
+    );
 }

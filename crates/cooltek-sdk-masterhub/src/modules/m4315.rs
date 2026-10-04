@@ -9,6 +9,10 @@ impl crate::Module for M4315 {
     const PRODUCT_ID: ProductId = product_id!(0x1FE);
     const PRODUCT_NAME: Option<&'static str> = Some("15xKey w/ IPS (4x3)");
 
+    fn accepts_product_id(product_id: ProductId) -> bool {
+        product_id == Self::PRODUCT_ID || product_id == product_id!(0x9997)
+    }
+
     fn initialize(device: &HidDevice) -> Result<(), HidError> {
         use super::capabilities::CanSetSoftwareMode;
 

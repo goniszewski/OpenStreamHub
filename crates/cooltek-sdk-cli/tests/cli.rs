@@ -89,6 +89,51 @@ fn help_describes_read_only_defaults_and_explicit_mode() {
 }
 
 #[test]
+fn new_module_diagnostics_use_identity_and_preserve_unknown_and_malformed_reports() {
+    for (name, pid, event_count) in [
+        ("m4315-software-derived-synthetic.jsonl", 0x9997, 6),
+        ("m005s-software-derived-synthetic.jsonl", 0x9991, 7),
+        ("m032le-software-derived-synthetic.jsonl", 0x9995, 5),
+    ] {
+        let mut source: Vec<Value> = fs::read_to_string(fixture(name))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        source[0]["identity"]["product_id"] = serde_json::json!(pid);
+        source[0]["identity"]["module"] = serde_json::json!("M003K");
+        if pid == 0x9997 {
+            source[0]["software_mode_requested"] = serde_json::json!(true);
+        }
+        let output = replay(&capture(&source).0);
+        assert!(output.status.success(), "{name}: {output:?}");
+        let rows: Vec<Value> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            rows.iter()
+                .filter_map(|row| row["events"].as_array())
+                .map(Vec::len)
+                .sum::<usize>(),
+            event_count
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["type"] == "parse_error")
+                .count(),
+            2
+        );
+        assert_eq!(
+            rows.iter().filter(|row| row["type"] == "unknown").count(),
+            1
+        );
+        assert_eq!(rows.last().unwrap()["type"], "capture_end");
+    }
+}
+
+#[test]
 fn replay_preserves_raw_identity_and_decodes_state_transitions() {
     let output = replay(&fixture("m003k-synthetic.jsonl"));
     assert!(output.status.success(), "{:?}", output);

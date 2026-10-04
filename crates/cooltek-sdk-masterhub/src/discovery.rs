@@ -28,10 +28,10 @@ impl ModuleKind {
         match product_id {
             0x01f6 | 0x9999 => Some(Self::M0064),
             0x0202 | 0x9996 => Some(Self::M003K),
-            0x0200 => Some(Self::M005S),
-            0x0204 => Some(Self::M032LE),
+            0x0200 | 0x9991 => Some(Self::M005S),
+            0x0204 | 0x9995 => Some(Self::M032LE),
             0x0206 | 0x9994 => Some(Self::M131E),
-            0x01fe => Some(Self::M4315),
+            0x01fe | 0x9997 => Some(Self::M4315),
             _ => None,
         }
     }
@@ -200,16 +200,19 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_legacy_and_software_catalog_ids_for_purchased_modules() {
+    fn recognizes_legacy_and_software_catalog_ids_for_all_control_modules() {
         use crate::{
             Module,
-            modules::{M003K, M0064, M131E},
+            modules::{M003K, M005S, M032LE, M0064, M131E, M4315},
         };
 
         let models = [
             (ModuleKind::M0064, 0x01f6, 0x9999),
             (ModuleKind::M003K, 0x0202, 0x9996),
             (ModuleKind::M131E, 0x0206, 0x9994),
+            (ModuleKind::M005S, 0x0200, 0x9991),
+            (ModuleKind::M032LE, 0x0204, 0x9995),
+            (ModuleKind::M4315, 0x01fe, 0x9997),
         ];
         for (model, legacy, current) in models {
             for product_id in [legacy, current] {
@@ -228,11 +231,26 @@ mod tests {
                     M131E::accepts_product_id(product_id),
                     model == ModuleKind::M131E
                 );
+                assert_eq!(
+                    M005S::accepts_product_id(product_id),
+                    model == ModuleKind::M005S
+                );
+                assert_eq!(
+                    M032LE::accepts_product_id(product_id),
+                    model == ModuleKind::M032LE
+                );
+                assert_eq!(
+                    M4315::accepts_product_id(product_id),
+                    model == ModuleKind::M4315
+                );
             }
         }
         assert_eq!(u16::from(M0064::PRODUCT_ID), 0x01f6);
         assert_eq!(u16::from(M003K::PRODUCT_ID), 0x0202);
         assert_eq!(u16::from(M131E::PRODUCT_ID), 0x0206);
+        assert_eq!(u16::from(M005S::PRODUCT_ID), 0x0200);
+        assert_eq!(u16::from(M032LE::PRODUCT_ID), 0x0204);
+        assert_eq!(u16::from(M4315::PRODUCT_ID), 0x01fe);
     }
 
     #[test]
@@ -242,7 +260,7 @@ mod tests {
             modules::{M003K, M0064, M131E},
         };
 
-        for product_id in [0x9993, 0x9995, 0x9997, 0x9998, 0xabcd] {
+        for product_id in [0x9993, 0x9998, 0xabcd] {
             assert_eq!(ModuleKind::from_ids(0x2516, product_id), None);
             let product_id = crate::ProductId::new(product_id).unwrap();
             assert!(!M0064::accepts_product_id(product_id));

@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local profile editing and device-free replay in the main window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "allow-bootstrap",
+    "allow-list-profiles",
+    "allow-load-profile",
+    "allow-save-profile",
+    "allow-validate-profile",
+    "allow-replay-demo",
+    "allow-preview-binding"
+  ]
+}

@@ -6,6 +6,10 @@ pub struct M032LE;
 impl crate::Module for M032LE {
     const PRODUCT_ID: ProductId = product_id!(0x0204);
     const PRODUCT_NAME: Option<&'static str> = Some("2xRoller (4x1)");
+
+    fn accepts_product_id(product_id: ProductId) -> bool {
+        product_id == Self::PRODUCT_ID || product_id == product_id!(0x9995)
+    }
 }
 
 impl crate::private::Sealed for M032LE {}

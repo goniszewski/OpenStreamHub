@@ -270,14 +270,12 @@ fn validate_session(session: &Session) -> Result<(), String> {
         return Err("identity path must be nonempty and contain no NUL bytes".into());
     }
     if session.software_mode_requested
-        && cooltek_sdk_masterhub::ModuleKind::from_ids(
+        && !crate::mode::supported(cooltek_sdk_masterhub::ModuleKind::from_ids(
             session.identity.vendor_id,
             session.identity.product_id,
-        ) != Some(cooltek_sdk_masterhub::ModuleKind::M131E)
+        ))
     {
-        return Err(
-            "software mode is supported only for the M131E (2516:0206 or 2516:9994)".into(),
-        );
+        return Err("software mode is supported only for M131E and M4315".into());
     }
     match &session.report_descriptor {
         Descriptor::Available { raw_hex } => {

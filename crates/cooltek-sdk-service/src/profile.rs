@@ -9,6 +9,12 @@ pub enum ServiceModule {
     M003K,
     /// IPS encoder dial using control index 0.
     M131E,
+    /// Fifteen keys using wire control indexes 0 through 14.
+    M4315,
+    /// Five absolute faders using wire control indexes 0 through 4.
+    M005S,
+    /// Two rollers using wire control indexes 0 and 1.
+    M032LE,
 }
 
 /// A normalized wire transition or host-derived dial gesture.
@@ -31,6 +37,50 @@ pub enum Gesture {
     ShortPress,
     /// M131E release after a known press lasting at least 600 ms.
     LongPress,
+    /// Absolute fader position update; its numeric value accompanies the event.
+    PositionChanged,
+    /// M032LE application's UP roller label; physical orientation is unverified.
+    Up,
+    /// M032LE application's DOWN roller label; physical orientation is unverified.
+    Down,
+}
+
+impl ServiceModule {
+    /// Checks a module's supported control indexes and gesture labels.
+    pub fn validate_selector(self, control: u8, gesture: Gesture) -> Result<(), String> {
+        let supported = match self {
+            Self::M003K => {
+                control <= 2
+                    && matches!(
+                        gesture,
+                        Gesture::Clockwise
+                            | Gesture::CounterClockwise
+                            | Gesture::Pressed
+                            | Gesture::Released
+                    )
+            }
+            Self::M131E => {
+                control == 0
+                    && matches!(
+                        gesture,
+                        Gesture::Right
+                            | Gesture::Left
+                            | Gesture::Pressed
+                            | Gesture::Released
+                            | Gesture::ShortPress
+                            | Gesture::LongPress
+                    )
+            }
+            Self::M4315 => control < 15 && matches!(gesture, Gesture::Pressed | Gesture::Released),
+            Self::M005S => control < 5 && gesture == Gesture::PositionChanged,
+            Self::M032LE => control < 2 && matches!(gesture, Gesture::Up | Gesture::Down),
+        };
+        if supported {
+            Ok(())
+        } else {
+            Err("control or gesture is unsupported for this module".into())
+        }
+    }
 }
 
 /// A modifier held for the duration of one keyboard shortcut.
@@ -56,6 +106,16 @@ pub enum Action {
         /// Nonzero delta between -100 and 100 inclusive.
         delta: i16,
     },
+    /// Set the default output volume to an absolute percentage.
+    SetVolume {
+        /// Absolute output percentage, between 0 and 100 inclusive.
+        percent: u8,
+    },
+    /// Resolve a fader's absolute position into an absolute volume percentage.
+    ///
+    /// This is a binding template. It must be resolved using the current input
+    /// value before it reaches an action dispatcher.
+    VolumeFromPosition,
     /// Invert the default output's current mute state.
     ToggleMute,
     /// Send one ASCII alphanumeric key or space with explicit modifiers.
@@ -86,6 +146,10 @@ impl<'de> Deserialize<'de> for Action {
             Volume {
                 delta: i16,
             },
+            SetVolume {
+                percent: u8,
+            },
+            VolumeFromPosition {},
             ToggleMute {},
             Shortcut {
                 key: String,
@@ -97,6 +161,8 @@ impl<'de> Deserialize<'de> for Action {
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
+            Shape::SetVolume { percent } => Self::SetVolume { percent },
+            Shape::VolumeFromPosition {} => Self::VolumeFromPosition,
             Shape::ToggleMute {} => Self::ToggleMute,
             Shape::Shortcut { key, modifiers } => Self::Shortcut { key, modifiers },
             Shape::LaunchApp { bundle_id } => Self::LaunchApp { bundle_id },
@@ -110,6 +176,9 @@ impl Action {
         match self {
             Self::Volume { delta } if *delta == 0 || !(-100..=100).contains(delta) => {
                 Err("volume delta must be nonzero and between -100 and 100".into())
+            }
+            Self::SetVolume { percent } if *percent > 100 => {
+                Err("absolute volume must be between 0 and 100".into())
             }
             Self::Shortcut { key, modifiers } => {
                 if key.len() != 1
@@ -143,7 +212,20 @@ impl Action {
                 }
                 Ok(())
             }
-            Self::Volume { .. } | Self::ToggleMute => Ok(()),
+            Self::Volume { .. }
+            | Self::SetVolume { .. }
+            | Self::VolumeFromPosition
+            | Self::ToggleMute => Ok(()),
+        }
+    }
+
+    /// Validates an operation and rejects templates lacking a resolved input value.
+    pub fn validate_executable(&self) -> Result<(), String> {
+        self.validate()?;
+        if matches!(self, Self::VolumeFromPosition) {
+            Err("volume_from_position must be resolved with a fader event before dispatch".into())
+        } else {
+            Ok(())
         }
     }
 }
@@ -216,33 +298,15 @@ impl Profile {
         }
         let mut selectors = HashSet::new();
         for (index, binding) in self.bindings.iter().enumerate() {
-            let valid_selector = match binding.module {
-                ServiceModule::M003K => {
-                    binding.control <= 2
-                        && matches!(
-                            binding.gesture,
-                            Gesture::Clockwise
-                                | Gesture::CounterClockwise
-                                | Gesture::Pressed
-                                | Gesture::Released
-                        )
-                }
-                ServiceModule::M131E => {
-                    binding.control == 0
-                        && matches!(
-                            binding.gesture,
-                            Gesture::Right
-                                | Gesture::Left
-                                | Gesture::Pressed
-                                | Gesture::Released
-                                | Gesture::ShortPress
-                                | Gesture::LongPress
-                        )
-                }
-            };
-            if !valid_selector {
+            binding
+                .module
+                .validate_selector(binding.control, binding.gesture)
+                .map_err(|error| format!("binding {index}: {error}"))?;
+            if (binding.module == ServiceModule::M005S)
+                != matches!(binding.action, Action::VolumeFromPosition)
+            {
                 return Err(format!(
-                    "binding {index}: control or gesture is unsupported for this module"
+                    "binding {index}: fader bindings require volume_from_position, which is supported only for faders"
                 ));
             }
             if binding.serial_number.as_ref().is_some_and(|serial| {
@@ -349,6 +413,71 @@ mod tests {
         assert!(profile.validate().is_err());
         profile.bindings[0].gesture = Gesture::LongPress;
         assert!(profile.validate().is_ok());
+    }
+
+    #[test]
+    fn keys_faders_and_rollers_enforce_their_control_and_action_contracts() {
+        let mut profile = sample();
+        profile.bindings[0].module = ServiceModule::M4315;
+        profile.bindings[0].control = 14;
+        profile.bindings[0].gesture = Gesture::Pressed;
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].control = 15;
+        assert!(profile.validate().is_err());
+        profile.bindings[0].control = 0;
+        profile.bindings[0].gesture = Gesture::LongPress;
+        assert!(profile.validate().is_err());
+
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(profile.validate().is_err());
+        profile.bindings[0].action = Action::VolumeFromPosition;
+        profile.bindings[0].control = 4;
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].control = 5;
+        assert!(profile.validate().is_err());
+        profile.bindings[0].module = ServiceModule::M003K;
+        profile.bindings[0].control = 0;
+        profile.bindings[0].gesture = Gesture::Clockwise;
+        assert!(profile.validate().is_err());
+
+        profile.bindings[0].module = ServiceModule::M032LE;
+        profile.bindings[0].control = 1;
+        profile.bindings[0].gesture = Gesture::Up;
+        profile.bindings[0].action = Action::Volume { delta: 5 };
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].control = 2;
+        assert!(profile.validate().is_err());
+        profile.bindings[0].control = 0;
+        profile.bindings[0].gesture = Gesture::Pressed;
+        assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn position_templates_and_absolute_actions_have_strict_additive_json_shapes() {
+        for action in [
+            Action::VolumeFromPosition,
+            Action::SetVolume { percent: 0 },
+            Action::SetVolume { percent: 100 },
+        ] {
+            let json = serde_json::to_vec(&action).unwrap();
+            assert_eq!(serde_json::from_slice::<Action>(&json).unwrap(), action);
+            assert!(action.validate().is_ok());
+        }
+        assert!(Action::VolumeFromPosition.validate_executable().is_err());
+        assert!(
+            Action::SetVolume { percent: 100 }
+                .validate_executable()
+                .is_ok()
+        );
+        assert!(Action::SetVolume { percent: 101 }.validate().is_err());
+        for json in [
+            br#"{"type":"volume_from_position","delta":5}"#.as_slice(),
+            br#"{"type":"set_volume","percent":5,"delta":5}"#.as_slice(),
+            br#"{"type":"set_volume","percent":-1}"#.as_slice(),
+        ] {
+            assert!(serde_json::from_slice::<Action>(json).is_err());
+        }
     }
 
     #[test]

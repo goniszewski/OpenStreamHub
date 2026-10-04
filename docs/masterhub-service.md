@@ -1,6 +1,6 @@
 # MasterHUB binding and action service
 
-`masterhub-service` maps M003K knob and M131E dial events to a small set of macOS actions. Profiles and replay work without a device. Live runs read one explicitly selected HID interface and default to logging planned actions. Physical input remains untested. Device-free host checks and their observed limitations are documented in the [macOS smoke guide](masterhub-macos-smoke.md).
+`masterhub-service` maps all five control modules' events to a small set of macOS actions. Profiles and replay work without a device. Live runs read one explicitly selected HID interface and default to logging planned actions. Physical input remains untested. Device-free host checks and their observed limitations are documented in the [macOS smoke guide](masterhub-macos-smoke.md).
 
 ## Validate and replay
 
@@ -19,7 +19,7 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
   crates/cooltek-sdk-cli/tests/fixtures/m131e-software-derived-synthetic.jsonl
 ```
 
-Validation checks the entire profile before printing `profile_valid`. Replay accepts the schema-1 JSONL input captures described in the [diagnostic guide](masterhub-diagnostics.md#capture-format-and-replay). It constructs no HID context, opens no interfaces, and executes no macOS actions. Both bundled input captures above are synthetic.
+Validation checks the entire profile before printing `profile_valid`. Replay accepts the schema-1 JSONL input captures described in the [diagnostic guide](masterhub-diagnostics.md#capture-format-and-replay). It constructs no HID context, opens no interfaces, and executes no macOS actions. All bundled input captures are synthetic. To try the additional modules, use `examples/profiles/all-modules.json` with `m4315-software-derived-synthetic.jsonl`, `m005s-software-derived-synthetic.jsonl`, or `m032le-software-derived-synthetic.jsonl` in the same fixture directory.
 
 Replay streams reports and planned bindings as they are read. An invalid or truncated capture, missing footer, or transport-error footer produces a failing exit status even when earlier output was emitted. Check the exit status and final `service_end` before treating the stream as a complete session.
 
@@ -35,7 +35,7 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
   --path-hex HEX_FROM_INVENTORY --duration-secs 30
 ```
 
-The path contains the lossless interface bytes without a trailing NUL. The service refuses missing, ambiguous, stale, or unsupported selections; it never falls back to the first matching VID/PID. M003K and M131E interfaces are supported under both known PID generations. Each process owns one selected interface.
+The path contains the lossless interface bytes without a trailing NUL. The service refuses missing, ambiguous, stale, or unsupported selections; it never falls back to the first matching VID/PID. All five control modules are supported under both known PID generations; see the [additional-module evidence](research/masterhub-additional-modules-1.0.0.113.md). Each process owns one selected interface.
 
 Without `--execute`, matched actions are validated and logged without touching volume, sending shortcuts, or opening applications. Without `--software-mode`, the service sends no configuration commands. Reads default to a 100 ms timeout; `--timeout-ms` accepts 1–1000. Optional `--max-reports` stops after that many nonempty input reports. `--duration-secs` accepts 1–86400; omitting both duration and report limits runs until interrupted or an error occurs.
 
@@ -59,13 +59,13 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
   --execute --software-mode
 ```
 
-The two flags are independent. `--execute` enables macOS actions and does not enable dial software mode. `--software-mode` requests software mode only for M131E and can be used during a dry run. Once enabling has been attempted, the service attempts to restore dial hardware mode when the session ends, including after an enable failure, action failure, input error, or output error.
+The two flags are independent. `--execute` enables macOS actions and does not enable device software mode. `--software-mode` requests software mode for M131E or M4315 and can be used during a dry run. Once enabling has been attempted, the service attempts to restore the selected IPS module's hardware mode when the session ends, including after an enable failure, action failure, input error, or output error.
 
 When a duration or report limit is reached, the service stops reading, closes the work queue, and allows up to ten seconds to drain accepted work. An expired drain deadline cancels pending work and fails the session. Ctrl-C, SIGTERM, input/action/output failures, and queue overflow request cancellation of pending work; the coordinator allows up to two seconds to observe worker completion after cancellation. Input state is cleared on either path.
 
 The native backend checks the shared cancellation flag before each subprocess and between volume/mute queries and setters. An in-flight system-tool process is stopped with bounded kill/reap cleanup when cancellation is observed; completed effects cannot be undone. The worker owns logging and action dispatch, and returns its writer to the coordinator before the final footer is written after requested dial cleanup. A worker whose completion cannot be observed is not joined indefinitely.
 
-Requested dial hardware-mode restoration is attempted once after the worker phase. Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
+Requested IPS module hardware-mode restoration is attempted once after the worker phase. Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
 
 ## Profiles and gestures
 
@@ -80,7 +80,7 @@ The [sample profile](../examples/profiles/macos.json) defines these actions:
 | M131E index 0 | Right / left | Output volume +5 / −5 percentage points |
 | M131E index 0 | Short press / long press | Toggle output mute / open Finder |
 
-Control indexes are wire indexes. Their physical placement needs hardware checking. Dial `right` and `left` retain the Windows application's labels; their physical clockwise mapping is unverified.
+Control indexes are wire indexes. Their physical placement needs hardware checking. Dial `right` and `left` retain the Windows application's labels; their physical clockwise mapping is unverified. Roller `up` and `down` likewise retain application labels. The GUI numbers controls by wire index without claiming their physical placement.
 
 A profile requires `schema_version: 1`, a nonempty `name`, and a `bindings` array. A binding requires `module`, `control`, `gesture`, and `action`; optional `serial_number` matches the exact, case-sensitive HID enumeration serial shown by inventory. The service does not query vendor serial feature reports. Omitting the serial matches any device serial, including an unavailable serial. An exact serial binding takes precedence over a wildcard for the same module, control, and gesture, independent of array order. Duplicate complete selectors are rejected.
 
@@ -88,8 +88,13 @@ A profile requires `schema_version: 1`, a nonempty `name`, and a `bindings` arra
 | --- | --- | --- |
 | `m003k` | `0`, `1`, `2` | `clockwise`, `counter_clockwise`, `pressed`, `released` |
 | `m131e` | `0` | `right`, `left`, `pressed`, `released`, `short_press`, `long_press` |
+| `m4315` | `0` through `14` | `pressed`, `released` |
+| `m005s` | `0` through `4` | `position_changed` |
+| `m032le` | `0`, `1` | `up`, `down` |
 
 Dial short/long gestures are classified on release after an observed press: less than 600 ms is short; at least 600 ms is long. A release emits `released` before the classified gesture, so bindings for both can execute two actions. Repeated button snapshots do not retrigger transitions; repeated rotations remain separate events. A release without a matching observed press produces no short/long gesture. Session reset clears pending presses without synthesizing actions.
+
+Fader events carry an absolute position as `value: {"type":"position","raw":63,"maximum":100}`. The first valid snapshot emits all five positions; later snapshots emit only changed controls. Reset clears known positions, so a new session can plan the initial fader action immediately. Fader bindings currently require `volume_from_position`, which resolves the value into a concrete `set_volume` action. Keys deduplicate snapshots; roller updates remain separate events, with `ff` interpreted as idle and no inferred distance.
 
 Unknown reports retain their raw bytes in the log and emit no events. Malformed input is logged as `parse_error` without changing decoder/button state. Those packet diagnostics do not end a session; transport, action, and output failures do.
 
@@ -100,6 +105,8 @@ JSON parsing rejects unknown fields, unsupported schema versions, invalid module
 | Action JSON | Behavior and constraints |
 | --- | --- |
 | `{"type":"volume","delta":5}` | Reads current system output volume, adds signed percentage points, and clamps to 0–100. Delta must be nonzero and within −100…100; the setter specifies only output volume. |
+| `{"type":"volume_from_position"}` | Fader-only binding that resolves the received absolute position into `set_volume` before dispatch. Missing or invalid values fail; the marker itself cannot execute. |
+| `{"type":"set_volume","percent":63}` | Sets absolute output volume to 0–100 with one setter and no volume query. Available for discrete bindings and emitted by the fader resolver. |
 | `{"type":"toggle_mute"}` | Reads and inverts the system output's current mute state. |
 | `{"type":"shortcut","key":"c","modifiers":["command"]}` | Sends a keystroke to the current application through System Events. Key is exactly one ASCII letter, digit, or space. Distinct modifiers are `command`, `control`, `option`, and `shift`; an empty array is allowed. Named keys, punctuation, Unicode keys, and sequences are unsupported. |
 | `{"type":"launch_app","bundle_id":"com.apple.finder"}` | Uses `open -b` to request an installed application by bundle ID. IDs are dotted ASCII identifiers of at most 255 bytes: at least two nonempty components, each starting with a letter/digit and containing only letters, digits, or hyphens. |
@@ -114,7 +121,7 @@ The [controlled smoke examples](masterhub-macos-smoke.md) use the same dispatche
 
 ## Output, failures, and integration
 
-Output is JSON Lines: `service_start`, raw `report` diagnostics, normalized `event` records with planned/unbound bindings, optional `action_executed`/`action_failed`, and `service_end` counts. The service emits a planned binding before dispatch; an output failure prevents the corresponding unlogged action. `action_count` counts successfully dispatched bindings, including dry-run plans. `action_executed` records system-tool completion rather than independent verification of the resulting application or system state.
+Output is JSON Lines: `service_start`, raw `report` diagnostics, normalized `event` records with planned/unbound bindings and resolved `action` values, optional `action_executed`/`action_failed`, and `service_end` counts. The service emits the original binding and concrete resolved action before dispatch; an output failure prevents the corresponding unlogged action. `action_count` counts successfully dispatched bindings, including dry-run plans. `action_executed` records system-tool completion rather than independent verification of the resulting application or system state.
 
 The input owner timestamps and normalizes reports before placing them in a FIFO queue holding at most 64 waiting reports, excluding the worker's current report. The worker serializes logging and actions, so slow host actions do not block input normalization until the queue fills. A full queue fails the session and cancels pending work; reports are not silently dropped while execution continues.
 

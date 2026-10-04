@@ -6,6 +6,10 @@ pub struct M005S;
 impl crate::Module for M005S {
     const PRODUCT_ID: ProductId = product_id!(0x0200);
     const PRODUCT_NAME: Option<&'static str> = Some("5xFader (4x2)");
+
+    fn accepts_product_id(product_id: ProductId) -> bool {
+        product_id == Self::PRODUCT_ID || product_id == product_id!(0x9991)
+    }
 }
 
 impl crate::private::Sealed for M005S {}

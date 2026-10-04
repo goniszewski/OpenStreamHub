@@ -1,6 +1,6 @@
 # Extracting protocol information from the Windows software
 
-Static analysis of MasterHUB 1.0.0.113 covers the M0064 base, M003K three-knob module, and M131E IPS dial. The [protocol report](research/masterhub-1.0.0.113-static-analysis.md) records package hashes, source locations, native addresses, and unresolved fields. The application was extracted without execution on 3 October 2026.
+Static analysis of MasterHUB 1.0.0.113 covers the M0064 base, M003K three-knob module, and M131E IPS dial. The [protocol report](research/masterhub-1.0.0.113-static-analysis.md) records package hashes, source locations, native addresses, and unresolved fields. The [additional-module analysis](research/masterhub-additional-modules-1.0.0.113.md) extends input coverage to keys, faders and rollers. The application was extracted without execution on 3 October 2026.
 
 ## Package and protocol findings
 

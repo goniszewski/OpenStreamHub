@@ -1,6 +1,6 @@
 # MasterHUB keys, faders and rollers: protocol evidence
 
-Analysis date: 3 October 2026. This extends the [version-pinned Windows software analysis](masterhub-1.0.0.113-static-analysis.md) to M4315, M005S and M032LE. The official application's extracted renderer, native SDK and public probe notes provide enough information for initial input support. The Windows executables were not run; device behavior remains unverified.
+Analysis date: 3 October 2026; keypad image evidence extended on 4 October 2026. This extends the [version-pinned Windows software analysis](masterhub-1.0.0.113-static-analysis.md) to M4315, M005S and M032LE. The official application's extracted renderer, native SDK and public probe notes provide enough information for initial input support and offline keypad image planning. The Windows executables were not run; device behavior remains unverified.
 
 The manufacturer's product sheet establishes module names and specifications, but does not provide a HID protocol or display refresh-rate guarantee. The packet details below come from software analysis and reverse-engineering notes.
 
@@ -62,7 +62,24 @@ OpenStreamHub allows editing each module's controls, selected-event previews, an
 
 The native M4315 software-mode wrapper at RVA `3440` calls the implementation at `5070`, constructing a 32-byte feature report with prefix `03 3a <bool>`. The app sets this flag false during suspend and true during resume. `keypad::software_mode_report` and `keypad::set_software_mode` implement the explicit setter; CLI recording/live service accept `--software-mode` for either IPS module and attempt one hardware-mode restoration after an enable attempt. Default opening and reading remain neutral.
 
-The native per-key image path was also identified: wrapper `35d0` calls implementation `5bb0`, using `02 36`, sequence at bytes 2–3, payload length at 4–5, key index at 6, final flag at 7, and JPEG payload at 8. Output length comes from the descriptor. This is evidence for a future per-key upload API; **this milestone does not implement keypad image uploads**. Key dimensions/encoding restrictions, image acceptance, orientation, transfer pacing and responsive concurrent input require separate validation. The desktop app does not upload either IPS display yet.
+The native per-key image wrapper at RVA `35d0` calls sender `5bb0`. Header stores at `5c89`–`5c96`, `5ee8`–`5efe` and `5f27`–`5f48` establish the following layout:
+
+| Offset | Field |
+| --- | --- |
+| 0–1 | Output report ID `02`, command `36` |
+| 2–3 | Little-endian `u16` sequence, starting at zero |
+| 4–5 | Little-endian `u16` payload length |
+| 6 | Wire key index, 0–14 |
+| 7 | Final packet flag, zero or one |
+| 8 onward | Encoded image payload |
+
+The sender derives capacity from the HID output length minus eight (`5eb7`–`5ec6`), copies payload at `5f93`, and writes the complete report length (`5fe3`–`5fff`). The [pinned probe output notes](https://github.com/projectzero7/cooltek-sdk-probe/blob/0e72f87547537193309c3a5f2eae9ef483d80d7f/docs/MasterHUB/modules/m4315/output_reports.md) corroborate this layout and key range. Their table's 255 limits conflict with the two-byte native fields; the implementation uses `u16` bounds. Their 320-byte report example does not establish a universal device report size.
+
+The renderer's `src/store/module/keypad.js` creates a 72×72 canvas at line 2405 and can encode it as JPEG at quality 1.0 at lines 2455–2457. Clearing a key creates a 72×72 black JPEG near line 2103; fallback images resize to 72×72 near line 3394 and are passed to M4315 near lines 3482–3486. `background.js`, UTF-8 byte offset `1737497`, forwards those bytes, length, key index and serial unchanged. Nearby transformations for M3704 belong to a different model and are not applied to M4315.
+
+Native image helper RVA `7440` checks for a BMP signature or `ff e0` at JPEG offsets 2–3. It does not establish complete dimension, scan, color-space or entropy restrictions. The SDK's 72×72, eight-bit, three-component baseline JFIF with one interleaved scan is a conservative supported format based on the renderer output; it is not a proved list of every firmware-supported encoding.
+
+`keypad::JpegPackets` constructs descriptor-sized reports offline, validates indexes and supported JPEG framing before producing packets, rejects sequence overflow, and zero-fills padding. The CLI prepares static images and writes packet plans without opening HID. **Physical keypad uploads remain unimplemented.** Firmware acceptance, orientation, physical key order, software-mode requirements, transfer pacing and concurrent input responsiveness require device validation. The native sender exposes no inter-packet delay or acknowledgement here. The desktop app does not upload either IPS display yet.
 
 ## Offline validation and hardware acceptance
 

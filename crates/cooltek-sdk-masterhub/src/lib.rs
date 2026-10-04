@@ -10,6 +10,7 @@ mod dial_session;
 mod discovery;
 mod hid;
 pub mod input;
+mod jpeg;
 pub mod keypad;
 mod macros;
 mod module;

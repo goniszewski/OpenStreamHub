@@ -2537,11 +2537,14 @@ name = "open-stream-hub-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "cooltek-sdk-cli",
  "cooltek-sdk-masterhub",
  "cooltek-sdk-service",
  "image",
  "libc",
+ "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",

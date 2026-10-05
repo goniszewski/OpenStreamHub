@@ -315,3 +315,11 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .artwork-raw-frame img { display:block; image-rendering:pixelated; }
 .artwork-export { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }.artwork-export .fine-print { margin:0; }
 @media(max-width:1000px) { .artwork-layout { grid-template-columns:minmax(0,1fr); } }
+.service-banner.paused { background:var(--soft-amber,var(--selected)); border-color:var(--accent); }
+.service-banner.paused>div { min-width:0; flex:1 1 auto; }
+.service-banner.attention { border-width:2px; border-color:var(--red); background:var(--soft-red); }
+.service-banner.attention strong { font-size:14px; color:var(--red); }
+.service-banner.attention .button { margin-top:10px; }
+.service-banner.stopped { background:var(--control); }
+.service-badge.suspended,.service-badge.waiting_for_device,.service-badge.reconnecting { color:var(--accent); border-color:var(--accent); }
+.service-badge.needs_confirmation { background:var(--soft-red); color:var(--red); border-color:var(--red); }

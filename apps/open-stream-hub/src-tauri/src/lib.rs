@@ -5,10 +5,12 @@ mod diagnostics;
 mod export;
 mod feed;
 mod migration;
+mod power;
 #[cfg(target_os = "macos")]
 mod quit;
 mod replay;
 mod service;
+mod session;
 mod store;
 #[cfg(test)]
 mod test_profiles;
@@ -17,7 +19,8 @@ use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
 use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc},
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager, State};
 
@@ -27,6 +30,7 @@ struct AppState {
     feeds: feed::Feeds,
     inventory: feed::InventoryWatcher,
     services: service::Services,
+    sessions: session::Manager,
 }
 
 /// Bootstrap failures carry the expected storage folder so the frontend can
@@ -48,6 +52,7 @@ impl AppState {
             feeds: feed::Feeds::default(),
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
+            sessions: session::Manager::default(),
         }
     }
 
@@ -207,30 +212,93 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
 
 // Profile actions run only in a supervised `masterhub-service` child process,
 // never in the app. A read-only feed on the same interface is stopped first
-// so the service owns the device.
+// so the service owns the device. The run is wrapped in a sleep/wake and
+// reconnect session (`session.rs`) whose id is the returned service id.
 #[tauri::command(async)]
 fn start_service(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     request: service::StartRequest,
 ) -> Result<String, String> {
+    if let Some(started) = state.sessions.start(request.clone()) {
+        return started;
+    }
+    run_service(&app, &request, None)
+}
+
+/// Starts one service process; `sessions` also receives its exit.
+fn run_service(
+    app: &tauri::AppHandle,
+    request: &service::StartRequest,
+    sessions: Option<mpsc::Sender<session::Input>>,
+) -> Result<String, String> {
+    let handle = app.clone();
     let emit: service::Emit = Arc::new(move |message| {
+        if let (Some(sessions), service::ServiceMessage::Status(status)) = (&sessions, &message)
+            && status.state == service::ServiceState::Exited
+        {
+            let _ = sessions.send(session::Input::Exited {
+                service_id: status.service_id.clone(),
+                exit_code: status.exit_code.flatten(),
+                stderr_tail: status.stderr_tail.clone().unwrap_or_default(),
+            });
+        }
         let emitted = match message {
-            service::ServiceMessage::Record(payload) => app.emit(service::RECORD_EVENT, payload),
-            service::ServiceMessage::Status(payload) => app.emit(service::STATUS_EVENT, payload),
+            service::ServiceMessage::Record(payload) => handle.emit(service::RECORD_EVENT, payload),
+            service::ServiceMessage::Status(payload) => handle.emit(service::STATUS_EVENT, payload),
         };
         if let Err(error) = emitted {
             eprintln!("could not emit a service event: {error}");
         }
     });
+    let state = app.state::<AppState>();
     service::start_service(
         &state.services,
-        request,
+        request.clone(),
         state.app_data.as_deref().map_err(Clone::clone),
         service_program(),
         |feed_id| state.feeds.stop(feed_id),
         emit,
     )
+}
+
+/// The session driver's side effects against the real services.
+struct AppRunner {
+    app: tauri::AppHandle,
+    sessions: mpsc::Sender<session::Input>,
+}
+
+impl session::Runner for AppRunner {
+    fn start(&mut self, request: &service::StartRequest) -> Result<String, String> {
+        // A crashed process emits `exited` just before its handle is marked
+        // done; let it settle so the restart is not refused as a duplicate.
+        if let Ok(id) = service::service_id(&request.path_hex) {
+            let deadline = Instant::now() + Duration::from_millis(500);
+            while self.app.state::<AppState>().services.is_running(&id) && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        run_service(&self.app, request, Some(self.sessions.clone()))
+    }
+
+    fn stop(&mut self, service_id: &str) {
+        let state = self.app.state::<AppState>();
+        if let Err(error) = state.services.stop(service_id, service::STOP_GRACE) {
+            eprintln!("could not stop {service_id}: {error}");
+        }
+    }
+
+    fn emit(&mut self, state: &session::SessionState) {
+        if let Err(error) = self.app.emit(session::STATE_EVENT, state) {
+            eprintln!("could not emit a session event: {error}");
+        }
+    }
+
+    fn enumerate(&mut self) -> Option<Vec<feed::LiveDevice>> {
+        let registry = cooltek_sdk_masterhub::DeviceRegistry::new().ok()?;
+        Some(feed::live_devices(&registry.devices()))
+    }
 }
 
 fn service_program() -> Result<PathBuf, String> {
@@ -302,9 +370,27 @@ async fn save_artwork(
     .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
 
+// Stopping a managed service's current process (or its session id) ends the
+// session, so it is not restarted.
 #[tauri::command(async)]
 fn stop_service(state: State<'_, AppState>, service_id: String) -> Result<(), String> {
+    if state.sessions.stop(&service_id, false)? {
+        return Ok(());
+    }
     state.services.stop(&service_id, service::STOP_GRACE)
+}
+
+// Restarts a session waiting in `needs_confirmation` with its original
+// request. The UI calls it only after the user confirmed resuming actions.
+#[tauri::command(async)]
+fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    state.sessions.resume(&session_id)
+}
+
+// Ends a session from any phase; unknown ids are ignored.
+#[tauri::command(async)]
+fn stop_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    state.sessions.stop(&session_id, true).map(drop)
 }
 
 pub fn run() {
@@ -332,12 +418,40 @@ pub fn run() {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
             }
             app.manage(AppState::open(app_data));
+            let state = app.state::<AppState>();
+            let sessions = state.sessions.sender();
+            let runner = AppRunner {
+                app: app.handle().clone(),
+                sessions: sessions.clone(),
+            };
+            if let Err(error) = state.sessions.spawn(runner) {
+                eprintln!("{error}");
+            }
+            // Sleep/wake events. A suspend waits (bounded) for the driver to
+            // stop services, so the service can restore hardware mode first.
+            let power_events = sessions.clone();
+            let sink: power::Sink = Arc::new(move |event| {
+                let (done, finished) = mpsc::channel();
+                let wait = event == power::PowerEvent::Suspend;
+                let done = wait.then_some(done);
+                if power_events
+                    .send(session::Input::Power(event, done))
+                    .is_ok()
+                    && wait
+                {
+                    let _ = finished.recv_timeout(service::STOP_GRACE + Duration::from_secs(1));
+                }
+            });
+            if let Err(error) = power::system_source().start(sink) {
+                eprintln!("{error}");
+            }
             // Hot-plug detection: the watcher emits `device://inventory` once
             // at start and whenever the input-capable device list changes.
             // Without it the app still works; devices can be listed on demand.
             let handle = app.handle().clone();
-            let started = app.state::<AppState>().inventory.start(move |stop| {
+            let started = state.inventory.start(move |stop| {
                 feed::watch_inventory(stop, feed::hid_inventory(), feed::wait, |payload| {
+                    let _ = sessions.send(session::Input::Inventory(payload.devices.clone()));
                     if let Err(error) = handle.emit(feed::INVENTORY_EVENT, payload) {
                         eprintln!("could not emit the device inventory: {error}");
                     }
@@ -364,6 +478,8 @@ pub fn run() {
             stop_feed,
             start_service,
             stop_service,
+            resume_session,
+            stop_session,
             create_diagnostics,
             prepare_artwork,
             save_artwork
@@ -374,6 +490,8 @@ pub fn run() {
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             let state = app.state::<AppState>();
+            // Sessions end first so nothing restarts while services stop.
+            state.sessions.shutdown(Duration::from_millis(500));
             // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
             state.services.stop_all(service::STOP_GRACE);
             state.feeds.stop_all();
@@ -411,6 +529,7 @@ mod tests {
             feeds: feed::Feeds::default(),
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
+            sessions: session::Manager::default(),
         }
     }
 

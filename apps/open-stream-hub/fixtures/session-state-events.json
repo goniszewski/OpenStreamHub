@@ -1,0 +1,157 @@
+[
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "running",
+    "reason": null,
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "suspended",
+    "reason": "sleep",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "suspended",
+    "reason": "sleep",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "next_attempt_in_ms": 2000,
+    "phase": "suspended",
+    "reason": "sleep",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "reconnecting",
+    "reason": "sleep",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "running",
+    "reason": null,
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "waiting_for_device",
+    "reason": "device_removed",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "reconnecting",
+    "reason": "device_removed",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30333033",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": false,
+    "module": "m131e",
+    "phase": "running",
+    "reason": null,
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30333033",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "detail": "masterhub-service: no HID interface matches the selected path",
+    "execute": false,
+    "module": "m131e",
+    "next_attempt_in_ms": 1000,
+    "phase": "reconnecting",
+    "reason": "service_exited",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "detail": "masterhub-service: no HID interface matches the selected path",
+    "execute": false,
+    "module": "m131e",
+    "phase": "reconnecting",
+    "reason": "service_exited",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30333033",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "execute": false,
+    "module": "m131e",
+    "phase": "running",
+    "reason": null,
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30333033",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "execute": false,
+    "module": "m131e",
+    "phase": "stopped",
+    "reason": "user",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30333033",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "execute": false,
+    "module": "m131e",
+    "phase": "stopped",
+    "reason": "user",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 1,
+    "detail": "exit code 1",
+    "execute": true,
+    "module": "m131e",
+    "phase": "needs_confirmation",
+    "reason": "service_exited",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  }
+]

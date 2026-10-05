@@ -58,3 +58,11 @@ export interface StartServiceRequest { profile: Profile; path_hex: string; execu
 export type ServiceState = 'starting' | 'running' | 'stopping' | 'exited' | 'failed';
 export interface ServiceStatusPayload { service_id: string; state: ServiceState; execute: boolean; exit_code?: number | null; error?: string; stderr_tail?: string }
 export interface ServiceRecordPayload { service_id: string; record: unknown }
+
+// Session manager (sleep/wake and reconnect for service runs). session_id is the first service_id and stays stable.
+export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user';
+export interface SessionStatePayload {
+  session_id: string; service_id: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number; execute: boolean;
+  module: ServiceModule; serial_number: string | null; detail?: string; next_attempt_in_ms?: number;
+}

@@ -52,7 +52,7 @@ export class DeviceFeed {
   private readonly feedByPath = new Map<string, string>();
   private readonly droppedFeeds = new Set<string>();
   private unlisteners: (() => void)[] = [];
-  private isBlocked: (pathHex: string) => boolean = () => false;
+  private isBlocked: (pathHex: string, device?: LiveDevice) => boolean = () => false;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean, private readonly schedule: Scheduler = frame) {
@@ -63,7 +63,7 @@ export class DeviceFeed {
   readonly getState = () => this.state;
 
   // Paths owned by another reader (a running service) never get a live feed from here.
-  setBlocker(isBlocked: (pathHex: string) => boolean) { this.isBlocked = isBlocked; }
+  setBlocker(isBlocked: (pathHex: string, device?: LiveDevice) => boolean) { this.isBlocked = isBlocked; }
 
   private set(patch: Partial<FeedStoreState>) {
     this.state = { ...this.state, ...(this.pendingLive ? { live: this.pendingLive } : {}), ...patch };
@@ -149,7 +149,7 @@ export class DeviceFeed {
   private async startAuto(pathHex: string) {
     if (this.attempted.has(pathHex)) return;
     this.attempted.add(pathHex);
-    if (this.isBlocked(pathHex)) return;
+    if (this.isBlocked(pathHex, this.state.devices.find(device => device.path_hex === pathHex))) return;
     await this.start({ kind: 'live', path_hex: pathHex }, true);
   }
 
@@ -164,7 +164,7 @@ export class DeviceFeed {
 
   private async start(source: FeedSource, auto = false) {
     if (!this.state.desktop) return;
-    if (source.kind === 'live' && this.isBlocked(source.path_hex)) { if (!auto) this.set({ error: 'Stop the running profile on this device before reading live input.' }); return; }
+    if (source.kind === 'live' && this.isBlocked(source.path_hex, this.state.devices.find(device => device.path_hex === source.path_hex))) { if (!auto) this.set({ error: 'Stop the running profile on this device before reading live input.' }); return; }
     const present = () => source.kind !== 'live' || this.state.devices.some(device => device.path_hex === source.path_hex);
     if (!auto || !isRunning(this.state)) this.pendingLive = resetLive();
     this.set(auto ? {} : { error: null });

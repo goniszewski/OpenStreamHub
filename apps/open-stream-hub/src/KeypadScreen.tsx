@@ -1,4 +1,5 @@
-import { ArrowLeft, ChevronRight, Folder, Keyboard } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
+import { KeyDisplayContent } from './DisplayContent';
 import type { KeypadPage } from './contracts';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 
@@ -24,11 +25,8 @@ export function KeypadScreen({ profileName, pages, allPages, path, selected, onS
           aria-label={back ? `Back one level, L${depth}` : slot?.type === 'folder' ? `Open folder ${folderName}, Key ${control + 1}` : `Select Key ${control + 1}${slot?.type === 'action' ? `, ${slot.label}` : ', empty'}`}
           aria-pressed={!back && slot?.type !== 'folder' ? selected === control : undefined}
           onClick={() => back ? onNavigate(path.slice(0, -1)) : slot?.type === 'folder' ? onNavigate([...path, slot.page_id]) : onSelect(control)}>
-          {back ? <><ArrowLeft size={39} aria-hidden="true" /><span className="keypad-depth">L{depth}</span><span className="keypad-tile-label">Back</span></> : <>
-            <span className="keypad-key-number">{control + 1}</span>
-            {slot?.type === 'folder' ? <Folder size={27} aria-hidden="true" /> : slot?.type === 'action' ? <Keyboard size={24} aria-hidden="true" /> : <span className="keypad-empty-mark" aria-hidden="true">+</span>}
-            <span className="keypad-tile-label">{slot?.type === 'action' ? slot.label : slot?.type === 'folder' ? folderName : 'Empty'}</span>
-          </>}
+          {!back && <span className="keypad-key-number">{control + 1}</span>}
+          <KeyDisplayContent slot={slot} pages={allPages} depth={depth} back={back} />
         </button>;
       })}
     </div>

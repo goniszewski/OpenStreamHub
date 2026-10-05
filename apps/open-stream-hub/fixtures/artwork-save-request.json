@@ -1,0 +1,15 @@
+{
+  "request": {
+    "background": [
+      0,
+      0,
+      0
+    ],
+    "fit": "contain",
+    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAGUlEQVR4AQEOAPH/AP8AAAD/AAAAAP////8f7gX73t3sKwAAAABJRU5ErkJggg==",
+    "name": "Four squares",
+    "quality": 90,
+    "quarter_turns": 1,
+    "target": "keypad"
+  }
+}

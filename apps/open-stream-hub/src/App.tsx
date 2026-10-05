@@ -8,6 +8,7 @@ import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCirc
 import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
+import { ArtworkPage } from './ArtworkPage';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
@@ -21,6 +22,7 @@ import { useDeviceEditor } from './useDeviceEditor';
 import type { ConfirmRequest } from './useDeviceEditor';
 
 const desktop = isTauri();
+const invokeCommand = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
 const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
 
 // Crash-recovery drafts work without storage; the store then does nothing.
@@ -135,7 +137,7 @@ export default function App() {
           {([{ id: 'devices', label: 'Devices', icon: Grid2X2 }, { id: 'profiles', label: 'Profiles', icon: FileText }] as const).map(item =>
             <button key={item.id} className={page === item.id ? 'active' : ''} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><item.icon size={22} />{item.label}</button>)}
           <button disabled title="Flow editor is planned"><Workflow size={22} /><span>Flows<small>Planned</small></span></button>
-          <button disabled title="Display uploads require further implementation and hardware validation"><Palette size={22} /><span>Display artwork<small>Planned</small></span></button>
+          <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
         <div className="sidebar-bottom"><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
@@ -155,6 +157,7 @@ export default function App() {
           <Inspector editor={editor} session={session} state={state} disabled={disabled} />
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} />}
+        {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>

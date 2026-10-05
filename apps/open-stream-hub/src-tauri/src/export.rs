@@ -67,19 +67,19 @@ fn export_stamp(name: &str) -> Option<&str> {
     (stamp_ok && slug_ok).then_some(stamp)
 }
 
-fn create_private_dir(directory: &Path) -> Result<(), String> {
+pub(crate) fn create_private_dir(directory: &Path, label: &str) -> Result<(), String> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder
         .create(directory)
-        .map_err(|error| format!("could not create the exports folder: {error}"))?;
+        .map_err(|error| format!("could not create the {label} folder: {error}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("could not secure the exports folder: {error}"))?;
+            .map_err(|error| format!("could not secure the {label} folder: {error}"))?;
     }
     Ok(())
 }
@@ -87,8 +87,13 @@ fn create_private_dir(directory: &Path) -> Result<(), String> {
 /// Writes a new 0600 file without ever replacing one: content goes to a
 /// private temporary file that is hard-linked to its final name (failing if
 /// that name exists) and unlinked.
-fn write_new(directory: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    create_private_dir(directory)?;
+pub(crate) fn write_new(
+    directory: &Path,
+    name: &str,
+    bytes: &[u8],
+    what: &str,
+) -> Result<PathBuf, String> {
+    create_private_dir(directory, what)?;
     let path = directory.join(name);
     if path.symlink_metadata().is_ok() {
         return Err(format!(
@@ -114,7 +119,7 @@ fn write_new(directory: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Stri
             "{} already exists; wait a second and try again",
             path.display()
         ),
-        _ => format!("could not write the exported profile: {error}"),
+        _ => format!("could not write the {what}: {error}"),
     })?;
     Ok(path)
 }
@@ -152,7 +157,12 @@ pub fn export(
     bytes.push(b'\n');
     let directory = app_data.join(DIRECTORY);
     let (_, stamp) = utc_stamps(generated_at);
-    let path = write_new(&directory, &file_name(&slug(&profile.name), &stamp), &bytes)?;
+    let path = write_new(
+        &directory,
+        &file_name(&slug(&profile.name), &stamp),
+        &bytes,
+        "exported profile",
+    )?;
     prune(&directory, KEEP_EXPORTS);
     Ok(ExportResult {
         path: path.to_string_lossy().into_owned(),

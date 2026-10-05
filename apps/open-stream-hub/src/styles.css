@@ -281,3 +281,37 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .diagnostics-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .profile-transfer .profile-actions { margin:-9px 0 14px; }.profile-transfer .diagnostics-result { margin:0 0 18px; }.import-error { margin:-6px 0 14px; }.profiles-page.drop-target .profile-editor { outline:2px dashed var(--accent); outline-offset:4px; }.dialog-actions.wrap { flex-wrap:wrap; }
 .shortcut-list { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:8px 20px; }.shortcut-list li { display:flex; align-items:center; gap:10px; font-size:13px; }.shortcut-list kbd { min-width:58px; text-align:center; font:inherit; font-size:12px; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:var(--header); }
+.artwork-offline { display:flex; align-items:flex-start; gap:11px; margin:0 0 20px; padding:13px 16px; border:2px solid #d3a451; border-radius:11px; background:var(--panel); font-size:13px; line-height:1.45; }
+.artwork-offline svg { flex:none; color:#b9812a; margin-top:1px; }
+.artwork-layout { display:grid; grid-template-columns:minmax(300px,390px) minmax(0,1fr); gap:22px; align-items:start; }
+.artwork-controls { display:grid; gap:22px; min-width:0; }
+.artwork-field { border:0; padding:0; margin:0 0 18px; min-width:0; }.artwork-field:last-child { margin-bottom:0; }
+.artwork-field legend,.artwork-field>label { display:block; padding:0; margin:0 0 8px; font-size:12px; font-weight:600; }
+.artwork-field:disabled { opacity:.6; }
+.artwork-seg { display:flex; flex-wrap:wrap; gap:6px; }
+.artwork-seg button { flex:1 1 auto; min-height:38px; padding:7px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font-size:12px; }
+.artwork-seg button:hover:enabled { border-color:var(--accent); }
+.artwork-seg button.active { background:var(--selected); border-color:var(--accent); font-weight:600; }
+.artwork-colour { display:flex; gap:10px; align-items:center; }.artwork-colour input[type="text"] { font-family:ui-monospace,Menlo,monospace; }
+.artwork-colour input[type="color"] { width:52px; flex:none; padding:3px; cursor:pointer; }
+.artwork-field output { min-width:34px; text-align:right; font-variant-numeric:tabular-nums; }
+.artwork-drop { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:14px; border:2px dashed var(--line); border-radius:11px; }
+.artwork-drop.active { border-color:var(--accent); background:var(--selected); }
+.artwork-drop-text { flex:1 1 120px; min-width:0; display:grid; gap:2px; }.artwork-drop-text strong { overflow-wrap:anywhere; font-size:13px; }.artwork-drop-text small { color:var(--muted); font-size:11px; }
+.artwork-thumb { width:64px; height:64px; object-fit:contain; border-radius:7px; background:#000; flex:none; }
+.artwork-preview { min-width:0; }
+.artwork-previews { display:flex; flex-wrap:wrap; gap:26px; align-items:flex-start; margin:8px 0 22px; }
+.artwork-stage { position:relative; flex:1 1 320px; max-width:460px; aspect-ratio:var(--art-aspect); }
+.artwork-stage.keypad { max-width:560px; flex-basis:380px; }
+.artwork-module { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none; }
+.artwork-display { position:absolute; overflow:hidden; background:#000; transition:opacity .15s; }
+.artwork-display.round { border-radius:50%; }
+.artwork-display:not(.round) { border-radius:4px; }
+.artwork-display.busy { opacity:.55; }
+.artwork-display img { display:block; width:100%; height:100%; object-fit:fill; }
+.artwork-display-empty { display:block; width:100%; height:100%; background:#000; }
+.artwork-raw { margin:0; flex:none; }
+.artwork-raw-frame { max-width:100%; background:#000; border:1px solid var(--line); line-height:0; }
+.artwork-raw-frame img { display:block; image-rendering:pixelated; }
+.artwork-export { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }.artwork-export .fine-print { margin:0; }
+@media(max-width:1000px) { .artwork-layout { grid-template-columns:minmax(0,1fr); } }

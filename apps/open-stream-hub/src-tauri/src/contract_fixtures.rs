@@ -1,7 +1,7 @@
 //! Shared fixtures that pin the Rust/TypeScript boundary. The frontend tests
 //! read the same files. Regenerate with `UPDATE_FIXTURES=1 cargo test`.
 
-use crate::{diagnostics, feed, replay, service, store, test_profiles};
+use crate::{artwork, diagnostics, feed, replay, service, store, test_profiles};
 use cooltek_sdk_service::Profile;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
@@ -313,6 +313,56 @@ fn profile_export_payloads_match_the_shared_fixtures() {
                 "path": format!("/storage/{}", result.path.rsplit_once("/exports/").map(|(_, name)| format!("exports/{name}")).unwrap()),
                 "bytes": result.bytes,
             },
+        }),
+    );
+}
+
+#[test]
+fn artwork_payloads_match_the_shared_fixtures() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+    // A 2x2 PNG: red, green / blue, white.
+    let pixels = [255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255];
+    let mut source = Vec::new();
+    PngEncoder::new(&mut source)
+        .write_image(&pixels, 2, 2, ExtendedColorType::Rgb8)
+        .unwrap();
+    let prepare = json!({
+        "image_base64": STANDARD.encode(&source),
+        "target": "keypad",
+        "quality": 90,
+        "fit": "contain",
+        "quarter_turns": 1,
+        "background": [0, 0, 0],
+    });
+    check_or_update(
+        "artwork-prepare-request.json",
+        &json!({ "request": prepare }),
+    );
+    let request: artwork::PrepareRequest = serde_json::from_value(prepare.clone()).unwrap();
+    let prepared = artwork::prepare_artwork(&request).unwrap();
+    check_or_update(
+        "artwork-prepare-result.json",
+        &json!({ "prepare_artwork": prepared }),
+    );
+    let mut save = prepare;
+    save["name"] = json!("Four squares");
+    check_or_update("artwork-save-request.json", &json!({ "request": save }));
+    let request: artwork::SaveRequest = serde_json::from_value(save).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let saved = artwork::save_artwork(&request, directory.path(), 1_791_201_600).unwrap();
+    check_or_update(
+        "artwork-save-result.json",
+        &json!({
+            "save_artwork": {
+                "path": format!(
+                    "/storage/{}",
+                    saved.path.rsplit_once("/artwork/").map(|(_, name)| format!("artwork/{name}")).unwrap()
+                ),
+                "bytes": saved.bytes,
+                "width": saved.width,
+                "height": saved.height,
+            }
         }),
     );
 }

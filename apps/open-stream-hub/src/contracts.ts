@@ -25,7 +25,11 @@ export interface Profile { schema_version: number; name: string; bindings: Bindi
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number }
 export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number }
 export interface ValidationResult { valid: true }
-export interface AppBootstrap { profile: StoredProfile; profiles: ProfileSummary[]; storage_path: string; desktop: boolean }
+export interface UnreadableProfile { id: string; error: string }
+export interface ProfileListing { profiles: ProfileSummary[]; unreadable: UnreadableProfile[] }
+// profile is null when storage holds only unreadable profiles; they are kept for recovery.
+export interface AppBootstrap { profile: StoredProfile | null; profiles: ProfileSummary[]; unreadable: UnreadableProfile[]; storage_path: string; desktop: boolean }
+export interface BootstrapError { message: string; storage_path: string | null }
 export interface KeypadNavigation { from_page: string; to_page: string; path: string[]; depth: number }
 export interface ReplayEvent { timestamp_us: number; module: ServiceModule; control: number; gesture: Gesture; value?: PositionValue; serial_number: string | null; action: Action | null; page_id?: string; navigation?: KeypadNavigation }
 export interface KeypadPreviewResult { path: string[]; depth: number; events: ReplayEvent[]; planned_action_count: number }
@@ -39,3 +43,12 @@ export interface ReplayResult {
   events: ReplayEvent[];
   diagnostics: { timestamp_us: number; message: string }[];
 }
+
+// Live device feed (Tauri events and commands). Field names are snake_case on the wire.
+export interface LiveInputEvent { timestamp_micros: number; control: number; gesture: Gesture; value?: PositionValue }
+export interface DeviceInputPayload { feed_id: string; module: ServiceModule; serial_number: string | null; event: LiveInputEvent }
+export type FeedState = 'running' | 'finished' | 'stopped' | 'failed';
+export interface DeviceStatusPayload { feed_id: string; state: FeedState; source: 'demo' | 'live'; module: ServiceModule | null; error?: string }
+export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null }
+export interface DeviceInventoryPayload { devices: LiveDevice[] }
+export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };

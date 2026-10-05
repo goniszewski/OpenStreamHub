@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "name": "Parity",
+  "bindings": [
+    { "module": "m003k", "control": 0, "gesture": "clockwise", "action": { "type": "volume", "delta": 5 } },
+    { "module": "m4315", "control": 4, "gesture": "released", "serial_number": "Desk", "action": { "type": "shortcut", "key": "c", "modifiers": ["command", "shift"] } },
+    { "module": "m4315", "control": 0, "gesture": "pressed", "action": { "type": "toggle_mute" } },
+    { "module": "m131e", "control": 0, "gesture": "right", "action": { "type": "volume", "delta": -3 } },
+    { "module": "m4315", "control": 4, "gesture": "pressed", "action": { "type": "launch_app", "bundle_id": "com.apple.finder" } },
+    { "module": "m4315", "control": 14, "gesture": "pressed", "action": { "type": "set_volume", "percent": 40 } },
+    { "module": "m005s", "control": 2, "gesture": "position_changed", "action": { "type": "volume_from_position" } },
+    { "module": "m4315", "control": 0, "gesture": "released", "serial_number": "Desk", "action": { "type": "volume", "delta": 2 } }
+  ]
+}

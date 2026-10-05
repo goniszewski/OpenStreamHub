@@ -1,0 +1,19 @@
+[
+  {
+    "devices": [
+      {
+        "module": "m003k",
+        "path_hex": "2f6465762f6869647261772d30323032",
+        "serial_number": "K1"
+      },
+      {
+        "module": "m005s",
+        "path_hex": "2f6465762f6869647261772d30323030",
+        "serial_number": null
+      }
+    ]
+  },
+  {
+    "devices": []
+  }
+]

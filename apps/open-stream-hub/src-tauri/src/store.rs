@@ -1,6 +1,7 @@
 use cooltek_sdk_service::Profile;
 use serde::Serialize;
 use std::{
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::PathBuf,
@@ -10,6 +11,7 @@ use uuid::Uuid;
 
 pub(crate) const MAX_PROFILES: usize = 128;
 const SAMPLE: &str = include_str!("../../../../examples/profiles/macos.json");
+pub(crate) const CONFLICT_ERROR: &str = "this profile changed on disk after it was loaded, possibly in another OpenStreamHub window; reload the saved profile before saving again";
 
 #[derive(Clone, Debug, Serialize)]
 pub struct StoredProfile {
@@ -26,12 +28,33 @@ pub struct ProfileSummary {
     pub modified_at_ms: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct UnreadableProfile {
+    pub id: String,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProfileListing {
+    pub profiles: Vec<ProfileSummary>,
+    pub unreadable: Vec<UnreadableProfile>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct AppBootstrap {
-    pub profile: StoredProfile,
+    /// The most recently modified readable profile, if any. `None` means the
+    /// store holds only unreadable data, which is preserved and never reseeded.
+    pub profile: Option<StoredProfile>,
     pub profiles: Vec<ProfileSummary>,
+    pub unreadable: Vec<UnreadableProfile>,
     pub storage_path: String,
     pub desktop: bool,
+}
+
+/// Hidden entries (`.DS_Store`, AppleDouble `._*` files, interrupted
+/// `.<uuid>.tmp` writes) are never profiles. They are left untouched.
+pub(crate) fn is_hidden_entry(name: &OsStr) -> bool {
+    name.as_encoded_bytes().first() == Some(&b'.')
 }
 
 pub struct ProfileStore {
@@ -66,60 +89,79 @@ impl ProfileStore {
     }
 
     pub fn bootstrap(&self) -> Result<AppBootstrap, String> {
-        let mut profiles = self.list()?;
-        if profiles.is_empty() {
-            // An interrupted write or unfamiliar file is retained for recovery.
-            // Seed only an empty store, never replace an unreadable profile.
-            if fs::read_dir(&self.directory)
-                .map_err(|error| format!("could not inspect profile storage: {error}"))?
-                .next()
-                .is_some()
-            {
+        let mut listing = self.list()?;
+        if listing.profiles.is_empty() && listing.unreadable.is_empty() {
+            // Seed only an empty store, never beside unfamiliar or unreadable
+            // data, which is retained for recovery. Hidden entries such as
+            // .DS_Store are ignored.
+            let mut entries = fs::read_dir(&self.directory)
+                .map_err(|error| format!("could not inspect profile storage: {error}"))?;
+            let has_data = entries.try_fold(false, |found, entry| {
+                entry
+                    .map(|entry| found || !is_hidden_entry(&entry.file_name()))
+                    .map_err(|error| format!("could not inspect profile storage: {error}"))
+            })?;
+            if has_data {
                 return Err("profile storage contains data but no usable profiles; preserve and inspect the files before recovery".into());
             }
             let mut profile = Profile::from_json(SAMPLE.as_bytes())?;
             profile.name = "Everyday".into();
-            self.save(None, profile)?;
-            profiles = self.list()?;
+            self.save(None, profile, None)?;
+            listing = self.list()?;
         }
-        let selected = profiles
-            .first()
-            .ok_or_else(|| "profile storage is empty".to_string())?;
+        let profile = match listing.profiles.first() {
+            Some(selected) => Some(self.load(&selected.id)?),
+            None => None,
+        };
         Ok(AppBootstrap {
-            profile: self.load(&selected.id)?,
-            profiles,
+            profile,
+            profiles: listing.profiles,
+            unreadable: listing.unreadable,
             storage_path: self.directory.to_string_lossy().into_owned(),
             desktop: true,
         })
     }
 
-    pub fn list(&self) -> Result<Vec<ProfileSummary>, String> {
+    /// Lists readable profiles and reports each unreadable `.json` entry
+    /// separately, so one damaged file never hides the others.
+    pub fn list(&self) -> Result<ProfileListing, String> {
         let entries = fs::read_dir(&self.directory)
             .map_err(|error| format!("could not list profiles: {error}"))?;
         let mut profiles = Vec::new();
+        let mut unreadable = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|error| format!("could not read profile entry: {error}"))?;
             let path = entry.path();
-            if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            if is_hidden_entry(&entry.file_name())
+                || path.extension().and_then(|extension| extension.to_str()) != Some("json")
+            {
                 continue;
             }
-            if profiles.len() == MAX_PROFILES {
+            if profiles.len() + unreadable.len() == MAX_PROFILES {
                 return Err(format!("profile storage exceeds {MAX_PROFILES} profiles"));
             }
-            let id = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .ok_or_else(|| "profile filename is not valid UTF-8".to_string())?;
-            let stored = self
-                .load(id)
-                .map_err(|error| format!("could not load profile {id}: {error}"))?;
-            let binding_count = stored.profile.binding_count();
-            profiles.push(ProfileSummary {
-                id: stored.id,
-                name: stored.profile.name,
-                binding_count,
-                modified_at_ms: stored.modified_at_ms,
-            });
+            let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                unreadable.push(UnreadableProfile {
+                    id: entry.file_name().to_string_lossy().into_owned(),
+                    error: "profile filename is not valid UTF-8".into(),
+                });
+                continue;
+            };
+            match self.load(id) {
+                Ok(stored) => {
+                    let binding_count = stored.profile.binding_count();
+                    profiles.push(ProfileSummary {
+                        id: stored.id,
+                        name: stored.profile.name,
+                        binding_count,
+                        modified_at_ms: stored.modified_at_ms,
+                    });
+                }
+                Err(error) => unreadable.push(UnreadableProfile {
+                    id: id.to_owned(),
+                    error,
+                }),
+            }
         }
         profiles.sort_by(|left, right| {
             right
@@ -127,23 +169,48 @@ impl ProfileStore {
                 .cmp(&left.modified_at_ms)
                 .then_with(|| left.id.cmp(&right.id))
         });
-        Ok(profiles)
+        unreadable.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(ProfileListing {
+            profiles,
+            unreadable,
+        })
     }
 
     pub fn load(&self, id: &str) -> Result<StoredProfile, String> {
         let path = self.path(id)?;
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("could not inspect profile: {error}"))?;
+        // Checked before opening so a FIFO or device node never blocks open().
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "profile no longer exists in storage".to_string()
+            } else {
+                format!("could not inspect profile: {error}")
+            }
+        })?;
         if !metadata.file_type().is_file() {
+            return Err("profile must be a regular file, not a symbolic link".into());
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW);
+        }
+        let file = options
+            .open(&path)
+            .map_err(|error| format!("could not open profile: {error}"))?;
+        // Re-check the opened file, not the path, in case it was swapped.
+        let metadata = file
+            .metadata()
+            .map_err(|error| format!("could not inspect opened profile: {error}"))?;
+        if !metadata.is_file() {
             return Err("profile must be a regular file, not a symbolic link".into());
         }
         if metadata.len() > Profile::MAX_JSON_BYTES as u64 {
             return Err("stored profile exceeds the size limit".into());
         }
         let mut bytes = Vec::new();
-        File::open(&path)
-            .map_err(|error| format!("could not open profile: {error}"))?
-            .take((Profile::MAX_JSON_BYTES + 1) as u64)
+        file.take((Profile::MAX_JSON_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|error| format!("could not read profile: {error}"))?;
         // Legacy profiles are upgraded for the editor only. Reading must not
@@ -164,19 +231,34 @@ impl ProfileStore {
         })
     }
 
-    pub fn save(&self, id: Option<&str>, profile: Profile) -> Result<StoredProfile, String> {
+    /// Saves a profile. For an existing ID, `expected_modified_at_ms` is the
+    /// modification time the editor loaded; a mismatch means another window or
+    /// process changed the file, and the save is rejected instead of
+    /// silently overwriting it.
+    pub fn save(
+        &self,
+        id: Option<&str>,
+        profile: Profile,
+        expected_modified_at_ms: Option<u64>,
+    ) -> Result<StoredProfile, String> {
         // Explicit Save is the only operation that persists a schema upgrade.
         let profile = profile.into_v2()?;
         let id = match id {
             Some(id) => {
                 // Never overwrite an unreadable existing profile during editing.
-                self.load(id)?;
+                let current = self.load(id)?;
+                if expected_modified_at_ms
+                    .is_some_and(|expected| expected != current.modified_at_ms)
+                {
+                    return Err(CONFLICT_ERROR.into());
+                }
                 id.to_owned()
             }
             None => {
-                if self.list()?.len() >= MAX_PROFILES {
+                let listing = self.list()?;
+                if listing.profiles.len() + listing.unreadable.len() >= MAX_PROFILES {
                     return Err(format!(
-                        "profile storage permits at most {MAX_PROFILES} profiles"
+                        "profile storage permits at most {MAX_PROFILES} profiles; delete a profile before creating another"
                     ));
                 }
                 Uuid::new_v4().to_string()
@@ -212,7 +294,27 @@ impl ProfileStore {
             let _ = fs::remove_file(&temporary);
         }
         result?;
+        // Persist the rename itself, not only the file contents.
+        self.sync_directory()?;
         self.load(&id)
+    }
+
+    /// Deletes a readable profile. `expected_modified_at_ms` protects against
+    /// removing a version changed elsewhere since it was listed or loaded.
+    pub fn delete(&self, id: &str, expected_modified_at_ms: Option<u64>) -> Result<(), String> {
+        let current = self.load(id)?;
+        if expected_modified_at_ms.is_some_and(|expected| expected != current.modified_at_ms) {
+            return Err(CONFLICT_ERROR.into());
+        }
+        fs::remove_file(self.path(id)?)
+            .map_err(|error| format!("could not delete profile: {error}"))?;
+        self.sync_directory()
+    }
+
+    fn sync_directory(&self) -> Result<(), String> {
+        File::open(&self.directory)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("could not flush profile storage: {error}"))
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, String> {
@@ -247,17 +349,18 @@ mod tests {
         let initial = store.bootstrap().unwrap();
         assert!(initial.desktop);
         assert_eq!(initial.profiles.len(), 1);
-        assert_eq!(initial.profile.profile.name, "Everyday");
-        let id = initial.profile.id;
-        let mut profile = initial.profile.profile;
+        let initial = initial.profile.unwrap();
+        assert_eq!(initial.profile.name, "Everyday");
+        let id = initial.id;
+        let mut profile = initial.profile;
         profile.name = "Work".into();
         profile.bindings[0].action = cooltek_sdk_service::Action::Volume { delta: 8 };
-        let saved = store.save(Some(&id), profile.clone()).unwrap();
+        let saved = store.save(Some(&id), profile.clone(), None).unwrap();
         assert_eq!(saved.profile, profile);
         let restarted = ProfileStore::open(directory.path().join("profiles")).unwrap();
         assert_eq!(restarted.load(&id).unwrap().profile, profile);
-        assert_eq!(restarted.bootstrap().unwrap().profile.id, id);
-        assert_eq!(restarted.list().unwrap().len(), 1);
+        assert_eq!(restarted.bootstrap().unwrap().profile.unwrap().id, id);
+        assert_eq!(restarted.list().unwrap().profiles.len(), 1);
         assert_eq!(
             fs::read_dir(directory.path().join("profiles"))
                 .unwrap()
@@ -281,15 +384,18 @@ mod tests {
         assert_eq!(loaded.profile, expected);
         assert_eq!(loaded.profile.schema_version, 2);
         assert!(loaded.profile.keypad.is_some());
-        assert_eq!(store.bootstrap().unwrap().profile.profile, expected);
         assert_eq!(
-            store.list().unwrap()[0].binding_count,
+            store.bootstrap().unwrap().profile.unwrap().profile,
+            expected
+        );
+        assert_eq!(
+            store.list().unwrap().profiles[0].binding_count,
             expected.binding_count()
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
         assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
 
-        let saved = store.save(Some(&id), loaded.profile).unwrap();
+        let saved = store.save(Some(&id), loaded.profile, None).unwrap();
         assert_eq!(saved.id, id);
         assert_eq!(saved.profile, expected);
         let saved_bytes = fs::read(&path).unwrap();
@@ -307,19 +413,19 @@ mod tests {
     fn schema_two_roundtrip_and_summary_include_all_nested_tile_bindings() {
         let (directory, store) = store();
         let profile = test_profiles::folders();
-        let saved = store.save(None, profile.clone()).unwrap();
+        let saved = store.save(None, profile.clone(), None).unwrap();
         assert_eq!(saved.profile, profile);
         assert_eq!(saved.profile.binding_count(), 7);
-        assert_eq!(store.list().unwrap()[0].binding_count, 7);
+        assert_eq!(store.list().unwrap().profiles[0].binding_count, 7);
         let restarted = ProfileStore::open(directory.path().join("profiles")).unwrap();
         assert_eq!(restarted.load(&saved.id).unwrap().profile, profile);
-        assert_eq!(restarted.bootstrap().unwrap().profile.id, saved.id);
+        assert_eq!(restarted.bootstrap().unwrap().profile.unwrap().id, saved.id);
     }
 
     #[test]
     fn invalid_folder_profiles_cannot_overwrite_or_reseed_storage() {
         let (directory, store) = store();
-        let saved = store.save(None, test_profiles::folders()).unwrap();
+        let saved = store.save(None, test_profiles::folders(), None).unwrap();
         let path = directory
             .path()
             .join("profiles")
@@ -328,12 +434,16 @@ mod tests {
         let mut invalid = test_profiles::folders_json();
         invalid["keypad"]["pages"][0]["slots"][0]["page_id"] = "missing".into();
         let invalid_profile: Profile = serde_json::from_value(invalid.clone()).unwrap();
-        assert!(store.save(Some(&saved.id), invalid_profile).is_err());
+        assert!(store.save(Some(&saved.id), invalid_profile, None).is_err());
         assert_eq!(fs::read(&path).unwrap(), original);
         let invalid_bytes = serde_json::to_vec(&invalid).unwrap();
         fs::write(&path, &invalid_bytes).unwrap();
         assert!(store.load(&saved.id).is_err());
-        assert!(store.bootstrap().is_err());
+        let recovered = store.bootstrap().unwrap();
+        assert!(recovered.profile.is_none());
+        assert!(recovered.profiles.is_empty());
+        assert_eq!(recovered.unreadable.len(), 1);
+        assert_eq!(recovered.unreadable[0].id, saved.id);
         assert_eq!(fs::read(&path).unwrap(), invalid_bytes);
         assert_eq!(
             fs::read_dir(directory.path().join("profiles"))
@@ -357,14 +467,18 @@ mod tests {
             assert!(store.load(id).is_err());
             assert!(
                 store
-                    .save(Some(id), initial.profile.profile.clone())
+                    .save(
+                        Some(id),
+                        initial.profile.as_ref().unwrap().profile.clone(),
+                        None
+                    )
                     .is_err()
             );
         }
-        let mut invalid = initial.profile.profile;
+        let mut invalid = initial.profile.unwrap().profile;
         invalid.bindings[0].control = 3;
-        assert!(store.save(None, invalid).is_err());
-        assert_eq!(store.list().unwrap().len(), 1);
+        assert!(store.save(None, invalid, None).is_err());
+        assert_eq!(store.list().unwrap().profiles.len(), 1);
     }
 
     #[test]
@@ -373,11 +487,17 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         let path = directory.path().join("profiles").join(format!("{id}.json"));
         fs::write(&path, b"corrupt").unwrap();
-        assert!(store.bootstrap().is_err());
+        let recovered = store.bootstrap().unwrap();
+        assert!(recovered.profile.is_none());
+        assert_eq!(recovered.unreadable[0].id, id);
         assert_eq!(fs::read(&path).unwrap(), b"corrupt");
         assert!(
             store
-                .save(Some(&id), Profile::from_json(SAMPLE.as_bytes()).unwrap())
+                .save(
+                    Some(&id),
+                    Profile::from_json(SAMPLE.as_bytes()).unwrap(),
+                    None
+                )
                 .is_err()
         );
         fs::write(&path, vec![b' '; Profile::MAX_JSON_BYTES + 1]).unwrap();
@@ -402,12 +522,155 @@ mod tests {
         .unwrap();
         assert!(store.load(&id).is_err());
         fs::remove_file(path).unwrap();
-        fs::write(
-            directory.path().join("profiles/.interrupted.tmp"),
-            b"partial",
-        )
-        .unwrap();
+        // Unfamiliar visible data still blocks seeding.
+        let unfamiliar = directory.path().join("profiles/notes.txt");
+        fs::write(&unfamiliar, b"keep me").unwrap();
         assert!(store.bootstrap().is_err());
+        assert_eq!(fs::read(&unfamiliar).unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn hidden_entries_never_block_seeding_and_are_left_untouched() {
+        let (directory, store) = store();
+        let profiles = directory.path().join("profiles");
+        for (name, bytes) in [
+            (".DS_Store", &b"finder"[..]),
+            ("._sidecar.json", &b"appledouble"[..]),
+            (".interrupted.tmp", &b"partial"[..]),
+        ] {
+            fs::write(profiles.join(name), bytes).unwrap();
+        }
+        let initial = store.bootstrap().unwrap();
+        assert_eq!(initial.profiles.len(), 1);
+        assert!(initial.unreadable.is_empty());
+        assert_eq!(fs::read(profiles.join(".DS_Store")).unwrap(), b"finder");
+        assert_eq!(
+            fs::read(profiles.join("._sidecar.json")).unwrap(),
+            b"appledouble"
+        );
+        assert_eq!(
+            fs::read(profiles.join(".interrupted.tmp")).unwrap(),
+            b"partial"
+        );
+    }
+
+    #[test]
+    fn one_unreadable_profile_does_not_hide_others_or_block_saving() {
+        let (directory, store) = store();
+        let good = store.save(None, test_profiles::folders(), None).unwrap();
+        let bad_id = Uuid::new_v4().to_string();
+        let bad_path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{bad_id}.json"));
+        fs::write(&bad_path, b"corrupt").unwrap();
+        fs::write(directory.path().join("profiles/not-a-uuid.json"), b"{}").unwrap();
+
+        let listing = store.list().unwrap();
+        assert_eq!(listing.profiles.len(), 1);
+        assert_eq!(listing.profiles[0].id, good.id);
+        let ids: Vec<_> = listing
+            .unreadable
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&bad_id.as_str()) && ids.contains(&"not-a-uuid"));
+        assert!(listing.unreadable.iter().all(|item| !item.error.is_empty()));
+
+        let bootstrap = store.bootstrap().unwrap();
+        assert_eq!(bootstrap.profile.unwrap().id, good.id);
+        assert_eq!(bootstrap.unreadable, listing.unreadable);
+
+        let created = store.save(None, test_profiles::folders(), None).unwrap();
+        let updated = store
+            .save(
+                Some(&good.id),
+                test_profiles::folders(),
+                Some(good.modified_at_ms),
+            )
+            .unwrap();
+        assert_eq!(updated.id, good.id);
+        assert_eq!(store.list().unwrap().profiles.len(), 2);
+        assert!(store.load(&created.id).is_ok());
+        assert_eq!(fs::read(&bad_path).unwrap(), b"corrupt");
+    }
+
+    #[test]
+    fn stale_saves_and_deletes_are_rejected_as_conflicts() {
+        let (directory, store) = store();
+        let saved = store.save(None, test_profiles::folders(), None).unwrap();
+        let path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{}.json", saved.id));
+        // Simulate another instance writing the file later.
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(
+                UNIX_EPOCH + std::time::Duration::from_millis(saved.modified_at_ms + 5_000),
+            ))
+            .unwrap();
+        let before = fs::read(&path).unwrap();
+        let mut edited = test_profiles::folders();
+        edited.name = "Mine".into();
+        let error = store
+            .save(Some(&saved.id), edited.clone(), Some(saved.modified_at_ms))
+            .unwrap_err();
+        assert_eq!(error, CONFLICT_ERROR);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            store
+                .delete(&saved.id, Some(saved.modified_at_ms))
+                .unwrap_err(),
+            CONFLICT_ERROR
+        );
+        assert!(path.exists());
+
+        let current = store.load(&saved.id).unwrap();
+        let resaved = store
+            .save(Some(&saved.id), edited, Some(current.modified_at_ms))
+            .unwrap();
+        assert_eq!(resaved.profile.name, "Mine");
+        store
+            .delete(&saved.id, Some(resaved.modified_at_ms))
+            .unwrap();
+        assert!(!path.exists());
+        assert!(
+            store
+                .load(&saved.id)
+                .unwrap_err()
+                .contains("no longer exists")
+        );
+    }
+
+    #[test]
+    fn deleting_frees_capacity_and_never_touches_invalid_ids_or_unreadable_files() {
+        let (directory, store) = store();
+        let mut last = None;
+        for _ in 0..MAX_PROFILES {
+            last = Some(store.save(None, test_profiles::folders(), None).unwrap());
+        }
+        let error = store
+            .save(None, test_profiles::folders(), None)
+            .unwrap_err();
+        assert!(error.contains("delete a profile"));
+        let last = last.unwrap();
+        store.delete(&last.id, None).unwrap();
+        assert!(store.save(None, test_profiles::folders(), None).is_ok());
+        for id in ["../escape", "", "a.json"] {
+            assert!(store.delete(id, None).is_err());
+        }
+        let bad_id = Uuid::new_v4().to_string();
+        let bad_path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{bad_id}.json"));
+        fs::write(&bad_path, b"corrupt").unwrap();
+        assert!(store.delete(&bad_id, None).is_err());
+        assert_eq!(fs::read(&bad_path).unwrap(), b"corrupt");
     }
 
     #[cfg(unix)]
@@ -421,7 +684,9 @@ mod tests {
         let id = Uuid::new_v4().to_string();
         std::os::unix::fs::symlink(&outside, store.path(&id).unwrap()).unwrap();
         assert!(store.load(&id).is_err());
-        assert!(store.save(Some(&id), profile).is_err());
+        assert!(store.save(Some(&id), profile, None).is_err());
+        assert!(store.delete(&id, None).is_err());
+        assert!(store.path(&id).unwrap().symlink_metadata().is_ok());
         assert_eq!(fs::read(outside).unwrap(), before);
     }
 }

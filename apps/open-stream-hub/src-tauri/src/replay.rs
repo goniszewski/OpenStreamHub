@@ -23,7 +23,7 @@ const ROLLERS: &str = include_str!(
     "../../../../crates/cooltek-sdk-cli/tests/fixtures/m032le-software-derived-synthetic.jsonl"
 );
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DemoKind {
     Knobs,
@@ -75,60 +75,64 @@ pub struct ReplayResult {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-pub fn replay_demo(profile: Profile, kind: DemoKind) -> Result<ReplayResult, String> {
-    let (capture, source) = match kind {
+/// Returns the bundled capture text and its display source for a demo.
+pub fn demo_capture(kind: DemoKind) -> (&'static str, &'static str) {
+    match kind {
         DemoKind::Knobs => (KNOBS, "Bundled M003K synthetic capture"),
         DemoKind::Dial => (DIAL, "Bundled M131E software-derived synthetic capture"),
         DemoKind::Keys => (KEYS, "Bundled M4315 software-derived synthetic capture"),
         DemoKind::Faders => (FADERS, "Bundled M005S software-derived synthetic capture"),
         DemoKind::Rollers => (ROLLERS, "Bundled M032LE software-derived synthetic capture"),
-    };
+    }
+}
+
+/// Maps a recognized MasterHUB model to a module with service input support.
+pub fn service_module(kind: Option<ModuleKind>) -> Option<ServiceModule> {
+    match kind {
+        Some(ModuleKind::M003K) => Some(ServiceModule::M003K),
+        Some(ModuleKind::M131E) => Some(ServiceModule::M131E),
+        Some(ModuleKind::M4315) => Some(ServiceModule::M4315),
+        Some(ModuleKind::M005S) => Some(ServiceModule::M005S),
+        Some(ModuleKind::M032LE) => Some(ServiceModule::M032LE),
+        _ => None,
+    }
+}
+
+pub fn replay_demo(profile: Profile, kind: DemoKind) -> Result<ReplayResult, String> {
+    let (capture, source) = demo_capture(kind);
     replay_capture(profile, capture, source)
 }
 
-// Internal only: callers cannot choose a path, URL, or external capture text.
-fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<ReplayResult, String> {
-    validate_profile(&profile)?;
-    let mut session = ProfileSession::new(profile)?;
+/// One bundled capture decoded by the shared service input session.
+pub struct DecodedCapture {
+    pub context: DeviceContext,
+    pub report_count: u64,
+    /// Each report's timestamp and decode outcome, in capture order.
+    pub reports: Vec<(u64, Result<InputUpdate, String>)>,
+}
+
+/// Validates and decodes a complete synthetic capture without planning actions.
+///
+/// Malformed reports are retained as per-report errors; capture framing,
+/// hex, and transport-error footers fail the whole capture.
+pub fn decode_capture(capture: &str) -> Result<DecodedCapture, String> {
     let (mut reader, header) = CaptureReader::new(Cursor::new(capture.as_bytes()))?;
     if !matches!(header.source, Source::Synthetic) {
         return Err("demo replay requires a bundled synthetic capture".into());
     }
-    let module = match ModuleKind::from_ids(header.identity.vendor_id, header.identity.product_id) {
-        Some(ModuleKind::M003K) => ServiceModule::M003K,
-        Some(ModuleKind::M131E) => ServiceModule::M131E,
-        Some(ModuleKind::M4315) => ServiceModule::M4315,
-        Some(ModuleKind::M005S) => ServiceModule::M005S,
-        Some(ModuleKind::M032LE) => ServiceModule::M032LE,
-        _ => return Err("demo replay requires a supported MasterHUB module identity".into()),
-    };
-    let context = DeviceContext {
-        module,
-        serial_number: header.identity.serial_number,
-    };
+    let module = service_module(ModuleKind::from_ids(
+        header.identity.vendor_id,
+        header.identity.product_id,
+    ))
+    .ok_or("demo replay requires a supported MasterHUB module identity")?;
     let mut input = InputSession::new(module);
-    let mut dispatcher = DryRunDispatcher::default();
-    let mut events = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut report_count = 0;
+    let mut reports = Vec::new();
     while let Some(report) = reader.next_report()? {
-        report_count += 1;
         let raw = decode_hex(&report.raw_hex, InputSession::MAX_REPORT_BYTES)?;
-        match input.decode(&raw, report.timestamp_micros) {
-            Ok(InputUpdate::Events(decoded)) => {
-                for event in decoded {
-                    events.push(plan_event(&mut session, &context, event, &mut dispatcher)?);
-                }
-            }
-            Ok(InputUpdate::Unknown) => diagnostics.push(Diagnostic {
-                timestamp_us: report.timestamp_micros,
-                message: "Unknown input report; no action planned".into(),
-            }),
-            Err(message) => diagnostics.push(Diagnostic {
-                timestamp_us: report.timestamp_micros,
-                message: format!("Malformed input report: {message}"),
-            }),
-        }
+        reports.push((
+            report.timestamp_micros,
+            input.decode(&raw, report.timestamp_micros),
+        ));
     }
     let footer = reader
         .end()
@@ -139,11 +143,47 @@ fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<Repla
             footer.error.as_deref().unwrap_or("unknown error")
         ));
     }
+    Ok(DecodedCapture {
+        context: DeviceContext {
+            module,
+            serial_number: header.identity.serial_number,
+        },
+        report_count: reports.len() as u64,
+        reports,
+    })
+}
+
+// Internal only: callers cannot choose a path, URL, or external capture text.
+fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<ReplayResult, String> {
+    validate_profile(&profile)?;
+    let mut session = ProfileSession::new(profile)?;
+    let decoded = decode_capture(capture)?;
+    let context = decoded.context;
+    let mut dispatcher = DryRunDispatcher::default();
+    let mut events = Vec::new();
+    let mut diagnostics = Vec::new();
+    for (timestamp_us, update) in decoded.reports {
+        match update {
+            Ok(InputUpdate::Events(decoded)) => {
+                for event in decoded {
+                    events.push(plan_event(&mut session, &context, event, &mut dispatcher)?);
+                }
+            }
+            Ok(InputUpdate::Unknown) => diagnostics.push(Diagnostic {
+                timestamp_us,
+                message: "Unknown input report; no action planned".into(),
+            }),
+            Err(message) => diagnostics.push(Diagnostic {
+                timestamp_us,
+                message: format!("Malformed input report: {message}"),
+            }),
+        }
+    }
     Ok(ReplayResult {
         source: source.into(),
         synthetic: true,
         status: "completed",
-        report_count,
+        report_count: decoded.report_count,
         event_count: events.len(),
         planned_action_count: dispatcher.actions.len(),
         events,

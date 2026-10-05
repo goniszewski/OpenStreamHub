@@ -1,0 +1,112 @@
+{
+  "bindings": [
+    {
+      "action": {
+        "delta": 5,
+        "type": "volume"
+      },
+      "control": 0,
+      "gesture": "clockwise",
+      "module": "m003k"
+    },
+    {
+      "action": {
+        "delta": -3,
+        "type": "volume"
+      },
+      "control": 0,
+      "gesture": "right",
+      "module": "m131e"
+    },
+    {
+      "action": {
+        "type": "volume_from_position"
+      },
+      "control": 2,
+      "gesture": "position_changed",
+      "module": "m005s"
+    }
+  ],
+  "keypad": {
+    "pages": [
+      {
+        "id": "root",
+        "name": "Root",
+        "slots": [
+          {
+            "bindings": [
+              {
+                "action": {
+                  "type": "toggle_mute"
+                },
+                "gesture": "pressed"
+              },
+              {
+                "action": {
+                  "delta": 2,
+                  "type": "volume"
+                },
+                "gesture": "released",
+                "serial_number": "Desk"
+              }
+            ],
+            "label": "Key 1",
+            "type": "action"
+          },
+          null,
+          null,
+          null,
+          {
+            "bindings": [
+              {
+                "action": {
+                  "key": "c",
+                  "modifiers": [
+                    "command",
+                    "shift"
+                  ],
+                  "type": "shortcut"
+                },
+                "gesture": "released",
+                "serial_number": "Desk"
+              },
+              {
+                "action": {
+                  "bundle_id": "com.apple.finder",
+                  "type": "launch_app"
+                },
+                "gesture": "pressed"
+              }
+            ],
+            "label": "Key 5",
+            "type": "action"
+          },
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          {
+            "bindings": [
+              {
+                "action": {
+                  "percent": 40,
+                  "type": "set_volume"
+                },
+                "gesture": "pressed"
+              }
+            ],
+            "label": "Key 15",
+            "type": "action"
+          }
+        ]
+      }
+    ]
+  },
+  "name": "Parity",
+  "schema_version": 2
+}

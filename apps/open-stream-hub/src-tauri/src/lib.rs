@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod contract_fixtures;
+mod feed;
 mod migration;
 #[cfg(target_os = "macos")]
 mod quit;
@@ -8,21 +11,65 @@ mod test_profiles;
 
 use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
 use serde::Serialize;
-use std::sync::Mutex;
-use tauri::{Manager, State};
+use std::{path::PathBuf, sync::Mutex};
+use tauri::{Emitter, Manager, State};
 
-struct AppState(Mutex<Result<store::ProfileStore, String>>);
+struct AppState {
+    store: Mutex<Result<store::ProfileStore, String>>,
+    app_data: Result<PathBuf, String>,
+    feeds: feed::Feeds,
+    inventory: feed::InventoryWatcher,
+}
+
+/// Bootstrap failures carry the expected storage folder so the frontend can
+/// tell the user where to look before retrying.
+#[derive(Debug, Serialize)]
+struct BootstrapError {
+    message: String,
+    storage_path: Option<String>,
+}
 
 impl AppState {
+    fn open(app_data: Result<PathBuf, String>) -> Self {
+        let store = app_data
+            .clone()
+            .and_then(store::ProfileStore::open_for_app_data);
+        Self {
+            store: Mutex::new(store),
+            app_data,
+            feeds: feed::Feeds::default(),
+            inventory: feed::InventoryWatcher::default(),
+        }
+    }
+
     fn with_store<T>(
         &self,
         operation: impl FnOnce(&store::ProfileStore) -> Result<T, String>,
     ) -> Result<T, String> {
         let store = self
-            .0
+            .store
             .lock()
             .map_err(|_| "profile storage lock is unavailable".to_string())?;
         operation(store.as_ref().map_err(Clone::clone)?)
+    }
+
+    /// Opens storage again if the previous attempt failed, so a retry after
+    /// the user fixes the folder does not require restarting the app.
+    fn bootstrap(&self) -> Result<store::AppBootstrap, BootstrapError> {
+        if let (Ok(mut store), Ok(app_data)) = (self.store.lock(), &self.app_data)
+            && store.is_err()
+        {
+            *store = store::ProfileStore::open_for_app_data(app_data.clone());
+        }
+        self.with_store(store::ProfileStore::bootstrap)
+            .map_err(|message| BootstrapError {
+                message,
+                storage_path: self
+                    .app_data
+                    .as_ref()
+                    .ok()
+                    .map(|path| path.join("profiles").to_string_lossy().into_owned()),
+            })
     }
 }
 
@@ -32,12 +79,12 @@ struct ProfileValidity {
 }
 
 #[tauri::command]
-fn bootstrap(state: State<'_, AppState>) -> Result<store::AppBootstrap, String> {
-    state.with_store(store::ProfileStore::bootstrap)
+fn bootstrap(state: State<'_, AppState>) -> Result<store::AppBootstrap, BootstrapError> {
+    state.bootstrap()
 }
 
 #[tauri::command]
-fn list_profiles(state: State<'_, AppState>) -> Result<Vec<store::ProfileSummary>, String> {
+fn list_profiles(state: State<'_, AppState>) -> Result<store::ProfileListing, String> {
     state.with_store(store::ProfileStore::list)
 }
 
@@ -51,9 +98,19 @@ fn save_profile(
     state: State<'_, AppState>,
     id: Option<String>,
     profile: Profile,
+    expected_modified_at_ms: Option<u64>,
 ) -> Result<store::StoredProfile, String> {
     replay::validate_profile(&profile)?;
-    state.with_store(|store| store.save(id.as_deref(), profile))
+    state.with_store(|store| store.save(id.as_deref(), profile, expected_modified_at_ms))
+}
+
+#[tauri::command]
+fn delete_profile(
+    state: State<'_, AppState>,
+    id: String,
+    expected_modified_at_ms: Option<u64>,
+) -> Result<(), String> {
+    state.with_store(|store| store.delete(&id, expected_modified_at_ms))
 }
 
 #[tauri::command]
@@ -89,19 +146,82 @@ fn preview_keypad(
     replay::preview_keypad(profile, path, control, serial_number)
 }
 
+// Device feeds are read-only: enumeration and input reads only, never software
+// mode, profiles, or actions. Enumeration and joining run off the main thread.
+//
+// `list_live_devices` enumerates on demand with its own registry rather than
+// returning the watcher's latest snapshot, so it is never up to one poll
+// interval stale and reports enumeration errors. Both share `live_devices`, so
+// the list matches `device://inventory` for the same enumeration.
+#[tauri::command(async)]
+fn list_live_devices() -> Result<Vec<feed::LiveDevice>, String> {
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    Ok(feed::live_devices(&registry.devices()))
+}
+
+#[tauri::command(async)]
+fn start_feed(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    source: feed::FeedSource,
+) -> Result<String, String> {
+    let feed_id = feed::feed_id(&source)?;
+    let thread_id = feed_id.clone();
+    state.feeds.start(feed_id, move |stop| {
+        feed::run_feed(&thread_id, &source, stop, |message| {
+            let emitted = match message {
+                feed::FeedMessage::Input(payload) => app.emit(feed::INPUT_EVENT, payload),
+                feed::FeedMessage::Status(payload) => app.emit(feed::STATUS_EVENT, payload),
+            };
+            if let Err(error) = emitted {
+                eprintln!("could not emit a device feed event: {error}");
+            }
+        })
+    })
+}
+
+#[tauri::command(async)]
+fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> {
+    state.feeds.stop(&feed_id)
+}
+
 pub fn run() {
-    let builder = tauri::Builder::default();
+    // A second launch focuses the existing window instead of opening another
+    // editor over the same profile files.
+    let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
+        |app, _arguments, _working_directory| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        },
+    ));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(quit::menu).on_menu_event(quit::on_menu_event);
 
     let app = builder
         .setup(|app| {
-            let store = app
+            let app_data = app
                 .path()
                 .app_data_dir()
-                .map_err(|error| format!("could not resolve profile storage: {error}"))
-                .and_then(store::ProfileStore::open_for_app_data);
-            app.manage(AppState(Mutex::new(store)));
+                .map_err(|error| format!("could not resolve profile storage: {error}"));
+            app.manage(AppState::open(app_data));
+            // Hot-plug detection: the watcher emits `device://inventory` once
+            // at start and whenever the input-capable device list changes.
+            // Without it the app still works; devices can be listed on demand.
+            let handle = app.handle().clone();
+            let started = app.state::<AppState>().inventory.start(move |stop| {
+                feed::watch_inventory(stop, feed::hid_inventory(), feed::wait, |payload| {
+                    if let Err(error) = handle.emit(feed::INVENTORY_EVENT, payload) {
+                        eprintln!("could not emit the device inventory: {error}");
+                    }
+                })
+            });
+            if let Err(error) = started {
+                eprintln!("{error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -109,16 +229,30 @@ pub fn run() {
             list_profiles,
             load_profile,
             save_profile,
+            delete_profile,
             validate_profile,
             replay_demo,
             preview_binding,
-            preview_keypad
+            preview_keypad,
+            list_live_devices,
+            start_feed,
+            stop_feed
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");
 
     app.run(|app, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event
+        if let tauri::RunEvent::Exit = event {
+            let state = app.state::<AppState>();
+            state.feeds.stop_all();
+            state.inventory.stop();
+            return;
+        }
+        // Only user/system exit requests (code None) are routed through the
+        // draft guard. An explicit app.exit(code) proceeds as requested.
+        if let tauri::RunEvent::ExitRequested {
+            api, code: None, ..
+        } = event
             && let Some(window) = app.get_webview_window("main")
         {
             // Tauri exit requests pass through the same draft guard as the
@@ -132,4 +266,67 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed(app_data: Result<PathBuf, String>) -> AppState {
+        AppState {
+            store: Mutex::new(Err("could not open storage".into())),
+            app_data,
+            feeds: feed::Feeds::default(),
+            inventory: feed::InventoryWatcher::default(),
+        }
+    }
+
+    #[test]
+    fn app_state_reports_the_store_open_error_for_every_storage_operation() {
+        let state = failed(Err("no app data".into()));
+        let mut called = false;
+        let result = state.with_store(|_| {
+            called = true;
+            Ok(())
+        });
+        assert_eq!(result.unwrap_err(), "could not open storage");
+        assert!(!called);
+        assert_eq!(
+            state.with_store(|store| store.list()).unwrap_err(),
+            "could not open storage"
+        );
+        let error = state.bootstrap().unwrap_err();
+        assert_eq!(error.message, "could not open storage");
+        assert_eq!(error.storage_path, None);
+    }
+
+    #[test]
+    fn bootstrap_retry_reopens_storage_after_the_folder_is_fixed() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path().join("dev.cooltek.openstreamhub");
+        // A file where the app data folder belongs blocks opening storage.
+        std::fs::write(&app_data, b"not a folder").unwrap();
+        let state = AppState::open(Ok(app_data.clone()));
+        let error = state.bootstrap().unwrap_err();
+        assert!(error.message.contains("must be a directory"));
+        assert_eq!(
+            error.storage_path.as_deref(),
+            Some(app_data.join("profiles").to_str().unwrap())
+        );
+        assert!(state.with_store(|store| store.list()).is_err());
+
+        std::fs::remove_file(&app_data).unwrap();
+        std::fs::create_dir(&app_data).unwrap();
+        let bootstrap = state.bootstrap().unwrap();
+        assert_eq!(bootstrap.profiles.len(), 1);
+        assert!(state.with_store(|store| store.list()).is_ok());
+    }
+
+    #[test]
+    fn app_state_runs_operations_against_an_open_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::open(Ok(directory.path().join("app")));
+        let bootstrap = state.bootstrap().unwrap();
+        assert_eq!(bootstrap.profiles.len(), 1);
+    }
 }

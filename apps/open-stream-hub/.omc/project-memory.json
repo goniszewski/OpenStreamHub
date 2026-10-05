@@ -1,0 +1,205 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1791211696381,
+  "projectRoot": "/Users/<user>/Documents/repos/goniszewski/cooltek-sdk/apps/open-stream-hub",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": ">=22.12",
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      },
+      {
+        "name": "TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "tsconfig.json"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "react",
+        "version": "19.3.0",
+        "category": "frontend"
+      },
+      {
+        "name": "react-dom",
+        "version": "19.3.0",
+        "category": "frontend"
+      },
+      {
+        "name": "vite",
+        "version": "8.3.2",
+        "category": "build"
+      },
+      {
+        "name": "vitest",
+        "version": "5.0.3",
+        "category": "testing"
+      }
+    ],
+    "packageManager": "npm",
+    "runtime": "Node.js 22.12"
+  },
+  "build": {
+    "buildCommand": "npm run build",
+    "testCommand": "npm test",
+    "lintCommand": null,
+    "devCommand": "npm run dev",
+    "scripts": {
+      "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+      "build": "tsc --noEmit && vite build",
+      "check": "tsc --noEmit",
+      "test": "vitest run",
+      "desktop": "tauri dev",
+      "desktop:build": "tauri build --debug --bundles app",
+      "tauri": "tauri",
+      "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml"
+    }
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "public",
+      "src"
+    ],
+    "gitBranches": {
+      "defaultBranch": "master",
+      "branchingStrategy": null
+    }
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 1,
+      "lastAccessed": 1791211696335,
+      "keyFiles": [
+        "index.html"
+      ]
+    },
+    "fixtures": {
+      "path": "fixtures",
+      "purpose": "Test fixtures",
+      "fileCount": 3,
+      "lastAccessed": 1791211696337,
+      "keyFiles": [
+        "ipc-contracts.json",
+        "legacy-upgrade-expected.json",
+        "legacy-upgrade-input.json"
+      ]
+    },
+    "public": {
+      "path": "public",
+      "purpose": "Public files",
+      "fileCount": 0,
+      "lastAccessed": 1791211696343,
+      "keyFiles": []
+    },
+    "qa": {
+      "path": "qa",
+      "purpose": null,
+      "fileCount": 25,
+      "lastAccessed": 1791211696344,
+      "keyFiles": [
+        "clickable-keys-dark.png",
+        "clickable-keys-light.png",
+        "comparison-dark-full.png",
+        "comparison-dark-hero.png",
+        "comparison-dark-inspector.png"
+      ]
+    },
+    "src": {
+      "path": "src",
+      "purpose": "Source code",
+      "fileCount": 24,
+      "lastAccessed": 1791211696344,
+      "keyFiles": [
+        "App.tsx",
+        "DevicesPage.tsx",
+        "DisplayContent.test.tsx",
+        "DisplayContent.tsx",
+        "InfoPages.tsx"
+      ]
+    },
+    "src-tauri": {
+      "path": "src-tauri",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1791211696345,
+      "keyFiles": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "build.rs",
+        "tauri.conf.json"
+      ]
+    },
+    "dist/assets": {
+      "path": "dist/assets",
+      "purpose": "Static assets",
+      "fileCount": 2,
+      "lastAccessed": 1791211696345,
+      "keyFiles": [
+        "index-VfiXd7GA.js",
+        "index-upM4Lp5r.css"
+      ]
+    },
+    "src-tauri/src": {
+      "path": "src-tauri/src",
+      "purpose": "Source code",
+      "fileCount": 8,
+      "lastAccessed": 1791211696350,
+      "keyFiles": [
+        "contract_fixtures.rs",
+        "lib.rs",
+        "main.rs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "src-tauri/src/replay.rs",
+      "accessCount": 2,
+      "lastAccessed": 1791212472680,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/feed.rs",
+      "accessCount": 2,
+      "lastAccessed": 1791212731826,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/lib.rs",
+      "accessCount": 1,
+      "lastAccessed": 1791212332332,
+      "type": "file"
+    },
+    {
+      "path": "src-tauri/src/contract_fixtures.rs",
+      "accessCount": 1,
+      "lastAccessed": 1791212333631,
+      "type": "file"
+    },
+    {
+      "path": "src/device-feed.ts",
+      "accessCount": 1,
+      "lastAccessed": 1791212449064,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
 import type { Scheduler } from './device-feed';
-import { isStale, maxEntries, ServiceRunner, serviceIdFor, summarizeRecord } from './service-runner';
+import { findRun, isStale, maxEntries, ServiceRunner, serviceIdFor, summarizeRecord } from './service-runner';
 
 const profile: Profile = { schema_version: 1, name: 'Everyday', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } }] };
 const event = { module: 'm003k', control: 0, gesture: 'pressed' };
@@ -126,7 +126,7 @@ describe('ServiceRunner', () => {
   it('unlistens on dispose and ignores later records', async () => {
     const t = setup(); t.runner.connect(); await tick(); await t.runner.start(options);
     t.runner.dispose();
-    expect(t.unlistened.sort()).toEqual(['service://record', 'service://status']);
+    expect(t.unlistened.sort()).toEqual(['service://record', 'service://status', 'session://state']);
     t.record({ type: 'raw', line: 'late' }); t.flush();
     expect(t.runner.getState().runs[t.id].entries).toHaveLength(0);
   });
@@ -137,5 +137,140 @@ describe('ServiceRunner', () => {
     expect(isStale(run, { ...profile, name: 'Changed' })).toBe(true);
     expect(isStale({ ...run, state: 'exited' }, { ...profile, name: 'Changed' })).toBe(false);
     expect(isStale(undefined, profile)).toBe(false);
+  });
+});
+
+describe('session manager', () => {
+  const id2 = serviceIdFor('CCDD');
+  const session = (t: ReturnType<typeof setup>, phase: string, extra: Record<string, unknown> = {}) => t.handlers['session://state']({ payload: {
+    session_id: t.id, service_id: t.id, phase, reason: null, attempt: 0, execute: false, module: 'm131e', serial_number: 'SER12345', ...extra } });
+  const started = async (execute = false) => {
+    const t = setup(); t.runner.connect(); await tick();
+    await t.runner.start({ ...options, execute }, async () => true);
+    t.status('running', { execute }); session(t, 'running', { execute });
+    return t;
+  };
+  const run = (t: ReturnType<typeof setup>) => t.runner.getState().runs[t.id];
+  const texts = (t: ReturnType<typeof setup>) => run(t).entries.map(entry => entry.text);
+
+  it('listens to session events', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    expect(Object.keys(t.handlers).sort()).toEqual(['service://record', 'service://status', 'session://state']);
+  });
+  it('logs every phase and reason without duplicating unchanged events', async () => {
+    const t = await started(true);
+    session(t, 'suspended', { service_id: null, reason: 'sleep', execute: true });
+    session(t, 'suspended', { service_id: null, reason: 'sleep', execute: true });
+    session(t, 'needs_confirmation', { service_id: null, reason: 'sleep', execute: true });
+    session(t, 'waiting_for_device', { service_id: null, reason: 'device_removed', execute: true });
+    session(t, 'reconnecting', { service_id: null, reason: 'device_removed', attempt: 2, execute: true, next_attempt_in_ms: 4000 });
+    session(t, 'running', { service_id: id2, execute: true });
+    session(t, 'stopped', { service_id: null, reason: 'service_exited', detail: 'crashed', execute: true });
+    expect(texts(t)).toEqual(['Mac went to sleep — actions paused', 'Paused: confirm to resume actions', 'Waiting for m131e to reconnect',
+      'Reconnecting (attempt 2/5)', 'Reconnected', 'Session stopped: the service exited (crashed)']);
+    expect(run(t).entries.at(-1)!.kind).toBe('error');
+  });
+  it('logs a user stop as info and unplug as stopped reason', async () => {
+    const t = await started();
+    session(t, 'stopped', { service_id: null, reason: 'user' });
+    expect(run(t).entries.at(-1)).toMatchObject({ kind: 'info', text: 'Session stopped: stopped by you' });
+    expect(run(t).state).toBe('exited');
+  });
+  it('turns next_attempt_in_ms into a deadline', async () => {
+    const t = await started();
+    session(t, 'reconnecting', { service_id: null, attempt: 1, next_attempt_in_ms: 3000 });
+    expect(run(t).session).toMatchObject({ phase: 'reconnecting', attempt: 1, nextAttemptAt: 4000 });
+    session(t, 'running', { service_id: id2 });
+    expect(run(t).session!.nextAttemptAt).toBeUndefined();
+  });
+  it('lands records and status of a reconnected process in the same session run', async () => {
+    const t = await started();
+    t.record({ type: 'event', status: 'planned', event, action: { type: 'toggle_mute' } }); t.flush();
+    session(t, 'reconnecting', { service_id: null, attempt: 1 });
+    session(t, 'running', { service_id: id2 });
+    t.handlers['service://status']({ payload: { service_id: id2, state: 'running', execute: false } });
+    t.handlers['service://record']({ payload: { service_id: id2, record: { type: 'event', status: 'planned', event, action: { type: 'toggle_mute' } } } });
+    t.flush();
+    const runs = t.runner.getState().runs;
+    expect(Object.keys(runs)).toEqual([t.id]);
+    expect(run(t).counters).toMatchObject({ events: 2, planned: 2 });
+    expect(run(t).session!.serviceId).toBe(id2);
+    // late exit of the superseded process does not end the session
+    t.status('exited', { exit_code: 1 });
+    expect(run(t).state).toBe('running');
+    expect(t.runner.isActivePath('AABB')).toBe(true);
+    expect(t.runner.isActivePath('CCDD')).toBe(true);
+    // exit of the current process is applied
+    t.handlers['service://status']({ payload: { service_id: id2, state: 'exited', execute: false } });
+    expect(run(t).state).toBe('exited');
+  });
+  it('keeps blocking auto-live until the session is stopped', async () => {
+    const t = await started();
+    const device = { path_hex: 'ccdd', module: 'm131e' as const, serial_number: 'SER12345' };
+    const other = { path_hex: 'eeff', module: 'm003k' as const, serial_number: null };
+    for (const phase of ['suspended', 'waiting_for_device', 'reconnecting', 'needs_confirmation']) {
+      session(t, phase, { service_id: null });
+      expect(t.runner.isActivePath('ccdd', device)).toBe(true);
+      expect(t.runner.isActivePath('eeff', other)).toBe(false);
+      expect(t.runner.isActivePath('aabb')).toBe(true);
+    }
+    session(t, 'stopped', { service_id: null, reason: 'user' });
+    expect(t.runner.isActivePath('ccdd', device)).toBe(false);
+    expect(t.runner.isActivePath('aabb')).toBe(false);
+  });
+  it('keeps the ring buffer and counters across reconnects', async () => {
+    const t = await started();
+    for (let index = 0; index < maxEntries + 20; index += 1) t.record({ type: 'raw', line: `l${index}` });
+    t.flush();
+    session(t, 'suspended', { service_id: null, reason: 'sleep' });
+    expect(run(t).entries).toHaveLength(maxEntries);
+    expect(run(t).entries.at(-1)!.text).toBe('Mac went to sleep — actions paused');
+  });
+  it('stops through stop_session when no process exists and stop_service otherwise', async () => {
+    const t = await started();
+    await t.runner.stop(t.id);
+    expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });
+    session(t, 'running', { service_id: id2 });
+    await t.runner.stop(t.id);
+    expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: id2 } });
+    for (const phase of ['suspended', 'waiting_for_device', 'reconnecting', 'needs_confirmation']) {
+      session(t, phase, { service_id: null });
+      await t.runner.stop(t.id);
+      expect(t.calls.at(-1)).toEqual({ command: 'stop_session', args: { sessionId: t.id } });
+    }
+  });
+  it('resumes only after a confirmation that resolves true and only in needs_confirmation', async () => {
+    const t = await started(true);
+    const resumes = () => t.calls.filter(call => call.command === 'resume_session');
+    session(t, 'suspended', { service_id: null, execute: true });
+    expect(await t.runner.resumeSession(t.id, async () => true)).toBe(false);
+    session(t, 'needs_confirmation', { service_id: null, execute: true });
+    expect(await t.runner.resumeSession(t.id)).toBe(false);
+    expect(await t.runner.resumeSession(t.id, async () => false)).toBe(false);
+    expect(resumes()).toHaveLength(0);
+    expect(await t.runner.resumeSession(t.id, async () => true)).toBe(true);
+    expect(resumes()).toEqual([{ command: 'resume_session', args: { sessionId: t.id } }]);
+  });
+  it('surfaces a failing resume or stop_session', async () => {
+    const t = await started(); session(t, 'needs_confirmation', { service_id: null });
+    t.failures.resume_session = 'nope';
+    expect(await t.runner.resumeSession(t.id, async () => true)).toBe(false);
+    expect(t.runner.getState().error).toBe('nope');
+    t.failures.stop_session = 'cannot';
+    await t.runner.stopSession(t.id);
+    expect(t.runner.getState().error).toBe('cannot');
+  });
+  it('findRun matches a session by process, module or fallback', async () => {
+    const t = await started(); session(t, 'waiting_for_device', { service_id: null });
+    const runs = t.runner.getState().runs;
+    expect(findRun(runs, undefined)).toBe(runs[t.id]);
+    expect(findRun(runs, { path_hex: 'ccdd', module: 'm131e', serial_number: 'SER12345' })).toBe(runs[t.id]);
+    expect(findRun(runs, { path_hex: 'ccdd', module: 'm003k', serial_number: null })).toBeUndefined();
+  });
+  it('a new start after a stopped session begins a clean run', async () => {
+    const t = await started(); session(t, 'stopped', { service_id: null, reason: 'user' });
+    expect(await t.runner.start(options)).toBe(true);
+    expect(run(t).session).toBeUndefined();
+    expect(run(t).state).toBe('starting');
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { hasKeypadFolders, isMacPlatform, relativeTime, runBlocker, ServicePanel } from './ServicePanel';
+import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, runBlocker, ServicePanel } from './ServicePanel';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -102,5 +102,81 @@ describe('ServicePanel markup', () => {
     const markup = render({ desktop: false });
     expect(markup).toContain('needs the desktop app');
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Dry run/);
+  });
+});
+
+describe('session banners', () => {
+  const sessionFor = (phase: string, extra: Record<string, unknown> = {}, execute = true) => fixtures(execute, 'running', {
+    session: { serviceId: null, phase, reason: null, attempt: 0, module: 'm131e', serialNumber: 'ABCDEF123456', ...extra } });
+  const liveBanner = 'Actions are running on this Mac';
+
+  it('shows the execute-live banner only while running', () => {
+    const { feed, runner } = sessionFor('running', { serviceId: serviceIdFor('aabb') });
+    const markup = render({ feed, runner });
+    expect(markup).toContain(liveBanner);
+    expect(markup).not.toContain('Resume actions');
+  });
+  it('needs_confirmation is prominent, offers Resume and Stop, and never says actions are live', () => {
+    const { feed, runner } = sessionFor('needs_confirmation', { reason: 'sleep' });
+    const markup = render({ feed, runner });
+    expect(markup).not.toContain(liveBanner);
+    expect(markup).not.toContain('service-banner execute');
+    expect(markup).toContain('service-banner paused attention');
+    expect(markup).toContain('Actions are paused. Nothing will run until you resume.');
+    expect(markup).toContain('Resume actions…');
+    expect(markup).toContain('>Stop<');
+    expect(markup).toContain('>Needs confirmation<');
+  });
+  it('suspended in dry-run mode says it resumes automatically', () => {
+    const { feed, runner } = sessionFor('suspended', { reason: 'sleep' }, false);
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Paused while your Mac sleeps');
+    expect(markup).toContain('resumes automatically in dry-run mode');
+    expect(markup).toContain('>Stop<');
+  });
+  it('waiting names the module and serial tail', () => {
+    const { feed, runner } = sessionFor('waiting_for_device', { reason: 'device_removed' });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Waiting for Encoder IPS display …123456 to reconnect…');
+    expect(markup).not.toContain(liveBanner);
+    expect(markup).toContain('>Stop<');
+  });
+  it('reconnecting shows the attempt and countdown', () => {
+    const { feed, runner } = sessionFor('reconnecting', { attempt: 3, nextAttemptAt: 6500 });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('attempt 3/5');
+    expect(markup).toContain('Next attempt in 5s.');
+    expect(markup).not.toContain(liveBanner);
+    expect(countdownSeconds(6500, 2000)).toBe(5);
+    expect(countdownSeconds(1000, 2000)).toBe(0);
+    expect(countdownSeconds(undefined, 2000)).toBeNull();
+  });
+  it('stopped shows reason and detail and no Stop', () => {
+    const { feed, runner } = sessionFor('stopped', { reason: 'service_exited', detail: 'HID read failed' });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Session stopped: the service exited');
+    expect(markup).toContain('HID read failed');
+    expect(markup).not.toContain(liveBanner);
+    expect(markup).not.toContain('>Stop<');
+    expect(markup).toContain('>Run<');
+  });
+  it('keeps showing the session when no device is connected', () => {
+    const { runner } = sessionFor('waiting_for_device');
+    const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
+    const markup = render({ feed, runner });
+    expect(markup).toContain('to reconnect');
+    expect(markup).toContain('>Stop<');
+  });
+  it('keeps the stale-profile notice against the original snapshot', () => {
+    const { feed, runner } = sessionFor('needs_confirmation');
+    expect(render({ feed, runner })).toContain('Profile changed since start. Restart to apply.');
+  });
+  it('labels phases and builds the resume confirmation copy', () => {
+    expect(phaseLabel(undefined)).toBe('Stopped');
+    const copy = confirmCopy('resume', 'Gaming', 'Encoder …1234');
+    expect(copy).toMatchObject({ title: 'Resume actions on this Mac?', confirm: 'Resume actions' });
+    expect(copy.message).toContain('Profile "Gaming"');
+    expect(copy.message).toContain('Encoder …1234');
+    expect(confirmCopy('start', 'Gaming', 'X').confirm).toBe('Run actions');
   });
 });

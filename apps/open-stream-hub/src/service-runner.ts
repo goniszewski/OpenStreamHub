@@ -1,4 +1,4 @@
-import type { Profile, ServiceRecordPayload, ServiceState, ServiceStatusPayload, StartServiceRequest } from './contracts';
+import type { LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest } from './contracts';
 import { stableStringify } from './draft-model';
 import type { Listen, Scheduler } from './device-feed';
 import type { Invoke } from './profile-session';
@@ -7,8 +7,14 @@ import { errorMessage } from './ui-model';
 export type ActivityKind = 'event' | 'action' | 'action_failed' | 'info' | 'error' | 'raw';
 export interface ActivityEntry { kind: ActivityKind; text: string; at: number }
 export interface ServiceCounters { events: number; planned: number; executed: number; failed: number }
+// Sleep/wake and reconnect state for one run. The run is keyed by the stable session id; serviceId here is the current process.
+export interface SessionInfo {
+  serviceId: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number;
+  module: ServiceModule; serialNumber: string | null; detail?: string; nextAttemptAt?: number;
+}
 export interface ServiceRun {
   serviceId: string;
+  session?: SessionInfo;
   state: ServiceState;
   execute: boolean;
   exitCode?: number | null;
@@ -28,7 +34,35 @@ export const maxEntries = 200;
 export const idleServiceState: ServiceStoreState = { desktop: false, runs: {}, error: null };
 export const serviceIdFor = (pathHex: string) => `service:${pathHex.toLowerCase()}`;
 export const isActiveState = (state: ServiceState) => state === 'starting' || state === 'running' || state === 'stopping';
-export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== undefined && isActiveState(run.state);
+// A session that is suspended, waiting, reconnecting or needs confirmation still owns its device. Only 'stopped' releases it.
+export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== undefined && (run.session ? run.session.phase !== 'stopped' : isActiveState(run.state));
+export const maxReconnectAttempts = 5;
+const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you' };
+
+// The run a device belongs to: a live session (matched by current process or module and serial) first, then the plain per-path run.
+export function findRun(runs: Record<string, ServiceRun>, device: LiveDevice | undefined): ServiceRun | undefined {
+  const open = Object.values(runs).filter(run => run.session && run.session.phase !== 'stopped');
+  if (!device) return open[0];
+  const id = serviceIdFor(device.path_hex);
+  return open.find(run => run.session!.serviceId === id || sessionMatches(run.session!, device)) ?? runs[id];
+}
+const sessionMatches = (session: SessionInfo, device: LiveDevice) => session.module === device.module && (session.serialNumber === null || session.serialNumber === device.serial_number);
+
+function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: number): ActivityEntry | null {
+  if (previous && previous.phase === next.phase && previous.attempt === next.attempt) return null;
+  const info = (text: string): ActivityEntry => ({ kind: 'info', text, at });
+  switch (next.phase) {
+    case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
+    case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect`);
+    case 'reconnecting': return info(`Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
+    case 'needs_confirmation': return info('Paused: confirm to resume actions');
+    case 'stopped': {
+      const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
+      return { kind: next.reason === 'user' || next.reason === null ? 'info' : 'error', text, at };
+    }
+    default: return previous && previous.phase !== 'running' ? info('Reconnected') : null;
+  }
+}
 export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, executed: 0, failed: 0 });
 
 type Json = Record<string, unknown>;
@@ -107,7 +141,7 @@ export function countRecord(counters: ServiceCounters, record: unknown): Service
 }
 
 // The service uses the draft as it was at start and never hot-reloads.
-export const isStale = (run: ServiceRun | undefined, draft: Profile) => run !== undefined && isActiveState(run.state) && stableStringify(draft) !== run.snapshot;
+export const isStale = (run: ServiceRun | undefined, draft: Profile) => run !== undefined && isActiveRun(run) && stableStringify(draft) !== run.snapshot;
 
 export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean };
 export type ConfirmExecute = () => Promise<boolean>;
@@ -126,6 +160,8 @@ export class ServiceRunner {
   private generation = 0;
   private unlisteners: (() => void)[] = [];
   private readonly listeners = new Set<() => void>();
+  // Every process id seen in a session event -> the stable session id that owns its log.
+  private readonly sessionOf = new Map<string, string>();
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean,
     private readonly schedule: Scheduler = frame, private readonly now: () => number = Date.now) {
@@ -134,7 +170,14 @@ export class ServiceRunner {
 
   readonly subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   readonly getState = () => this.state;
-  isActivePath = (pathHex: string) => isActiveRun((this.pending ?? this.state.runs)[serviceIdFor(pathHex)]);
+  // A device is owned by a run on its path, by the session its path was remapped to, or by a session
+  // that has no process right now but will reclaim the same module.
+  isActivePath = (pathHex: string, device?: LiveDevice): boolean => {
+    const runs = this.runs();
+    const id = serviceIdFor(pathHex);
+    if (isActiveRun(runs[id]) || isActiveRun(runs[this.sessionOf.get(id) ?? ''])) return true;
+    return device !== undefined && Object.values(runs).some(run => run.session && run.session.phase !== 'stopped' && sessionMatches(run.session, device));
+  };
 
   private set(patch: Partial<ServiceStoreState>) {
     this.state = { ...this.state, ...(this.pending ? { runs: this.pending } : {}), ...patch };
@@ -164,12 +207,15 @@ export class ServiceRunner {
     };
     add('service://record', payload => this.onRecord(payload as ServiceRecordPayload));
     add('service://status', payload => this.onStatus(payload as ServiceStatusPayload));
+    add('session://state', payload => this.onSession(payload as SessionStatePayload));
   }
 
   private onRecord(payload: ServiceRecordPayload) {
-    if (!payload || typeof payload.service_id !== 'string' || !this.runs()[payload.service_id]) return;
+    if (!payload || typeof payload.service_id !== 'string') return;
+    const id = this.sessionOf.get(payload.service_id) ?? payload.service_id;
+    if (!this.runs()[id]) return;
     const at = this.now();
-    this.update(payload.service_id, run => {
+    this.update(id, run => {
       const entry = summarizeRecord(payload.record, at);
       const entries = entry ? [...run.entries, entry].slice(-maxEntries) : run.entries;
       return { ...run, entries, counters: countRecord(run.counters, payload.record) };
@@ -178,16 +224,39 @@ export class ServiceRunner {
 
   private onStatus(payload: ServiceStatusPayload) {
     if (!payload || typeof payload.service_id !== 'string' || typeof payload.state !== 'string') return;
-    const id = payload.service_id;
+    const id = this.sessionOf.get(payload.service_id) ?? payload.service_id;
     if (!this.runs()[id]) {
       this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
     }
+    const terminal = payload.state === 'exited' || payload.state === 'failed';
+    const session = this.runs()[id]?.session;
+    // A superseded process ending must not end a session that has moved on to a new process.
+    if (terminal && session && session.phase !== 'stopped' && payload.service_id !== session.serviceId) return;
     this.update(id, run => ({
       ...run, state: payload.state, execute: payload.execute ?? run.execute,
       ...(payload.exit_code !== undefined ? { exitCode: payload.exit_code } : {}),
       ...(payload.error !== undefined ? { error: payload.error } : {}),
       ...(payload.stderr_tail !== undefined ? { stderrTail: payload.stderr_tail } : {}),
     }), true);
+  }
+
+  private onSession(payload: SessionStatePayload) {
+    if (!payload || typeof payload.session_id !== 'string' || typeof payload.phase !== 'string') return;
+    const id = payload.session_id;
+    this.sessionOf.set(id, id);
+    if (typeof payload.service_id === 'string') this.sessionOf.set(payload.service_id, id);
+    if (!this.runs()[id]) this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
+    const at = this.now();
+    this.update(id, run => {
+      const session: SessionInfo = {
+        serviceId: payload.service_id, phase: payload.phase, reason: payload.reason ?? null, attempt: payload.attempt ?? 0,
+        module: payload.module, serialNumber: payload.serial_number ?? null, detail: payload.detail,
+        ...(typeof payload.next_attempt_in_ms === 'number' ? { nextAttemptAt: at + payload.next_attempt_in_ms } : {}),
+      };
+      const entry = sessionEntry(run.session, session, at);
+      const state: ServiceState = payload.phase === 'stopped' ? (run.state === 'failed' ? 'failed' : 'exited') : payload.phase === 'running' && run.state !== 'stopping' ? 'running' : run.state;
+      return { ...run, session, state, execute: payload.execute ?? run.execute, entries: entry ? [...run.entries, entry].slice(-maxEntries) : run.entries };
+    }, true);
   }
 
   private blankRun(serviceId: string, execute: boolean, profileName: string, snapshot: string, draftUnsaved: boolean): ServiceRun {
@@ -204,6 +273,7 @@ export class ServiceRunner {
       if (!(await confirm())) return false;
       if (isActiveRun(this.runs()[id])) return false;
     }
+    this.sessionOf.forEach((session, key) => { if (session === id) this.sessionOf.delete(key); });
     const run = this.blankRun(id, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved);
     this.set({ runs: { ...this.runs(), [id]: run }, error: null });
     const request: StartServiceRequest = { profile: options.profile, path_hex: options.pathHex, execute: options.execute, software_mode: options.softwareMode };
@@ -217,11 +287,33 @@ export class ServiceRunner {
     }
   }
 
+  // serviceId is the run key. A managed run with no live process (suspended, waiting, reconnecting,
+  // needs confirmation) is ended through stop_session; otherwise the process is stopped as before.
   async stop(serviceId: string) {
     if (!this.state.desktop) return;
+    const session = this.runs()[serviceId]?.session;
+    if (session && session.phase !== 'stopped' && (session.phase !== 'running' || session.serviceId === null)) { await this.stopSession(serviceId); return; }
+    const target = session?.serviceId ?? serviceId;
     this.update(serviceId, run => run.state === 'starting' || run.state === 'running' ? { ...run, state: 'stopping' } : run, true);
-    try { await this.invoke<void>('stop_service', { serviceId }); }
+    try { await this.invoke<void>('stop_service', { serviceId: target }); }
     catch (reason) { this.set({ error: errorMessage(reason) }); }
+  }
+
+  async stopSession(sessionId: string) {
+    if (!this.state.desktop) return;
+    try { await this.invoke<void>('stop_session', { sessionId }); }
+    catch (reason) { this.set({ error: errorMessage(reason) }); }
+  }
+
+  // Restarts a paused run with its original snapshot, including execute. Never without a confirmation that resolves true.
+  async resumeSession(sessionId: string, confirm?: ConfirmExecute): Promise<boolean> {
+    if (!this.state.desktop) return false;
+    if (this.runs()[sessionId]?.session?.phase !== 'needs_confirmation') return false;
+    if (!confirm) { this.set({ error: 'Resuming actions needs confirmation.' }); return false; }
+    if (!(await confirm())) return false;
+    if (this.runs()[sessionId]?.session?.phase !== 'needs_confirmation') return false;
+    try { await this.invoke<void>('resume_session', { sessionId }); return true; }
+    catch (reason) { this.set({ error: errorMessage(reason) }); return false; }
   }
 
   dismissError() { this.set({ error: null }); }

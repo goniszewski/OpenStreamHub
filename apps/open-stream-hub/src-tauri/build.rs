@@ -16,6 +16,8 @@ fn main() {
             "stop_feed",
             "start_service",
             "stop_service",
+            "resume_session",
+            "stop_session",
             "create_diagnostics",
             "prepare_artwork",
             "save_artwork",

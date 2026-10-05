@@ -230,6 +230,72 @@ fn service_payloads_match_the_shared_fixtures() {
 }
 
 #[test]
+fn session_payloads_match_the_shared_fixtures() {
+    use crate::{power::PowerEvent, session};
+    use cooltek_sdk_service::ServiceModule;
+    use session::fake::{FakeRunner, device, exit, request};
+    let dial = |path: &str| device(ServiceModule::M131E, Some("ABCDEF123456"), path);
+    let start = |execute| {
+        let mut driver = session::Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/dev/hidraw-0202")], 0);
+        let id = driver
+            .start(request(&dial("/dev/hidraw-0202"), execute), 0)
+            .unwrap();
+        (driver, id)
+    };
+    // Dry run: running, sleep, settle, wake, unplug, replug on a new path,
+    // a crash with backoff, then a user stop.
+    let (mut dry, id) = start(false);
+    dry.power(PowerEvent::Suspend, 1_000);
+    exit(&mut dry, &id, "", 1_100);
+    dry.power(PowerEvent::Resume, 5_000);
+    dry.tick(7_000);
+    dry.inventory(vec![], 8_000);
+    exit(
+        &mut dry,
+        &id,
+        "masterhub-service: input read failed\n",
+        8_100,
+    );
+    dry.inventory(vec![dial("/dev/hidraw-0303")], 9_000);
+    let moved = format!(
+        "service:{}",
+        cooltek_sdk_cli::capture::encode_hex(b"/dev/hidraw-0303")
+    );
+    exit(
+        &mut dry,
+        &moved,
+        "masterhub-service: no HID interface matches the selected path\n",
+        10_000,
+    );
+    dry.tick(11_000);
+    dry.stop(&id, true, 12_000);
+    exit(&mut dry, &moved, "", 12_100);
+    // Execute: a crash waits for the user's confirmation.
+    let (mut executing, executing_id) = start(true);
+    exit(&mut executing, &executing_id, "", 500);
+    let mut events = dry.runner().emitted.clone();
+    events.extend(executing.runner().emitted.iter().skip(1).cloned());
+    check_or_update(
+        "session-state-events.json",
+        &serde_json::to_value(&events).unwrap(),
+    );
+    // Tauri maps snake_case command arguments to camelCase.
+    check_or_update(
+        "session-command-args.json",
+        &json!({
+            "resume_session": { "sessionId": executing_id },
+            "stop_session": { "sessionId": id },
+        }),
+    );
+    executing.resume(&executing_id, 600).unwrap();
+    check_or_update(
+        "session-command-results.json",
+        &json!({ "resume_session": null, "stop_session": null }),
+    );
+}
+
+#[test]
 fn diagnostics_payloads_match_the_shared_fixtures() {
     let fader_hex =
         cooltek_sdk_cli::capture::encode_hex(br"\\?\HID#VID_2516&PID_0200#FADER-SERIAL-0042");

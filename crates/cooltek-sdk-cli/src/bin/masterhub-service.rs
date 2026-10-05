@@ -4,10 +4,7 @@ use std::{
     io::{self, BufReader, Read, Write},
     path::PathBuf,
     process::ExitCode,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
 
@@ -16,30 +13,29 @@ use cooltek_sdk_cli::capture::{
     CaptureReader, EndReason, MAX_REPORT_BYTES, decode_hex, encode_hex,
 };
 use cooltek_sdk_cli::{
+    device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     live_output::TimedStdout,
-    live_runtime::{LiveOptions, run_live},
+    live_runtime::{LiveOptions, LiveSummary, run_live},
+    service_events::{emit, execution, plan_report, process_work, start_record},
 };
-use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleIdentity, ModuleKind};
+use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
 use cooltek_sdk_service::{
-    ActionDispatcher, BindingEngine, DeviceContext, InputSession, InputUpdate, KeypadResolution,
-    Profile, ProfileSession, ServiceModule, macos::MacOsDispatcher,
+    ActionDispatcher, DeviceContext, InputSession, Profile, ProfileSession, ServiceModule,
+    macos::MacOsDispatcher,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[derive(Parser)]
 #[command(
     name = "masterhub-service",
     version,
     about = "Bind MasterHUB gestures to macOS actions",
-    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables software mode for the IPS dial or keys. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM ends the session and attempts requested mode cleanup."
+    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables software mode for the IPS dial or keys. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM ends the session and attempts requested mode cleanup; a second Ctrl-C exits immediately."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Command,
 }
-
-#[derive(Clone, Debug)]
-struct DevicePath(Vec<u8>);
 
 #[derive(Subcommand)]
 enum Command {
@@ -52,6 +48,15 @@ enum Command {
         capture: PathBuf,
     },
     /// Read one exact interface until interrupted, optionally executing actions.
+    ///
+    /// JSON records are written to stdout with bounded write deadlines, so stdout
+    /// must be a terminal or pipe. Redirecting to a regular file (`> file.jsonl`)
+    /// is rejected; to save the log, pipe through tee instead:
+    /// `masterhub-service run ... | tee session.jsonl`.
+    ///
+    /// A failed action is logged as `action_failed` and the session continues,
+    /// unless --stop-on-action-error is given. Log-output and device errors
+    /// always end the session.
     Run {
         #[arg(long)]
         profile: PathBuf,
@@ -68,8 +73,12 @@ enum Command {
         duration_secs: Option<u64>,
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
         max_reports: Option<u64>,
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i32).range(1..=1000))]
+        /// Maximum wait for each read (1 to 1000 ms).
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i32).range(TIMEOUT_MS_RANGE))]
         timeout_ms: i32,
+        /// End the session on the first failed action instead of logging it and continuing.
+        #[arg(long)]
+        stop_on_action_error: bool,
     },
 }
 
@@ -107,16 +116,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             duration_secs,
             max_reports,
             timeout_ms,
+            stop_on_action_error,
         } => {
-            let path_hex = path_hex.0;
             let profile = load_profile(profile)?;
             let profile_name = profile.name.clone();
             if execute && !cfg!(target_os = "macos") {
                 return Err("--execute is supported only on macOS".into());
             }
-            let stopped = Arc::new(AtomicBool::new(false));
-            let signal = Arc::clone(&stopped);
-            ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))?;
+            // Reject unsupported stdout (such as a regular file) before any HID access.
+            let stdout = TimedStdout::new(Duration::from_millis(500))?;
+            let stopped = cooltek_sdk_cli::interrupt::install()?;
             let registry = DeviceRegistry::new()?;
             let devices = registry.devices();
             let selected = select_device(&devices, &path_hex, software_mode)?;
@@ -134,6 +143,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "usage":selected.usage, "software_mode_requested":software_mode,
                 "queue_capacity":64, "log_timeout_ms":500,
                 "drain_timeout_ms":10000, "cancellation_timeout_ms":2000,
+                "stop_on_action_error":stop_on_action_error,
             });
             run_live(
                 reader,
@@ -146,15 +156,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     duration: duration_secs.map(Duration::from_secs),
                     max_reports,
                     timeout_ms,
+                    stop_on_action_error,
                     ..LiveOptions::default()
                 },
                 stopped,
-                move |abort| {
-                    Ok((
-                        Dispatcher::new(execute, abort),
-                        TimedStdout::new(Duration::from_millis(500))?,
-                    ))
-                },
+                move |abort| Ok((Dispatcher::new(execute, abort), stdout)),
             )?;
         }
     }
@@ -163,7 +169,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
 
 // Folder pages need display updates before their mappings can be used live.
 // Other modules can retain their existing flat bindings from the same profile.
-fn live_bindings(mut profile: Profile, module: ServiceModule) -> Result<BindingEngine, String> {
+fn live_bindings(mut profile: Profile, module: ServiceModule) -> Result<ProfileSession, String> {
     profile.validate()?;
     if profile.schema_version == 2 {
         if module == ServiceModule::M4315 {
@@ -172,7 +178,7 @@ fn live_bindings(mut profile: Profile, module: ServiceModule) -> Result<BindingE
         profile.schema_version = 1;
         profile.keypad = None;
     }
-    BindingEngine::new(profile)
+    ProfileSession::new(profile)
 }
 
 fn load_profile(path: PathBuf) -> Result<Profile, Box<dyn Error>> {
@@ -181,14 +187,7 @@ fn load_profile(path: PathBuf) -> Result<Profile, Box<dyn Error>> {
     Ok(Profile::from_json(&bytes)?)
 }
 
-fn parse_path(raw: &str) -> Result<DevicePath, String> {
-    let path = decode_hex(raw, MAX_REPORT_BYTES)?;
-    if path.is_empty() || path.contains(&0) {
-        return Err("device path must be nonempty and contain no NUL bytes".into());
-    }
-    Ok(DevicePath(path))
-}
-
+/// Establishes the module from VID/PID; a blank serial is treated as absent.
 fn device_context(
     vendor_id: u16,
     product_id: u16,
@@ -202,41 +201,7 @@ fn device_context(
         Some(ModuleKind::M032LE) => ServiceModule::M032LE,
         _ => return Err("the binding service supports only the five control modules".into()),
     };
-    Ok(DeviceContext {
-        module,
-        serial_number,
-    })
-}
-
-fn select_device<'a>(
-    devices: &'a [ModuleIdentity],
-    path: &[u8],
-    software_mode: bool,
-) -> Result<&'a ModuleIdentity, String> {
-    let mut matches = devices
-        .iter()
-        .filter(|device| device.path.as_bytes() == path);
-    let selected = matches
-        .next()
-        .ok_or("selected path is absent; refresh masterhub-diag list")?;
-    if matches.next().is_some() {
-        return Err("selected path identifies multiple interfaces".into());
-    }
-    let context = device_context(
-        selected.vendor_id,
-        selected.product_id,
-        selected.serial_number.clone(),
-    )?;
-    if software_mode && !matches!(context.module, ServiceModule::M131E | ServiceModule::M4315) {
-        return Err("--software-mode is supported only for M131E and M4315".into());
-    }
-    Ok(selected)
-}
-
-fn emit(writer: &mut impl Write, value: Value) -> Result<(), String> {
-    serde_json::to_writer(&mut *writer, &value).map_err(|error| error.to_string())?;
-    writer.write_all(b"\n").map_err(|error| error.to_string())?;
-    writer.flush().map_err(|error| error.to_string())
+    DeviceContext::new(module, serial_number)
 }
 
 enum Dispatcher {
@@ -263,132 +228,12 @@ impl ActionDispatcher for Dispatcher {
     }
 }
 
-struct Runtime<'a, D, W> {
-    engine: ProfileSession,
-    device: DeviceContext,
-    input: InputSession,
-    dispatcher: &'a mut D,
-    output: &'a mut W,
-    execute: bool,
-    report_count: u64,
-    event_count: u64,
-    action_count: u64,
-}
-
-impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
-    fn new(
-        engine: ProfileSession,
-        device: DeviceContext,
-        dispatcher: &'a mut D,
-        output: &'a mut W,
-        execute: bool,
-    ) -> Self {
-        Self {
-            input: InputSession::new(device.module),
-            engine,
-            device,
-            dispatcher,
-            output,
-            execute,
-            report_count: 0,
-            event_count: 0,
-            action_count: 0,
-        }
-    }
-
-    fn start(&mut self, details: Value) -> Result<(), String> {
-        emit(
-            self.output,
-            json!({
-                "type":"service_start", "schema_version":1,
-                "device":{"module":self.device.module,"serial_number":self.device.serial_number},
-                "execution":if self.execute {"macos"} else {"dry_run"}, "details":details,
-            }),
-        )
-    }
-
-    fn process(
-        &mut self,
-        raw: &[u8],
-        timestamp_micros: u64,
-        stopped: Option<&AtomicBool>,
-    ) -> Result<bool, String> {
-        self.report_count += 1;
-        let update = self.input.decode(raw, timestamp_micros);
-        let (status, error, events) = match update {
-            Ok(InputUpdate::Events(events)) => ("decoded", None, events),
-            Ok(InputUpdate::Unknown) => ("unknown", None, Vec::new()),
-            Err(error) => ("parse_error", Some(error), Vec::new()),
-        };
-        emit(
-            self.output,
-            json!({
-                "type":"report", "schema_version":1, "timestamp_micros":timestamp_micros,
-                "raw_hex":encode_hex(raw), "status":status, "error":error,
-            }),
-        )?;
-        for event in events {
-            if stopped.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                return Ok(false);
-            }
-            self.event_count += 1;
-            let binding = self.engine.binding_for(&self.device, &event).cloned();
-            let resolution = self.engine.resolve(&self.device, &event)?;
-            let (action, navigation, page_id) = match resolution {
-                KeypadResolution::Action { action, page_id } => (Some(action), None, page_id),
-                KeypadResolution::Navigation { navigation } => (None, Some(navigation), None),
-                KeypadResolution::Unbound => (None, None, None),
-            };
-            // Publish the intended action before invoking the host. A failed log
-            // write must never cause an unrecorded action.
-            emit(
-                self.output,
-                json!({
-                    "type":"event", "schema_version":1, "event":event,
-                    "binding":binding, "action":action, "navigation":navigation, "page_id":page_id,
-                    "status":if action.is_some() {"planned"} else if navigation.is_some() {"navigation"} else {"unbound"},
-                }),
-            )?;
-            if let Some(action) = action {
-                if stopped.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                    return Ok(false);
-                }
-                if let Err(error) = self.dispatcher.dispatch(&action) {
-                    let log = emit(
-                        self.output,
-                        json!({
-                            "type":"action_failed", "event":event, "action":action, "error":error,
-                        }),
-                    );
-                    return combine(Err(format!("action failed: {error}")), log).map(|_| true);
-                }
-                self.action_count += 1;
-                if self.execute {
-                    emit(
-                        self.output,
-                        json!({"type":"action_executed", "event":event, "action":action}),
-                    )?;
-                }
-            }
-        }
-        Ok(true)
-    }
-
-    fn end(&mut self, reason: &str, error: Option<&str>) -> Result<(), String> {
-        self.input.reset();
-        self.engine.reset();
-        emit(
-            self.output,
-            json!({
-                "type":"service_end", "schema_version":1, "reason":reason, "error":error,
-                "report_count":self.report_count, "event_count":self.event_count,
-                "action_count":self.action_count, "execution":if self.execute {"macos"} else {"dry_run"},
-            }),
-        )
-    }
-}
-
-fn replay(engine: ProfileSession, file: PathBuf, output: &mut impl Write) -> Result<(), String> {
+/// Plans a completed capture through the same report/event path as live runs.
+fn replay(
+    mut engine: ProfileSession,
+    file: PathBuf,
+    output: &mut impl Write,
+) -> Result<(), String> {
     let (mut reader, session) = CaptureReader::new(BufReader::new(
         File::open(file).map_err(|error| error.to_string())?,
     ))?;
@@ -397,20 +242,42 @@ fn replay(engine: ProfileSession, file: PathBuf, output: &mut impl Write) -> Res
         session.identity.product_id,
         session.identity.serial_number.clone(),
     )?;
+    let mut input = InputSession::new(device.module);
     let mut dispatcher = Dispatcher::Preview;
-    let mut runtime = Runtime::new(engine, device, &mut dispatcher, output, false);
-    runtime.start(json!({"source":session.source, "identity":session.identity}))?;
+    let never = AtomicBool::new(false);
+    let mut summary = LiveSummary::default();
+    emit(
+        output,
+        start_record(
+            &device,
+            false,
+            json!({"source":session.source, "identity":session.identity}),
+        ),
+    )?;
     let result = (|| {
         while let Some(report) = reader.next_report()? {
-            runtime.process(
-                &decode_hex(&report.raw_hex, MAX_REPORT_BYTES)?,
+            summary.report_count += 1;
+            let raw = decode_hex(&report.raw_hex, MAX_REPORT_BYTES)?;
+            let work = plan_report(
+                &mut input,
+                &mut engine,
+                &device,
+                &raw,
                 report.timestamp_micros,
-                None,
+            )?;
+            process_work(
+                work,
+                &mut dispatcher,
+                output,
+                &never,
+                false,
+                false,
+                &mut summary,
             )?;
         }
         let end = reader.end().ok_or("capture end missing")?;
         emit(
-            runtime.output,
+            output,
             json!({"type":"capture_end", "reason":end.reason, "error":end.error, "report_count":end.report_count}),
         )?;
         if end.reason == EndReason::TransportError {
@@ -421,13 +288,18 @@ fn replay(engine: ProfileSession, file: PathBuf, output: &mut impl Write) -> Res
         }
         Ok(())
     })();
-    let footer = runtime.end(
-        if result.is_ok() {
-            "capture_complete"
-        } else {
-            "error"
-        },
-        result.as_ref().err().map(String::as_str),
+    input.reset();
+    engine.reset();
+    let footer = emit(
+        output,
+        json!({
+            "type":"service_end", "schema_version":1,
+            "reason":if result.is_ok() {"capture_complete"} else {"error"},
+            "error":result.as_ref().err(),
+            "report_count":summary.report_count, "event_count":summary.event_count,
+            "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
+            "execution":execution(false),
+        }),
     );
     combine(result, footer)
 }
@@ -443,7 +315,7 @@ fn combine(primary: Result<(), String>, secondary: Result<(), String>) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cooltek_sdk_service::{Action, Gesture, InputEvent};
+    use cooltek_sdk_service::{Action, Gesture, InputEvent, KeypadResolution};
 
     fn nested_profile() -> Profile {
         Profile::from_json(include_bytes!(
@@ -461,7 +333,7 @@ mod tests {
 
     #[test]
     fn other_modules_keep_their_bindings_in_a_folder_profile() {
-        let engine = live_bindings(nested_profile(), ServiceModule::M003K).unwrap();
+        let mut engine = live_bindings(nested_profile(), ServiceModule::M003K).unwrap();
         let device = DeviceContext {
             module: ServiceModule::M003K,
             serial_number: None,
@@ -473,8 +345,19 @@ mod tests {
             value: None,
         };
         assert_eq!(
-            engine.action_for(&device, &event).unwrap(),
-            Some(Action::Volume { delta: 5 })
+            engine.resolve(&device, &event).unwrap(),
+            KeypadResolution::Action {
+                action: Action::Volume { delta: 5 },
+                page_id: None
+            }
         );
+    }
+
+    #[test]
+    fn blank_serials_are_absent_for_live_and_replay_contexts() {
+        for serial in [Some(String::new()), Some("  ".into()), None] {
+            let device = device_context(0x2516, 0x0202, serial).unwrap();
+            assert_eq!(device.serial_number, None);
+        }
     }
 }

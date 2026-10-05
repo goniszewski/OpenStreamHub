@@ -60,6 +60,8 @@ pub enum EndReason {
     DurationElapsed,
     MaxReports,
     TransportError,
+    /// Ctrl-C or SIGTERM ended the capture; reports before it are complete.
+    Interrupted,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -265,7 +267,7 @@ fn validate_session(session: &Session) -> Result<(), String> {
             session.schema_version
         ));
     }
-    let path = decode_hex(&session.identity.path_hex, MAX_REPORT_BYTES)?;
+    let path = decode_hex(&session.identity.path_hex, crate::device::MAX_PATH_BYTES)?;
     if path.is_empty() || path.contains(&0) {
         return Err("identity path must be nonempty and contain no NUL bytes".into());
     }

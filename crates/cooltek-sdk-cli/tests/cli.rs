@@ -194,6 +194,7 @@ fn invalid_record_arguments_fail_in_clap_before_discovery() {
         ("--duration-secs", "86401"),
         ("--timeout-ms", "0"),
         ("--timeout-ms", "-1"),
+        ("--timeout-ms", "1001"),
         ("--max-reports", "0"),
         ("--path-hex", "abc"),
         ("--path-hex", "zz"),
@@ -306,4 +307,29 @@ fn complete_transport_error_capture_remains_replayable() {
     let mut data = records();
     data.last_mut().unwrap()["reason"] = serde_json::json!("transport_error");
     assert_invalid(&capture(&data), "error is required only");
+}
+
+#[test]
+fn interrupted_capture_replays_with_its_reason_and_empty_serial_is_accepted() {
+    let mut data = records();
+    data[0]["identity"]["serial_number"] = serde_json::json!("");
+    let footer = data.last_mut().unwrap();
+    footer["reason"] = serde_json::json!("interrupted");
+    let output = replay(&capture(&data).0);
+    assert!(output.status.success(), "{output:?}");
+    let rows: Vec<Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let end = rows.last().unwrap();
+    assert_eq!(end["type"], "capture_end");
+    assert_eq!(end["reason"], "interrupted");
+    assert!(end["error"].is_null());
+    // An interrupted footer must not carry a transport error message.
+    data.last_mut().unwrap()["error"] = serde_json::json!("unexpected");
+    assert_invalid(
+        &capture(&data),
+        "error is required only for transport_error",
+    );
 }

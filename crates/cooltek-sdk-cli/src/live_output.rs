@@ -133,7 +133,7 @@ mod unix {
             {
                 return Err(io::Error::new(
                     io::ErrorKind::Unsupported,
-                    "live output deadlines require a terminal or pipe; use an actively read pipe (for example tee) for file capture",
+                    "live output deadlines require a terminal or pipe, not a regular file; to save the log, pipe through tee (an actively read pipe), for example `masterhub-service run ... | tee session.jsonl`",
                 ));
             }
             let original_flags = unsafe { libc::fcntl(duplicated, libc::F_GETFL) };
@@ -495,6 +495,7 @@ mod unix {
             };
             assert_eq!(error.kind(), io::ErrorKind::Unsupported);
             assert!(error.to_string().contains("actively read pipe"));
+            assert!(error.to_string().contains("pipe through tee"));
             assert_eq!(flags(&file), original_flags);
         }
 

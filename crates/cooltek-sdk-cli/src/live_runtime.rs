@@ -1,16 +1,20 @@
 //! Bounded live input and serialized action execution.
 //!
-//! The input owner timestamps and normalizes reports before enqueueing work.
-//! Queue overflow ends the session. The action worker's writer must have bounded
-//! writes, and its dispatcher must respond to the supplied cancellation token.
-//! Native HID feature cleanup has no exposed timeout; worker deadlines do not
-//! establish a bound on a backend's synchronous device operations.
+//! The input owner timestamps, normalizes, and resolves reports before
+//! enqueueing work. When the queue is full, later reports are coalesced into one
+//! pending work item: consecutive relative volume steps on a control are summed,
+//! absolute positions keep the latest value, and other events are appended up to
+//! a fixed bound beyond which they are dropped and counted. The action worker's
+//! writer must have bounded writes, and its dispatcher must respond to the
+//! supplied cancellation token. Native HID feature cleanup has no exposed
+//! timeout; worker deadlines do not establish a bound on a backend's
+//! synchronous device operations.
 
-use crate::capture::encode_hex;
+use crate::service_events::{PlannedEvent, Work, emit, execution, plan_report, process_work};
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
-    ActionDispatcher, Binding, BindingEngine, DeviceContext, InputEvent, InputSession, InputUpdate,
-    ServiceModule,
+    Action, ActionDispatcher, DeviceContext, Gesture, InputSession, KeypadResolution,
+    ProfileSession, ServiceModule,
 };
 use serde_json::{Value, json};
 use std::{
@@ -23,6 +27,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// Maximum distinct events held in the coalesced pending work item.
+pub const MAX_PENDING_EVENTS: usize = 256;
+/// Read timeout while coalesced work waits for queue space, in milliseconds.
+const PENDING_POLL_MS: i32 = 5;
 
 /// Bounds for a single live interface.
 #[derive(Clone, Copy, Debug)]
@@ -41,6 +50,8 @@ pub struct LiveOptions {
     pub drain_timeout: Duration,
     /// Maximum time to observe worker completion after cancellation.
     pub cancellation_timeout: Duration,
+    /// End the session on the first failed action instead of logging and continuing.
+    pub stop_on_action_error: bool,
 }
 
 impl Default for LiveOptions {
@@ -53,6 +64,7 @@ impl Default for LiveOptions {
             queue_capacity: 64,
             drain_timeout: Duration::from_secs(10),
             cancellation_timeout: Duration::from_secs(2),
+            stop_on_action_error: false,
         }
     }
 }
@@ -60,18 +72,26 @@ impl Default for LiveOptions {
 /// Final counts distinguish received input from completed worker output.
 #[derive(Clone, Debug, Default)]
 pub struct LiveSummary {
-    /// Nonempty reports received, including a report rejected by queue overflow.
+    /// Nonempty reports received.
     pub report_count: u64,
-    /// Reports accepted by the work queue.
+    /// Reports accepted by the work queue, including coalesced reports.
     pub queued_report_count: u64,
-    /// Reports whose diagnostic record was written by the worker.
+    /// Reports whose diagnostic record (possibly coalesced) was written by the worker.
     pub processed_report_count: u64,
+    /// Reports merged into an earlier pending work item while the queue was full.
+    pub coalesced_report_count: u64,
     /// Normalized events decoded by the input owner.
     pub decoded_event_count: u64,
-    /// Events whose planned or unbound record was written.
+    /// Events whose planned, navigation, or unbound record was written.
     pub event_count: u64,
+    /// Events merged into an earlier pending event on the same control.
+    pub coalesced_event_count: u64,
+    /// Events dropped because the pending work item was full.
+    pub dropped_event_count: u64,
     /// Successfully dispatched actions, including dry-run validation.
     pub action_count: u64,
+    /// Dispatched actions that reported failure.
+    pub failed_action_count: u64,
     /// Matched bindings that did not complete successfully.
     pub incomplete_action_count: u64,
 }
@@ -82,20 +102,11 @@ struct Finish {
     error: Option<String>,
     reports: u64,
     queued: u64,
+    coalesced_reports: u64,
     decoded_events: u64,
+    coalesced_events: u64,
+    dropped_events: u64,
     matched_actions: u64,
-}
-
-struct Work {
-    raw: Vec<u8>,
-    timestamp_micros: u64,
-    status: &'static str,
-    error: Option<String>,
-    events: Vec<(
-        InputEvent,
-        Option<Binding>,
-        Option<cooltek_sdk_service::Action>,
-    )>,
 }
 
 struct WorkerOutcome<W> {
@@ -115,7 +126,7 @@ struct WorkerOutcome<W> {
 #[allow(clippy::too_many_arguments)]
 pub fn run_live<T, D, W, F>(
     mut reader: InputReader<T>,
-    engine: BindingEngine,
+    session: ProfileSession,
     device: DeviceContext,
     execute: bool,
     details: Value,
@@ -132,7 +143,7 @@ where
     let origin = Instant::now();
     run_with_clock(
         &mut reader,
-        engine,
+        session,
         device,
         execute,
         details,
@@ -146,7 +157,7 @@ where
 #[allow(clippy::too_many_arguments)]
 fn run_with_clock<T, D, W, F>(
     reader: &mut InputReader<T>,
-    engine: BindingEngine,
+    mut session: ProfileSession,
     device: DeviceContext,
     execute: bool,
     details: Value,
@@ -180,6 +191,7 @@ where
                     worker_abort,
                     worker_device,
                     execute,
+                    options.stop_on_action_error,
                     details,
                     factory,
                 )
@@ -203,6 +215,7 @@ where
     let mut input = InputSession::new(device.module);
     let mut mode_attempted = false;
     let mut counts = Finish::default();
+    let mut pending: Option<Work> = None;
     let result: Result<&str, String> = (|| {
         match ready_rx.recv_timeout(options.cancellation_timeout) {
             Ok(Ok(())) => {}
@@ -220,7 +233,10 @@ where
             if interrupted.load(Ordering::SeqCst) {
                 return Ok("interrupted");
             }
-            let timeout = if let Some(duration) = options.duration {
+            if let Some(work) = pending.take() {
+                pending = offer(&sender, work, &mut counts)?;
+            }
+            let mut timeout = if let Some(duration) = options.duration {
                 let remaining = duration.saturating_sub(started.elapsed());
                 if remaining.as_millis() == 0 {
                     return Ok("duration_elapsed");
@@ -229,6 +245,9 @@ where
             } else {
                 options.timeout_ms
             };
+            if pending.is_some() {
+                timeout = timeout.min(PENDING_POLL_MS);
+            }
             if let Some(raw) = reader
                 .read_input(timeout)
                 .map_err(|error| format!("input read failed: {error}"))?
@@ -238,40 +257,17 @@ where
                 if interrupted.load(Ordering::SeqCst) {
                     return Ok("interrupted");
                 }
-                let (status, error, events) = match input.decode(raw, now) {
-                    Ok(InputUpdate::Events(events)) => ("decoded", None, events),
-                    Ok(InputUpdate::Unknown) => ("unknown", None, Vec::new()),
-                    Err(error) => ("parse_error", Some(error), Vec::new()),
-                };
-                let events: Vec<_> = events
-                    .into_iter()
-                    .map(|event| {
-                        let binding = engine.binding_for(&device, &event).cloned();
-                        let action = engine.action_for(&device, &event)?;
-                        counts.decoded_events += 1;
-                        counts.matched_actions += u64::from(action.is_some());
-                        Ok((event, binding, action))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                let work = Work {
-                    raw: raw.to_vec(),
-                    timestamp_micros: now,
-                    status,
-                    error,
-                    events,
-                };
-                match sender.try_send(work) {
-                    Ok(()) => counts.queued += 1,
-                    Err(TrySendError::Full(_)) => {
-                        return Err(format!(
-                            "action queue overflow (capacity {} reports); stopping session",
-                            options.queue_capacity
-                        ));
+                let work = plan_report(&mut input, &mut session, &device, raw, now)?;
+                counts.decoded_events += work.events.len() as u64;
+                counts.matched_actions +=
+                    work.events.iter().filter(|e| e.action().is_some()).count() as u64;
+                pending = match pending.take() {
+                    Some(mut earlier) => {
+                        coalesce(&mut earlier, work, &mut counts);
+                        Some(earlier)
                     }
-                    Err(TrySendError::Disconnected(_)) => {
-                        return Err("action worker disconnected".into());
-                    }
-                }
+                    None => offer(&sender, work, &mut counts)?,
+                };
                 if options
                     .max_reports
                     .is_some_and(|limit| counts.reports >= limit)
@@ -282,12 +278,17 @@ where
         }
     })();
     let normal = matches!(result, Ok("duration_elapsed" | "max_reports"));
+    let mut drain_error = None;
+    if normal && let Some(work) = pending.take() {
+        drain_error = flush_pending(&sender, work, &abort, options.drain_timeout, &mut counts);
+    }
     if !normal {
         abort.store(true, Ordering::SeqCst);
     }
     input.reset();
+    session.reset();
     counts.reason = result.as_ref().copied().unwrap_or("error").to_owned();
-    counts.error = result.err();
+    counts.error = combine_errors(result.err(), drain_error);
     // Close the queue before monitoring drain/cancellation. Device cleanup is
     // attempted after that finite worker phase, including when the worker fails.
     drop(sender);
@@ -330,7 +331,10 @@ where
     }
     summary.report_count = counts.reports;
     summary.queued_report_count = counts.queued;
+    summary.coalesced_report_count = counts.coalesced_reports;
     summary.decoded_event_count = counts.decoded_events;
+    summary.coalesced_event_count = counts.coalesced_events;
+    summary.dropped_event_count = counts.dropped_events;
     summary.incomplete_action_count = counts.matched_actions.saturating_sub(summary.action_count);
     if let Some(mut output) = output {
         let footer = emit(
@@ -340,11 +344,15 @@ where
                 "reason":if counts.error.is_some() {"error"} else {counts.reason.as_str()}, "error":counts.error,
                 "report_count":summary.report_count, "queued_report_count":summary.queued_report_count,
                 "processed_report_count":summary.processed_report_count,
+                "coalesced_report_count":summary.coalesced_report_count,
                 "discarded_report_count":summary.report_count.saturating_sub(summary.processed_report_count),
                 "decoded_event_count":summary.decoded_event_count, "event_count":summary.event_count,
+                "coalesced_event_count":summary.coalesced_event_count,
+                "dropped_event_count":summary.dropped_event_count,
                 "discarded_event_count":summary.decoded_event_count.saturating_sub(summary.event_count),
-                "action_count":summary.action_count, "incomplete_action_count":summary.incomplete_action_count,
-                "execution":if execute {"macos"} else {"dry_run"},
+                "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
+                "incomplete_action_count":summary.incomplete_action_count,
+                "execution":execution(execute),
             }),
         );
         counts.error = combine_errors(counts.error.take(), footer.err());
@@ -353,6 +361,140 @@ where
         Some(error) => Err(error),
         None => Ok(summary),
     }
+}
+
+/// Offers work to the queue; returns it back when the queue is full.
+fn offer(
+    sender: &SyncSender<Work>,
+    work: Work,
+    counts: &mut Finish,
+) -> Result<Option<Work>, String> {
+    let reports = work.report_count;
+    match sender.try_send(work) {
+        Ok(()) => {
+            counts.queued += reports;
+            Ok(None)
+        }
+        Err(TrySendError::Full(work)) => Ok(Some(work)),
+        Err(TrySendError::Disconnected(_)) => Err("action worker disconnected".into()),
+    }
+}
+
+/// Retries pending work within the drain budget after a normal input limit.
+fn flush_pending(
+    sender: &SyncSender<Work>,
+    mut work: Work,
+    abort: &AtomicBool,
+    budget: Duration,
+    counts: &mut Finish,
+) -> Option<String> {
+    let started = Instant::now();
+    loop {
+        match offer(sender, work, counts) {
+            Ok(None) => return None,
+            Ok(Some(returned)) => work = returned,
+            Err(error) => return Some(error),
+        }
+        if abort.load(Ordering::SeqCst) {
+            return None;
+        }
+        if started.elapsed() >= budget {
+            abort.store(true, Ordering::SeqCst);
+            return Some("action queue drain deadline exceeded; pending actions cancelled".into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Merges a later report into pending work that is waiting for queue space.
+fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
+    counts.coalesced_reports += next.report_count;
+    pending.coalesced_parse_error_count +=
+        next.coalesced_parse_error_count + u64::from(pending.status == "parse_error");
+    pending.report_count += next.report_count;
+    pending.raw = next.raw;
+    pending.timestamp_micros = next.timestamp_micros;
+    pending.status = next.status;
+    pending.error = next.error;
+    pending.dropped_event_count += next.dropped_event_count;
+    for planned in next.events {
+        if let Some(existing) = pending
+            .events
+            .iter_mut()
+            .rev()
+            .find(|existing| existing.event.control == planned.event.control)
+            && let Some(merged) = merge_event(existing, &planned)
+        {
+            *existing = merged;
+            counts.coalesced_events += 1;
+        } else if pending.events.len() < MAX_PENDING_EVENTS {
+            pending.events.push(planned);
+        } else {
+            pending.dropped_event_count += planned.coalesced;
+            counts.dropped_events += planned.coalesced;
+        }
+    }
+}
+
+/// Merges two consecutive continuous inputs on one control, if they are equivalent.
+///
+/// Relative volume steps sum (clamped to the valid ±100 range), absolute
+/// positions keep the latest value, and unbound continuous inputs keep only the
+/// latest event. Button transitions, navigation, and other actions never merge.
+fn merge_event(earlier: &PlannedEvent, later: &PlannedEvent) -> Option<PlannedEvent> {
+    if earlier.event.gesture != later.event.gesture
+        || !matches!(
+            later.event.gesture,
+            Gesture::Clockwise
+                | Gesture::CounterClockwise
+                | Gesture::Left
+                | Gesture::Right
+                | Gesture::Up
+                | Gesture::Down
+                | Gesture::PositionChanged
+        )
+    {
+        return None;
+    }
+    let resolution = match (&earlier.resolution, &later.resolution) {
+        (
+            KeypadResolution::Action {
+                action: Action::Volume { delta: first },
+                page_id: None,
+            },
+            KeypadResolution::Action {
+                action: Action::Volume { delta: second },
+                page_id: None,
+            },
+        ) => {
+            let delta = (first + second).clamp(-100, 100);
+            if delta == 0 {
+                return None;
+            }
+            KeypadResolution::Action {
+                action: Action::Volume { delta },
+                page_id: None,
+            }
+        }
+        (
+            KeypadResolution::Action {
+                action: Action::SetVolume { .. },
+                page_id: None,
+            },
+            KeypadResolution::Action {
+                action: Action::SetVolume { .. },
+                page_id: None,
+            },
+        )
+        | (KeypadResolution::Unbound, KeypadResolution::Unbound) => later.resolution.clone(),
+        _ => return None,
+    };
+    Some(PlannedEvent {
+        event: later.event,
+        binding: later.binding.clone(),
+        resolution,
+        coalesced: earlier.coalesced + later.coalesced,
+    })
 }
 
 fn validate_options(options: LiveOptions, device: &DeviceContext) -> Result<(), String> {
@@ -446,6 +588,7 @@ fn worker<D, W, F>(
     abort: Arc<AtomicBool>,
     device: DeviceContext,
     execute: bool,
+    stop_on_action_error: bool,
     details: Value,
     factory: F,
 ) -> WorkerOutcome<W>
@@ -470,11 +613,7 @@ where
     };
     if let Err(error) = emit(
         &mut output,
-        json!({
-            "type":"service_start", "schema_version":1,
-            "device":{"module":device.module,"serial_number":device.serial_number},
-            "execution":if execute {"macos"} else {"dry_run"}, "details":details,
-        }),
+        crate::service_events::start_record(&device, execute, details),
     ) {
         abort.store(true, Ordering::SeqCst);
         let _ = ready.send(Err(error.clone()));
@@ -493,6 +632,7 @@ where
             &mut output,
             &abort,
             execute,
+            stop_on_action_error,
             &mut outcome.summary,
         ) {
             outcome.error = Some(error);
@@ -501,74 +641,6 @@ where
     }
     outcome.output = Some(output);
     outcome
-}
-
-fn process_work<D: ActionDispatcher, W: Write>(
-    work: Work,
-    dispatcher: &mut D,
-    output: &mut W,
-    abort: &AtomicBool,
-    execute: bool,
-    summary: &mut LiveSummary,
-) -> Result<(), String> {
-    emit(
-        output,
-        json!({
-            "type":"report", "schema_version":1, "timestamp_micros":work.timestamp_micros,
-            "raw_hex":encode_hex(&work.raw), "status":work.status, "error":work.error,
-        }),
-    )?;
-    summary.processed_report_count += 1;
-    for (event, binding, action) in work.events {
-        if abort.load(Ordering::SeqCst) {
-            break;
-        }
-        emit(
-            output,
-            json!({
-                "type":"event", "schema_version":1, "event":event, "binding":binding, "action":action,
-                "status":if action.is_some() {"planned"} else {"unbound"},
-            }),
-        )?;
-        summary.event_count += 1;
-        if let Some(action) = action {
-            if abort.load(Ordering::SeqCst) {
-                break;
-            }
-            if let Err(error) = dispatcher.dispatch(&action) {
-                abort.store(true, Ordering::SeqCst);
-                let logged = emit(
-                    output,
-                    json!({"type":"action_failed", "event":event, "action":action, "error":error}),
-                );
-                return Err(
-                    combine_errors(Some(format!("action failed: {error}")), logged.err()).unwrap(),
-                );
-            }
-            summary.action_count += 1;
-            if execute {
-                emit(
-                    output,
-                    json!({"type":"action_executed", "event":event, "action":action}),
-                )?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn emit(output: &mut impl Write, value: Value) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
-    bytes.push(b'\n');
-    if bytes.len() > 65_536 {
-        return Err("live log record exceeds 65536 bytes".into());
-    }
-    output
-        .write_all(&bytes)
-        .map_err(|error| format!("live log write failed: {error}"))?;
-    output
-        .flush()
-        .map_err(|error| format!("live log flush failed: {error}"))
 }
 
 fn combine_errors(first: Option<String>, second: Option<String>) -> Option<String> {
@@ -587,7 +659,7 @@ mod tests {
     use super::*;
     use cooltek_sdk_masterhub::dial;
     use cooltek_sdk_masterhub::hidapi::{HidError, HidResult};
-    use cooltek_sdk_service::{Action, Profile};
+    use cooltek_sdk_service::Profile;
     use std::{
         cell::RefCell,
         collections::VecDeque,
@@ -739,8 +811,8 @@ mod tests {
     fn dial(selector: u8, value: u8, time: u64) -> Step {
         Step::Raw(vec![1, 0x44, 3, 0, selector, 0, value], time)
     }
-    fn profile() -> BindingEngine {
-        BindingEngine::new(Profile::from_json(br#"{"schema_version":1,"name":"test","bindings":[
+    fn profile() -> ProfileSession {
+        ProfileSession::new(Profile::from_json(br#"{"schema_version":1,"name":"test","bindings":[
             {"module":"m131e","control":0,"gesture":"right","action":{"type":"volume","delta":5}},
             {"module":"m131e","control":0,"gesture":"pressed","action":{"type":"volume","delta":1}},
             {"module":"m131e","control":0,"gesture":"short_press","action":{"type":"volume","delta":2}},
@@ -836,7 +908,7 @@ mod tests {
             let actions = Arc::clone(&received);
             let output = Output::default();
             let writer = output.clone();
-            let engine = BindingEngine::new(
+            let engine = ProfileSession::new(
                 Profile::from_json(include_bytes!(
                     "../../../examples/profiles/all-modules.json"
                 ))
@@ -933,7 +1005,20 @@ mod tests {
         assert_eq!(result.incomplete_action_count, 0);
         assert!(writes.lock().unwrap().is_empty());
         assert_eq!(*received.lock().unwrap(), vec![Action::Volume { delta: 5 }]);
-        assert_eq!(output.rows().last().unwrap()["reason"], "max_reports");
+        let rows = output.rows();
+        // Live event records share replay's shape, including keypad fields.
+        let event = rows.iter().find(|row| row["type"] == "event").unwrap();
+        for key in [
+            "event",
+            "binding",
+            "action",
+            "navigation",
+            "page_id",
+            "status",
+        ] {
+            assert!(event.get(key).is_some(), "missing {key}: {event}");
+        }
+        assert_eq!(rows.last().unwrap()["reason"], "max_reports");
     }
 
     #[test]
@@ -991,20 +1076,32 @@ mod tests {
     }
 
     #[test]
-    fn queue_overflow_is_explicit_and_cancels_pending_work_with_one_cleanup() {
+    fn burst_beyond_queue_capacity_is_coalesced_without_ending_the_session() {
         let (began_tx, began_rx) = mpsc::sync_channel(1);
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
-        let mut transport = Transport::new([dial(3, 0, 1), dial(3, 0, 2), dial(3, 0, 3)]);
+        let mut transport = Transport::new((1..=10).map(|time| dial(3, 0, time)));
         transport.wait_second = Some(began_rx);
+        let reads = Arc::clone(&transport.reads);
         let writes = Arc::clone(&transport.writes);
+        let release = Arc::clone(&gate);
+        // Hold the first action until every report has been read, so reports
+        // 3..=10 arrive while the capacity-1 queue is full.
+        let controller = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while reads.load(Ordering::SeqCst) < 10 && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            *release.0.lock().unwrap() = true;
+            release.1.notify_all();
+        });
         let mut configuration = options();
-        configuration.max_reports = None;
+        configuration.max_reports = Some(10);
         configuration.software_mode = true;
         configuration.queue_capacity = 1;
         let received = Arc::new(Mutex::new(Vec::new()));
         let actions = Arc::clone(&received);
         let output = Output::default();
-        let error = run_fake(
+        let summary = run_fake(
             transport,
             configuration,
             Arc::new(AtomicBool::new(false)),
@@ -1016,16 +1113,133 @@ mod tests {
                 actions
             },
         )
-        .unwrap_err();
-        assert!(error.contains("action queue overflow"));
+        .unwrap();
+        controller.join().unwrap();
+        assert_eq!(
+            *received.lock().unwrap(),
+            vec![
+                Action::Volume { delta: 5 },
+                Action::Volume { delta: 5 },
+                Action::Volume { delta: 40 },
+            ]
+        );
+        assert_eq!(summary.report_count, 10);
+        assert_eq!(summary.processed_report_count, 10);
+        assert_eq!(summary.coalesced_report_count, 7);
+        assert_eq!(summary.coalesced_event_count, 7);
+        assert_eq!(summary.dropped_event_count, 0);
+        assert_eq!(summary.event_count, 10);
+        assert_eq!(summary.action_count, 10);
+        assert_eq!(summary.incomplete_action_count, 0);
         assert_eq!(*writes.lock().unwrap(), modes());
-        assert_eq!(received.lock().unwrap().len(), 1);
-        let footer = output.rows().last().unwrap().clone();
-        assert_eq!(footer["reason"], "error");
-        assert_eq!(footer["report_count"], 3);
-        assert_eq!(footer["queued_report_count"], 2);
-        assert_eq!(footer["processed_report_count"], 1);
-        assert_eq!(footer["incomplete_action_count"], 3);
+        let rows = output.rows();
+        let coalesced = rows
+            .iter()
+            .find(|row| row["type"] == "report" && row["coalesced_report_count"] == 8)
+            .unwrap();
+        assert_eq!(coalesced["timestamp_micros"], 10);
+        let event = rows
+            .iter()
+            .find(|row| row["type"] == "event" && row["coalesced_event_count"] == 8)
+            .unwrap();
+        assert_eq!(event["action"], json!({"type":"volume","delta":40}));
+        let footer = rows.last().unwrap();
+        assert_eq!(footer["reason"], "max_reports");
+        assert_eq!(footer["discarded_report_count"], 0);
+        assert_eq!(footer["coalesced_report_count"], 7);
+    }
+
+    fn planned(control: u8, gesture: Gesture, resolution: KeypadResolution) -> PlannedEvent {
+        PlannedEvent {
+            event: cooltek_sdk_service::InputEvent {
+                timestamp_micros: 0,
+                control,
+                gesture,
+                value: None,
+            },
+            binding: None,
+            resolution,
+            coalesced: 1,
+        }
+    }
+
+    fn action(action: Action) -> KeypadResolution {
+        KeypadResolution::Action {
+            action,
+            page_id: None,
+        }
+    }
+
+    fn work(events: Vec<PlannedEvent>) -> Work {
+        Work {
+            raw: vec![1],
+            timestamp_micros: 0,
+            status: "decoded",
+            error: None,
+            events,
+            report_count: 1,
+            coalesced_parse_error_count: 0,
+            dropped_event_count: 0,
+        }
+    }
+
+    #[test]
+    fn coalescing_sums_steps_keeps_last_position_and_never_merges_buttons() {
+        let volume = |delta| planned(0, Gesture::Clockwise, action(Action::Volume { delta }));
+        let merged = merge_event(&volume(60), &volume(60)).unwrap();
+        assert_eq!(merged.resolution, action(Action::Volume { delta: 100 }));
+        assert_eq!(merged.coalesced, 2);
+        let position = |percent| {
+            planned(
+                1,
+                Gesture::PositionChanged,
+                action(Action::SetVolume { percent }),
+            )
+        };
+        assert_eq!(
+            merge_event(&position(10), &position(70))
+                .unwrap()
+                .resolution,
+            action(Action::SetVolume { percent: 70 })
+        );
+        let press = planned(0, Gesture::Pressed, action(Action::ToggleMute));
+        assert!(merge_event(&press, &press).is_none());
+        let counter = planned(
+            0,
+            Gesture::CounterClockwise,
+            action(Action::Volume { delta: -5 }),
+        );
+        assert!(merge_event(&volume(5), &counter).is_none());
+        let shortcut = planned(
+            0,
+            Gesture::Clockwise,
+            action(Action::Shortcut {
+                key: "v".into(),
+                modifiers: vec![],
+            }),
+        );
+        assert!(merge_event(&shortcut, &shortcut).is_none());
+    }
+
+    #[test]
+    fn coalescing_preserves_per_control_order_and_drops_beyond_the_bound() {
+        let mut counts = Finish::default();
+        let step = || planned(0, Gesture::Clockwise, action(Action::Volume { delta: 5 }));
+        let press = || planned(0, Gesture::Pressed, action(Action::ToggleMute));
+        let mut pending = work(vec![step()]);
+        coalesce(&mut pending, work(vec![press(), step()]), &mut counts);
+        // A press between two steps prevents merging across it.
+        assert_eq!(pending.events.len(), 3);
+        coalesce(&mut pending, work(vec![step()]), &mut counts);
+        assert_eq!(pending.events.len(), 3);
+        assert_eq!(pending.events[2].coalesced, 2);
+        let presses = (0..MAX_PENDING_EVENTS).map(|_| press()).collect();
+        coalesce(&mut pending, work(presses), &mut counts);
+        assert_eq!(pending.events.len(), MAX_PENDING_EVENTS);
+        assert_eq!(pending.dropped_event_count, 3);
+        assert_eq!(counts.dropped_events, 3);
+        assert_eq!(pending.report_count, 4);
+        assert_eq!(counts.coalesced_reports, 3);
     }
 
     #[test]
@@ -1085,7 +1299,7 @@ mod tests {
 
     #[test]
     fn interrupted_action_drops_remaining_actions_from_the_same_report() {
-        let engine = BindingEngine::new(Profile::from_json(br#"{"schema_version":1,"name":"test","bindings":[
+        let engine = ProfileSession::new(Profile::from_json(br#"{"schema_version":1,"name":"test","bindings":[
             {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}},
             {"module":"m003k","control":1,"gesture":"clockwise","action":{"type":"volume","delta":5}}
         ]}"#).unwrap()).unwrap();
@@ -1149,12 +1363,54 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_failure_stops_further_work_without_retrying() {
+    fn dispatcher_failure_is_logged_and_the_session_continues_by_default() {
         let received = Arc::new(Mutex::new(Vec::new()));
         let actions = Arc::clone(&received);
+        let mut configuration = options();
+        configuration.max_reports = Some(3);
+        configuration.software_mode = true;
+        let transport = Transport::new([dial(3, 0, 1), dial(3, 0, 2), dial(3, 0, 3)]);
+        let writes = Arc::clone(&transport.writes);
+        let output = Output::default();
+        let summary = run_fake(
+            transport,
+            configuration,
+            Arc::new(AtomicBool::new(false)),
+            output.clone(),
+            move |stop| {
+                let mut actions = simple_actions(stop, actions);
+                actions.fail = true;
+                actions
+            },
+        )
+        .unwrap();
+        assert_eq!(received.lock().unwrap().len(), 3);
+        assert_eq!(summary.failed_action_count, 3);
+        assert_eq!(summary.action_count, 0);
+        assert_eq!(summary.processed_report_count, 3);
+        assert_eq!(*writes.lock().unwrap(), modes());
+        let rows = output.rows();
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["type"] == "action_failed")
+                .count(),
+            3
+        );
+        let footer = rows.last().unwrap();
+        assert_eq!(footer["reason"], "max_reports");
+        assert_eq!(footer["failed_action_count"], 3);
+    }
+
+    #[test]
+    fn stop_on_action_error_restores_the_failure_stops_session_behavior() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let actions = Arc::clone(&received);
+        let mut configuration = options();
+        configuration.max_reports = Some(3);
+        configuration.stop_on_action_error = true;
         let error = run_fake(
-            Transport::new([dial(3, 0, 1)]),
-            options(),
+            Transport::new([dial(3, 0, 1), dial(3, 0, 2), dial(3, 0, 3)]),
+            configuration,
             Arc::new(AtomicBool::new(false)),
             Output::default(),
             move |stop| {

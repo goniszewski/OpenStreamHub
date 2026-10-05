@@ -538,3 +538,94 @@ fn run_requires_an_explicit_interface_and_help_states_separate_opt_ins() {
         )
     );
 }
+
+#[test]
+fn empty_and_blank_serials_replay_exactly_like_an_absent_serial() {
+    let baseline = output_records(&replay(&fixture("m003k-synthetic.jsonl")));
+    let output = replay(&fixture("m003k-empty-serial-synthetic.jsonl"));
+    assert!(output.status.success(), "{output:?}");
+    let rows = output_records(&output);
+    assert!(rows[0]["device"]["serial_number"].is_null());
+    assert_eq!(planned_actions(&rows), planned_actions(&baseline));
+    assert_eq!(rows.last().unwrap()["reason"], "capture_complete");
+
+    // Schema-2 keypad routing validates the device serial on every press.
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/keypad-folders.json");
+    for serial in ["", "   "] {
+        let mut records = capture_records("m4315-software-derived-synthetic.jsonl");
+        records[0]["identity"]["serial_number"] = json!(serial);
+        let capture = TempFile::records(&records);
+        let output = run(&[
+            "replay",
+            "--profile",
+            profile.to_str().unwrap(),
+            capture.0.to_str().unwrap(),
+        ]);
+        assert!(output.status.success(), "{serial:?}: {output:?}");
+    }
+}
+
+#[test]
+fn replay_event_records_share_the_live_shape_and_accept_interrupted_captures() {
+    let mut records = capture_records("m003k-synthetic.jsonl");
+    records.last_mut().unwrap()["reason"] = json!("interrupted");
+    let capture = TempFile::records(&records);
+    let output = replay(&capture.0);
+    assert!(output.status.success(), "{output:?}");
+    let rows = output_records(&output);
+    for event in rows.iter().filter(|row| row["type"] == "event") {
+        for key in [
+            "event",
+            "binding",
+            "action",
+            "navigation",
+            "page_id",
+            "status",
+        ] {
+            assert!(event.get(key).is_some(), "missing {key}: {event}");
+        }
+    }
+    let end = rows
+        .iter()
+        .find(|row| row["type"] == "capture_end")
+        .unwrap();
+    assert_eq!(end["reason"], "interrupted");
+    assert_eq!(rows.last().unwrap()["failed_action_count"], 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_rejects_regular_file_stdout_before_hid_and_suggests_tee() {
+    let log = TempFile::new("");
+    fs::remove_file(&log.0).unwrap();
+    let file = fs::File::create_new(&log.0).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_masterhub-service"))
+        .args([
+            "run",
+            "--profile",
+            example_profile().to_str().unwrap(),
+            "--path-hex",
+            "ab",
+        ])
+        .stdout(file)
+        .output()
+        .unwrap();
+    assert_failure(&output, "pipe through tee");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !error.contains("inventory"),
+        "stdout must fail before HID: {error}"
+    );
+    assert!(fs::read(&log.0).unwrap().is_empty());
+}
+
+#[test]
+fn run_help_explains_tee_capture_and_action_error_policy() {
+    let output = run(&["run", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("pipe through tee"), "{help}");
+    assert!(help.contains("--stop-on-action-error"), "{help}");
+    assert!(help.contains("1 to 1000 ms"), "{help}");
+}

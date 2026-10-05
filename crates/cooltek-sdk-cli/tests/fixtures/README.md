@@ -72,3 +72,7 @@ recorded in their session headers. Every fixture has a schema version and a
 mandatory end record. A malformed HID report inside a complete capture is a
 `parse_error` diagnostic, while corrupt JSONL or a missing end record causes the
 replay command to fail.
+
+`m003k-empty-serial-synthetic.jsonl` is `m003k-synthetic.jsonl` with the
+identity serial set to `""`, as some HID backends report for devices without a
+serial. Replay must treat it exactly like an absent serial.

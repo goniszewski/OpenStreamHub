@@ -4,26 +4,24 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use cooltek_sdk_masterhub::{
-    DeviceRegistry, DialGesture, DialGestureTracker, InputReader, ModuleIdentity, ModuleKind,
-    ReportTransport, descriptor, dial,
+    DeviceRegistry, InputReader, ModuleIdentity, ModuleKind, ReportTransport, descriptor, dial,
     hidapi::{HidDevice, MAX_REPORT_DESCRIPTOR_SIZE},
-    input::{
-        DecodedM003K, DecodedM131E, DialDirection, KnobEventKind, M003KDecoder, M131EDecoder,
-        M131EEvent, RotationDirection,
-    },
     keypad,
 };
-use serde_json::json;
+use cooltek_sdk_service::{Gesture, InputEvent, InputSession, InputUpdate, ServiceModule};
+use serde_json::{Value, json};
 
 use cooltek_sdk_cli::capture::{
     CaptureReader, Descriptor, End, EndReason, Identity, MAX_REPORT_BYTES, Record, Report,
     SCHEMA_VERSION, Session, Source, decode_hex, encode_hex, write_record,
 };
+use cooltek_sdk_cli::device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device};
 use cooltek_sdk_cli::image_prep::{
     FitMode, MAX_ENCODED_BYTES, PrepareOptions, prepare_image, prepare_keypad_image,
 };
@@ -40,21 +38,15 @@ struct Cli {
     command: Command,
 }
 
-#[derive(Clone, Debug)]
-struct DevicePath(Vec<u8>);
-
-impl std::ops::Deref for DevicePath {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        &self.0
-    }
-}
-
 #[derive(Subcommand)]
 enum Command {
     /// Print a JSON device inventory without opening or initializing devices.
     List,
     /// Record a single exact device path to a new JSONL file.
+    ///
+    /// Ctrl-C or SIGTERM ends the capture with an `interrupted` end record and
+    /// restores hardware mode if --software-mode was requested; a second Ctrl-C
+    /// exits immediately without cleanup.
     Record {
         /// Hexadecimal device path copied from `list` (no trailing NUL).
         #[arg(long, value_parser = parse_path)]
@@ -65,8 +57,8 @@ enum Command {
         /// Capture deadline, including idle time (1 to 86400 seconds).
         #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=86_400))]
         duration_secs: u64,
-        /// Maximum wait for each read; reduced as the deadline approaches.
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i32).range(1..))]
+        /// Maximum wait for each read (1 to 1000 ms); reduced as the deadline approaches.
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i32).range(TIMEOUT_MS_RANGE))]
         timeout_ms: i32,
         /// End capture after this many nonempty reports.
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
@@ -246,14 +238,6 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
     decode_hex(raw, 3)?
         .try_into()
         .map_err(|_| "color must contain exactly six hexadecimal digits".into())
-}
-
-fn parse_path(raw: &str) -> Result<DevicePath, String> {
-    let bytes = decode_hex(raw, MAX_REPORT_BYTES)?;
-    if bytes.is_empty() || bytes.contains(&0) {
-        return Err("device path must be nonempty and contain no NUL bytes".into());
-    }
-    Ok(DevicePath(bytes))
 }
 
 fn identity(device: &ModuleIdentity) -> Identity {
@@ -542,6 +526,7 @@ fn record(
     max_reports: Option<u64>,
     software_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let interrupted = cooltek_sdk_cli::interrupt::install()?;
     let registry = DeviceRegistry::new()?;
     let devices = registry.devices();
     let selected = select_device(&devices, path, software_mode)?;
@@ -549,14 +534,21 @@ fn record(
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(output)?;
-    let device = registry.open(selected)?;
+        .open(&output)?;
+    let device = match registry.open(selected) {
+        Ok(device) => device,
+        Err(error) => {
+            // This call created the file and wrote nothing; do not leave it behind.
+            drop(file);
+            let _ = std::fs::remove_file(&output);
+            return Err(error.into());
+        }
+    };
     let mut reader = InputReader::new(device);
     let report_descriptor = descriptor(reader.transport());
     let started_unix_micros =
         u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?;
     let started = Instant::now();
-    let duration = Duration::from_secs(duration_secs);
     let mut writer = BufWriter::new(file);
     write_record(
         &mut writer,
@@ -569,21 +561,54 @@ fn record(
             report_descriptor,
         }),
     )?;
-    let module = ModuleKind::from_ids(selected.vendor_id, selected.product_id);
-    begin_record_mode(
-        reader.transport(),
-        module,
-        software_mode,
-        &mut writer,
-        started,
-    )?;
-    let result = capture_input(
+    record_session(
         &mut reader,
         &mut writer,
+        RecordSettings {
+            module: ModuleKind::from_ids(selected.vendor_id, selected.product_id),
+            software_mode,
+            started,
+            duration: Duration::from_secs(duration_secs),
+            timeout_ms,
+            max_reports,
+        },
+        &interrupted,
+    )
+}
+
+struct RecordSettings {
+    module: Option<ModuleKind>,
+    software_mode: bool,
+    started: Instant,
+    duration: Duration,
+    timeout_ms: i32,
+    max_reports: Option<u64>,
+}
+
+/// Enables requested mode, captures until a limit or interrupt, then restores mode.
+fn record_session<T: ReportTransport>(
+    reader: &mut InputReader<T>,
+    writer: &mut impl Write,
+    settings: RecordSettings,
+    interrupted: &AtomicBool,
+) -> Result<(), Box<dyn Error>> {
+    let RecordSettings {
+        module,
+        software_mode,
         started,
         duration,
         timeout_ms,
         max_reports,
+    } = settings;
+    begin_record_mode(reader.transport(), module, software_mode, writer, started)?;
+    let result = capture_input(
+        reader,
+        writer,
+        started,
+        duration,
+        timeout_ms,
+        max_reports,
+        interrupted,
     );
     cleanup_record_mode(reader.transport(), module, software_mode, result)
 }
@@ -640,33 +665,6 @@ fn cleanup_record_mode<T: ReportTransport>(
     }
 }
 
-fn select_device<'a>(
-    devices: &'a [ModuleIdentity],
-    path: &[u8],
-    software_mode: bool,
-) -> Result<&'a ModuleIdentity, Box<dyn Error>> {
-    let mut matches = devices
-        .iter()
-        .filter(|device| device.path.as_bytes() == path);
-    let selected = matches
-        .next()
-        .ok_or("device path is not in the current inventory; run `list` again")?;
-    if matches.next().is_some() {
-        return Err(
-            "device path identifies multiple interfaces; ambiguous selection is unsupported".into(),
-        );
-    }
-    if software_mode
-        && !cooltek_sdk_cli::mode::supported(ModuleKind::from_ids(
-            selected.vendor_id,
-            selected.product_id,
-        ))
-    {
-        return Err("software mode is supported only for M131E and M4315".into());
-    }
-    Ok(selected)
-}
-
 fn select_dial<'a>(
     devices: &'a [ModuleIdentity],
     path: &[u8],
@@ -685,9 +683,13 @@ fn capture_input<T: ReportTransport>(
     duration: Duration,
     timeout_ms: i32,
     max_reports: Option<u64>,
+    interrupted: &AtomicBool,
 ) -> Result<(), Box<dyn Error>> {
     let mut count = 0;
     loop {
+        if interrupted.load(Ordering::SeqCst) {
+            return finish(writer, started, count, EndReason::Interrupted, None);
+        }
         let Some(remaining) = duration.checked_sub(started.elapsed()) else {
             return finish(writer, started, count, EndReason::DurationElapsed, None);
         };
@@ -769,25 +771,21 @@ fn finish(
 }
 
 fn replay(file: PathBuf) -> Result<(), Box<dyn Error>> {
-    // This path constructs no registry or HidApi instance. Synthetic captures use
-    // the same decoder and framing validation as captured hardware reports.
+    // This path constructs no registry or HidApi instance. Every module decodes
+    // through the same InputSession as masterhub-service; M003K and M131E keep
+    // their established diagnostic event shapes.
     let (mut reader, session) = CaptureReader::new(BufReader::new(File::open(file)?))?;
-    let mut decoder = M003KDecoder::default();
-    let mut dial_decoder = M131EDecoder::default();
-    let mut gestures = DialGestureTracker::new();
     let module = ModuleKind::from_ids(session.identity.vendor_id, session.identity.product_id);
-    let mut other_input = match module {
-        Some(ModuleKind::M4315) => Some(cooltek_sdk_service::InputSession::new(
-            cooltek_sdk_service::ServiceModule::M4315,
-        )),
-        Some(ModuleKind::M005S) => Some(cooltek_sdk_service::InputSession::new(
-            cooltek_sdk_service::ServiceModule::M005S,
-        )),
-        Some(ModuleKind::M032LE) => Some(cooltek_sdk_service::InputSession::new(
-            cooltek_sdk_service::ServiceModule::M032LE,
-        )),
+    let mut input = match module {
+        Some(ModuleKind::M003K) => Some(ServiceModule::M003K),
+        Some(ModuleKind::M131E) => Some(ServiceModule::M131E),
+        Some(ModuleKind::M4315) => Some(ServiceModule::M4315),
+        Some(ModuleKind::M005S) => Some(ServiceModule::M005S),
+        Some(ModuleKind::M032LE) => Some(ServiceModule::M032LE),
         _ => None,
-    };
+    }
+    .map(InputSession::new);
+    let mut dial_pressed_at = None;
     let mut output = io::stdout().lock();
     while let Some(report) = reader.next_report()? {
         let raw = decode_hex(&report.raw_hex, MAX_REPORT_BYTES)?;
@@ -798,87 +796,30 @@ fn replay(file: PathBuf) -> Result<(), Box<dyn Error>> {
             "timestamp_micros": report.timestamp_micros,
             "raw_hex": report.raw_hex,
         });
-        if module == Some(ModuleKind::M003K) {
-            match decoder.decode_report(&raw) {
-                Ok(DecodedM003K::Events(events)) => {
-                    let events: Vec<_> = events
-                        .into_iter()
-                        .map(|event| {
-                            let kind = match event.kind {
-                                KnobEventKind::Rotated(RotationDirection::Clockwise) => {
-                                    json!({"type":"rotated", "direction":"clockwise"})
-                                }
-                                KnobEventKind::Rotated(RotationDirection::CounterClockwise) => {
-                                    json!({"type":"rotated", "direction":"counter_clockwise"})
-                                }
-                                KnobEventKind::Pressed => json!({"type":"pressed"}),
-                                KnobEventKind::Released => json!({"type":"released"}),
-                            };
-                            json!({"knob_index":event.knob_index, "kind":kind})
-                        })
-                        .collect();
-                    item["type"] = json!("events");
-                    item["events"] = json!(events);
-                }
-                Ok(DecodedM003K::Unknown(_)) => item["type"] = json!("unknown"),
-                Err(error) => {
-                    item["type"] = json!("parse_error");
-                    item["error"] = json!(error.to_string());
-                }
+        match input
+            .as_mut()
+            .map(|input| input.decode(&raw, report.timestamp_micros))
+        {
+            None | Some(Ok(InputUpdate::Unknown)) => item["type"] = json!("unknown"),
+            // Gesture-timing errors are reported here too, leaving state unchanged.
+            Some(Err(error)) => {
+                item["type"] = json!("parse_error");
+                item["error"] = json!(error);
             }
-        } else if module == Some(ModuleKind::M131E) {
-            match dial_decoder.decode_report(&raw) {
-                Ok(DecodedM131E::Events(events)) => {
-                    let mut interpreted = Vec::new();
-                    let mut decoded = Vec::new();
-                    for event in events {
-                        if let Some(gesture) = gestures
-                            .observe(event, Duration::from_micros(report.timestamp_micros))?
-                        {
-                            interpreted.push(match gesture {
-                                DialGesture::ShortPress { held } => {
-                                    json!({"type":"short_press", "held_micros":held.as_micros()})
-                                }
-                                DialGesture::LongPress { held } => {
-                                    json!({"type":"long_press", "held_micros":held.as_micros()})
-                                }
-                            });
-                        }
-                        decoded.push(match event {
-                            M131EEvent::Rotated(DialDirection::Right) => {
-                                json!({"type":"rotated", "direction":"right"})
-                            }
-                            M131EEvent::Rotated(DialDirection::Left) => {
-                                json!({"type":"rotated", "direction":"left"})
-                            }
-                            M131EEvent::Pressed => json!({"type":"pressed"}),
-                            M131EEvent::Released => json!({"type":"released"}),
-                        });
+            Some(Ok(InputUpdate::Events(events))) => {
+                item["type"] = json!("events");
+                match module {
+                    Some(ModuleKind::M003K) => {
+                        item["events"] = events.iter().map(knob_event).collect();
                     }
-                    item["type"] = json!("events");
-                    item["events"] = json!(decoded);
-                    item["gestures"] = json!(interpreted);
-                }
-                Ok(DecodedM131E::Unknown(_)) => item["type"] = json!("unknown"),
-                Err(error) => {
-                    item["type"] = json!("parse_error");
-                    item["error"] = json!(error.to_string());
+                    Some(ModuleKind::M131E) => {
+                        let (decoded, gestures) = dial_events(&events, &mut dial_pressed_at);
+                        item["events"] = json!(decoded);
+                        item["gestures"] = json!(gestures);
+                    }
+                    _ => item["events"] = json!(events),
                 }
             }
-        } else if let Some(input) = &mut other_input {
-            match input.decode(&raw, report.timestamp_micros) {
-                Ok(cooltek_sdk_service::InputUpdate::Events(events)) => {
-                    item["type"] = json!("events");
-                    item["events"] = json!(events);
-                }
-                Ok(cooltek_sdk_service::InputUpdate::Unknown) => item["type"] = json!("unknown"),
-                Err(error) => {
-                    item["type"] = json!("parse_error");
-                    item["error"] = json!(error);
-                }
-            }
-        } else {
-            item["type"] = json!("unknown");
         }
         serde_json::to_writer(&mut output, &item)?;
         writeln!(output)?;
@@ -899,6 +840,48 @@ fn replay(file: PathBuf) -> Result<(), Box<dyn Error>> {
     )?;
     writeln!(output)?;
     Ok(())
+}
+
+fn knob_event(event: &InputEvent) -> Value {
+    let kind = match event.gesture {
+        Gesture::Clockwise => json!({"type":"rotated", "direction":"clockwise"}),
+        Gesture::CounterClockwise => json!({"type":"rotated", "direction":"counter_clockwise"}),
+        Gesture::Pressed => json!({"type":"pressed"}),
+        _ => json!({"type":"released"}),
+    };
+    json!({"knob_index":event.control, "kind":kind})
+}
+
+/// Splits normalized dial events into wire events and host press gestures.
+///
+/// The session emits at most one `pressed` per physical press and follows a
+/// matched release with its gesture, so the hold time is release minus press.
+fn dial_events(events: &[InputEvent], pressed_at: &mut Option<u64>) -> (Vec<Value>, Vec<Value>) {
+    let mut decoded = Vec::new();
+    let mut gestures = Vec::new();
+    for event in events {
+        match event.gesture {
+            Gesture::ShortPress | Gesture::LongPress => {
+                let held = pressed_at
+                    .take()
+                    .map_or(0, |pressed| event.timestamp_micros.saturating_sub(pressed));
+                let kind = if event.gesture == Gesture::ShortPress {
+                    "short_press"
+                } else {
+                    "long_press"
+                };
+                gestures.push(json!({"type":kind, "held_micros":held}));
+            }
+            Gesture::Right => decoded.push(json!({"type":"rotated", "direction":"right"})),
+            Gesture::Left => decoded.push(json!({"type":"rotated", "direction":"left"})),
+            Gesture::Pressed => {
+                pressed_at.get_or_insert(event.timestamp_micros);
+                decoded.push(json!({"type":"pressed"}));
+            }
+            _ => decoded.push(json!({"type":"released"})),
+        }
+    }
+    (decoded, gestures)
 }
 
 #[cfg(test)]
@@ -1258,6 +1241,7 @@ mod tests {
             Duration::from_secs(1),
             100,
             Some(2),
+            &AtomicBool::new(false),
         )
         .unwrap();
         let records = output_records(output);
@@ -1279,6 +1263,7 @@ mod tests {
             Duration::from_millis(10),
             100,
             None,
+            &AtomicBool::new(false),
         )
         .unwrap();
         assert!(started.elapsed() < Duration::from_millis(500));
@@ -1297,6 +1282,106 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_writes_an_interrupted_footer_and_restores_requested_mode() {
+        struct Interrupting {
+            reads: RefCell<VecDeque<Vec<u8>>>,
+            writes: RefCell<Vec<Vec<u8>>>,
+            flag: std::sync::Arc<AtomicBool>,
+        }
+        impl ReportTransport for Interrupting {
+            fn read_timeout(&self, buffer: &mut [u8], _: i32) -> HidResult<usize> {
+                // Simulate Ctrl-C arriving while the second report is read.
+                let bytes = self.reads.borrow_mut().pop_front().unwrap_or_default();
+                if self.reads.borrow().is_empty() {
+                    cooltek_sdk_cli::interrupt::signal_received(&self.flag);
+                }
+                buffer[..bytes.len()].copy_from_slice(&bytes);
+                Ok(bytes.len())
+            }
+            fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
+                panic!("recording must not query vendor feature reports")
+            }
+            fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+                self.writes.borrow_mut().push(data.to_vec());
+                Ok(())
+            }
+        }
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let mut reader = InputReader::new(Interrupting {
+            reads: RefCell::new(VecDeque::from([vec![1, 0x44, 3, 0, 3, 0, 0], vec![2]])),
+            writes: RefCell::new(Vec::new()),
+            flag: std::sync::Arc::clone(&flag),
+        });
+        let mut output = Vec::new();
+        record_session(
+            &mut reader,
+            &mut output,
+            RecordSettings {
+                module: Some(ModuleKind::M131E),
+                software_mode: true,
+                started: Instant::now(),
+                duration: Duration::from_secs(60),
+                timeout_ms: 100,
+                max_reports: None,
+            },
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(
+            *reader.transport().writes.borrow(),
+            [
+                dial::software_mode_report(true).to_vec(),
+                dial::software_mode_report(false).to_vec()
+            ]
+        );
+        let records = output_records(output.clone());
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[1]["raw_hex"], "02");
+        assert_eq!(records[2]["type"], "end");
+        assert_eq!(records[2]["reason"], "interrupted");
+        assert_eq!(records[2]["report_count"], 2);
+        assert!(records[2].get("error").is_none());
+
+        // The footer is a complete capture for both replay paths.
+        let mut capture = serde_json::to_vec(&Record::Session(Session {
+            schema_version: SCHEMA_VERSION,
+            source: Source::Synthetic,
+            started_unix_micros: 0,
+            identity: identity(&device(b"dial", 0x0206, 0)),
+            software_mode_requested: true,
+            report_descriptor: Descriptor::Error {
+                message: "synthetic".into(),
+            },
+        }))
+        .unwrap();
+        capture.push(b'\n');
+        capture.extend(output);
+        let (mut reader, _) = CaptureReader::new(capture.as_slice()).unwrap();
+        while reader.next_report().unwrap().is_some() {}
+        assert_eq!(reader.end().unwrap().reason, EndReason::Interrupted);
+    }
+
+    #[test]
+    fn interrupt_before_any_read_ends_without_reading() {
+        let mut reader = InputReader::new(FakeTransport::new([Read::Data(vec![1])]));
+        let mut output = Vec::new();
+        capture_input(
+            &mut reader,
+            &mut output,
+            Instant::now(),
+            Duration::from_secs(1),
+            100,
+            None,
+            &AtomicBool::new(true),
+        )
+        .unwrap();
+        assert!(reader.transport().timeouts.borrow().is_empty());
+        let records = output_records(output);
+        assert_eq!(records[0]["reason"], "interrupted");
+        assert_eq!(records[0]["report_count"], 0);
+    }
+
+    #[test]
     fn unplug_preserves_partial_reports_and_writes_error_footer() {
         let mut reader = InputReader::new(FakeTransport::new([
             Read::Data(vec![9]),
@@ -1311,6 +1396,7 @@ mod tests {
                 Duration::from_secs(1),
                 100,
                 None,
+                &AtomicBool::new(false),
             )
             .is_err()
         );

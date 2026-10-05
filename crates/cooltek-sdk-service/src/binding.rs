@@ -9,6 +9,22 @@ pub struct DeviceContext {
     pub serial_number: Option<String>,
 }
 
+impl DeviceContext {
+    /// Builds a context from a reported serial, treating an empty or blank serial as absent.
+    ///
+    /// Live inventories and recorded captures can report `""` for devices
+    /// without a serial. Normalizing here keeps both paths identical; any other
+    /// serial must satisfy the same rules as a profile selector.
+    pub fn new(module: ServiceModule, serial_number: Option<String>) -> Result<Self, String> {
+        let serial_number = serial_number.filter(|serial| !serial.trim().is_empty());
+        crate::profile::validate_serial_number(serial_number.as_deref())?;
+        Ok(Self {
+            module,
+            serial_number,
+        })
+    }
+}
+
 /// A validated profile with deterministic serial-specific binding precedence.
 #[derive(Clone, Debug)]
 pub struct BindingEngine {
@@ -197,6 +213,17 @@ mod tests {
         assert!(engine.binding_for(&device, &input).is_none());
         device.module = ServiceModule::M131E;
         assert!(engine.binding_for(&device, &event()).is_none());
+    }
+
+    #[test]
+    fn blank_device_serials_are_absent_and_invalid_serials_fail_early() {
+        for serial in ["", " ", "\t"] {
+            let device = DeviceContext::new(ServiceModule::M003K, Some(serial.into())).unwrap();
+            assert_eq!(device.serial_number, None);
+        }
+        let device = DeviceContext::new(ServiceModule::M003K, Some("unit-1".into())).unwrap();
+        assert_eq!(device.serial_number.as_deref(), Some("unit-1"));
+        assert!(DeviceContext::new(ServiceModule::M003K, Some("a\u{1}b".into())).is_err());
     }
 
     #[test]

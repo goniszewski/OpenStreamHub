@@ -411,14 +411,12 @@ impl ProfileSession {
                 }))
             }
             Gesture::Released => {
-                let Some(held) = self.held[index].as_ref() else {
+                // Any release clears the key so a mismatched serial cannot leave it
+                // stuck; only a release from the pressing serial may act.
+                let Some(held) = self.held[index].take() else {
                     return Ok(KeypadResolution::Unbound);
                 };
-                if held.serial_number != device.serial_number {
-                    return Ok(KeypadResolution::Unbound);
-                }
-                let held = self.held[index].take().expect("held key checked above");
-                if !held.action_tile {
+                if held.serial_number != device.serial_number || !held.action_tile {
                     return Ok(KeypadResolution::Unbound);
                 }
                 let page = self
@@ -561,6 +559,36 @@ mod tests {
             KeypadResolution::Unbound
         );
         assert_eq!(session.depth(), 0);
+    }
+    #[test]
+    fn release_from_another_serial_clears_the_held_key() {
+        let mut session = ProfileSession::new(fixture()).unwrap();
+        let unit = DeviceContext {
+            serial_number: Some("unit".into()),
+            ..device()
+        };
+        assert!(matches!(
+            session.resolve(&unit, &event(0, Gesture::Pressed)).unwrap(),
+            KeypadResolution::Action { .. }
+        ));
+        assert_eq!(
+            session
+                .resolve(&device(), &event(0, Gesture::Released))
+                .unwrap(),
+            KeypadResolution::Unbound
+        );
+        // The key is no longer held: the matching release cannot act late,
+        // and a new press is accepted instead of being treated as a duplicate.
+        assert_eq!(
+            session
+                .resolve(&unit, &event(0, Gesture::Released))
+                .unwrap(),
+            KeypadResolution::Unbound
+        );
+        assert!(matches!(
+            session.resolve(&unit, &event(0, Gesture::Pressed)).unwrap(),
+            KeypadResolution::Action { .. }
+        ));
     }
     #[test]
     fn invalid_tree_shapes_are_rejected() {

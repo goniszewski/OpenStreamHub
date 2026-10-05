@@ -52,3 +52,9 @@ export interface DeviceStatusPayload { feed_id: string; state: FeedState; source
 export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null }
 export interface DeviceInventoryPayload { devices: LiveDevice[] }
 export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };
+
+// Supervised masterhub-service child process (Tauri commands and events, snake_case on the wire).
+export interface StartServiceRequest { profile: Profile; path_hex: string; execute: boolean; software_mode: boolean }
+export type ServiceState = 'starting' | 'running' | 'stopping' | 'exited' | 'failed';
+export interface ServiceStatusPayload { service_id: string; state: ServiceState; execute: boolean; exit_code?: number | null; error?: string; stderr_tail?: string }
+export interface ServiceRecordPayload { service_id: string; record: unknown }

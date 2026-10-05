@@ -2,25 +2,13 @@
   "version": 1,
   "entries": {
     "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
-      "last_emitted_at_ms": 1791215683914,
+      "last_emitted_at_ms": 1791216883131,
       "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
     },
     "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
       "last_emitted_at_ms": 1791213317953,
       "message": "Read multiple files in parallel when possible for faster analysis."
-    },
-    "808cb04420bcb368ab4716038ddd950b51198d0402b6cf8e965d66ca42ebccbe": {
-      "last_emitted_at_ms": 1791212588714,
-      "message": "[SLOP WARNING] Detected fallback/workaround language in this tool input. Do not make potential slop: avoid ad-hoc fallback layers, workaround shims, or environment-specific patches unless explicitly justified. For architecture concerns, consult the architect for a concrete design first. If this seems environment-specific, ask the user to confirm constraints before proceeding.\n\nVerify changes work after editing. Test functionality before marking complete."
-    },
-    "894a8e7c4290d7c71d7a22ebbcdf93a556478761ebb3e2f1ba056d0430f1df6a": {
-      "last_emitted_at_ms": 1791212340498,
-      "message": "Spawning agent: oh-my-claudecode:executor (sonnet) | Task: Frontend live state and rig | Active agents: 1"
-    },
-    "08919941948044cb9e69b7c1fc848fcb3fda2c2543fcc23394fb505712946691": {
-      "last_emitted_at_ms": 1791212326060,
-      "message": "Spawning agent: oh-my-claudecode:executor (opus) | Task: Rust device feed backend"
     }
   },
-  "updated_at": "2026-10-05T15:54:43.914Z"
+  "updated_at": "2026-10-05T16:14:43.131Z"
 }

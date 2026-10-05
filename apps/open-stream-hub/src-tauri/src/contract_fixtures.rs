@@ -1,7 +1,7 @@
 //! Shared fixtures that pin the Rust/TypeScript boundary. The frontend tests
 //! read the same files. Regenerate with `UPDATE_FIXTURES=1 cargo test`.
 
-use crate::{feed, replay, store, test_profiles};
+use crate::{feed, replay, service, store, test_profiles};
 use cooltek_sdk_service::Profile;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
@@ -175,6 +175,56 @@ fn device_feed_payloads_match_the_shared_fixtures() {
                 devices: feed::live_devices(&inventory),
             },
             feed::InventoryPayload { devices: vec![] },
+        ]),
+    );
+}
+
+#[test]
+fn service_payloads_match_the_shared_fixtures() {
+    let path_hex = cooltek_sdk_cli::capture::encode_hex(b"/dev/hidraw-0202");
+    let request = json!({
+        "profile": test_profiles::folders_json(),
+        "path_hex": path_hex.to_uppercase(),
+        "execute": true,
+        "software_mode": false,
+    });
+    // The request deserializes as the command argument and ids are lowercase.
+    let parsed: service::StartRequest = serde_json::from_value(request.clone()).unwrap();
+    let id = service::service_id(&parsed.path_hex).unwrap();
+    check_or_update("service-start-request.json", &request);
+    check_or_update(
+        "service-command-results.json",
+        &json!({ "start_service": id, "stop_service": null }),
+    );
+    let status = |state| service::StatusPayload::new(&id, state, true);
+    check_or_update(
+        "service-status-events.json",
+        &json!([
+            status(service::ServiceState::Starting),
+            status(service::ServiceState::Running),
+            status(service::ServiceState::Stopping),
+            service::StatusPayload::exited(&id, true, Some(0), String::new()),
+            service::StatusPayload::exited(
+                &id,
+                true,
+                Some(1),
+                "masterhub-service: no HID interface matches the selected path\n".into(),
+            ),
+            service::StatusPayload::exited(&id, true, None, String::new()),
+            service::StatusPayload::failed(
+                &id,
+                true,
+                "could not find masterhub-service. Checked: /Applications/OpenStreamHub.app/Contents/MacOS/masterhub-service. Build it with `cargo build -p cooltek-sdk-cli --bin masterhub-service` or set OPEN_STREAM_HUB_SERVICE to its path.".into(),
+            ),
+        ]),
+    );
+    let record = |line: &[u8], truncated| service::record_payload(&id, line, truncated).unwrap();
+    check_or_update(
+        "service-record-events.json",
+        &json!([
+            record(br#"{"type":"service_start","mode":"dry_run"}"#, false),
+            record(b"not json", false),
+            record(&[b'a'; 600], true),
         ]),
     );
 }

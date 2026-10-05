@@ -13,6 +13,8 @@ fn main() {
             "list_live_devices",
             "start_feed",
             "stop_feed",
+            "start_service",
+            "stop_service",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

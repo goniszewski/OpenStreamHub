@@ -5,13 +5,17 @@ mod migration;
 #[cfg(target_os = "macos")]
 mod quit;
 mod replay;
+mod service;
 mod store;
 #[cfg(test)]
 mod test_profiles;
 
 use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
 use serde::Serialize;
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+};
 use tauri::{Emitter, Manager, State};
 
 struct AppState {
@@ -19,6 +23,7 @@ struct AppState {
     app_data: Result<PathBuf, String>,
     feeds: feed::Feeds,
     inventory: feed::InventoryWatcher,
+    services: service::Services,
 }
 
 /// Bootstrap failures carry the expected storage folder so the frontend can
@@ -39,6 +44,7 @@ impl AppState {
             app_data,
             feeds: feed::Feeds::default(),
             inventory: feed::InventoryWatcher::default(),
+            services: service::Services::default(),
         }
     }
 
@@ -186,6 +192,45 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
     state.feeds.stop(&feed_id)
 }
 
+// Profile actions run only in a supervised `masterhub-service` child process,
+// never in the app. A read-only feed on the same interface is stopped first
+// so the service owns the device.
+#[tauri::command(async)]
+fn start_service(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: service::StartRequest,
+) -> Result<String, String> {
+    let emit: service::Emit = Arc::new(move |message| {
+        let emitted = match message {
+            service::ServiceMessage::Record(payload) => app.emit(service::RECORD_EVENT, payload),
+            service::ServiceMessage::Status(payload) => app.emit(service::STATUS_EVENT, payload),
+        };
+        if let Err(error) = emitted {
+            eprintln!("could not emit a service event: {error}");
+        }
+    });
+    let exe = std::env::current_exe().ok();
+    let program = service::resolve_service_binary(
+        std::env::var_os(service::BINARY_ENV).as_deref(),
+        exe.as_deref().and_then(Path::parent),
+        cfg!(debug_assertions),
+    );
+    service::start_service(
+        &state.services,
+        request,
+        state.app_data.as_deref().map_err(Clone::clone),
+        program,
+        |feed_id| state.feeds.stop(feed_id),
+        emit,
+    )
+}
+
+#[tauri::command(async)]
+fn stop_service(state: State<'_, AppState>, service_id: String) -> Result<(), String> {
+    state.services.stop(&service_id, service::STOP_GRACE)
+}
+
 pub fn run() {
     // A second launch focuses the existing window instead of opening another
     // editor over the same profile files.
@@ -207,6 +252,9 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| format!("could not resolve profile storage: {error}"));
+            if let Ok(app_data) = &app_data {
+                service::clean_stale_profiles(&service::profile_dir(app_data));
+            }
             app.manage(AppState::open(app_data));
             // Hot-plug detection: the watcher emits `device://inventory` once
             // at start and whenever the input-capable device list changes.
@@ -236,7 +284,9 @@ pub fn run() {
             preview_keypad,
             list_live_devices,
             start_feed,
-            stop_feed
+            stop_feed,
+            start_service,
+            stop_service
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");
@@ -244,6 +294,8 @@ pub fn run() {
     app.run(|app, event| {
         if let tauri::RunEvent::Exit = event {
             let state = app.state::<AppState>();
+            // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
+            state.services.stop_all(service::STOP_GRACE);
             state.feeds.stop_all();
             state.inventory.stop();
             return;
@@ -278,6 +330,7 @@ mod tests {
             app_data,
             feeds: feed::Feeds::default(),
             inventory: feed::InventoryWatcher::default(),
+            services: service::Services::default(),
         }
     }
 

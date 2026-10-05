@@ -7,8 +7,11 @@ import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { moduleArtwork } from './module-controls';
 import { RigPreview } from './RigPreview';
+import { ServicePanel } from './ServicePanel';
+import type { ServiceRunner } from './service-runner';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
+import { isUnsaved } from './profile-session';
 import type { KeypadPreview, SessionState } from './profile-session';
 import { actionLabel, controlCounts, controlLabel, faderMaximum, gestureLabels, gestures, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
@@ -32,7 +35,7 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
   return <p className="status"><span className={`status-dot${connected ? ' on' : ''}`} />{connected ? `${count} module${count === 1 ? '' : 's'} connected` : 'No hardware connected'}</p>;
 }
 
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; disabled: boolean; setPage(page: Page): void }) {
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, runner }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; runner?: ServiceRunner; disabled: boolean; setPage(page: Page): void }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope, faderPosition } = editor;
   const { preview, keypadPreview } = state;
   const profile = state.draft.profile;
@@ -73,6 +76,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
         <p className="fine-print">No volume changes, shortcuts or application launches are executed.</p>
       </section>
     </> : <div className="planned-panel"><h2>Input support is planned</h2><p>{selected.name} is included in the module catalog. Its input decoder and binding support are not implemented in this app.</p><p>Display uploads and physical device behavior still require validation.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
+    <ServicePanel runner={runner} feed={feed} profile={profile} desktop={desktop} unsaved={isUnsaved(state.draft)} />
   </section>;
 }
 

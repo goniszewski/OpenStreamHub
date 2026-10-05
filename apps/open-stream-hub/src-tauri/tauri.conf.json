@@ -18,7 +18,8 @@
         "height": 1087,
         "minWidth": 1100,
         "minHeight": 780,
-        "titleBarStyle": "Visible"
+        "titleBarStyle": "Visible",
+        "dragDropEnabled": false
       }
     ],
     "security": {

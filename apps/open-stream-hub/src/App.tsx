@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
@@ -11,21 +11,31 @@ import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
+import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
+import { installShortcuts, isMacPlatform, shortcutPages, withHint } from './shortcuts';
 import { appearanceStorageKey, browserProfile, errorMessage, readAppearance } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
 import type { ConfirmRequest } from './useDeviceEditor';
 
 const desktop = isTauri();
+const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
+
+// Crash-recovery drafts work without storage; the store then does nothing.
+function draftPersister() {
+  let storage: Storage | null = null;
+  try { storage = localStorage; } catch { /* Drafts are simply not kept. */ }
+  return new DraftPersister(new DraftStore(storage));
+}
 
 function getAppearance(): Appearance {
   try { return readAppearance(localStorage); } catch { return 'system'; }
 }
 
 export default function App() {
-  const [session] = useState(() => new ProfileSession((command, args) => invoke(command, args), browserProfile, desktop));
+  const [session] = useState(() => new ProfileSession((command, args) => invoke(command, args), browserProfile, desktop, desktop ? draftPersister() : null));
   const [feed] = useState(() => {
     const created = new DeviceFeed((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop);
     try { created.setAutoDetect(readAutoDetect(localStorage)); } catch { /* auto-detect stays on by default */ }
@@ -58,6 +68,26 @@ export default function App() {
   }, [appearance, systemDark]);
 
   useEffect(() => { if (desktop) void session.bootstrap(); }, [session]);
+
+  // Write any pending crash-recovery copy before the page goes away.
+  useEffect(() => {
+    const flush = () => session.flushDraft();
+    const hidden = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', flush); window.removeEventListener('beforeunload', flush); flush(); };
+  }, [session]);
+
+  const latest = useRef({ desktop, ready: state.ready });
+  latest.current = { desktop, ready: state.ready };
+  useEffect(() => installShortcuts(document, () => ({
+    mac,
+    isPageEnabled: page => shortcutPages.includes(page),
+    setPage,
+    save: () => { if (!latest.current.desktop) session.setNotice('Saving needs the desktop app.'); else if (latest.current.ready) void session.saveOrNote(); },
+    duplicate: () => { if (!latest.current.desktop) session.setNotice('Duplicating needs the desktop app.'); else session.requestDuplicate(); },
+  })), [session]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -96,7 +126,7 @@ export default function App() {
         {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
       </div>
       <div className="header-actions"><span className="mode-pill"><Activity size={16} />Device-free</span>
-        <button className="button primary" disabled={disabled || !unsaved} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
+        <button className="button primary" disabled={disabled || !unsaved} title={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
       </div>
     </header>
     <div className="app-body">
@@ -124,14 +154,24 @@ export default function App() {
           <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} />
           <Inspector editor={editor} session={session} state={state} disabled={disabled} />
         </div>}
-        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} />}
+        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>
+    </ModalDialog>
+    <ModalDialog open={state.duplicatePrompt} labelledBy="duplicate-title" describedBy="duplicate-message" onCancel={() => { void session.resolveDuplicate(null); }}>
+      <h2 id="duplicate-title">Duplicate which version?</h2><p id="duplicate-message">{profile.name} has unsaved changes. The copy replaces the open draft, so the other version is not kept open. Your saved file is never changed.</p>
+      <div className="dialog-actions wrap"><button className="button" onClick={() => { void session.resolveDuplicate(null); }}>Cancel</button><button className="button" onClick={() => { void session.resolveDuplicate('saved'); }}>Saved version</button><button className="button primary" autoFocus onClick={() => { void session.resolveDuplicate('draft'); }}>Current draft</button></div>
+    </ModalDialog>
+    <ModalDialog open={state.restorePrompt !== null} labelledBy="restore-title" describedBy="restore-message" onCancel={() => { /* Escape never discards recovered changes. */ }}>
+      <h2 id="restore-title">Restore unsaved changes to {state.restorePrompt?.name}?</h2>
+      <p id="restore-message">OpenStreamHub closed before these changes were saved. Restore them to continue editing, or discard them and keep the saved profile.</p>
+      {state.restorePrompt?.changedOnDisk && <p className="fine-print" role="note">The saved profile changed on disk after these changes were made. You can still restore them; saving will then ask you to reload first, so nothing on disk is overwritten.</p>}
+      <div className="dialog-actions"><button className="button danger" onClick={() => session.resolveRestore(false)}>Discard</button><button className="button primary" autoFocus onClick={() => session.resolveRestore(true)}>Restore</button></div>
     </ModalDialog>
     <ModalDialog open={pendingIntent !== null} labelledBy="unsaved-title" describedBy="unsaved-message" onCancel={() => session.resolveIntent(false)}>
       <h2 id="unsaved-title">Keep your changes?</h2><p id="unsaved-message">You have an unsaved profile draft. Discard it to {pendingIntent?.label}, or cancel and save your changes first.</p>

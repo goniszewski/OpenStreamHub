@@ -7,20 +7,22 @@ import type { ProfileSession, ReplaySession, SessionState } from './profile-sess
 import { actionLabel, controlLabel, gestureLabels, replayLabels } from './ui-model';
 import type { Page } from './ui-model';
 import type { ConfirmRequest, DeviceEditor } from './useDeviceEditor';
+import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 
-export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm }: {
+export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false }: {
   session: ProfileSession; state: SessionState; editor: DeviceEditor; desktop: boolean; disabled: boolean;
-  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void;
+  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void; mac?: boolean;
 }) {
   const { profile, profileId } = state.draft;
   const unsaved = isUnsaved(state.draft);
+  const drop = useImportDrop(session, disabled);
   const deleteProfile = (item: ProfileSummary) => confirm({
     title: `Delete ${item.name}?`,
     description: item.id === profileId ? 'This permanently removes the saved profile file. Its contents stay open as an unsaved draft until you discard them.' : 'This permanently removes the saved profile file. This cannot be undone.',
     confirmLabel: 'Delete profile',
     run: () => { void session.deleteProfile(item); },
   });
-  return <section className="page-content profiles-page"><div className="page-title"><div><h1>Profiles</h1><p>Saved bindings and device-free replay.</p></div><button className="button" disabled={disabled} onClick={() => session.guard('create a new profile', () => { session.newProfile(); setPage('profiles'); })}><Plus size={18} />New profile</button></div>
+  return <section className={`page-content profiles-page${drop.dragging ? ' drop-target' : ''}`} {...drop.props}><div className="page-title"><div><h1>Profiles</h1><p>Saved bindings and device-free replay.</p></div><button className="button" disabled={disabled} onClick={() => session.guard('create a new profile', () => { session.newProfile(); setPage('profiles'); })}><Plus size={18} />New profile</button></div>
     <div className="profiles-grid"><section className="panel saved-profiles"><div className="section-heading"><h2>Saved profiles</h2><button className="icon-button" disabled={disabled} aria-label="Refresh profile list" onClick={() => { void session.refreshProfiles(); }}><RotateCcw size={18} /></button></div>
       {state.profiles.length ? state.profiles.map(item => <div key={item.id} className="saved-profile-row">
         <button className={`saved-profile ${item.id === profileId ? 'active' : ''}`} disabled={disabled} aria-pressed={item.id === profileId} onClick={() => session.guard('switch profiles', () => { void session.load(item.id); })}><FileText size={20} /><span><strong>{item.name}</strong><small>{item.binding_count} bindings</small></span><ChevronRight size={16} /></button>
@@ -32,6 +34,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
     </section><section className="panel profile-editor"><div className="section-heading"><h2>Profile draft</h2><span className={`small-label ${unsaved ? 'draft-label' : ''}`}>{unsaved ? 'Unsaved changes' : 'Saved'}</span></div>
       <label htmlFor="profile-name">Name</label><input id="profile-name" disabled={disabled} value={profile.name} aria-describedby="profile-name-error" onChange={event => session.edit({ ...profile, name: event.target.value })} /><LabelError id="profile-name-error" value={profile.name} field="Profile name" />
       <div className="profile-actions"><button className="button" disabled={disabled || state.validation === 'running'} onClick={() => { void session.validate(); }}>{state.validation === 'running' ? <LoaderCircle size={16} className="spinning" /> : <Check size={17} />}Validate draft</button><button className="button" disabled={disabled || !profileId} onClick={() => { if (profileId) session.guard('reload the saved profile', () => { void session.load(profileId); }); }}><ArrowDownToLine size={17} />Reload saved</button></div>
+      <ProfileTransfer session={session} state={state} disabled={disabled} mac={mac} />
       {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />Current draft is valid.</p>}
       <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
       {profile.bindings.length ? <div className="binding-list">{profile.bindings.map((item, index) => <div key={`${item.module}:${item.control}:${item.gesture}:${item.serial_number ?? ''}:${index}`} className="binding-row"><div><strong>{controlLabel(item.module, item.control)} · {gestureLabels[item.gesture]}</strong><span>{actionLabel(item.action)}</span><small>{item.serial_number ? `Serial: ${item.serial_number}` : 'Any device serial'}</small></div><button className="button compact" onClick={() => editor.selectBinding(item)}>Edit</button><button className="icon-button" aria-label={`Remove ${controlLabel(item.module, item.control)} ${gestureLabels[item.gesture]} binding`} disabled={disabled} onClick={() => session.update(latest => ({ ...latest, bindings: latest.bindings.filter((_, position) => position !== index) }))}><Trash2 size={17} /></button></div>)}</div> : profileBindingCount(profile) === 0 && <p className="empty-state">No bindings yet. Select a module in Devices and choose an action to add one.</p>}

@@ -2,7 +2,7 @@ import type { Action, Binding, BindingAction, Gesture, Profile, ReplayKind, Serv
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
-export type Page = 'devices' | 'profiles' | 'compatibility' | 'settings';
+export type Page = 'devices' | 'profiles' | 'artwork' | 'compatibility' | 'settings';
 
 export const appearanceStorageKey = 'open-stream-hub.appearance';
 

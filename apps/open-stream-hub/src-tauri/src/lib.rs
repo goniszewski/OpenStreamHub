@@ -1,3 +1,4 @@
+mod artwork;
 #[cfg(test)]
 mod contract_fixtures;
 mod diagnostics;
@@ -275,6 +276,32 @@ async fn create_diagnostics(
     .map_err(|error| format!("the diagnostics worker failed: {error}"))?
 }
 
+// Offline artwork preparation: decode, fit and encode on a blocking worker.
+// Nothing is sent to a device or over the network.
+#[tauri::command]
+async fn prepare_artwork(
+    request: artwork::PrepareRequest,
+) -> Result<artwork::PrepareResult, String> {
+    tauri::async_runtime::spawn_blocking(move || artwork::prepare_artwork(&request))
+        .await
+        .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
+// Writes the prepared JPEG under `<app data>/artwork/`; nothing is uploaded.
+#[tauri::command]
+async fn save_artwork(
+    state: State<'_, AppState>,
+    request: artwork::SaveRequest,
+) -> Result<artwork::SaveResult, String> {
+    let app_data = state.app_data.clone()?;
+    let generated_at = export::now_seconds()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        artwork::save_artwork(&request, &app_data, generated_at)
+    })
+    .await
+    .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
 #[tauri::command(async)]
 fn stop_service(state: State<'_, AppState>, service_id: String) -> Result<(), String> {
     state.services.stop(&service_id, service::STOP_GRACE)
@@ -337,7 +364,9 @@ pub fn run() {
             stop_feed,
             start_service,
             stop_service,
-            create_diagnostics
+            create_diagnostics,
+            prepare_artwork,
+            save_artwork
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

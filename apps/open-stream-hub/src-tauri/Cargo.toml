@@ -24,6 +24,7 @@ tauri-plugin-single-instance = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
 cooltek-sdk-service = { path = "../../../crates/cooltek-sdk-service" }
 cooltek-sdk-masterhub = { path = "../../../crates/cooltek-sdk-masterhub" }
 cooltek-sdk-cli = { path = "../../../crates/cooltek-sdk-cli" }
@@ -33,3 +34,4 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }

@@ -1,0 +1,13 @@
+{
+  "create_diagnostics": {
+    "bytes": 8983,
+    "path": "/storage/diagnostics/openstreamhub-diagnostics-20261005-120000.json",
+    "summary": {
+      "capture_reports": 2,
+      "descriptor_errors": 1,
+      "descriptors_read": 3,
+      "devices": 5,
+      "redacted": true
+    }
+  }
+}

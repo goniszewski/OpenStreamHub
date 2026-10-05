@@ -1,0 +1,364 @@
+{
+  "app": {
+    "build": "debug",
+    "name": "open-stream-hub-app",
+    "service_binary": {
+      "path": "~/cooltek-sdk/target/debug/masterhub-service"
+    },
+    "target_arch": "aarch64",
+    "target_os": "macos",
+    "tauri_version": "2.12.1",
+    "version": "0.1.0"
+  },
+  "capture": {
+    "devices": [
+      {
+        "module": "M003K",
+        "path_label": "path-9fde161a",
+        "serial_number": "…NOB7",
+        "skipped": "in use by feed/service",
+        "status": "skipped"
+      },
+      {
+        "bytes": 22,
+        "ended": "deadline",
+        "error": null,
+        "module": "M005S",
+        "path_label": "path-c3bd38bb",
+        "report_count": 2,
+        "reports": [
+          {
+            "hex": "012a070002050019324b64",
+            "timestamp_us": 1000
+          },
+          {
+            "hex": "012a070002053c19324b64",
+            "timestamp_us": 2000
+          }
+        ],
+        "serial_number": "…0042",
+        "status": "captured"
+      }
+    ],
+    "max_bytes": 65536,
+    "max_reports": 256,
+    "read_timeout_ms": 100,
+    "seconds": 1.0
+  },
+  "devices": [
+    {
+      "descriptor": {
+        "feature_report_lengths": {},
+        "length": 5,
+        "output_report_lengths": {},
+        "parse_error": "hidapi error: Invalid HID report descriptor: truncated short item",
+        "report_descriptor_hex": "050c0901a1",
+        "status": "read"
+      },
+      "input_supported": true,
+      "interface_number": 0,
+      "manufacturer_string": "Cooler Master",
+      "module": "M003K",
+      "path_label": "path-9ede1487",
+      "picked_for_live": false,
+      "product_id": 514,
+      "product_string": "MasterHUB module",
+      "release_number": 256,
+      "serial_number": "…NOB7",
+      "usage": 1,
+      "usage_page": 12,
+      "usb_id": "2516:0202",
+      "vendor_id": 9494
+    },
+    {
+      "descriptor": {
+        "skipped": "in use by feed/service",
+        "status": "skipped"
+      },
+      "input_supported": true,
+      "interface_number": 0,
+      "manufacturer_string": "Cooler Master",
+      "module": "M003K",
+      "path_label": "path-9fde161a",
+      "picked_for_live": true,
+      "product_id": 514,
+      "product_string": "MasterHUB module",
+      "release_number": 256,
+      "serial_number": "…NOB7",
+      "usage": 1,
+      "usage_page": 65280,
+      "usb_id": "2516:0202",
+      "vendor_id": 9494
+    },
+    {
+      "descriptor": {
+        "error": "could not read the report descriptor: hidapi error: descriptor unavailable",
+        "status": "error"
+      },
+      "input_supported": false,
+      "interface_number": 0,
+      "manufacturer_string": "Cooler Master",
+      "module": "M0064",
+      "path_label": "path-a0de17ad",
+      "picked_for_live": false,
+      "product_id": 502,
+      "product_string": "MasterHUB module",
+      "release_number": 256,
+      "serial_number": null,
+      "usage": 1,
+      "usage_page": 65280,
+      "usb_id": "2516:01f6",
+      "vendor_id": 9494
+    },
+    {
+      "descriptor": {
+        "feature_report_lengths": {
+          "0x03": 32
+        },
+        "length": 34,
+        "output_report_lengths": {
+          "0x02": 64
+        },
+        "parse_error": null,
+        "report_descriptor_hex": "0600ff0901a10175088501953f090181028502953f090191028503951f0901b102c0",
+        "status": "read"
+      },
+      "input_supported": false,
+      "interface_number": 0,
+      "manufacturer_string": "Cooler Master",
+      "module": null,
+      "path_label": "path-99de0ca8",
+      "picked_for_live": false,
+      "product_id": 4660,
+      "product_string": "MasterHUB module",
+      "release_number": 256,
+      "serial_number": "…",
+      "usage": 1,
+      "usage_page": 65280,
+      "usb_id": "2516:1234",
+      "vendor_id": 9494
+    },
+    {
+      "descriptor": {
+        "feature_report_lengths": {
+          "0x03": 32
+        },
+        "length": 34,
+        "output_report_lengths": {
+          "0x02": 64
+        },
+        "parse_error": null,
+        "report_descriptor_hex": "0600ff0901a10175088501953f090181028502953f090191028503951f0901b102c0",
+        "status": "read"
+      },
+      "input_supported": true,
+      "interface_number": 0,
+      "manufacturer_string": "Cooler Master",
+      "module": "M005S",
+      "path_label": "path-c3bd38bb",
+      "picked_for_live": true,
+      "product_id": 512,
+      "product_string": "MasterHUB module",
+      "release_number": 256,
+      "serial_number": "…0042",
+      "usage": 1,
+      "usage_page": 65280,
+      "usb_id": "2516:0200",
+      "vendor_id": 9494
+    }
+  ],
+  "enumeration_error": null,
+  "environment": {
+    "arch": "aarch64",
+    "os": "macos",
+    "os_family": "unix",
+    "os_version": "macOS 27.0"
+  },
+  "generated_at": "2026-10-05T12:00:00Z",
+  "kind": "openstreamhub_diagnostics",
+  "profile": {
+    "bindings": [
+      {
+        "action": {
+          "delta": 5,
+          "type": "volume"
+        },
+        "control": 0,
+        "gesture": "clockwise",
+        "module": "m003k"
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Home",
+          "slots": [
+            {
+              "page_id": "tools",
+              "type": "folder"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "delta": 7,
+                    "type": "volume"
+                  },
+                  "gesture": "pressed"
+                },
+                {
+                  "action": {
+                    "type": "toggle_mute"
+                  },
+                  "gesture": "released"
+                }
+              ],
+              "label": "Root action",
+              "type": "action"
+            }
+          ]
+        },
+        {
+          "id": "tools",
+          "name": "Tools",
+          "slots": [
+            null,
+            {
+              "page_id": "deeper",
+              "type": "folder"
+            },
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "bundle_id": "com.apple.calculator",
+                    "type": "launch_app"
+                  },
+                  "gesture": "pressed"
+                },
+                {
+                  "action": {
+                    "delta": 11,
+                    "type": "volume"
+                  },
+                  "gesture": "pressed",
+                  "serial_number": "…it-1"
+                },
+                {
+                  "action": {
+                    "delta": -2,
+                    "type": "volume"
+                  },
+                  "gesture": "released"
+                }
+              ],
+              "label": "Calculator",
+              "type": "action"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "id": "deeper",
+          "name": "Deeper",
+          "slots": [
+            null,
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "key": "v",
+                    "modifiers": [
+                      "command"
+                    ],
+                    "type": "shortcut"
+                  },
+                  "gesture": "pressed"
+                }
+              ],
+              "label": "Paste",
+              "type": "action"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        }
+      ]
+    },
+    "name": "Folders",
+    "schema_version": 2
+  },
+  "redacted": true,
+  "runtime": {
+    "client": {
+      "activity": [
+        {
+          "exit_code": 1,
+          "kind": "service_status",
+          "service_id": "service:path-c3bd38bb",
+          "state": "exited",
+          "stderr_tail": "masterhub-service: could not open …0042\n"
+        },
+        {
+          "feed_id": "demo:faders",
+          "kind": "feed_status",
+          "state": "finished"
+        },
+        {
+          "kind": "service_record",
+          "record": {
+            "serial_number": "…0042",
+            "type": "binding_matched"
+          }
+        }
+      ],
+      "notes": "Faders stopped responding after replugging the hub; log at ~/Desktop/notes.txt"
+    },
+    "client_activity_dropped": 0,
+    "client_notes_truncated": false,
+    "feeds": [
+      "demo:faders"
+    ],
+    "services": [
+      "service:path-c3bd38bb"
+    ]
+  },
+  "schema_version": 1,
+  "uploaded": false
+}

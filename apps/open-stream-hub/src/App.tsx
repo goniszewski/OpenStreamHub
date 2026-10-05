@@ -9,6 +9,7 @@ import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { Inspector } from './Inspector';
+import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
 import { isUnsaved, ProfileSession } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
@@ -125,7 +126,7 @@ export default function App() {
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} />}
+        {page === 'settings' && <SettingsPage desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>

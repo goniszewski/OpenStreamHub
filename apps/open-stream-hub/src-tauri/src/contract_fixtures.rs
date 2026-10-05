@@ -298,3 +298,21 @@ fn diagnostics_payloads_match_the_shared_fixtures() {
         }),
     );
 }
+
+#[test]
+fn profile_export_payloads_match_the_shared_fixtures() {
+    let request = json!({ "profile": test_profiles::folders_json() });
+    check_or_update("profile-export-request.json", &request);
+    let directory = tempfile::tempdir().unwrap();
+    let result =
+        crate::export::export(&test_profiles::folders(), directory.path(), 1_791_201_600).unwrap();
+    check_or_update(
+        "profile-export-result.json",
+        &json!({
+            "export_profile": {
+                "path": format!("/storage/{}", result.path.rsplit_once("/exports/").map(|(_, name)| format!("exports/{name}")).unwrap()),
+                "bytes": result.bytes,
+            },
+        }),
+    );
+}

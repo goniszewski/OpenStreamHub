@@ -12,6 +12,7 @@
     "allow-save-profile",
     "allow-delete-profile",
     "allow-validate-profile",
+    "allow-export-profile",
     "allow-replay-demo",
     "allow-preview-binding",
     "allow-preview-keypad",

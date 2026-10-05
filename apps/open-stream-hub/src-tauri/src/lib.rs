@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod contract_fixtures;
 mod diagnostics;
+mod export;
 mod feed;
 mod migration;
 #[cfg(target_os = "macos")]
@@ -124,6 +125,16 @@ fn delete_profile(
 fn validate_profile(profile: Profile) -> Result<ProfileValidity, String> {
     replay::validate_profile(&profile)?;
     Ok(ProfileValidity { valid: true })
+}
+
+// Writes one profile as a local JSON file under `<app data>/exports/`.
+#[tauri::command]
+fn export_profile(
+    state: State<'_, AppState>,
+    profile: Profile,
+) -> Result<export::ExportResult, String> {
+    let app_data = state.app_data.as_deref().map_err(Clone::clone)?;
+    export::export(&profile, app_data, export::now_seconds()?)
 }
 
 #[tauri::command]
@@ -317,6 +328,7 @@ pub fn run() {
             save_profile,
             delete_profile,
             validate_profile,
+            export_profile,
             replay_demo,
             preview_binding,
             preview_keypad,

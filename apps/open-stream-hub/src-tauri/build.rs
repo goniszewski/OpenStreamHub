@@ -7,6 +7,7 @@ fn main() {
             "save_profile",
             "delete_profile",
             "validate_profile",
+            "export_profile",
             "replay_demo",
             "preview_binding",
             "preview_keypad",

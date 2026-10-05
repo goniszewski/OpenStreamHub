@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import contracts from '../fixtures/ipc-contracts.json';
 import legacyExpected from '../fixtures/legacy-upgrade-expected.json';
 import legacyInput from '../fixtures/legacy-upgrade-input.json';
+import exportRequest from '../fixtures/profile-export-request.json';
+import exportResult from '../fixtures/profile-export-result.json';
 import type { AppBootstrap, KeypadPreviewResult, Profile, ProfileListing, ProfileSummary, ReplayEvent, ReplayResult, StoredProfile, UnreadableProfile } from './contracts';
 import { upgradeKeypadProfile } from './keypad-model';
 
@@ -79,5 +81,15 @@ describe('legacy keypad upgrade parity with Rust into_v2', () => {
 
   it('leaves an already upgraded profile unchanged', () => {
     expect(upgradeKeypadProfile(legacyExpected as Profile)).toEqual(legacyExpected);
+  });
+});
+
+describe('profile export fixtures', () => {
+  it('the request carries one upgraded profile and the result a path and byte count', () => {
+    expect(Object.keys(exportRequest)).toEqual(['profile']);
+    expect(exportRequest.profile.schema_version).toBe(2);
+    expect(Object.keys(exportResult.export_profile).sort()).toEqual(['bytes', 'path']);
+    expect(exportResult.export_profile.path).toMatch(/\/exports\/[a-z0-9-]+-\d{8}-\d{6}\.json$/);
+    expect(typeof exportResult.export_profile.bytes).toBe('number');
   });
 });

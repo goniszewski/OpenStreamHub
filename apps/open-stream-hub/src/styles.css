@@ -279,3 +279,5 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .diagnostics-result { display:grid; gap:8px; margin-top:18px; padding-top:16px; border-top:1px solid var(--line); }
 .diagnostics-result .storage-path { user-select:all; }.diagnostics-result .fine-print { margin:0; }
 .diagnostics-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.profile-transfer .profile-actions { margin:-9px 0 14px; }.profile-transfer .diagnostics-result { margin:0 0 18px; }.import-error { margin:-6px 0 14px; }.profiles-page.drop-target .profile-editor { outline:2px dashed var(--accent); outline-offset:4px; }.dialog-actions.wrap { flex-wrap:wrap; }
+.shortcut-list { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:8px 20px; }.shortcut-list li { display:flex; align-items:center; gap:10px; font-size:13px; }.shortcut-list kbd { min-width:58px; text-align:center; font:inherit; font-size:12px; padding:3px 8px; border:1px solid var(--line); border-radius:6px; background:var(--header); }

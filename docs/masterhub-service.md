@@ -21,6 +21,10 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
 
 Validation checks the entire profile before printing `profile_valid`. Replay accepts the schema-1 JSONL input captures described in the [diagnostic guide](masterhub-diagnostics.md#capture-format-and-replay). It constructs no HID context, opens no interfaces, and executes no macOS actions. All bundled input captures are synthetic. To try the additional modules, use `examples/profiles/all-modules.json` with `m4315-software-derived-synthetic.jsonl`, `m005s-software-derived-synthetic.jsonl`, or `m032le-software-derived-synthetic.jsonl` in the same fixture directory.
 
+Schema-2 profiles add [nested keypad folders](masterhub-keypad-folders.md); see the [example profile](../examples/profiles/keypad-folders.json). Validation counts actions across all pages. Replay routes key events through a stateful `ProfileSession` and reports navigation separately from planned host actions. A folder's top-left Back key returns one level, with a generated `L1`–`L8` badge in the desktop editor. Key releases retain the page where the press began.
+
+Live M4315 runs reject schema-2 keypad profiles before opening the selected device because synchronized physical display updates are not implemented. Other modules can use their flat bindings from the same profile. Schema-1 live input retains its existing behavior.
+
 Replay streams reports and planned bindings as they are read. An invalid or truncated capture, missing footer, or transport-error footer produces a failing exit status even when earlier output was emitted. Check the exit status and final `service_end` before treating the stream as a complete session.
 
 ## Read an interface
@@ -82,7 +86,7 @@ The [sample profile](../examples/profiles/macos.json) defines these actions:
 
 Control indexes are wire indexes. Their physical placement needs hardware checking. Dial `right` and `left` retain the Windows application's labels; their physical clockwise mapping is unverified. Roller `up` and `down` likewise retain application labels. The GUI numbers controls by wire index without claiming their physical placement.
 
-A profile requires `schema_version: 1`, a nonempty `name`, and a `bindings` array. A binding requires `module`, `control`, `gesture`, and `action`; optional `serial_number` matches the exact, case-sensitive HID enumeration serial shown by inventory. The service does not query vendor serial feature reports. Omitting the serial matches any device serial, including an unavailable serial. An exact serial binding takes precedence over a wildcard for the same module, control, and gesture, independent of array order. Duplicate complete selectors are rejected.
+A profile requires a supported `schema_version`, a nonempty `name`, and a `bindings` array. Schema 1 contains flat bindings; schema 2 also requires a validated `keypad` page layout and stores M4315 bindings in its action tiles. Other modules continue to use flat bindings. A binding requires `module`, `control`, `gesture`, and `action`; optional `serial_number` matches the exact, case-sensitive HID enumeration serial shown by inventory. The service does not query vendor serial feature reports. Omitting the serial matches any device serial, including an unavailable serial. An exact serial binding takes precedence over a wildcard for the same module, control, and gesture, independent of array order. Duplicate complete selectors are rejected.
 
 | Module | Allowed controls | Allowed gestures |
 | --- | --- | --- |

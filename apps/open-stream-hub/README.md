@@ -26,8 +26,9 @@ The app is written to `src-tauri/target/debug/bundle/macos/OpenStreamHub.app`. B
 ## Available workflow
 
 - Select any of the five module types. Click a control on its module image or use the keyboard-accessible picker to edit its binding. Encoder, three-knob, 15-key, five-fader and two-roller bindings can be edited. Hardware behavior remains unverified.
-- Create, edit, validate and save schema-1 profiles. Profiles use the service's existing JSON action format and strict validation.
-- Preview a selected binding, or replay any of the five bundled synthetic module captures. Results show normalized events, planned/unbound actions and packet diagnostics.
+- Create, edit, validate and save profiles using the service's JSON action format and strict validation. Schema-1 files remain readable and upgrade in memory; explicit Save stores schema 2.
+- Organize the 15-key module into nested folders within one profile. Each folder reserves the top-left key for Back, with an `L1`–`L8` badge for the current level, and provides 14 content slots. The root keeps all 15 configurable keys. A breadcrumb, folder names, and per-page action editing are available; [folder behavior and limits](../../docs/masterhub-keypad-folders.md) are documented separately.
+- Preview a selected binding or complete keypad click, or replay any of the five bundled synthetic module captures. Results show normalized events, planned/unbound actions, folder navigation and packet diagnostics. Navigation does not execute a newly displayed action when the original key is released.
 - Preview absolute fader positions as output volume; bind key Press/Release and roller Up/Down events.
 - Switch between system, light and dark appearance.
 

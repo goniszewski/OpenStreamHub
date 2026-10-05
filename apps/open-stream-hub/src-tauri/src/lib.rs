@@ -3,6 +3,8 @@ mod migration;
 mod quit;
 mod replay;
 mod store;
+#[cfg(test)]
+mod test_profiles;
 
 use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
 use serde::Serialize;
@@ -77,6 +79,16 @@ fn preview_binding(
     replay::preview_binding(profile, module, control, gesture, serial_number, value)
 }
 
+#[tauri::command]
+fn preview_keypad(
+    profile: Profile,
+    path: Vec<String>,
+    control: u8,
+    serial_number: Option<String>,
+) -> Result<replay::KeypadPreview, String> {
+    replay::preview_keypad(profile, path, control, serial_number)
+}
+
 pub fn run() {
     let builder = tauri::Builder::default();
     #[cfg(target_os = "macos")]
@@ -99,7 +111,8 @@ pub fn run() {
             save_profile,
             validate_profile,
             replay_demo,
-            preview_binding
+            preview_binding,
+            preview_keypad
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

@@ -19,7 +19,14 @@ impl BindingEngine {
     /// Validates a profile before it can select any host actions.
     pub fn new(profile: Profile) -> Result<Self, String> {
         profile.validate()?;
+        if profile.keypad.is_some() {
+            return Err("keypad page profiles require a stateful ProfileSession".into());
+        }
         Ok(Self { profile })
+    }
+
+    pub(crate) fn from_validated(profile: Profile) -> Self {
+        Self { profile }
     }
 
     /// Looks up one binding, preferring an exact serial match over a wildcard.
@@ -56,6 +63,9 @@ impl BindingEngine {
         event: &InputEvent,
     ) -> Result<Option<Action>, String> {
         event.validate_for(device.module)?;
+        if device.module == ServiceModule::M4315 && self.profile.keypad.is_some() {
+            return Err("keypad pages require stateful ProfileSession routing".into());
+        }
         let Some(binding) = self.binding_for(device, event) else {
             return Ok(None);
         };
@@ -123,6 +133,7 @@ mod tests {
             schema_version: 1,
             name: "Desk".into(),
             bindings,
+            keypad: None,
         })
         .unwrap()
     }
@@ -194,6 +205,7 @@ mod tests {
             schema_version: 1,
             name: "Desk".into(),
             bindings: vec![binding(None, 0)],
+            keypad: None,
         };
         assert!(BindingEngine::new(invalid).is_err());
     }

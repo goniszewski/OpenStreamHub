@@ -21,8 +21,8 @@ use cooltek_sdk_cli::{
 };
 use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleIdentity, ModuleKind};
 use cooltek_sdk_service::{
-    ActionDispatcher, BindingEngine, DeviceContext, InputSession, InputUpdate, Profile,
-    ServiceModule, macos::MacOsDispatcher,
+    ActionDispatcher, BindingEngine, DeviceContext, InputSession, InputUpdate, KeypadResolution,
+    Profile, ProfileSession, ServiceModule, macos::MacOsDispatcher,
 };
 use serde_json::{Value, json};
 
@@ -90,13 +90,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             emit(
                 &mut io::stdout().lock(),
                 json!({
-                    "type":"profile_valid", "schema_version":1,
-                    "name":profile.name, "binding_count":profile.bindings.len(),
+                    "type":"profile_valid", "schema_version":profile.schema_version,
+                    "name":profile.name, "binding_count":profile.binding_count(),
                 }),
             )?;
         }
         Command::Replay { profile, capture } => {
-            let engine = BindingEngine::new(load_profile(profile)?)?;
+            let engine = ProfileSession::new(load_profile(profile)?)?;
             replay(engine, capture, &mut io::stdout().lock())?;
         }
         Command::Run {
@@ -111,7 +111,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             let path_hex = path_hex.0;
             let profile = load_profile(profile)?;
             let profile_name = profile.name.clone();
-            let engine = BindingEngine::new(profile)?;
             if execute && !cfg!(target_os = "macos") {
                 return Err("--execute is supported only on macOS".into());
             }
@@ -126,6 +125,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 selected.product_id,
                 selected.serial_number.clone(),
             )?;
+            let engine = live_bindings(profile, device.module)?;
             let reader = InputReader::new(registry.open(selected)?);
             let details = json!({
                 "source":"hardware", "profile":profile_name, "path_hex":encode_hex(&path_hex),
@@ -159,6 +159,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+// Folder pages need display updates before their mappings can be used live.
+// Other modules can retain their existing flat bindings from the same profile.
+fn live_bindings(mut profile: Profile, module: ServiceModule) -> Result<BindingEngine, String> {
+    profile.validate()?;
+    if profile.schema_version == 2 {
+        if module == ServiceModule::M4315 {
+            return Err("nested keypad profiles are offline only until live display integration is implemented".into());
+        }
+        profile.schema_version = 1;
+        profile.keypad = None;
+    }
+    BindingEngine::new(profile)
 }
 
 fn load_profile(path: PathBuf) -> Result<Profile, Box<dyn Error>> {
@@ -250,7 +264,7 @@ impl ActionDispatcher for Dispatcher {
 }
 
 struct Runtime<'a, D, W> {
-    engine: BindingEngine,
+    engine: ProfileSession,
     device: DeviceContext,
     input: InputSession,
     dispatcher: &'a mut D,
@@ -263,7 +277,7 @@ struct Runtime<'a, D, W> {
 
 impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
     fn new(
-        engine: BindingEngine,
+        engine: ProfileSession,
         device: DeviceContext,
         dispatcher: &'a mut D,
         output: &'a mut W,
@@ -318,15 +332,21 @@ impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
                 return Ok(false);
             }
             self.event_count += 1;
-            let binding = self.engine.binding_for(&self.device, &event);
-            let action = self.engine.action_for(&self.device, &event)?;
+            let binding = self.engine.binding_for(&self.device, &event).cloned();
+            let resolution = self.engine.resolve(&self.device, &event)?;
+            let (action, navigation, page_id) = match resolution {
+                KeypadResolution::Action { action, page_id } => (Some(action), None, page_id),
+                KeypadResolution::Navigation { navigation } => (None, Some(navigation), None),
+                KeypadResolution::Unbound => (None, None, None),
+            };
             // Publish the intended action before invoking the host. A failed log
             // write must never cause an unrecorded action.
             emit(
                 self.output,
                 json!({
                     "type":"event", "schema_version":1, "event":event,
-                    "binding":binding, "action":action, "status":if action.is_some() {"planned"} else {"unbound"},
+                    "binding":binding, "action":action, "navigation":navigation, "page_id":page_id,
+                    "status":if action.is_some() {"planned"} else if navigation.is_some() {"navigation"} else {"unbound"},
                 }),
             )?;
             if let Some(action) = action {
@@ -356,6 +376,7 @@ impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
 
     fn end(&mut self, reason: &str, error: Option<&str>) -> Result<(), String> {
         self.input.reset();
+        self.engine.reset();
         emit(
             self.output,
             json!({
@@ -367,7 +388,7 @@ impl<'a, D: ActionDispatcher, W: Write> Runtime<'a, D, W> {
     }
 }
 
-fn replay(engine: BindingEngine, file: PathBuf, output: &mut impl Write) -> Result<(), String> {
+fn replay(engine: ProfileSession, file: PathBuf, output: &mut impl Write) -> Result<(), String> {
     let (mut reader, session) = CaptureReader::new(BufReader::new(
         File::open(file).map_err(|error| error.to_string())?,
     ))?;
@@ -416,5 +437,44 @@ fn combine(primary: Result<(), String>, secondary: Result<(), String>) -> Result
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
         (Err(error), Err(other)) => Err(format!("{error}; {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cooltek_sdk_service::{Action, Gesture, InputEvent};
+
+    fn nested_profile() -> Profile {
+        Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/keypad-folders.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn live_keypad_folders_are_rejected_before_a_reader_can_be_opened() {
+        let error = live_bindings(nested_profile(), ServiceModule::M4315).unwrap_err();
+        assert!(error.contains("offline only"));
+        assert!(error.contains("display integration"));
+    }
+
+    #[test]
+    fn other_modules_keep_their_bindings_in_a_folder_profile() {
+        let engine = live_bindings(nested_profile(), ServiceModule::M003K).unwrap();
+        let device = DeviceContext {
+            module: ServiceModule::M003K,
+            serial_number: None,
+        };
+        let event = InputEvent {
+            timestamp_micros: 0,
+            control: 0,
+            gesture: Gesture::Clockwise,
+            value: None,
+        };
+        assert_eq!(
+            engine.action_for(&device, &event).unwrap(),
+            Some(Action::Volume { delta: 5 })
+        );
     }
 }

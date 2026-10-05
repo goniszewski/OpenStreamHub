@@ -8,11 +8,16 @@
 
 mod binding;
 mod input;
+mod keypad;
 mod profile;
 
 pub mod macos;
 
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher};
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
+pub use keypad::{
+    KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution, KeypadTile,
+    ProfileSession,
+};
 pub use macos::MacOsDispatcher;
 pub use profile::{Action, Binding, Gesture, Modifier, Profile, ServiceModule};

@@ -3,20 +3,23 @@ import type { CSSProperties, SelectHTMLAttributes } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  Activity, ArrowDownToLine, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, FileText,
+  Activity, ArrowDownToLine, Check, CheckCircle2, ChevronDown, ChevronRight, CircleHelp, FileText, Folder,
   Grid2X2, Keyboard, Link, LoaderCircle, Monitor, Moon, Palette, Play, Plus, RotateCcw,
   RotateCw, Save, Settings, Sun, Trash2, Volume2, VolumeX, Workflow, X,
 } from 'lucide-react';
-import type { Action, AppBootstrap, Binding, BindingAction, Gesture, Modifier, Profile, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, StoredProfile } from './contracts';
+import type { Action, AppBootstrap, Binding, BindingAction, Gesture, KeypadBinding, KeypadPreviewResult, Modifier, Profile, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, StoredProfile } from './contracts';
 import { actionLabel, appearanceStorageKey, browserProfile, controlCounts, controlLabel, editBinding, errorMessage, faderMaximum, gestureLabels, gestures, moduleNote, modules, readAppearance, replayLabels, sameSelector } from './ui-model';
 import type { Appearance, BindingSelection, ModuleId, Page } from './ui-model';
 import { moduleArtwork } from './module-controls';
+import { KeypadScreen } from './KeypadScreen';
+import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadDepth, keypadIsBack, keypadMaximumDepth, keypadMaximumPages, keypadPagesAtPath, keypadPathToPage, profileBindingCount, renameKeypadAction, renameKeypadPage, upgradeKeypadProfile } from './keypad-model';
 
 const desktop = isTauri();
 type Session = { status: 'idle' } | { status: 'running'; name: string } | { status: 'failed'; name: string; error: string } |
   { status: 'completed'; name: string; result: ReplayResult };
 type Preview = { status: 'idle' } | { status: 'running' } | { status: 'failed'; error: string } | { status: 'completed'; event: ReplayEvent };
 type PendingIntent = { label: string; run: () => void };
+type KeypadPreview = { status: 'idle' } | { status: 'running' } | { status: 'failed'; error: string } | { status: 'completed'; result: KeypadPreviewResult };
 
 function getAppearance(): Appearance {
   try { return readAppearance(localStorage); } catch { return 'system'; }
@@ -26,9 +29,9 @@ export default function App() {
   const [page, setPage] = useState<Page>('devices');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
-  const [profile, setProfile] = useState<Profile>(browserProfile);
+  const [profile, setProfile] = useState<Profile>(() => upgradeKeypadProfile(browserProfile));
   const [profileId, setProfileId] = useState<string | null>(null);
-  const [savedSnapshot, setSavedSnapshot] = useState(JSON.stringify(browserProfile));
+  const [savedSnapshot, setSavedSnapshot] = useState(() => JSON.stringify(upgradeKeypadProfile(browserProfile)));
   const [profiles, setProfiles] = useState<ProfileSummary[]>([]);
   const [storagePath, setStoragePath] = useState('');
   const [ready, setReady] = useState(!desktop);
@@ -41,6 +44,10 @@ export default function App() {
   const [serialScope, setSerialScope] = useState<'any' | 'exact'>('any');
   const [replayKind, setReplayKind] = useState<ReplayKind>('knobs');
   const [faderPosition, setFaderPosition] = useState(50);
+  const [keypadPath, setKeypadPath] = useState<string[]>(['root']);
+  const [keypadPreview, setKeypadPreview] = useState<KeypadPreview>({ status: 'idle' });
+  const [destructiveEdit, setDestructiveEdit] = useState<{ title: string; description: string; run: () => void } | null>(null);
+  const destructiveDialog = useRef<HTMLDialogElement>(null);
   const [session, setSession] = useState<Session>({ status: 'idle' });
   const [preview, setPreview] = useState<Preview>({ status: 'idle' });
   const [pendingIntent, setPendingIntent] = useState<PendingIntent | null>(null);
@@ -58,7 +65,13 @@ export default function App() {
   busyRef.current = busy;
   const disabled = !desktop || !ready || busy !== null;
   const selected = modules.find(module => module.id === selectedModule)!;
-  const binding = profile.bindings.find(item => sameSelector(item, selection));
+  const keypadPages = keypadPagesAtPath(profile, keypadPath);
+  const currentKeypadPage = keypadPages.at(-1)!;
+  const isKeypad = selection.module === 'm4315';
+  const isBack = isKeypad && keypadIsBack(keypadPath, selection.control);
+  const keypadSlot = isKeypad ? currentKeypadPage.slots[selection.control] : null;
+  const folderPage = keypadSlot?.type === 'folder' ? profile.keypad!.pages.find(item => item.id === keypadSlot.page_id) : undefined;
+  const binding = isKeypad ? keypadBindingAt(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial) : profile.bindings.find(item => sameSelector(item, selection));
 
   useEffect(() => {
     const query = matchMedia('(prefers-color-scheme: dark)');
@@ -80,16 +93,19 @@ export default function App() {
     listSequence.current += 1;
     setSession({ status: 'idle' });
     setPreview({ status: 'idle' });
+    setKeypadPreview({ status: 'idle' });
     setValidation('idle');
     setNotice(null);
     setError(null);
   }, []);
 
-  const adopt = useCallback((stored: StoredProfile) => {
+  const adopt = useCallback((stored: StoredProfile, resetKeypad = true) => {
     invalidateResults();
-    setProfile(stored.profile);
+    const upgraded = upgradeKeypadProfile(stored.profile);
+    setProfile(upgraded);
     setProfileId(stored.id);
-    setSavedSnapshot(JSON.stringify(stored.profile));
+    setSavedSnapshot(JSON.stringify(upgraded));
+    if (resetKeypad) setKeypadPath(['root']);
   }, [invalidateResults]);
 
   useEffect(() => {
@@ -115,6 +131,8 @@ export default function App() {
     dialog.current?.showModal();
   }, [pendingIntent]);
 
+  useEffect(() => { if (destructiveEdit) destructiveDialog.current?.showModal(); }, [destructiveEdit]);
+
   useEffect(() => {
     if (!desktop) return;
     let disposed = false;
@@ -136,7 +154,14 @@ export default function App() {
   }, []);
 
   function edit(next: Profile) { invalidateResults(); setProfile(next); }
-  function mutateAction(action: BindingAction | null) { edit(editBinding(profile, selection, action)); }
+  function mutateAction(action: BindingAction | null) {
+    try {
+      if (isKeypad) {
+        if (action?.type === 'volume_from_position') throw new Error('This action is available only for faders.');
+        edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, actionLabel(action)));
+      } else edit(editBinding(profile, selection, action));
+    } catch (reason) { setError(errorMessage(reason)); }
+  }
   function guard(label: string, run: () => void) {
     if (unsaved) setPendingIntent({ label, run }); else run();
   }
@@ -175,7 +200,7 @@ export default function App() {
     setNotice(null);
     try {
       const stored = await invoke<StoredProfile>('save_profile', { id: profileId, profile: snapshot });
-      adopt(stored);
+      adopt(stored, false);
       setValidation('valid');
       setNotice(`Saved ${stored.profile.name}.`);
       const sequence = ++listSequence.current;
@@ -206,6 +231,7 @@ export default function App() {
 
   async function testBinding(gesture = selection.gesture) {
     if (disabled) return;
+    if (isKeypad) { await testKeypad(); return; }
     const sequence = ++previewSequence.current;
     const snapshot = structuredClone(profile);
     const capturedSelection = { ...selection, gesture };
@@ -220,6 +246,22 @@ export default function App() {
     } catch (reason) {
       if (sequence === previewSequence.current) setPreview({ status: 'failed', error: errorMessage(reason) });
     }
+  }
+
+  async function testKeypad(control = selection.control) {
+    if (disabled) return;
+    const sequence = ++previewSequence.current;
+    const snapshot = structuredClone(profile);
+    const capturedPath = [...keypadPath];
+    setKeypadPreview({ status: 'running' });
+    try {
+      const result = await invoke<KeypadPreviewResult>('preview_keypad', { profile: snapshot, path: capturedPath, control, serialNumber: selection.serial || null });
+      if (sequence !== previewSequence.current) return;
+      keypadPagesAtPath(snapshot, result.path);
+      setKeypadPreview({ status: 'completed', result });
+      setKeypadPath(result.path);
+      if (JSON.stringify(capturedPath) !== JSON.stringify(result.path)) setSelection(previous => ({ ...previous, control: result.depth ? 1 : 0 }));
+    } catch (reason) { if (sequence === previewSequence.current) setKeypadPreview({ status: 'failed', error: errorMessage(reason) }); }
   }
 
   async function replay() {
@@ -240,6 +282,7 @@ export default function App() {
     setSelectedModule(id);
     previewSequence.current += 1;
     setPreview({ status: 'idle' });
+    setKeypadPreview({ status: 'idle' });
     setSelection({ module: id, control: 0, gesture: gestures[id][0], serial: '' });
     setSerialScope('any');
   }
@@ -257,6 +300,43 @@ export default function App() {
     setSelection(next);
     previewSequence.current += 1;
     setPreview({ status: 'idle' });
+    setKeypadPreview({ status: 'idle' });
+  }
+
+  function navigateKeypad(path: string[]) {
+    try {
+      keypadPagesAtPath(profile, path);
+      previewSequence.current += 1;
+      setKeypadPreview({ status: 'idle' });
+      setKeypadPath(path);
+      setSelection(previous => ({ ...previous, module: 'm4315', control: path.length > 1 ? 1 : 0, gesture: 'pressed', serial: '' }));
+      setSelectedModule('m4315'); setSerialScope('any');
+    } catch (reason) { setError(errorMessage(reason)); }
+  }
+
+  function createFolder() {
+    try {
+      const id = `page-${crypto.randomUUID()}`;
+      const next = createKeypadFolder(profile, keypadPath, selection.control, id);
+      edit(next); setKeypadPath([...keypadPath, id]);
+      setSelection(previous => ({ ...previous, control: 1, gesture: 'pressed', serial: '' })); setSerialScope('any');
+    } catch (reason) { setError(errorMessage(reason)); }
+  }
+
+  function clearKey(control = selection.control, path = keypadPath) {
+    const slot = keypadPagesAtPath(profile, path).at(-1)!.slots[control];
+    if (!slot) return;
+    setDestructiveEdit({ title: slot.type === 'folder' ? 'Delete this folder?' : 'Clear this key?', description: slot.type === 'folder' ? 'This removes the folder and every key and folder inside it from the draft.' : 'This removes the key label and all its press, release and serial-specific bindings from the draft.', run: () => {
+      try { edit(clearKeypadSlot(profile, path, control)); setKeypadPath([...path]); setSelection(previous => ({ ...previous, control })); }
+      catch (reason) { setError(errorMessage(reason)); }
+    } });
+  }
+
+  function deleteCurrentFolder() {
+    const parentPath = keypadBackPath(keypadPath);
+    const parent = keypadPagesAtPath(profile, parentPath).at(-1)!;
+    const control = parent.slots.findIndex(slot => slot?.type === 'folder' && slot.page_id === currentKeypadPage.id);
+    if (control >= 0) clearKey(control, parentPath);
   }
 
   function changeFaderPosition(value: number) {
@@ -268,7 +348,8 @@ export default function App() {
   function newProfile() {
     guard('create a new profile', () => {
       invalidateResults();
-      setProfile({ schema_version: 1, name: 'New profile', bindings: [] });
+      setProfile(upgradeKeypadProfile({ schema_version: 1, name: 'New profile', bindings: [] }));
+      setKeypadPath(['root']);
       setProfileId(null); setSavedSnapshot(''); setPage('profiles');
     });
   }
@@ -324,7 +405,7 @@ export default function App() {
           </aside>
           <section className="workspace" aria-label="Device controls">
             <div className="page-heading"><h1>Your controls</h1><p className="status"><span className="status-dot" />No hardware connected</p></div>
-            <div className={`hero ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
+            <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
               <div className="module-image" style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
                 <img src={`/modules/${selected.art}.png`} alt="" draggable={false} />
                 {selected.supported && moduleArtwork[selected.id].controls.map(area => <button key={area.control} type="button"
@@ -336,26 +417,30 @@ export default function App() {
               </div>
             </div>
             {selected.supported ? <>
-              <div className={`control-picker ${selection.module === 'm4315' ? 'key-picker' : ''}`} role="group" aria-label="Control selection">
+              {isKeypad && <KeypadScreen profileName={profile.name} pages={keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => changeSelection({ ...selection, control })} onNavigate={navigateKeypad} />}
+              {!isKeypad && <div className={`control-picker ${selection.module === 'm4315' ? 'key-picker' : ''}`} role="group" aria-label="Control selection">
                 {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
-              </div>
+              </div>}
               <p className="hero-note">{moduleNote(selection.module)}</p>
               <section className="simulation-panel"><div className="section-heading"><h2>Simulation</h2><span className="small-label">Planned actions only</span></div>
-                {selection.module === 'm005s' ? <div className="position-preview"><label htmlFor="fader-position">Simulated fader position</label><div className="position-inputs"><input id="fader-position" type="range" min={0} max={faderMaximum} step={1} value={faderPosition} disabled={disabled || preview.status === 'running'} onChange={event => changeFaderPosition(Number(event.target.value))} /><label className="sr-only" htmlFor="fader-position-value">Fader position value</label><input id="fader-position-value" type="number" min={0} max={faderMaximum} step={1} value={faderPosition} disabled={disabled || preview.status === 'running'} onChange={event => changeFaderPosition(Number(event.target.value))} /></div><p className="fine-print">Position scale: 0–100. Preview resolves the volume through the service; physical endpoints still need checking.</p><button className="button" disabled={disabled || preview.status === 'running' || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(); }}><Play size={16} />Preview position</button></div> :
-                  <div className="event-buttons">{gestures[selection.module].map(gesture => <button className="button" key={gesture} disabled={disabled || preview.status === 'running' || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(gesture); }}>{gesture === 'clockwise' || gesture === 'right' ? <RotateCw size={17} /> : gesture === 'counter_clockwise' || gesture === 'left' ? <RotateCcw size={17} /> : <Play size={16} />}{gestureLabels[gesture]}</button>)}</div>}
-                <div className="preview-result" role={preview.status === 'failed' ? 'alert' : 'status'}>
+                {isKeypad ? <button className="button" disabled={disabled || keypadPreview.status === 'running' || serialScope === 'exact' && !selection.serial} onClick={() => { void testKeypad(); }}><Play size={17} />Simulate key click</button> : selection.module === 'm005s' ? <div className="position-preview"><label htmlFor="fader-position">Simulated fader position</label><div className="position-inputs"><input id="fader-position" type="range" min={0} max={faderMaximum} step={1} value={faderPosition} disabled={disabled || preview.status === 'running'} onChange={event => changeFaderPosition(Number(event.target.value))} /><label className="sr-only" htmlFor="fader-position-value">Fader position value</label><input id="fader-position-value" type="number" min={0} max={faderMaximum} step={1} value={faderPosition} disabled={disabled || preview.status === 'running'} onChange={event => changeFaderPosition(Number(event.target.value))} /></div><p className="fine-print">Position scale: 0–100. Preview resolves the volume through the service; physical endpoints still need checking.</p><button className="button" disabled={disabled || (preview.status === 'running' || keypadPreview.status === 'running') || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(); }}><Play size={16} />Preview position</button></div> :
+                  <div className="event-buttons">{gestures[selection.module].map(gesture => <button className="button" key={gesture} disabled={disabled || (preview.status === 'running' || keypadPreview.status === 'running') || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(gesture); }}>{gesture === 'clockwise' || gesture === 'right' ? <RotateCw size={17} /> : gesture === 'counter_clockwise' || gesture === 'left' ? <RotateCcw size={17} /> : <Play size={16} />}{gestureLabels[gesture]}</button>)}</div>}
+                {isKeypad ? <div className="preview-result" role={keypadPreview.status === 'failed' ? 'alert' : 'status'}><KeypadResult preview={keypadPreview} /></div> : <div className="preview-result" role={preview.status === 'failed' ? 'alert' : 'status'}>
                   {preview.status === 'idle' ? <><CircleHelp size={20} /><span>{desktop ? 'Choose a gesture to preview its binding through the service.' : 'Launch the desktop app to preview bindings.'}</span></> :
                     preview.status === 'running' ? <><LoaderCircle size={20} className="spinning" /><span>Resolving binding…</span></> :
                     preview.status === 'failed' ? <><CircleHelp size={20} /><span className="error-text">{preview.error}</span></> :
                     <><CheckCircle2 size={22} /><span>{gestureLabels[preview.event.gesture]}{preview.event.value ? ` ${preview.event.value.raw}/${preview.event.value.maximum}` : ''}: {preview.event.action ? `Would ${actionLabel(preview.event.action).toLowerCase()}.` : 'No action is bound to this event.'}</span></>}
-                </div>
+                </div>}
                 <p className="fine-print">No volume changes, shortcuts or application launches are executed.</p>
               </section>
             </> : <div className="planned-panel"><h2>Input support is planned</h2><p>{selected.name} is included in the module catalog. Its input decoder and binding support are not implemented in this app.</p><p>Display uploads and physical device behavior still require validation.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
           </section>
           <aside className="inspector" aria-label="Selected control settings">
             {selected.supported ? <>
-              <h2>{controlLabel(selection.module, selection.control)}</h2>
+              {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? `Folder · L${keypadDepth(keypadPath)}` : 'Root page'}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} onChange={event => edit(renameKeypadPage(profile, keypadPath, event.target.value))} />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={deleteCurrentFolder}><Trash2 size={16} />Delete folder</button>}<div className="inspector-divider" /></>}
+              <h2>{isBack ? `Back · L${keypadDepth(keypadPath)}` : controlLabel(selection.module, selection.control)}</h2>
+              {isKeypad && <>{isBack ? <p className="fine-print">The reserved Back key returns one level. Its badge shows the current nesting level.</p> : folderPage ? <><button className="button" onClick={() => navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />Open {folderPage.name}</button><button className="button" disabled={disabled} onClick={() => clearKey()}><Trash2 size={17} />Delete folder</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">Key label</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} onChange={event => edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value))} /><button className="button compact" disabled={disabled} onClick={() => clearKey()}><Trash2 size={16} />Clear key</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={createFolder}><Folder size={17} />Create folder</button>}</>}</>}
+              {!(isKeypad && (isBack || folderPage)) && <>
               <label htmlFor="binding-gesture">Gesture</label><SelectField id="binding-gesture" value={selection.gesture} onChange={event => changeSelection({ ...selection, gesture: event.target.value as Gesture })}>
                 {gestures[selection.module].map(gesture => <option key={gesture} value={gesture}>{gestureLabels[gesture]}</option>)}
               </SelectField>
@@ -375,8 +460,9 @@ export default function App() {
               <label htmlFor="serial-scope">Device selector</label><SelectField id="serial-scope" value={serialScope} onChange={event => { const scope = event.target.value as 'any' | 'exact'; setSerialScope(scope); changeSelection({ ...selection, serial: '' }); }}><option value="any">Any device serial</option><option value="exact">Exact device serial</option></SelectField>
               {serialScope === 'exact' && <><label className="spaced-label" htmlFor="serial-number">Exact serial number</label><input id="serial-number" value={selection.serial} spellCheck={false} onChange={event => changeSelection({ ...selection, serial: event.target.value })} /><p className="fine-print">Case-sensitive. Enter a serial before adding an exact binding.</p></>}
               <p className="fine-print">The action editor targets this exact selector. The Rust service applies exact-serial precedence during preview and replay.</p>
-              <button className="button full-width" disabled={disabled || preview.status === 'running' || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(); }}><Play size={18} />{selection.module === 'm005s' ? 'Test selected position' : 'Test selected gesture'}</button>
+              <button className="button full-width" disabled={disabled || (preview.status === 'running' || keypadPreview.status === 'running') || serialScope === 'exact' && !selection.serial} onClick={() => { void testBinding(); }}><Play size={18} />{selection.module === 'm005s' ? 'Test selected position' : isKeypad ? 'Simulate key click' : 'Test selected gesture'}</button>
               <p className="fine-print">Edits belong to the unsaved profile draft. Save to retain them after restart.</p>
+              </>}
               <div className="planned-actions"><span><Workflow size={17} />Run flow<small>Planned</small></span><span><FileText size={17} />Run script<small>Planned</small></span></div>
             </> : <><h2>{selected.name}</h2><div className="status planned"><span className="status-dot" />Planned</div><p className="inspector-note">Binding editing is available for the encoder and three-knob modules. This module cannot be added to a service profile yet.</p></>}
           </aside>
@@ -389,8 +475,9 @@ export default function App() {
             <label htmlFor="profile-name">Name</label><input id="profile-name" disabled={disabled} value={profile.name} onChange={event => edit({ ...profile, name: event.target.value })} />
             <div className="profile-actions"><button className="button" disabled={disabled || validation === 'running'} onClick={() => { void validate(); }}>{validation === 'running' ? <LoaderCircle size={16} className="spinning" /> : <Check size={17} />}Validate draft</button><button className="button" disabled={disabled || !profileId} onClick={() => { if (profileId) guard('reload the saved profile', () => { void load(profileId); }); }}><ArrowDownToLine size={17} />Reload saved</button></div>
             {validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />Current draft is valid.</p>}
-            <h3>Bindings <span className="small-label">{profile.bindings.length}</span></h3>
-            {profile.bindings.length ? <div className="binding-list">{profile.bindings.map((item, index) => <div key={`${item.module}:${item.control}:${item.gesture}:${item.serial_number ?? ''}:${index}`} className="binding-row"><div><strong>{controlLabel(item.module, item.control)} · {gestureLabels[item.gesture]}</strong><span>{actionLabel(item.action)}</span><small>{item.serial_number ? `Serial: ${item.serial_number}` : 'Any device serial'}</small></div><button className="button compact" onClick={() => selectBinding(item)}>Edit</button><button className="icon-button" aria-label={`Remove ${controlLabel(item.module, item.control)} ${gestureLabels[item.gesture]} binding`} disabled={disabled} onClick={() => edit({ ...profile, bindings: profile.bindings.filter((_, position) => position !== index) })}><Trash2 size={17} /></button></div>)}</div> : <p className="empty-state">No bindings yet. Select a module in Devices and choose an action to add one.</p>}
+            <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
+            {profile.bindings.length ? <div className="binding-list">{profile.bindings.map((item, index) => <div key={`${item.module}:${item.control}:${item.gesture}:${item.serial_number ?? ''}:${index}`} className="binding-row"><div><strong>{controlLabel(item.module, item.control)} · {gestureLabels[item.gesture]}</strong><span>{actionLabel(item.action)}</span><small>{item.serial_number ? `Serial: ${item.serial_number}` : 'Any device serial'}</small></div><button className="button compact" onClick={() => selectBinding(item)}>Edit</button><button className="icon-button" aria-label={`Remove ${controlLabel(item.module, item.control)} ${gestureLabels[item.gesture]} binding`} disabled={disabled} onClick={() => edit({ ...profile, bindings: profile.bindings.filter((_, position) => position !== index) })}><Trash2 size={17} /></button></div>)}</div> : profileBindingCount(profile) === 0 && <p className="empty-state">No bindings yet. Select a module in Devices and choose an action to add one.</p>}
+            <div className="binding-list">{profile.keypad!.pages.flatMap(keyPage => keyPage.slots.flatMap((slot, control) => slot?.type === 'action' ? slot.bindings.map((item, index) => <div className="binding-row" key={`${keyPage.id}:${control}:${index}`}><div><strong>{keyPage.name} · Key {control + 1} · {gestureLabels[item.gesture]}</strong><span>{actionLabel(item.action)}</span><small>{item.serial_number ? `Serial: ${item.serial_number}` : 'Any device serial'}</small></div><button className="button compact" onClick={() => { navigateKeypad(keypadPathToPage(profile, keyPage.id)); setSelection({ module: 'm4315', control, gesture: item.gesture, serial: item.serial_number ?? '' }); setSerialScope(item.serial_number ? 'exact' : 'any'); setPage('devices'); }}>Edit</button></div>) : []))}</div>
             <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
           </section></div>
           <section className="panel replay-panel"><div className="section-heading"><div><h2>Replay a capture</h2><p className="fine-print">Bundled synthetic input reports pass through the Rust decoder and binding engine using the current draft.</p></div><span className="small-label">No hardware required</span></div><div className="replay-controls"><label htmlFor="replay-capture">Capture</label><SelectField id="replay-capture" value={replayKind} onChange={event => { requestSequence.current += 1; setSession({ status: 'idle' }); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || session.status === 'running'} onClick={() => { void replay(); }}><Play size={17} />{session.status === 'running' ? 'Running…' : 'Replay capture'}</button></div>
@@ -399,12 +486,13 @@ export default function App() {
         </section>}
 
         {page === 'compatibility' && <section className="page-content compatibility-page"><div className="page-title"><div><h1>Compatibility</h1><p>Cooler Master MasterHUB modules: implemented foundations and remaining device checks.</p></div><span className="mode-pill">Device-free build</span></div><section className="panel table-panel"><h2>Modules</h2><div className="table-scroll"><table className="compatibility-table"><thead><tr><th>Module</th><th>Binding and replay</th><th>Hardware</th><th>Displays</th></tr></thead><tbody>{modules.map(module => <tr key={module.id}><th scope="row"><div className="compatibility-module"><span className="compatibility-photo"><img src={`/modules/${module.art}.png`} alt="" /></span><span>{module.name}</span></div></th><td><span className={`capability ${module.supported ? 'available' : 'planned'}`}>{module.supported ? 'Available' : 'Planned'}</span><small>{module.input}</small></td><td>Unverified</td><td>{module.id === 'm131e' || module.id === 'm4315' ? 'Not available in this app' : '—'}</td></tr>)}</tbody></table></div><p className="fine-print">Available means the existing service accepts these bindings and synthetic reports. Physical control order, timing and behavior remain unverified.</p></section>
-          <div className="feature-grid"><section className="panel"><h2>Actions</h2><ul className="feature-list"><li><Volume2 size={18} /><span>Output volume<small>Deltas for buttons and rotations; absolute position for faders</small></span><span className="capability available">Preview</span></li><li><VolumeX size={18} /><span>Toggle output mute</span><span className="capability available">Preview</span></li><li><Keyboard size={18} /><span>Keyboard shortcut<small>Single ASCII letter, digit or space</small></span><span className="capability available">Preview</span></li><li><Monitor size={18} /><span>Open application<small>Application bundle ID</small></span><span className="capability available">Preview</span></li></ul><p className="fine-print">This desktop build plans actions. It does not execute them or request macOS action permissions.</p></section><section className="panel"><h2>Software and modes</h2><ul className="feature-list"><li><CheckCircle2 size={18} /><span>Manual profile selection</span><span className="capability available">Available</span></li><li><Monitor size={18} /><span>Focused-app profiles</span><span className="capability planned">Planned</span></li><li><Grid2X2 size={18} /><span>Browser tabs on keys</span><span className="capability planned">Planned</span></li><li><Workflow size={18} /><span>Flows, scripts and plugins</span><span className="capability planned">Planned</span></li></ul><p className="fine-print">App focus, browser adapters, live HID sessions and display uploads are outside this first build.</p></section></div>
+          <div className="feature-grid"><section className="panel"><h2>Actions</h2><ul className="feature-list"><li><Volume2 size={18} /><span>Output volume<small>Deltas for buttons and rotations; absolute position for faders</small></span><span className="capability available">Preview</span></li><li><VolumeX size={18} /><span>Toggle output mute</span><span className="capability available">Preview</span></li><li><Keyboard size={18} /><span>Keyboard shortcut<small>Single ASCII letter, digit or space</small></span><span className="capability available">Preview</span></li><li><Monitor size={18} /><span>Open application<small>Application bundle ID</small></span><span className="capability available">Preview</span></li></ul><p className="fine-print">This desktop build plans actions. It does not execute them or request macOS action permissions.</p></section><section className="panel"><h2>Software and modes</h2><ul className="feature-list"><li><CheckCircle2 size={18} /><span>Manual profile selection</span><span className="capability available">Available</span></li><li><Folder size={18} /><span>Nested keypad folders<small>Back key with L1–L8 indicator; offline preview</small></span><span className="capability available">Available</span></li><li><Monitor size={18} /><span>Focused-app profiles</span><span className="capability planned">Planned</span></li><li><Grid2X2 size={18} /><span>Browser tabs on keys</span><span className="capability planned">Planned</span></li><li><Workflow size={18} /><span>Flows, scripts and plugins</span><span className="capability planned">Planned</span></li></ul><p className="fine-print">App focus, browser adapters, live HID sessions and display uploads are outside this first build.</p></section></div>
         </section>}
 
         {page === 'settings' && <section className="page-content settings-page"><div className="page-title"><div><h1>Settings</h1><p>Appearance and local profile storage.</p></div></div><section className="panel"><h2>Appearance</h2><p className="fine-print">System follows the macOS appearance setting. Your choice is remembered locally.</p>{themePicker}</section><section className="panel"><h2>Profile storage</h2><p>{desktop ? 'Profiles are validated and saved by the native Rust backend.' : 'The browser preview has no profile storage access.'}</p>{storagePath && <><label>Storage directory</label><code className="storage-path">{storagePath}</code></>}<p className="fine-print">Unsaved drafts are not persisted. Save a profile before closing to keep your changes. Dock Quit and system termination can bypass the draft prompt.</p></section><section className="panel"><h2>About OpenStreamHub</h2><p>Open-source control and automation for modular hardware.</p><p>An independent app for Cooler Master MasterHUB.</p><p className="fine-print">Not affiliated with or endorsed by Cooler Master.</p></section><section className="panel"><h2>Current mode</h2><p>Device-free profile editing and synthetic replay.</p><p className="fine-print">No HID interface is opened. No shortcuts, volume changes, application launches or arbitrary scripts are executed by this build.</p></section></section>}
       </main>
     </div>
+    <dialog ref={destructiveDialog} className="unsaved-dialog" aria-labelledby="delete-title" onCancel={() => setDestructiveEdit(null)}><h2 id="delete-title">{destructiveEdit?.title}</h2><p>{destructiveEdit?.description}</p><div className="dialog-actions"><button className="button" autoFocus onClick={() => { destructiveDialog.current?.close(); setDestructiveEdit(null); }}>Cancel</button><button className="button danger" onClick={() => { const edit = destructiveEdit; destructiveDialog.current?.close(); setDestructiveEdit(null); edit?.run(); }}>Delete</button></div></dialog>
     <dialog ref={dialog} className="unsaved-dialog" aria-labelledby="unsaved-title" aria-describedby="unsaved-message" onCancel={event => { event.preventDefault(); dialog.current?.close(); setPendingIntent(null); }}><h2 id="unsaved-title">Keep your changes?</h2><p id="unsaved-message">You have an unsaved profile draft. Discard it to {pendingIntent?.label}, or cancel and save your changes first.</p><div className="dialog-actions"><button className="button" autoFocus onClick={() => { dialog.current?.close(); setPendingIntent(null); }}>Cancel</button><button className="button danger" onClick={() => { const intent = pendingIntent; dialog.current?.close(); setPendingIntent(null); intent?.run(); }}>Discard changes</button></div></dialog>
   </div>;
 }
@@ -418,7 +506,16 @@ function SessionView({ session }: { session: Session }) {
   if (session.status === 'running') return <div className="session-status" role="status"><LoaderCircle size={21} className="spinning" /><span>Running {session.name}…</span></div>;
   if (session.status === 'failed') return <div className="session-status failed" role="alert"><CircleHelp size={21} /><div><strong>Replay failed</strong><p>{session.error}</p></div></div>;
   const { result } = session;
-  return <div className="session-results"><div className="session-status completed" role="status"><CheckCircle2 size={21} /><span>Completed · {session.name}</span></div><div className="session-counts"><div><strong>{result.report_count}</strong><span>Reports</span></div><div><strong>{result.event_count}</strong><span>Normalized events</span></div><div><strong>{result.planned_action_count}</strong><span>Planned actions</span></div><div><strong>{result.events.filter(event => event.action === null).length}</strong><span>Unbound events</span></div></div>
-    <p className="fine-print">Synthetic source: <code>{result.source}</code>. Planned actions were not executed.</p><div className="table-scroll"><table className="events-table"><caption>Normalized events</caption><thead><tr><th>Time (µs)</th><th>Control</th><th>Gesture</th><th>Value</th><th>Planned action</th></tr></thead><tbody>{result.events.map((event, index) => <tr key={index}><td>{event.timestamp_us}</td><td>{controlLabel(event.module, event.control)}<small>{event.serial_number ? `Serial: ${event.serial_number}` : 'No serial'}</small></td><td>{gestureLabels[event.gesture]}</td><td>{event.value ? `${event.value.raw}/${event.value.maximum}` : '—'}</td><td className={event.action ? '' : 'muted'}>{actionLabel(event.action)}</td></tr>)}</tbody></table></div><div className="diagnostics"><h3>Diagnostics <span className="small-label">{result.diagnostics.length}</span></h3>{result.diagnostics.length ? <ul>{result.diagnostics.map((diagnostic, index) => <li key={index}><code>{diagnostic.timestamp_us} µs</code><span>{diagnostic.message}</span></li>)}</ul> : <p className="fine-print">No parser diagnostics.</p>}</div>
+  return <div className="session-results"><div className="session-status completed" role="status"><CheckCircle2 size={21} /><span>Completed · {session.name}</span></div><div className="session-counts"><div><strong>{result.report_count}</strong><span>Reports</span></div><div><strong>{result.event_count}</strong><span>Normalized events</span></div><div><strong>{result.planned_action_count}</strong><span>Planned actions</span></div><div><strong>{result.events.filter(event => event.action === null && !event.navigation).length}</strong><span>Unbound events</span></div></div>
+    <p className="fine-print">Synthetic source: <code>{result.source}</code>. Planned actions were not executed.</p><div className="table-scroll"><table className="events-table"><caption>Normalized events</caption><thead><tr><th>Time (µs)</th><th>Control</th><th>Gesture</th><th>Value</th><th>Planned action</th></tr></thead><tbody>{result.events.map((event, index) => <tr key={index}><td>{event.timestamp_us}</td><td>{controlLabel(event.module, event.control)}<small>{event.serial_number ? `Serial: ${event.serial_number}` : 'No serial'}</small></td><td>{gestureLabels[event.gesture]}</td><td>{event.value ? `${event.value.raw}/${event.value.maximum}` : '—'}</td><td className={event.action ? '' : 'muted'}>{event.navigation ? `Navigate to ${event.navigation.to_page} · L${event.navigation.depth}` : actionLabel(event.action)}</td></tr>)}</tbody></table></div><div className="diagnostics"><h3>Diagnostics <span className="small-label">{result.diagnostics.length}</span></h3>{result.diagnostics.length ? <ul>{result.diagnostics.map((diagnostic, index) => <li key={index}><code>{diagnostic.timestamp_us} µs</code><span>{diagnostic.message}</span></li>)}</ul> : <p className="fine-print">No parser diagnostics.</p>}</div>
   </div>;
+}
+
+function KeypadResult({ preview }: { preview: KeypadPreview }) {
+  if (preview.status === 'idle') return <><CircleHelp size={20} /><span>Simulate a complete press and release on the current page.</span></>;
+  if (preview.status === 'running') return <><LoaderCircle size={20} className="spinning" /><span>Resolving key click…</span></>;
+  if (preview.status === 'failed') return <><CircleHelp size={20} /><span className="error-text">{preview.error}</span></>;
+  const navigation = preview.result.events.find(event => event.navigation)?.navigation;
+  const actions = preview.result.events.filter(event => event.action);
+  return <><CheckCircle2 size={22} /><span>{navigation ? `Navigated ${navigation.depth ? `to L${navigation.depth}` : 'to root'}.` : actions.length ? actions.map(event => `${gestureLabels[event.gesture]}: would ${actionLabel(event.action).toLowerCase()}`).join('; ') : 'No action is bound to this key click.'}</span></>;
 }

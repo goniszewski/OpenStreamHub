@@ -12,6 +12,7 @@
     "allow-save-profile",
     "allow-validate-profile",
     "allow-replay-demo",
-    "allow-preview-binding"
+    "allow-preview-binding",
+    "allow-preview-keypad"
   ]
 }

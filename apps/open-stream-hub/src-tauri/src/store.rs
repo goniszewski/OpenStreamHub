@@ -113,10 +113,11 @@ impl ProfileStore {
             let stored = self
                 .load(id)
                 .map_err(|error| format!("could not load profile {id}: {error}"))?;
+            let binding_count = stored.profile.binding_count();
             profiles.push(ProfileSummary {
                 id: stored.id,
                 name: stored.profile.name,
-                binding_count: stored.profile.bindings.len(),
+                binding_count,
                 modified_at_ms: stored.modified_at_ms,
             });
         }
@@ -145,7 +146,9 @@ impl ProfileStore {
             .take((Profile::MAX_JSON_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|error| format!("could not read profile: {error}"))?;
-        let profile = Profile::from_json(&bytes)?;
+        // Legacy profiles are upgraded for the editor only. Reading must not
+        // change file bytes, modification time, filename, or opaque identity.
+        let profile = Profile::from_json(&bytes)?.into_v2()?;
         let modified_at_ms = metadata
             .modified()
             .map_err(|error| format!("could not read profile modification time: {error}"))?
@@ -162,7 +165,8 @@ impl ProfileStore {
     }
 
     pub fn save(&self, id: Option<&str>, profile: Profile) -> Result<StoredProfile, String> {
-        profile.validate()?;
+        // Explicit Save is the only operation that persists a schema upgrade.
+        let profile = profile.into_v2()?;
         let id = match id {
             Some(id) => {
                 // Never overwrite an unreadable existing profile during editing.
@@ -229,6 +233,7 @@ pub(crate) fn validate_id(id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_profiles;
 
     fn store() -> (tempfile::TempDir, ProfileStore) {
         let directory = tempfile::tempdir().unwrap();
@@ -253,6 +258,83 @@ mod tests {
         assert_eq!(restarted.load(&id).unwrap().profile, profile);
         assert_eq!(restarted.bootstrap().unwrap().profile.id, id);
         assert_eq!(restarted.list().unwrap().len(), 1);
+        assert_eq!(
+            fs::read_dir(directory.path().join("profiles"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_load_upgrades_only_in_memory_until_explicit_save() {
+        let (directory, store) = store();
+        let id = Uuid::new_v4().to_string();
+        let path = directory.path().join("profiles").join(format!("{id}.json"));
+        let bytes = include_bytes!("../../../../examples/profiles/all-modules.json");
+        fs::write(&path, bytes).unwrap();
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let expected = Profile::from_json(bytes).unwrap().into_v2().unwrap();
+
+        let loaded = store.load(&id).unwrap();
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.profile, expected);
+        assert_eq!(loaded.profile.schema_version, 2);
+        assert!(loaded.profile.keypad.is_some());
+        assert_eq!(store.bootstrap().unwrap().profile.profile, expected);
+        assert_eq!(
+            store.list().unwrap()[0].binding_count,
+            expected.binding_count()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+
+        let saved = store.save(Some(&id), loaded.profile).unwrap();
+        assert_eq!(saved.id, id);
+        assert_eq!(saved.profile, expected);
+        let saved_bytes = fs::read(&path).unwrap();
+        assert_ne!(saved_bytes, bytes);
+        assert_eq!(Profile::from_json(&saved_bytes).unwrap().schema_version, 2);
+        assert_eq!(
+            fs::read_dir(directory.path().join("profiles"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn schema_two_roundtrip_and_summary_include_all_nested_tile_bindings() {
+        let (directory, store) = store();
+        let profile = test_profiles::folders();
+        let saved = store.save(None, profile.clone()).unwrap();
+        assert_eq!(saved.profile, profile);
+        assert_eq!(saved.profile.binding_count(), 7);
+        assert_eq!(store.list().unwrap()[0].binding_count, 7);
+        let restarted = ProfileStore::open(directory.path().join("profiles")).unwrap();
+        assert_eq!(restarted.load(&saved.id).unwrap().profile, profile);
+        assert_eq!(restarted.bootstrap().unwrap().profile.id, saved.id);
+    }
+
+    #[test]
+    fn invalid_folder_profiles_cannot_overwrite_or_reseed_storage() {
+        let (directory, store) = store();
+        let saved = store.save(None, test_profiles::folders()).unwrap();
+        let path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{}.json", saved.id));
+        let original = fs::read(&path).unwrap();
+        let mut invalid = test_profiles::folders_json();
+        invalid["keypad"]["pages"][0]["slots"][0]["page_id"] = "missing".into();
+        let invalid_profile: Profile = serde_json::from_value(invalid.clone()).unwrap();
+        assert!(store.save(Some(&saved.id), invalid_profile).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let invalid_bytes = serde_json::to_vec(&invalid).unwrap();
+        fs::write(&path, &invalid_bytes).unwrap();
+        assert!(store.load(&saved.id).is_err());
+        assert!(store.bootstrap().is_err());
+        assert_eq!(fs::read(&path).unwrap(), invalid_bytes);
         assert_eq!(
             fs::read_dir(directory.path().join("profiles"))
                 .unwrap()

@@ -1,6 +1,6 @@
 # MasterHUB implementation status
 
-Updated on 4 October 2026. The SDK implements discovery, input decoding for all five control modules, IPS mode controls, dial JPEG output, offline per-key JPEG packets, and dial session lifecycle hooks. The CLI prepares static images for both IPS modules offline. A separate binding service adds profiles and explicit macOS actions. The [OpenStreamHub desktop app](../apps/open-stream-hub/README.md) provides device-free profile editing and replay. Automated tests use synthetic reports, simulated transports, and mock host processes; limited device-free macOS checks are recorded in the [smoke guide](masterhub-macos-smoke.md). Hardware compatibility and complete action acceptance remain pending. See the [roadmap](masterhub-macos-plan.md), [diagnostic guide](masterhub-diagnostics.md), and [service guide](masterhub-service.md).
+Updated on 5 October 2026. The SDK implements discovery, input decoding for all five control modules, IPS mode controls, dial JPEG output, offline per-key JPEG packets, and dial session lifecycle hooks. The CLI prepares static images for both IPS modules offline. A separate binding service adds profiles and explicit macOS actions. The [OpenStreamHub desktop app](../apps/open-stream-hub/README.md) provides device-free profile editing and replay. Automated tests use synthetic reports, simulated transports, and mock host processes; limited device-free macOS checks are recorded in the [smoke guide](masterhub-macos-smoke.md). Hardware compatibility and complete action acceptance remain pending. See the [roadmap](masterhub-macos-plan.md), [diagnostic guide](masterhub-diagnostics.md), and [service guide](masterhub-service.md).
 
 ## References
 
@@ -38,7 +38,8 @@ Updated on 4 October 2026. The SDK implements discovery, input decoding for all 
 
 ## Binding and action service
 
-- Separate `cooltek-sdk-service` crate with strict schema-1 profiles, bounded action validation, serial-specific precedence, input normalization, and the host dispatcher boundary.
+- Separate `cooltek-sdk-service` crate with strict schema-1/schema-2 profiles, bounded action validation, serial-specific precedence, input normalization, and the host dispatcher boundary.
+- Stateful `ProfileSession` routes schema-2 keypad events through the current page and retains press origins for release actions. CLI replay logs folder navigation without dispatching an action. Live schema-2 keypad runs are rejected before opening HID until display synchronization is implemented; schema-1 keypad and non-key module runs retain their existing behavior.
 - `masterhub-service validate`, `replay`, and `run`. Replay constructs no HID context and always plans actions. Live runs own one exact selected interface, log planned actions by default, and require `--execute` for host operations. IPS module software mode is a separate explicit option.
 - macOS system output volume/mute, ASCII keyboard shortcuts through System Events, and application launch by bundle ID. The backend uses absolute system binaries with argument validation, five-second subprocess timeouts, bounded output, and no retries.
 - Public `AudioSnapshot`, `audio_snapshot()`, and `restore_audio_snapshot()` helpers support bounded state queries and exact best-effort restoration. Device-free smoke examples verify audio effects and restoration, or request a TextEdit launch/plain scratch keystroke; explicit execution is required. Native command completion is distinguished from independently observed effects.
@@ -55,6 +56,7 @@ Updated on 4 October 2026. The SDK implements discovery, input decoding for all 
 - Create, edit, validate, save and reload service profiles. The native backend bounds reads, validates UUID storage identifiers, rejects symlinks, preserves invalid files and replaces saved profiles atomically. Unsaved drafts are protected when switching, reloading or closing the window.
 - First launch under the OpenStreamHub identity validates and copies the previous desktop app's profiles when the new store is absent. UUIDs, JSON contents and modification times are preserved; originals and existing destination stores are never overwritten. Appearance falls back to the previous key only when that webview storage is accessible.
 - Selected-event previews and five bundled synthetic captures use the shared capture reader, decoder, binding engine and `DryRunDispatcher`. Results include planned/unbound actions and malformed/unknown-report diagnostics. The desktop bridge exposes no HID or host action execution command.
+- Nested keypad folders with 15 root slots, 14 child slots and a generated Back key showing the current L1–L8 depth. Breadcrumbs, folder naming, subtree deletion confirmation, per-page action editing and complete-click simulation share the validated schema-2 layout. Schema-1 files upgrade in memory and change on disk only after explicit Save. See [folder design and acceptance](masterhub-keypad-folders.md).
 - Browser preview is read-only. Focused-app routing, browser adapters, display uploads, flows and user scripts remain planned.
 
 ## Validation evidence
@@ -64,7 +66,7 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | Check | Result |
 | --- | --- |
 | Workspace/all-target compilation | Passed `cargo check --workspace --all-targets --locked` |
-| Workspace/all-target tests | Passed 254: 97 SDK unit, 50 CLI unit, 47 CLI integration, 51 service unit, 9 audio example tests |
+| Workspace/all-target tests | Passed 262: 97 SDK unit, 52 CLI unit, 48 CLI integration, 56 service unit, 9 audio example tests |
 | Documentation tests | Passed 12, including compile-fail type-state coverage |
 | Formatting and diff whitespace | Passed `cargo fmt --all -- --check` and `git diff --check` |
 | Clippy across workspace/all targets with warnings denied | Passed |
@@ -76,7 +78,8 @@ Validated on Apple Silicon macOS with Rust 1.98.1.
 | macOS script syntax | Seven backend AppleScript forms compiled with `osacompile`; live execution is scoped separately below |
 | Image preparation | Twelve conversion unit tests and eleven image/keypad CLI integration checks passed: entropy decoding at both sizes, alpha/matte, fit/crop, all quarter-turns, corrupt/animated/limited sources, per-key reconstruction, key/sequence bounds, preflight, and no-overwrite |
 | Device-free macOS runtime | Passed volume/mute effects with one-point target tolerance and exact restoration on this host; TextEdit launch request completed; scratch keyboard effect remains unverified. See [masterhub-macos-smoke.md](masterhub-macos-smoke.md) |
-| Desktop automated checks | Passed 19 Rust backend tests (including six profile migration checks and new-module replay/value validation), rerun against the keypad SDK/CLI changes. Five frontend selector/appearance tests, TypeScript checking, frontend/bundle builds, Rust formatting and clippy passed for the preceding unchanged desktop milestone |
+| Desktop automated checks | Passed 28 Rust backend tests and 11 frontend tests, including folder navigation, origin-page releases, migration without rewriting files, nested save/reload, malformed tree rejection, subtree deletion, and depth/Back constraints. TypeScript checking, native bundle build, Rust formatting and clippy with warnings denied passed |
+| Nested keypad native acceptance | Passed L1/L2 folder simulation without child release actions; an intentional click resolves the release binding. Created and named an L3 folder, configured its action, saved/reloaded it, and recovered all six bindings. Passed one-level Back, keyboard Space activation, root first-key restoration, light/dark inspection, subtree deletion confirmation and draft guard, and profile-switch reset. Both existing profile hashes and modification times remained unchanged; validation profile was archived outside the store |
 | Desktop native runtime | Passed creating/saving/reloading profiles, invalid-binding rejection, unsaved reload/window-close/Command-Q guards, repeated Quit, appearance persistence, and saved binding recovery after quitting/reopening the bundled app. Dock/system termination remains a draft-loss limitation |
 | Desktop app rename | Verified OpenStreamHub bundle/window/menu/About identity, unchanged IDs/contents/modification times for two migrated profiles, untouched original files, and saved binding recovery after quitting/reopening. The new bundle starts with System appearance when previous webview storage is unavailable |
 | Desktop image controls and OS requirement | Native image clicks, Space/Enter activation, synchronized picker/editor selection and light/dark outlines passed; saved profiles remained unchanged. The rebuilt bundle declares `LSMinimumSystemVersion` as `12.3` |

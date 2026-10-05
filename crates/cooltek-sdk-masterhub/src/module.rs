@@ -96,6 +96,15 @@ pub trait Module: Sized {
     }
 }
 
+/// Returns whether a raw VID/PID pair identifies module `M`.
+///
+/// This is the single source of truth for VID/PID recognition, shared by
+/// typed handles and [`crate::ModuleKind::from_ids`].
+pub(crate) fn matches_module<M: Module>(vendor_id: u16, product_id: u16) -> bool {
+    vendor_id == u16::from(M::VENDOR_ID)
+        && ProductId::new(product_id).is_ok_and(M::accepts_product_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

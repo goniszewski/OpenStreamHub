@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use hidapi::{HidError, HidResult};
 
 use crate::{
     InputReader, ReportTransport,
-    input::{DecodedM131E, M131EDecoder, M131EEvent},
+    input::{DecodedM131E, M131EDecoder, M131EEvent, M131EInputError},
 };
 
 fn error(message: &str) -> HidError {
@@ -29,6 +29,59 @@ pub enum DialSessionState {
     },
 }
 
+/// Failure from [`DialSession::read_input`], separating transport and decode errors.
+///
+/// Only [`Self::Transport`] clears the session's lifecycle and button state.
+/// Malformed reports preserve state so the caller can continue reading.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum DialReadError {
+    /// The session is not [`DialSessionState::Active`]; no read was attempted.
+    Inactive,
+    /// The timeout was zero or negative; no read was attempted.
+    InvalidTimeout,
+    /// The HID read failed; the session is now [`DialSessionState::Inactive`].
+    Transport(HidError),
+    /// A report was received but its known M131E framing was malformed.
+    Malformed(M131EInputError),
+}
+
+impl fmt::Display for DialReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Inactive => formatter.write_str("Dial input requires an active session"),
+            Self::InvalidTimeout => formatter.write_str("Input timeout must be positive"),
+            Self::Transport(error) => write!(formatter, "Dial input transport failed: {error}"),
+            Self::Malformed(error) => write!(formatter, "Malformed dial input: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DialReadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Transport(error) => Some(error),
+            Self::Malformed(error) => Some(error),
+            Self::Inactive | Self::InvalidTimeout => None,
+        }
+    }
+}
+
+/// Compatibility path for callers that still propagate [`HidError`].
+///
+/// Transport errors are returned unchanged; other variants become
+/// [`HidError::HidApiError`] carrying the [`fmt::Display`] message.
+impl From<DialReadError> for HidError {
+    fn from(error: DialReadError) -> Self {
+        match error {
+            DialReadError::Transport(error) => error,
+            other => HidError::HidApiError {
+                message: other.to_string(),
+            },
+        }
+    }
+}
+
 /// Owns dial input and provides explicit start, suspend, resume, and shutdown.
 ///
 /// Construction performs no I/O. The caller delivers OS lifecycle notifications
@@ -39,6 +92,10 @@ pub struct DialSession<T: ReportTransport> {
     reader: InputReader<T>,
     decoder: M131EDecoder,
     state: DialSessionState,
+    /// Whether the device may be in software mode, so shutdown must restore
+    /// hardware mode. True whenever the state is Active, after a failed or
+    /// interrupted session, and for transports taken from an initialized handle.
+    restore_hardware_mode: bool,
 }
 
 impl<T: ReportTransport> DialSession<T> {
@@ -46,11 +103,26 @@ impl<T: ReportTransport> DialSession<T> {
     pub const RESUME_DELAY: Duration = Duration::from_secs(2);
 
     /// Takes ownership of a transport without reading or initializing it.
+    ///
+    /// The session assumes the device is in hardware mode; [`Self::shutdown`]
+    /// sends nothing unless the session was activated.
     pub fn new(transport: T) -> Self {
         Self {
             reader: InputReader::new(transport),
             decoder: M131EDecoder::new(),
             state: DialSessionState::Inactive,
+            restore_hardware_mode: false,
+        }
+    }
+
+    /// Takes ownership of a transport that may already be in software mode.
+    ///
+    /// Performs no I/O. The state starts [`DialSessionState::Inactive`], but
+    /// [`Self::shutdown`] restores hardware mode unless the session is suspended.
+    pub(crate) fn from_possibly_software_mode(transport: T) -> Self {
+        Self {
+            restore_hardware_mode: true,
+            ..Self::new(transport)
         }
     }
 
@@ -63,18 +135,36 @@ impl<T: ReportTransport> DialSession<T> {
     ///
     /// Repeated calls while active are idempotent. Errors leave the session
     /// inactive; the actual device mode is unknown after a failed write.
+    ///
+    /// # Errors
+    /// Fails without I/O while [`DialSessionState::Suspended`] or
+    /// [`DialSessionState::ResumePending`]: resumption must go through
+    /// [`Self::resume_at`] and [`Self::advance`] so the resume delay is honored.
+    /// Call [`Self::shutdown`] first to start over without the delay.
     pub fn activate(&mut self) -> HidResult<()> {
-        if self.state == DialSessionState::Active {
-            return Ok(());
+        match self.state {
+            DialSessionState::Active => Ok(()),
+            DialSessionState::Inactive => self.enter_software_mode(),
+            DialSessionState::Suspended | DialSessionState::ResumePending { .. } => Err(error(
+                "Suspended dial session must resume through resume_at and advance",
+            )),
         }
+    }
+
+    fn enter_software_mode(&mut self) -> HidResult<()> {
         self.decoder.reset();
         self.state = DialSessionState::Inactive;
+        // A failed write may still have reached the device.
+        self.restore_hardware_mode = true;
         crate::dial::set_software_mode(self.reader.transport(), true)?;
         self.state = DialSessionState::Active;
         Ok(())
     }
 
     /// Requests hardware mode and clears button state before suspension.
+    ///
+    /// From [`DialSessionState::ResumePending`] this cancels the pending
+    /// resume without I/O; hardware mode was already requested.
     pub fn suspend(&mut self) -> HidResult<()> {
         match self.state {
             DialSessionState::Inactive => {
@@ -84,6 +174,7 @@ impl<T: ReportTransport> DialSession<T> {
                 self.decoder.reset();
                 self.state = DialSessionState::Inactive;
                 crate::dial::set_software_mode(self.reader.transport(), false)?;
+                self.restore_hardware_mode = false;
             }
             _ => self.decoder.reset(),
         }
@@ -117,7 +208,7 @@ impl<T: ReportTransport> DialSession<T> {
         if let DialSessionState::ResumePending { ready_at } = self.state
             && now >= ready_at
         {
-            self.activate()?;
+            self.enter_software_mode()?;
             return Ok(true);
         }
         Ok(false)
@@ -128,12 +219,18 @@ impl<T: ReportTransport> DialSession<T> {
     /// Idle returns `None`. Transport failures clear lifecycle/button state;
     /// malformed or unknown reports preserve state. Action consumers must reset
     /// any held actions and gesture trackers when the session becomes inactive.
-    pub fn read_input(&mut self, timeout_ms: i32) -> HidResult<Option<DecodedM131E<'_>>> {
+    ///
+    /// # Errors
+    /// See [`DialReadError`]; it converts into [`HidError`] for `?` callers.
+    pub fn read_input(
+        &mut self,
+        timeout_ms: i32,
+    ) -> Result<Option<DecodedM131E<'_>>, DialReadError> {
         if self.state != DialSessionState::Active {
-            return Err(error("Dial input requires an active session"));
+            return Err(DialReadError::Inactive);
         }
         if timeout_ms <= 0 {
-            return Err(error("Input timeout must be positive"));
+            return Err(DialReadError::InvalidTimeout);
         }
         let raw = match self.reader.read_input(timeout_ms) {
             Ok(Some(raw)) => raw,
@@ -141,24 +238,28 @@ impl<T: ReportTransport> DialSession<T> {
             Err(error) => {
                 self.decoder.reset();
                 self.state = DialSessionState::Inactive;
-                return Err(error);
+                return Err(DialReadError::Transport(error));
             }
         };
         self.decoder
             .decode_report(raw)
             .map(Some)
-            .map_err(|e| error(&e.to_string()))
+            .map_err(DialReadError::Malformed)
     }
 
-    /// Returns hardware mode when active, then clears state even on failure.
+    /// Restores hardware mode when needed, then clears state even on failure.
     ///
-    /// No commands are sent when already suspended or inactive. Call before
+    /// Hardware mode is requested unless it is already known to be restored:
+    /// no command is sent when suspended, resume-pending, or after a previous
+    /// shutdown. This covers a session created from a handle initialized into
+    /// software mode by `connect()`, even if it was never activated. Call before
     /// releasing the transport; cleanup does not run implicitly on drop.
     pub fn shutdown(&mut self) -> HidResult<()> {
-        let active = self.state == DialSessionState::Active;
+        let restore = self.restore_hardware_mode;
         self.state = DialSessionState::Inactive;
+        self.restore_hardware_mode = false;
         self.decoder.reset();
-        if active {
+        if restore {
             crate::dial::set_software_mode(self.reader.transport(), false)
         } else {
             Ok(())
@@ -351,6 +452,111 @@ mod tests {
             session.read_input(10).unwrap(),
             Some(DecodedM131E::Events(vec![M131EEvent::Pressed]))
         );
+    }
+
+    #[test]
+    fn initialized_handle_session_restores_hardware_mode_on_shutdown_without_activation() {
+        // Mirrors ModuleHandle::<M131E>::connect() -> into_dial_session() -> shutdown().
+        let mut session = DialSession::from_possibly_software_mode(Fake::default());
+        assert_eq!(session.state(), DialSessionState::Inactive);
+        assert!(session.transport().modes.borrow().is_empty());
+        session.shutdown().unwrap();
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [false]);
+
+        let mut session = DialSession::from_possibly_software_mode(Fake::default());
+        session.activate().unwrap();
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+
+        let mut session = DialSession::from_possibly_software_mode(Fake::default());
+        session.activate().unwrap();
+        session.suspend().unwrap();
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+    }
+
+    #[test]
+    fn transport_failure_still_attempts_hardware_restore_on_shutdown() {
+        let mut session = DialSession::new(Fake::default());
+        session.activate().unwrap();
+        session
+            .transport()
+            .reads
+            .borrow_mut()
+            .push_back(Err(error("Unplugged")));
+        assert!(matches!(
+            session.read_input(10),
+            Err(DialReadError::Transport(_))
+        ));
+        assert_eq!(session.state(), DialSessionState::Inactive);
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+    }
+
+    #[test]
+    fn suspend_from_resume_pending_cancels_resume_without_io() {
+        let mut session = DialSession::new(Fake::default());
+        session.activate().unwrap();
+        session.suspend().unwrap();
+        session.resume_at(Duration::ZERO).unwrap();
+        session.suspend().unwrap();
+        assert_eq!(session.state(), DialSessionState::Suspended);
+        assert!(!session.advance(Duration::from_secs(5)).unwrap());
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+        session.resume_at(Duration::from_secs(10)).unwrap();
+        assert!(session.advance(Duration::from_secs(12)).unwrap());
+        assert_eq!(session.state(), DialSessionState::Active);
+        assert_eq!(*session.transport().modes.borrow(), [true, false, true]);
+    }
+
+    #[test]
+    fn activate_rejects_suspended_and_resume_pending_without_bypassing_delay() {
+        let mut session = DialSession::new(Fake::default());
+        session.activate().unwrap();
+        session.suspend().unwrap();
+        assert!(session.activate().is_err());
+        assert_eq!(session.state(), DialSessionState::Suspended);
+        session.resume_at(Duration::ZERO).unwrap();
+        assert!(session.activate().is_err());
+        assert_eq!(
+            session.state(),
+            DialSessionState::ResumePending {
+                ready_at: DialSession::<Fake>::RESUME_DELAY
+            }
+        );
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false]);
+        session.activate().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false, true]);
+    }
+
+    #[test]
+    fn read_errors_are_typed_and_convert_to_hid_errors() {
+        let mut session = DialSession::new(Fake::default());
+        assert!(matches!(
+            session.read_input(10),
+            Err(DialReadError::Inactive)
+        ));
+        session.activate().unwrap();
+        assert!(matches!(
+            session.read_input(0),
+            Err(DialReadError::InvalidTimeout)
+        ));
+        session
+            .transport()
+            .reads
+            .borrow_mut()
+            .push_back(Ok(vec![1, 0x44, 3, 0, 4]));
+        let malformed = session.read_input(10).unwrap_err();
+        assert!(matches!(
+            malformed,
+            DialReadError::Malformed(M131EInputError::TruncatedPayload { .. })
+        ));
+        assert_eq!(session.state(), DialSessionState::Active);
+        let converted = HidError::from(malformed);
+        assert!(converted.to_string().contains("Malformed dial input"));
     }
 
     #[test]

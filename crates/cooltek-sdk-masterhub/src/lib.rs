@@ -30,7 +30,9 @@ mod types;
 //  Exports
 // -------------------------------
 
-pub use dial_session::{DialGesture, DialGestureTracker, DialSession, DialSessionState};
+pub use dial_session::{
+    DialGesture, DialGestureTracker, DialReadError, DialSession, DialSessionState,
+};
 pub use discovery::{DeviceRegistry, ModuleIdentity, ModuleKind};
 pub use hid::ModuleHandle;
 pub use module::Module;

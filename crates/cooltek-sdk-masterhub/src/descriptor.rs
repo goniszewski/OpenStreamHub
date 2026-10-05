@@ -1,4 +1,4 @@
-//! Pure HID descriptor inspection for deriving output report lengths.
+//! Pure HID descriptor inspection for deriving output and feature report lengths.
 
 use hidapi::{HidError, HidResult};
 
@@ -26,6 +26,32 @@ struct Globals {
 /// length (`u16`) produce [`HidError::HidApiError`]. This function performs no HID
 /// operations.
 pub fn output_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize> {
+    report_length(descriptor, report_id, OUTPUT, "output")
+}
+
+/// Derives a feature report's length from a complete HID report descriptor.
+///
+/// Identical rules to [`output_report_length`], counting only Feature fields.
+/// The returned length includes the report-ID byte, matching the buffers passed
+/// to HIDAPI's feature-report calls. Use it to check fixed-size feature commands
+/// (such as the 32-byte software-mode report) against the selected interface.
+///
+/// # Errors
+/// Returns [`HidError::HidApiError`] for malformed descriptors or an absent
+/// feature Report ID. This function performs no HID operations.
+pub fn feature_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize> {
+    report_length(descriptor, report_id, FEATURE, "feature")
+}
+
+const OUTPUT: usize = 1;
+const FEATURE: usize = 2;
+
+fn report_length(
+    descriptor: &[u8],
+    report_id: u8,
+    report_type: usize,
+    type_name: &str,
+) -> HidResult<usize> {
     if descriptor.len() > MAX_DESCRIPTOR_LENGTH {
         return Err(descriptor_error("descriptor exceeds 4096 bytes"));
     }
@@ -154,16 +180,16 @@ pub fn output_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize
             "Collection has no matching End Collection",
         ));
     }
-    let bits = report_bits[1][usize::from(report_id)];
+    let bits = report_bits[report_type][usize::from(report_id)];
     if bits == 0 {
         return Err(descriptor_error(&format!(
-            "output Report ID {report_id:#04x} is absent"
+            "{type_name} Report ID {report_id:#04x} is absent"
         )));
     }
     bits.checked_add(7)
         .and_then(|bits| (bits / 8).checked_add(1))
         .filter(|length| *length <= usize::from(u16::MAX))
-        .ok_or_else(|| descriptor_error("output report exceeds 65535 bytes"))
+        .ok_or_else(|| descriptor_error(&format!("{type_name} report exceeds 65535 bytes")))
 }
 
 fn positive_global(data: &[u8], name: &str) -> HidResult<usize> {
@@ -219,6 +245,51 @@ mod tests {
         assert_eq!(output_report_length(&descriptor, 4).unwrap(), 512);
         assert!(message(&descriptor, 1).contains("is absent"));
         assert!(message(&descriptor, 3).contains("is absent"));
+        assert_eq!(feature_report_length(&descriptor, 3).unwrap(), 8);
+        for id in [1, 2, 4] {
+            assert!(
+                feature_report_length(&descriptor, id)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("feature Report ID")
+            );
+        }
+    }
+
+    #[test]
+    fn arbitrary_descriptors_never_panic() {
+        // Deterministic pseudo-random fuzzing; no external dependency.
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // Bias toward item prefixes that the parser interprets.
+        const PREFIXES: [u8; 12] = [
+            0x75, 0x76, 0x77, 0x85, 0x95, 0x96, 0x81, 0x91, 0xb1, 0xa1, 0xc0, 0xa4,
+        ];
+        for _ in 0..20_000 {
+            let length = (next() % 64) as usize;
+            let descriptor: Vec<u8> = (0..length)
+                .map(|_| {
+                    let value = next();
+                    if value % 3 == 0 {
+                        PREFIXES[(value >> 8) as usize % PREFIXES.len()]
+                    } else {
+                        (value >> 16) as u8
+                    }
+                })
+                .collect();
+            let id = (next() % 4) as u8;
+            if let Ok(length) = output_report_length(&descriptor, id) {
+                assert!((1..=65_535).contains(&length));
+            }
+            if let Ok(length) = feature_report_length(&descriptor, id) {
+                assert!((1..=65_535).contains(&length));
+            }
+        }
     }
 
     #[test]

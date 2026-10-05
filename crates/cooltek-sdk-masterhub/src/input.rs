@@ -153,28 +153,59 @@ fn control_bytes<'a>(
     Ok(&payload[2..])
 }
 
-fn channel_zero_payload(raw: &[u8], tag: u8) -> Result<Option<&[u8]>, InputError> {
-    let Some(&id) = raw.first() else {
-        return Err(InputError::ShortHeader {
+/// Outer-frame failure shared by the length-prefixed report parsers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FrameError {
+    ShortHeader { required: usize, received: usize },
+    TruncatedPayload { declared: usize, available: usize },
+}
+
+impl From<FrameError> for InputError {
+    fn from(error: FrameError) -> Self {
+        match error {
+            FrameError::ShortHeader { required, received } => {
+                Self::ShortHeader { required, received }
+            }
+            FrameError::TruncatedPayload {
+                declared,
+                available,
+            } => Self::TruncatedPayload {
+                declared,
+                available,
+            },
+        }
+    }
+}
+
+/// Parses report `0x01` with a tag at byte 1 and a little-endian payload length
+/// at bytes 2–3, followed by the payload. Padding after it is ignored.
+///
+/// Returns `None` (without length checks) for other report IDs or when
+/// `classify` rejects the tag; otherwise the classified tag and the payload.
+pub(crate) fn parse_length_prefixed<T>(
+    raw: &[u8],
+    classify: impl FnOnce(u8) -> Option<T>,
+) -> Result<Option<(T, &[u8])>, FrameError> {
+    let Some(&report_id) = raw.first() else {
+        return Err(FrameError::ShortHeader {
             required: 1,
             received: 0,
         });
     };
-    if id != 0x01 {
+    if report_id != 0x01 {
         return Ok(None);
     }
-    let Some(&received_tag) = raw.get(1) else {
-        return Err(InputError::ShortHeader {
+    let Some(&tag) = raw.get(1) else {
+        return Err(FrameError::ShortHeader {
             required: 2,
             received: raw.len(),
         });
     };
-    // Other channels keep their entire raw bytes; their framing is not assumed.
-    if received_tag != tag {
+    let Some(class) = classify(tag) else {
         return Ok(None);
-    }
+    };
     if raw.len() < 4 {
-        return Err(InputError::ShortHeader {
+        return Err(FrameError::ShortHeader {
             required: 4,
             received: raw.len(),
         });
@@ -182,12 +213,20 @@ fn channel_zero_payload(raw: &[u8], tag: u8) -> Result<Option<&[u8]>, InputError
     let declared = usize::from(u16::from_le_bytes([raw[2], raw[3]]));
     let available = raw.len() - 4;
     if declared > available {
-        return Err(InputError::TruncatedPayload {
+        return Err(FrameError::TruncatedPayload {
             declared,
             available,
         });
     }
-    Ok(Some(&raw[4..4 + declared]))
+    Ok(Some((class, &raw[4..4 + declared])))
+}
+
+fn channel_zero_payload(raw: &[u8], tag: u8) -> Result<Option<&[u8]>, InputError> {
+    // Other channels keep their entire raw bytes; their framing is not assumed.
+    Ok(
+        parse_length_prefixed(raw, |received| (received == tag).then_some(()))?
+            .map(|((), payload)| payload),
+    )
 }
 
 /// A recognized outer M0 frame or an uninterpreted raw HID report.
@@ -220,45 +259,13 @@ pub enum M0Report<'a> {
 ///
 /// Returns [`InputError`] for truncated headers or payloads of known layouts.
 pub fn parse_m0_report(raw: &[u8]) -> Result<M0Report<'_>, InputError> {
-    let Some(&report_id) = raw.first() else {
-        return Err(InputError::ShortHeader {
-            required: 1,
-            received: 0,
-        });
-    };
-    if report_id != 0x01 {
-        return Ok(M0Report::Unknown { raw });
-    }
-
-    let Some(&tag) = raw.get(1) else {
-        return Err(InputError::ShortHeader {
-            required: 2,
-            received: raw.len(),
-        });
-    };
-    let channel = match tag {
-        0x2a..=0x2c | 0x2e => tag - 0x2a,
-        _ => return Ok(M0Report::Unknown { raw }),
-    };
-    if raw.len() < 4 {
-        return Err(InputError::ShortHeader {
-            required: 4,
-            received: raw.len(),
-        });
-    }
-
-    let declared = u16::from_le_bytes([raw[2], raw[3]]) as usize;
-    let available = raw.len() - 4;
-    if declared > available {
-        return Err(InputError::TruncatedPayload {
-            declared,
-            available,
-        });
-    }
-
-    Ok(M0Report::Known {
-        channel,
-        payload: &raw[4..4 + declared],
+    let framed = parse_length_prefixed(raw, |tag| match tag {
+        0x2a..=0x2c | 0x2e => Some(tag - 0x2a),
+        _ => None,
+    })?;
+    Ok(match framed {
+        Some((channel, payload)) => M0Report::Known { channel, payload },
+        None => M0Report::Unknown { raw },
     })
 }
 

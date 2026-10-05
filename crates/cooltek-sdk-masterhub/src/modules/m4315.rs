@@ -25,6 +25,13 @@ impl crate::Module for M4315 {
 impl crate::private::Sealed for M4315 {}
 
 impl super::capabilities::CanGetSerialNumber for M4315 {
+    // Source: inherited unchanged from the upstream commit that added M4315
+    // support (e71d94f, "add initial support for M4315 modules"); no capture or
+    // static-analysis evidence for it exists in docs/masterhub-protocol-evidence.md,
+    // which records serial report `30` for M0 models and `4a` for M131E only.
+    // It coincides with the software-mode command byte below (`03 3a <bool>`),
+    // which is evidenced. Treat this report ID as unverified; do not change it
+    // without a hardware capture or recovered `Get_Serial_Number_CM_M4315` code.
     const REPORT_ID: u8 = 0x3A;
 }
 

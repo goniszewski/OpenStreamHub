@@ -53,12 +53,8 @@ pub fn validate_jpeg(jpeg: &[u8]) -> HidResult<()> {
 /// transfer pacing or device acknowledgement.
 #[derive(Clone, Debug)]
 pub struct JpegPackets<'a> {
-    jpeg: &'a [u8],
+    chunks: crate::jpeg::JpegChunks<'a>,
     key_index: u8,
-    report_length: usize,
-    capacity: usize,
-    offset: usize,
-    sequence: u32,
 }
 
 impl<'a> JpegPackets<'a> {
@@ -77,38 +73,16 @@ impl<'a> JpegPackets<'a> {
         if key_index > 14 {
             return Err(invalid("Keypad key index must be between 0 and 14"));
         }
-        if output_report_length > usize::from(u16::MAX) {
-            return Err(invalid(
-                "Keypad output report length exceeds the 16-bit HID descriptor length",
-            ));
-        }
-        let capacity = output_report_length
-            .checked_sub(8)
-            .filter(|&length| length > 0)
-            .ok_or_else(|| {
-                invalid(
-                    "Keypad output length must contain payload capacity after its 8-byte header",
-                )
-            })?;
+        let chunks =
+            crate::jpeg::JpegChunks::new(jpeg, 0x36, key_index, output_report_length, "Keypad")?;
         validate_jpeg(jpeg)?;
-        if jpeg.len().div_ceil(capacity) > usize::from(u16::MAX) + 1 {
-            return Err(invalid(
-                "Keypad image would overflow the 16-bit chunk sequence",
-            ));
-        }
-        Ok(Self {
-            jpeg,
-            key_index,
-            report_length: output_report_length,
-            capacity,
-            offset: 0,
-            sequence: 0,
-        })
+        chunks.check_sequence_limit("Keypad")?;
+        Ok(Self { chunks, key_index })
     }
 
     /// Returns the complete output report length, including the report ID.
     pub fn output_report_length(&self) -> usize {
-        self.report_length
+        self.chunks.output_report_length()
     }
 
     /// Returns the targeted wire key index, from 0 through 14.
@@ -118,7 +92,7 @@ impl<'a> JpegPackets<'a> {
 
     /// Returns the complete encoded JPEG length, unaffected by iteration.
     pub fn jpeg_length(&self) -> usize {
-        self.jpeg.len()
+        self.chunks.jpeg_length()
     }
 }
 
@@ -126,27 +100,11 @@ impl Iterator for JpegPackets<'_> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let remaining = self.jpeg.len() - self.offset;
-        if remaining == 0 {
-            return None;
-        }
-        let payload_length = remaining.min(self.capacity);
-        let mut report = vec![0; self.report_length];
-        report[..2].copy_from_slice(&[0x02, 0x36]);
-        report[2..4].copy_from_slice(&(self.sequence as u16).to_le_bytes());
-        report[4..6].copy_from_slice(&(payload_length as u16).to_le_bytes());
-        report[6] = self.key_index;
-        report[7] = u8::from(remaining <= self.capacity);
-        report[8..8 + payload_length]
-            .copy_from_slice(&self.jpeg[self.offset..self.offset + payload_length]);
-        self.offset += payload_length;
-        self.sequence += 1;
-        Some(report)
+        self.chunks.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = (self.jpeg.len() - self.offset).div_ceil(self.capacity);
-        (remaining, Some(remaining))
+        self.chunks.size_hint()
     }
 }
 

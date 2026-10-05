@@ -1,5 +1,6 @@
 #[cfg(test)]
 mod contract_fixtures;
+mod diagnostics;
 mod feed;
 mod migration;
 #[cfg(target_os = "macos")]
@@ -210,20 +211,57 @@ fn start_service(
             eprintln!("could not emit a service event: {error}");
         }
     });
-    let exe = std::env::current_exe().ok();
-    let program = service::resolve_service_binary(
-        std::env::var_os(service::BINARY_ENV).as_deref(),
-        exe.as_deref().and_then(Path::parent),
-        cfg!(debug_assertions),
-    );
     service::start_service(
         &state.services,
         request,
         state.app_data.as_deref().map_err(Clone::clone),
-        program,
+        service_program(),
         |feed_id| state.feeds.stop(feed_id),
         emit,
     )
+}
+
+fn service_program() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe().ok();
+    service::resolve_service_binary(
+        std::env::var_os(service::BINARY_ENV).as_deref(),
+        exe.as_deref().and_then(Path::parent),
+        cfg!(debug_assertions),
+    )
+}
+
+// Writes a local diagnostic bundle; nothing is uploaded. Probing is read-only
+// and runs on a blocking worker; interfaces held by a running feed or service
+// are checked right before each open and skipped.
+#[tauri::command]
+async fn create_diagnostics(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    request: diagnostics::DiagnosticsRequest,
+) -> Result<diagnostics::DiagnosticsResult, String> {
+    let app_data = state.app_data.clone()?;
+    let running = diagnostics::Running {
+        feeds: state.feeds.running_ids(),
+        services: state.services.running_ids(),
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let in_use = |path: &[u8]| {
+            let hex = cooltek_sdk_cli::capture::encode_hex(path);
+            state.feeds.is_running(&format!("live:{hex}"))
+                || state.services.is_running(&format!("service:{hex}"))
+        };
+        diagnostics::create(
+            request,
+            &app_data,
+            &running,
+            &in_use,
+            service_program(),
+            &mut diagnostics::HidProbe::default(),
+        )
+    })
+    .await
+    .map_err(|error| format!("the diagnostics worker failed: {error}"))?
 }
 
 #[tauri::command(async)]
@@ -286,7 +324,8 @@ pub fn run() {
             start_feed,
             stop_feed,
             start_service,
-            stop_service
+            stop_service,
+            create_diagnostics
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

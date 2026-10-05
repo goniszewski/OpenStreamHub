@@ -457,6 +457,18 @@ impl Services {
             .is_some_and(|handle| !handle.finished())
     }
 
+    /// Ids of services whose child has not exited, sorted.
+    pub fn running_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .lock()
+            .iter()
+            .filter(|(_, handle)| !handle.finished())
+            .map(|(id, _)| id.clone())
+            .collect();
+        ids.sort();
+        ids
+    }
+
     /// Spawns `program args` as `service_id`, emitting `starting`, then
     /// `running` or `failed`. A duplicate running id is rejected without any
     /// event. `profile` is removed once the child is reaped.

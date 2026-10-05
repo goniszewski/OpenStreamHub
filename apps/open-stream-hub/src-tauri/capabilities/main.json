@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Local profile editing, device-free replay, and read-only device input feeds, and supervised masterhub-service action runs in the main window.",
+  "description": "Local profile editing, device-free replay, and read-only device input feeds, supervised masterhub-service action runs, and local diagnostic bundles in the main window.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -19,6 +19,7 @@
     "allow-start-feed",
     "allow-stop-feed",
     "allow-start-service",
-    "allow-stop-service"
+    "allow-stop-service",
+    "allow-create-diagnostics"
   ]
 }

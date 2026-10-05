@@ -1,7 +1,7 @@
 //! Shared fixtures that pin the Rust/TypeScript boundary. The frontend tests
 //! read the same files. Regenerate with `UPDATE_FIXTURES=1 cargo test`.
 
-use crate::{feed, replay, service, store, test_profiles};
+use crate::{diagnostics, feed, replay, service, store, test_profiles};
 use cooltek_sdk_service::Profile;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
@@ -226,5 +226,75 @@ fn service_payloads_match_the_shared_fixtures() {
             record(b"not json", false),
             record(&[b'a'; 600], true),
         ]),
+    );
+}
+
+#[test]
+fn diagnostics_payloads_match_the_shared_fixtures() {
+    let fader_hex =
+        cooltek_sdk_cli::capture::encode_hex(br"\\?\HID#VID_2516&PID_0200#FADER-SERIAL-0042");
+    let request = json!({
+        "redact_serials": true,
+        "include_capture": true,
+        "capture_seconds": 1,
+        "include_profile": test_profiles::folders_json(),
+        "client": {
+            "activity": [
+                { "kind": "service_status", "service_id": format!("service:{fader_hex}"),
+                  "state": "exited", "exit_code": 1,
+                  "stderr_tail": "masterhub-service: could not open FADER-SERIAL-0042\n" },
+                { "kind": "feed_status", "feed_id": "demo:faders", "state": "finished" },
+                { "kind": "service_record", "record": { "type": "binding_matched", "serial_number": "FADER-SERIAL-0042" } }
+            ],
+            "notes": "Faders stopped responding after replugging the hub; log at /Users/tester/Desktop/notes.txt",
+        },
+    });
+    check_or_update("diagnostics-request.json", &request);
+    let parsed: diagnostics::DiagnosticsRequest = serde_json::from_value(request).unwrap();
+    let validated = diagnostics::validate(parsed).unwrap();
+    let running = diagnostics::Running {
+        feeds: vec!["demo:faders".into()],
+        services: vec![format!("service:{fader_hex}")],
+    };
+    let held = |path: &[u8]| path == b"DevSrvsID:4294970002";
+    let mut probe = diagnostics::fake::rig();
+    let bundle = diagnostics::build_bundle(
+        &diagnostics::BundleInputs {
+            request: &validated,
+            generated_at: 1_791_201_600,
+            app: json!({
+                "name": "open-stream-hub-app",
+                "version": "0.1.0",
+                "build": "debug",
+                "target_os": "macos",
+                "target_arch": "aarch64",
+                "tauri_version": "2.12.1",
+                "service_binary": { "path": "/Users/tester/cooltek-sdk/target/debug/masterhub-service" },
+            }),
+            environment: json!({
+                "os": "macos", "os_family": "unix", "arch": "aarch64", "os_version": "macOS 27.0",
+            }),
+            home: Some("/Users/tester".into()),
+            running: &running,
+            in_use: &held,
+        },
+        &mut probe,
+    );
+    assert!(probe.commands.is_empty());
+    check_or_update("diagnostics-bundle-redacted.json", &bundle.value);
+    let (_, stamp) = diagnostics::utc_stamps(1_791_201_600);
+    check_or_update(
+        "diagnostics-result.json",
+        &json!({
+            "create_diagnostics": diagnostics::DiagnosticsResult {
+                path: format!(
+                    "/storage/{}/{}",
+                    diagnostics::DIRECTORY,
+                    diagnostics::file_name(&stamp)
+                ),
+                bytes: (serde_json::to_vec_pretty(&bundle.value).unwrap().len() + 1) as u64,
+                summary: bundle.summary,
+            },
+        }),
     );
 }

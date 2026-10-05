@@ -1,0 +1,177 @@
+{
+  "capture_seconds": 1,
+  "client": {
+    "activity": [
+      {
+        "exit_code": 1,
+        "kind": "service_status",
+        "service_id": "service:5c5c3f5c484944235649445f32353136265049445f303230302346414445522d53455249414c2d30303432",
+        "state": "exited",
+        "stderr_tail": "masterhub-service: could not open FADER-SERIAL-0042\n"
+      },
+      {
+        "feed_id": "demo:faders",
+        "kind": "feed_status",
+        "state": "finished"
+      },
+      {
+        "kind": "service_record",
+        "record": {
+          "serial_number": "FADER-SERIAL-0042",
+          "type": "binding_matched"
+        }
+      }
+    ],
+    "notes": "Faders stopped responding after replugging the hub; log at /Users/tester/Desktop/notes.txt"
+  },
+  "include_capture": true,
+  "include_profile": {
+    "bindings": [
+      {
+        "action": {
+          "delta": 5,
+          "type": "volume"
+        },
+        "control": 0,
+        "gesture": "clockwise",
+        "module": "m003k"
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Home",
+          "slots": [
+            {
+              "page_id": "tools",
+              "type": "folder"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "delta": 7,
+                    "type": "volume"
+                  },
+                  "gesture": "pressed"
+                },
+                {
+                  "action": {
+                    "type": "toggle_mute"
+                  },
+                  "gesture": "released"
+                }
+              ],
+              "label": "Root action",
+              "type": "action"
+            }
+          ]
+        },
+        {
+          "id": "tools",
+          "name": "Tools",
+          "slots": [
+            null,
+            {
+              "page_id": "deeper",
+              "type": "folder"
+            },
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "bundle_id": "com.apple.calculator",
+                    "type": "launch_app"
+                  },
+                  "gesture": "pressed"
+                },
+                {
+                  "action": {
+                    "delta": 11,
+                    "type": "volume"
+                  },
+                  "gesture": "pressed",
+                  "serial_number": "unit-1"
+                },
+                {
+                  "action": {
+                    "delta": -2,
+                    "type": "volume"
+                  },
+                  "gesture": "released"
+                }
+              ],
+              "label": "Calculator",
+              "type": "action"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        },
+        {
+          "id": "deeper",
+          "name": "Deeper",
+          "slots": [
+            null,
+            {
+              "bindings": [
+                {
+                  "action": {
+                    "key": "v",
+                    "modifiers": [
+                      "command"
+                    ],
+                    "type": "shortcut"
+                  },
+                  "gesture": "pressed"
+                }
+              ],
+              "label": "Paste",
+              "type": "action"
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        }
+      ]
+    },
+    "name": "Folders",
+    "schema_version": 2
+  },
+  "redact_serials": true
+}

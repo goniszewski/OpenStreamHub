@@ -485,6 +485,13 @@ struct FeedHandle {
     join: Option<JoinHandle<()>>,
 }
 
+impl FeedHandle {
+    fn running(&self) -> bool {
+        !self.done.load(Ordering::SeqCst)
+            && self.join.as_ref().is_some_and(|join| !join.is_finished())
+    }
+}
+
 /// Running feeds by id. Finished feeds stay until replaced or stopped.
 #[derive(Default)]
 pub struct Feeds {
@@ -543,6 +550,28 @@ impl Feeds {
             }
         }
         Ok(())
+    }
+
+    /// True while the feed's thread has not finished.
+    pub fn is_running(&self, feed_id: &str) -> bool {
+        self.lock()
+            .is_ok_and(|feeds| feeds.get(feed_id).is_some_and(FeedHandle::running))
+    }
+
+    /// Ids of feeds whose threads have not finished, sorted.
+    pub fn running_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self
+            .lock()
+            .map(|feeds| {
+                feeds
+                    .iter()
+                    .filter(|(_, handle)| handle.running())
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        ids.sort();
+        ids
     }
 
     /// Signals every feed to stop without waiting, e.g. on app exit.

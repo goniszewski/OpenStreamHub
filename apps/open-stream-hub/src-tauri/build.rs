@@ -15,6 +15,7 @@ fn main() {
             "stop_feed",
             "start_service",
             "stop_service",
+            "create_diagnostics",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

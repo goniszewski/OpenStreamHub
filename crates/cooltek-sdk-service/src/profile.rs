@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::{KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
+
 /// Modules whose input is supported by the binding service.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -251,12 +253,15 @@ pub struct Binding {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// Configuration schema; currently 1.
+    /// Configuration schema: 1 for flat bindings or 2 for a keypad page tree.
     pub schema_version: u32,
     /// Human-readable name of at most 128 bytes.
     pub name: String,
     /// At most 256 bindings with unique complete selectors.
     pub bindings: Vec<Binding>,
+    /// Schema-2 keypad pages; omitted from existing schema-1 profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keypad: Option<KeypadLayout>,
 }
 
 impl Profile {
@@ -278,11 +283,16 @@ impl Profile {
 
     /// Validates a profile constructed in Rust or decoded using another path.
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1 {
-            return Err(format!(
-                "unsupported profile schema {} (expected 1)",
-                self.schema_version
-            ));
+        match (self.schema_version, self.keypad.as_ref()) {
+            (1, None) => {}
+            (2, Some(keypad)) => keypad.validate()?,
+            (1, Some(_)) => return Err("schema 1 profiles must omit keypad pages".into()),
+            (2, None) => return Err("schema 2 profiles require keypad pages".into()),
+            (version, _) => {
+                return Err(format!(
+                    "unsupported profile schema {version} (expected 1 or 2)"
+                ));
+            }
         }
         if self.name.trim().is_empty()
             || self.name.len() > 128
@@ -293,11 +303,16 @@ impl Profile {
                     .into(),
             );
         }
-        if self.bindings.len() > Self::MAX_BINDINGS {
+        if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
         }
         let mut selectors = HashSet::new();
         for (index, binding) in self.bindings.iter().enumerate() {
+            if self.schema_version == 2 && binding.module == ServiceModule::M4315 {
+                return Err(format!(
+                    "binding {index}: schema 2 keypad bindings belong in keypad action tiles"
+                ));
+            }
             binding
                 .module
                 .validate_selector(binding.control, binding.gesture)
@@ -309,13 +324,8 @@ impl Profile {
                     "binding {index}: fader bindings require volume_from_position, which is supported only for faders"
                 ));
             }
-            if binding.serial_number.as_ref().is_some_and(|serial| {
-                serial.is_empty() || serial.len() > 256 || serial.chars().any(char::is_control)
-            }) {
-                return Err(format!(
-                    "binding {index}: serial number must be nonempty, free of control characters, and at most 256 bytes"
-                ));
-            }
+            validate_serial_number(binding.serial_number.as_deref())
+                .map_err(|error| format!("binding {index}: {error}"))?;
             if !selectors.insert((
                 binding.module,
                 binding.control,
@@ -329,6 +339,68 @@ impl Profile {
                 .validate()
                 .map_err(|error| format!("binding {index}: {error}"))?;
         }
+        Ok(())
+    }
+
+    /// Counts flat bindings and bindings on all nested keypad action tiles.
+    pub fn binding_count(&self) -> usize {
+        self.bindings.len() + self.keypad.as_ref().map_or(0, KeypadLayout::binding_count)
+    }
+
+    /// Converts a valid flat profile into schema 2 without writing to storage.
+    ///
+    /// Every M4315 selector becomes a binding on its original root key, retaining
+    /// gesture, serial selector, and action. Other module bindings keep their
+    /// original order. A valid schema-2 profile is returned unchanged.
+    pub fn into_v2(mut self) -> Result<Self, String> {
+        self.validate()?;
+        if self.schema_version == 2 {
+            return Ok(self);
+        }
+        let mut slots = vec![None; KeypadLayout::KEY_COUNT];
+        let mut flat = Vec::new();
+        for binding in self.bindings {
+            if binding.module == ServiceModule::M4315 {
+                let tile =
+                    slots[binding.control as usize].get_or_insert_with(|| KeypadTile::Action {
+                        label: format!("Key {}", binding.control + 1),
+                        bindings: Vec::new(),
+                    });
+                let KeypadTile::Action { bindings, .. } = tile else {
+                    unreachable!("migration creates only action tiles")
+                };
+                bindings.push(KeypadBinding {
+                    gesture: binding.gesture,
+                    serial_number: binding.serial_number,
+                    action: binding.action,
+                });
+            } else {
+                flat.push(binding);
+            }
+        }
+        self.bindings = flat;
+        self.schema_version = 2;
+        self.keypad = Some(KeypadLayout {
+            pages: vec![KeypadPage {
+                id: KeypadLayout::ROOT_PAGE_ID.into(),
+                name: "Root".into(),
+                slots,
+            }],
+        });
+        self.validate()?;
+        Ok(self)
+    }
+}
+
+pub(crate) fn validate_serial_number(serial: Option<&str>) -> Result<(), String> {
+    if serial.is_some_and(|serial| {
+        serial.is_empty() || serial.len() > 256 || serial.chars().any(char::is_control)
+    }) {
+        Err(
+            "serial number must be nonempty, free of control characters, and at most 256 bytes"
+                .into(),
+        )
+    } else {
         Ok(())
     }
 }
@@ -348,6 +420,7 @@ mod tests {
                 serial_number: None,
                 action: Action::Volume { delta: 5 },
             }],
+            keypad: None,
         }
     }
 

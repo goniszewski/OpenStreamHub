@@ -8,6 +8,7 @@ fn main() {
             "validate_profile",
             "replay_demo",
             "preview_binding",
+            "preview_keypad",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

@@ -18,12 +18,17 @@ export interface Binding {
   serial_number?: string;
   action: BindingAction;
 }
-export interface Profile { schema_version: number; name: string; bindings: Binding[] }
+export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
+export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
+export interface KeypadPage { id: string; name: string; slots: KeypadSlot[] }
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] } }
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number }
 export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number }
 export interface ValidationResult { valid: true }
 export interface AppBootstrap { profile: StoredProfile; profiles: ProfileSummary[]; storage_path: string; desktop: boolean }
-export interface ReplayEvent { timestamp_us: number; module: ServiceModule; control: number; gesture: Gesture; value?: PositionValue; serial_number: string | null; action: Action | null }
+export interface KeypadNavigation { from_page: string; to_page: string; path: string[]; depth: number }
+export interface ReplayEvent { timestamp_us: number; module: ServiceModule; control: number; gesture: Gesture; value?: PositionValue; serial_number: string | null; action: Action | null; page_id?: string; navigation?: KeypadNavigation }
+export interface KeypadPreviewResult { path: string[]; depth: number; events: ReplayEvent[]; planned_action_count: number }
 export interface ReplayResult {
   source: string;
   synthetic: true;

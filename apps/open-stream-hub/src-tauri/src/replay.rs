@@ -1,8 +1,9 @@
 use cooltek_sdk_cli::capture::{CaptureReader, EndReason, Source, decode_hex};
 use cooltek_sdk_masterhub::ModuleKind;
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, Binding, BindingEngine, DeviceContext, DryRunDispatcher, Gesture,
-    InputEvent, InputSession, InputUpdate, InputValue, Profile, ServiceModule,
+    Action, ActionDispatcher, DeviceContext, DryRunDispatcher, Gesture, InputEvent, InputSession,
+    InputUpdate, InputValue, KeypadNavigation, KeypadResolution, Profile, ProfileSession,
+    ServiceModule,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -42,6 +43,18 @@ pub struct ReplayEvent {
     pub value: Option<InputValue>,
     pub serial_number: Option<String>,
     pub action: Option<Action>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub navigation: Option<KeypadNavigation>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct KeypadPreview {
+    pub path: Vec<String>,
+    pub depth: usize,
+    pub events: [ReplayEvent; 2],
+    pub planned_action_count: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -76,7 +89,7 @@ pub fn replay_demo(profile: Profile, kind: DemoKind) -> Result<ReplayResult, Str
 // Internal only: callers cannot choose a path, URL, or external capture text.
 fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<ReplayResult, String> {
     validate_profile(&profile)?;
-    let engine = BindingEngine::new(profile)?;
+    let mut session = ProfileSession::new(profile)?;
     let (mut reader, header) = CaptureReader::new(Cursor::new(capture.as_bytes()))?;
     if !matches!(header.source, Source::Synthetic) {
         return Err("demo replay requires a bundled synthetic capture".into());
@@ -104,7 +117,7 @@ fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<Repla
         match input.decode(&raw, report.timestamp_micros) {
             Ok(InputUpdate::Events(decoded)) => {
                 for event in decoded {
-                    events.push(plan_event(&engine, &context, event, &mut dispatcher)?);
+                    events.push(plan_event(&mut session, &context, event, &mut dispatcher)?);
                 }
             }
             Ok(InputUpdate::Unknown) => diagnostics.push(Diagnostic {
@@ -154,40 +167,89 @@ pub fn preview_binding(
         value,
     };
     event.validate_for(module)?;
-    if serial_number.is_some() {
-        // Keep exact-serial constraints owned by the shared profile validator.
-        Profile {
-            schema_version: 1,
-            name: "Preview selector".into(),
-            bindings: vec![Binding {
-                module,
-                control,
-                gesture,
-                serial_number: serial_number.clone(),
-                action: if module == ServiceModule::M005S {
-                    Action::VolumeFromPosition
-                } else {
-                    Action::ToggleMute
-                },
-            }],
-        }
-        .validate()?;
-    }
-    let engine = BindingEngine::new(profile)?;
+    let prime_release = profile.schema_version == 2
+        && module == ServiceModule::M4315
+        && gesture == Gesture::Released;
+    let mut session = ProfileSession::new(profile)?;
     let context = DeviceContext {
         module,
         serial_number,
     };
-    plan_event(&engine, &context, event, &mut DryRunDispatcher::default())
+    if prime_release {
+        // The single-gesture preview has no preceding HID press. Prime the
+        // shared origin tracking, then return only the requested release plan.
+        // No dispatcher sees the priming action.
+        session.resolve(
+            &context,
+            &InputEvent {
+                gesture: Gesture::Pressed,
+                ..event
+            },
+        )?;
+    }
+    plan_event(
+        &mut session,
+        &context,
+        event,
+        &mut DryRunDispatcher::default(),
+    )
+}
+
+pub fn preview_keypad(
+    profile: Profile,
+    path: Vec<String>,
+    control: u8,
+    serial_number: Option<String>,
+) -> Result<KeypadPreview, String> {
+    validate_profile(&profile)?;
+    let mut session = ProfileSession::new(profile.into_v2()?)?;
+    session.set_path(&path)?;
+    let context = DeviceContext {
+        module: ServiceModule::M4315,
+        serial_number,
+    };
+    let mut dispatcher = DryRunDispatcher::default();
+    let pressed = plan_event(
+        &mut session,
+        &context,
+        InputEvent {
+            timestamp_micros: 0,
+            control,
+            gesture: Gesture::Pressed,
+            value: None,
+        },
+        &mut dispatcher,
+    )?;
+    let released = plan_event(
+        &mut session,
+        &context,
+        InputEvent {
+            timestamp_micros: 1,
+            control,
+            gesture: Gesture::Released,
+            value: None,
+        },
+        &mut dispatcher,
+    )?;
+    Ok(KeypadPreview {
+        path: session.path().to_vec(),
+        depth: session.depth(),
+        events: [pressed, released],
+        planned_action_count: dispatcher.actions.len(),
+    })
 }
 
 fn plan_event(
-    engine: &BindingEngine,
+    session: &mut ProfileSession,
     context: &DeviceContext,
     event: InputEvent,
     dispatcher: &mut DryRunDispatcher,
 ) -> Result<ReplayEvent, String> {
-    let action = engine.action_for(context, &event)?;
+    let (action, page_id, navigation) = match session.resolve(context, &event)? {
+        KeypadResolution::Action { action, page_id } => (Some(action), page_id, None),
+        KeypadResolution::Navigation { navigation } => (None, None, Some(navigation)),
+        KeypadResolution::Unbound => (None, None, None),
+    };
     if let Some(action) = &action {
         dispatcher.dispatch(action)?;
     }
@@ -199,6 +261,8 @@ fn plan_event(
         value: event.value,
         serial_number: context.serial_number.clone(),
         action,
+        page_id,
+        navigation,
     })
 }
 
@@ -215,6 +279,7 @@ pub fn validate_profile(profile: &Profile) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_profiles;
     use serde_json::{Value, json};
 
     fn sample() -> Profile {
@@ -581,6 +646,216 @@ mod tests {
                 value
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn folder_preview_and_back_use_complete_pairs_without_child_release_actions() {
+        let child = preview_keypad(test_profiles::folders(), vec!["root".into()], 0, None).unwrap();
+        assert_eq!(child.path, ["root", "tools"]);
+        assert_eq!(child.depth, 1);
+        assert_eq!(child.planned_action_count, 0);
+        let navigation = child.events[0].navigation.as_ref().unwrap();
+        assert_eq!(navigation.from_page, "root");
+        assert_eq!(navigation.to_page, "tools");
+        assert!(child.events[1].action.is_none());
+        assert!(child.events[1].navigation.is_none());
+        let deeper = preview_keypad(test_profiles::folders(), child.path, 1, None).unwrap();
+        assert_eq!(deeper.path, ["root", "tools", "deeper"]);
+        assert_eq!(deeper.depth, 2);
+        let back = preview_keypad(test_profiles::folders(), deeper.path, 0, None).unwrap();
+        assert_eq!(back.path, ["root", "tools"]);
+        assert_eq!(back.depth, 1);
+        assert_eq!(back.planned_action_count, 0);
+        assert_eq!(back.events[0].navigation.as_ref().unwrap().to_page, "tools");
+        assert!(back.events[1].navigation.is_none());
+        assert!(back.events.iter().all(|event| event.action.is_none()));
+    }
+
+    #[test]
+    fn keypad_preview_plans_both_origin_actions_and_exact_serial_precedence() {
+        for (serial, pressed_action) in [
+            (
+                None,
+                Action::LaunchApp {
+                    bundle_id: "com.apple.calculator".into(),
+                },
+            ),
+            (Some("unit-1"), Action::Volume { delta: 11 }),
+        ] {
+            let result = preview_keypad(
+                test_profiles::folders(),
+                vec!["root".into(), "tools".into()],
+                2,
+                serial.map(str::to_owned),
+            )
+            .unwrap();
+            assert_eq!(result.planned_action_count, 2);
+            assert_eq!(result.events[0].action, Some(pressed_action));
+            assert_eq!(result.events[1].action, Some(Action::Volume { delta: -2 }));
+            assert!(
+                result
+                    .events
+                    .iter()
+                    .all(|event| event.page_id.as_deref() == Some("tools"))
+            );
+            assert!(result.events.iter().all(|event| event.navigation.is_none()));
+            assert_eq!(result.path, ["root", "tools"]);
+        }
+        let value = serde_json::to_value(
+            preview_keypad(test_profiles::folders(), vec!["root".into()], 0, None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            value["events"][0]["navigation"],
+            json!({
+                "from_page": "root", "to_page": "tools", "path": ["root", "tools"], "depth": 1,
+            })
+        );
+        assert_eq!(value["events"][1]["gesture"], "released");
+        assert_eq!(value["planned_action_count"], 0);
+    }
+
+    #[test]
+    fn invalid_preview_paths_selectors_and_serials_fail_before_planning() {
+        for path in [
+            vec![],
+            vec!["tools".into()],
+            vec!["root".into(), "deeper".into()],
+            vec!["root".into(), "missing".into()],
+            vec!["root".into(), "tools".into(), "root".into()],
+        ] {
+            assert!(preview_keypad(test_profiles::folders(), path, 0, None).is_err());
+        }
+        assert!(preview_keypad(test_profiles::folders(), vec!["root".into()], 15, None).is_err());
+        assert!(
+            preview_keypad(
+                test_profiles::folders(),
+                vec!["root".into()],
+                0,
+                Some(String::new())
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn single_release_preview_primes_shared_origin_without_planning_the_press() {
+        let event = preview_binding(
+            test_profiles::folders(),
+            ServiceModule::M4315,
+            14,
+            Gesture::Released,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(event.action, Some(Action::ToggleMute));
+        assert_eq!(event.page_id.as_deref(), Some("root"));
+        assert!(event.navigation.is_none());
+        let folder_release = preview_binding(
+            test_profiles::folders(),
+            ServiceModule::M4315,
+            0,
+            Gesture::Released,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(folder_release.action.is_none());
+        assert!(folder_release.navigation.is_none());
+    }
+
+    fn key_capture(snapshots: &[&[usize]]) -> String {
+        let mut records =
+            vec![serde_json::from_str::<Value>(KEYS.lines().next().unwrap()).unwrap()];
+        for (index, snapshot) in snapshots.iter().enumerate() {
+            let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+            raw.extend_from_slice(&[0; 15]);
+            for &key in snapshot.iter() {
+                raw[6 + key] = 1;
+            }
+            records.push(
+                json!({ "type": "report", "timestamp_micros": (index + 1) * 1000,
+                "raw_hex": raw.iter().map(|byte| format!("{byte:02x}")).collect::<String>() }),
+            );
+        }
+        records.push(
+            json!({ "type": "end", "timestamp_micros": snapshots.len() * 1000 + 1,
+            "report_count": snapshots.len(), "reason": "max_reports" }),
+        );
+        records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap() + "\n")
+            .collect()
+    }
+
+    #[test]
+    fn raw_replay_retains_origin_release_after_back_navigation() {
+        let capture = key_capture(&[&[0], &[], &[2], &[0, 2], &[]]);
+        let result =
+            replay_capture(test_profiles::folders(), &capture, "synthetic folder test").unwrap();
+        assert_eq!(result.report_count, 5);
+        assert_eq!(result.event_count, 6);
+        assert_eq!(result.planned_action_count, 2);
+        assert!(result.diagnostics.is_empty());
+        let navigation: Vec<_> = result
+            .events
+            .iter()
+            .filter_map(|event| event.navigation.as_ref())
+            .map(|navigation| navigation.to_page.as_str())
+            .collect();
+        assert_eq!(navigation, ["tools", "root"]);
+        let actions: Vec<_> = result
+            .events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .action
+                    .as_ref()
+                    .map(|action| (action, event.page_id.as_deref()))
+            })
+            .collect();
+        assert_eq!(
+            actions,
+            [
+                (
+                    &Action::LaunchApp {
+                        bundle_id: "com.apple.calculator".into()
+                    },
+                    Some("tools")
+                ),
+                (&Action::Volume { delta: -2 }, Some("tools")),
+            ]
+        );
+        assert_eq!(result.status, "completed");
+    }
+
+    #[test]
+    fn migrated_root_replay_preserves_flat_actions_and_capture_diagnostics() {
+        let flat = replay_demo(all_modules(), DemoKind::Keys).unwrap();
+        let migrated = replay_demo(all_modules().into_v2().unwrap(), DemoKind::Keys).unwrap();
+        assert_eq!(migrated.report_count, flat.report_count);
+        assert_eq!(migrated.event_count, flat.event_count);
+        assert_eq!(migrated.planned_action_count, flat.planned_action_count);
+        assert_eq!(migrated.diagnostics.len(), flat.diagnostics.len());
+        assert_eq!(
+            migrated
+                .events
+                .iter()
+                .filter_map(|event| event.action.clone())
+                .collect::<Vec<_>>(),
+            flat.events
+                .iter()
+                .filter_map(|event| event.action.clone())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            migrated
+                .events
+                .iter()
+                .filter(|event| event.action.is_some())
+                .all(|event| event.page_id.as_deref() == Some("root"))
         );
     }
 }

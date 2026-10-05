@@ -109,6 +109,73 @@ fn validates_example_profile_without_starting_a_service() {
 }
 
 #[test]
+fn nested_keypad_profile_validates_and_replay_keeps_navigation_releases_on_the_origin_page() {
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/keypad-folders.json");
+    let validated = run(&["validate", profile.to_str().unwrap()]);
+    assert!(validated.status.success(), "{validated:?}");
+    let summary = output_records(&validated);
+    assert_eq!(summary[0]["schema_version"], 2);
+    assert_eq!(summary[0]["binding_count"], 5);
+
+    let original = capture_records("m4315-software-derived-synthetic.jsonl");
+    let mut records = vec![original[0].clone()];
+    // Root key 2 opens Development; its key 2 opens Git tools. Releasing
+    // either folder must not run Git tools' release action at the same slot.
+    // Key 3 executes its own release action, then key 1 goes Back twice.
+    for (index, control) in [
+        Some(1),
+        None,
+        Some(1),
+        None,
+        Some(2),
+        None,
+        Some(0),
+        None,
+        Some(0),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+        let mut states = [0u8; 15];
+        if let Some(control) = control {
+            states[control] = 1;
+        }
+        raw.extend_from_slice(&states);
+        let hex: String = raw.iter().map(|byte| format!("{byte:02x}")).collect();
+        records.push(json!({"type":"report","timestamp_micros":(index + 1) * 1000,"raw_hex":hex}));
+    }
+    records.push(
+        json!({"type":"end","timestamp_micros":10001,"report_count":10,"reason":"max_reports"}),
+    );
+    let capture = TempFile::records(&records);
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.to_str().unwrap(),
+        capture.0.to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let rows = output_records(&output);
+    assert_eq!(
+        planned_actions(&rows),
+        vec![json!({"type":"shortcut","key":"t","modifiers":["command"]})]
+    );
+    let depths: Vec<u64> = rows
+        .iter()
+        .filter(|row| row["status"] == "navigation")
+        .map(|row| row["navigation"]["depth"].as_u64().unwrap())
+        .collect();
+    assert_eq!(depths, [1, 2, 1, 0]);
+    let ending = rows.last().unwrap();
+    assert_eq!(ending["event_count"], 10);
+    assert_eq!(ending["action_count"], 1);
+    assert_eq!(ending["execution"], "dry_run");
+}
+
+#[test]
 fn all_new_modules_replay_offline_and_log_concrete_actions_under_both_pid_generations() {
     let profile =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/all-modules.json");

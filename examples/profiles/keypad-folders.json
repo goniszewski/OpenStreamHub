@@ -1,0 +1,141 @@
+{
+  "schema_version": 2,
+  "name": "Nested keypad example",
+  "bindings": [
+    {
+      "module": "m003k",
+      "control": 0,
+      "gesture": "clockwise",
+      "action": {
+        "type": "volume",
+        "delta": 5
+      }
+    }
+  ],
+  "keypad": {
+    "pages": [
+      {
+        "id": "root",
+        "name": "Keys",
+        "slots": [
+          {
+            "type": "action",
+            "label": "Mute",
+            "bindings": [
+              {
+                "gesture": "pressed",
+                "action": {
+                  "type": "toggle_mute"
+                }
+              }
+            ]
+          },
+          {
+            "type": "folder",
+            "page_id": "development"
+          },
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "id": "development",
+        "name": "Development",
+        "slots": [
+          null,
+          {
+            "type": "folder",
+            "page_id": "git-tools"
+          },
+          {
+            "type": "action",
+            "label": "Terminal",
+            "bindings": [
+              {
+                "gesture": "pressed",
+                "action": {
+                  "type": "launch_app",
+                  "bundle_id": "com.apple.Terminal"
+                }
+              }
+            ]
+          },
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      },
+      {
+        "id": "git-tools",
+        "name": "Git tools",
+        "slots": [
+          null,
+          {
+            "type": "action",
+            "label": "Command palette",
+            "bindings": [
+              {
+                "gesture": "released",
+                "action": {
+                  "type": "shortcut",
+                  "key": "k",
+                  "modifiers": [
+                    "command"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "type": "action",
+            "label": "New tab",
+            "bindings": [
+              {
+                "gesture": "released",
+                "action": {
+                  "type": "shortcut",
+                  "key": "t",
+                  "modifiers": [
+                    "command"
+                  ]
+                }
+              }
+            ]
+          },
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        ]
+      }
+    ]
+  }
+}

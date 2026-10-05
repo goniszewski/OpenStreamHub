@@ -4,17 +4,17 @@ import type { KeypadPage } from './contracts';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 
 interface Props {
-  profileName: string; pages: KeypadPage[]; allPages: KeypadPage[]; path: string[]; selected: number;
+  pages: KeypadPage[]; allPages: KeypadPage[]; path: string[]; selected: number;
   onSelect(control: number): void; onNavigate(path: string[]): void;
 }
 
-export function KeypadScreen({ profileName, pages, allPages, path, selected, onSelect, onNavigate }: Props) {
+export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavigate }: Props) {
   const page = pages.at(-1)!;
   const depth = keypadDepth(path);
   return <section className="keypad-screen" aria-label="Keypad screen preview">
     <nav className="keypad-breadcrumbs" aria-label="Keypad folders">
-      <button onClick={() => onNavigate(['root'])}>{profileName}</button>
-      {pages.map((item, index) => <span key={item.id}><ChevronRight size={13} aria-hidden="true" /><button aria-current={index === pages.length - 1 ? 'page' : undefined} onClick={() => onNavigate(path.slice(0, index + 1))}>{item.name}</button></span>)}
+      {/* The root page is the first crumb; no separate profile-name crumb. */}
+      {pages.map((item, index) => <span key={item.id}>{index > 0 && <ChevronRight size={13} aria-hidden="true" />}<button aria-current={index === pages.length - 1 ? 'page' : undefined} onClick={() => onNavigate(path.slice(0, index + 1))}>{item.name}</button></span>)}
     </nav>
     <div className="keypad-tiles" role="group" aria-label={`${page.name} keys`}>
       {page.slots.map((slot, control) => {

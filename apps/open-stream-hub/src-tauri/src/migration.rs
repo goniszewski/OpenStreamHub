@@ -1,4 +1,4 @@
-use crate::store::{MAX_PROFILES, validate_id};
+use crate::store::{MAX_PROFILES, is_hidden_entry, validate_id};
 use cooltek_sdk_service::Profile;
 use std::{
     fs::{self, File, FileTimes, OpenOptions},
@@ -113,13 +113,18 @@ fn snapshots(directory: &Path) -> Result<Vec<Snapshot>, String> {
         .map_err(|error| format!("could not read legacy profile storage: {error}"))?;
     let mut snapshots = Vec::new();
     for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("could not read legacy profile entry: {error}"))?;
+        // Hidden entries such as .DS_Store are never profiles. They are not
+        // copied, and the legacy store is never modified.
+        if is_hidden_entry(&entry.file_name()) {
+            continue;
+        }
         if snapshots.len() == MAX_PROFILES {
             return Err(format!(
                 "legacy profile storage exceeds {MAX_PROFILES} profiles"
             ));
         }
-        let entry =
-            entry.map_err(|error| format!("could not read legacy profile entry: {error}"))?;
         let filename = entry
             .file_name()
             .into_string()
@@ -273,7 +278,7 @@ mod tests {
         let modified = fs::metadata(&old_file).unwrap().modified().unwrap();
         let store = ProfileStore::open_for_app_data(new_app.clone()).unwrap();
         let new_file = new_app.join("profiles").join(format!("{id}.json"));
-        assert_eq!(store.bootstrap().unwrap().profile.id, id);
+        assert_eq!(store.bootstrap().unwrap().profile.unwrap().id, id);
         assert_eq!(fs::read(&new_file).unwrap(), bytes);
         assert_eq!(
             fs::metadata(&new_file).unwrap().modified().unwrap(),
@@ -316,14 +321,36 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_filenames_and_partial_entries_are_not_silently_migrated_or_seeded() {
-        for filename in ["invalid-id.json", ".interrupted.tmp"] {
+    fn unexpected_filenames_are_not_silently_migrated_or_seeded() {
+        for filename in ["invalid-id.json", "notes.txt"] {
             let (_temporary, legacy, new_app) = paths();
             fs::write(legacy.join(filename), profile_bytes("Legacy")).unwrap();
             assert!(ProfileStore::open_for_app_data(new_app.clone()).is_err());
             assert!(!new_app.join("profiles").exists());
             assert!(legacy.join(filename).exists());
         }
+    }
+
+    #[test]
+    fn hidden_legacy_entries_are_skipped_without_aborting_or_being_copied() {
+        let (_temporary, legacy, new_app) = paths();
+        let id = Uuid::new_v4().to_string();
+        let bytes = profile_bytes("Legacy");
+        fs::write(legacy.join(format!("{id}.json")), &bytes).unwrap();
+        for name in [".DS_Store", "._sidecar.json", ".interrupted.tmp"] {
+            fs::write(legacy.join(name), b"hidden").unwrap();
+        }
+        let store = ProfileStore::open_for_app_data(new_app.clone()).unwrap();
+        let bootstrap = store.bootstrap().unwrap();
+        assert_eq!(bootstrap.profile.unwrap().id, id);
+        assert!(bootstrap.unreadable.is_empty());
+        let migrated: Vec<_> = fs::read_dir(new_app.join("profiles"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(migrated, vec![format!("{id}.json")]);
+        assert_eq!(fs::read(legacy.join(".DS_Store")).unwrap(), b"hidden");
+        assert_eq!(fs::read_dir(&legacy).unwrap().count(), 4);
     }
 
     #[test]

@@ -5,10 +5,14 @@ fn main() {
             "list_profiles",
             "load_profile",
             "save_profile",
+            "delete_profile",
             "validate_profile",
             "replay_demo",
             "preview_binding",
             "preview_keypad",
+            "list_live_devices",
+            "start_feed",
+            "stop_feed",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

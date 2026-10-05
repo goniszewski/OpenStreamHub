@@ -1,0 +1,27 @@
+[
+  {
+    "feed_id": "demo:faders",
+    "module": "m005s",
+    "source": "demo",
+    "state": "running"
+  },
+  {
+    "feed_id": "demo:faders",
+    "module": "m005s",
+    "source": "demo",
+    "state": "finished"
+  },
+  {
+    "feed_id": "demo:dial",
+    "module": "m131e",
+    "source": "demo",
+    "state": "stopped"
+  },
+  {
+    "error": "could not open the module: example. Another program (for example masterhub-service) may be holding the device.",
+    "feed_id": "live:2f6465762f6869647261773130",
+    "module": null,
+    "source": "live",
+    "state": "failed"
+  }
+]

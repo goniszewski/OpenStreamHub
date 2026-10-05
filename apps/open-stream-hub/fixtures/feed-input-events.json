@@ -1,0 +1,27 @@
+[
+  {
+    "event": {
+      "control": 0,
+      "gesture": "position_changed",
+      "timestamp_micros": 1000,
+      "value": {
+        "maximum": 100,
+        "raw": 0,
+        "type": "position"
+      }
+    },
+    "feed_id": "demo:faders",
+    "module": "m005s",
+    "serial_number": null
+  },
+  {
+    "event": {
+      "control": 0,
+      "gesture": "clockwise",
+      "timestamp_micros": 1000
+    },
+    "feed_id": "demo:knobs",
+    "module": "m003k",
+    "serial_number": null
+  }
+]

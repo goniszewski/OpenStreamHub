@@ -1,0 +1,44 @@
+[
+  {
+    "execute": true,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "starting"
+  },
+  {
+    "execute": true,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "running"
+  },
+  {
+    "execute": true,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "stopping"
+  },
+  {
+    "execute": true,
+    "exit_code": 0,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "exited",
+    "stderr_tail": ""
+  },
+  {
+    "execute": true,
+    "exit_code": 1,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "exited",
+    "stderr_tail": "masterhub-service: no HID interface matches the selected path\n"
+  },
+  {
+    "execute": true,
+    "exit_code": null,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "exited",
+    "stderr_tail": ""
+  },
+  {
+    "error": "could not find masterhub-service. Checked: /Applications/OpenStreamHub.app/Contents/MacOS/masterhub-service. Build it with `cargo build -p cooltek-sdk-cli --bin masterhub-service` or set OPEN_STREAM_HUB_SERVICE to its path.",
+    "execute": true,
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "state": "failed"
+  }
+]

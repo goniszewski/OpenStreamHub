@@ -2,6 +2,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
+import { ServiceRunner } from './service-runner';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, RotateCcw, Save, Settings, Sun, Workflow, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
@@ -29,7 +30,8 @@ export default function App() {
     try { created.setAutoDetect(readAutoDetect(localStorage)); } catch { /* auto-detect stays on by default */ }
     return created;
   });
-  useEffect(() => { feed.connect(); return () => feed.dispose(); }, [feed]);
+  const [runner] = useState(() => new ServiceRunner((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop));
+  useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); return () => { feed.dispose(); runner.dispose(); }; }, [feed, runner]);
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const [page, setPage] = useState<Page>('devices');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
@@ -118,7 +120,7 @@ export default function App() {
 
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} />
-          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} />
+          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} />
           <Inspector editor={editor} session={session} state={state} disabled={disabled} />
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} />}

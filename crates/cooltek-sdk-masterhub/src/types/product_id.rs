@@ -45,7 +45,7 @@ impl TryFrom<u16> for ProductId {
 
 impl std::fmt::Display for ProductId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        write!(f, "{:#06x}", self.0)
     }
 }
 
@@ -78,6 +78,13 @@ impl std::fmt::Display for ProductIdError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn displays_as_zero_padded_hex() {
+        assert_eq!(ProductId::new(0x01f6).unwrap().to_string(), "0x01f6");
+        assert_eq!(ProductId::new(0x2516).unwrap().to_string(), "0x2516");
+        assert_eq!(ProductId::new(0x0001).unwrap().to_string(), "0x0001");
+    }
 
     mod new {
         use super::*;

@@ -61,6 +61,23 @@ impl fmt::Display for M131EInputError {
 
 impl std::error::Error for M131EInputError {}
 
+impl From<super::FrameError> for M131EInputError {
+    fn from(error: super::FrameError) -> Self {
+        match error {
+            super::FrameError::ShortHeader { required, received } => {
+                Self::ShortHeader { required, received }
+            }
+            super::FrameError::TruncatedPayload {
+                declared,
+                available,
+            } => Self::TruncatedPayload {
+                declared,
+                available,
+            },
+        }
+    }
+}
+
 /// A recognized M131E outer frame or an uninterpreted raw HID report.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum M131EReport<'a> {
@@ -90,42 +107,13 @@ pub enum M131EReport<'a> {
 ///
 /// Returns [`M131EInputError`] for incomplete known headers and payloads.
 pub fn parse_m131e_report(raw: &[u8]) -> Result<M131EReport<'_>, M131EInputError> {
-    let Some(&report_id) = raw.first() else {
-        return Err(M131EInputError::ShortHeader {
-            required: 1,
-            received: 0,
-        });
-    };
-    if report_id != 0x01 {
-        return Ok(M131EReport::Unknown { raw });
-    }
-    let Some(&class) = raw.get(1) else {
-        return Err(M131EInputError::ShortHeader {
-            required: 2,
-            received: raw.len(),
-        });
-    };
-    let queue = match class {
-        0x44 | 0x45 | 0x47 => class - 0x44,
-        _ => return Ok(M131EReport::Unknown { raw }),
-    };
-    if raw.len() < 4 {
-        return Err(M131EInputError::ShortHeader {
-            required: 4,
-            received: raw.len(),
-        });
-    }
-    let declared = u16::from_le_bytes([raw[2], raw[3]]) as usize;
-    let available = raw.len() - 4;
-    if declared > available {
-        return Err(M131EInputError::TruncatedPayload {
-            declared,
-            available,
-        });
-    }
-    Ok(M131EReport::Known {
-        queue,
-        payload: &raw[4..4 + declared],
+    let framed = super::parse_length_prefixed(raw, |class| match class {
+        0x44 | 0x45 | 0x47 => Some(class - 0x44),
+        _ => None,
+    })?;
+    Ok(match framed {
+        Some((queue, payload)) => M131EReport::Known { queue, payload },
+        None => M131EReport::Unknown { raw },
     })
 }
 

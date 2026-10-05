@@ -3,8 +3,9 @@ use std::marker::PhantomData;
 use hidapi::{HidApi, HidError};
 
 use crate::{
-    DeviceRegistry, Module, ModuleIdentity, ProductId,
+    DeviceRegistry, Module, ModuleIdentity,
     hid::handle_state::{Connected, Disconnected, HandleState},
+    module::matches_module,
 };
 
 /// Serves as a strongly-typed wrapper around [`Module`] information and functionality.
@@ -95,6 +96,13 @@ impl<M: Module> ModuleHandle<M> {
     ///
     /// In the event that multiple instances of a module are connected to the host, this function
     /// will connect to the first instance found.
+    ///
+    /// A module may enumerate several HID interfaces or top-level collections under one
+    /// VID/PID. Among matches, the first entry on a vendor-defined usage page
+    /// (`0xff00..=0xffff`), which carries the vendor feature/output reports, is preferred;
+    /// otherwise the first VID/PID match is used. To select an exact interface, use
+    /// [`Self::connect_by_identity`] with a [`DeviceRegistry`] snapshot.
+    ///
     /// It also invokes module initialization, which may send software-mode commands.
     /// For explicit selection without initialization, use [`Self::open_by_identity`].
     ///
@@ -107,12 +115,15 @@ impl<M: Module> ModuleHandle<M> {
     /// ```
     pub fn connect(self) -> Result<ModuleHandle<M, Connected>, HidError> {
         let context = HidApi::new()?;
-        let selected = context
-            .device_list()
-            .find(|device| matches_module::<M>(device.vendor_id(), device.product_id()))
-            .ok_or_else(|| HidError::HidApiError {
-                message: "No matching module is present in the HID inventory".into(),
-            })?;
+        let selected = preferred_interface(
+            context
+                .device_list()
+                .filter(|device| matches_module::<M>(device.vendor_id(), device.product_id())),
+            |device| device.usage_page(),
+        )
+        .ok_or_else(|| HidError::HidApiError {
+            message: "No matching module is present in the HID inventory".into(),
+        })?;
         let device = selected.open_device(&context)?;
         M::initialize(&device)?;
 
@@ -157,9 +168,22 @@ impl<M: Module> ModuleHandle<M> {
     }
 }
 
-fn matches_module<M: Module>(vendor_id: u16, product_id: u16) -> bool {
-    vendor_id == u16::from(M::VENDOR_ID)
-        && ProductId::new(product_id).is_ok_and(M::accepts_product_id)
+/// First HID usage page reserved for vendor-defined usages.
+const VENDOR_USAGE_PAGE: u16 = 0xff00;
+
+/// Picks the first vendor-usage-page candidate, else the first candidate.
+fn preferred_interface<T>(
+    candidates: impl Iterator<Item = T>,
+    usage_page: impl Fn(&T) -> u16,
+) -> Option<T> {
+    let mut fallback = None;
+    for candidate in candidates {
+        if usage_page(&candidate) >= VENDOR_USAGE_PAGE {
+            return Some(candidate);
+        }
+        fallback.get_or_insert(candidate);
+    }
+    fallback
 }
 
 // Functionality available to any module in the Connected state.
@@ -305,8 +329,13 @@ impl ModuleHandle<crate::modules::M131E, Connected> {
     }
 
     /// Transfers ownership into an explicit lifecycle/input session without I/O.
+    ///
+    /// The handle may already be in software mode (for example after
+    /// [`ModuleHandle::connect`]), so the session's
+    /// [`shutdown`](crate::DialSession::shutdown) restores hardware mode even
+    /// if [`activate`](crate::DialSession::activate) was never called.
     pub fn into_dial_session(self) -> crate::DialSession<hidapi::HidDevice> {
-        crate::DialSession::new(self.data)
+        crate::DialSession::from_possibly_software_mode(self.data)
     }
 }
 
@@ -326,5 +355,17 @@ mod identity_tests {
         assert!(matches_module::<M0064>(0x2516, 0x9999));
         assert!(!matches_module::<M131E>(0x2516, 0));
         assert!(!matches_module::<M131E>(0x2516, 0xffff));
+    }
+
+    #[test]
+    fn connect_prefers_the_vendor_usage_page_interface() {
+        let pick = |pages: &[u16]| {
+            preferred_interface(pages.iter().copied().enumerate(), |(_, page)| *page)
+                .map(|(index, _)| index)
+        };
+        assert_eq!(pick(&[0x0001, 0x000c, 0xff00, 0xff01]), Some(2));
+        assert_eq!(pick(&[0xffa0, 0xff00]), Some(0));
+        assert_eq!(pick(&[0x0001, 0x000c]), Some(0));
+        assert_eq!(pick(&[]), None);
     }
 }

@@ -21,19 +21,28 @@ pub enum ModuleKind {
 
 impl ModuleKind {
     /// Recognizes an official VID/PID without opening the device.
-    pub const fn from_ids(vendor_id: u16, product_id: u16) -> Option<Self> {
-        if vendor_id != 0x2516 {
-            return None;
-        }
-        match product_id {
-            0x01f6 | 0x9999 => Some(Self::M0064),
-            0x0202 | 0x9996 => Some(Self::M003K),
-            0x0200 | 0x9991 => Some(Self::M005S),
-            0x0204 | 0x9995 => Some(Self::M032LE),
-            0x0206 | 0x9994 => Some(Self::M131E),
-            0x01fe | 0x9997 => Some(Self::M4315),
-            _ => None,
-        }
+    ///
+    /// Recognition is delegated to each module's [`crate::Module`] implementation
+    /// (`VENDOR_ID` and `accepts_product_id`), so IDs are defined in one place.
+    pub fn from_ids(vendor_id: u16, product_id: u16) -> Option<Self> {
+        use crate::{
+            module::matches_module,
+            modules::{M003K, M005S, M032LE, M0064, M131E, M4315},
+        };
+
+        type Matcher = fn(u16, u16) -> bool;
+        let candidates: [(Self, Matcher); 6] = [
+            (Self::M0064, matches_module::<M0064>),
+            (Self::M003K, matches_module::<M003K>),
+            (Self::M005S, matches_module::<M005S>),
+            (Self::M032LE, matches_module::<M032LE>),
+            (Self::M131E, matches_module::<M131E>),
+            (Self::M4315, matches_module::<M4315>),
+        ];
+        candidates
+            .into_iter()
+            .find(|(_, matches)| matches(vendor_id, product_id))
+            .map(|(kind, _)| kind)
     }
 
     /// Returns the model identifier used by SDK metadata and capture files.
@@ -62,6 +71,8 @@ pub struct ModuleIdentity {
     /// USB product identifier.
     pub product_id: u16,
     /// USB enumeration serial, which may differ from vendor feature-report serials.
+    ///
+    /// Empty or whitespace-only enumeration strings are normalized to `None`.
     pub serial_number: Option<String>,
     /// Manufacturer string returned by enumeration.
     pub manufacturer_string: Option<String>,
@@ -85,7 +96,7 @@ impl From<&DeviceInfo> for ModuleIdentity {
             path: device.path().to_owned(),
             vendor_id: device.vendor_id(),
             product_id: device.product_id(),
-            serial_number: device.serial_number().map(str::to_owned),
+            serial_number: normalize_serial(device.serial_number()),
             manufacturer_string: device.manufacturer_string().map(str::to_owned),
             product_string: device.product_string().map(str::to_owned),
             release_number: device.release_number(),
@@ -94,6 +105,32 @@ impl From<&DeviceInfo> for ModuleIdentity {
             usage: device.usage(),
             module: ModuleKind::from_ids(device.vendor_id(), device.product_id()),
         }
+    }
+}
+
+/// Treats a missing, empty, or whitespace-only serial as unavailable.
+///
+/// Some HIDAPI backends report `Some("")` for devices without a serial, which
+/// would otherwise never match a serial-bound profile or a wildcard-as-`None`.
+fn normalize_serial(serial: Option<&str>) -> Option<String> {
+    serial
+        .filter(|serial| !serial.trim().is_empty())
+        .map(str::to_owned)
+}
+
+impl ModuleIdentity {
+    /// Compares only fields that identify the physical interface.
+    ///
+    /// Path, VID/PID, serial, and interface number must match. Usage page,
+    /// usage, strings, and release number are excluded: backends may report a
+    /// different top-level collection or string set for an opened device than
+    /// for its enumeration entry.
+    fn same_physical_interface(&self, other: &Self) -> bool {
+        self.path == other.path
+            && self.vendor_id == other.vendor_id
+            && self.product_id == other.product_id
+            && self.serial_number == other.serial_number
+            && self.interface_number == other.interface_number
     }
 }
 
@@ -133,18 +170,37 @@ impl DeviceRegistry {
     /// Rejects identities absent from this context rather than falling back to a
     /// different VID/PID match. Physical removal may still cause an HID open error.
     pub fn open(&self, identity: &ModuleIdentity) -> HidResult<HidDevice> {
-        validate_identity(identity, &self.devices())?;
-        let device = self.api.open_path(&identity.path)?;
-        // A path can be reused after reattachment. Verify the opened interface
-        // before a caller can send initialization to the wrong physical device.
-        let opened = ModuleIdentity::from(&device.get_device_info()?);
-        validate_identity(identity, &[opened])?;
-        Ok(device)
+        open_verified(
+            identity,
+            &self.devices(),
+            |path| self.api.open_path(path),
+            |device| Ok(ModuleIdentity::from(&device.get_device_info()?)),
+        )
     }
 }
 
+/// Opens `identity` and verifies the opened device's physical identity.
+///
+/// Separated from HIDAPI so the verification can be tested with fake devices.
+fn open_verified<D>(
+    identity: &ModuleIdentity,
+    current: &[ModuleIdentity],
+    open: impl FnOnce(&std::ffi::CStr) -> HidResult<D>,
+    device_info: impl FnOnce(&D) -> HidResult<ModuleIdentity>,
+) -> HidResult<D> {
+    validate_identity(identity, current)?;
+    let device = open(&identity.path)?;
+    // A path can be reused after reattachment. Verify the opened interface
+    // before a caller can send initialization to the wrong physical device.
+    validate_identity(identity, &[device_info(&device)?])?;
+    Ok(device)
+}
+
 fn validate_identity(identity: &ModuleIdentity, current: &[ModuleIdentity]) -> HidResult<()> {
-    if current.contains(identity) {
+    if current
+        .iter()
+        .any(|candidate| candidate.same_physical_interface(identity))
+    {
         Ok(())
     } else {
         Err(HidError::HidApiError {
@@ -187,6 +243,62 @@ mod tests {
         assert_eq!(selected.path.as_bytes(), b"path-\xff");
         assert!(validate_identity(&selected, std::slice::from_ref(&selected)).is_ok());
         assert!(validate_identity(&identity(b"path-\xff", 0), &[selected]).is_err());
+    }
+
+    #[test]
+    fn open_verification_ignores_usage_and_strings_but_not_physical_identity() {
+        let selected = identity(b"dev", 1);
+        let current = [selected.clone()];
+        let open = |info: ModuleIdentity| {
+            open_verified(
+                &selected,
+                &current,
+                |path| {
+                    assert_eq!(path.to_bytes(), b"dev");
+                    Ok(())
+                },
+                move |_| Ok(info),
+            )
+        };
+
+        // get_device_info() may report another top-level collection or strings.
+        let mut cosmetic = selected.clone();
+        cosmetic.usage_page = 0x0001;
+        cosmetic.usage = 6;
+        cosmetic.manufacturer_string = Some("Cooler Master".into());
+        cosmetic.product_string = Some("MasterHUB".into());
+        cosmetic.release_number = 2;
+        assert!(open(cosmetic).is_ok());
+
+        let mut other_serial = selected.clone();
+        other_serial.serial_number = Some("other".into());
+        let mut other_interface = selected.clone();
+        other_interface.interface_number = 0;
+        let mut other_product = selected.clone();
+        other_product.product_id = 0x0206;
+        let mut other_path = selected.clone();
+        other_path.path = CString::new("other").unwrap();
+        for changed in [other_serial, other_interface, other_product, other_path] {
+            assert!(open(changed).is_err());
+        }
+
+        // An absent selection never reaches the open callback.
+        let result = open_verified(
+            &identity(b"gone", 1),
+            &current,
+            |_| -> HidResult<()> { panic!("must not open an absent identity") },
+            |_| Ok(selected.clone()),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn blank_enumeration_serials_are_unavailable() {
+        assert_eq!(normalize_serial(None), None);
+        assert_eq!(normalize_serial(Some("")), None);
+        assert_eq!(normalize_serial(Some("  \t")), None);
+        assert_eq!(normalize_serial(Some("A1")), Some("A1".into()));
+        assert_eq!(normalize_serial(Some(" A1 ")), Some(" A1 ".into()));
     }
 
     #[test]

@@ -66,13 +66,56 @@ pub fn output_report_length<T: ReportTransport + ?Sized>(
     report_id: u8,
 ) -> HidResult<usize> {
     let mut descriptor = [0; hidapi::MAX_REPORT_DESCRIPTOR_SIZE];
-    let length = transport.get_report_descriptor(&mut descriptor)?;
-    if length == 0 || length > descriptor.len() {
+    crate::descriptor::output_report_length(read_descriptor(transport, &mut descriptor)?, report_id)
+}
+
+/// Queries and parses a descriptor to obtain a feature length including its ID.
+pub fn feature_report_length<T: ReportTransport + ?Sized>(
+    transport: &T,
+    report_id: u8,
+) -> HidResult<usize> {
+    let mut descriptor = [0; hidapi::MAX_REPORT_DESCRIPTOR_SIZE];
+    crate::descriptor::feature_report_length(
+        read_descriptor(transport, &mut descriptor)?,
+        report_id,
+    )
+}
+
+/// Rejects a fixed-size feature command whose descriptor declares another size.
+///
+/// The SDK builds feature commands with a fixed length (32 bytes, including the
+/// report ID). Sending them to an interface declaring a different length would
+/// be truncated or padded by the OS, so a positive mismatch is an error. When
+/// the descriptor cannot be read or does not declare `report_id` as a feature
+/// report, the check is inconclusive and passes: these declarations are not yet
+/// verified on hardware, and a guess must not block otherwise working devices.
+pub(crate) fn check_feature_report_length<T: ReportTransport + ?Sized>(
+    transport: &T,
+    report_id: u8,
+    expected: usize,
+) -> HidResult<()> {
+    match feature_report_length(transport, report_id) {
+        Ok(declared) if declared != expected => Err(HidError::HidApiError {
+            message: format!(
+                "Feature report {report_id:#04x} is declared as {declared} bytes by the HID \
+                 descriptor, but the SDK sends fixed {expected}-byte feature reports"
+            ),
+        }),
+        _ => Ok(()),
+    }
+}
+
+fn read_descriptor<'a, T: ReportTransport + ?Sized>(
+    transport: &T,
+    buffer: &'a mut [u8],
+) -> HidResult<&'a [u8]> {
+    let length = transport.get_report_descriptor(buffer)?;
+    if length == 0 || length > buffer.len() {
         return Err(HidError::HidApiError {
             message: "Transport returned an invalid report descriptor length".into(),
         });
     }
-    crate::descriptor::output_report_length(&descriptor[..length], report_id)
+    Ok(&buffer[..length])
 }
 
 /// A single-owner input reader with bounded read timeouts and a reusable buffer.
@@ -189,6 +232,70 @@ mod tests {
         let mut reader = InputReader::new(Fake(RefCell::new(VecDeque::new())));
         assert!(reader.read_input(0).is_err());
         assert!(reader.read_input(-1).is_err());
+    }
+
+    struct DescriptorFake(Result<Vec<u8>, usize>);
+
+    impl ReportTransport for DescriptorFake {
+        fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+            panic!("descriptor queries must not read input")
+        }
+        fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
+            panic!("descriptor queries must not fetch feature reports")
+        }
+        fn send_feature_report(&self, _: &[u8]) -> HidResult<()> {
+            panic!("descriptor queries must not write")
+        }
+        fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            match &self.0 {
+                Ok(bytes) => {
+                    buffer[..bytes.len()].copy_from_slice(bytes);
+                    Ok(bytes.len())
+                }
+                // Simulates a backend claiming an impossible length.
+                Err(extra) => Ok(buffer.len() + extra),
+            }
+        }
+    }
+
+    const DESCRIPTOR: [u8; 14] = [
+        0x75, 0x08, // Report Size (8)
+        0x85, 0x02, 0x95, 0x3f, 0x91, 0x02, // ID 2: 63-byte output
+        0x85, 0x03, 0x95, 0x1f, 0xb1, 0x02, // ID 3: 31-byte feature
+    ];
+
+    #[test]
+    fn descriptor_lengths_reject_zero_and_overlong_transport_results() {
+        for fake in [
+            DescriptorFake(Ok(Vec::new())),
+            DescriptorFake(Err(1)),
+            DescriptorFake(Err(1000)),
+        ] {
+            let output = output_report_length(&fake, 2).unwrap_err().to_string();
+            assert!(output.contains("invalid report descriptor length"));
+            let feature = feature_report_length(&fake, 3).unwrap_err().to_string();
+            assert!(feature.contains("invalid report descriptor length"));
+            // Inconclusive descriptors do not block fixed-size commands.
+            check_feature_report_length(&fake, 3, 32).unwrap();
+        }
+        let exact = DescriptorFake(Ok(vec![0x75, 0x08, 0x95, 0x01, 0x91, 0x02]));
+        assert_eq!(output_report_length(&exact, 0).unwrap(), 2);
+    }
+
+    #[test]
+    fn descriptor_lengths_are_derived_per_report_type() {
+        let fake = DescriptorFake(Ok(DESCRIPTOR.to_vec()));
+        assert_eq!(output_report_length(&fake, 2).unwrap(), 64);
+        assert_eq!(feature_report_length(&fake, 3).unwrap(), 32);
+        assert!(feature_report_length(&fake, 2).is_err());
+        check_feature_report_length(&fake, 3, 32).unwrap();
+        let mismatch = check_feature_report_length(&fake, 3, 16)
+            .unwrap_err()
+            .to_string();
+        assert!(mismatch.contains("declared as 32 bytes"));
+        assert!(mismatch.contains("fixed 16-byte"));
+        // An undeclared feature ID is inconclusive rather than fatal.
+        check_feature_report_length(&fake, 4, 32).unwrap();
     }
 
     #[test]

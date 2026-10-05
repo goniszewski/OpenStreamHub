@@ -240,13 +240,7 @@ pub fn read_firmware_info<T: ReportTransport + ?Sized>(
 /// zero by deliberate policy; the native SDK reuses a buffer and does not assign
 /// these fields. Their device-side requirements remain unknown.
 #[derive(Clone, Debug)]
-pub struct JpegPackets<'a> {
-    jpeg: &'a [u8],
-    report_length: usize,
-    capacity: usize,
-    offset: usize,
-    sequence: u32,
-}
+pub struct JpegPackets<'a>(crate::jpeg::JpegChunks<'a>);
 
 impl<'a> JpegPackets<'a> {
     /// Validates the complete image and output length before constructing packets.
@@ -260,35 +254,15 @@ impl<'a> JpegPackets<'a> {
     /// [`MAX_JPEG_LENGTH`], output lengths without payload capacity,
     /// report lengths exceeding `u16`, or more than 65,536 chunks.
     pub fn new(jpeg: &'a [u8], output_report_length: usize) -> HidResult<Self> {
-        if output_report_length > usize::from(u16::MAX) {
-            return Err(invalid(
-                "Dial output report length exceeds the 16-bit HID descriptor length",
-            ));
-        }
-        let capacity = output_report_length
-            .checked_sub(8)
-            .filter(|&length| length > 0)
-            .ok_or_else(|| {
-                invalid("Dial output length must contain payload capacity after its 8-byte header")
-            })?;
+        let chunks = crate::jpeg::JpegChunks::new(jpeg, 0x45, 0, output_report_length, "Dial")?;
         validate_jpeg(jpeg)?;
-        if jpeg.len().div_ceil(capacity) > usize::from(u16::MAX) + 1 {
-            return Err(invalid(
-                "Dial image would overflow the 16-bit chunk sequence",
-            ));
-        }
-        Ok(Self {
-            jpeg,
-            report_length: output_report_length,
-            capacity,
-            offset: 0,
-            sequence: 0,
-        })
+        chunks.check_sequence_limit("Dial")?;
+        Ok(Self(chunks))
     }
 
     /// Returns the complete output report length, including its report ID.
     pub fn output_report_length(&self) -> usize {
-        self.report_length
+        self.0.output_report_length()
     }
 }
 
@@ -296,26 +270,11 @@ impl Iterator for JpegPackets<'_> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let remaining = self.jpeg.len() - self.offset;
-        if remaining == 0 {
-            return None;
-        }
-        let payload_length = remaining.min(self.capacity);
-        let mut report = vec![0; self.report_length];
-        report[..2].copy_from_slice(&[0x02, 0x45]);
-        report[2..4].copy_from_slice(&(self.sequence as u16).to_le_bytes());
-        report[4..6].copy_from_slice(&(payload_length as u16).to_le_bytes());
-        report[7] = u8::from(remaining <= self.capacity);
-        report[8..8 + payload_length]
-            .copy_from_slice(&self.jpeg[self.offset..self.offset + payload_length]);
-        self.offset += payload_length;
-        self.sequence += 1;
-        Some(report)
+        self.0.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = (self.jpeg.len() - self.offset).div_ceil(self.capacity);
-        (remaining, Some(remaining))
+        self.0.size_hint()
     }
 }
 
@@ -337,9 +296,31 @@ pub fn display_jpeg<T: ReportTransport + ?Sized>(
     jpeg: &[u8],
     output_report_length: usize,
 ) -> HidResult<usize> {
+    display_jpeg_with_pacing(transport, jpeg, output_report_length, |_| {})
+}
+
+/// Like [`display_jpeg`], with a caller hook run between consecutive reports.
+///
+/// `between_chunks` receives the number of reports already written and runs
+/// after each successful write except the last; it is not called for a
+/// single-report image or after a failure. Use it to insert an inter-chunk
+/// delay (for example `|_| std::thread::sleep(pause)`). Device pacing
+/// requirements are unverified; [`display_jpeg`] inserts no delay.
+///
+/// # Errors
+/// Same as [`display_jpeg`].
+pub fn display_jpeg_with_pacing<T: ReportTransport + ?Sized>(
+    transport: &T,
+    jpeg: &[u8],
+    output_report_length: usize,
+    mut between_chunks: impl FnMut(usize),
+) -> HidResult<usize> {
     let packets = JpegPackets::new(jpeg, output_report_length)?;
     let count = packets.len();
-    for report in packets {
+    for (index, report) in packets.enumerate() {
+        if index > 0 {
+            between_chunks(index);
+        }
         let written = transport.write_output(&report)?;
         if written != report.len() {
             return Err(invalid(format!(
@@ -674,6 +655,32 @@ mod tests {
             assert!(JpegPackets::new(&jpeg[..length], 72).is_err());
         }
         assert!(fake.output_writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn pacing_hook_runs_only_between_successful_chunks() {
+        let jpeg = real_jpeg();
+        let fake = Fake::default();
+        let mut calls = Vec::new();
+        let count = display_jpeg_with_pacing(&fake, &jpeg, 72, |sent| {
+            assert_eq!(fake.output_writes.borrow().len(), sent);
+            calls.push(sent);
+        })
+        .unwrap();
+        assert_eq!(calls, (1..count).collect::<Vec<_>>());
+
+        let single = Fake::default();
+        let mut called = false;
+        display_jpeg_with_pacing(&single, &jpeg, jpeg.len() + 8, |_| called = true).unwrap();
+        assert!(!called);
+
+        let failing = Fake {
+            output_results: RefCell::new(VecDeque::from([Ok(72), Ok(1)])),
+            ..Fake::default()
+        };
+        let mut calls = 0;
+        assert!(display_jpeg_with_pacing(&failing, &jpeg, 72, |_| calls += 1).is_err());
+        assert_eq!(calls, 1);
     }
 
     #[test]

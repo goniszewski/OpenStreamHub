@@ -13,6 +13,108 @@ fn invalid(message: impl Into<String>) -> HidError {
     }
 }
 
+/// Shared descriptor-sized JPEG output-report chunker for IPS modules.
+///
+/// Each report is `[0x02, command, seq_lo, seq_hi, len_lo, len_hi, byte6, last]`
+/// followed by up to `report_length - 8` payload bytes and zero padding. Every
+/// report is freshly zero-filled. Validation happens in [`Self::new`] before
+/// any bytes are produced.
+#[derive(Clone, Debug)]
+pub(crate) struct JpegChunks<'a> {
+    jpeg: &'a [u8],
+    command: u8,
+    byte6: u8,
+    report_length: usize,
+    capacity: usize,
+    offset: usize,
+    sequence: u32,
+}
+
+impl<'a> JpegChunks<'a> {
+    /// Validates the report length and chunk count; the caller validates the image.
+    ///
+    /// `module_name` prefixes error messages.
+    pub(crate) fn new(
+        jpeg: &'a [u8],
+        command: u8,
+        byte6: u8,
+        output_report_length: usize,
+        module_name: &str,
+    ) -> HidResult<Self> {
+        if output_report_length > usize::from(u16::MAX) {
+            return Err(invalid(format!(
+                "{module_name} output report length exceeds the 16-bit HID descriptor length"
+            )));
+        }
+        let capacity = output_report_length
+            .checked_sub(8)
+            .filter(|&length| length > 0)
+            .ok_or_else(|| {
+                invalid(format!(
+                    "{module_name} output length must contain payload capacity after its 8-byte header"
+                ))
+            })?;
+        Ok(Self {
+            jpeg,
+            command,
+            byte6,
+            report_length: output_report_length,
+            capacity,
+            offset: 0,
+            sequence: 0,
+        })
+    }
+
+    /// Rejects plans that would wrap the 16-bit sequence number.
+    pub(crate) fn check_sequence_limit(&self, module_name: &str) -> HidResult<()> {
+        if self.jpeg.len().div_ceil(self.capacity) > usize::from(u16::MAX) + 1 {
+            return Err(invalid(format!(
+                "{module_name} image would overflow the 16-bit chunk sequence"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn output_report_length(&self) -> usize {
+        self.report_length
+    }
+
+    pub(crate) fn jpeg_length(&self) -> usize {
+        self.jpeg.len()
+    }
+}
+
+impl Iterator for JpegChunks<'_> {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let remaining = self.jpeg.len() - self.offset;
+        if remaining == 0 {
+            return None;
+        }
+        let payload_length = remaining.min(self.capacity);
+        let mut report = vec![0; self.report_length];
+        report[..2].copy_from_slice(&[0x02, self.command]);
+        report[2..4].copy_from_slice(&(self.sequence as u16).to_le_bytes());
+        report[4..6].copy_from_slice(&(payload_length as u16).to_le_bytes());
+        report[6] = self.byte6;
+        report[7] = u8::from(remaining <= self.capacity);
+        report[8..8 + payload_length]
+            .copy_from_slice(&self.jpeg[self.offset..self.offset + payload_length]);
+        self.offset += payload_length;
+        self.sequence += 1;
+        Some(report)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = (self.jpeg.len() - self.offset).div_ceil(self.capacity);
+        (remaining, Some(remaining))
+    }
+}
+
+impl ExactSizeIterator for JpegChunks<'_> {}
+impl std::iter::FusedIterator for JpegChunks<'_> {}
+
 pub(crate) fn validate(
     jpeg: &[u8],
     module_name: &str,
@@ -162,4 +264,54 @@ fn validate_scan_tail(tail: &[u8]) -> HidResult<()> {
         }
     }
     Err(invalid("JPEG is missing its EOI marker"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rng(mut state: u64) -> impl FnMut() -> u64 {
+        move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        }
+    }
+
+    #[test]
+    fn chunker_places_command_byte6_and_flags() {
+        let jpeg = [0xaa; 5];
+        let reports: Vec<_> = JpegChunks::new(&jpeg, 0x45, 9, 11, "Test")
+            .unwrap()
+            .collect();
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0], [2, 0x45, 0, 0, 3, 0, 9, 0, 0xaa, 0xaa, 0xaa]);
+        assert_eq!(reports[1], [2, 0x45, 1, 0, 2, 0, 9, 1, 0xaa, 0xaa, 0]);
+        for length in [0, 8, 65_536] {
+            assert!(JpegChunks::new(&jpeg, 0x45, 0, length, "Test").is_err());
+        }
+    }
+
+    #[test]
+    fn arbitrary_and_mutated_jpegs_never_panic() {
+        let mut next = rng(0x9e37_79b9_7f4a_7c15);
+        let base: &[u8] = include_bytes!("../tests/fixtures/keypad-72x72-baseline.jpg");
+        validate(base, "Test", 72, 72).unwrap();
+        for _ in 0..5_000 {
+            // Random mutations of a valid image exercise deep parser paths.
+            let mut jpeg = base.to_vec();
+            for _ in 0..1 + next() % 4 {
+                let index = (next() as usize) % jpeg.len();
+                jpeg[index] = next() as u8;
+            }
+            let cut = (next() as usize) % (jpeg.len() + 1);
+            let _ = validate(&jpeg[..cut], "Test", 72, 72);
+            let _ = validate(&jpeg, "Test", 72, 72);
+            // Fully random data starting with the accepted prefix.
+            let mut random = vec![0xff, 0xd8, 0xff, 0xe0];
+            random.extend((0..next() % 96).map(|_| next() as u8));
+            let _ = validate(&random, "Test", 72, 72);
+        }
+    }
 }

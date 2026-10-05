@@ -12,6 +12,7 @@ import { actionLabel, appearanceStorageKey, browserProfile, controlCounts, contr
 import type { Appearance, BindingSelection, ModuleId, Page } from './ui-model';
 import { moduleArtwork } from './module-controls';
 import { KeypadScreen } from './KeypadScreen';
+import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadDepth, keypadIsBack, keypadMaximumDepth, keypadMaximumPages, keypadPagesAtPath, keypadPathToPage, profileBindingCount, renameKeypadAction, renameKeypadPage, upgradeKeypadProfile } from './keypad-model';
 
 const desktop = isTauri();
@@ -406,19 +407,22 @@ export default function App() {
           <section className="workspace" aria-label="Device controls">
             <div className="page-heading"><h1>Your controls</h1><p className="status"><span className="status-dot" />No hardware connected</p></div>
             <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
-              <div className="module-image" style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
+              <div className={`module-image${selected.id === 'm003k' ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
                 <img src={`/modules/${selected.art}.png`} alt="" draggable={false} />
-                {selected.supported && moduleArtwork[selected.id].controls.map(area => <button key={area.control} type="button"
-                  className={`image-control${area.round ? ' round' : ''}${selection.control === area.control ? ' selected' : ''}`}
+                {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={binding?.action} /></div>}
+                {selected.supported && controlCounts[selected.id] > 1 && moduleArtwork[selected.id].controls.map(area => <button key={area.control} type="button"
+                  className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}`}
                   style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
                   aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
                   aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
-                  onClick={() => changeSelection({ ...selection, control: area.control })} />)}
+                  onClick={() => changeSelection({ ...selection, control: area.control })}>
+                  {isKeypad && <KeyDisplayContent slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
+                </button>)}
               </div>
             </div>
             {selected.supported ? <>
               {isKeypad && <KeypadScreen profileName={profile.name} pages={keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => changeSelection({ ...selection, control })} onNavigate={navigateKeypad} />}
-              {!isKeypad && <div className={`control-picker ${selection.module === 'm4315' ? 'key-picker' : ''}`} role="group" aria-label="Control selection">
+              {!isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
                 {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
               </div>}
               <p className="hero-note">{moduleNote(selection.module)}</p>

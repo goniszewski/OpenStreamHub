@@ -1,6 +1,6 @@
 # OpenStreamHub
 
-Open-source control and automation for modular hardware. OpenStreamHub is an independent macOS configuration app for Cooler Master MasterHUB, built with Tauri, React and the CoolTEK Rust service. This first version supports profile editing and device-free action previews. It does not connect to hardware or execute Mac actions.
+Open-source control and automation for modular hardware. OpenStreamHub is an independent macOS configuration app for Cooler Master MasterHUB, built with Tauri, React and the CoolTEK Rust service. It supports profile editing, a live preview of connected modules, device-free action previews, offline display artwork preparation, and running a profile's actions through a supervised `masterhub-service` process. Hardware behavior has not been verified on a device yet.
 
 OpenStreamHub is not affiliated with or endorsed by Cooler Master. MasterHUB identifies the supported hardware, not the app's publisher.
 
@@ -12,6 +12,8 @@ The app requires macOS 12.3 or later. For development, use Node.js 22.12 or late
 npm ci
 npm run desktop
 ```
+
+`npm run desktop` and `npm run desktop:build` first build the `masterhub-service` sidecar (`npm run sidecar`). On a fresh checkout, run `npm run sidecar` once before `cargo test` or `cargo clippy` in `src-tauri`, because Tauri requires the sidecar file to exist. See [building the desktop app](../../docs/building-the-desktop-app.md).
 
 Create a local debug application bundle:
 
@@ -31,16 +33,24 @@ The app is written to `src-tauri/target/debug/bundle/macos/OpenStreamHub.app`. B
 - Preview a selected binding or complete keypad click, or replay any of the five bundled synthetic module captures. Results show normalized events, planned/unbound actions, folder navigation and packet diagnostics. Navigation does not execute a newly displayed action when the original key is released.
 - Preview absolute fader positions as output volume; bind key Press/Release and roller Up/Down events.
 - Switch between system, light and dark appearance.
+- **Rig preview:** arrange module instances in a rig strip. It is drawn from the draft profile, so edits appear as you make them. Connected modules are detected automatically (hot-plug and swap) and show live fader positions, pressed keys and knob rotation through a read-only feed; bundled synthetic captures can drive the same preview. The feed never enables software mode, writes to a device or runs actions.
+- **Run profile:** run the current draft through a supervised `masterhub-service` child process. Dry run is the default; Execute (macOS only) needs an explicit confirmation naming the profile and device, and Stop is always one click. The service uses a snapshot of the draft and does not reload it, so the panel tells you when to restart after edits. On sleep the service is stopped cleanly; after wake, unplug or a crash it reconnects by module and serial. Execute runs never resume automatically and wait for your confirmation. See the [session manager](../../docs/masterhub-session-manager.md).
+- **Profiles:** duplicate, import (file or drop; always creates a new profile) and export (an owner-only JSON file in the app data folder). Search bindings and see warnings for release/short-press overlaps and duplicate selectors. Undo/redo covers draft edits.
+- **Display artwork:** prepare a PNG or JPEG offline for the dial (240×240) or a key (72×72) with fit, rotation, background and quality controls, a live preview inside the module artwork, and an export to the app data folder. Sending images to a module display is not available until display behavior is verified on hardware.
+- **Diagnostic bundle:** Settings can write one local JSON file with app and OS information, USB interfaces and HID descriptors (read without sending anything to a device), an optional short passive input capture, and recent run activity. Serial numbers are hidden by default and nothing is uploaded. See the [diagnostic bundle](../../docs/masterhub-diagnostic-bundle.md).
+- **Shortcuts and notices:** ⌘S saves, ⌘D duplicates, ⌘Z / ⇧⌘Z undo and redo, ⌘1–4 switch pages, ⌘F searches on the Profiles page (Ctrl on other platforms). In-app notices report module connect, disconnect and swap, and a skippable getting-started guide opens on first launch.
 
-All replay and preview actions use `DryRunDispatcher`. There is no command for HID connection, host action execution, arbitrary file access, browser integration or user scripts in this version. Physical control placement and dial/roller direction still require device validation.
+Replay and previews use `DryRunDispatcher`. The app executes host actions only through a service run you start with Execute. It has no arbitrary file access, browser integration or user scripts. Physical control placement and dial/roller direction still require device validation.
 
 Profiles are stored in the application's local data directory, shown in Settings. A fresh store starts with the sample profile. Saving uses an atomic replacement; invalid or corrupted data produces an error and is preserved. Bootstrap selects the most recently saved profile.
+
+Alongside `profiles`, the app data folder holds `exports/` (profile exports), `diagnostics/` (diagnostic bundles), `artwork/` (prepared images) and `service-profiles/` (temporary profile snapshots for running services). Files there are created owner-only and the oldest are pruned.
 
 On macOS, the app uses `~/Library/Application Support/dev.cooltek.openstreamhub/profiles`. If that store is absent, existing profiles from `dev.cooltek.masterhub/profiles` are validated and copied without changing their IDs or contents. The previous files remain intact. An existing OpenStreamHub store is never overwritten or merged automatically; invalid legacy data is reported for recovery.
 
 Appearance reads the previous preference key when it is available in the webview's local storage. A new macOS bundle identity can have separate webview storage and start with System appearance; profile migration does not copy that storage.
 
-Unsaved drafts prompt before profile changes, window closing, or Quit OpenStreamHub / Command-Q. Save before using Dock Quit or system termination: those macOS termination paths can bypass the app's draft prompt. Unsaved drafts are not recovered after termination.
+Unsaved drafts prompt before profile changes, window closing, or Quit OpenStreamHub / Command-Q. Drafts are also saved to the webview's local storage as you edit, so after a crash, Dock Quit or system termination the app offers to restore them on the next launch. Saving to disk is still explicit; a draft restored over a file that changed meanwhile is protected by the save conflict check.
 
 ## Verify
 
@@ -63,4 +73,4 @@ Frontend code is under `src/`, the narrow desktop command bridge is under `src-t
 
 ## Next milestones
 
-Focused-app rules, browser-tab cards, live device sessions, dial artwork, flows and script integrations remain separate implementation milestones. Hardware acceptance and signing/notarization are required before a public release.
+Focused-app rules, browser-tab cards, flows and script integrations remain separate implementation milestones, as do sending images to the module displays, GIF animation, dial backlight/colour and firmware controls, and multi-module live action routing. Hardware acceptance and signing/notarization (including the sidecar) are required before a public release.

@@ -70,7 +70,8 @@ pub fn output_report_length<T: ReportTransport + ?Sized>(
 }
 
 /// Queries and parses a descriptor to obtain a feature length including its ID.
-pub fn feature_report_length<T: ReportTransport + ?Sized>(
+#[cfg(test)]
+fn feature_report_length<T: ReportTransport + ?Sized>(
     transport: &T,
     report_id: u8,
 ) -> HidResult<usize> {
@@ -81,27 +82,45 @@ pub fn feature_report_length<T: ReportTransport + ?Sized>(
     )
 }
 
+/// Why a fixed-size feature command passed the descriptor length check.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FeatureLengthCheck {
+    /// The descriptor declares the report with exactly the expected length.
+    Matches,
+    /// The descriptor could not be read or parsed; the check is inconclusive.
+    DescriptorUnavailable,
+    /// The descriptor parsed but does not declare the report as a feature.
+    NotDeclared,
+}
+
 /// Rejects a fixed-size feature command whose descriptor declares another size.
 ///
 /// The SDK builds feature commands with a fixed length (32 bytes, including the
 /// report ID). Sending them to an interface declaring a different length would
 /// be truncated or padded by the OS, so a positive mismatch is an error. When
-/// the descriptor cannot be read or does not declare `report_id` as a feature
-/// report, the check is inconclusive and passes: these declarations are not yet
-/// verified on hardware, and a guess must not block otherwise working devices.
+/// the descriptor cannot be read or parsed, or does not declare `report_id` as
+/// a feature report, the check is inconclusive and passes, returning which case
+/// applied: these declarations are not yet verified on hardware, and a guess
+/// must not block otherwise working devices.
 pub(crate) fn check_feature_report_length<T: ReportTransport + ?Sized>(
     transport: &T,
     report_id: u8,
     expected: usize,
-) -> HidResult<()> {
-    match feature_report_length(transport, report_id) {
-        Ok(declared) if declared != expected => Err(HidError::HidApiError {
+) -> HidResult<FeatureLengthCheck> {
+    let mut descriptor = [0; hidapi::MAX_REPORT_DESCRIPTOR_SIZE];
+    let declared = read_descriptor(transport, &mut descriptor).and_then(|descriptor| {
+        crate::descriptor::declared_feature_report_length(descriptor, report_id)
+    });
+    match declared {
+        Ok(Some(declared)) if declared != expected => Err(HidError::HidApiError {
             message: format!(
                 "Feature report {report_id:#04x} is declared as {declared} bytes by the HID \
                  descriptor, but the SDK sends fixed {expected}-byte feature reports"
             ),
         }),
-        _ => Ok(()),
+        Ok(Some(_)) => Ok(FeatureLengthCheck::Matches),
+        Ok(None) => Ok(FeatureLengthCheck::NotDeclared),
+        Err(_) => Ok(FeatureLengthCheck::DescriptorUnavailable),
     }
 }
 
@@ -276,7 +295,10 @@ mod tests {
             let feature = feature_report_length(&fake, 3).unwrap_err().to_string();
             assert!(feature.contains("invalid report descriptor length"));
             // Inconclusive descriptors do not block fixed-size commands.
-            check_feature_report_length(&fake, 3, 32).unwrap();
+            assert_eq!(
+                check_feature_report_length(&fake, 3, 32).unwrap(),
+                FeatureLengthCheck::DescriptorUnavailable
+            );
         }
         let exact = DescriptorFake(Ok(vec![0x75, 0x08, 0x95, 0x01, 0x91, 0x02]));
         assert_eq!(output_report_length(&exact, 0).unwrap(), 2);
@@ -288,14 +310,26 @@ mod tests {
         assert_eq!(output_report_length(&fake, 2).unwrap(), 64);
         assert_eq!(feature_report_length(&fake, 3).unwrap(), 32);
         assert!(feature_report_length(&fake, 2).is_err());
-        check_feature_report_length(&fake, 3, 32).unwrap();
+        assert_eq!(
+            check_feature_report_length(&fake, 3, 32).unwrap(),
+            FeatureLengthCheck::Matches
+        );
         let mismatch = check_feature_report_length(&fake, 3, 16)
             .unwrap_err()
             .to_string();
         assert!(mismatch.contains("declared as 32 bytes"));
         assert!(mismatch.contains("fixed 16-byte"));
         // An undeclared feature ID is inconclusive rather than fatal.
-        check_feature_report_length(&fake, 4, 32).unwrap();
+        assert_eq!(
+            check_feature_report_length(&fake, 4, 32).unwrap(),
+            FeatureLengthCheck::NotDeclared
+        );
+        // A malformed descriptor is unusable, not "undeclared".
+        let malformed = DescriptorFake(Ok(vec![0x75]));
+        assert_eq!(
+            check_feature_report_length(&malformed, 3, 32).unwrap(),
+            FeatureLengthCheck::DescriptorUnavailable
+        );
     }
 
     #[test]

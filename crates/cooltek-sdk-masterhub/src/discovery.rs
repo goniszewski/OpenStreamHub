@@ -20,29 +20,37 @@ pub enum ModuleKind {
 }
 
 impl ModuleKind {
-    /// Recognizes an official VID/PID without opening the device.
-    ///
-    /// Recognition is delegated to each module's [`crate::Module`] implementation
-    /// (`VENDOR_ID` and `accepts_product_id`), so IDs are defined in one place.
-    pub fn from_ids(vendor_id: u16, product_id: u16) -> Option<Self> {
-        use crate::{
-            module::matches_module,
-            modules::{M003K, M005S, M032LE, M0064, M131E, M4315},
-        };
+    /// Official vendor ID shared by every MasterHUB model.
+    const VENDOR_ID: u16 = 0x2516;
 
-        type Matcher = fn(u16, u16) -> bool;
-        let candidates: [(Self, Matcher); 6] = [
-            (Self::M0064, matches_module::<M0064>),
-            (Self::M003K, matches_module::<M003K>),
-            (Self::M005S, matches_module::<M005S>),
-            (Self::M032LE, matches_module::<M032LE>),
-            (Self::M131E, matches_module::<M131E>),
-            (Self::M4315, matches_module::<M4315>),
-        ];
-        candidates
-            .into_iter()
-            .find(|(_, matches)| matches(vendor_id, product_id))
-            .map(|(kind, _)| kind)
+    /// Accepted product IDs per model: the original ID and a hardware revision.
+    ///
+    /// Must agree with each module's [`crate::Module`] implementation
+    /// (`VENDOR_ID` and `accepts_product_id`); a unit test enforces this for
+    /// every possible product ID.
+    const PRODUCT_IDS: [(Self, [u16; 2]); 6] = [
+        (Self::M0064, [0x01f6, 0x9999]),
+        (Self::M003K, [0x0202, 0x9996]),
+        (Self::M005S, [0x0200, 0x9991]),
+        (Self::M032LE, [0x0204, 0x9995]),
+        (Self::M131E, [0x0206, 0x9994]),
+        (Self::M4315, [0x01fe, 0x9997]),
+    ];
+
+    /// Recognizes an official VID/PID without opening the device.
+    pub const fn from_ids(vendor_id: u16, product_id: u16) -> Option<Self> {
+        if vendor_id != Self::VENDOR_ID {
+            return None;
+        }
+        let mut index = 0;
+        while index < Self::PRODUCT_IDS.len() {
+            let (kind, [original, revision]) = Self::PRODUCT_IDS[index];
+            if product_id == original || product_id == revision {
+                return Some(kind);
+            }
+            index += 1;
+        }
+        None
     }
 
     /// Returns the model identifier used by SDK metadata and capture files.
@@ -228,6 +236,38 @@ mod tests {
             usage: 1,
             module: Some(ModuleKind::M003K),
         }
+    }
+
+    #[test]
+    fn from_ids_agrees_with_module_recognition_for_every_model() {
+        use crate::{
+            module::matches_module,
+            modules::{M003K, M005S, M032LE, M0064, M131E, M4315},
+        };
+        type Matcher = fn(u16, u16) -> bool;
+        let models: [(ModuleKind, Matcher); 6] = [
+            (ModuleKind::M0064, matches_module::<M0064>),
+            (ModuleKind::M003K, matches_module::<M003K>),
+            (ModuleKind::M005S, matches_module::<M005S>),
+            (ModuleKind::M032LE, matches_module::<M032LE>),
+            (ModuleKind::M131E, matches_module::<M131E>),
+            (ModuleKind::M4315, matches_module::<M4315>),
+        ];
+        for vendor_id in [0x0000, 0x2515, 0x2516, 0x2517, 0xffff] {
+            for product_id in 0..=u16::MAX {
+                let expected = models
+                    .iter()
+                    .find(|(_, matches)| matches(vendor_id, product_id))
+                    .map(|(kind, _)| *kind);
+                assert_eq!(
+                    ModuleKind::from_ids(vendor_id, product_id),
+                    expected,
+                    "{vendor_id:#06x}:{product_id:#06x}"
+                );
+            }
+        }
+        const DIAL: Option<ModuleKind> = ModuleKind::from_ids(0x2516, 0x0206);
+        assert_eq!(DIAL, Some(ModuleKind::M131E));
     }
 
     #[test]

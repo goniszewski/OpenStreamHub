@@ -1,4 +1,4 @@
-use crate::store::{MAX_PROFILES, is_hidden_entry, validate_id};
+use crate::store::{MAX_PROFILES, UnreadableProfile, is_hidden_entry, is_stale, validate_id};
 use cooltek_sdk_service::Profile;
 use std::{
     fs::{self, File, FileTimes, OpenOptions},
@@ -18,31 +18,36 @@ struct Snapshot {
     modified: SystemTime,
 }
 
-pub fn prepare_store(app_data: &Path) -> Result<PathBuf, String> {
+/// Returns the profile storage path, migrating legacy profiles into it when it
+/// does not exist yet, plus the legacy entries that were left behind. The
+/// legacy folder is only ever read.
+pub fn prepare_store(app_data: &Path) -> Result<(PathBuf, Vec<UnreadableProfile>), String> {
     let parent = app_data
         .parent()
         .ok_or_else(|| "application data has no parent directory".to_string())?;
     check_directory(parent, "application data parent")?;
-    check_directory(app_data, "OpenStreamHub application data")?;
+    if check_directory(app_data, "OpenStreamHub application data")? {
+        remove_stale_staging(app_data);
+    }
     let destination = app_data.join("profiles");
     if check_directory(&destination, "OpenStreamHub profile storage")? {
         // An existing destination is authoritative, including an empty or
         // corrupt store. Never merge legacy data into it or overwrite it.
-        return Ok(destination);
+        return Ok((destination, Vec::new()));
     }
 
     let legacy_app = parent.join(LEGACY_APP_ID);
     if !check_directory(&legacy_app, "legacy application data")? {
-        return Ok(destination);
+        return Ok((destination, Vec::new()));
     }
     let legacy_profiles = legacy_app.join("profiles");
     if !check_directory(&legacy_profiles, "legacy profile storage")? {
-        return Ok(destination);
+        return Ok((destination, Vec::new()));
     }
 
     // Capture and validate every bounded file before writing any new store.
     // Raw JSON bytes and file modification times are preserved exactly.
-    let snapshots = snapshots(&legacy_profiles)?;
+    let (snapshots, skipped) = snapshots(&legacy_profiles)?;
     if !check_directory(app_data, "OpenStreamHub application data")? {
         fs::create_dir_all(app_data)
             .map_err(|error| format!("could not create OpenStreamHub application data: {error}"))?;
@@ -94,7 +99,29 @@ pub fn prepare_store(app_data: &Path) -> Result<PathBuf, String> {
     File::open(app_data)
         .and_then(|file| file.sync_all())
         .map_err(|error| format!("could not flush migrated profile storage: {error}"))?;
-    Ok(destination)
+    Ok((destination, skipped))
+}
+
+/// Deletes stale `.profiles-migration-*.tmp` folders left by an interrupted
+/// migration. Recent ones may belong to another app process mid-migration.
+fn remove_stale_staging(app_data: &Path) {
+    let Ok(entries) = fs::read_dir(app_data) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with(".profiles-migration-") && name.ends_with(".tmp")) {
+            continue;
+        }
+        // DirEntry metadata does not follow symbolic links.
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_dir() && is_stale(&metadata))
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn check_directory(path: &Path, label: &str) -> Result<bool, String> {
@@ -108,83 +135,115 @@ fn check_directory(path: &Path, label: &str) -> Result<bool, String> {
     }
 }
 
-fn snapshots(directory: &Path) -> Result<Vec<Snapshot>, String> {
+/// Valid legacy profiles, at most `MAX_PROFILES` by filename, plus a report
+/// for every visible entry that is not migrated. Hidden entries such as
+/// .DS_Store are never profiles and are neither copied nor reported.
+fn snapshots(directory: &Path) -> Result<(Vec<Snapshot>, Vec<UnreadableProfile>), String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("could not read legacy profile storage: {error}"))?;
-    let mut snapshots = Vec::new();
+    let mut skipped = Vec::new();
+    let mut skip = |filename: &str, error: String| {
+        // The report is bounded even for a folder full of stray files.
+        if skipped.len() < MAX_PROFILES {
+            skipped.push(UnreadableProfile {
+                id: filename
+                    .strip_suffix(".json")
+                    .unwrap_or(filename)
+                    .to_owned(),
+                error: format!(
+                    "not migrated; left unchanged in {}: {error}",
+                    directory.display()
+                ),
+            });
+        }
+    };
+    let mut filenames = Vec::new();
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("could not read legacy profile entry: {error}"))?;
-        // Hidden entries such as .DS_Store are never profiles. They are not
-        // copied, and the legacy store is never modified.
         if is_hidden_entry(&entry.file_name()) {
             continue;
         }
-        if snapshots.len() == MAX_PROFILES {
-            return Err(format!(
-                "legacy profile storage exceeds {MAX_PROFILES} profiles"
-            ));
+        match entry.file_name().into_string() {
+            Ok(filename) => filenames.push(filename),
+            Err(filename) => skip(
+                &filename.to_string_lossy(),
+                "legacy profile filename is not valid UTF-8".into(),
+            ),
         }
-        let filename = entry
-            .file_name()
-            .into_string()
-            .map_err(|_| "legacy profile filename is not valid UTF-8".to_string())?;
-        let id = filename.strip_suffix(".json").ok_or_else(|| {
-            format!("legacy profile storage contains an unexpected entry: {filename}")
-        })?;
-        validate_id(id)
-            .map_err(|error| format!("invalid legacy profile filename {filename}: {error}"))?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("could not inspect legacy profile {filename}: {error}"))?;
-        if !metadata.file_type().is_file() {
-            return Err(format!(
-                "legacy profile {filename} must be a regular file, not a symbolic link"
-            ));
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|error| format!("could not open legacy profile {filename}: {error}"))?;
-        let metadata = file.metadata().map_err(|error| {
-            format!("could not inspect opened legacy profile {filename}: {error}")
-        })?;
-        if !metadata.is_file() || metadata.len() > Profile::MAX_JSON_BYTES as u64 {
-            return Err(format!(
-                "legacy profile {filename} is not a bounded regular profile file"
-            ));
-        }
-        let modified = metadata
-            .modified()
-            .map_err(|error| format!("could not read legacy profile modification time: {error}"))?;
-        u64::try_from(
-            modified
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|_| {
-                    "legacy profile modification time predates the Unix epoch".to_string()
-                })?
-                .as_millis(),
-        )
-        .map_err(|_| "legacy profile modification time is out of range".to_string())?;
-        let mut bytes = Vec::new();
-        file.take((Profile::MAX_JSON_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("could not read legacy profile {filename}: {error}"))?;
-        Profile::from_json(&bytes)
-            .map_err(|error| format!("invalid legacy profile {filename}: {error}"))?;
-        snapshots.push(Snapshot {
-            filename,
-            bytes,
-            modified,
-        });
     }
-    Ok(snapshots)
+    filenames.sort();
+    let mut snapshots = Vec::new();
+    for filename in filenames {
+        if snapshots.len() == MAX_PROFILES {
+            skip(
+                &filename,
+                format!("only the first {MAX_PROFILES} legacy profiles are migrated"),
+            );
+            continue;
+        }
+        match snapshot(directory, filename.clone()) {
+            Ok(snapshot) => snapshots.push(snapshot),
+            Err(error) => skip(&filename, error),
+        }
+    }
+    Ok((snapshots, skipped))
+}
+
+/// Reads and validates one legacy profile without following links.
+fn snapshot(directory: &Path, filename: String) -> Result<Snapshot, String> {
+    let id = filename.strip_suffix(".json").ok_or_else(|| {
+        format!("legacy profile storage contains an unexpected entry: {filename}")
+    })?;
+    validate_id(id)
+        .map_err(|error| format!("invalid legacy profile filename {filename}: {error}"))?;
+    let path = directory.join(&filename);
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|error| format!("could not inspect legacy profile {filename}: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "legacy profile {filename} must be a regular file, not a symbolic link"
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(&path)
+        .map_err(|error| format!("could not open legacy profile {filename}: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("could not inspect opened legacy profile {filename}: {error}"))?;
+    if !metadata.is_file() || metadata.len() > Profile::MAX_JSON_BYTES as u64 {
+        return Err(format!(
+            "legacy profile {filename} is not a bounded regular profile file"
+        ));
+    }
+    let modified = metadata
+        .modified()
+        .map_err(|error| format!("could not read legacy profile modification time: {error}"))?;
+    u64::try_from(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| "legacy profile modification time predates the Unix epoch".to_string())?
+            .as_millis(),
+    )
+    .map_err(|_| "legacy profile modification time is out of range".to_string())?;
+    let mut bytes = Vec::new();
+    file.take((Profile::MAX_JSON_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read legacy profile {filename}: {error}"))?;
+    Profile::from_json(&bytes)
+        .map_err(|error| format!("invalid legacy profile {filename}: {error}"))?;
+    Ok(Snapshot {
+        filename,
+        bytes,
+        modified,
+    })
 }
 
 fn protect_directory(path: &Path) -> Result<(), String> {
@@ -297,8 +356,17 @@ mod tests {
         assert_eq!(fs::read_dir(new_app).unwrap().count(), 1);
     }
 
+    fn store_names(new_app: &Path) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(new_app.join("profiles"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+
     #[test]
-    fn invalid_legacy_profiles_abort_before_publication_and_never_reseed() {
+    fn invalid_legacy_profiles_are_reported_and_valid_ones_still_migrate() {
         for bytes in [
             b"corrupt".to_vec(),
             vec![b' '; Profile::MAX_JSON_BYTES + 1],
@@ -308,27 +376,112 @@ mod tests {
             let id = Uuid::new_v4().to_string();
             let old_file = legacy.join(format!("{id}.json"));
             fs::write(&old_file, &bytes).unwrap();
-            fs::write(
-                legacy.join(format!("{}.json", Uuid::new_v4())),
-                profile_bytes("Valid"),
-            )
-            .unwrap();
-            assert!(ProfileStore::open_for_app_data(new_app.clone()).is_err());
-            assert!(!new_app.join("profiles").exists());
+            let valid = Uuid::new_v4().to_string();
+            fs::write(legacy.join(format!("{valid}.json")), profile_bytes("Valid")).unwrap();
+            let store = ProfileStore::open_for_app_data(new_app.clone()).unwrap();
+            let listing = store.list().unwrap();
+            assert_eq!(listing.profiles.len(), 1);
+            assert_eq!(listing.profiles[0].id, valid);
+            assert_eq!(listing.unreadable.len(), 1);
+            assert_eq!(listing.unreadable[0].id, id);
+            assert!(listing.unreadable[0].error.contains("not migrated"));
+            assert_eq!(store_names(&new_app), vec![format!("{valid}.json")]);
             assert_eq!(fs::read(&old_file).unwrap(), bytes);
-            assert_eq!(fs::read_dir(legacy).unwrap().count(), 2);
+            assert_eq!(fs::read_dir(&legacy).unwrap().count(), 2);
         }
     }
 
     #[test]
-    fn unexpected_filenames_are_not_silently_migrated_or_seeded() {
+    fn unexpected_legacy_entries_are_reported_not_copied() {
         for filename in ["invalid-id.json", "notes.txt"] {
             let (_temporary, legacy, new_app) = paths();
             fs::write(legacy.join(filename), profile_bytes("Legacy")).unwrap();
-            assert!(ProfileStore::open_for_app_data(new_app.clone()).is_err());
-            assert!(!new_app.join("profiles").exists());
-            assert!(legacy.join(filename).exists());
+            fs::create_dir(legacy.join("folder")).unwrap();
+            let store = ProfileStore::open_for_app_data(new_app.clone()).unwrap();
+            let ids: Vec<_> = store
+                .list()
+                .unwrap()
+                .unreadable
+                .into_iter()
+                .map(|item| item.id)
+                .collect();
+            assert_eq!(ids.len(), 2, "{ids:?}");
+            assert!(ids.contains(&"folder".to_string()));
+            assert!(
+                ids.contains(
+                    &filename
+                        .strip_suffix(".json")
+                        .unwrap_or(filename)
+                        .to_string()
+                )
+            );
+            assert!(store_names(&new_app).is_empty());
+            assert_eq!(
+                fs::read(legacy.join(filename)).unwrap(),
+                profile_bytes("Legacy")
+            );
+            assert!(legacy.join("folder").is_dir());
+            // The store holds no data of its own, so it gets the sample
+            // profile while the legacy entries stay reported for this launch.
+            let bootstrap = store.bootstrap().unwrap();
+            assert_eq!(bootstrap.profiles.len(), 1);
+            assert_eq!(bootstrap.unreadable.len(), 2);
         }
+    }
+
+    #[test]
+    fn legacy_profiles_beyond_the_limit_are_reported_and_the_rest_migrate() {
+        let (_temporary, legacy, new_app) = paths();
+        let bytes = profile_bytes("Many");
+        let mut ids: Vec<String> = (0..MAX_PROFILES + 2)
+            .map(|_| Uuid::new_v4().to_string())
+            .collect();
+        for id in &ids {
+            fs::write(legacy.join(format!("{id}.json")), &bytes).unwrap();
+        }
+        ids.sort();
+        let store = ProfileStore::open_for_app_data(new_app.clone()).unwrap();
+        let listing = store.list().unwrap();
+        assert_eq!(listing.profiles.len(), MAX_PROFILES);
+        let skipped: Vec<_> = listing
+            .unreadable
+            .iter()
+            .map(|item| item.id.clone())
+            .collect();
+        assert_eq!(skipped, ids[MAX_PROFILES..].to_vec());
+        assert_eq!(store_names(&new_app).len(), MAX_PROFILES);
+        assert_eq!(fs::read_dir(&legacy).unwrap().count(), MAX_PROFILES + 2);
+    }
+
+    #[test]
+    fn stale_staging_folders_are_removed_and_recent_ones_kept() {
+        let (_temporary, legacy, new_app) = paths();
+        fs::write(
+            legacy.join(format!("{}.json", Uuid::new_v4())),
+            profile_bytes("Legacy"),
+        )
+        .unwrap();
+        fs::create_dir_all(&new_app).unwrap();
+        let stale = new_app.join(format!(".profiles-migration-{}.tmp", Uuid::new_v4()));
+        let recent = new_app.join(format!(".profiles-migration-{}.tmp", Uuid::new_v4()));
+        let other = new_app.join(".other.tmp");
+        for folder in [&stale, &recent, &other] {
+            fs::create_dir(folder).unwrap();
+            fs::write(folder.join("partial.json"), b"partial").unwrap();
+        }
+        let old = SystemTime::now() - crate::store::STALE_TEMPORARY - Duration::from_secs(60);
+        for folder in [&stale, &other] {
+            File::open(folder)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        let (destination, skipped) = prepare_store(&new_app).unwrap();
+        assert!(skipped.is_empty());
+        assert_eq!(fs::read_dir(destination).unwrap().count(), 1);
+        assert!(!stale.exists());
+        assert!(recent.join("partial.json").exists());
+        assert!(other.join("partial.json").exists());
     }
 
     #[test]
@@ -364,7 +517,10 @@ mod tests {
             if !empty {
                 fs::write(&sentinel, b"existing destination").unwrap();
             }
-            assert_eq!(prepare_store(&new_app).unwrap(), destination);
+            assert_eq!(
+                prepare_store(&new_app).unwrap(),
+                (destination.clone(), Vec::new())
+            );
             assert_eq!(
                 fs::read_dir(&destination).unwrap().count(),
                 usize::from(!empty)
@@ -427,10 +583,26 @@ mod tests {
                 }
                 _ => unreachable!(),
             };
-            assert!(
-                ProfileStore::open_for_app_data(app_data).is_err(),
-                "accepted {link_target} link"
-            );
+            if link_target == "file" {
+                // A linked legacy profile is reported, never followed or copied.
+                let store = ProfileStore::open_for_app_data(app_data.clone()).unwrap();
+                let unreadable = store.list().unwrap().unreadable;
+                assert_eq!(unreadable.len(), 1);
+                assert!(unreadable[0].error.contains("symbolic link"));
+                assert!(store_names(&app_data).is_empty());
+                assert!(
+                    legacy
+                        .join(&filename)
+                        .symlink_metadata()
+                        .unwrap()
+                        .is_symlink()
+                );
+            } else {
+                assert!(
+                    ProfileStore::open_for_app_data(app_data).is_err(),
+                    "accepted {link_target} link"
+                );
+            }
             assert_eq!(fs::read(outside.join(&filename)).unwrap(), bytes);
             assert!(!outside.join("profiles").exists());
         }

@@ -176,20 +176,91 @@ pub fn path_label(path: &[u8]) -> String {
     format!("path-{hash:08x}")
 }
 
-/// Redacts every string under a key named `serial_number` or `serial`.
-fn redact_serial_keys(value: &mut Value) {
+/// Text replacements for one raw device path: its hex (both cases) and, when
+/// long enough to be distinctive, its text form.
+fn seed_path(path: &[u8], replacements: &mut Vec<(String, String)>) {
+    let label = path_label(path);
+    let hex = encode_hex(path);
+    replacements.push((hex.to_uppercase(), label.clone()));
+    replacements.push((hex, label.clone()));
+    let text = String::from_utf8_lossy(path).into_owned();
+    if text.chars().count() >= 6 {
+        replacements.push((text, label));
+    }
+}
+
+/// Text replacement for one raw serial, when long enough to be distinctive.
+fn seed_serial(serial: &str, replacements: &mut Vec<(String, String)>) {
+    if serial.chars().count() >= 5 {
+        replacements.push((serial.to_owned(), redact_serial(serial)));
+    }
+}
+
+/// `live:<hex>` / `service:<hex>` ids become `<kind>:path-xxxxxxxx`, or
+/// `<kind>:<invalid>` when the hex is not a device path. Other text is None.
+fn redact_runtime_id(id: &str, replacements: &mut Vec<(String, String)>) -> Option<String> {
+    let (kind @ ("live" | "service"), hex) = id.split_once(':')? else {
+        return None;
+    };
+    Some(match parse_path(hex) {
+        Ok(path) => {
+            seed_path(&path, replacements);
+            format!("{kind}:{}", path_label(&path))
+        }
+        Err(_) => format!("{kind}:<invalid>"),
+    })
+}
+
+/// Structural redaction of caller-supplied data, independent of which devices
+/// are attached now: `serial_number`/`serial` strings are shortened,
+/// `path_hex` becomes `path_label`, and whole-string runtime ids are relabeled.
+/// Every raw value found is added to `replacements` for the text scrub.
+fn redact_fields(value: &mut Value, replacements: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
-            for (key, item) in map.iter_mut() {
-                match item {
-                    Value::String(serial) if key == "serial_number" || key == "serial" => {
+            for (key, mut item) in std::mem::take(map) {
+                if is_data_key(&key) {
+                    map.insert(key, item);
+                    continue;
+                }
+                match (key.as_str(), &mut item) {
+                    ("serial_number" | "serial", Value::String(serial)) => {
+                        seed_serial(serial, replacements);
                         *serial = redact_serial(serial);
                     }
-                    _ => redact_serial_keys(item),
+                    ("path_hex", _) => {
+                        let label = match &item {
+                            Value::Null => Value::Null,
+                            Value::String(hex) => match parse_path(hex) {
+                                Ok(path) => {
+                                    seed_path(&path, replacements);
+                                    Value::String(path_label(&path))
+                                }
+                                Err(_) => Value::String("<invalid>".into()),
+                            },
+                            _ => Value::String("<invalid>".into()),
+                        };
+                        map.insert("path_label".into(), label);
+                        continue;
+                    }
+                    (_, Value::String(text)) => {
+                        if let Some(id) = redact_runtime_id(text, replacements) {
+                            *text = id;
+                        }
+                    }
+                    _ => redact_fields(&mut item, replacements),
                 }
+                map.insert(key, item);
             }
         }
-        Value::Array(items) => items.iter_mut().for_each(redact_serial_keys),
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| redact_fields(item, replacements)),
+        Value::String(text) => {
+            if let Some(id) = redact_runtime_id(text, replacements) {
+                *text = id;
+            }
+        }
         _ => {}
     }
 }
@@ -574,19 +645,42 @@ pub fn build_bundle(inputs: &BundleInputs, probe: &mut dyn DeviceProbe) -> Bundl
         })
     });
 
-    let runtime_id = |id: &str| -> String {
-        match id.split_once(':') {
-            Some((kind @ ("live" | "service"), hex)) if redact => parse_path(hex)
-                .map(|path| format!("{kind}:{}", path_label(&path)))
-                .unwrap_or_else(|_| format!("{kind}:<invalid>")),
-            _ => id.to_owned(),
+    // Serial and path text that leaked into error messages, stderr tails or
+    // ids is scrubbed with these, seeded from both the enumerated devices and
+    // every raw value found structurally in the caller-supplied data.
+    let mut replacements: Vec<(String, String)> = Vec::new();
+    let mut runtime_id = |id: &str| -> String {
+        if redact {
+            redact_runtime_id(id, &mut replacements).unwrap_or_else(|| id.to_owned())
+        } else {
+            id.to_owned()
         }
     };
+    let feeds: Vec<String> = inputs
+        .running
+        .feeds
+        .iter()
+        .map(|id| runtime_id(id))
+        .collect();
+    let services: Vec<String> = inputs
+        .running
+        .services
+        .iter()
+        .map(|id| runtime_id(id))
+        .collect();
     let mut profile = inputs.request.profile.clone();
     let mut client = inputs.request.client.clone();
     if redact {
-        profile.iter_mut().for_each(redact_serial_keys);
-        redact_serial_keys(&mut client);
+        if let Some(profile) = &mut profile {
+            redact_fields(profile, &mut replacements);
+        }
+        redact_fields(&mut client, &mut replacements);
+        for device in &devices {
+            seed_path(device.path.as_bytes(), &mut replacements);
+            if let Some(serial) = &device.serial_number {
+                seed_serial(serial, &mut replacements);
+            }
+        }
     }
     let (generated_at, _) = utc_stamps(inputs.generated_at);
     let mut value = json!({
@@ -602,35 +696,15 @@ pub fn build_bundle(inputs: &BundleInputs, probe: &mut dyn DeviceProbe) -> Bundl
         "capture": capture,
         "profile": profile,
         "runtime": {
-            "feeds": inputs.running.feeds.iter().map(|id| runtime_id(id)).collect::<Vec<_>>(),
-            "services": inputs.running.services.iter().map(|id| runtime_id(id)).collect::<Vec<_>>(),
+            "feeds": feeds,
+            "services": services,
             "client": client,
             "client_activity_dropped": inputs.request.activity_dropped,
             "client_notes_truncated": inputs.request.notes_truncated,
         },
     });
 
-    // Text scrub: serial and path text that leaked into error messages,
-    // stderr tails or ids. Longest first so overlapping values stay whole.
-    let mut replacements: Vec<(String, String)> = Vec::new();
-    if redact {
-        for device in &devices {
-            let path = device.path.as_bytes();
-            let label = path_label(path);
-            let hex = encode_hex(path);
-            replacements.push((hex.to_uppercase(), label.clone()));
-            replacements.push((hex, label.clone()));
-            let text = String::from_utf8_lossy(path).into_owned();
-            if text.chars().count() >= 6 {
-                replacements.push((text, label));
-            }
-            if let Some(serial) = &device.serial_number
-                && serial.chars().count() >= 5
-            {
-                replacements.push((serial.clone(), redact_serial(serial)));
-            }
-        }
-    }
+    // Longest first so overlapping values stay whole.
     if let Some(home) = inputs
         .home
         .as_deref()
@@ -715,23 +789,6 @@ fn os_release_name(text: &str) -> Option<String> {
 // Files
 // ---------------------------------------------------------------------------
 
-fn create_private_dir(directory: &Path) -> Result<(), String> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder
-        .create(directory)
-        .map_err(|error| format!("could not create the diagnostics folder: {error}"))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("could not secure the diagnostics folder: {error}"))?;
-    }
-    Ok(())
-}
-
 pub fn file_name(stamp: &str) -> String {
     format!("{FILE_PREFIX}{stamp}.json")
 }
@@ -755,45 +812,18 @@ pub fn is_bundle_name(name: &str) -> bool {
         })
 }
 
-/// Writes the bundle as a new 0600 file without ever replacing one: the
-/// content goes to a private temporary file that is then hard-linked to its
-/// final name (failing if that name exists) and unlinked.
+/// Writes the bundle as a new private file without ever replacing one; see
+/// `export::write_new`.
 pub fn write_bundle(
     directory: &Path,
     bundle: &Value,
     stamp: &str,
 ) -> Result<(PathBuf, u64), String> {
-    create_private_dir(directory)?;
     let mut bytes = serde_json::to_vec_pretty(bundle)
         .map_err(|error| format!("could not encode the diagnostics bundle: {error}"))?;
     bytes.push(b'\n');
-    let path = directory.join(file_name(stamp));
-    if path.symlink_metadata().is_ok() {
-        return Err(format!(
-            "{} already exists; wait a second and try again",
-            path.display()
-        ));
-    }
-    let temporary = directory.join(format!(".{FILE_PREFIX}{}.tmp", uuid::Uuid::new_v4()));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let written = options
-        .open(&temporary)
-        .and_then(|mut file| {
-            io::Write::write_all(&mut file, &bytes)?;
-            file.sync_all()
-        })
-        .and_then(|()| fs::hard_link(&temporary, &path));
-    let _ = fs::remove_file(&temporary);
-    written.map_err(|error| match error.kind() {
-        io::ErrorKind::AlreadyExists => format!(
-            "{} already exists; wait a second and try again",
-            path.display()
-        ),
-        _ => format!("could not write the diagnostics bundle: {error}"),
-    })?;
+    let path =
+        crate::export::write_new(directory, &file_name(stamp), &bytes, "diagnostics bundle")?;
     Ok((path, bytes.len() as u64))
 }
 
@@ -1212,6 +1242,81 @@ mod tests {
     }
 
     #[test]
+    fn client_data_naming_unenumerated_devices_is_redacted_structurally() {
+        // A device that unplugged before the bundle was built: it is named
+        // only by the caller-supplied activity and profile.
+        let gone = b"/dev/hidraw7-GONE";
+        let gone_hex = encode_hex(gone);
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "modules": [{ "serial_number": "PROFILE-SN-777" }] })),
+            client: ClientContext {
+                activity: vec![
+                    json!({
+                        "source": "device_feed",
+                        "devices": [{ "path_hex": gone_hex, "module": "M005S", "serial_number": "GONE-SERIAL-9" }],
+                        "feeds": [{ "feed_id": format!("live:{}", gone_hex.to_uppercase()), "error": format!("{gone_hex} vanished") }],
+                    }),
+                    json!({
+                        "source": "service_status",
+                        "service_id": format!("service:{gone_hex}"),
+                        "stderr_tail": "open /dev/hidraw7-GONE failed for GONE-SERIAL-9 (PROFILE-SN-777)",
+                        "counters": { "hex": "00ff" },
+                    }),
+                    json!(format!("live:{gone_hex}")),
+                ],
+                notes: Some(format!("unplugged {} at 12:00", gone_hex.to_uppercase())),
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let text = bundle.value.to_string();
+        for secret in [
+            "/dev/hidraw7-GONE",
+            gone_hex.as_str(),
+            gone_hex.to_uppercase().as_str(),
+            "GONE-SERIAL-9",
+            "PROFILE-SN-777",
+            "path_hex",
+        ] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        let label = path_label(gone);
+        let activity = &bundle.value["runtime"]["client"]["activity"];
+        let feed = &activity[0];
+        assert_eq!(feed["devices"][0]["path_label"], label);
+        assert_eq!(feed["devices"][0]["serial_number"], "…AL-9");
+        assert_eq!(feed["feeds"][0]["feed_id"], format!("live:{label}"));
+        assert_eq!(feed["feeds"][0]["error"], format!("{label} vanished"));
+        assert_eq!(activity[1]["service_id"], format!("service:{label}"));
+        assert_eq!(
+            activity[1]["stderr_tail"],
+            format!("open {label} failed for …AL-9 (…-777)")
+        );
+        // Raw data keys are never rewritten.
+        assert_eq!(activity[1]["counters"]["hex"], "00ff");
+        assert_eq!(activity[2], format!("live:{label}"));
+        assert_eq!(
+            bundle.value["runtime"]["client"]["notes"],
+            format!("unplugged {label} at 12:00")
+        );
+        assert_eq!(
+            bundle.value["profile"]["modules"][0]["serial_number"],
+            "…-777"
+        );
+
+        // Without redaction the caller's data is kept as given.
+        let mut plain = validated.clone();
+        plain.redact = false;
+        let bundle = build(&plain, &mut rig(), &|_| false, &Running::default());
+        assert_eq!(
+            bundle.value["runtime"]["client"]["activity"][0]["devices"][0]["path_hex"],
+            gone_hex
+        );
+    }
+
+    #[test]
     fn unredacted_bundles_keep_real_paths_and_serials() {
         let validated = validate(request(false, false, 0.0)).unwrap();
         let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
@@ -1507,6 +1612,13 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "{\n  \"a\": 1\n}\n");
         // No temporary files are left behind.
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        assert!(
+            write_bundle(&directory, &json!({ "a": 3 }), "20261005-120001")
+                .unwrap()
+                .0
+                .exists()
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
     }
 
     #[test]

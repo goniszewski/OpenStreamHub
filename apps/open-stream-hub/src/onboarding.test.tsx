@@ -18,11 +18,12 @@ describe('onboarding steps', () => {
       expect(markup).toContain('aria-labelledby="onboarding-title"');
     });
   });
-  it('shows Next and Skip on early steps, Back after the first, and Done only on the last', () => {
+  it('shows Next and Skip on early steps, Back disabled only on the first, and Done only on the last', () => {
     expect(render(0)).toContain('>Next<');
     expect(render(0)).toContain('>Skip guide<');
-    expect(render(0)).not.toContain('>Back<');
-    expect(render(1)).toContain('>Back<');
+    expect(render(0)).toContain('<button class="button" disabled="">Back</button>');
+    expect(render(1)).toContain('<button class="button">Back</button>');
+    expect(render(lastOnboardingStep)).toContain('<button class="button">Back</button>');
     const last = render(lastOnboardingStep);
     expect(last).toContain('>Done<');
     expect(last).not.toContain('>Next<');

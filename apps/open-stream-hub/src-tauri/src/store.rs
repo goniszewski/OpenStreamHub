@@ -4,12 +4,15 @@ use std::{
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::PathBuf,
-    time::UNIX_EPOCH,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use uuid::Uuid;
 
 pub(crate) const MAX_PROFILES: usize = 128;
+/// Hidden temporary files and staging folders older than this are leftovers
+/// of an interrupted write, not work in progress in another app window.
+pub(crate) const STALE_TEMPORARY: Duration = Duration::from_secs(60 * 60);
 const SAMPLE: &str = include_str!("../../../../examples/profiles/macos.json");
 pub(crate) const CONFLICT_ERROR: &str = "this profile changed on disk after it was loaded, possibly in another OpenStreamHub window; reload the saved profile before saving again";
 
@@ -57,14 +60,49 @@ pub(crate) fn is_hidden_entry(name: &OsStr) -> bool {
     name.as_encoded_bytes().first() == Some(&b'.')
 }
 
+/// True when `metadata` was last modified more than `STALE_TEMPORARY` ago.
+pub(crate) fn is_stale(metadata: &fs::Metadata) -> bool {
+    metadata.modified().is_ok_and(|modified| {
+        SystemTime::now()
+            .duration_since(modified)
+            .is_ok_and(|age| age > STALE_TEMPORARY)
+    })
+}
+
+/// Deletes stale `.*.tmp` regular files left by interrupted saves. Symbolic
+/// links, folders and recent files are left alone.
+fn remove_stale_temporaries(directory: &Path) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !is_hidden_entry(&name) || !name.as_encoded_bytes().ends_with(b".tmp") {
+            continue;
+        }
+        // DirEntry metadata does not follow symbolic links.
+        if entry
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && is_stale(&metadata))
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 pub struct ProfileStore {
     directory: PathBuf,
+    /// Legacy files that were left behind by migration on this launch; they
+    /// are reported with the unreadable profiles.
+    migration_skipped: Vec<UnreadableProfile>,
 }
 
 impl ProfileStore {
     pub fn open_for_app_data(app_data: PathBuf) -> Result<Self, String> {
-        let directory = crate::migration::prepare_store(&app_data)?;
-        Self::open(directory)
+        let (directory, migration_skipped) = crate::migration::prepare_store(&app_data)?;
+        let mut store = Self::open(directory)?;
+        store.migration_skipped = migration_skipped;
+        Ok(store)
     }
 
     pub fn open(directory: PathBuf) -> Result<Self, String> {
@@ -85,12 +123,17 @@ impl ProfileStore {
             }
             Err(error) => return Err(format!("could not inspect profile storage: {error}")),
         }
-        Ok(Self { directory })
+        remove_stale_temporaries(&directory);
+        Ok(Self {
+            directory,
+            migration_skipped: Vec::new(),
+        })
     }
 
     pub fn bootstrap(&self) -> Result<AppBootstrap, String> {
-        let mut listing = self.list()?;
-        if listing.profiles.is_empty() && listing.unreadable.is_empty() {
+        // Seeding depends only on what the store itself holds.
+        let stored = self.list_stored()?;
+        if stored.profiles.is_empty() && stored.unreadable.is_empty() {
             // Seed only an empty store, never beside unfamiliar or unreadable
             // data, which is retained for recovery. Hidden entries such as
             // .DS_Store are ignored.
@@ -107,8 +150,8 @@ impl ProfileStore {
             let mut profile = Profile::from_json(SAMPLE.as_bytes())?;
             profile.name = "Everyday".into();
             self.save(None, profile, None)?;
-            listing = self.list()?;
         }
+        let listing = self.list()?;
         let profile = match listing.profiles.first() {
             Some(selected) => Some(self.load(&selected.id)?),
             None => None,
@@ -123,12 +166,22 @@ impl ProfileStore {
     }
 
     /// Lists readable profiles and reports each unreadable `.json` entry
-    /// separately, so one damaged file never hides the others.
+    /// separately, so one damaged file never hides the others. Legacy files
+    /// skipped by migration on this launch are reported as unreadable too.
     pub fn list(&self) -> Result<ProfileListing, String> {
+        let mut listing = self.list_stored()?;
+        listing
+            .unreadable
+            .extend(self.migration_skipped.iter().cloned());
+        Ok(listing)
+    }
+
+    /// The store's own entries. Above `MAX_PROFILES` entries only the first
+    /// `MAX_PROFILES` by filename are listed; creating more is refused.
+    fn list_stored(&self) -> Result<ProfileListing, String> {
         let entries = fs::read_dir(&self.directory)
             .map_err(|error| format!("could not list profiles: {error}"))?;
-        let mut profiles = Vec::new();
-        let mut unreadable = Vec::new();
+        let mut candidates = Vec::new();
         for entry in entries {
             let entry = entry.map_err(|error| format!("could not read profile entry: {error}"))?;
             let path = entry.path();
@@ -137,12 +190,16 @@ impl ProfileStore {
             {
                 continue;
             }
-            if profiles.len() + unreadable.len() == MAX_PROFILES {
-                return Err(format!("profile storage exceeds {MAX_PROFILES} profiles"));
-            }
+            candidates.push((entry.file_name(), path));
+        }
+        candidates.sort();
+        candidates.truncate(MAX_PROFILES);
+        let mut profiles = Vec::new();
+        let mut unreadable = Vec::new();
+        for (name, path) in candidates {
             let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
                 unreadable.push(UnreadableProfile {
-                    id: entry.file_name().to_string_lossy().into_owned(),
+                    id: name.to_string_lossy().into_owned(),
                     error: "profile filename is not valid UTF-8".into(),
                 });
                 continue;
@@ -255,7 +312,7 @@ impl ProfileStore {
                 id.to_owned()
             }
             None => {
-                let listing = self.list()?;
+                let listing = self.list_stored()?;
                 if listing.profiles.len() + listing.unreadable.len() >= MAX_PROFILES {
                     return Err(format!(
                         "profile storage permits at most {MAX_PROFILES} profiles; delete a profile before creating another"
@@ -671,6 +728,68 @@ mod tests {
         fs::write(&bad_path, b"corrupt").unwrap();
         assert!(store.delete(&bad_id, None).is_err());
         assert_eq!(fs::read(&bad_path).unwrap(), b"corrupt");
+    }
+
+    #[test]
+    fn overfull_storage_lists_a_partial_set_and_refuses_only_new_profiles() {
+        let (directory, store) = store();
+        let profiles = directory.path().join("profiles");
+        let bytes = serde_json::to_vec(&test_profiles::folders()).unwrap();
+        for _ in 0..MAX_PROFILES + 2 {
+            fs::write(profiles.join(format!("{}.json", Uuid::new_v4())), &bytes).unwrap();
+        }
+        let listing = store.list().unwrap();
+        assert_eq!(listing.profiles.len(), MAX_PROFILES);
+        assert!(listing.unreadable.is_empty());
+        let bootstrap = store.bootstrap().unwrap();
+        assert_eq!(bootstrap.profiles.len(), MAX_PROFILES);
+        let first = bootstrap.profile.unwrap();
+        let error = store
+            .save(None, test_profiles::folders(), None)
+            .unwrap_err();
+        assert!(error.contains("delete a profile"), "{error}");
+        // Existing profiles can still be edited and deleted.
+        let saved = store
+            .save(Some(&first.id), first.profile, Some(first.modified_at_ms))
+            .unwrap();
+        store.delete(&saved.id, Some(saved.modified_at_ms)).unwrap();
+        assert_eq!(fs::read_dir(&profiles).unwrap().count(), MAX_PROFILES + 1);
+    }
+
+    #[test]
+    fn opening_removes_only_stale_hidden_temporary_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let profiles = directory.path().join("profiles");
+        fs::create_dir(&profiles).unwrap();
+        let old =
+            std::time::SystemTime::now() - STALE_TEMPORARY - std::time::Duration::from_secs(60);
+        let age = |path: &Path| {
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        };
+        let stale = profiles.join(format!(".{}.tmp", Uuid::new_v4()));
+        let fresh = profiles.join(format!(".{}.tmp", Uuid::new_v4()));
+        let visible = profiles.join("visible.tmp");
+        let finder = profiles.join(".DS_Store");
+        for path in [&stale, &fresh, &visible, &finder] {
+            fs::write(path, b"partial").unwrap();
+        }
+        for path in [&stale, &visible, &finder] {
+            age(path);
+        }
+        fs::create_dir(profiles.join(".folder.tmp")).unwrap();
+        let store = ProfileStore::open(profiles.clone()).unwrap();
+        assert!(!stale.exists());
+        assert!(fresh.exists() && visible.exists() && finder.exists());
+        assert!(profiles.join(".folder.tmp").is_dir());
+        // Hidden leftovers never count as data: once the visible file is gone
+        // the store is seeded.
+        fs::remove_file(&visible).unwrap();
+        assert_eq!(store.bootstrap().unwrap().profiles.len(), 1);
     }
 
     #[cfg(unix)]

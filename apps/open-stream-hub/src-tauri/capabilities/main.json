@@ -4,7 +4,8 @@
   "description": "Local profile editing, device-free replay, and read-only device input feeds, supervised masterhub-service action runs with sleep/wake and reconnect sessions, local diagnostic bundles, and offline display artwork preparation in the main window.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-destroy",
     "allow-bootstrap",
     "allow-list-profiles",

@@ -108,6 +108,10 @@ describe('ServiceRunner', () => {
     const entries = t.runner.getState().runs[t.id].entries;
     expect(entries).toHaveLength(maxEntries);
     expect(entries.at(-1)!.text).toBe(`line ${maxEntries + 49}`);
+    // Each entry keeps a sequence number that survives trimming (a stable list key).
+    expect(entries[0].seq).toBe(50);
+    expect(entries.at(-1)!.seq).toBe(maxEntries + 49);
+    expect(entries.every((entry, index) => entry.seq === 50 + index)).toBe(true);
   });
   it('never executes without a confirmation that resolves true', async () => {
     const t = setup();
@@ -198,7 +202,8 @@ describe('session manager', () => {
     // late exit of the superseded process does not end the session
     t.status('exited', { exit_code: 1 });
     expect(run(t).state).toBe('running');
-    expect(t.runner.isActivePath('AABB')).toBe(true);
+    // The session owns only its current path, not the one its name came from.
+    expect(t.runner.isActivePath('AABB')).toBe(false);
     expect(t.runner.isActivePath('CCDD')).toBe(true);
     // exit of the current process is applied
     t.handlers['service://status']({ payload: { service_id: id2, state: 'exited', execute: false } });
@@ -212,7 +217,8 @@ describe('session manager', () => {
       session(t, phase, { service_id: null });
       expect(t.runner.isActivePath('ccdd', device)).toBe(true);
       expect(t.runner.isActivePath('eeff', other)).toBe(false);
-      expect(t.runner.isActivePath('aabb')).toBe(true);
+      expect(t.runner.isActivePath('aabb', { ...device, path_hex: 'aabb' })).toBe(true);
+      expect(t.runner.isActivePath('aabb')).toBe(false);
     }
     session(t, 'stopped', { service_id: null, reason: 'user' });
     expect(t.runner.isActivePath('ccdd', device)).toBe(false);
@@ -266,6 +272,43 @@ describe('session manager', () => {
     expect(findRun(runs, undefined)).toBe(runs[t.id]);
     expect(findRun(runs, { path_hex: 'ccdd', module: 'm131e', serial_number: 'SER12345' })).toBe(runs[t.id]);
     expect(findRun(runs, { path_hex: 'ccdd', module: 'm003k', serial_number: null })).toBeUndefined();
+  });
+  it('a replug frees the old path for another device whose session:<uuid> events attach to its run', async () => {
+    const t = await started();
+    session(t, 'waiting_for_device', { service_id: null, reason: 'device_removed', attempt: 1 });
+    session(t, 'running', { service_id: id2 });
+    const other = { path_hex: 'aabb', module: 'm131e' as const, serial_number: 'SER-2' };
+    expect(t.runner.isActivePath('aabb', other)).toBe(false);
+    expect(await t.runner.start(options)).toBe(true);
+    expect(t.calls.filter(call => call.command === 'start_service')).toHaveLength(2);
+    expect(t.runner.getState().error).toBeNull();
+    expect(t.runner.isActivePath('aabb', other)).toBe(true);
+    // The new process's status and records arrive before its session event, under the old session's name.
+    t.status('running');
+    t.record({ type: 'event', status: 'planned', event, action: { type: 'toggle_mute' } }); t.flush();
+    expect(run(t).session!.serviceId).toBe(id2);
+    expect(run(t).state).toBe('running');
+    expect(run(t).counters.events).toBe(0);
+    const fresh = Object.values(t.runner.getState().runs).find(r => r !== run(t))!;
+    expect(fresh).toMatchObject({ profileName: 'Everyday', state: 'running', counters: { events: 1 } });
+    expect(findRun(t.runner.getState().runs, other)).toBe(fresh);
+    const uuid = 'session:0b7c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d';
+    session(t, 'running', { session_id: uuid, service_id: t.id, serial_number: 'SER-2' });
+    const runs = t.runner.getState().runs;
+    expect(Object.keys(runs).sort()).toEqual([uuid, t.id].sort());
+    expect(Object.values(runs).some(r => r.profileName === 'Unknown profile')).toBe(false);
+    expect(runs[uuid]).toMatchObject({ serviceId: uuid, profileName: 'Everyday', counters: { events: 1 }, session: { serviceId: t.id, serialNumber: 'SER-2' } });
+    expect(findRun(runs, other)).toBe(runs[uuid]);
+    expect(findRun(runs, { path_hex: 'ccdd', module: 'm131e', serial_number: 'SER12345' })).toBe(runs[t.id]);
+    // Later records and status of the new process land in its own run, never in the moved session.
+    t.record({ type: 'event', status: 'unbound', event, action: null }); t.flush();
+    expect(t.runner.getState().runs[uuid].counters.events).toBe(2);
+    expect(run(t).counters.events).toBe(0);
+    await t.runner.stop(uuid);
+    expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });
+    t.status('exited', { exit_code: 0 });
+    expect(t.runner.getState().runs[uuid].state).toBe('exited');
+    expect(run(t).state).toBe('running');
   });
   it('a new start after a stopped session begins a clean run', async () => {
     const t = await started(); session(t, 'stopped', { service_id: null, reason: 'user' });

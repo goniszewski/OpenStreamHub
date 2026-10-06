@@ -1,7 +1,7 @@
 //! Local profile export. `export_profile` writes one pretty JSON file under
 //! `<app data>/exports/`. Nothing is uploaded; the user decides where the file
 //! goes. Files are never overwritten and only the newest `KEEP_EXPORTS` files
-//! matching the export name pattern are kept.
+//! of each profile slug matching the export name pattern are kept.
 
 use crate::{diagnostics::utc_stamps, replay};
 use cooltek_sdk_service::Profile;
@@ -47,8 +47,9 @@ pub fn file_name(slug: &str, stamp: &str) -> String {
     format!("{slug}-{stamp}.json")
 }
 
-/// The sort stamp of `<slug>-yyyymmdd-hhmmss.json`, or None for any other name.
-fn export_stamp(name: &str) -> Option<&str> {
+/// `(slug, sort stamp)` of `<slug>-yyyymmdd-hhmmss.json`, or None for any
+/// other name.
+fn export_stamp(name: &str) -> Option<(&str, &str)> {
     let body = name.strip_suffix(".json")?;
     let stamp = body.get(body.len().checked_sub(STAMP_LEN)?..)?;
     let slug = body[..body.len() - STAMP_LEN].strip_suffix('-')?;
@@ -64,7 +65,7 @@ fn export_stamp(name: &str) -> Option<&str> {
         && slug
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    (stamp_ok && slug_ok).then_some(stamp)
+    (stamp_ok && slug_ok).then_some((slug, stamp))
 }
 
 pub(crate) fn create_private_dir(directory: &Path, label: &str) -> Result<(), String> {
@@ -86,7 +87,8 @@ pub(crate) fn create_private_dir(directory: &Path, label: &str) -> Result<(), St
 
 /// Writes a new 0600 file without ever replacing one: content goes to a
 /// private temporary file that is hard-linked to its final name (failing if
-/// that name exists) and unlinked.
+/// that name exists) and unlinked, then the folder itself is flushed so the
+/// new name survives a crash.
 pub(crate) fn write_new(
     directory: &Path,
     name: &str,
@@ -121,28 +123,45 @@ pub(crate) fn write_new(
         ),
         _ => format!("could not write the {what}: {error}"),
     })?;
+    #[cfg(unix)]
+    fs::File::open(directory)
+        .and_then(|folder| folder.sync_all())
+        .map_err(|error| format!("could not flush the {what} folder: {error}"))?;
     Ok(path)
 }
 
-/// Deletes all but the newest `keep` export files; other files are ignored.
-pub fn prune(directory: &Path, keep: usize) {
+/// Deletes all but the newest `keep` files of each slug among the names that
+/// `key` maps to `(slug, sort stamp)`; other files are ignored.
+pub(crate) fn prune_per_slug(directory: &Path, keep: usize, key: fn(&str) -> Option<(&str, &str)>) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
-    let mut exports: Vec<(String, String, PathBuf)> = entries
+    let mut files: Vec<(String, String, String, PathBuf)> = entries
         .flatten()
         .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
         .filter_map(|entry| {
             let name = entry.file_name().into_string().ok()?;
-            let stamp = export_stamp(&name)?.to_string();
-            Some((stamp, name, entry.path()))
+            let (slug, stamp) = key(&name)?;
+            Some((slug.to_owned(), stamp.to_owned(), name, entry.path()))
         })
         .collect();
-    exports.sort();
-    let excess = exports.len().saturating_sub(keep);
-    for (_, _, path) in exports.into_iter().take(excess) {
-        let _ = fs::remove_file(path);
+    // Newest first within each slug.
+    files.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| (&b.1, &b.2).cmp(&(&a.1, &a.2))));
+    let mut kept = 0;
+    for (index, (slug, _, _, path)) in files.iter().enumerate() {
+        if index == 0 || files[index - 1].0 != *slug {
+            kept = 0;
+        }
+        kept += 1;
+        if kept > keep {
+            let _ = fs::remove_file(path);
+        }
     }
+}
+
+/// Deletes all but the newest `keep` export files of each profile slug.
+pub fn prune(directory: &Path, keep: usize) {
+    prune_per_slug(directory, keep, export_stamp);
 }
 
 /// The command without Tauri: validates, writes, prunes.
@@ -236,14 +255,17 @@ mod tests {
     }
 
     #[test]
-    fn retention_keeps_the_newest_exports_and_ignores_other_files() {
+    fn retention_keeps_the_newest_exports_per_slug_and_ignores_other_files() {
         let directory = tempfile::tempdir().unwrap();
         let directory = directory.path();
+        // Two old exports of a rarely exported profile survive many newer
+        // exports of another one.
+        for index in 0..2 {
+            let name = file_name("beta-desk", &format!("20000101-0000{index:02}"));
+            fs::write(directory.join(name), "{}").unwrap();
+        }
         for index in 0..23 {
-            let name = file_name(
-                if index % 2 == 0 { "alpha" } else { "beta" },
-                &format!("20261005-1200{index:02}"),
-            );
+            let name = file_name("alpha", &format!("20261005-1200{index:02}"));
             fs::write(directory.join(name), "{}").unwrap();
         }
         let unrelated = [
@@ -265,9 +287,13 @@ mod tests {
         // 20 export files plus the unrelated near-miss `Alpha-...120000.json`
         // and `.txt` that also contain "-1200".
         assert_eq!(kept, KEEP_EXPORTS + 2);
-        assert!(!names.contains(&file_name("beta", "20261005-120001")));
-        assert!(names.contains(&file_name("beta", "20261005-120003")));
+        for index in 0..3 {
+            assert!(!names.contains(&file_name("alpha", &format!("20261005-1200{index:02}"))));
+        }
+        assert!(names.contains(&file_name("alpha", "20261005-120003")));
         assert!(names.contains(&file_name("alpha", "20261005-120022")));
+        assert!(names.contains(&file_name("beta-desk", "20000101-000000")));
+        assert!(names.contains(&file_name("beta-desk", "20000101-000001")));
         for name in unrelated {
             assert!(names.iter().any(|item| item == name), "{name}");
         }

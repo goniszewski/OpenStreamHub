@@ -32,9 +32,11 @@ export function recordEdit<T>(history: History<T>, before: T, after: T, meta: Ed
   if (same(before, after)) return history;
   if (shouldCoalesce(history.last, meta) && history.past.length > 0) {
     // The step already holds the state from before the burst. If the burst ended
-    // back at that state, the step would be a no-op, so it is dropped.
-    const past = same(history.past[history.past.length - 1], after) ? history.past.slice(0, -1) : history.past;
-    return { past, future: [], last: meta };
+    // back at that state, the step would be a no-op, so it is dropped. The burst
+    // ends with it (last: null): otherwise the next keystroke would coalesce into
+    // the unrelated step below and undo would revert that earlier change too.
+    if (same(history.past[history.past.length - 1], after)) return { past: history.past.slice(0, -1), future: [], last: null };
+    return { past: history.past, future: [], last: meta };
   }
   return { past: [...history.past, before].slice(-limit), future: [], last: meta };
 }

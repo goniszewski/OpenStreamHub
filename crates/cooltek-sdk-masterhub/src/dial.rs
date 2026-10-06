@@ -59,28 +59,44 @@ pub fn software_mode_report(enabled: bool) -> [u8; FEATURE_REPORT_LENGTH] {
 /// Explicitly sets dial backlight through a physical or test transport.
 ///
 /// # Errors
-/// Returns an error for an invalid value or a transport failure.
+/// Returns an error for an invalid value, a descriptor-declared feature length
+/// other than 32 bytes (before writing), or a transport failure.
 pub fn set_backlight<T: ReportTransport + ?Sized>(transport: &T, value: u8) -> HidResult<()> {
-    transport.send_feature_report(&backlight_report(value)?)
+    send_feature(transport, &backlight_report(value)?)
 }
 
 /// Explicitly sends the dial's raw three-channel solid-color command.
 ///
 /// # Errors
-/// Returns a transport failure without performing any other operation.
+/// Returns an error, before writing, when the HID descriptor declares the
+/// feature report with a length other than 32 bytes; otherwise a transport failure.
 pub fn set_color<T: ReportTransport + ?Sized>(transport: &T, channels: [u8; 3]) -> HidResult<()> {
-    transport.send_feature_report(&color_report(channels))
+    send_feature(transport, &color_report(channels))
 }
 
 /// Explicitly enters or leaves software mode without extra initialization.
 ///
 /// # Errors
-/// Returns a transport failure without performing any other operation.
+/// Returns an error, before writing, when the HID descriptor declares the
+/// feature report with a length other than 32 bytes; otherwise a transport failure.
 pub fn set_software_mode<T: ReportTransport + ?Sized>(
     transport: &T,
     enabled: bool,
 ) -> HidResult<()> {
-    transport.send_feature_report(&software_mode_report(enabled))
+    send_feature(transport, &software_mode_report(enabled))
+}
+
+/// Shared send path for the dial's fixed 32-byte feature commands.
+///
+/// Consults the HID descriptor (read-only) first and sends nothing when it
+/// declares the report with another length; an unreadable descriptor or an
+/// undeclared report does not block the command.
+fn send_feature<T: ReportTransport + ?Sized>(
+    transport: &T,
+    report: &[u8; FEATURE_REPORT_LENGTH],
+) -> HidResult<()> {
+    crate::transport::check_feature_report_length(transport, report[0], report.len())?;
+    transport.send_feature_report(report)
 }
 
 fn feature_body(report: &[u8], expected_id: u8) -> HidResult<&[u8]> {
@@ -351,6 +367,7 @@ mod tests {
         received: usize,
         output_results: RefCell<VecDeque<HidResult<usize>>>,
         fail_features: bool,
+        descriptor: Option<Vec<u8>>,
     }
 
     impl ReportTransport for Fake {
@@ -382,6 +399,44 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Ok(report.len()))
         }
+
+        fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            let descriptor = self
+                .descriptor
+                .as_ref()
+                .ok_or_else(|| invalid("no descriptor"))?;
+            buffer[..descriptor.len()].copy_from_slice(descriptor);
+            Ok(descriptor.len())
+        }
+    }
+
+    #[test]
+    fn feature_commands_check_the_declared_feature_length_before_writing() {
+        let wrong = Fake {
+            // ID 3 declared as a 64-byte feature report.
+            descriptor: Some(vec![0x75, 0x08, 0x85, 0x03, 0x95, 63, 0xb1, 0x02]),
+            ..Fake::default()
+        };
+        for error in [
+            set_backlight(&wrong, 50).unwrap_err(),
+            set_color(&wrong, [1, 2, 3]).unwrap_err(),
+            set_software_mode(&wrong, true).unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("declared as 64 bytes"),
+                "{error}"
+            );
+        }
+        assert!(wrong.feature_writes.borrow().is_empty());
+
+        let exact = Fake {
+            descriptor: Some(vec![0x75, 0x08, 0x85, 0x03, 0x95, 31, 0xb1, 0x02]),
+            ..Fake::default()
+        };
+        set_backlight(&exact, 50).unwrap();
+        set_color(&exact, [1, 2, 3]).unwrap();
+        set_software_mode(&exact, false).unwrap();
+        assert_eq!(exact.feature_writes.borrow().len(), 3);
     }
 
     #[test]

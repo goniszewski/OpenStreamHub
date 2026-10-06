@@ -8,6 +8,9 @@ import { findRun, idleServiceState, isActiveRun, isStale, maxReconnectAttempts }
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 
+// The Resume actions button, focused after Review on a paused-run notice.
+export const serviceResumeId = 'service-resume';
+
 export type PlatformInfo = { platform?: string; userAgent?: string };
 export const isMacPlatform = (info: PlatformInfo | undefined) => /mac/i.test(`${info?.platform ?? ''} ${info?.userAgent ?? ''}`);
 
@@ -53,6 +56,13 @@ export function relativeTime(at: number, now: number): string {
   return minutes < 60 ? `${minutes}m ago` : `${Math.floor(minutes / 60)}h ago`;
 }
 
+// Answers an open Execute confirmation with false and forgets it.
+export function settlePendingConfirm(pending: { current: ((ok: boolean) => void) | null }) {
+  const resolve = pending.current;
+  pending.current = null;
+  resolve?.(false);
+}
+
 const noopSubscribe = () => () => {};
 const idleFeed = () => idleFeedState;
 const idleRunner = () => idleServiceState;
@@ -70,6 +80,10 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
   const [confirmKind, setConfirmKind] = useState<'start' | 'resume'>('start');
   const [clock, setClock] = useState(() => Date.now());
   const log = useRef<HTMLOListElement>(null);
+  // A confirmation still open when the panel unmounts (page change) answers false, so the start or resume never hangs.
+  const pendingConfirm = useRef(confirm);
+  pendingConfirm.current = confirm;
+  useEffect(() => () => settlePendingConfirm(pendingConfirm), []);
   const mac = isMacPlatform(platform);
   const enabled = desktop && runner !== undefined;
 
@@ -117,7 +131,7 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
     {run && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{run.execute ? 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
     {run && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{run.execute ? 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
     {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? ' Actions are paused.' : ''}</span></div></div>}
-    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} Resuming restarts "{run.profileName}" exactly as it was started.</span><button type="button" className="button danger" onClick={resume}>Resume actions…</button></div></div>}
+    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} Resuming restarts "{run.profileName}" exactly as it was started.</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
     {active && phase === 'running' && <p className="fine-print" role="status">Live preview paused while actions run.</p>}
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}
@@ -148,7 +162,7 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
       </dl>
       <ol className="service-log" ref={log} role="log" aria-label="Service activity" tabIndex={0}>
         {run.entries.length === 0 ? <li className="info">Waiting for activity…</li> : run.entries.slice(-100).map((entry, index) =>
-          <li key={`${run.entries.length}-${index}`} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
+          <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>
     </>}
     <ModalDialog open={confirm !== null} labelledBy="execute-title" describedBy="execute-message" onCancel={() => answer(false)}>

@@ -361,3 +361,5 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .onboarding-dialog h2 { margin-bottom:10px; }.onboarding-dialog ul { margin:10px 0 0; padding-left:20px; font-size:13px; color:var(--muted); line-height:1.7; }
 .onboarding-dialog .dialog-actions { align-items:center; }.onboarding-dialog .dialog-actions .spacer { flex:1; }
 .help-link { display:flex; align-items:center; gap:13px; width:100%; min-height:43px; padding:8px 13px; border:0; border-radius:9px; background:transparent; text-align:left; color:var(--muted); }.help-link:hover { color:var(--text); background:var(--selected); }
+/* Focus lands on main only as a fallback (e.g. after dismissing the last notice); no outline around the whole page. */
+.main-content:focus { outline:none; }

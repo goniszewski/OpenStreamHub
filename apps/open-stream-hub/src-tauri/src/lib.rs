@@ -31,7 +31,17 @@ struct AppState {
     inventory: feed::InventoryWatcher,
     services: service::Services,
     sessions: session::Manager,
+    /// Serializes artwork jobs (a single-permit async lock), so concurrent
+    /// requests cannot decode several large images at once.
+    artwork: tauri::async_runtime::Mutex<()>,
 }
+
+/// How long a sleep notification waits for the pre-sleep stop. Every service
+/// is stopped in parallel, which takes at most `STOP_GRACE` plus the kill,
+/// reap and pipe drain (about 1 s); the rest covers a command the session
+/// driver may still be finishing (another bounded stop). macOS delays sleep
+/// for an observer only up to about 30 s, so this stays well below that.
+const SUSPEND_WAIT: Duration = Duration::from_secs(service::STOP_GRACE.as_secs() * 2 + 4);
 
 /// Bootstrap failures carry the expected storage folder so the frontend can
 /// tell the user where to look before retrying.
@@ -53,6 +63,7 @@ impl AppState {
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
             sessions: session::Manager::default(),
+            artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
 
@@ -191,6 +202,8 @@ fn start_feed(
     source: feed::FeedSource,
 ) -> Result<String, String> {
     let feed_id = feed::feed_id(&source)?;
+    // A running service owns its interface; the feed must not open it too.
+    service::check_feed_allowed(&state.services, &source)?;
     let thread_id = feed_id.clone();
     state.feeds.start(feed_id, move |stop| {
         feed::run_feed(&thread_id, &source, stop, |message| {
@@ -214,6 +227,7 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
 // never in the app. A read-only feed on the same interface is stopped first
 // so the service owns the device. The run is wrapped in a sleep/wake and
 // reconnect session (`session.rs`) whose id is the returned service id.
+// Once app exit began nothing starts, not even an unmanaged run.
 #[tauri::command(async)]
 fn start_service(
     app: tauri::AppHandle,
@@ -222,6 +236,9 @@ fn start_service(
 ) -> Result<String, String> {
     if let Some(started) = state.sessions.start(request.clone()) {
         return started;
+    }
+    if state.sessions.is_closed() || state.services.is_closed() {
+        return Err(service::SHUTTING_DOWN.into());
     }
     run_service(&app, &request, None)
 }
@@ -289,6 +306,16 @@ impl session::Runner for AppRunner {
         }
     }
 
+    fn stop_many(&mut self, service_ids: &[String]) {
+        let state = self.app.state::<AppState>();
+        state.services.stop_many(service_ids, service::STOP_GRACE);
+    }
+
+    fn closed(&self) -> bool {
+        let state = self.app.state::<AppState>();
+        state.sessions.is_closed() || state.services.is_closed()
+    }
+
     fn emit(&mut self, state: &session::SessionState) {
         if let Err(error) = self.app.emit(session::STATE_EVENT, state) {
             eprintln!("could not emit a session event: {error}");
@@ -303,8 +330,12 @@ impl session::Runner for AppRunner {
 
 fn service_program() -> Result<PathBuf, String> {
     let exe = std::env::current_exe().ok();
+    // The override is a development aid; release builds never read it.
+    let env_override = cfg!(debug_assertions)
+        .then(|| std::env::var_os(service::BINARY_ENV))
+        .flatten();
     service::resolve_service_binary(
-        std::env::var_os(service::BINARY_ENV).as_deref(),
+        env_override.as_deref(),
         exe.as_deref().and_then(Path::parent),
         cfg!(debug_assertions),
     )
@@ -345,11 +376,13 @@ async fn create_diagnostics(
 }
 
 // Offline artwork preparation: decode, fit and encode on a blocking worker.
-// Nothing is sent to a device or over the network.
+// Nothing is sent to a device or over the network. One job runs at a time.
 #[tauri::command]
 async fn prepare_artwork(
+    state: State<'_, AppState>,
     request: artwork::PrepareRequest,
 ) -> Result<artwork::PrepareResult, String> {
+    let _permit = state.artwork.lock().await;
     tauri::async_runtime::spawn_blocking(move || artwork::prepare_artwork(&request))
         .await
         .map_err(|error| format!("the artwork worker failed: {error}"))?
@@ -427,8 +460,9 @@ pub fn run() {
             if let Err(error) = state.sessions.spawn(runner) {
                 eprintln!("{error}");
             }
-            // Sleep/wake events. A suspend waits (bounded) for the driver to
-            // stop services, so the service can restore hardware mode first.
+            // Sleep/wake events. A suspend waits (bounded by SUSPEND_WAIT)
+            // for the driver to stop every service in parallel, so each can
+            // restore hardware mode first.
             let power_events = sessions.clone();
             let sink: power::Sink = Arc::new(move |event| {
                 let (done, finished) = mpsc::channel();
@@ -439,7 +473,7 @@ pub fn run() {
                     .is_ok()
                     && wait
                 {
-                    let _ = finished.recv_timeout(service::STOP_GRACE + Duration::from_secs(1));
+                    let _ = finished.recv_timeout(SUSPEND_WAIT);
                 }
             });
             if let Err(error) = power::system_source().start(sink) {
@@ -491,6 +525,8 @@ pub fn run() {
         if let tauri::RunEvent::Exit = event {
             let state = app.state::<AppState>();
             // Sessions end first so nothing restarts while services stop.
+            // Both refuse later starts, so a session still busy past the
+            // wait cannot spawn an orphan after stop_all.
             state.sessions.shutdown(Duration::from_millis(500));
             // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
             state.services.stop_all(service::STOP_GRACE);
@@ -530,6 +566,7 @@ mod tests {
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
             sessions: session::Manager::default(),
+            artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
 

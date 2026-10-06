@@ -4,7 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
 import { NoticeStore } from './notices';
-import { NoticeRegion } from './NoticeRegion';
+import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
+import { serviceResumeId } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -167,7 +168,7 @@ export default function App() {
         </nav>
         <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
       </aside>
-      <main className="main-content">
+      <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and replay run in the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
         {bootstrapError && <div className="alert error" role="alert"><CircleHelp size={19} /><span><strong>Could not open profile storage.</strong> {bootstrapError.message}
@@ -187,7 +188,7 @@ export default function App() {
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
-    <NoticeRegion store={notices} onReview={() => setPage('devices')} />
+    <NoticeRegion store={notices} onReview={() => { setPage('devices'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
     <OnboardingDialog open={guide.open} step={guide.step} mac={mac} onStep={step => setGuide({ open: true, step })} onSkip={closeGuide} onDone={closeGuide} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>

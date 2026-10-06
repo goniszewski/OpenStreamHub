@@ -715,6 +715,10 @@ fn capture_input<T: ReportTransport>(
                     return finish(writer, started, count, EndReason::MaxReports, None);
                 }
             }
+            // A signal can interrupt the blocking read; that is a requested stop.
+            Err(_) if interrupted.load(Ordering::SeqCst) => {
+                return finish(writer, started, count, EndReason::Interrupted, None);
+            }
             Err(error) => {
                 finish(
                     writer,
@@ -1293,7 +1297,7 @@ mod tests {
                 // Simulate Ctrl-C arriving while the second report is read.
                 let bytes = self.reads.borrow_mut().pop_front().unwrap_or_default();
                 if self.reads.borrow().is_empty() {
-                    cooltek_sdk_cli::interrupt::signal_received(&self.flag);
+                    self.flag.store(true, Ordering::SeqCst);
                 }
                 buffer[..bytes.len()].copy_from_slice(&bytes);
                 Ok(bytes.len())
@@ -1379,6 +1383,42 @@ mod tests {
         let records = output_records(output);
         assert_eq!(records[0]["reason"], "interrupted");
         assert_eq!(records[0]["report_count"], 0);
+    }
+
+    #[test]
+    fn read_error_after_an_interrupt_ends_as_interrupted() {
+        struct SignalledRead(std::sync::Arc<AtomicBool>);
+        impl ReportTransport for SignalledRead {
+            fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+                // The signal arrives during the blocking read, which then fails.
+                self.0.store(true, Ordering::SeqCst);
+                Err(HidError::HidApiError {
+                    message: "read interrupted".into(),
+                })
+            }
+            fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
+                panic!("recording must not query vendor feature reports")
+            }
+            fn send_feature_report(&self, _: &[u8]) -> HidResult<()> {
+                Ok(())
+            }
+        }
+        let flag = std::sync::Arc::new(AtomicBool::new(false));
+        let mut reader = InputReader::new(SignalledRead(std::sync::Arc::clone(&flag)));
+        let mut output = Vec::new();
+        capture_input(
+            &mut reader,
+            &mut output,
+            Instant::now(),
+            Duration::from_secs(1),
+            100,
+            None,
+            &flag,
+        )
+        .unwrap();
+        let records = output_records(output);
+        assert_eq!(records[0]["reason"], "interrupted");
+        assert!(records[0].get("error").is_none());
     }
 
     #[test]

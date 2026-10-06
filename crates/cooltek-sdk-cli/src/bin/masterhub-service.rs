@@ -16,7 +16,7 @@ use cooltek_sdk_cli::{
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live},
-    service_events::{emit, execution, plan_report, process_work, start_record},
+    service_events::{emit, end_record, plan_report, process_work, start_record},
 };
 use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
 use cooltek_sdk_service::{
@@ -246,6 +246,7 @@ fn replay(
     let mut dispatcher = Dispatcher::Preview;
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
+    let mut matched_actions = 0u64;
     emit(
         output,
         start_record(
@@ -265,6 +266,9 @@ fn replay(
                 &raw,
                 report.timestamp_micros,
             )?;
+            summary.queued_report_count += 1;
+            summary.decoded_event_count += work.events.len() as u64;
+            matched_actions += work.events.iter().filter(|e| e.action().is_some()).count() as u64;
             process_work(
                 work,
                 &mut dispatcher,
@@ -290,16 +294,15 @@ fn replay(
     })();
     input.reset();
     engine.reset();
+    summary.incomplete_action_count = matched_actions.saturating_sub(summary.action_count);
     let footer = emit(
         output,
-        json!({
-            "type":"service_end", "schema_version":1,
-            "reason":if result.is_ok() {"capture_complete"} else {"error"},
-            "error":result.as_ref().err(),
-            "report_count":summary.report_count, "event_count":summary.event_count,
-            "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
-            "execution":execution(false),
-        }),
+        end_record(
+            "capture_complete",
+            result.as_ref().err().map(String::as_str),
+            &summary,
+            false,
+        ),
     );
     combine(result, footer)
 }

@@ -200,6 +200,7 @@ pub fn preview_binding(
     value: Option<InputValue>,
 ) -> Result<ReplayEvent, String> {
     validate_profile(&profile)?;
+    reject_blank_serial(&serial_number)?;
     let event = InputEvent {
         timestamp_micros: 0,
         control,
@@ -235,6 +236,17 @@ pub fn preview_binding(
     )
 }
 
+/// Preview serials are user-selected, so a blank one is a mistake. The service
+/// crate would normalise it to "any serial", which would hide that mistake.
+fn reject_blank_serial(serial_number: &Option<String>) -> Result<(), String> {
+    match serial_number {
+        Some(serial) if serial.trim().is_empty() => {
+            Err("serial number must not be blank".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 pub fn preview_keypad(
     profile: Profile,
     path: Vec<String>,
@@ -242,6 +254,7 @@ pub fn preview_keypad(
     serial_number: Option<String>,
 ) -> Result<KeypadPreview, String> {
     validate_profile(&profile)?;
+    reject_blank_serial(&serial_number)?;
     let mut session = ProfileSession::new(profile.into_v2()?)?;
     session.set_path(&path)?;
     let context = DeviceContext {

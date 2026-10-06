@@ -20,14 +20,14 @@ export function isMacPlatform(navigatorLike: { platform?: string; userAgent?: st
 const textInputTypes = new Set(['text', 'search', 'email', 'url', 'tel', 'password', 'number', 'date', 'datetime-local', 'month', 'time', 'week']);
 
 // True when focus is in a field with its own native undo (text input, textarea,
-// select, contenteditable). Undo and redo are then left to the browser so Cmd+Z
+// contenteditable). A select has no native undo, so Cmd+Z still undoes the draft. Undo and redo are then left to the browser so Cmd+Z
 // inside a field undoes the typing, not the last profile edit.
 export function isTextEntryTarget(target: unknown): boolean {
   if (!target || typeof target !== 'object') return false;
   const element = target as { tagName?: string; type?: string; isContentEditable?: boolean };
   if (element.isContentEditable) return true;
   const tag = element.tagName?.toUpperCase();
-  if (tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if (tag === 'TEXTAREA') return true;
   return tag === 'INPUT' && textInputTypes.has((element.type ?? 'text').toLowerCase());
 }
 

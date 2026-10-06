@@ -55,6 +55,17 @@ describe('RigPreview', () => {
     expect(markup).toContain('5x Fader Precision in rig');
     expect(markup).toContain('connected');
     expect(markup).toContain('Auto-detect modules');
+    // Faders are vertical sliders with a value, not toggle buttons.
+    const faders = markup.match(/<div[^>]*role="slider"[^>]*>/g) ?? [];
+    expect(faders).toHaveLength(5);
+    for (const fader of faders) {
+      expect(fader).toContain('aria-orientation="vertical"');
+      expect(fader).toContain('aria-valuemin="0"');
+      expect(fader).toContain('aria-valuemax="100"');
+      expect(fader).toContain('aria-valuenow="50"');
+      expect(fader).toContain('tabindex="0"');
+      expect(fader).not.toContain('aria-pressed');
+    }
     const off = make(false); await new Promise(resolve => setTimeout(resolve, 0));
     expect(renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={off} />)).not.toContain('5x Fader Precision in rig');
   });

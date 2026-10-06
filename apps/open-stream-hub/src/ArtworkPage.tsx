@@ -13,21 +13,25 @@ import { copyText } from './ProfileTransfer';
 
 export interface ArtworkSource { name: string; base64: string; mime: string; size: number }
 
-const encoderArea = { left: 20, top: 14, width: 60, height: 56 };
+// The encoder screen has the same two-level geometry as the main hero in
+// DevicesPage: the single-display box (20/14/60/56 of the artwork), and inside it
+// the round screen from `.encoder-display` in styles.css (17/16/65/63).
+const encoderBox = { left: 20, top: 14, width: 60, height: 56 };
 
-// The prepared JPEG replaces the display area of the module artwork, exactly
-// as it was encoded: the stage only scales it.
+// The prepared JPEG fills the display area (cover, clipped to the round screen
+// for the dial); the stage only scales it.
 function ArtworkStage({ target, src, busy }: { target: ArtworkTarget; src: string | null; busy: boolean }) {
   const dial = target === 'dial';
   const key = moduleArtwork.m4315.controls[0];
-  const area = dial ? encoderArea : key;
+  const area = dial ? encoderBox : key;
   const style: CSSProperties = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
+  const display = <div className={`artwork-display${dial ? ' round' : ''}${busy ? ' busy' : ''}`} style={dial ? undefined : style}>
+    {src ? <img src={src} alt="" draggable={false} /> : <span className="artwork-display-empty" aria-hidden="true" />}
+  </div>;
   return <div className={`artwork-stage ${dial ? 'dial' : 'keypad'}`} style={{ '--art-aspect': dial ? 1 : moduleArtwork.m4315.aspect } as CSSProperties}
     role="img" aria-label={dial ? 'Prepared image on the encoder display' : 'Prepared image on key 1 of the 15-key display'}>
     <img className="artwork-module" src={`/modules/${dial ? 'encoder' : 'keys'}.png`} alt="" draggable={false} />
-    <div className={`artwork-display${dial ? ' round' : ''}${busy ? ' busy' : ''}`} style={style}>
-      {src ? <img src={src} alt="" draggable={false} /> : <span className="artwork-display-empty" aria-hidden="true" />}
-    </div>
+    {dial ? <div className="artwork-dial-box" style={style}>{display}</div> : display}
   </div>;
 }
 

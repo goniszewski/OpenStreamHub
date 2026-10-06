@@ -1,5 +1,7 @@
 import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, Profile, ProfileListing, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
 import { closeDecision, stableStringify } from './draft-model';
+import { emptyHistory, recordEdit, redoStep, undoStep } from './edit-history';
+import type { History } from './edit-history';
 import { newDraftKey, restoreDecision } from './draft-store';
 import type { DraftPersister, StoredDraft } from './draft-store';
 import { copyName, ImportError, importName, parseImportedProfile, withName } from './profile-library';
@@ -50,6 +52,9 @@ export interface SessionState {
   // Increments whenever a different stored or new profile replaces the draft,
   // so view state such as the open keypad folder can reset.
   draftGeneration: number;
+  // Whether the bounded edit history has a step to undo or redo.
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 export const emptyProfile: Profile = { schema_version: 1, name: 'New profile', bindings: [] };
@@ -85,8 +90,9 @@ export class ProfileSession {
   private state: SessionState;
   private readonly listeners = new Set<() => void>();
   private readonly sequence = { bootstrap: 0, load: 0, list: 0, replay: 0, preview: 0, validation: 0 };
+  private history: History<Profile> = emptyHistory();
 
-  constructor(private readonly invoke: Invoke, initial: Profile, desktop: boolean, private readonly drafts: DraftPersister | null = null) {
+  constructor(private readonly invoke: Invoke, initial: Profile, desktop: boolean, private readonly drafts: DraftPersister | null = null, private readonly now: () => number = Date.now) {
     if (drafts) drafts.onOversize = () => this.setNotice('This draft is too large for a crash-recovery copy. Save it to keep your changes.');
     const draft = newDraft(initial);
     this.state = {
@@ -94,7 +100,7 @@ export class ProfileSession {
       profiles: [], unreadable: [], storagePath: '', ready: !desktop, bootstrapError: null,
       busy: desktop ? 'Opening profiles' : null, error: null, notice: null, validation: 'idle',
       replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, pendingIntent: null,
-      duplicatePrompt: false, restorePrompt: null, importError: null, exportResult: null,
+      duplicatePrompt: false, restorePrompt: null, importError: null, exportResult: null, canUndo: false, canRedo: false,
     };
   }
 
@@ -136,17 +142,18 @@ export class ProfileSession {
     if (!prompt) return;
     this.drafts?.release(prompt.key);
     const draft = this.state.draft;
-    if (!restore) { this.drafts?.store.clear(prompt.key); this.set({ restorePrompt: null }); return; }
+    const history = this.resetHistory();
+    if (!restore) { this.drafts?.store.clear(prompt.key); this.set({ restorePrompt: null, ...history }); return; }
     if (prompt.key === newDraftKey) {
-      this.set({ ...this.invalidateResults(), restorePrompt: null, draft: newDraft(prompt.draft.profile), draftGeneration: this.state.draftGeneration + 1, notice: 'Restored your unsaved new profile.' });
+      this.set({ ...this.invalidateResults(), ...history, restorePrompt: null, draft: newDraft(prompt.draft.profile), draftGeneration: this.state.draftGeneration + 1, notice: 'Restored your unsaved new profile.' });
     } else if (draft.profileId === prompt.key) {
       // Keeping the stored base time makes a save conflict if the file changed since.
       this.set({
-        ...this.invalidateResults(), restorePrompt: null, draftGeneration: this.state.draftGeneration + 1,
+        ...this.invalidateResults(), ...history, restorePrompt: null, draftGeneration: this.state.draftGeneration + 1,
         draft: { ...draft, profile: prompt.draft.profile, modifiedAtMs: prompt.draft.base_modified_at_ms ?? draft.modifiedAtMs },
         notice: prompt.changedOnDisk ? `Restored unsaved changes to ${prompt.name}. The saved profile changed on disk since, so saving will ask you to reload first.` : `Restored unsaved changes to ${prompt.name}.`,
       });
-    } else this.set({ restorePrompt: null });
+    } else this.set({ restorePrompt: null, ...history });
   }
 
   private invalidateResults(): Partial<SessionState> {
@@ -157,20 +164,47 @@ export class ProfileSession {
     return { replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, validation: 'idle', notice: null, error: null, exportResult: null, importError: null };
   }
 
+  // A different profile, or a saved baseline, replaces the draft: the edit
+  // history belongs to the old draft and is cleared.
+  private resetHistory(): Pick<SessionState, 'canUndo' | 'canRedo'> {
+    this.history = emptyHistory();
+    return { canUndo: false, canRedo: false };
+  }
+
   private adopt(stored: StoredProfile): Partial<SessionState> {
-    return { ...this.invalidateResults(), draft: storedDraft(stored), draftGeneration: this.state.draftGeneration + 1 };
+    return { ...this.invalidateResults(), ...this.resetHistory(), draft: storedDraft(stored), draftGeneration: this.state.draftGeneration + 1 };
   }
 
   setError(error: string | null) { this.set({ error }); }
   setNotice(notice: string | null) { this.set({ notice }); }
 
-  // Replaces the draft profile. Results computed from the old draft are discarded.
-  edit(profile: Profile) { this.set({ ...this.invalidateResults(), draft: { ...this.state.draft, profile } }); }
+  // Replaces the draft profile and records the change for undo. Results computed
+  // from the old draft are discarded. An optional `key` names the edited field:
+  // rapid consecutive edits with the same key become one undo step.
+  edit(profile: Profile, key?: string) {
+    this.history = recordEdit(this.history, this.state.draft.profile, profile, { key, at: this.now() });
+    this.set({ ...this.invalidateResults(), ...this.historyFlags(), draft: { ...this.state.draft, profile } });
+  }
 
   // Applies an edit to the latest draft, not to a value captured earlier.
-  update(change: (profile: Profile) => Profile) { this.edit(change(this.state.draft.profile)); }
+  update(change: (profile: Profile) => Profile, key?: string) { this.edit(change(this.state.draft.profile), key); }
 
-  newProfile(profile: Profile = emptyProfile) { this.set({ ...this.invalidateResults(), draft: newDraft(profile), draftGeneration: this.state.draftGeneration + 1 }); }
+  private historyFlags() { return { canUndo: this.history.past.length > 0, canRedo: this.history.future.length > 0 }; }
+
+  // Undo and redo move only the draft. The saved profile and its file are never
+  // touched, and the dirty state follows the draft (undoing back to the saved
+  // profile makes it clean). They wait while a profile operation is running.
+  undo(): boolean { return this.travel(undoStep(this.history, this.state.draft.profile)); }
+  redo(): boolean { return this.travel(redoStep(this.history, this.state.draft.profile)); }
+
+  private travel(step: { history: History<Profile>; value: Profile } | null): boolean {
+    if (!step || this.state.busy !== null) return false;
+    this.history = step.history;
+    this.set({ ...this.invalidateResults(), ...this.historyFlags(), draft: { ...this.state.draft, profile: step.value } });
+    return true;
+  }
+
+  newProfile(profile: Profile = emptyProfile) { this.set({ ...this.invalidateResults(), ...this.resetHistory(), draft: newDraft(profile), draftGeneration: this.state.draftGeneration + 1 }); }
 
   // Runs immediately, or asks before discarding an unsaved draft.
   guard(label: string, run: () => void) {
@@ -203,7 +237,7 @@ export class ProfileSession {
       // A never-saved draft is offered only when the opened profile has nothing to restore.
       if (!restorePrompt && value.profile) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
       this.set({
-        ...this.invalidateResults(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable,
+        ...this.invalidateResults(), ...this.resetHistory(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable,
         storagePath: value.storage_path, ready: true, busy: null,
         notice: value.profile ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
       });

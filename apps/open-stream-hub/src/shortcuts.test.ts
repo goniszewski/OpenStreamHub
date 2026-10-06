@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { handleShortcut, hint, installShortcuts, isMacPlatform, shortcutAction, withHint } from './shortcuts';
+import { handleShortcut, hint, installShortcuts, isMacPlatform, isTextEntryTarget, redoHint, shortcutAction, shortcutList, withHint } from './shortcuts';
 import type { KeyEventLike } from './shortcuts';
 
 const key = (name: string, extra: Partial<KeyEventLike> = {}): KeyEventLike => ({ key: name, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
@@ -39,7 +39,7 @@ describe('shortcutAction', () => {
 });
 
 describe('handleShortcut', () => {
-  const handlers = () => ({ mac: true, isPageEnabled: vi.fn((page: string) => page !== 'settings'), setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn() });
+  const handlers = () => ({ mac: true, isPageEnabled: vi.fn((page: string) => page !== 'settings'), setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => true) });
 
   it('prevents the default and runs the action, including from inputs', () => {
     const h = handlers();
@@ -72,7 +72,7 @@ describe('installShortcuts', () => {
       querySelector: vi.fn(() => dialogOpen ? {} : null),
     };
     const save = vi.fn();
-    const remove = installShortcuts(target as never, () => ({ mac: false, isPageEnabled: () => true, setPage: vi.fn(), save, duplicate: vi.fn() }));
+    const remove = installShortcuts(target as never, () => ({ mac: false, isPageEnabled: () => true, setPage: vi.fn(), save, duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: () => true }));
     const event = { ...key('s', { ctrlKey: true }), preventDefault: vi.fn() };
     listener!(event as unknown as Event);
     expect(save).toHaveBeenCalledOnce();
@@ -93,5 +93,77 @@ describe('hints', () => {
     expect(isMacPlatform({ platform: 'MacIntel' })).toBe(true);
     expect(isMacPlatform({ platform: 'Win32', userAgent: 'Windows' })).toBe(false);
     expect(isMacPlatform(undefined)).toBe(false);
+  });
+});
+
+describe('undo, redo and find', () => {
+  it('maps Cmd+Z / Cmd+Shift+Z on macOS and Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y elsewhere', () => {
+    expect(shortcutAction(key('z', { metaKey: true }), true)).toEqual({ type: 'undo' });
+    expect(shortcutAction(key('Z', { metaKey: true, shiftKey: true }), true)).toEqual({ type: 'redo' });
+    expect(shortcutAction(key('z', { ctrlKey: true }), false)).toEqual({ type: 'undo' });
+    expect(shortcutAction(key('Z', { ctrlKey: true, shiftKey: true }), false)).toEqual({ type: 'redo' });
+    expect(shortcutAction(key('y', { ctrlKey: true }), false)).toEqual({ type: 'redo' });
+    expect(shortcutAction(key('f', { metaKey: true }), true)).toEqual({ type: 'find' });
+    expect(shortcutAction(key('f', { ctrlKey: true }), false)).toEqual({ type: 'find' });
+  });
+
+  it('ignores the wrong modifier, Ctrl+Y on macOS, Alt and shifted non-Z keys', () => {
+    expect(shortcutAction(key('z', { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('z', { metaKey: true }), false)).toBeNull();
+    expect(shortcutAction(key('y', { metaKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('y', { ctrlKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('y', { ctrlKey: true, shiftKey: true }), false)).toBeNull();
+    expect(shortcutAction(key('z', { metaKey: true, altKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('f', { metaKey: true, shiftKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('z'), true)).toBeNull();
+    expect(shortcutAction(key('z', { metaKey: true }), true, { modalOpen: true })).toBeNull();
+  });
+
+  it('leaves undo and redo to the browser while focus is in a text field', () => {
+    for (const target of [{ tagName: 'INPUT', type: 'text' }, { tagName: 'INPUT' }, { tagName: 'INPUT', type: 'number' }, { tagName: 'INPUT', type: 'search' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' }, { tagName: 'DIV', isContentEditable: true }]) {
+      expect(isTextEntryTarget(target)).toBe(true);
+      expect(shortcutAction(key('z', { metaKey: true, target }), true)).toBeNull();
+      expect(shortcutAction(key('z', { metaKey: true, shiftKey: true, target }), true)).toBeNull();
+      expect(shortcutAction(key('y', { ctrlKey: true, target }), false)).toBeNull();
+    }
+  });
+
+  it('still intercepts on buttons, checkboxes, ranges, the body and with no target', () => {
+    for (const target of [{ tagName: 'BUTTON' }, { tagName: 'BODY' }, { tagName: 'INPUT', type: 'checkbox' }, { tagName: 'INPUT', type: 'range' }, { tagName: 'INPUT', type: 'radio' }, null, undefined]) {
+      expect(isTextEntryTarget(target)).toBe(false);
+      expect(shortcutAction(key('z', { metaKey: true, target }), true)).toEqual({ type: 'undo' });
+    }
+  });
+
+  it('other shortcuts keep working from inside a text field', () => {
+    expect(shortcutAction(key('s', { metaKey: true, target: { tagName: 'INPUT', type: 'text' } }), true)).toEqual({ type: 'save' });
+  });
+
+  it('handleShortcut runs undo/redo and only prevents default when it acts', () => {
+    const handlers = { mac: true, isPageEnabled: () => true, setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => false) };
+    const preventDefault = vi.fn();
+    expect(handleShortcut({ ...key('z', { metaKey: true }), preventDefault }, handlers, false)).toBe(true);
+    expect(handlers.undo).toHaveBeenCalledOnce();
+    expect(handleShortcut({ ...key('z', { metaKey: true, shiftKey: true }), preventDefault }, handlers, false)).toBe(true);
+    expect(handlers.redo).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledTimes(2);
+    const input = { tagName: 'INPUT', type: 'text' };
+    expect(handleShortcut({ ...key('z', { metaKey: true, target: input }), preventDefault }, handlers, false)).toBe(false);
+    expect(handlers.undo).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledTimes(2);
+    // Find outside the Profiles page keeps the browser's own Cmd+F.
+    expect(handleShortcut({ ...key('f', { metaKey: true }), preventDefault }, handlers, false)).toBe(false);
+    expect(preventDefault).toHaveBeenCalledTimes(2);
+    handlers.find.mockReturnValue(true);
+    expect(handleShortcut({ ...key('f', { metaKey: true }), preventDefault }, handlers, false)).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(3);
+  });
+
+  it('documents the shortcuts and hints', () => {
+    expect(withHint('Undo', 'Z', true)).toBe('Undo (⌘Z)');
+    expect(withHint('Undo', 'Z', false)).toBe('Undo (Ctrl+Z)');
+    expect(redoHint(true)).toBe('⌘⇧Z');
+    expect(redoHint(false)).toBe('Ctrl+Y');
+    expect(shortcutList.map(item => item.keys)).toEqual(expect.arrayContaining(['Z', 'Shift+Z', 'F']));
   });
 });

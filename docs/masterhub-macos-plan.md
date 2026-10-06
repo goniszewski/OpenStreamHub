@@ -1,6 +1,6 @@
 # MasterHUB macOS support plan
 
-Updated on 4 October 2026. This roadmap covers macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
+Updated on 6 October 2026. This roadmap covers macOS support for the M0064 base and all five control modules: M003K, M131E, M4315, M005S and M032LE. The SDK builds on Apple Silicon macOS; device access, physical input, and display behavior still require hardware validation.
 
 ## Scope and intended outcome
 
@@ -92,25 +92,27 @@ Gate: macOS reads dial gestures and repeatedly displays known patterns while inp
 
 Use a single owner for each device session to coordinate input and commands. Add bounded queues, explicit overflow reporting, bounded retries/timeouts, reconnect, and reinitialization. Identify modules by serial where available, with documented fallback when serials are missing or duplicated; paths may change.
 
-The live service owns input and mode cleanup on one thread, normalizes arrival-timestamped reports before a 64-report queue, and uses one action/log worker. Overflow, action failure, or stalled output cancels pending work. Normal limits use a finite drain; subprocess cancellation and one-shot dial cleanup are explicit. Worker/log deadlines do not bound synchronous native HID feature cleanup. Reconnection and OS lifecycle observation remain pending.
+The live service owns input and mode cleanup on one thread, normalizes arrival-timestamped reports before a 64-report queue, and uses one action/log worker. Overflow, action failure, or stalled output cancels pending work. Normal limits use a finite drain; subprocess cancellation and one-shot dial cleanup are explicit. Worker/log deadlines do not bound synchronous native HID feature cleanup. The service itself does not reconnect or observe OS lifecycle events; the desktop app's session manager does (see below).
 
-`DialSession` now provides explicit activation, suspension, caller-timed two-second resume and shutdown, clearing stale decoder state on transport failure. It does not subscribe to macOS notifications or reconnect automatically; firmware queries and display refresh remain caller operations. Optional host gesture tracking classifies a press/release at the application's 600 ms threshold. Actual lifecycle reliability and the remaining automatic service behavior are pending.
+`DialSession` now provides explicit activation, suspension, caller-timed two-second resume and shutdown, clearing stale decoder state on transport failure. It does not subscribe to macOS notifications or reconnect automatically; firmware queries and display refresh remain caller operations. Optional host gesture tracking classifies a press/release at the application's 600 ms threshold.
+
+The desktop app wraps each `masterhub-service` run in a session that stops the service on sleep, restarts it after wake, unplug or a crash by module and serial, and requires user confirmation before an executing session resumes; see the [session manager](masterhub-session-manager.md). It is tested with fake clocks, runners, inventories and power events. Actual lifecycle reliability remains pending hardware.
 
 Gate: base unplug/replug, module reinsertion, app restart, and sleep/wake recover without duplicate actions, stuck presses, or stale sessions. Fixture tests can prepare these behaviors, but actual lifecycle acceptance requires hardware.
 
 ### 6. Everyday macOS application and release
 
-The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. The [OpenStreamHub desktop app](../apps/open-stream-hub/README.md) now adds profile editing, strict validation, atomic local storage, and synthetic capture replay. It shares the service's profile schema, decoder and binding engine. All five modules appear in its catalog; all five control modules support binding editing and synthetic replay. Faders carry absolute positions into volume actions; rollers expose discrete directions without an inferred magnitude. Its previews use the dry-run dispatcher and open no HID interface.
+The reusable `cooltek-sdk-service` crate and `masterhub-service` CLI provide profiles, binding lookup, normalized input, and explicit macOS actions. The [OpenStreamHub desktop app](../apps/open-stream-hub/README.md) now adds profile editing, strict validation, atomic local storage, and synthetic capture replay. It shares the service's profile schema, decoder and binding engine. All five modules appear in its catalog; all five control modules support binding editing and synthetic replay. Faders carry absolute positions into volume actions; rollers expose discrete directions without an inferred magnitude. Replay previews use the dry-run dispatcher and open no HID interface. Beyond editing, the app provides undo/redo, binding search and conflict warnings, profile duplicate/import/export, crash-safe drafts, connection notices, a first-run guide, a live rig preview with hot-plug detection, offline display artwork preparation, a local [diagnostic bundle](masterhub-diagnostic-bundle.md), and supervised `masterhub-service` runs (a bundled Tauri sidecar; dry run by default, explicit Execute confirmation). Display upload from the app is not available.
 
 The [nested keypad folder milestone](masterhub-keypad-folders.md) adds schema-2 pages, 14 content keys plus Back at every folder level, an `L1`–`L8` depth badge, and shared stateful simulation. Existing profiles upgrade in memory without rewriting their files. Physical page redraw remains a display-acceptance task.
 
-Keep the desktop package alongside the SDK under `apps/open-stream-hub`, with separate npm and Cargo workspaces. Add focused-app profile rules and integrations as separate milestones. Connect reliable live sessions and explicit host action execution after physical input and action behavior have been validated. Document permissions only for actions that require them. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
+Keep the desktop package alongside the SDK under `apps/open-stream-hub`, with separate npm and Cargo workspaces. Add focused-app profile rules (see [focused-app rules](masterhub-focus-rules.md)) and integrations as separate milestones. Supervised live sessions and explicit host action execution exist in the app but need validation against physical input and action behavior. Document permissions only for actions that require them. System/app audio integrations need separate feasibility checks; do not equate generic volume control with arbitrary per-app mixing.
 
 The [controlled macOS smoke guide](masterhub-macos-smoke.md) provides device-free audio snapshot/restore checks and a scratch keystroke procedure. Observed effects, system-tool completion, and unresolved focus/output behavior are recorded separately from physical-device acceptance.
 
-Add useful dial content after the display milestone. Package, sign/notarize, and document compatible firmware and tested Mac architectures.
+Add useful dial content after the display milestone. Package, sign/notarize, and document compatible firmware and tested Mac architectures; see the [release process](release-process.md). Track remaining differences from the official application in the [Windows parity tracker](windows-parity-gaps.md).
 
-Gate: all target controls work during a real usage session, including reconnect and sleep/wake. Track support separately for input, display, lighting, and lifecycle.
+Run the [first hardware session checklist](masterhub-first-hardware-session.md) before claiming any of this. Gate: all target controls work during a real usage session, including reconnect and sleep/wake. Track support separately for input, display, lighting, and lifecycle.
 
 ## Windows capture procedure
 
@@ -172,4 +174,5 @@ Captures can establish how to reproduce existing hardware operations. They do no
 - Device communication and physical control/display/lifecycle tests: pending hardware.
 - Diagnostic implementation: complete; see the [diagnostic guide](masterhub-diagnostics.md), [implementation status](masterhub-implementation-status.md), and [protocol evidence](masterhub-protocol-evidence.md).
 - Official-software static analysis, recovered SDK capabilities, and CLI integration: complete and offline-validated. Hardware-dependent milestones remain pending.
+- Desktop app: profile editing, live preview, supervised runs with sleep/wake and reconnect handling, offline artwork preparation and diagnostic bundle implemented and tested with synthetic inputs and fakes (139 Rust and 317 frontend tests passing on 6 October 2026). Hardware acceptance, signing and notarization pending.
 - Binding/action service: implemented with synthetic replay, simulated transports, and mock host processes. Device input, actual host actions, throughput, and permissions require runtime acceptance.

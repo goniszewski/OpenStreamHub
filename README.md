@@ -96,6 +96,10 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | [Diagnostics](docs/masterhub-diagnostics.md) | Device inventory, raw recording, dial command previews, static images, JPEG packet plans, and offline replay |
 | [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, and explicit macOS actions |
 | [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |
+| [Windows parity tracker](docs/windows-parity-gaps.md) | Gaps against the official Windows application |
+| [First hardware session](docs/masterhub-first-hardware-session.md) | Checklist for the first session with physical modules |
+| [Release process](docs/release-process.md) | Signing, notarization and release packaging |
+| [Focused-app rules](docs/masterhub-focus-rules.md) | Rules for choosing a profile by the focused application |
 | [Session manager](docs/masterhub-session-manager.md) | Sleep/wake handling, reconnect rules and the Execute safety rule |
 | [Diagnostic bundle](docs/masterhub-diagnostic-bundle.md) | What the local diagnostic file collects, redaction and what is never collected |
 | [Building the desktop app](docs/building-the-desktop-app.md) | Sidecar bundling, environment override and signing caveat |

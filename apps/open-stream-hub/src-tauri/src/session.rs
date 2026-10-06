@@ -1293,8 +1293,9 @@ impl Manager {
     }
 
     /// `Ok(true)` once the driver handled the stop, `Ok(false)` without one.
-    /// A dead driver is `Ok(false)` too: stopping the plain process spawns
-    /// nothing, so that fallback stays safe.
+    /// A dead driver is `Ok(false)` too when the plain process may be stopped
+    /// instead (that spawns nothing, so the fallback stays safe). A
+    /// sessions-only stop has no such fallback, so it reports `DRIVER_STOPPED`.
     pub fn stop(&self, id: &str, sessions_only: bool) -> Result<bool, String> {
         match self.request(|done| Input::Stop {
             id: id.into(),
@@ -1302,7 +1303,7 @@ impl Manager {
             done,
         }) {
             None => Ok(false),
-            Some(Err(error)) if error == DRIVER_STOPPED => Ok(false),
+            Some(Err(error)) if error == DRIVER_STOPPED && !sessions_only => Ok(false),
             Some(answer) => answer.map(|()| true),
         }
     }
@@ -2528,6 +2529,11 @@ mod tests {
         );
         // Stopping the plain process stays possible.
         assert_eq!(manager.stop("service:aa", false), Ok(false));
+        // A sessions-only stop has no plain fallback: it reports the dead driver.
+        assert_eq!(
+            manager.stop("service:aa", true),
+            Err(DRIVER_STOPPED.to_string())
+        );
         // No driver configured: the caller falls back to plain services.
         let idle = Manager::default();
         assert_eq!(idle.start(request(&device, false)), None);

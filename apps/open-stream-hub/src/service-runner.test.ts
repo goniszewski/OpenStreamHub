@@ -545,10 +545,18 @@ describe('session manager', () => {
       expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Session stopped: the module was unplugged');
       expect(t.runner.isActivePath('aabb')).toBe(true);
     };
+    // `awaiting` is private; a stale entry has no other observable effect until a later start reuses the key.
+    const awaitingSize = (t: ReturnType<typeof setup>) => (t.runner as unknown as { awaiting: Map<string, string> }).awaiting.size;
+    // 'status' is the new process's 'starting' then 'running', which run_service reports inside the backend's start,
+    // before the new session's first state event.
     for (const [name, order] of [
       ['reply, old stopped, new first event', ['reply', 'stopped', 'record', 'first']],
       ['old stopped, reply, new first event', ['stopped', 'reply', 'record', 'first']],
       ['old stopped, new first event, reply', ['stopped', 'record', 'first', 'reply']],
+      ['reply, old stopped, status, new first event', ['reply', 'stopped', 'status', 'record', 'first']],
+      ['old stopped, reply, status, new first event', ['stopped', 'reply', 'status', 'record', 'first']],
+      ['old stopped, status, reply, new first event', ['stopped', 'status', 'reply', 'record', 'first']],
+      ['old stopped, status, new first event, reply', ['stopped', 'status', 'record', 'first', 'reply']],
     ] as const) {
       it(`adopts the pending run, never the old one, when events arrive as: ${name}`, async () => {
         const t = await moved();
@@ -557,19 +565,128 @@ describe('session manager', () => {
         t.results.start_service = async () => { await replied; return t.id; };
         const starting = t.runner.start(fresh);
         await tick();
+        // A reply after the old run's 'stopped' replaces the old run at once; before it, the old run stays until adoption.
+        let stopped = false, replaced = false;
         for (const step of order) {
-          if (step === 'reply') { reply(); expect(await starting).toBe(true); }
-          if (step === 'stopped') oldStopped(t);
+          if (step === 'reply') { replaced = stopped; reply(); expect(await starting).toBe(true); }
+          if (step === 'stopped') { stopped = true; oldStopped(t); }
+          if (step === 'status') {
+            t.status('starting'); t.status('running');
+            // The status lands in the new run (still `pending:` unless the reply already replaced the old run), never
+            // in the old one.
+            const runs = Object.values(t.runner.getState().runs);
+            expect(runs.find(r => r.profileName === 'Fresh')).toMatchObject({ state: 'running' });
+            const old = runs.filter(r => r.profileName === 'Everyday');
+            expect(old).toHaveLength(replaced ? 0 : 1);
+            if (!replaced) expect(old[0].state).toBe('exited');
+          }
           // The new process's first record, before its session event.
           if (step === 'record') { t.record({ type: 'event', status: 'unbound', event, action: null }); t.flush(); }
           if (step === 'first') newRunning(t);
         }
         expectFresh(t);
+        expect(awaitingSize(t)).toBe(0);
         // The old run's 'stopped', had it been late, would not end the adopted run either.
         await t.runner.stop(t.id);
         expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });
       });
     }
+    it('an executing session adopts the pending run, not an old run switched to another profile', async () => {
+      const t = await moved();
+      // A focused-app rule had switched the old session to generation 2.
+      session(t, 'running', { service_id: id2, profile_generation: 2, profile_id: 'p-browser', profile_name: 'Browser' });
+      expect(run(t)).toMatchObject({ profileName: 'Browser', profileGeneration: 2 });
+      let reply = () => {};
+      const replied = new Promise<void>(resolve => { reply = resolve; });
+      t.results.start_service = async () => { await replied; return t.id; };
+      const starting = t.runner.start({ ...fresh, execute: true }, async () => true);
+      await tick();
+      const newState = (phase: string, extra: Record<string, unknown> = {}) => session(t, phase, { serial_number: 'SER-2', execute: true, profile_generation: 0, profile_id: null, profile_name: 'Fresh', ...extra });
+      session(t, 'stopped', { service_id: null, reason: 'device_removed', profile_generation: 2, profile_id: 'p-browser', profile_name: 'Browser' });
+      t.status('starting', { execute: true }); t.status('running', { execute: true });
+      // The old run is untouched by the new process's status.
+      expect(run(t)).toMatchObject({ profileName: 'Browser', profileGeneration: 2, state: 'exited', session: { phase: 'stopped' } });
+      newState('running');
+      reply(); expect(await starting).toBe(true);
+      // The Mac slept and woke: the executing session waits for confirmation.
+      newState('suspended', { service_id: null, reason: 'sleep' });
+      newState('needs_confirmation', { service_id: null, reason: 'sleep' });
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs)).toEqual([t.id]);
+      expect(runs[t.id]).toMatchObject({ profileName: 'Fresh', profileGeneration: 0, execute: true, session: { phase: 'needs_confirmation', profileGeneration: 0 } });
+      expect(runs[t.id].profileSwitched).toBeFalsy();
+      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Session stopped: the module was unplugged');
+      expect(t.runner.isActivePath('aabb')).toBe(false);
+      // Resume asks once, for the profile shown, and names generation 0.
+      const shown: string[] = [];
+      expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
+      expect(shown).toEqual(['Fresh']);
+      expect(t.calls.filter(call => call.command === 'resume_session')).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 0 } }]);
+    });
+    it('old non-stopped events never take the path\'s routing from the pending run', async () => {
+      const t = await moved();
+      expect(await t.runner.start(fresh)).toBe(true);
+      // The old session keeps reporting from elsewhere while the pending run waits.
+      session(t, 'reconnecting', { service_id: null, reason: 'device_removed', attempt: 2 });
+      session(t, 'running', { service_id: id2 });
+      t.status('starting'); t.status('running');
+      t.record({ type: 'event', status: 'unbound', event, action: null }); t.flush();
+      expect(t.runner.getState().runs[`pending:${t.id}`]).toMatchObject({ profileName: 'Fresh', state: 'running', counters: { events: 1 } });
+      expect(run(t)).toMatchObject({ profileName: 'Everyday', counters: { events: 0 }, session: { serviceId: id2 } });
+      oldStopped(t);
+      newRunning(t);
+      expectFresh(t);
+    });
+    it('a reply after the new session already adopted the pending run awaits nothing', async () => {
+      const t = await moved();
+      const device = { path_hex: 'aabb', module: 'm131e' as const, serial_number: 'SER-2' };
+      let reply = () => {};
+      const replied = new Promise<void>(resolve => { reply = resolve; });
+      t.results.start_service = async () => { await replied; return t.id; };
+      const starting = t.runner.start({ ...fresh, device });
+      await tick();
+      oldStopped(t);
+      // Asleep: no process, matched by module and serial.
+      session(t, 'suspended', { service_id: null, reason: 'sleep', serial_number: 'SER-2' });
+      expect(Object.keys(t.runner.getState().runs)).toEqual([t.id]);
+      reply(); expect(await starting).toBe(true);
+      expect(awaitingSize(t)).toBe(0);
+      expect(Object.keys(t.runner.getState().runs)).toEqual([t.id]);
+      expect(run(t)).toMatchObject({ profileName: 'Fresh', session: { phase: 'suspended', serviceId: null } });
+    });
+    it('a pending run whose start failed never receives the old session\'s events', async () => {
+      const t = await moved();
+      t.failures.start_service = 'Another reader owns this device.';
+      expect(await t.runner.start(fresh)).toBe(false);
+      const pending = () => t.runner.getState().runs[`pending:${t.id}`];
+      expect(pending()).toMatchObject({ profileName: 'Fresh', state: 'failed' });
+      session(t, 'reconnecting', { service_id: null, reason: 'device_removed', attempt: 1 });
+      t.status('running');
+      session(t, 'running', { service_id: t.id });
+      expect(pending()).toMatchObject({ profileName: 'Fresh', state: 'failed', counters: { events: 0 } });
+      expect(pending().session).toBeUndefined();
+      expect(run(t)).toMatchObject({ profileName: 'Everyday', state: 'running', session: { phase: 'running', serviceId: t.id } });
+      session(t, 'stopped', { service_id: null, reason: 'user' });
+      delete t.failures.start_service;
+      expect(await t.runner.start(fresh)).toBe(true);
+      expect(run(t)).toMatchObject({ profileName: 'Fresh', state: 'starting' });
+      expect(pending()).toMatchObject({ state: 'failed' });
+    });
+    it('a pending run stopped before its session reports is adopted, stays stopping, then exits', async () => {
+      const t = await moved();
+      expect(await t.runner.start(fresh)).toBe(true);
+      await t.runner.stop(`pending:${t.id}`);
+      expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });
+      expect(t.runner.getState().runs[`pending:${t.id}`]).toMatchObject({ state: 'stopping' });
+      oldStopped(t);
+      newRunning(t);
+      expect(Object.keys(t.runner.getState().runs)).toEqual([t.id]);
+      expect(run(t)).toMatchObject({ profileName: 'Fresh', state: 'stopping', session: { phase: 'running', serviceId: t.id } });
+      session(t, 'stopped', { service_id: null, reason: 'user', serial_number: 'SER-2' });
+      expect(run(t)).toMatchObject({ profileName: 'Fresh', state: 'exited', session: { phase: 'stopped' } });
+      expect(t.runner.isActivePath('aabb')).toBe(false);
+      expect(await t.runner.start(fresh)).toBe(true);
+    });
     it('a late old stopped event does not end a run adopted on its own process', async () => {
       const t = await moved();
       expect(await t.runner.start(fresh)).toBe(true);

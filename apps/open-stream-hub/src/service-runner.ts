@@ -108,10 +108,12 @@ function adoptProfile(run: ServiceRun, payload: SessionStatePayload): Partial<Se
   };
 }
 const normalSerial = (serial: string | null | undefined) => serial?.trim() || null;
-// A run start() keyed `pending:` that has no session yet and was started on this module. A run keyed by its own service
-// id is named by its session directly (or by the start result), so it is never matched by device and two serial-less
-// runs of one module cannot be swapped.
-const startedOnMatches = (key: string, run: ServiceRun, payload: SessionStatePayload) => key.startsWith('pending:') && !run.session && run.state === 'starting' && run.startedOn !== undefined
+// A run start() keyed `pending:` that still waits for its session: none named it yet and its process has not ended. Its
+// process can already be 'running': start_service reports the process status before the session's first state event.
+const waitsForSession = (key: string, run: ServiceRun | undefined): run is ServiceRun => key.startsWith('pending:') && run !== undefined && !run.session && isActiveState(run.state);
+// A waiting run that was started on this module. A run keyed by its own service id is named by its session directly
+// (or by the start result), so it is never matched by device and two serial-less runs of one module cannot be swapped.
+const startedOnMatches = (key: string, run: ServiceRun, payload: SessionStatePayload) => waitsForSession(key, run) && run.startedOn !== undefined
   && run.startedOn.module === payload.module && normalSerial(run.startedOn.serialNumber) === normalSerial(payload.serial_number);
 export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, executed: 0, failed: 0 });
 
@@ -331,9 +333,13 @@ export class ServiceRunner {
         : Object.entries(this.runs()).find(([key, run]) => startedOnMatches(key, run, payload))?.[0];
       if (!this.adopt(provisional, id)) this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
     }
-    // The old run's 'stopped' leaves the path's process routed to the pending run that waits for the new session.
+    // The old run's 'stopped' leaves the path's process routed to the pending run that waits for the new session, and so
+    // does any other event of the old session: only an event on the path's own process takes it back from a pending run
+    // that still waits.
     const owner = this.sessionOf.get(id);
-    if (payload.phase !== 'stopped' || owner === undefined || owner === id || !this.runs()[owner]) this.sessionOf.set(id, id);
+    const ownedElsewhere = owner !== undefined && owner !== id && this.runs()[owner] !== undefined;
+    const pendingOwner = ownedElsewhere && waitsForSession(owner, this.runs()[owner]);
+    if (!ownedElsewhere || (payload.phase !== 'stopped' && !(pendingOwner && payload.service_id !== id))) this.sessionOf.set(id, id);
     if (typeof payload.service_id === 'string') this.sessionOf.set(payload.service_id, id);
     const at = this.now();
     this.update(id, run => {
@@ -352,7 +358,7 @@ export class ServiceRunner {
   // one start_service answered with `id`, else one started on the event's process (or, without one, its module).
   private waitingRun(id: string, existing: ServiceRun, payload: SessionStatePayload): string | undefined {
     const runs = this.runs();
-    const isWaiting = (key: string | undefined): key is string => key !== undefined && key.startsWith('pending:') && runs[key] !== undefined && !runs[key].session && runs[key].state === 'starting';
+    const isWaiting = (key: string | undefined): key is string => key !== undefined && waitsForSession(key, runs[key]);
     const awaited = this.awaiting.get(id);
     if (isActiveRun(existing)) {
       // Only after the backend confirmed the name, and only for an event on the pending run's own process.
@@ -392,7 +398,13 @@ export class ServiceRunner {
     this.pending = runs;
     this.sessionOf.forEach((session, key) => { if (session === provisional) this.sessionOf.set(key, sessionId); });
     this.sessionOf.set(sessionId, sessionId);
+    this.forgetAwaiting(provisional);
     return true;
+  }
+
+  // Drops every `awaiting` entry that targets `key`, a run that was adopted or replaced.
+  private forgetAwaiting(key: string) {
+    this.awaiting.forEach((target, name) => { if (target === key) this.awaiting.delete(name); });
   }
 
   // Execute mode never starts without an explicit confirmation callback that resolves true.
@@ -410,6 +422,7 @@ export class ServiceRunner {
     this.sessionOf.forEach((session, process) => { if (session === key) this.sessionOf.delete(process); });
     this.sessionOf.set(id, key);
     this.staleStop.delete(key);
+    this.forgetAwaiting(key);
     // An unsaved draft is not its saved profile, so a focused-app rule for that profile still switches the run.
     const profileId = options.draftUnsaved ? null : options.profileId ?? null;
     const startedOn = options.device ? { module: options.device.module, serialNumber: options.device.serial_number } : undefined;
@@ -428,7 +441,8 @@ export class ServiceRunner {
       // is still on its way) and this run keeps its key until its session's first event adopts it. A stopped one is
       // replaced, as on any new start; one its new session already reported is merged.
       if (started === id && named && isActiveRun(named) && named.session?.serviceId !== id) {
-        if (named.session) this.awaiting.set(started, key);
+        // Not when the new session's first event already adopted this run (its key is gone).
+        if (named.session && waitsForSession(key, this.runs()[key])) this.awaiting.set(started, key);
         return true;
       }
       if (started === id && named && !isActiveRun(named)) {
@@ -441,7 +455,10 @@ export class ServiceRunner {
       return true;
     } catch (reason) {
       const message = errorMessage(reason);
-      this.update(this.sessionOf.get(id) ?? key, current => current.state === 'starting' ? { ...current, state: 'failed', error: message } : current, true);
+      const target = this.sessionOf.get(id) ?? key;
+      // A pending run that failed to start gives the path's routing back, so it never receives the old session's events.
+      if (key !== id && target === key) this.sessionOf.delete(id);
+      this.update(target, current => current.state === 'starting' ? { ...current, state: 'failed', error: message } : current, true);
       return false;
     }
   }

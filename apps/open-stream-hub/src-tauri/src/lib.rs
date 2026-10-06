@@ -455,7 +455,8 @@ fn resume_session(
     state.sessions.resume(&session_id, profile_generation)
 }
 
-// Ends a session from any phase; unknown ids are ignored.
+// Ends a session from any phase; unknown ids are ignored. A dead session
+// driver is reported (`session::DRIVER_STOPPED`) instead of doing nothing.
 #[tauri::command(async)]
 fn stop_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.sessions.stop(&session_id, true).map(drop)

@@ -10,8 +10,9 @@
 //! child runs in its own process group so a terminal Ctrl-C aimed at the app
 //! (e.g. during `tauri dev`) does not reach it a second time.
 //!
-//! Follow-up: bundle the binary as a Tauri sidecar (`bundle.externalBin`).
-//! Until then it is found via `OPEN_STREAM_HUB_SERVICE`, next to the app
+//! The binary is bundled as a Tauri sidecar (`bundle.externalBin`), which the
+//! bundler installs next to the app executable without the target-triple
+//! suffix. It is found via `OPEN_STREAM_HUB_SERVICE`, next to the app
 //! executable, or (debug builds only) in a workspace `target/` directory.
 
 use crate::{feed, replay};

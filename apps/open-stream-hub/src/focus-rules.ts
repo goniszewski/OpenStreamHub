@@ -45,6 +45,9 @@ export class FocusRulesStore {
   private state: FocusRulesState;
   private readonly listeners = new Set<() => void>();
   private pendingSwitch: unknown = null;
+  // Rule edits, deletes and disables still waiting for their reply. A switch matched against the old rules could fire
+  // before the reply lands, so the debounced switch is skipped while any is in flight and cancelled again on reply.
+  private rulesChanging = 0;
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean, private readonly runner?: SwitchTarget,
     private readonly timers: FocusTimers = defaultTimers) {
@@ -71,7 +74,8 @@ export class FocusRulesStore {
   }
 
   // Each focus change replaces the pending one; switching happens focusDebounceMs after the last change, for its match.
-  // Editing, deleting or disabling rules cancels a pending switch, which was matched against the old rules.
+  // Editing, deleting or disabling rules cancels a pending switch, which was matched against the old rules, and no
+  // switch fires until that change's reply arrived.
   onFocus(payload: FocusChangedPayload) {
     if (!payload || typeof payload !== 'object') return;
     if (typeof payload.bundle_id === 'string' && payload.bundle_id !== this.state.focusedApp) this.set({ focusedApp: payload.bundle_id });
@@ -83,6 +87,7 @@ export class FocusRulesStore {
     const ruleId = payload.rule_id;
     this.pendingSwitch = this.timers.set(() => {
       this.pendingSwitch = null;
+      if (this.rulesChanging > 0) return;
       // Rules edited while the switch waited win: once loaded here, the rules must still be on and still map to it.
       const { loaded, enabled, rules } = this.state;
       if (loaded && !(enabled && rules.some(rule => rule.id === ruleId && rule.profile_id === profileId))) return;
@@ -109,9 +114,18 @@ export class FocusRulesStore {
   }
 
   load() { return this.run('list_focus_rules'); }
-  save(rule: FocusRuleInput) { this.cancelSwitch(); return this.run('save_focus_rule', { rule: { ...rule, app_bundle_id: rule.app_bundle_id.trim() } }); }
-  remove(id: string) { this.cancelSwitch(); return this.run('delete_focus_rule', { id }); }
-  setEnabled(enabled: boolean) { if (!enabled) this.cancelSwitch(); return this.run('set_focus_rules_enabled', { enabled }); }
+  // Cancels a pending switch and holds later ones until the change's reply arrived; then cancels whatever was
+  // scheduled meanwhile, since it was matched against the rules before the change.
+  private async change(command: string, args: Record<string, unknown>): Promise<boolean> {
+    this.cancelSwitch();
+    this.rulesChanging += 1;
+    try { return await this.run(command, args); }
+    finally { this.rulesChanging -= 1; this.cancelSwitch(); }
+  }
+
+  save(rule: FocusRuleInput) { return this.change('save_focus_rule', { rule: { ...rule, app_bundle_id: rule.app_bundle_id.trim() } }); }
+  remove(id: string) { return this.change('delete_focus_rule', { id }); }
+  setEnabled(enabled: boolean) { return enabled ? this.run('set_focus_rules_enabled', { enabled }) : this.change('set_focus_rules_enabled', { enabled }); }
 
   // The last app other than OpenStreamHub that was frontmost, or null with an explanation in `error`.
   async currentApp(): Promise<string | null> {

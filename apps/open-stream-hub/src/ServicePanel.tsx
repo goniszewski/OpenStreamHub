@@ -56,6 +56,12 @@ export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string |
   return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true) : null;
 }
 
+// The copy of the open confirmation. Null for a resume whose run disappeared while its dialog was open: the panel then
+// answers false and closes the dialog instead of showing start-a-run text for a resume.
+export function dialogCopy(kind: 'start' | 'resume', runs: Record<string, ServiceRun>, resumeId: string | null, startCopy: ReturnType<typeof confirmCopy>) {
+  return kind === 'resume' ? resumeCopy(runs, resumeId) : startCopy;
+}
+
 export function relativeTime(at: number, now: number): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 5) return 'now';
@@ -122,7 +128,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   const begin = () => {
     if (!runner || !device) return;
     const confirmExecute = executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
-    void runner.start({ profile, profileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved }, confirmExecute);
+    void runner.start({ profile, profileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved, device }, confirmExecute);
   };
   const resume = () => {
     if (!runner || !run) return;
@@ -131,8 +137,11 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   };
   const answer = (ok: boolean) => { confirm?.(ok); setConfirm(null); };
 
-  const copy = (confirmKind === 'resume' ? resumeCopy(service.runs, resumeId) : null)
-    ?? confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module');
+  const startCopy = confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module');
+  const dialog = dialogCopy(confirmKind, service.runs, resumeId, startCopy);
+  const resumeGone = confirm !== null && dialog === null;
+  useEffect(() => { if (resumeGone) answer(false); });
+  const copy = dialog ?? startCopy;
 
   return <section className="service-panel" aria-label="Run profile">
     <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${phaseClass(run)}`} role="status">{phaseLabel(run)}</span></div>
@@ -175,7 +184,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>
     </>}
-    <ModalDialog open={confirm !== null} labelledBy="execute-title" describedBy="execute-message" onCancel={() => answer(false)}>
+    <ModalDialog open={confirm !== null && !resumeGone} labelledBy="execute-title" describedBy="execute-message" onCancel={() => answer(false)}>
       <h2 id="execute-title">{copy.title}</h2>
       <p id="execute-message">{copy.message}</p>
       <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" onClick={() => answer(true)}>{copy.confirm}</button></div>

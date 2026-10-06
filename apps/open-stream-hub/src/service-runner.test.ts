@@ -5,7 +5,7 @@ import sessionArgs from '../fixtures/session-command-args.json';
 import sessionResults from '../fixtures/session-command-results.json';
 import sessionEvents from '../fixtures/session-state-events.json';
 import switchEvents from '../fixtures/session-switch-events.json';
-import { findRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord } from './service-runner';
+import { findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord, unknownSnapshot } from './service-runner';
 
 const profile: Profile = { schema_version: 1, name: 'Everyday', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } }] };
 const event = { module: 'm003k', control: 0, gesture: 'pressed' };
@@ -16,10 +16,13 @@ function setup(desktop = true) {
   const calls: { command: string; args?: Record<string, unknown> }[] = [];
   const queue: (() => void)[] = [];
   const failures: Record<string, string> = {};
+  // A command's result instead of the default, computed when it is invoked (it may emit events first).
+  const results: Record<string, () => unknown> = {};
   let generation = 0;
   const invoke = (async (command: string, args?: Record<string, unknown>) => {
     calls.push({ command, args });
     if (failures[command]) throw new Error(failures[command]);
+    if (results[command]) return results[command]();
     if (command === 'switch_session_profile') return { id: args!.profileId, profile: { ...profile, name: 'Browser' }, modified_at_ms: 1, profile_generation: generation += 1 };
     return command === 'start_service' ? serviceIdFor((args!.request as { path_hex: string }).path_hex) : undefined;
   }) as never;
@@ -30,7 +33,7 @@ function setup(desktop = true) {
   const id = serviceIdFor('AABB');
   const record = (value: unknown) => handlers['service://record']({ payload: { service_id: id, record: value } });
   const status = (state: string, extra = {}) => handlers['service://status']({ payload: { service_id: id, state, execute: false, ...extra } });
-  return { runner, handlers, unlistened, calls, flush, failures, id, record, status };
+  return { runner, handlers, unlistened, calls, flush, failures, results, id, record, status };
 }
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const options = { profile, pathHex: 'AABB', execute: false, softwareMode: false, draftUnsaved: false };
@@ -403,6 +406,194 @@ describe('session manager', () => {
     t.status('exited', { exit_code: 0 });
     expect(t.runner.getState().runs[uuid].state).toBe('exited');
     expect(run(t).state).toBe('running');
+  });
+  describe('a start while asleep on a path a moved session is still named after', () => {
+    const collision = sessionResults.start_service_asleep_collision;
+    const uuid = collision.result;
+    const device = { path_hex: 'aabb', module: collision.first_state.module as 'm131e', serial_number: collision.first_state.serial_number };
+    // The backend reports the name of the profile the run was started with.
+    const start = { ...options, profile: { ...profile, name: collision.first_state.profile_name } };
+    // The older session t.id moved to CCDD, so the new run on AABB waits under `pending:` until its session names it.
+    const moved = async () => {
+      const t = await started();
+      session(t, 'waiting_for_device', { service_id: null, reason: 'device_removed', attempt: 1 });
+      session(t, 'running', { service_id: id2 });
+      return t;
+    };
+    const asleepState = (t: ReturnType<typeof setup>) => t.handlers['session://state']({ payload: collision.first_state });
+    const expectAdopted = (t: ReturnType<typeof setup>) => {
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs).sort()).toEqual([uuid, t.id].sort());
+      expect(runs[uuid]).toMatchObject({ serviceId: uuid, profileName: collision.first_state.profile_name, snapshot: expect.stringContaining(start.profile.name), session: { serviceId: null, phase: 'suspended', serialNumber: device.serial_number } });
+      expect(Object.values(runs).some(r => r.profileName === 'Unknown profile')).toBe(false);
+      // Nothing is left 'starting' on AABB: the path is free for the session to reclaim and a stop ends the session.
+      expect(t.runner.isActivePath('aabb')).toBe(false);
+      expect(t.runner.isActivePath('aabb', device)).toBe(true);
+      expect(findRun(runs, device)).toBe(runs[uuid]);
+      expect(isActiveRun(runs[t.id])).toBe(true);
+    };
+    it('the first state (no process yet) attaches to the run started on that module', async () => {
+      const t = await moved();
+      // Matched by module and serial as soon as the state arrives, before the start result.
+      t.results.start_service = () => { asleepState(t); expectAdopted(t); return uuid; };
+      expect(await t.runner.start({ ...start, device })).toBe(true);
+      expectAdopted(t);
+      await t.runner.stop(uuid);
+      expect(t.calls.at(-1)).toEqual({ command: 'stop_session', args: { sessionId: uuid } });
+    });
+    it('without the device, the start result merges the run its state created', async () => {
+      const t = await moved();
+      t.results.start_service = () => { asleepState(t); return uuid; };
+      expect(await t.runner.start(start)).toBe(true);
+      expectAdopted(t);
+      expect(t.runner.getState().runs[uuid].entries.map(entry => entry.text)).toEqual(['Mac went to sleep — actions paused']);
+    });
+    it('a start result that arrives before the state moves the run to its session id', async () => {
+      const t = await moved();
+      t.results.start_service = () => uuid;
+      expect(await t.runner.start(start)).toBe(true);
+      expect(Object.keys(t.runner.getState().runs).sort()).toEqual([uuid, t.id].sort());
+      asleepState(t);
+      expectAdopted(t);
+    });
+  });
+  it('a run switched by a backend state no longer compares against the profile it started with', async () => {
+    const t = await started(true);
+    expect(isStale(run(t), { ...profile, name: 'Changed' })).toBe(true);
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' });
+    expect(run(t)).toMatchObject({ profileName: 'Browser', snapshot: unknownSnapshot });
+    expect(isStale(run(t), profile)).toBe(false);
+    expect(isStale(run(t), { ...profile, name: 'Browser' })).toBe(false);
+    // A switch reply carries the profile body, and a later state of the same generation keeps it.
+    await t.runner.switchProfile(t.id, 'p-editor', 'focused com.apple.TextEdit');
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-editor', profile_name: 'Browser' });
+    expect(run(t).snapshot).not.toBe(unknownSnapshot);
+    expect(isStale(run(t), { ...profile, name: 'Browser' })).toBe(false);
+    expect(isStale(run(t), profile)).toBe(true);
+  });
+  it('a run created by a session event alone still shows the profile-changed notice', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    // A webview reload: the frontend never saw this run start, so it cannot know the profile matches the draft.
+    session(t, 'running');
+    expect(run(t)).toMatchObject({ profileName: 'Unknown profile', snapshot: '' });
+    expect(isStale(run(t), profile)).toBe(true);
+  });
+  it('a session event without a process never takes over another serial-less run of the same module', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    const bare = (path_hex: string) => ({ path_hex, module: 'm003k' as const, serial_number: null });
+    const first = serviceIdFor('aabb'), second = serviceIdFor('ccdd'), uuid = 'session:serial-less';
+    expect(await t.runner.start({ ...options, profile: { ...profile, name: 'First' }, device: bare('aabb') })).toBe(true);
+    // The second start's session (asleep, no process yet) reports before its start result.
+    t.results.start_service = () => {
+      session(t, 'suspended', { session_id: uuid, service_id: null, reason: 'sleep', module: 'm003k', serial_number: null });
+      expect(t.runner.getState().runs[first]).toMatchObject({ profileName: 'First', state: 'starting' });
+      expect(t.runner.getState().runs[first].session).toBeUndefined();
+      return uuid;
+    };
+    expect(await t.runner.start({ ...options, pathHex: 'CCDD', profile: { ...profile, name: 'Second' }, device: bare('ccdd') })).toBe(true);
+    const runs = t.runner.getState().runs;
+    expect(Object.keys(runs).sort()).toEqual([first, uuid].sort());
+    expect(runs[first]).toMatchObject({ profileName: 'First', state: 'starting' });
+    expect(runs[first].session).toBeUndefined();
+    expect(runs[uuid]).toMatchObject({ profileName: 'Second', session: { phase: 'suspended' } });
+    expect(runs[second]).toBeUndefined();
+  });
+  describe('a pending run whose start returns the path\'s own service id', () => {
+    const fresh = { ...options, profile: { ...profile, name: 'Fresh' } };
+    // The session t.id moved to CCDD, so a new start on AABB waits under `pending:`.
+    const moved = async () => {
+      const t = await started();
+      session(t, 'waiting_for_device', { service_id: null, reason: 'device_removed', attempt: 1 });
+      session(t, 'running', { service_id: id2 });
+      return t;
+    };
+    it('replaces the run of a session that ended meanwhile', async () => {
+      const t = await moved();
+      t.results.start_service = () => { session(t, 'stopped', { service_id: null, reason: 'device_removed' }); return t.id; };
+      expect(await t.runner.start(fresh)).toBe(true);
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs)).toEqual([t.id]);
+      expect(runs[t.id]).toMatchObject({ serviceId: t.id, profileName: 'Fresh', state: 'starting', counters: { events: 0 } });
+      expect(runs[t.id].session).toBeUndefined();
+      session(t, 'running');
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ profileName: 'Fresh', state: 'running', session: { serviceId: t.id } });
+    });
+    it('merges into the run its new session already reported', async () => {
+      const t = await moved();
+      t.results.start_service = () => { session(t, 'running'); return t.id; };
+      expect(await t.runner.start(fresh)).toBe(true);
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs)).toEqual([t.id]);
+      expect(runs[t.id]).toMatchObject({ profileName: 'Fresh', session: { serviceId: t.id, phase: 'running' } });
+    });
+    it('keeps its key while the session named after the path still runs elsewhere', async () => {
+      const t = await moved();
+      expect(await t.runner.start(fresh)).toBe(true);
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs).sort()).toEqual([`pending:${t.id}`, t.id].sort());
+      expect(runs[t.id]).toMatchObject({ profileName: 'Everyday', session: { serviceId: id2 } });
+      expect(runs[`pending:${t.id}`]).toMatchObject({ profileName: 'Fresh', state: 'starting' });
+    });
+    // The old session ended in the backend before the new one took its name, so its 'stopped' always precedes the new
+    // session's first event; only the start reply can overtake them.
+    const oldStopped = (t: ReturnType<typeof setup>) => session(t, 'stopped', { service_id: null, reason: 'device_removed' });
+    const newRunning = (t: ReturnType<typeof setup>) => session(t, 'running', { serial_number: 'SER-2' });
+    const expectFresh = (t: ReturnType<typeof setup>) => {
+      const runs = t.runner.getState().runs;
+      expect(Object.keys(runs)).toEqual([t.id]);
+      expect(runs[t.id]).toMatchObject({ serviceId: t.id, profileName: 'Fresh', state: 'running', counters: { events: 1 }, session: { serviceId: t.id, phase: 'running', serialNumber: 'SER-2' } });
+      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Session stopped: the module was unplugged');
+      expect(t.runner.isActivePath('aabb')).toBe(true);
+    };
+    for (const [name, order] of [
+      ['reply, old stopped, new first event', ['reply', 'stopped', 'record', 'first']],
+      ['old stopped, reply, new first event', ['stopped', 'reply', 'record', 'first']],
+      ['old stopped, new first event, reply', ['stopped', 'record', 'first', 'reply']],
+    ] as const) {
+      it(`adopts the pending run, never the old one, when events arrive as: ${name}`, async () => {
+        const t = await moved();
+        let reply = () => {};
+        const replied = new Promise<void>(resolve => { reply = resolve; });
+        t.results.start_service = async () => { await replied; return t.id; };
+        const starting = t.runner.start(fresh);
+        await tick();
+        for (const step of order) {
+          if (step === 'reply') { reply(); expect(await starting).toBe(true); }
+          if (step === 'stopped') oldStopped(t);
+          // The new process's first record, before its session event.
+          if (step === 'record') { t.record({ type: 'event', status: 'unbound', event, action: null }); t.flush(); }
+          if (step === 'first') newRunning(t);
+        }
+        expectFresh(t);
+        // The old run's 'stopped', had it been late, would not end the adopted run either.
+        await t.runner.stop(t.id);
+        expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });
+      });
+    }
+    it('a late old stopped event does not end a run adopted on its own process', async () => {
+      const t = await moved();
+      expect(await t.runner.start(fresh)).toBe(true);
+      // Defensive: the new session's first event before the old 'stopped'.
+      newRunning(t);
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ profileName: 'Fresh', session: { serviceId: t.id, phase: 'running' } });
+      oldStopped(t);
+      expect(Object.keys(t.runner.getState().runs)).toEqual([t.id]);
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ profileName: 'Fresh', state: 'running', session: { phase: 'running' } });
+      // The adopted session's own stop still ends it.
+      session(t, 'stopped', { service_id: null, reason: 'user', serial_number: 'SER-2' });
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ state: 'exited', session: { phase: 'stopped' } });
+    });
+    it('old non-stopped events after the reply stay on the old run', async () => {
+      const t = await moved();
+      expect(await t.runner.start(fresh)).toBe(true);
+      session(t, 'waiting_for_device', { service_id: null, reason: 'device_removed', attempt: 1 });
+      expect(t.runner.getState().runs[`pending:${t.id}`]).toMatchObject({ profileName: 'Fresh', state: 'starting' });
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ profileName: 'Everyday', session: { phase: 'waiting_for_device' } });
+      oldStopped(t);
+      session(t, 'suspended', { service_id: null, reason: 'sleep', serial_number: 'SER-2' });
+      expect(Object.keys(t.runner.getState().runs)).toEqual([t.id]);
+      expect(t.runner.getState().runs[t.id]).toMatchObject({ profileName: 'Fresh', session: { phase: 'suspended', serialNumber: 'SER-2' } });
+    });
   });
   it('a new start after a stopped session begins a clean run', async () => {
     const t = await started(); session(t, 'stopped', { service_id: null, reason: 'user' });

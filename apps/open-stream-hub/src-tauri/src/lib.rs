@@ -230,8 +230,13 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
 // Profile actions run only in a supervised `masterhub-service` child process,
 // never in the app. A read-only feed on the same interface is stopped first
 // so the service owns the device. The run is wrapped in a sleep/wake and
-// reconnect session (`session.rs`) whose id is the returned service id.
-// Once app exit began nothing starts, not even an unmanaged run.
+// reconnect session (`session.rs`). The result is the session id (the first
+// service id, or `session:<uuid>` when that id still names an older session),
+// or the service id of an unmanaged run.
+// Once app exit began nothing starts, not even an unmanaged run. Only a
+// missing session driver falls back to an unmanaged run; a driver thread that
+// died refuses the start (`session::DRIVER_STOPPED`), since an unmanaged run
+// would ignore sleep.
 #[tauri::command(async)]
 fn start_service(
     app: tauri::AppHandle,
@@ -289,16 +294,36 @@ struct AppRunner {
     sessions: mpsc::Sender<session::Input>,
 }
 
-impl session::Runner for AppRunner {
-    fn start(&mut self, request: &service::StartRequest) -> Result<String, String> {
-        // A crashed process emits `exited` just before its handle is marked
-        // done; let it settle so the restart is not refused as a duplicate.
-        if let Ok(id) = service::service_id(&request.path_hex) {
-            let deadline = Instant::now() + Duration::from_millis(500);
-            while self.app.state::<AppState>().services.is_running(&id) && Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(10));
+impl AppRunner {
+    /// True when `service_id` is still running after a bounded wait. A
+    /// crashed process emits `exited` just before its handle is marked done;
+    /// letting it settle keeps a restart (or a user start right after the
+    /// exit) from being refused as a duplicate.
+    fn still_running(&self, service_id: &str) -> bool {
+        let services = &self.app.state::<AppState>().services;
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while services.is_running(service_id) {
+            if Instant::now() >= deadline {
+                return true;
             }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+}
+
+impl session::Runner for AppRunner {
+    fn check(&mut self, request: &service::StartRequest) -> Result<(), String> {
+        let id = service::service_id(&request.path_hex)?;
+        if self.still_running(&id) {
+            return Err(format!("service {id} is already running"));
+        }
+        service::check_request(request)
+    }
+
+    fn start(&mut self, request: &service::StartRequest) -> Result<String, String> {
+        if let Ok(id) = service::service_id(&request.path_hex) {
+            self.still_running(&id);
         }
         run_service(&self.app, request, Some(self.sessions.clone()))
     }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { confirmCopy, countdownSeconds, dialogCopy, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -215,6 +215,11 @@ describe('session banners', () => {
     expect(resumeCopy(runs, 'service:bb')?.message).toContain('Profile "Browser" (the saved profile a focused-app rule switched to)');
     expect(resumeCopy(runs, 'service:gone')).toBeNull();
     expect(resumeCopy(runs, null)).toBeNull();
+    // A resume whose run vanished while the dialog was open has no copy (the panel answers false), never start text.
+    const start = confirmCopy('start', 'Flat', 'X');
+    expect(dialogCopy('resume', runs, 'service:gone', start)).toBeNull();
+    expect(dialogCopy('resume', runs, 'service:aa', start)?.title).toBe('Resume actions on this Mac?');
+    expect(dialogCopy('start', runs, 'service:gone', start)).toBe(start);
   });
   it('labels phases and builds the resume confirmation copy', () => {
     expect(phaseLabel(undefined)).toBe('Stopped');

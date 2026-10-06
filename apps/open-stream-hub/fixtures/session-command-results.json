@@ -1,5 +1,21 @@
 {
   "resume_session": null,
   "resume_session_profile_changed": "the session's profile changed after the confirmation was shown; review the new profile and confirm again",
+  "start_service_asleep_collision": {
+    "first_state": {
+      "attempt": 0,
+      "execute": false,
+      "module": "m131e",
+      "phase": "suspended",
+      "profile_generation": 0,
+      "profile_id": null,
+      "profile_name": "Folders",
+      "reason": "sleep",
+      "serial_number": "FEDCBA654321",
+      "service_id": null,
+      "session_id": "session:00000000-0000-4000-8000-000000000000"
+    },
+    "result": "session:00000000-0000-4000-8000-000000000000"
+  },
   "stop_session": null
 }

@@ -63,6 +63,35 @@ const IDLE_WAIT: Duration = Duration::from_secs(60);
 /// `start_service` error for a device that cannot be managed while the Mac
 /// is going to sleep (nothing may be spawned across sleep).
 pub const ASLEEP: &str = "the Mac is going to sleep; start the profile again after it wakes";
+/// `start_service` error for an unidentified device when this Start itself
+/// cleared a missed wake (`MISSED_WAKE_MS`): the Mac is awake, but the start
+/// is still deferred for the settle delay, and an unmanaged run cannot wait.
+pub const JUST_WOKE: &str = "the Mac just woke; start the profile again in a moment";
+/// `start_service` error when the session driver thread is gone. The start
+/// is refused rather than run unmanaged, which would ignore sleep.
+pub const DRIVER_STOPPED: &str =
+    "the session manager stopped; restart OpenStreamHub to start profiles";
+/// Monotonic time after a `Suspend` after which a user's Start clears a sleep
+/// whose wake notification never arrived. Only that user-initiated path
+/// clears it: Power Nap dark wakes advance the driver clock without any
+/// sleep/wake notification while timers and inventory polls keep firing, so
+/// background ticks and inventory never clear `asleep` (that would restart
+/// dry runs while the Mac is asleep). A user pressing Start means the Mac is
+/// fully awake. Ten minutes is far beyond the pre-sleep stop (`SUSPEND_WAIT`
+/// in `lib.rs`, about 10 s) and the ~30 s macOS lets a sleep observer delay
+/// sleep, so a Start queued behind a slow but real sleep never trips it.
+///
+/// The driver clock is `CLOCK_UPTIME_RAW` on macOS, so the ten minutes count
+/// awake uptime since the `Suspend`, not wall time. After a genuinely lost
+/// wake every Start is deferred (identified devices get a suspended session,
+/// unidentified ones are refused with `ASLEEP`) until ten minutes of uptime
+/// have passed; sessions stay `suspended` meanwhile, and a second Start on a
+/// device whose deferred session already exists is refused as already
+/// running. The valve fires before the Start is validated, so it fires even
+/// when that Start is then refused: firing only clears the asleep flag and
+/// broadcasts `Resume` (settle delay first; executing sessions still wait
+/// for `resume_session`).
+pub const MISSED_WAKE_MS: u64 = 10 * 60_000;
 /// `resume_session` error when the profile changed after the confirmation
 /// was shown. The frontend matches it to ask again.
 pub const PROFILE_CHANGED: &str = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
@@ -282,6 +311,18 @@ impl Session {
         self.serial_number.is_some()
             && self.module == device.module
             && self.serial_number == blank_to_none(device.serial_number.as_deref())
+    }
+
+    /// A serial-less device this session will reclaim although it has no
+    /// process now (e.g. it was started while asleep): same module and no
+    /// serial on either side, on any path, exactly as `find_device` reclaims
+    /// "the only device of that module".
+    fn awaits_serial_less(&self, device: &LiveDevice) -> bool {
+        !self.finished()
+            && self.service.is_none()
+            && self.serial_number.is_none()
+            && blank_to_none(device.serial_number.as_deref()).is_none()
+            && self.module == device.module
     }
 
     /// Ended and no process left; the driver forgets it.
@@ -538,6 +579,13 @@ pub fn step(mut session: Session, event: Event, now_ms: u64) -> (Session, Vec<Ac
 /// Side effects of the driver. `start` spawns (or fails) synchronously; a
 /// process's exit is reported later through `Driver::exited`.
 pub trait Runner {
+    /// The checks `start` runs before spawning (valid profile, supported
+    /// execute mode, no process already on the path), without spawning.
+    /// `Driver::start` runs them for every start, so a start while asleep
+    /// fails as early as one that spawns.
+    fn check(&mut self, _request: &StartRequest) -> Result<(), String> {
+        Ok(())
+    }
     fn start(&mut self, request: &StartRequest) -> Result<String, String>;
     /// Stops via SIGINT, then kills after the grace period.
     fn stop(&mut self, service_id: &str);
@@ -574,6 +622,8 @@ pub struct Driver<R> {
     deferred_stops: Option<Vec<String>>,
     /// Between `Suspend` and `Resume`: nothing new is spawned.
     asleep: bool,
+    /// When the last `Suspend` arrived (monotonic ms).
+    suspended_ms: u64,
 }
 
 impl<R: Runner> Driver<R> {
@@ -586,7 +636,24 @@ impl<R: Runner> Driver<R> {
             closed: false,
             deferred_stops: None,
             asleep: false,
+            suspended_ms: 0,
         }
+    }
+
+    /// Safety valve for a lost wake notification, called only from the
+    /// user's Start (never from ticks or inventory, which keep running during
+    /// Power Nap dark wakes): a Start `MISSED_WAKE_MS` of monotonic time after
+    /// the `Suspend` means the Mac is awake. The flag is cleared through the
+    /// normal wake path: the settle delay first, and an executing session
+    /// still waits for `resume_session`. True when it fired. `now_ms` is
+    /// awake uptime (see `MISSED_WAKE_MS`), and it fires before the Start is
+    /// validated, so a refused Start still clears the flag.
+    fn missed_wake(&mut self, now_ms: u64) -> bool {
+        if !self.asleep || now_ms.saturating_sub(self.suspended_ms) < MISSED_WAKE_MS {
+            return false;
+        }
+        self.power(PowerEvent::Resume, now_ms);
+        true
     }
 
     fn is_closed(&self) -> bool {
@@ -646,11 +713,18 @@ impl<R: Runner> Driver<R> {
     /// An unidentified device runs unmanaged, exactly as before sessions.
     /// While the Mac is asleep nothing is spawned: an identified device gets a
     /// suspended session that starts after wake (an executing one only after
-    /// `resume_session`); an unidentified one is refused with `ASLEEP`.
+    /// `resume_session`); an unidentified one is refused with `ASLEEP`. The
+    /// same holds for a start that clears a missed wake (`missed_wake`): its
+    /// session waits for the settle delay like every other one.
+    ///
+    /// Returns the session id (which may be `session:<uuid>`), or the service
+    /// id of an unmanaged run, so the frontend can key the run at once.
     pub fn start(&mut self, request: StartRequest, now_ms: u64) -> Result<String, String> {
         if self.is_closed() {
             return Err(service::SHUTTING_DOWN.into());
         }
+        let woke = self.missed_wake(now_ms);
+        let deferred = self.asleep || woke;
         let service_id = service::service_id(&request.path_hex)?;
         // Only a live process holds the path; a session name does not.
         if self
@@ -662,20 +736,24 @@ impl<R: Runner> Driver<R> {
         }
         let path_hex = service_id.trim_start_matches("service:").to_owned();
         let device = self.lookup(&path_hex);
+        // A serial-less device has no identity to compare, so a process-less
+        // session waiting on the same module still claims it on any path.
         if let Some(device) = &device
-            && let Some(other) = self
-                .sessions
-                .iter()
-                .find(|managed| managed.session.same_identity(device))
+            && let Some(other) = self.sessions.iter().find(|managed| {
+                managed.session.same_identity(device) || managed.session.awaits_serial_less(device)
+            })
         {
             return Err(format!(
                 "session {} already runs this device",
                 other.session.session_id
             ));
         }
-        let id = if self.asleep {
+        // The spawning path checks again inside `start`; asleep nothing
+        // spawns, so this is the only check before the session exists.
+        self.runner.check(&request)?;
+        let id = if deferred {
             if device.is_none() {
-                return Err(ASLEEP.into());
+                return Err(if woke { JUST_WOKE } else { ASLEEP }.into());
             }
             service_id
         } else {
@@ -694,18 +772,26 @@ impl<R: Runner> Driver<R> {
         } else {
             id.clone()
         };
-        let (session, actions) = Session::start(
-            session_id,
-            (!self.asleep).then(|| id.clone()),
+        let (session, mut actions) = Session::start(
+            session_id.clone(),
+            (!deferred).then_some(id),
             &device,
             request.execute,
             request.profile.name.clone(),
             inventory,
             now_ms,
         );
+        // Created after the missed wake was cleared: it settles like the rest.
+        let session = if woke {
+            let (session, more) = step(session, Event::Resume, now_ms);
+            actions.extend(more);
+            session
+        } else {
+            session
+        };
         self.sessions.push(Managed { session, request });
         self.execute(self.sessions.len() - 1, actions, now_ms);
-        Ok(id)
+        Ok(session_id)
     }
 
     /// `stop_service` / `stop_session`: ends the owning session from any
@@ -803,6 +889,7 @@ impl<R: Runner> Driver<R> {
         results
     }
 
+    /// Never clears `asleep`: inventory polls keep running in dark wakes.
     pub fn inventory(&mut self, devices: Vec<LiveDevice>, now_ms: u64) {
         self.inventory = Some(devices.clone());
         self.broadcast(|| Event::Inventory(devices.clone()), now_ms);
@@ -811,6 +898,9 @@ impl<R: Runner> Driver<R> {
     /// Every process a sleep (or wake) interrupts is stopped in parallel.
     pub fn power(&mut self, event: PowerEvent, now_ms: u64) {
         self.asleep = event == PowerEvent::Suspend;
+        if self.asleep {
+            self.suspended_ms = now_ms;
+        }
         self.deferred_stops = Some(Vec::new());
         self.broadcast(
             || match event {
@@ -846,7 +936,8 @@ impl<R: Runner> Driver<R> {
         self.prune();
     }
 
-    /// Fires every timer due at `now_ms`.
+    /// Fires every timer due at `now_ms`. Never clears `asleep`: timers keep
+    /// firing in dark wakes.
     pub fn tick(&mut self, now_ms: u64) {
         let due: BTreeSet<String> = self
             .timers
@@ -1165,19 +1256,25 @@ impl Manager {
         Ok(())
     }
 
-    /// `None` when no driver runs, so the caller falls back to plain services.
+    /// `None` only when no driver was started (or it was shut down), so the
+    /// caller falls back to plain services. A driver thread that died is
+    /// `Some(Err(DRIVER_STOPPED))`, never a fallback: an unmanaged start would
+    /// ignore sleep.
     fn request<T>(&self, make: impl FnOnce(Sender<T>) -> Input) -> Option<Result<T, String>> {
         if !self.running.load(Ordering::SeqCst) {
             return None;
         }
         let (reply, answer) = mpsc::channel();
         if self.inputs.send(make(reply)).is_err() {
-            return None;
+            return Some(Err(DRIVER_STOPPED.into()));
         }
         Some(
             answer
                 .recv_timeout(REPLY_WAIT)
-                .map_err(|_| "the session manager did not respond".to_string()),
+                .map_err(|error| match error {
+                    RecvTimeoutError::Disconnected => DRIVER_STOPPED.into(),
+                    RecvTimeoutError::Timeout => "the session manager did not respond".to_string(),
+                }),
         )
     }
 
@@ -1196,13 +1293,18 @@ impl Manager {
     }
 
     /// `Ok(true)` once the driver handled the stop, `Ok(false)` without one.
+    /// A dead driver is `Ok(false)` too: stopping the plain process spawns
+    /// nothing, so that fallback stays safe.
     pub fn stop(&self, id: &str, sessions_only: bool) -> Result<bool, String> {
-        self.request(|done| Input::Stop {
+        match self.request(|done| Input::Stop {
             id: id.into(),
             sessions_only,
             done,
-        })
-        .map_or(Ok(false), |answer| answer.map(|()| true))
+        }) {
+            None => Ok(false),
+            Some(Err(error)) if error == DRIVER_STOPPED => Ok(false),
+            Some(answer) => answer.map(|()| true),
+        }
     }
 
     pub fn resume(&self, session_id: &str, profile_generation: u64) -> Result<(), String> {
@@ -1264,6 +1366,14 @@ pub mod fake {
     }
 
     impl Runner for FakeRunner {
+        fn check(&mut self, request: &StartRequest) -> Result<(), String> {
+            let id = service::service_id(&request.path_hex)?;
+            if self.alive.contains(&id) {
+                return Err(format!("service {id} is already running"));
+            }
+            service::check_request(request)
+        }
+
         fn start(&mut self, request: &StartRequest) -> Result<String, String> {
             if let Some(error) = self.fail_next.take() {
                 return Err(error);
@@ -1906,13 +2016,14 @@ mod tests {
         let other = device(DIAL, Some("SER-2"), "/a");
         driver.inventory(vec![dial("/b"), other.clone()], 5_001);
         let started = driver.start(request(&other, false), 5_002).unwrap();
-        assert_eq!(started, sid("/a"));
         let state = last(&mut driver);
         assert_eq!(state.service_id, Some(sid("/a")));
         assert_eq!(state.serial_number.as_deref(), Some("SER-2"));
-        // Its name cannot be the old session's, which is still in use.
+        // Its name cannot be the old session's, which is still in use; the
+        // start returns that name so the frontend keys the run by it.
         assert!(state.session_id.starts_with("session:"), "{state:?}");
         assert_ne!(state.session_id, id);
+        assert_eq!(started, state.session_id);
         let second = state.session_id.clone();
         // stop_service with the old path's id stops the process running there.
         driver.stop(&sid("/a"), false, 5_003);
@@ -2227,8 +2338,11 @@ mod tests {
                 ),
                 (id.as_str(), Phase::Suspended, Some(Reason::Sleep), None)
             );
-            driver.tick(1_000_000);
+            // Ticks and inventory never clear the sleep, however late.
+            driver.tick(10 + 100 * MISSED_WAKE_MS);
+            driver.inventory(vec![dial("/a")], 10 + 100 * MISSED_WAKE_MS);
             assert_eq!(starts(&mut driver), 0);
+            assert_eq!(phase(&mut driver), Phase::Suspended);
 
             driver.power(PowerEvent::Resume, 2_000_000);
             driver.tick(2_000_000 + SETTLE_DELAY_MS - 1);
@@ -2311,5 +2425,216 @@ mod tests {
             (Some("p-browser"), "Browser")
         );
         assert_eq!(state.profile_generation, 1);
+    }
+
+    #[test]
+    fn a_start_while_asleep_on_a_path_named_by_a_moved_session_returns_its_session_id() {
+        let (mut driver, id) = running(false);
+        driver.inventory(vec![], 1);
+        exit(&mut driver, &id, "", 2);
+        driver.inventory(vec![dial("/b")], 5_000);
+        let other = device(DIAL, Some("SER-2"), "/a");
+        driver.inventory(vec![dial("/b"), other.clone()], 5_001);
+        driver.power(PowerEvent::Suspend, 5_002);
+        exit(&mut driver, &sid("/b"), "", 5_003);
+        let started = driver.start(request(&other, false), 5_004).unwrap();
+        assert!(started.starts_with("session:"), "{started}");
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.session_id.as_str(), state.service_id, state.phase),
+            (started.as_str(), None, Phase::Suspended)
+        );
+        assert_eq!(starts(&mut driver), 2, "spawned across sleep");
+    }
+
+    #[test]
+    fn ticks_and_inventory_never_clear_a_sleep_without_a_wake() {
+        // Power Nap dark wakes advance the clock and keep timers and inventory
+        // polls running without any wake notification.
+        for execute in [false, true] {
+            let (mut driver, id) = running(execute);
+            // A crash backoff timer is pending when the Mac goes to sleep.
+            exit(&mut driver, &id, "boom", 50);
+            driver.power(PowerEvent::Suspend, 100);
+            let late = 100 + 100 * MISSED_WAKE_MS;
+            for now in [100 + MISSED_WAKE_MS, late, late + SETTLE_DELAY_MS] {
+                driver.tick(now);
+                driver.inventory(vec![dial("/a")], now);
+            }
+            assert_eq!(starts(&mut driver), 1, "spawned while asleep");
+            assert_eq!(phase(&mut driver), Phase::Suspended);
+            assert_eq!(driver.next_due(), None);
+            assert!(driver.resume(&id, 0, late + SETTLE_DELAY_MS + 1).is_err());
+            assert_eq!(starts(&mut driver), 1);
+        }
+    }
+
+    #[test]
+    fn other_late_inputs_never_clear_a_sleep_without_a_wake() {
+        for execute in [false, true] {
+            let (mut driver, id) = running(execute);
+            driver.power(PowerEvent::Suspend, 100);
+            exit(&mut driver, &id, "", 101);
+            let late = 100 + 100 * MISSED_WAKE_MS;
+            // An unmanaged process exiting, a focused-app switch and a stop of
+            // an unknown id, all long after the suspend.
+            driver.exited("service:unmanaged", Some(1), String::new(), late);
+            driver
+                .switch_profile(&id, "p-browser".into(), renamed("Browser"), late + 1)
+                .unwrap();
+            driver.stop("service:unknown", false, late + 2);
+            driver.stop("service:unknown", true, late + 3);
+            driver.tick(late + SETTLE_DELAY_MS);
+            driver.inventory(vec![dial("/a")], late + SETTLE_DELAY_MS);
+            driver.tick(late + 2 * SETTLE_DELAY_MS);
+            assert_eq!(starts(&mut driver), 1, "spawned while asleep");
+            assert_eq!(phase(&mut driver), Phase::Suspended);
+            assert_eq!(driver.next_due(), None);
+        }
+    }
+
+    #[test]
+    fn an_unidentified_start_that_clears_a_missed_wake_says_the_mac_just_woke() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.power(PowerEvent::Suspend, 0);
+        let error = driver
+            .start(request(&dial("/x"), false), MISSED_WAKE_MS)
+            .unwrap_err();
+        assert_eq!(error, JUST_WOKE);
+        assert_eq!(starts(&mut driver), 0);
+        // The valve fired: after the settle delay the next start spawns.
+        driver.tick(MISSED_WAKE_MS + SETTLE_DELAY_MS);
+        assert!(
+            driver
+                .start(
+                    request(&dial("/x"), false),
+                    MISSED_WAKE_MS + SETTLE_DELAY_MS + 1
+                )
+                .is_ok()
+        );
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_dead_driver_refuses_starts_instead_of_running_unmanaged() {
+        let manager = Manager::default();
+        // A driver that ran and died: its receiver is gone.
+        drop(manager.receiver.lock().unwrap().take());
+        manager.running.store(true, Ordering::SeqCst);
+        let device = dial("/a");
+        assert_eq!(
+            manager.start(request(&device, false)),
+            Some(Err(DRIVER_STOPPED.to_string()))
+        );
+        // Stopping the plain process stays possible.
+        assert_eq!(manager.stop("service:aa", false), Ok(false));
+        // No driver configured: the caller falls back to plain services.
+        let idle = Manager::default();
+        assert_eq!(idle.start(request(&device, false)), None);
+    }
+
+    #[test]
+    fn a_start_long_after_suspend_clears_a_missed_wake_but_still_settles() {
+        for execute in [false, true] {
+            let mut driver = Driver::new(FakeRunner::default());
+            driver.inventory(vec![dial("/a")], 0);
+            driver.power(PowerEvent::Suspend, 0);
+            let id = driver
+                .start(request(&dial("/a"), execute), MISSED_WAKE_MS)
+                .unwrap();
+            assert_eq!(starts(&mut driver), 0, "spawned without the settle delay");
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.next_attempt_in_ms),
+                (Phase::Suspended, Some(SETTLE_DELAY_MS))
+            );
+            driver.tick(MISSED_WAKE_MS + SETTLE_DELAY_MS);
+            if execute {
+                assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+                assert_eq!(starts(&mut driver), 0, "executed without confirmation");
+                driver
+                    .resume(&id, 0, MISSED_WAKE_MS + SETTLE_DELAY_MS + 1)
+                    .unwrap();
+            }
+            assert_eq!(starts(&mut driver), 1);
+            assert_eq!(phase(&mut driver), Phase::Running);
+            // The driver is awake again: the next start spawns at once.
+            let keys = device(ServiceModule::M003K, Some("K"), "/k");
+            driver.inventory(vec![dial("/a"), keys.clone()], MISSED_WAKE_MS + 5_000);
+            driver
+                .start(request(&keys, false), MISSED_WAKE_MS + 5_001)
+                .unwrap();
+            assert_eq!(starts(&mut driver), 2);
+        }
+    }
+
+    #[test]
+    fn a_serial_less_device_gets_one_session_while_asleep() {
+        let mut driver = Driver::new(FakeRunner::default());
+        let bare = device(DIAL, None, "/a");
+        driver.inventory(vec![bare.clone()], 0);
+        driver.power(PowerEvent::Suspend, 1);
+        let id = driver.start(request(&bare, false), 2).unwrap();
+        let error = driver.start(request(&bare, false), 3).unwrap_err();
+        assert!(error.contains("already runs this device"), "{error}");
+        assert!(error.contains(&id), "{error}");
+        // The session reclaims the only device of its module on any path, so
+        // the same module on another path is refused too.
+        let moved = device(DIAL, None, "/b");
+        driver.inventory(vec![moved.clone()], 4);
+        let error = driver.start(request(&moved, false), 5).unwrap_err();
+        assert!(error.contains(&id), "{error}");
+        driver.inventory(vec![bare.clone()], 6);
+        driver.power(PowerEvent::Resume, 10);
+        driver.tick(10 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 1);
+        // Another serial-less module of another kind is not claimed.
+        let keys = device(ServiceModule::M003K, None, "/k");
+        driver.inventory(vec![bare.clone(), keys.clone()], 20);
+        assert!(driver.start(request(&keys, false), 21).is_ok());
+    }
+
+    #[test]
+    fn a_stopped_or_stopping_serial_less_session_does_not_claim_the_module() {
+        let mut driver = Driver::new(FakeRunner::default());
+        let bare = device(DIAL, None, "/a");
+        let moved = device(DIAL, None, "/b");
+        driver.inventory(vec![bare.clone()], 0);
+        let id = driver.start(request(&bare, false), 0).unwrap();
+        // Still stopping: its process is alive and it never restarts.
+        driver.stop(&id, true, 1);
+        driver.inventory(vec![moved.clone()], 2);
+        let other = driver.start(request(&moved, false), 3).unwrap();
+        assert_eq!(starts(&mut driver), 2);
+        // Finished: forgotten once its process exited.
+        exit(&mut driver, &id, "", 4);
+        assert!(driver.session(&id).is_none());
+        // A process-less session waiting to restart does claim it.
+        exit(&mut driver, &other, "boom", 5);
+        driver.inventory(vec![bare.clone()], 6);
+        let error = driver.start(request(&bare, false), 7).unwrap_err();
+        assert!(error.contains(&other), "{error}");
+    }
+
+    #[test]
+    fn a_start_while_asleep_is_validated_like_one_that_spawns() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/a"), dial("/u")], 0);
+        driver.power(PowerEvent::Suspend, 1);
+        let mut invalid = request(&dial("/a"), false);
+        invalid.profile.schema_version = 999;
+        assert!(driver.start(invalid.clone(), 2).is_err());
+        assert!(driver.session(&sid("/a")).is_none());
+        assert!(driver.runner().emitted.is_empty());
+        // The same profile is refused awake too, before anything spawns.
+        driver.power(PowerEvent::Resume, 3);
+        assert!(driver.start(invalid, 4).is_err());
+        assert_eq!(starts(&mut driver), 0);
+        // An unmanaged process already on the path refuses a start asleep.
+        driver.power(PowerEvent::Suspend, 5);
+        driver.runner().alive.insert(sid("/u"));
+        let error = driver.start(request(&dial("/u"), false), 6).unwrap_err();
+        assert!(error.contains("already running"), "{error}");
+        assert!(driver.session(&sid("/u")).is_none());
     }
 }

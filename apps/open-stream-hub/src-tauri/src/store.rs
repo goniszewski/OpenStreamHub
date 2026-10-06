@@ -69,12 +69,13 @@ pub(crate) fn is_stale(metadata: &fs::Metadata) -> bool {
     })
 }
 
-/// True for the exact `.<uuid>.tmp` name `write_atomically` uses.
+/// True for the exact `.<uuid>.tmp` name `write_private_file` uses: the
+/// hyphenated 36-character form only, never the simple, braced or urn forms.
 fn is_uuid_temporary(name: &OsStr) -> bool {
     name.to_str()
         .and_then(|name| name.strip_prefix('.'))
         .and_then(|name| name.strip_suffix(".tmp"))
-        .is_some_and(|middle| Uuid::parse_str(middle).is_ok())
+        .is_some_and(|middle| middle.len() == 36 && Uuid::try_parse(middle).is_ok())
 }
 
 /// Deletes stale hidden `.tmp` regular files left by interrupted saves.
@@ -838,6 +839,22 @@ mod tests {
         // the store is seeded.
         fs::remove_file(&visible).unwrap();
         assert_eq!(store.bootstrap().unwrap().profiles.len(), 1);
+    }
+
+    #[test]
+    fn only_hyphenated_uuid_temporaries_match_in_shared_folders() {
+        let uuid = Uuid::new_v4();
+        let name = |middle: String| std::ffi::OsString::from(format!(".{middle}.tmp"));
+        assert!(is_uuid_temporary(&name(uuid.hyphenated().to_string())));
+        for other in [
+            uuid.simple().to_string(),
+            uuid.braced().to_string(),
+            uuid.urn().to_string(),
+            "not-a-uuid".into(),
+        ] {
+            assert!(!is_uuid_temporary(&name(other.clone())), "{other}");
+        }
+        assert!(!is_uuid_temporary(OsStr::new(&format!("{uuid}.tmp"))));
     }
 
     #[cfg(unix)]

@@ -803,6 +803,14 @@ fn keep_tail(mut stderr: impl Read, tail: &Mutex<Vec<u8>>) {
     }
 }
 
+/// The request checks `start_service` runs before spawning: a valid profile
+/// and an execute mode this platform supports. The session driver runs the
+/// same checks for a start while asleep, which spawns nothing yet.
+pub fn check_request(request: &StartRequest) -> Result<(), String> {
+    replay::validate_profile(&request.profile)?;
+    check_execute_supported(request.execute)
+}
+
 /// The `start_service` command without Tauri: validates, stops a read-only
 /// feed on the same interface, writes the snapshot, and spawns `program`.
 /// Failures after the id is known (except a duplicate) emit `failed`.
@@ -823,8 +831,7 @@ pub fn start_service(
     }
     let path_hex = encode_hex(&parse_path(&request.path_hex)?);
     let prepared = (|| {
-        replay::validate_profile(&request.profile)?;
-        check_execute_supported(request.execute)?;
+        check_request(&request)?;
         let program = program?;
         let directory = profile_dir(app_data?);
         stop_feed(&feed::feed_id(&feed::FeedSource::Live {

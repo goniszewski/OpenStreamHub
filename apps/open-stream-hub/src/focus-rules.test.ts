@@ -209,6 +209,31 @@ describe('FocusRulesStore', () => {
     expect(switched).toEqual([['service:aa', profileB, 'focused com.apple.Safari']]);
   });
 
+  it('a switch never fires while a rule edit or disable slower than the debounce is in flight', async () => {
+    const { store, handlers, switched, timers, elapse } = setup();
+    store.connect();
+    await tick();
+    await store.load();
+    await store.save({ id: null, app_bundle_id: 'com.apple.Safari', profile_id: profileB });
+    await store.setEnabled(true);
+    const safari = () => handlers[focusChangedEvent]({ payload: { bundle_id: 'com.apple.Safari', rule_id: 'r1', profile_id: profileB } });
+    // The edit remaps r1; a focus event matched against the old rules lands while its reply is outstanding.
+    const editing = store.save({ id: 'r1', app_bundle_id: 'com.apple.Safari', profile_id: profileA });
+    safari();
+    elapse();
+    expect(switched).toEqual([]);
+    safari();
+    expect(timers.size).toBe(1);
+    await editing;
+    // The reply cancels what was scheduled against the old rules.
+    expect(timers.size).toBe(0);
+    const disabling = store.setEnabled(false);
+    safari();
+    elapse();
+    await disabling;
+    expect(switched).toEqual([]);
+  });
+
   it('use current app explains when no app is known or the platform has no watcher', async () => {
     const known = setup(true, { focus_current_app: { supported: true, bundle_id: 'com.apple.Safari' } });
     expect(await known.store.currentApp()).toBe('com.apple.Safari');

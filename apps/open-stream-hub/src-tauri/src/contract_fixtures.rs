@@ -291,14 +291,43 @@ fn session_payloads_match_the_shared_fixtures() {
     );
     let stale = executing.resume(&executing_id, 1, 600).unwrap_err();
     executing.resume(&executing_id, 0, 600).unwrap();
+    // `start_service` returns the session id. A start while asleep on a path
+    // whose service id still names a session that moved away gets a
+    // `session:<uuid>` name; its first state has no process yet.
+    let (mut moved, moved_id) = start(false);
+    moved.inventory(vec![], 1);
+    exit(&mut moved, &moved_id, "", 2);
+    moved.inventory(vec![dial("/dev/hidraw-0303")], 5_000);
+    let other = device(
+        ServiceModule::M131E,
+        Some("FEDCBA654321"),
+        "/dev/hidraw-0202",
+    );
+    moved.inventory(vec![dial("/dev/hidraw-0303"), other.clone()], 5_001);
+    moved.power(PowerEvent::Suspend, 5_002);
+    let asleep_id = moved.start(request(&other, false), 5_003).unwrap();
+    let asleep_state = moved.runner().emitted.last().unwrap().clone();
+    assert!(asleep_id.starts_with("session:") && asleep_state.session_id == asleep_id);
+    let normalized = |value: Value| -> Value {
+        serde_json::from_str(
+            &value
+                .to_string()
+                .replace(&asleep_id, "session:00000000-0000-4000-8000-000000000000"),
+        )
+        .unwrap()
+    };
     check_or_update(
         "session-command-results.json",
-        &json!({
+        &normalized(json!({
             "resume_session": null,
             // Refused: the profile changed after the confirmation was shown.
             "resume_session_profile_changed": stale,
+            "start_service_asleep_collision": {
+                "result": asleep_id,
+                "first_state": asleep_state,
+            },
             "stop_session": null,
-        }),
+        })),
     );
 }
 

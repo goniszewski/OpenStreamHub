@@ -1,0 +1,17 @@
+[
+  {
+    "bundle_id": "com.apple.Safari",
+    "profile_id": "00000000-0000-4000-8000-000000000000",
+    "rule_id": "00000000-0000-4000-8000-0000000000f1"
+  },
+  {
+    "bundle_id": "com.apple.Terminal",
+    "profile_id": null,
+    "rule_id": null
+  },
+  {
+    "bundle_id": null,
+    "profile_id": null,
+    "rule_id": null
+  }
+]

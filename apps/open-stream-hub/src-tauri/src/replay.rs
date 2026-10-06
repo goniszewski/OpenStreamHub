@@ -240,9 +240,7 @@ pub fn preview_binding(
 /// crate would normalise it to "any serial", which would hide that mistake.
 fn reject_blank_serial(serial_number: &Option<String>) -> Result<(), String> {
     match serial_number {
-        Some(serial) if serial.trim().is_empty() => {
-            Err("serial number must not be blank".into())
-        }
+        Some(serial) if serial.trim().is_empty() => Err("serial number must not be blank".into()),
         _ => Ok(()),
     }
 }

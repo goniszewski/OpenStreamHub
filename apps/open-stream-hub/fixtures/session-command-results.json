@@ -1,4 +1,5 @@
 {
   "resume_session": null,
+  "resume_session_profile_changed": "the session's profile changed after the confirmation was shown; review the new profile and confirm again",
   "stop_session": null
 }

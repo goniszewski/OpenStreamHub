@@ -1,0 +1,24 @@
+{
+  "delete_focus_rule": {
+    "enabled": true,
+    "rules": []
+  },
+  "focus_current_app": {
+    "bundle_id": "com.apple.Terminal",
+    "supported": true
+  },
+  "list_focus_rules": {
+    "enabled": true,
+    "rules": [
+      {
+        "app_bundle_id": "com.apple.Safari",
+        "id": "00000000-0000-4000-8000-0000000000f1",
+        "profile_id": "00000000-0000-4000-8000-000000000000"
+      }
+    ]
+  },
+  "list_focus_rules_default": {
+    "enabled": false,
+    "rules": []
+  }
+}

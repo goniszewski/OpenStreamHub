@@ -61,8 +61,26 @@ export interface ServiceRecordPayload { service_id: string; record: unknown }
 
 // Session manager (sleep/wake and reconnect for service runs). session_id is the first service_id and stays stable.
 export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user';
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user' | 'profile_switch';
 export interface SessionStatePayload {
   session_id: string; service_id: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number; execute: boolean;
-  module: ServiceModule; serial_number: string | null; detail?: string; next_attempt_in_ms?: number;
+  module: ServiceModule; serial_number: string | null;
+  // Bumped by every profile switch. resume_session must name the generation whose profile the user confirmed.
+  profile_generation: number;
+  // The profile of profile_generation: profile_id is the saved profile a switch put in place (null while the session
+  // still runs the profile it was started with), profile_name its name. The runner resyncs its confirmation copy from them.
+  profile_id: string | null; profile_name: string;
+  detail?: string; next_attempt_in_ms?: number;
 }
+
+// Focused-app profile rules (stored in <app data>/focus-rules.json, never inside a profile). Opt-in: enabled is false by default.
+export interface FocusRule { id: string; app_bundle_id: string; profile_id: string }
+export interface FocusRules { enabled: boolean; rules: FocusRule[] }
+// save_focus_rule argument: a null id adds a rule, an existing id edits it.
+export interface FocusRuleInput { id: string | null; app_bundle_id: string; profile_id: string }
+// focus://changed: rule_id and profile_id are set only when the rules are enabled and a rule matches an existing profile.
+export interface FocusChangedPayload { bundle_id: string | null; rule_id: string | null; profile_id: string | null }
+// switch_session_profile result: the saved profile the session now uses and its new profile generation.
+export interface SwitchedProfile extends StoredProfile { profile_generation: number }
+// The last app other than OpenStreamHub that was frontmost. supported is false off macOS.
+export interface FocusCurrentApp { supported: boolean; bundle_id: string | null }

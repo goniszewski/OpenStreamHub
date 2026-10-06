@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
 import type { Scheduler } from './device-feed';
-import { findRun, isStale, maxEntries, ServiceRunner, serviceIdFor, summarizeRecord } from './service-runner';
+import sessionArgs from '../fixtures/session-command-args.json';
+import sessionResults from '../fixtures/session-command-results.json';
+import sessionEvents from '../fixtures/session-state-events.json';
+import switchEvents from '../fixtures/session-switch-events.json';
+import { findRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord } from './service-runner';
 
 const profile: Profile = { schema_version: 1, name: 'Everyday', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } }] };
 const event = { module: 'm003k', control: 0, gesture: 'pressed' };
@@ -12,9 +16,11 @@ function setup(desktop = true) {
   const calls: { command: string; args?: Record<string, unknown> }[] = [];
   const queue: (() => void)[] = [];
   const failures: Record<string, string> = {};
+  let generation = 0;
   const invoke = (async (command: string, args?: Record<string, unknown>) => {
     calls.push({ command, args });
     if (failures[command]) throw new Error(failures[command]);
+    if (command === 'switch_session_profile') return { id: args!.profileId, profile: { ...profile, name: 'Browser' }, modified_at_ms: 1, profile_generation: generation += 1 };
     return command === 'start_service' ? serviceIdFor((args!.request as { path_hex: string }).path_hex) : undefined;
   }) as never;
   const listen = async (name: string, handler: (event: { payload: unknown }) => void) => { handlers[name] = handler; return () => { unlistened.push(name); }; };
@@ -255,7 +261,95 @@ describe('session manager', () => {
     expect(await t.runner.resumeSession(t.id, async () => false)).toBe(false);
     expect(resumes()).toHaveLength(0);
     expect(await t.runner.resumeSession(t.id, async () => true)).toBe(true);
-    expect(resumes()).toEqual([{ command: 'resume_session', args: { sessionId: t.id } }]);
+    expect(resumes()).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 0 } }]);
+  });
+  it('resume arguments and the stale-profile refusal match the Rust fixtures', () => {
+    expect(Object.keys(sessionArgs.resume_session).sort()).toEqual(['profileGeneration', 'sessionId']);
+    expect(sessionResults.resume_session_profile_changed).toBe(profileChangedError);
+  });
+  it('asks again for the new profile when a switch lands while the Resume dialog is open', async () => {
+    const t = await started(true);
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'sleep' });
+    const shown: string[] = [];
+    const confirm = async () => {
+      shown.push(run(t).profileName);
+      if (shown.length === 1) {
+        await t.runner.switchProfile(t.id, 'p-browser', 'focused com.apple.Safari');
+        session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'sleep', profile_generation: 1 });
+      }
+      return true;
+    };
+    expect(await t.runner.resumeSession(t.id, confirm)).toBe(true);
+    expect(shown).toEqual(['Everyday', 'Browser']);
+    expect(t.calls.filter(call => call.command === 'resume_session')).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 1 } }]);
+  });
+  it('asks again when the backend refuses a stale profile generation', async () => {
+    const t = await started(true);
+    session(t, 'needs_confirmation', { service_id: null, execute: true });
+    t.failures.resume_session = profileChangedError;
+    let prompts = 0;
+    expect(await t.runner.resumeSession(t.id, async () => { prompts += 1; if (prompts === 2) delete t.failures.resume_session; return true; })).toBe(true);
+    expect(prompts).toBe(2);
+    expect(t.calls.filter(call => call.command === 'resume_session')).toHaveLength(2);
+    expect(t.runner.getState().error).toBeNull();
+  });
+  it('never confirms a profile the run does not name yet', async () => {
+    const t = await started(true);
+    // The session reports a newer generation than the profile name the panel shows.
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1 });
+    let prompted = false;
+    expect(await t.runner.resumeSession(t.id, async () => { prompted = true; return true; })).toBe(false);
+    expect(prompted).toBe(false);
+    expect(t.calls.filter(call => call.command === 'resume_session')).toEqual([]);
+    expect(t.runner.getState().error).toContain('profile of this run changed');
+  });
+  it('a declined re-prompt resumes nothing', async () => {
+    const t = await started(true);
+    session(t, 'needs_confirmation', { service_id: null, execute: true });
+    t.failures.resume_session = profileChangedError;
+    let prompts = 0;
+    expect(await t.runner.resumeSession(t.id, async () => { prompts += 1; return prompts === 1; })).toBe(false);
+    expect(t.calls.filter(call => call.command === 'resume_session')).toHaveLength(1);
+  });
+  it('resyncs the profile from session state after a switch reply timed out', async () => {
+    const t = await started(true);
+    t.failures.switch_session_profile = 'the session manager did not respond';
+    expect(await t.runner.switchProfile(t.id, 'p-browser', 'focused com.apple.Safari')).toBe(false);
+    expect(run(t)).toMatchObject({ profileName: 'Everyday', profileGeneration: 0 });
+    // The backend did switch: its state names the new profile and generation.
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' });
+    expect(run(t)).toMatchObject({ profileName: 'Browser', profileGeneration: 1, profileId: 'p-browser', profileSwitched: true });
+    const shown: string[] = [];
+    expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
+    expect(shown).toEqual(['Browser']);
+    expect(t.calls.filter(call => call.command === 'resume_session')).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 1 } }]);
+  });
+  it('resyncs the profile of a paused session after a webview reload', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 2, profile_id: 'p-editor', profile_name: 'Editor' });
+    expect(run(t)).toMatchObject({ profileName: 'Editor', profileGeneration: 2, profileId: 'p-editor', profileSwitched: true });
+    // An older event that overtook the newer state never moves the run back.
+    session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' });
+    expect(run(t)).toMatchObject({ profileName: 'Editor', profileGeneration: 2 });
+    const shown: string[] = [];
+    expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
+    expect(shown).toEqual(['Editor']);
+    expect(t.calls).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 2 } }]);
+  });
+  it('session state fixtures carry the profile the runner resyncs from', async () => {
+    for (const event of [...sessionEvents, ...switchEvents]) expect(Object.keys(event)).toEqual(expect.arrayContaining(['profile_generation', 'profile_id', 'profile_name']));
+    const t = setup(); t.runner.connect(); await tick();
+    const paused = switchEvents.at(-1)!;
+    t.handlers['session://state']({ payload: paused });
+    expect(t.runner.getState().runs[paused.session_id]).toMatchObject({ profileName: paused.profile_name, profileGeneration: paused.profile_generation, profileId: paused.profile_id, profileSwitched: true });
+  });
+  it('a run started from an unsaved draft does not claim its saved profile', async () => {
+    const draft = setup(); draft.runner.connect(); await tick();
+    await draft.runner.start({ ...options, draftUnsaved: true, profileId: 'p-saved' });
+    expect(draft.runner.getState().runs[draft.id].profileId).toBeNull();
+    const saved = setup(); saved.runner.connect(); await tick();
+    await saved.runner.start({ ...options, profileId: 'p-saved' });
+    expect(saved.runner.getState().runs[saved.id]).toMatchObject({ profileId: 'p-saved', profileGeneration: 0 });
   });
   it('surfaces a failing resume or stop_session', async () => {
     const t = await started(); session(t, 'needs_confirmation', { service_id: null });

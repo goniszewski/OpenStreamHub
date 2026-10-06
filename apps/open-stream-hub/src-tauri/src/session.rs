@@ -19,17 +19,24 @@
 //! executing on its own. After any interruption it waits in
 //! `needs_confirmation` until `resume_session` (issued by the UI after an
 //! explicit user confirmation). Dry-run sessions resume automatically.
-//! See `docs/masterhub-session-manager.md`.
+//! The same holds when a focused-app rule replaces the session's profile
+//! (`switch_profile`): the process restarts with the new profile, a dry run
+//! at once, an executing session only after `resume_session`. Every switch
+//! bumps the session's `profile_generation`; `resume_session` names the
+//! generation whose profile the user confirmed and is refused once another
+//! switch replaced it, so a confirmation never starts a profile the user did
+//! not see.
+//! See `docs/masterhub-session-manager.md` and `docs/masterhub-focus-rules.md`.
 
 use crate::{
     feed::LiveDevice,
     power::PowerEvent,
     service::{self, StartRequest},
 };
-use cooltek_sdk_service::ServiceModule;
+use cooltek_sdk_service::{Profile, ServiceModule};
 use serde::Serialize;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -53,6 +60,12 @@ pub const AMBIGUOUS_DEVICE: &str = "ambiguous device";
 const DETAIL_CHARS: usize = 512;
 /// Longest pause of an idle driver loop; timers wake it earlier.
 const IDLE_WAIT: Duration = Duration::from_secs(60);
+/// `start_service` error for a device that cannot be managed while the Mac
+/// is going to sleep (nothing may be spawned across sleep).
+pub const ASLEEP: &str = "the Mac is going to sleep; start the profile again after it wakes";
+/// `resume_session` error when the profile changed after the confirmation
+/// was shown. The frontend matches it to ask again.
+pub const PROFILE_CHANGED: &str = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
 
 /// Restart delay for crash attempt `attempt` (1-based): 1 s, 2 s, 4 s, 8 s, 8 s.
 pub fn backoff_ms(attempt: u32) -> u64 {
@@ -77,6 +90,8 @@ pub enum Reason {
     DeviceRemoved,
     ServiceExited,
     User,
+    /// A focused-app rule replaced the session's profile.
+    ProfileSwitch,
 }
 
 /// Payload of `session://state`.
@@ -91,6 +106,14 @@ pub struct SessionState {
     pub execute: bool,
     pub module: ServiceModule,
     pub serial_number: Option<String>,
+    /// Bumped by every profile switch; `resume_session` must name it.
+    pub profile_generation: u64,
+    /// The saved profile the session now runs, null while it still runs the
+    /// profile it was started with (whose id the backend does not know).
+    pub profile_id: Option<String>,
+    /// Name of the profile of `profile_generation`, so the frontend can resync
+    /// the confirmation copy after a lost switch reply or a reload.
+    pub profile_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,6 +138,12 @@ pub enum Event {
     Tick,
     UserStop,
     UserResume,
+    /// The stored request now carries another profile; the current process
+    /// stops and the session restarts it under the usual safety rule.
+    ProfileSwitched {
+        profile_id: String,
+        profile_name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +191,10 @@ pub struct Session {
     retry_at: Option<u64>,
     /// The user confirmed resuming an executing session.
     confirmed: bool,
+    /// Number of profile switches so far.
+    profile_generation: u64,
+    profile_id: Option<String>,
+    profile_name: String,
     last_emitted: Option<SessionState>,
 }
 
@@ -188,15 +221,19 @@ fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
 
 impl Session {
     /// A session named `session_id` for a service already spawned as
-    /// `service_id` on `device`.
+    /// `service_id` on `device`. `None` means the Mac is asleep and nothing
+    /// was spawned: the session starts suspended and starts its process only
+    /// after wake, under the usual safety rule.
     pub fn start(
         session_id: String,
-        service_id: String,
+        service_id: Option<String>,
         device: &LiveDevice,
         execute: bool,
+        profile_name: String,
         inventory: Vec<LiveDevice>,
         now_ms: u64,
     ) -> (Self, Vec<Action>) {
+        let asleep = service_id.is_none();
         let mut session = Self {
             session_id,
             module: device.module,
@@ -204,20 +241,23 @@ impl Session {
             execute,
             path_hex: device.path_hex.clone(),
             phase: Phase::Running,
-            reason: None,
             attempt: 0,
             detail: None,
-            service: Some(Process {
+            reason: asleep.then_some(Reason::Sleep),
+            service: service_id.map(|service_id| Process {
                 service_id,
                 started_ms: now_ms,
                 running: true,
                 stopping: false,
             }),
             inventory,
-            asleep: false,
+            asleep,
             settle_until: None,
             retry_at: None,
             confirmed: false,
+            profile_generation: 0,
+            profile_id: None,
+            profile_name,
             last_emitted: None,
         };
         let mut actions = Vec::new();
@@ -259,6 +299,9 @@ impl Session {
             execute: self.execute,
             module: self.module,
             serial_number: self.serial_number.clone(),
+            profile_generation: self.profile_generation,
+            profile_id: self.profile_id.clone(),
+            profile_name: self.profile_name.clone(),
             detail: self.detail.clone(),
             next_attempt_in_ms,
         }
@@ -372,7 +415,30 @@ impl Session {
                 self.confirmed = true;
                 self.retry_at = None;
             }
-            Event::Suspend | Event::Resume | Event::Tick | Event::UserStop | Event::UserResume => {}
+            // Without a live process the next start already uses the new
+            // profile; nothing is interrupted.
+            Event::ProfileSwitched {
+                profile_id,
+                profile_name,
+            } if !stopped => {
+                self.profile_generation += 1;
+                self.profile_id = Some(profile_id);
+                self.profile_name = profile_name;
+                if self
+                    .service
+                    .as_ref()
+                    .is_some_and(|process| !process.stopping)
+                {
+                    self.interrupt(Reason::ProfileSwitch);
+                    self.stop_process(actions);
+                }
+            }
+            Event::Suspend
+            | Event::Resume
+            | Event::Tick
+            | Event::UserStop
+            | Event::UserResume
+            | Event::ProfileSwitched { .. } => {}
         }
     }
 
@@ -506,6 +572,8 @@ pub struct Driver<R> {
     /// While set, `StopService` actions are collected here and then stopped
     /// together through `Runner::stop_many`.
     deferred_stops: Option<Vec<String>>,
+    /// Between `Suspend` and `Resume`: nothing new is spawned.
+    asleep: bool,
 }
 
 impl<R: Runner> Driver<R> {
@@ -517,6 +585,7 @@ impl<R: Runner> Driver<R> {
             timers: BTreeSet::new(),
             closed: false,
             deferred_stops: None,
+            asleep: false,
         }
     }
 
@@ -575,6 +644,9 @@ impl<R: Runner> Driver<R> {
 
     /// Starts a run and, when its device is identified, a session for it.
     /// An unidentified device runs unmanaged, exactly as before sessions.
+    /// While the Mac is asleep nothing is spawned: an identified device gets a
+    /// suspended session that starts after wake (an executing one only after
+    /// `resume_session`); an unidentified one is refused with `ASLEEP`.
     pub fn start(&mut self, request: StartRequest, now_ms: u64) -> Result<String, String> {
         if self.is_closed() {
             return Err(service::SHUTTING_DOWN.into());
@@ -601,7 +673,14 @@ impl<R: Runner> Driver<R> {
                 other.session.session_id
             ));
         }
-        let id = self.runner.start(&request)?;
+        let id = if self.asleep {
+            if device.is_none() {
+                return Err(ASLEEP.into());
+            }
+            service_id
+        } else {
+            self.runner.start(&request)?
+        };
         let Some(device) = device else {
             return Ok(id);
         };
@@ -617,9 +696,10 @@ impl<R: Runner> Driver<R> {
         };
         let (session, actions) = Session::start(
             session_id,
-            id.clone(),
+            (!self.asleep).then(|| id.clone()),
             &device,
             request.execute,
+            request.profile.name.clone(),
             inventory,
             now_ms,
         );
@@ -640,18 +720,87 @@ impl<R: Runner> Driver<R> {
         self.prune();
     }
 
-    pub fn resume(&mut self, session_id: &str, now_ms: u64) -> Result<(), String> {
+    /// `profile_generation` is the generation of the profile the user saw
+    /// when confirming. A later switch refuses the resume with
+    /// `PROFILE_CHANGED` and emits the current state again.
+    pub fn resume(
+        &mut self,
+        session_id: &str,
+        profile_generation: u64,
+        now_ms: u64,
+    ) -> Result<(), String> {
         let index = self
             .sessions
             .iter()
             .position(|managed| managed.session.session_id == session_id)
             .ok_or_else(|| format!("unknown session {session_id}"))?;
-        if self.sessions[index].session.phase != Phase::NeedsConfirmation {
+        let session = &self.sessions[index].session;
+        if session.phase != Phase::NeedsConfirmation {
             return Err(format!("session {session_id} does not need confirmation"));
+        }
+        if session.profile_generation != profile_generation {
+            let state = session
+                .last_emitted
+                .clone()
+                .unwrap_or_else(|| session.state(None));
+            self.runner.emit(&state);
+            return Err(PROFILE_CHANGED.into());
         }
         self.apply(index, Event::UserResume, now_ms);
         self.prune();
         Ok(())
+    }
+
+    /// Replaces a session's profile (a focused-app rule matched) and returns
+    /// the new profile generation. Restarts follow the safety rule: an
+    /// executing session waits in `needs_confirmation` and never resumes with
+    /// the new profile on its own.
+    pub fn switch_profile(
+        &mut self,
+        session_id: &str,
+        profile_id: String,
+        profile: Profile,
+        now_ms: u64,
+    ) -> Result<u64, String> {
+        let index = self
+            .sessions
+            .iter()
+            .position(|managed| managed.session.session_id == session_id)
+            .ok_or_else(|| format!("unknown session {session_id}"))?;
+        if self.sessions[index].session.phase == Phase::Stopped {
+            return Err(format!("session {session_id} has stopped"));
+        }
+        let profile_name = profile.name.clone();
+        self.sessions[index].request.profile = profile;
+        let event = Event::ProfileSwitched {
+            profile_id,
+            profile_name,
+        };
+        self.apply(index, event, now_ms);
+        let generation = self.sessions[index].session.profile_generation;
+        self.prune();
+        Ok(generation)
+    }
+
+    /// Several switches at once (one focus change, several sessions): every
+    /// process they interrupt is stopped in one parallel batch, like sleep.
+    pub fn switch_profiles(
+        &mut self,
+        switches: Vec<(String, String, Profile)>,
+        now_ms: u64,
+    ) -> Vec<Result<u64, String>> {
+        self.deferred_stops = Some(Vec::new());
+        let results = switches
+            .into_iter()
+            .map(|(session_id, profile_id, profile)| {
+                self.switch_profile(&session_id, profile_id, profile, now_ms)
+            })
+            .collect();
+        let stops = self.deferred_stops.take().unwrap_or_default();
+        if !stops.is_empty() {
+            self.runner.stop_many(&stops);
+        }
+        results
     }
 
     pub fn inventory(&mut self, devices: Vec<LiveDevice>, now_ms: u64) {
@@ -661,6 +810,7 @@ impl<R: Runner> Driver<R> {
 
     /// Every process a sleep (or wake) interrupts is stopped in parallel.
     pub fn power(&mut self, event: PowerEvent, now_ms: u64) {
+        self.asleep = event == PowerEvent::Suspend;
         self.deferred_stops = Some(Vec::new());
         self.broadcast(
             || match event {
@@ -821,7 +971,11 @@ pub enum Input {
         sessions_only: bool,
         done: Sender<()>,
     },
-    Resume(String, Sender<Result<(), String>>),
+    /// Session id and the confirmed profile generation.
+    Resume(String, u64, Sender<Result<(), String>>),
+    /// Session id, saved profile id and profile; answered with the new
+    /// profile generation.
+    SwitchProfile(String, String, Box<Profile>, Sender<Result<u64, String>>),
     Inventory(Vec<LiveDevice>),
     /// `done` is answered once the event's actions ran (e.g. the stop before
     /// sleep).
@@ -849,8 +1003,11 @@ impl<R: Runner> Driver<R> {
                 self.stop(&id, sessions_only, now_ms);
                 let _ = done.send(());
             }
-            Input::Resume(id, reply) => {
-                let _ = reply.send(self.resume(&id, now_ms));
+            Input::Resume(id, generation, reply) => {
+                let _ = reply.send(self.resume(&id, generation, now_ms));
+            }
+            Input::SwitchProfile(id, profile_id, profile, reply) => {
+                self.handle_switches(vec![(id, profile_id, profile, reply)], now_ms);
             }
             Input::Inventory(devices) => self.inventory(devices, now_ms),
             Input::Power(event, done) => {
@@ -872,6 +1029,58 @@ impl<R: Runner> Driver<R> {
         }
         true
     }
+
+    fn handle_switches(&mut self, switches: Vec<Switch>, now_ms: u64) {
+        let (requests, replies): (Vec<_>, Vec<_>) = switches
+            .into_iter()
+            .map(|(id, profile_id, profile, reply)| ((id, profile_id, *profile), reply))
+            .unzip();
+        for (result, reply) in self
+            .switch_profiles(requests, now_ms)
+            .into_iter()
+            .zip(replies)
+        {
+            let _ = reply.send(result);
+        }
+    }
+}
+
+type Switch = (String, String, Box<Profile>, Sender<Result<u64, String>>);
+
+/// What the driver handles next from the queued inputs.
+enum Next {
+    One(Input),
+    Switches(Vec<Switch>),
+}
+
+/// Picks the next queued input. Power events go first, so a sleep never
+/// waits behind other queued work and a dry run a switch just stopped is not
+/// restarted right before sleep stops it again. A start queued behind a
+/// suspend therefore runs while the driver is asleep and spawns nothing (see
+/// `Driver::start`). A profile switch takes every
+/// other queued switch with it, so their stops run in one parallel batch.
+fn take_next(queue: &mut VecDeque<Input>) -> Option<Next> {
+    let index = queue
+        .iter()
+        .position(|input| matches!(input, Input::Power(..)))
+        .unwrap_or(0);
+    match queue.remove(index)? {
+        Input::SwitchProfile(id, profile_id, profile, reply) => {
+            let mut switches = vec![(id, profile_id, profile, reply)];
+            let mut rest = VecDeque::with_capacity(queue.len());
+            for input in queue.drain(..) {
+                match input {
+                    Input::SwitchProfile(id, profile_id, profile, reply) => {
+                        switches.push((id, profile_id, profile, reply))
+                    }
+                    other => rest.push_back(other),
+                }
+            }
+            *queue = rest;
+            Some(Next::Switches(switches))
+        }
+        input => Some(Next::One(input)),
+    }
 }
 
 /// Runs the driver until shutdown, waking for inputs and due timers.
@@ -880,19 +1089,28 @@ pub fn run_driver<R: Runner>(
     inputs: &Receiver<Input>,
     clock: impl Fn() -> u64,
 ) {
+    let mut queue = VecDeque::new();
     loop {
-        let now = clock();
-        let wait = driver.next_due().map_or(IDLE_WAIT, |due| {
-            Duration::from_millis(due.saturating_sub(now))
-        });
-        match inputs.recv_timeout(wait) {
-            Ok(input) => {
+        if queue.is_empty() {
+            let now = clock();
+            let wait = driver.next_due().map_or(IDLE_WAIT, |due| {
+                Duration::from_millis(due.saturating_sub(now))
+            });
+            match inputs.recv_timeout(wait) {
+                Ok(input) => queue.push_back(input),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        queue.extend(inputs.try_iter());
+        match take_next(&mut queue) {
+            Some(Next::One(input)) => {
                 if !driver.handle(input, clock()) {
                     return;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return,
+            Some(Next::Switches(switches)) => driver.handle_switches(switches, clock()),
+            None => {}
         }
         driver.tick(clock());
     }
@@ -987,10 +1205,28 @@ impl Manager {
         .map_or(Ok(false), |answer| answer.map(|()| true))
     }
 
-    pub fn resume(&self, session_id: &str) -> Result<(), String> {
-        self.request(|reply| Input::Resume(session_id.into(), reply))
+    pub fn resume(&self, session_id: &str, profile_generation: u64) -> Result<(), String> {
+        self.request(|reply| Input::Resume(session_id.into(), profile_generation, reply))
             .unwrap_or_else(|| Err(format!("unknown session {session_id}")))
             .and_then(|resumed| resumed)
+    }
+
+    pub fn switch_profile(
+        &self,
+        session_id: &str,
+        profile_id: &str,
+        profile: Profile,
+    ) -> Result<u64, String> {
+        self.request(|reply| {
+            Input::SwitchProfile(
+                session_id.into(),
+                profile_id.into(),
+                Box::new(profile),
+                reply,
+            )
+        })
+        .unwrap_or_else(|| Err(format!("unknown session {session_id}")))
+        .and_then(|switched| switched)
     }
 
     /// App exit: ends every session; waits at most `wait`.
@@ -1137,6 +1373,9 @@ mod tests {
                 execute: false,
                 module: DIAL,
                 serial_number: Some("SER-1".into()),
+                profile_generation: 0,
+                profile_id: None,
+                profile_name: crate::test_profiles::folders().name,
                 detail: None,
                 next_attempt_in_ms: None,
             }]
@@ -1196,7 +1435,7 @@ mod tests {
     fn an_executing_session_waits_for_confirmation_after_wake() {
         let (mut driver, id) = running(true);
         assert!(
-            driver.resume(&id, 0).is_err(),
+            driver.resume(&id, 0, 0).is_err(),
             "running needs no confirmation"
         );
         driver.power(PowerEvent::Suspend, 0);
@@ -1213,13 +1452,13 @@ mod tests {
         driver.inventory(vec![dial("/a")], 1_000_001);
         assert_eq!(starts(&mut driver), 1);
 
-        driver.resume(&id, 1_000_002).unwrap();
+        driver.resume(&id, 0, 1_000_002).unwrap();
         assert_eq!(starts(&mut driver), 2);
         let restarted = driver.runner().starts[1].clone();
         assert!(restarted.execute);
         assert_eq!(restarted.profile, crate::test_profiles::folders());
         assert_eq!(phase(&mut driver), Phase::Running);
-        assert!(driver.resume("service:unknown", 0).is_err());
+        assert!(driver.resume("service:unknown", 0, 0).is_err());
     }
 
     #[test]
@@ -1263,7 +1502,7 @@ mod tests {
             (Phase::NeedsConfirmation, Some(Reason::DeviceRemoved))
         );
         assert_eq!(starts(&mut driver), 1);
-        driver.resume(&id, 4).unwrap();
+        driver.resume(&id, 0, 4).unwrap();
         assert_eq!(driver.runner().starts[1].path_hex, dial("/b").path_hex);
         assert!(driver.runner().starts[1].execute);
     }
@@ -1366,7 +1605,7 @@ mod tests {
         driver.tick(100_000);
         assert_eq!(starts(&mut driver), 1);
         driver.runner().fail_next = Some("could not start".into());
-        driver.resume(&id, 100_001).unwrap();
+        driver.resume(&id, 0, 100_001).unwrap();
         let state = last(&mut driver);
         assert_eq!((state.phase, state.attempt), (Phase::NeedsConfirmation, 2));
         assert_eq!(state.detail.as_deref(), Some("could not start"));
@@ -1486,7 +1725,7 @@ mod tests {
             driver.power(PowerEvent::Resume, 6);
             driver.tick(1_000_000);
             assert_eq!(starts(&mut driver), 1, "{target:?}");
-            assert!(driver.resume(&id, 7).is_err());
+            assert!(driver.resume(&id, 0, 7).is_err());
             driver.stop(&id, true, 8);
             driver.stop("service:unknown", true, 8);
         }
@@ -1542,9 +1781,10 @@ mod tests {
     fn the_pure_step_never_requests_a_second_process() {
         let (session, _) = Session::start(
             sid("/a"),
-            sid("/a"),
+            Some(sid("/a")),
             &dial("/a"),
             false,
+            "Folders".into(),
             vec![dial("/a")],
             0,
         );
@@ -1638,7 +1878,7 @@ mod tests {
             assert!(Instant::now() < deadline, "the restart timer never fired");
             thread::sleep(Duration::from_millis(20));
         }
-        assert!(manager.resume(&id).is_err());
+        assert!(manager.resume(&id, 0).is_err());
         assert!(manager.stop(&id, true).unwrap());
         manager.shutdown(Duration::from_secs(1));
         // Refused rather than falling back to an unmanaged run.
@@ -1753,5 +1993,323 @@ mod tests {
         assert!(driver.session(&id).is_none());
         let error = driver.start(request(&dial("/a"), false), 20).unwrap_err();
         assert_eq!(error, service::SHUTTING_DOWN);
+    }
+
+    fn renamed(name: &str) -> Profile {
+        let mut profile = crate::test_profiles::folders();
+        profile.name = name.into();
+        profile
+    }
+
+    #[test]
+    fn a_profile_switch_restarts_a_dry_run_with_the_new_profile() {
+        let (mut driver, id) = running(false);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 100)
+            .unwrap();
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason),
+            (Phase::Running, Some(Reason::ProfileSwitch))
+        );
+        // A second switch while stopping only replaces the profile again.
+        driver
+            .switch_profile(&id, "Editor".into(), renamed("Editor"), 110)
+            .unwrap();
+        assert_eq!(driver.runner().stops.len(), 1);
+        exit(&mut driver, &id, "", 150);
+        assert_eq!(starts(&mut driver), 2);
+        let restarted = driver.runner().starts[1].clone();
+        assert!(!restarted.execute);
+        assert!(restarted.software_mode);
+        assert_eq!(restarted.profile.name, "Editor");
+        let state = last(&mut driver);
+        assert_eq!((state.phase, state.reason), (Phase::Running, None));
+    }
+
+    #[test]
+    fn a_profile_switch_never_resumes_an_executing_session_on_its_own() {
+        let (mut driver, id) = running(true);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 100)
+            .unwrap();
+        exit(&mut driver, &id, "", 150);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.service_id),
+            (Phase::NeedsConfirmation, Some(Reason::ProfileSwitch), None)
+        );
+        driver.tick(1_000_000);
+        driver.inventory(vec![dial("/a")], 1_000_001);
+        assert_eq!(state.profile_generation, 1);
+        // Another switch while paused starts nothing either.
+        let generation = driver
+            .switch_profile(&id, "Editor".into(), renamed("Editor"), 1_000_002)
+            .unwrap();
+        assert_eq!(generation, 2);
+        assert_eq!(last(&mut driver).profile_generation, 2);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+
+        // A confirmation of the profile shown before the second switch is
+        // refused, and the current state is emitted again.
+        let emitted = driver.runner().emitted.len();
+        let error = driver.resume(&id, 1, 1_000_003).unwrap_err();
+        assert_eq!(error, PROFILE_CHANGED);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(driver.runner().emitted.len(), emitted + 1);
+        let refreshed = last(&mut driver);
+        assert_eq!(
+            (refreshed.phase, refreshed.profile_generation),
+            (Phase::NeedsConfirmation, 2)
+        );
+
+        driver.resume(&id, 2, 1_000_004).unwrap();
+        let restarted = driver.runner().starts[1].clone();
+        assert!(restarted.execute);
+        assert_eq!(restarted.profile.name, "Editor");
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn switches_for_several_sessions_stop_in_one_parallel_batch() {
+        let (mut driver, first) = running(false);
+        let keys = device(ServiceModule::M003K, Some("K"), "/k");
+        driver.inventory(vec![dial("/a"), keys.clone()], 1);
+        let second = driver.start(request(&keys, true), 1).unwrap();
+        let results = driver.switch_profiles(
+            vec![
+                (first.clone(), "Browser".into(), renamed("Browser")),
+                (second.clone(), "Browser".into(), renamed("Browser")),
+                (
+                    "service:unknown".into(),
+                    "Browser".into(),
+                    renamed("Browser"),
+                ),
+            ],
+            2,
+        );
+        assert_eq!(results[0], Ok(1));
+        assert_eq!(results[1], Ok(1));
+        assert!(results[2].is_err());
+        assert_eq!(driver.runner().batches, [vec![first, second]]);
+        assert_eq!(driver.runner().stops.len(), 2);
+    }
+
+    fn switch_input(id: &str) -> (Input, Receiver<Result<u64, String>>) {
+        let (reply, answer) = mpsc::channel();
+        let input = Input::SwitchProfile(
+            id.into(),
+            "Browser".into(),
+            Box::new(renamed("Browser")),
+            reply,
+        );
+        (input, answer)
+    }
+
+    #[test]
+    fn queued_power_events_go_first_and_queued_switches_batch() {
+        let (first, _a) = switch_input("s1");
+        let (second, _b) = switch_input("s2");
+        let mut queue = VecDeque::from([
+            Input::Exited {
+                service_id: "service:41".into(),
+                exit_code: Some(0),
+                stderr_tail: String::new(),
+            },
+            first,
+            Input::Inventory(vec![]),
+            Input::Power(PowerEvent::Suspend, None),
+            second,
+            Input::Power(PowerEvent::Resume, None),
+        ]);
+        assert!(matches!(
+            take_next(&mut queue),
+            Some(Next::One(Input::Power(PowerEvent::Suspend, None)))
+        ));
+        assert!(matches!(
+            take_next(&mut queue),
+            Some(Next::One(Input::Power(PowerEvent::Resume, None)))
+        ));
+        assert!(matches!(
+            take_next(&mut queue),
+            Some(Next::One(Input::Exited { .. }))
+        ));
+        match take_next(&mut queue) {
+            Some(Next::Switches(switches)) => {
+                let ids: Vec<_> = switches.iter().map(|(id, ..)| id.as_str()).collect();
+                assert_eq!(ids, ["s1", "s2"]);
+            }
+            _ => panic!("expected the queued switches together"),
+        }
+        assert!(matches!(
+            take_next(&mut queue),
+            Some(Next::One(Input::Inventory(_)))
+        ));
+        assert!(take_next(&mut queue).is_none());
+    }
+
+    #[test]
+    fn a_dry_run_switched_just_before_sleep_is_not_restarted() {
+        let (mut driver, id) = running(false);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 100)
+            .unwrap();
+        // Sleep is handled before the queued exit of the switched process.
+        driver.power(PowerEvent::Suspend, 110);
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        exit(&mut driver, &id, "", 120);
+        assert_eq!(starts(&mut driver), 1);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.service_id),
+            (Phase::Suspended, Some(Reason::Sleep), None)
+        );
+        driver.power(PowerEvent::Resume, 10_000);
+        driver.tick(10_000 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.runner().starts[1].profile.name, "Browser");
+    }
+
+    #[test]
+    fn the_driver_thread_batches_and_answers_queued_switches() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/a")], 0);
+        let id = driver.start(request(&dial("/a"), false), 0).unwrap();
+        let (inputs, receiver) = mpsc::channel();
+        let (first, first_answer) = switch_input(&id);
+        let (second, second_answer) = switch_input("service:unknown");
+        let (done, finished) = mpsc::channel();
+        inputs.send(first).unwrap();
+        inputs.send(second).unwrap();
+        inputs.send(Input::Shutdown(done)).unwrap();
+        run_driver(&mut driver, &receiver, || 1);
+        assert_eq!(first_answer.try_recv().unwrap(), Ok(1));
+        assert!(second_answer.try_recv().unwrap().is_err());
+        assert!(finished.try_recv().is_ok());
+        assert_eq!(driver.runner().batches, [vec![id]]);
+    }
+
+    #[test]
+    fn a_profile_switch_needs_a_live_session() {
+        let (mut driver, id) = running(false);
+        let error = driver
+            .switch_profile("service:unknown", "Browser".into(), renamed("Browser"), 1)
+            .unwrap_err();
+        assert!(error.contains("unknown session"), "{error}");
+        driver.stop(&id, true, 2);
+        exit(&mut driver, &id, "", 3);
+        assert!(
+            driver
+                .switch_profile(&id, "Browser".into(), renamed("Browser"), 4)
+                .is_err()
+        );
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_start_while_asleep_spawns_nothing_until_wake() {
+        for execute in [false, true] {
+            let mut driver = Driver::new(FakeRunner::default());
+            driver.inventory(vec![dial("/a")], 0);
+            driver.power(PowerEvent::Suspend, 10);
+            let id = driver.start(request(&dial("/a"), execute), 20).unwrap();
+            assert_eq!(id, sid("/a"));
+            assert_eq!(starts(&mut driver), 0, "spawned across sleep");
+            let state = last(&mut driver);
+            assert_eq!(
+                (
+                    state.session_id.as_str(),
+                    state.phase,
+                    state.reason,
+                    state.service_id
+                ),
+                (id.as_str(), Phase::Suspended, Some(Reason::Sleep), None)
+            );
+            driver.tick(1_000_000);
+            assert_eq!(starts(&mut driver), 0);
+
+            driver.power(PowerEvent::Resume, 2_000_000);
+            driver.tick(2_000_000 + SETTLE_DELAY_MS - 1);
+            assert_eq!(starts(&mut driver), 0, "started before the settle delay");
+            driver.tick(2_000_000 + SETTLE_DELAY_MS);
+            if execute {
+                let state = last(&mut driver);
+                assert_eq!(
+                    (state.phase, state.reason),
+                    (Phase::NeedsConfirmation, Some(Reason::Sleep))
+                );
+                assert_eq!(starts(&mut driver), 0, "executed without confirmation");
+                driver.resume(&id, 0, 2_100_000).unwrap();
+            }
+            assert_eq!(starts(&mut driver), 1);
+            assert_eq!(driver.runner().starts[0].execute, execute);
+            assert_eq!(phase(&mut driver), Phase::Running);
+        }
+    }
+
+    #[test]
+    fn an_unidentified_device_is_refused_while_asleep() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.power(PowerEvent::Suspend, 0);
+        let error = driver.start(request(&dial("/x"), false), 1).unwrap_err();
+        assert_eq!(error, ASLEEP);
+        assert_eq!(starts(&mut driver), 0);
+        driver.power(PowerEvent::Resume, 2);
+        assert!(driver.start(request(&dial("/x"), false), 3).is_ok());
+    }
+
+    #[test]
+    fn a_start_queued_behind_suspend_waits_for_wake() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/a")], 0);
+        let (inputs, receiver) = mpsc::channel();
+        let (reply, answer) = mpsc::channel();
+        let (done, finished) = mpsc::channel();
+        // Queued in this order; the power event is handled first.
+        inputs
+            .send(Input::Start(request(&dial("/a"), true), reply))
+            .unwrap();
+        inputs
+            .send(Input::Power(PowerEvent::Suspend, None))
+            .unwrap();
+        inputs.send(Input::Shutdown(done)).unwrap();
+        run_driver(&mut driver, &receiver, || 1);
+        assert_eq!(answer.try_recv().unwrap(), Ok(sid("/a")));
+        assert!(finished.try_recv().is_ok());
+        assert_eq!(starts(&mut driver), 0, "spawned after the sleep stop");
+        assert!(
+            driver
+                .runner()
+                .emitted
+                .iter()
+                .all(|state| state.service_id.is_none())
+        );
+    }
+
+    #[test]
+    fn session_state_carries_the_current_profile_for_resync() {
+        let (mut driver, id) = running(true);
+        let state = last(&mut driver);
+        assert_eq!(
+            (
+                state.profile_id,
+                state.profile_name,
+                state.profile_generation
+            ),
+            (None, crate::test_profiles::folders().name, 0)
+        );
+        driver
+            .switch_profile(&id, "p-browser".into(), renamed("Browser"), 100)
+            .unwrap();
+        exit(&mut driver, &id, "", 150);
+        let state = last(&mut driver);
+        assert_eq!(state.phase, Phase::NeedsConfirmation);
+        assert_eq!(
+            (state.profile_id.as_deref(), state.profile_name.as_str()),
+            (Some("p-browser"), "Browser")
+        );
+        assert_eq!(state.profile_generation, 1);
     }
 }

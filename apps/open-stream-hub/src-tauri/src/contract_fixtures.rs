@@ -285,14 +285,20 @@ fn session_payloads_match_the_shared_fixtures() {
     check_or_update(
         "session-command-args.json",
         &json!({
-            "resume_session": { "sessionId": executing_id },
+            "resume_session": { "sessionId": executing_id, "profileGeneration": 0 },
             "stop_session": { "sessionId": id },
         }),
     );
-    executing.resume(&executing_id, 600).unwrap();
+    let stale = executing.resume(&executing_id, 1, 600).unwrap_err();
+    executing.resume(&executing_id, 0, 600).unwrap();
     check_or_update(
         "session-command-results.json",
-        &json!({ "resume_session": null, "stop_session": null }),
+        &json!({
+            "resume_session": null,
+            // Refused: the profile changed after the confirmation was shown.
+            "resume_session_profile_changed": stale,
+            "stop_session": null,
+        }),
     );
 }
 
@@ -431,5 +437,98 @@ fn artwork_payloads_match_the_shared_fixtures() {
                 "height": saved.height,
             }
         }),
+    );
+}
+
+#[test]
+fn focus_rule_payloads_match_the_shared_fixtures() {
+    use crate::{focus, session};
+    use cooltek_sdk_service::ServiceModule;
+    use session::fake::{FakeRunner, device, exit, request};
+    let profile_id = "00000000-0000-4000-8000-000000000000";
+    let rule_id = "00000000-0000-4000-8000-0000000000f1";
+    let rule = json!({ "id": null, "app_bundle_id": "com.apple.Safari", "profile_id": profile_id });
+    // The argument deserializes as the command's input.
+    let parsed: focus::RuleInput = serde_json::from_value(rule.clone()).unwrap();
+    let saved = focus::upsert(focus::FocusRules::default(), parsed).unwrap();
+    assert_eq!(saved.rules[0].app_bundle_id, "com.apple.Safari");
+    let rules = focus::FocusRules {
+        enabled: true,
+        rules: vec![focus::FocusRule {
+            id: rule_id.into(),
+            app_bundle_id: "com.apple.Safari".into(),
+            profile_id: profile_id.into(),
+        }],
+    };
+    let session_id = format!(
+        "service:{}",
+        cooltek_sdk_cli::capture::encode_hex(b"/dev/hidraw-0202")
+    );
+    // Tauri maps snake_case command arguments to camelCase.
+    check_or_update(
+        "focus-command-args.json",
+        &json!({
+            "save_focus_rule": { "rule": rule },
+            "save_focus_rule_edit": { "rule": { "id": rule_id, "app_bundle_id": "com.apple.Terminal", "profile_id": profile_id } },
+            "delete_focus_rule": { "id": rule_id },
+            "set_focus_rules_enabled": { "enabled": true },
+            "switch_session_profile": { "sessionId": session_id, "profileId": profile_id },
+        }),
+    );
+    let state = focus::FocusState::open(Err("unused".into()));
+    let unmatched = state.observe(Some("com.apple.Terminal".into()), |_| true);
+    let none = state.observe(None, |_| true);
+    let matched = focus::FocusChanged {
+        bundle_id: Some("com.apple.Safari".into()),
+        rule_id: Some(rule_id.into()),
+        profile_id: Some(profile_id.into()),
+    };
+    assert_eq!(
+        focus::match_rule(&rules, Some("com.apple.Safari"), |_| true).map(|rule| &rule.id),
+        Some(&rule_id.to_string())
+    );
+    check_or_update(
+        "focus-changed-events.json",
+        &json!([matched, unmatched, none]),
+    );
+    check_or_update(
+        "focus-command-results.json",
+        &json!({
+            "list_focus_rules": rules,
+            "list_focus_rules_default": focus::FocusRules::default(),
+            // `supported` is false off macOS; the fixture pins the macOS shape.
+            "focus_current_app": focus::CurrentApp { supported: true, ..state.current_app() },
+            "delete_focus_rule": focus::FocusRules { enabled: true, rules: vec![] },
+        }),
+    );
+    // An executing session paused by a profile switch.
+    let dial = device(
+        ServiceModule::M131E,
+        Some("ABCDEF123456"),
+        "/dev/hidraw-0202",
+    );
+    let mut driver = session::Driver::new(FakeRunner::default());
+    driver.inventory(vec![dial.clone()], 0);
+    let id = driver.start(request(&dial, true), 0).unwrap();
+    let profile_generation = driver
+        .switch_profile(&id, profile_id.into(), test_profiles::folders(), 100)
+        .unwrap();
+    exit(&mut driver, &id, "", 200);
+    check_or_update(
+        "focus-switch-result.json",
+        &json!({
+            "switch_session_profile": crate::SwitchedProfile {
+                stored: store::StoredProfile {
+                    id: profile_id.into(),
+                    profile: test_profiles::folders(),
+                    modified_at_ms: 0,
+                },
+                profile_generation,
+            },
+        }),
+    );
+    check_or_update(
+        "session-switch-events.json",
+        &serde_json::to_value(&driver.runner().emitted).unwrap(),
     );
 }

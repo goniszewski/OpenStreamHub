@@ -363,3 +363,11 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .help-link { display:flex; align-items:center; gap:13px; width:100%; min-height:43px; padding:8px 13px; border:0; border-radius:9px; background:transparent; text-align:left; color:var(--muted); }.help-link:hover { color:var(--text); background:var(--selected); }
 /* Focus lands on main only as a fallback (e.g. after dismissing the last notice); no outline around the whole page. */
 .main-content:focus { outline:none; }
+.focus-rules-panel { margin-top:22px; }.focus-rules-panel .service-option { margin-top:0; }
+.focus-rules-error { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }.focus-rules-error .icon-button { flex:none; color:inherit; }
+.focus-rules-table td { vertical-align:middle; overflow-wrap:anywhere; }.focus-rules-table tr[aria-current] td { background:var(--header); }
+.focus-rule-actions { white-space:nowrap; text-align:right; }.focus-rule-actions .icon-button+.icon-button { margin-left:4px; }
+.focus-rule-missing { display:inline-flex; align-items:center; gap:5px; color:var(--red); }
+.focus-rule-form { margin-top:18px; border-top:1px solid var(--line); padding-top:16px; }.focus-rule-form h3 { margin:0 0 10px; }.focus-rule-form label { display:block; margin-top:12px; font-size:12px; }
+.focus-bundle-row { display:flex; gap:10px; align-items:center; }.focus-bundle-row input { flex:1; min-width:0; }.focus-bundle-row .button { flex:none; }
+@media(max-width:670px) { .focus-bundle-row { flex-wrap:wrap; }.focus-bundle-row .button { width:100%; justify-content:center; } }

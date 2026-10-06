@@ -69,15 +69,31 @@ pub(crate) fn is_stale(metadata: &fs::Metadata) -> bool {
     })
 }
 
-/// Deletes stale `.*.tmp` regular files left by interrupted saves. Symbolic
-/// links, folders and recent files are left alone.
-fn remove_stale_temporaries(directory: &Path) {
+/// True for the exact `.<uuid>.tmp` name `write_atomically` uses.
+fn is_uuid_temporary(name: &OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(".tmp"))
+        .is_some_and(|middle| Uuid::parse_str(middle).is_ok())
+}
+
+/// Deletes stale hidden `.tmp` regular files left by interrupted saves.
+/// `uuid_names_only` restricts it to the exact `.<uuid>.tmp` shape, for
+/// folders shared with other files (the app data root); the profiles folder
+/// is owned by the store, so any hidden `.*.tmp` there goes. Symbolic links,
+/// folders and recent files are left alone.
+pub(crate) fn remove_stale_temporaries(directory: &Path, uuid_names_only: bool) {
     let Ok(entries) = fs::read_dir(directory) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if !is_hidden_entry(&name) || !name.as_encoded_bytes().ends_with(b".tmp") {
+        let matches = if uuid_names_only {
+            is_uuid_temporary(&name)
+        } else {
+            is_hidden_entry(&name) && name.as_encoded_bytes().ends_with(b".tmp")
+        };
+        if !matches {
             continue;
         }
         // DirEntry metadata does not follow symbolic links.
@@ -123,7 +139,7 @@ impl ProfileStore {
             }
             Err(error) => return Err(format!("could not inspect profile storage: {error}")),
         }
-        remove_stale_temporaries(&directory);
+        remove_stale_temporaries(&directory, false);
         Ok(Self {
             directory,
             migration_skipped: Vec::new(),
@@ -235,41 +251,8 @@ impl ProfileStore {
 
     pub fn load(&self, id: &str) -> Result<StoredProfile, String> {
         let path = self.path(id)?;
-        // Checked before opening so a FIFO or device node never blocks open().
-        let metadata = fs::symlink_metadata(&path).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                "profile no longer exists in storage".to_string()
-            } else {
-                format!("could not inspect profile: {error}")
-            }
-        })?;
-        if !metadata.file_type().is_file() {
-            return Err("profile must be a regular file, not a symbolic link".into());
-        }
-        let mut options = OpenOptions::new();
-        options.read(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NOFOLLOW);
-        }
-        let file = options
-            .open(&path)
-            .map_err(|error| format!("could not open profile: {error}"))?;
-        // Re-check the opened file, not the path, in case it was swapped.
-        let metadata = file
-            .metadata()
-            .map_err(|error| format!("could not inspect opened profile: {error}"))?;
-        if !metadata.is_file() {
-            return Err("profile must be a regular file, not a symbolic link".into());
-        }
-        if metadata.len() > Profile::MAX_JSON_BYTES as u64 {
-            return Err("stored profile exceeds the size limit".into());
-        }
-        let mut bytes = Vec::new();
-        file.take((Profile::MAX_JSON_BYTES + 1) as u64)
-            .read_to_end(&mut bytes)
-            .map_err(|error| format!("could not read profile: {error}"))?;
+        let (bytes, metadata) = read_private_file(&path, Profile::MAX_JSON_BYTES, "profile")?
+            .ok_or("profile no longer exists in storage")?;
         // Legacy profiles are upgraded for the editor only. Reading must not
         // change file bytes, modification time, filename, or opaque identity.
         let profile = Profile::from_json(&bytes)?.into_v2()?;
@@ -327,32 +310,7 @@ impl ProfileStore {
         if bytes.len() > Profile::MAX_JSON_BYTES {
             return Err("encoded profile exceeds the size limit".into());
         }
-        let temporary = self.directory.join(format!(".{}.tmp", Uuid::new_v4()));
-        let result = (|| -> Result<(), String> {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            let mut file = options
-                .open(&temporary)
-                .map_err(|error| format!("could not create temporary profile: {error}"))?;
-            file.write_all(&bytes)
-                .map_err(|error| format!("could not write profile: {error}"))?;
-            file.sync_all()
-                .map_err(|error| format!("could not flush profile: {error}"))?;
-            fs::rename(&temporary, &path)
-                .map_err(|error| format!("could not atomically save profile: {error}"))?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result?;
-        // Persist the rename itself, not only the file contents.
-        self.sync_directory()?;
+        write_private_file(&self.directory, &path, &bytes, "profile")?;
         self.load(&id)
     }
 
@@ -369,15 +327,105 @@ impl ProfileStore {
     }
 
     fn sync_directory(&self) -> Result<(), String> {
-        File::open(&self.directory)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("could not flush profile storage: {error}"))
+        sync_directory(&self.directory, "profile")
     }
 
     fn path(&self, id: &str) -> Result<PathBuf, String> {
         validate_id(id)?;
         Ok(self.directory.join(format!("{id}.json")))
     }
+}
+
+/// Reads a regular file of at most `max_bytes`, never following a symbolic
+/// link and never blocking on a FIFO or device node. `Ok(None)` means the file
+/// does not exist. Also returns the opened file's metadata.
+pub(crate) fn read_private_file(
+    path: &Path,
+    max_bytes: usize,
+    what: &str,
+) -> Result<Option<(Vec<u8>, fs::Metadata)>, String> {
+    // Checked before opening so a FIFO or device node never blocks open().
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("could not inspect {what}: {error}")),
+    };
+    if !metadata.file_type().is_file() {
+        return Err(format!(
+            "{what} must be a regular file, not a symbolic link"
+        ));
+    }
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| format!("could not open {what}: {error}"))?;
+    // Re-check the opened file, not the path, in case it was swapped.
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("could not inspect opened {what}: {error}"))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{what} must be a regular file, not a symbolic link"
+        ));
+    }
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!("stored {what} exceeds the size limit"));
+    }
+    let mut bytes = Vec::new();
+    file.take((max_bytes + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("could not read {what}: {error}"))?;
+    Ok(Some((bytes, metadata)))
+}
+
+/// Atomically replaces `path` (inside `directory`) with `bytes`: a private
+/// 0600 `.<uuid>.tmp` file is written, flushed and renamed over the target,
+/// then the folder is flushed so the rename survives a crash. `rename`
+/// replaces a symbolic link itself and never writes through it.
+pub(crate) fn write_private_file(
+    directory: &Path,
+    path: &Path,
+    bytes: &[u8],
+    what: &str,
+) -> Result<(), String> {
+    let temporary = directory.join(format!(".{}.tmp", Uuid::new_v4()));
+    let result = (|| -> Result<(), String> {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&temporary)
+            .map_err(|error| format!("could not create temporary {what}: {error}"))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("could not write {what}: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("could not flush {what}: {error}"))?;
+        fs::rename(&temporary, path)
+            .map_err(|error| format!("could not atomically save {what}: {error}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    // Persist the rename itself, not only the file contents.
+    sync_directory(directory, what)
+}
+
+fn sync_directory(directory: &Path, what: &str) -> Result<(), String> {
+    File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("could not flush {what} storage: {error}"))
 }
 
 pub(crate) fn validate_id(id: &str) -> Result<(), String> {

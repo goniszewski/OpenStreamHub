@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -47,6 +47,11 @@ function fixtures(execute: boolean, state: 'running' | 'failed' = 'running', ext
     startedAt: 0, profileName: 'Flat', snapshot: '{}', draftUnsaved: true, ...extra } } };
   return { feed, runner };
 }
+const setRun = (runner: ServiceRunner, patch: Record<string, unknown>) => {
+  const state = runner.getState();
+  const id = serviceIdFor('aabb');
+  (runner as unknown as { state: unknown }).state = { ...state, runs: { [id]: { ...state.runs[id], ...patch } } };
+};
 const render = (props: Partial<Parameters<typeof ServicePanel>[0]> & { feed?: DeviceFeed; runner?: ServiceRunner }) =>
   renderToStaticMarkup(<ServicePanel profile={flat} desktop unsaved={false} platform={mac} now={2000} {...props} />);
 
@@ -174,9 +179,42 @@ describe('session banners', () => {
     expect(markup).toContain('to reconnect');
     expect(markup).toContain('>Stop<');
   });
+  it('a run paused by a focused-app switch resumes with the switched profile', () => {
+    const { feed, runner } = sessionFor('needs_confirmation', { reason: 'profile_switch' });
+    setRun(runner, { profileSwitched: true });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Paused because a focused-app rule switched the profile.');
+    expect(markup).toContain('Resuming starts the saved profile &quot;Flat&quot; a focused-app rule switched to.');
+    expect(markup).toContain('Resume actions…');
+    expect(confirmCopy('resume', 'Browser', 'X', true).message).toContain('the saved profile a focused-app rule switched to');
+  });
+  it('a switched run paused later by sleep still says the switched profile resumes', () => {
+    const { feed, runner } = sessionFor('needs_confirmation', { reason: 'sleep' });
+    setRun(runner, { profileSwitched: true });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Paused because the Mac went to sleep.');
+    expect(markup).toContain('Resuming starts the saved profile &quot;Flat&quot; a focused-app rule switched to.');
+    expect(markup).not.toContain('exactly as it was started');
+    const unswitched = sessionFor('needs_confirmation', { reason: 'service_exited' });
+    expect(render(unswitched)).toContain('Resuming restarts &quot;Flat&quot; exactly as it was started.');
+  });
   it('keeps the stale-profile notice against the original snapshot', () => {
     const { feed, runner } = sessionFor('needs_confirmation');
     expect(render({ feed, runner })).toContain('Profile changed since start. Restart to apply.');
+  });
+  it('the Resume dialog names the run being resumed, not the run of the device selected now', () => {
+    const session = (module: 'm131e' | 'm003k', serialNumber: string) => ({ serviceId: null, phase: 'needs_confirmation' as const, reason: 'sleep' as const, attempt: 0, module, serialNumber });
+    const base = { state: 'running' as const, execute: true, entries: [], counters: emptyCounters(), startedAt: 0, snapshot: '{}', draftUnsaved: false };
+    const runs = {
+      'service:aa': { ...base, serviceId: 'service:aa', profileName: 'Gaming', session: session('m131e', 'DIAL-123456') },
+      'service:bb': { ...base, serviceId: 'service:bb', profileName: 'Browser', profileSwitched: true, session: session('m003k', 'KEYS-654321') },
+    };
+    // A device plugged in while the dialog is open would make findRun pick the other run.
+    expect(resumeCopy(runs, 'service:aa')?.message).toContain('Profile "Gaming" (as it was when this run started)');
+    expect(resumeCopy(runs, 'service:aa')?.message).not.toContain('Browser');
+    expect(resumeCopy(runs, 'service:bb')?.message).toContain('Profile "Browser" (the saved profile a focused-app rule switched to)');
+    expect(resumeCopy(runs, 'service:gone')).toBeNull();
+    expect(resumeCopy(runs, null)).toBeNull();
   });
   it('labels phases and builds the resume confirmation copy', () => {
     expect(phaseLabel(undefined)).toBe('Stopped');

@@ -1,4 +1,4 @@
-import type { LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest } from './contracts';
+import type { LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
 import { stableStringify } from './draft-model';
 import type { Listen, Scheduler } from './device-feed';
 import type { Invoke } from './profile-session';
@@ -13,6 +13,8 @@ export interface ServiceCounters { events: number; planned: number; executed: nu
 export interface SessionInfo {
   serviceId: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number;
   module: ServiceModule; serialNumber: string | null; detail?: string; nextAttemptAt?: number;
+  // The backend's latest profile generation for this session (missing = 0).
+  profileGeneration?: number;
 }
 export interface ServiceRun {
   // The run key: the session id once a session names the run, before that the key start() chose.
@@ -32,6 +34,14 @@ export interface ServiceRun {
   profileName: string;
   snapshot: string;
   draftUnsaved: boolean;
+  // The saved profile id the run uses, when known. Null for a run started from an unsaved draft, which differs
+  // from its saved profile. Focused-app rules skip runs already on the matched profile.
+  profileId?: string | null;
+  // The session profile generation that profileName describes (0 = the profile the run started with).
+  // resume_session names it, so a confirmation never starts a profile the dialog did not show.
+  profileGeneration?: number;
+  // A focused-app rule switched this run to a saved profile; set by switchProfile and kept for later pauses.
+  profileSwitched?: boolean;
 }
 export interface ServiceStoreState { desktop: boolean; runs: Record<string, ServiceRun>; error: string | null }
 
@@ -44,7 +54,9 @@ export const isActiveState = (state: ServiceState) => state === 'starting' || st
 // A session that is suspended, waiting, reconnecting or needs confirmation still owns its device. Only 'stopped' releases it.
 export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== undefined && (run.session ? run.session.phase !== 'stopped' : isActiveState(run.state));
 export const maxReconnectAttempts = 5;
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you' };
+// resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
+export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile' };
 
 // The process a run has now. A session owns only its current process's path, never the path its name came from.
 const processOf = (key: string, run: ServiceRun) => run.session ? run.session.serviceId : run.processId ?? key;
@@ -67,14 +79,26 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
   switch (next.phase) {
     case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
     case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect`);
-    case 'reconnecting': return info(`Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
-    case 'needs_confirmation': return info('Paused: confirm to resume actions');
+    case 'reconnecting': return info(next.reason === 'profile_switch' ? 'Restarting with the new profile' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
+    case 'needs_confirmation': return info(next.reason === 'profile_switch' ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
       const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
       return { kind: next.reason === 'user' || next.reason === null ? 'info' : 'error', text, at };
     }
     default: return previous && previous.phase !== 'running' ? info('Reconnected') : null;
   }
+}
+// The backend's profile for the backend's generation, from a session://state payload. A switch reply that timed out or a
+// webview reload leaves the run behind; every state event resyncs it, so the Resume dialog always names the profile
+// resume_session will start. Never moves back to an older generation (an event that overtook a newer switch reply).
+function adoptProfile(run: ServiceRun, payload: SessionStatePayload): Partial<ServiceRun> {
+  const generation = payload.profile_generation ?? 0;
+  if (typeof payload.profile_name !== 'string' || generation < (run.profileGeneration ?? 0)) return {};
+  const switched = generation > 0 && typeof payload.profile_id === 'string';
+  return {
+    profileName: payload.profile_name, profileGeneration: generation,
+    ...(switched ? { profileId: payload.profile_id, profileSwitched: true, draftUnsaved: false } : {}),
+  };
 }
 export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, executed: 0, failed: 0 });
 
@@ -156,8 +180,11 @@ export function countRecord(counters: ServiceCounters, record: unknown): Service
 // The service uses the draft as it was at start and never hot-reloads.
 export const isStale = (run: ServiceRun | undefined, draft: Profile) => run !== undefined && isActiveRun(run) && stableStringify(draft) !== run.snapshot;
 
-export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean };
+export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean; profileId?: string | null };
 export type ConfirmExecute = () => Promise<boolean>;
+
+interface QueuedSwitch { profileId: string; why: string; settle: (ok: boolean) => void }
+interface SwitchQueue { done: Promise<void>; queued: QueuedSwitch | null }
 
 const frame: Scheduler = callback => {
   if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => callback()); else setTimeout(callback, 16);
@@ -175,6 +202,10 @@ export class ServiceRunner {
   private readonly listeners = new Set<() => void>();
   // Every process id seen in a session event -> the stable session id that owns its log.
   private readonly sessionOf = new Map<string, string>();
+  // Run key -> the newest profile id a focused-app switch was requested for, so rapid focus changes compare against it.
+  private readonly switching = new Map<string, string>();
+  // Run key -> its serialized switches: one request in flight, only the newest waiting.
+  private readonly switchQueues = new Map<string, SwitchQueue>();
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean,
     private readonly schedule: Scheduler = frame, private readonly now: () => number = Date.now) {
@@ -272,12 +303,12 @@ export class ServiceRunner {
     this.update(id, run => {
       const session: SessionInfo = {
         serviceId: payload.service_id, phase: payload.phase, reason: payload.reason ?? null, attempt: payload.attempt ?? 0,
-        module: payload.module, serialNumber: payload.serial_number ?? null, detail: payload.detail,
+        module: payload.module, serialNumber: payload.serial_number ?? null, detail: payload.detail, profileGeneration: payload.profile_generation ?? 0,
         ...(typeof payload.next_attempt_in_ms === 'number' ? { nextAttemptAt: at + payload.next_attempt_in_ms } : {}),
       };
       const entry = sessionEntry(run.session, session, at);
       const state: ServiceState = payload.phase === 'stopped' ? (run.state === 'failed' ? 'failed' : 'exited') : payload.phase === 'running' && run.state !== 'stopping' ? 'running' : run.state;
-      return { ...run, session, state, execute: payload.execute ?? run.execute, entries: appendEntry(run.entries, entry) };
+      return { ...run, ...adoptProfile(run, payload), session, state, execute: payload.execute ?? run.execute, entries: appendEntry(run.entries, entry) };
     }, true);
   }
 
@@ -299,7 +330,9 @@ export class ServiceRunner {
     const key = isActiveRun(this.runs()[id]) ? `pending:${id}` : id;
     this.sessionOf.forEach((session, process) => { if (session === key) this.sessionOf.delete(process); });
     this.sessionOf.set(id, key);
-    const run = { ...this.blankRun(key, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved), processId: id };
+    // An unsaved draft is not its saved profile, so a focused-app rule for that profile still switches the run.
+    const profileId = options.draftUnsaved ? null : options.profileId ?? null;
+    const run = { ...this.blankRun(key, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved), processId: id, profileId, profileGeneration: 0 };
     this.set({ runs: { ...this.runs(), [key]: run }, error: null });
     const request: StartServiceRequest = { profile: options.profile, path_hex: options.pathHex, execute: options.execute, software_mode: options.softwareMode };
     try {
@@ -331,15 +364,83 @@ export class ServiceRunner {
     catch (reason) { this.set({ error: errorMessage(reason) }); }
   }
 
-  // Restarts a paused run with its original snapshot, including execute. Never without a confirmation that resolves true.
+  // Restarts a paused run with its stored request, including execute. Never without a confirmation that resolves true.
+  // The confirmation is tied to the profile generation the dialog showed: when a switch replaces the profile while the
+  // dialog is open, the user is asked again for the new profile, and the backend refuses a stale generation too.
   async resumeSession(sessionId: string, confirm?: ConfirmExecute): Promise<boolean> {
     if (!this.state.desktop) return false;
     if (this.runs()[sessionId]?.session?.phase !== 'needs_confirmation') return false;
     if (!confirm) { this.set({ error: 'Resuming actions needs confirmation.' }); return false; }
-    if (!(await confirm())) return false;
-    if (this.runs()[sessionId]?.session?.phase !== 'needs_confirmation') return false;
-    try { await this.invoke<void>('resume_session', { sessionId }); return true; }
-    catch (reason) { this.set({ error: errorMessage(reason) }); return false; }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // A switch reply still on its way would leave profileName behind the backend's generation.
+      await this.switchQueues.get(sessionId)?.done;
+      const shown = this.runs()[sessionId];
+      if (shown?.session?.phase !== 'needs_confirmation') return false;
+      const generation = shown.profileGeneration ?? 0;
+      if ((shown.session.profileGeneration ?? 0) > generation) { this.set({ error: 'The profile of this run changed. Review it and resume again.' }); return false; }
+      if (!(await confirm())) return false;
+      const current = this.runs()[sessionId];
+      if (current?.session?.phase !== 'needs_confirmation') return false;
+      if ((current.profileGeneration ?? 0) !== generation || (current.session.profileGeneration ?? 0) > generation) continue;
+      try { await this.invoke<void>('resume_session', { sessionId, profileGeneration: generation }); return true; }
+      catch (reason) {
+        if (errorMessage(reason) === profileChangedError) continue;
+        this.set({ error: errorMessage(reason) });
+        return false;
+      }
+    }
+    this.set({ error: 'The profile of this run kept changing. Review it and resume again.' });
+    return false;
+  }
+
+  // Switches a managed run to a saved profile because a focused-app rule matched. The session manager restarts a
+  // dry run at once; an executing run pauses in needs_confirmation and runs actions again only after resumeSession.
+  // Switches of one run are serialized: one request in flight and only the newest waiting (an older waiting request
+  // resolves false), so replies arrive in order and the run always names the profile the backend holds.
+  async switchProfile(sessionId: string, profileId: string, why: string): Promise<boolean> {
+    if (!this.state.desktop) return false;
+    const run = this.runs()[sessionId];
+    if (!run?.session || run.session.phase === 'stopped') return false;
+    if ((this.switching.get(sessionId) ?? run.profileId) === profileId) return false;
+    this.switching.set(sessionId, profileId);
+    const waiting = this.switchQueues.get(sessionId);
+    if (waiting) {
+      waiting.queued?.settle(false);
+      return new Promise<boolean>(settle => { waiting.queued = { profileId, why, settle }; });
+    }
+    const queue: SwitchQueue = { done: Promise.resolve(), queued: null };
+    this.switchQueues.set(sessionId, queue);
+    return new Promise<boolean>(settle => { queue.done = this.drainSwitches(sessionId, queue, { profileId, why, settle }); });
+  }
+
+  // Sends one switch at a time; each request settles as soon as its own reply arrived.
+  private async drainSwitches(sessionId: string, queue: SwitchQueue, first: QueuedSwitch) {
+    try {
+      for (let next: QueuedSwitch | null = first; next; next = queue.queued, queue.queued = null) {
+        const run = this.runs()[sessionId];
+        next.settle(run?.session !== undefined && run.session.phase !== 'stopped' && run.profileId !== next.profileId
+          && await this.sendSwitch(sessionId, next.profileId, next.why));
+      }
+    } finally {
+      this.switchQueues.delete(sessionId);
+      this.switching.delete(sessionId);
+    }
+  }
+
+  private async sendSwitch(sessionId: string, profileId: string, why: string): Promise<boolean> {
+    try {
+      const switched = await this.invoke<SwitchedProfile>('switch_session_profile', { sessionId, profileId });
+      const at = this.now();
+      this.update(sessionId, current => (current.profileGeneration ?? 0) > switched.profile_generation ? current : ({
+        ...current, profileId: switched.id, profileName: switched.profile.name, snapshot: stableStringify(switched.profile), draftUnsaved: false,
+        profileGeneration: switched.profile_generation, profileSwitched: true,
+        entries: appendEntry(current.entries, { kind: 'info', text: `Switched to profile "${switched.profile.name}" (${why})`, at }),
+      }), true);
+      return true;
+    } catch (reason) {
+      this.set({ error: errorMessage(reason) });
+      return false;
+    }
   }
 
   dismissError() { this.set({ error: null }); }

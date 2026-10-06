@@ -1,5 +1,6 @@
 {
   "resume_session": {
+    "profileGeneration": 0,
     "sessionId": "service:2f6465762f6869647261772d30323032"
   },
   "stop_session": {

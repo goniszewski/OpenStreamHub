@@ -39,13 +39,21 @@ const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile' } as const;
 
 // Copy for the Execute confirmation, used when starting a run and when resuming a paused one.
-export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string) {
+// A run a focused-app rule switched resumes with the saved profile it switched to, not the original snapshot.
+export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false) {
   return kind === 'start'
     ? { title: 'Run actions on this Mac?', confirm: 'Run actions', message: `Profile "${profileName}" will run on ${deviceLabel}. Volume, shortcut and app-launch actions from the profile will really run on this Mac whenever you use the module.` }
-    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (as it was when this run started) will resume on ${deviceLabel}. Volume, shortcut and app-launch actions will really run on this Mac again whenever you use the module.` };
+    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? 'the saved profile a focused-app rule switched to' : 'as it was when this run started'}) will resume on ${deviceLabel}. Volume, shortcut and app-launch actions will really run on this Mac again whenever you use the module.` };
+}
+
+// Resume copy for the run resumeSession holds (by its session id), never the run the device selection shows now:
+// the selection can move while the dialog is open (a module plugged in or out). Null once that run is gone.
+export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string | null) {
+  const run = sessionId === null ? undefined : runs[sessionId];
+  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true) : null;
 }
 
 export function relativeTime(at: number, now: number): string {
@@ -68,8 +76,8 @@ const idleFeed = () => idleFeedState;
 const idleRunner = () => idleServiceState;
 const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
 
-export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
-  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; desktop: boolean; unsaved: boolean; platform?: PlatformInfo; now?: number;
+export function ServicePanel({ runner, feed, profile, profileId = null, desktop, unsaved, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
+  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; desktop: boolean; unsaved: boolean; platform?: PlatformInfo; now?: number;
 }) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
@@ -78,6 +86,8 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
   const [softwareMode, setSoftwareMode] = useState(false);
   const [confirm, setConfirm] = useState<((ok: boolean) => void) | null>(null);
   const [confirmKind, setConfirmKind] = useState<'start' | 'resume'>('start');
+  // The run being resumed. The dialog names it, not whatever run the device selection shows by the time it renders.
+  const [resumeId, setResumeId] = useState<string | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const log = useRef<HTMLOListElement>(null);
   // A confirmation still open when the panel unmounts (page change) answers false, so the start or resume never hangs.
@@ -112,17 +122,17 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
   const begin = () => {
     if (!runner || !device) return;
     const confirmExecute = executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
-    void runner.start({ profile, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved }, confirmExecute);
+    void runner.start({ profile, profileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved }, confirmExecute);
   };
   const resume = () => {
     if (!runner || !run) return;
-    void runner.resumeSession(run.serviceId, () => new Promise<boolean>(resolve => { setConfirmKind('resume'); setConfirm(() => resolve); }));
+    const sessionId = run.serviceId;
+    void runner.resumeSession(sessionId, () => new Promise<boolean>(resolve => { setConfirmKind('resume'); setResumeId(sessionId); setConfirm(() => resolve); }));
   };
   const answer = (ok: boolean) => { confirm?.(ok); setConfirm(null); };
 
-  const copy = confirmKind === 'resume' && run
-    ? confirmCopy('resume', run.profileName, session ? sessionDeviceName(session) : 'the module')
-    : confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module');
+  const copy = (confirmKind === 'resume' ? resumeCopy(service.runs, resumeId) : null)
+    ?? confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module');
 
   return <section className="service-panel" aria-label="Run profile">
     <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${phaseClass(run)}`} role="status">{phaseLabel(run)}</span></div>
@@ -131,7 +141,7 @@ export function ServicePanel({ runner, feed, profile, desktop, unsaved, platform
     {run && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{run.execute ? 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
     {run && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{run.execute ? 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
     {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? ' Actions are paused.' : ''}</span></div></div>}
-    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} Resuming restarts "{run.profileName}" exactly as it was started.</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
+    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" a focused-app rule switched to.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
     {active && phase === 'running' && <p className="fine-print" role="status">Live preview paused while actions run.</p>}
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}

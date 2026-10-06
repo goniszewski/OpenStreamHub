@@ -1,0 +1,26 @@
+{
+  "delete_focus_rule": {
+    "id": "00000000-0000-4000-8000-0000000000f1"
+  },
+  "save_focus_rule": {
+    "rule": {
+      "app_bundle_id": "com.apple.Safari",
+      "id": null,
+      "profile_id": "00000000-0000-4000-8000-000000000000"
+    }
+  },
+  "save_focus_rule_edit": {
+    "rule": {
+      "app_bundle_id": "com.apple.Terminal",
+      "id": "00000000-0000-4000-8000-0000000000f1",
+      "profile_id": "00000000-0000-4000-8000-000000000000"
+    }
+  },
+  "set_focus_rules_enabled": {
+    "enabled": true
+  },
+  "switch_session_profile": {
+    "profileId": "00000000-0000-4000-8000-000000000000",
+    "sessionId": "service:2f6465762f6869647261772d30323032"
+  }
+}

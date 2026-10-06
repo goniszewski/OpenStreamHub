@@ -4,6 +4,7 @@ mod contract_fixtures;
 mod diagnostics;
 mod export;
 mod feed;
+mod focus;
 mod migration;
 mod power;
 #[cfg(target_os = "macos")]
@@ -31,6 +32,7 @@ struct AppState {
     inventory: feed::InventoryWatcher,
     services: service::Services,
     sessions: session::Manager,
+    focus: focus::FocusState,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
     /// requests cannot decode several large images at once.
     artwork: tauri::async_runtime::Mutex<()>,
@@ -56,6 +58,7 @@ impl AppState {
         let store = app_data
             .clone()
             .and_then(store::ProfileStore::open_for_app_data);
+        let focus = focus::FocusState::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
             app_data,
@@ -63,6 +66,7 @@ impl AppState {
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
             sessions: session::Manager::default(),
+            focus,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
@@ -413,17 +417,104 @@ fn stop_service(state: State<'_, AppState>, service_id: String) -> Result<(), St
     state.services.stop(&service_id, service::STOP_GRACE)
 }
 
-// Restarts a session waiting in `needs_confirmation` with its original
-// request. The UI calls it only after the user confirmed resuming actions.
+// Restarts a session waiting in `needs_confirmation` with its stored
+// request. The UI calls it only after the user confirmed resuming actions,
+// naming the `profile_generation` of the profile the dialog showed; a later
+// profile switch refuses it with `session::PROFILE_CHANGED`.
 #[tauri::command(async)]
-fn resume_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
-    state.sessions.resume(&session_id)
+fn resume_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    profile_generation: u64,
+) -> Result<(), String> {
+    state.sessions.resume(&session_id, profile_generation)
 }
 
 // Ends a session from any phase; unknown ids are ignored.
 #[tauri::command(async)]
 fn stop_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.sessions.stop(&session_id, true).map(drop)
+}
+
+// Focused-app rules (`focus.rs`). Opt-in: nothing matches until enabled.
+#[tauri::command]
+fn list_focus_rules(state: State<'_, AppState>) -> Result<focus::FocusRules, String> {
+    state.focus.list()
+}
+
+// Adds or edits one rule; its profile must be a readable saved profile.
+#[tauri::command]
+fn save_focus_rule(
+    state: State<'_, AppState>,
+    rule: focus::RuleInput,
+) -> Result<focus::FocusRules, String> {
+    state.with_store(|store| store.load(&rule.profile_id).map(drop))?;
+    state.focus.update(|rules| focus::upsert(rules, rule))
+}
+
+#[tauri::command]
+fn delete_focus_rule(state: State<'_, AppState>, id: String) -> Result<focus::FocusRules, String> {
+    state.focus.update(|rules| focus::remove(rules, &id))
+}
+
+#[tauri::command]
+fn set_focus_rules_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<focus::FocusRules, String> {
+    state
+        .focus
+        .update(|rules| Ok(focus::FocusRules { enabled, ..rules }))
+}
+
+// The last app other than OpenStreamHub that was frontmost.
+#[tauri::command]
+fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
+    state.focus.current_app()
+}
+
+/// `switch_session_profile` result: the saved profile the session now uses
+/// and the session's new `profile_generation`, which a later
+/// `resume_session` must name.
+#[derive(Serialize)]
+struct SwitchedProfile {
+    #[serde(flatten)]
+    stored: store::StoredProfile,
+    profile_generation: u64,
+}
+
+// Restarts a managed session with a saved profile (a focused-app rule
+// matched). The session safety rule applies: a dry run restarts at once, an
+// executing session waits in `needs_confirmation` for `resume_session`.
+#[tauri::command(async)]
+fn switch_session_profile(
+    state: State<'_, AppState>,
+    session_id: String,
+    profile_id: String,
+) -> Result<SwitchedProfile, String> {
+    let stored = state.with_store(|store| store.load(&profile_id))?;
+    replay::validate_profile(&stored.profile)?;
+    let profile_generation =
+        state
+            .sessions
+            .switch_profile(&session_id, &stored.id, stored.profile.clone())?;
+    Ok(SwitchedProfile {
+        stored,
+        profile_generation,
+    })
+}
+
+/// Matches a frontmost-app change and tells the frontend.
+fn focus_changed(app: &tauri::AppHandle, bundle_id: Option<String>) {
+    let state = app.state::<AppState>();
+    let payload = state.focus.observe(bundle_id, |profile_id| {
+        state
+            .with_store(|store| store.load(profile_id).map(drop))
+            .is_ok()
+    });
+    if let Err(error) = app.emit(focus::CHANGED_EVENT, payload) {
+        eprintln!("could not emit a focus event: {error}");
+    }
 }
 
 pub fn run() {
@@ -494,6 +585,14 @@ pub fn run() {
             if let Err(error) = started {
                 eprintln!("{error}");
             }
+            // Frontmost-app changes for the opt-in focused-app rules.
+            let handle = app.handle().clone();
+            let own_bundle_id = app.config().identifier.clone();
+            if let Err(error) = focus::watch(own_bundle_id, move |bundle_id| {
+                focus_changed(&handle, bundle_id);
+            }) {
+                eprintln!("{error}");
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -514,6 +613,12 @@ pub fn run() {
             stop_service,
             resume_session,
             stop_session,
+            list_focus_rules,
+            save_focus_rule,
+            delete_focus_rule,
+            set_focus_rules_enabled,
+            focus_current_app,
+            switch_session_profile,
             create_diagnostics,
             prepare_artwork,
             save_artwork
@@ -566,6 +671,7 @@ mod tests {
             inventory: feed::InventoryWatcher::default(),
             services: service::Services::default(),
             sessions: session::Manager::default(),
+            focus: focus::FocusState::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }

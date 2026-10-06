@@ -1,0 +1,41 @@
+[
+  {
+    "attempt": 0,
+    "execute": true,
+    "module": "m131e",
+    "phase": "running",
+    "profile_generation": 0,
+    "profile_id": null,
+    "profile_name": "Folders",
+    "reason": null,
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": true,
+    "module": "m131e",
+    "phase": "running",
+    "profile_generation": 1,
+    "profile_id": "00000000-0000-4000-8000-000000000000",
+    "profile_name": "Folders",
+    "reason": "profile_switch",
+    "serial_number": "ABCDEF123456",
+    "service_id": "service:2f6465762f6869647261772d30323032",
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  },
+  {
+    "attempt": 0,
+    "execute": true,
+    "module": "m131e",
+    "phase": "needs_confirmation",
+    "profile_generation": 1,
+    "profile_id": "00000000-0000-4000-8000-000000000000",
+    "profile_name": "Folders",
+    "reason": "profile_switch",
+    "serial_number": "ABCDEF123456",
+    "service_id": null,
+    "session_id": "service:2f6465762f6869647261772d30323032"
+  }
+]

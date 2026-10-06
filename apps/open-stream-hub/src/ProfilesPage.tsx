@@ -9,10 +9,12 @@ import type { Page } from './ui-model';
 import type { ConfirmRequest, DeviceEditor } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { BindingsPanel } from './BindingsPanel';
+import { FocusRulesPanel } from './FocusRulesPanel';
+import type { FocusRulesStore } from './focus-rules';
 
-export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false }: {
+export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false, focusRules }: {
   session: ProfileSession; state: SessionState; editor: DeviceEditor; desktop: boolean; disabled: boolean;
-  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void; mac?: boolean;
+  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void; mac?: boolean; focusRules?: FocusRulesStore;
 }) {
   const { profile, profileId } = state.draft;
   const unsaved = isUnsaved(state.draft);
@@ -41,6 +43,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       <BindingsPanel profile={profile} session={session} editor={editor} disabled={disabled} />
       <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
     </section></div>
+    <FocusRulesPanel store={focusRules} profiles={state.profiles} disabled={!desktop || !state.ready} />
     <section className="panel replay-panel"><div className="section-heading"><div><h2>Replay a capture</h2><p className="fine-print">Bundled synthetic input reports pass through the Rust decoder and binding engine using the current draft.</p></div><span className="small-label">No hardware required</span></div><div className="replay-controls"><label htmlFor="replay-capture">Capture</label><SelectField id="replay-capture" value={replayKind} onChange={event => { session.clearReplay(); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || state.replay.status === 'running'} onClick={() => { void session.replayCapture(replayKind); }}><Play size={17} />{state.replay.status === 'running' ? 'Running…' : 'Replay capture'}</button></div>
       <SessionView session={state.replay} />
     </section>

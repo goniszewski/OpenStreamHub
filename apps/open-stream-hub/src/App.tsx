@@ -4,6 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
 import { NoticeStore } from './notices';
+import { FocusRulesStore } from './focus-rules';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
@@ -54,7 +55,8 @@ export default function App() {
   });
   const [runner] = useState(() => new ServiceRunner((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop));
   const [notices] = useState(() => new NoticeStore());
-  useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); const stopNotices = notices.connect(feed, runner); return () => { stopNotices(); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices]);
+  const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
+  useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
   // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
   const [guide, setGuide] = useState<{ open: boolean; step: number }>(() => ({ open: shouldAutoOpenOnboarding(webStorage(), desktop), step: 0 }));
@@ -182,7 +184,7 @@ export default function App() {
           <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} />
           <Inspector editor={editor} session={session} state={state} disabled={disabled} />
         </div>}
-        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} />}
+        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}

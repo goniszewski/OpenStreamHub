@@ -164,13 +164,16 @@ impl<T: ReportTransport> DialSession<T> {
     /// Requests hardware mode and clears button state before suspension.
     ///
     /// From [`DialSessionState::ResumePending`] this cancels the pending
-    /// resume without I/O; hardware mode was already requested.
+    /// resume without I/O; hardware mode was already requested. From
+    /// [`DialSessionState::Inactive`] it succeeds only when the device may be in
+    /// software mode (e.g. after a failed session or a handle initialized by
+    /// `connect()`), in which case hardware mode is requested first.
     pub fn suspend(&mut self) -> HidResult<()> {
         match self.state {
-            DialSessionState::Inactive => {
+            DialSessionState::Inactive if !self.restore_hardware_mode => {
                 return Err(error("Activate the dial session before suspending"));
             }
-            DialSessionState::Active => {
+            DialSessionState::Inactive | DialSessionState::Active => {
                 self.decoder.reset();
                 self.state = DialSessionState::Inactive;
                 crate::dial::set_software_mode(self.reader.transport(), false)?;
@@ -251,19 +254,18 @@ impl<T: ReportTransport> DialSession<T> {
     ///
     /// Hardware mode is requested unless it is already known to be restored:
     /// no command is sent when suspended, resume-pending, or after a previous
-    /// shutdown. This covers a session created from a handle initialized into
+    /// successful shutdown. A failed restore keeps the restore obligation, so a
+    /// later shutdown retries it. This covers a session created from a handle initialized into
     /// software mode by `connect()`, even if it was never activated. Call before
     /// releasing the transport; cleanup does not run implicitly on drop.
     pub fn shutdown(&mut self) -> HidResult<()> {
-        let restore = self.restore_hardware_mode;
         self.state = DialSessionState::Inactive;
-        self.restore_hardware_mode = false;
         self.decoder.reset();
-        if restore {
-            crate::dial::set_software_mode(self.reader.transport(), false)
-        } else {
-            Ok(())
+        if self.restore_hardware_mode {
+            crate::dial::set_software_mode(self.reader.transport(), false)?;
+            self.restore_hardware_mode = false;
         }
+        Ok(())
     }
 
     /// Borrows the transport for coordinated explicit queries or display writes.
@@ -492,6 +494,42 @@ mod tests {
         assert_eq!(session.state(), DialSessionState::Inactive);
         session.shutdown().unwrap();
         assert_eq!(*session.transport().modes.borrow(), [true, false]);
+    }
+
+    #[test]
+    fn failed_shutdown_keeps_restore_obligation_for_retry() {
+        let mut session = DialSession::new(Fake::default());
+        session.activate().unwrap();
+        session.transport().fail.set(true);
+        assert!(session.shutdown().is_err());
+        assert_eq!(session.state(), DialSessionState::Inactive);
+        session.transport().fail.set(false);
+        session.shutdown().unwrap();
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [true, false, false]);
+    }
+
+    #[test]
+    fn suspend_from_inactive_restores_hardware_mode_only_when_needed() {
+        let mut session = DialSession::new(Fake::default());
+        assert!(session.suspend().is_err());
+        assert!(session.transport().modes.borrow().is_empty());
+
+        let mut session = DialSession::from_possibly_software_mode(Fake::default());
+        session.suspend().unwrap();
+        assert_eq!(session.state(), DialSessionState::Suspended);
+        assert_eq!(*session.transport().modes.borrow(), [false]);
+        // Hardware mode is restored, so shutdown sends nothing further.
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [false]);
+
+        let mut session = DialSession::from_possibly_software_mode(Fake::default());
+        session.transport().fail.set(true);
+        assert!(session.suspend().is_err());
+        assert_eq!(session.state(), DialSessionState::Inactive);
+        session.transport().fail.set(false);
+        session.shutdown().unwrap();
+        assert_eq!(*session.transport().modes.borrow(), [false, false]);
     }
 
     #[test]

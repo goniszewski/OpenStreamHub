@@ -57,6 +57,22 @@ describe('history', () => {
     expect(h.past).toEqual(['a']);
   });
 
+  it('ends the burst when it drops a step, so the next keystroke does not merge into the step below', () => {
+    type Draft = { binding: string; name: string };
+    let h: History<Draft> = emptyHistory();
+    let draft: Draft = { binding: 'S0', name: '' };
+    const edit = (next: Draft, meta: { key?: string; at: number }) => { h = recordEdit(h, draft, next, meta); draft = next; };
+    edit({ binding: 'X', name: '' }, { at: 0 });
+    edit({ binding: 'X', name: 'a' }, { key: 'name', at: 1000 });
+    edit({ binding: 'X', name: '' }, { key: 'name', at: 1100 });
+    expect(h.past).toEqual([{ binding: 'S0', name: '' }]);
+    expect(h.last).toBeNull();
+    edit({ binding: 'X', name: 'b' }, { key: 'name', at: 1200 });
+    const undone = undoStep(h, draft)!;
+    expect(undone.value).toEqual({ binding: 'X', name: '' });
+    expect(undoStep(undone.history, undone.value)!.value).toEqual({ binding: 'S0', name: '' });
+  });
+
   it('is bounded to the newest entries', () => {
     let h: History<number> = emptyHistory();
     for (let value = 0; value < historyLimit + 20; value += 1) h = recordEdit(h, value, value + 1, { at: value });

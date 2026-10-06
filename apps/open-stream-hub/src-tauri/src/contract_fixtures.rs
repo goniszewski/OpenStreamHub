@@ -257,7 +257,8 @@ fn session_payloads_match_the_shared_fixtures() {
         "masterhub-service: input read failed\n",
         8_100,
     );
-    dry.inventory(vec![dial("/dev/hidraw-0303")], 9_000);
+    // The exit while unplugged counts as attempt 1 (1 s backoff).
+    dry.inventory(vec![dial("/dev/hidraw-0303")], 9_100);
     let moved = format!(
         "service:{}",
         cooltek_sdk_cli::capture::encode_hex(b"/dev/hidraw-0303")
@@ -268,9 +269,9 @@ fn session_payloads_match_the_shared_fixtures() {
         "masterhub-service: no HID interface matches the selected path\n",
         10_000,
     );
-    dry.tick(11_000);
-    dry.stop(&id, true, 12_000);
-    exit(&mut dry, &moved, "", 12_100);
+    dry.tick(12_000);
+    dry.stop(&id, true, 13_000);
+    exit(&mut dry, &moved, "", 13_100);
     // Execute: a crash waits for the user's confirmation.
     let (mut executing, executing_id) = start(true);
     exit(&mut executing, &executing_id, "", 500);

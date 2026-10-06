@@ -5,7 +5,9 @@ import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
 export type ActivityKind = 'event' | 'action' | 'action_failed' | 'info' | 'error' | 'raw';
-export interface ActivityEntry { kind: ActivityKind; text: string; at: number }
+// `seq` is assigned when the runner appends the entry: it increases by one per entry
+// within a run and survives trimming, so it is a stable React key for the log.
+export interface ActivityEntry { kind: ActivityKind; text: string; at: number; seq?: number }
 export interface ServiceCounters { events: number; planned: number; executed: number; failed: number }
 // Sleep/wake and reconnect state for one run. The run is keyed by the stable session id; serviceId here is the current process.
 export interface SessionInfo {
@@ -13,7 +15,10 @@ export interface SessionInfo {
   module: ServiceModule; serialNumber: string | null; detail?: string; nextAttemptAt?: number;
 }
 export interface ServiceRun {
+  // The run key: the session id once a session names the run, before that the key start() chose.
   serviceId: string;
+  // The process id start_service runs, until the run's session reports its current one.
+  processId?: string;
   session?: SessionInfo;
   state: ServiceState;
   execute: boolean;
@@ -31,6 +36,8 @@ export interface ServiceRun {
 export interface ServiceStoreState { desktop: boolean; runs: Record<string, ServiceRun>; error: string | null }
 
 export const maxEntries = 200;
+const appendEntry = (entries: ActivityEntry[], entry: ActivityEntry | null): ActivityEntry[] =>
+  entry ? [...entries, { ...entry, seq: (entries.at(-1)?.seq ?? -1) + 1 }].slice(-maxEntries) : entries;
 export const idleServiceState: ServiceStoreState = { desktop: false, runs: {}, error: null };
 export const serviceIdFor = (pathHex: string) => `service:${pathHex.toLowerCase()}`;
 export const isActiveState = (state: ServiceState) => state === 'starting' || state === 'running' || state === 'stopping';
@@ -39,12 +46,18 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you' };
 
-// The run a device belongs to: a live session (matched by current process or module and serial) first, then the plain per-path run.
+// The process a run has now. A session owns only its current process's path, never the path its name came from.
+const processOf = (key: string, run: ServiceRun) => run.session ? run.session.serviceId : run.processId ?? key;
+const ownsProcess = (runs: Record<string, ServiceRun>, id: string) => Object.entries(runs).some(([key, run]) => isActiveRun(run) && processOf(key, run) === id);
+
+// The run a device belongs to: a live session (matched by current process or module and serial) first, then a run
+// started on its path that is not a live session elsewhere.
 export function findRun(runs: Record<string, ServiceRun>, device: LiveDevice | undefined): ServiceRun | undefined {
   const open = Object.values(runs).filter(run => run.session && run.session.phase !== 'stopped');
   if (!device) return open[0];
   const id = serviceIdFor(device.path_hex);
-  return open.find(run => run.session!.serviceId === id || sessionMatches(run.session!, device)) ?? runs[id];
+  return open.find(run => run.session!.serviceId === id || sessionMatches(run.session!, device))
+    ?? Object.entries(runs).find(([key, run]) => !open.includes(run) && (run.processId ?? key) === id)?.[1];
 }
 const sessionMatches = (session: SessionInfo, device: LiveDevice) => session.module === device.module && (session.serialNumber === null || session.serialNumber === device.serial_number);
 
@@ -170,12 +183,11 @@ export class ServiceRunner {
 
   readonly subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   readonly getState = () => this.state;
-  // A device is owned by a run on its path, by the session its path was remapped to, or by a session
-  // that has no process right now but will reclaim the same module.
+  // A device is owned by the run whose current process is on its path, or by a session that has no
+  // process right now but will reclaim the same module.
   isActivePath = (pathHex: string, device?: LiveDevice): boolean => {
     const runs = this.runs();
-    const id = serviceIdFor(pathHex);
-    if (isActiveRun(runs[id]) || isActiveRun(runs[this.sessionOf.get(id) ?? ''])) return true;
+    if (ownsProcess(runs, serviceIdFor(pathHex))) return true;
     return device !== undefined && Object.values(runs).some(run => run.session && run.session.phase !== 'stopped' && sessionMatches(run.session, device));
   };
 
@@ -217,8 +229,7 @@ export class ServiceRunner {
     const at = this.now();
     this.update(id, run => {
       const entry = summarizeRecord(payload.record, at);
-      const entries = entry ? [...run.entries, entry].slice(-maxEntries) : run.entries;
-      return { ...run, entries, counters: countRecord(run.counters, payload.record) };
+      return { ...run, entries: appendEntry(run.entries, entry), counters: countRecord(run.counters, payload.record) };
     }, false);
   }
 
@@ -243,9 +254,20 @@ export class ServiceRunner {
   private onSession(payload: SessionStatePayload) {
     if (!payload || typeof payload.session_id !== 'string' || typeof payload.phase !== 'string') return;
     const id = payload.session_id;
+    if (!this.runs()[id]) {
+      // A run started here waits under the key start() chose until its session names it, which may be
+      // `session:<uuid>` when its first service id is still the name of a session that moved elsewhere.
+      const provisional = typeof payload.service_id === 'string' ? this.sessionOf.get(payload.service_id) : undefined;
+      const started = provisional === undefined ? undefined : this.runs()[provisional];
+      if (provisional !== undefined && started && !started.session) {
+        const runs = { ...this.runs(), [id]: { ...started, serviceId: id } };
+        delete runs[provisional];
+        this.pending = runs;
+        this.sessionOf.forEach((session, key) => { if (session === provisional) this.sessionOf.set(key, id); });
+      } else this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
+    }
     this.sessionOf.set(id, id);
     if (typeof payload.service_id === 'string') this.sessionOf.set(payload.service_id, id);
-    if (!this.runs()[id]) this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
     const at = this.now();
     this.update(id, run => {
       const session: SessionInfo = {
@@ -255,7 +277,7 @@ export class ServiceRunner {
       };
       const entry = sessionEntry(run.session, session, at);
       const state: ServiceState = payload.phase === 'stopped' ? (run.state === 'failed' ? 'failed' : 'exited') : payload.phase === 'running' && run.state !== 'stopping' ? 'running' : run.state;
-      return { ...run, session, state, execute: payload.execute ?? run.execute, entries: entry ? [...run.entries, entry].slice(-maxEntries) : run.entries };
+      return { ...run, session, state, execute: payload.execute ?? run.execute, entries: appendEntry(run.entries, entry) };
     }, true);
   }
 
@@ -267,22 +289,25 @@ export class ServiceRunner {
   async start(options: StartOptions, confirm?: ConfirmExecute): Promise<boolean> {
     if (!this.state.desktop) return false;
     const id = serviceIdFor(options.pathHex);
-    if (isActiveRun(this.runs()[id])) { this.set({ error: 'A profile is already running on this device.' }); return false; }
+    if (ownsProcess(this.runs(), id)) { this.set({ error: 'A profile is already running on this device.' }); return false; }
     if (options.execute) {
       if (!confirm) { this.set({ error: 'Running actions needs confirmation.' }); return false; }
       if (!(await confirm())) return false;
-      if (isActiveRun(this.runs()[id])) return false;
+      if (ownsProcess(this.runs(), id)) return false;
     }
-    this.sessionOf.forEach((session, key) => { if (session === id) this.sessionOf.delete(key); });
-    const run = this.blankRun(id, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved);
-    this.set({ runs: { ...this.runs(), [id]: run }, error: null });
+    // A live session that moved away from this path keeps its name, so this run waits under its own key.
+    const key = isActiveRun(this.runs()[id]) ? `pending:${id}` : id;
+    this.sessionOf.forEach((session, process) => { if (session === key) this.sessionOf.delete(process); });
+    this.sessionOf.set(id, key);
+    const run = { ...this.blankRun(key, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved), processId: id };
+    this.set({ runs: { ...this.runs(), [key]: run }, error: null });
     const request: StartServiceRequest = { profile: options.profile, path_hex: options.pathHex, execute: options.execute, software_mode: options.softwareMode };
     try {
       await this.invoke<string>('start_service', { request });
       return true;
     } catch (reason) {
       const message = errorMessage(reason);
-      this.update(id, current => current.state === 'starting' ? { ...current, state: 'failed', error: message } : current, true);
+      this.update(this.sessionOf.get(id) ?? key, current => current.state === 'starting' ? { ...current, state: 'failed', error: message } : current, true);
       return false;
     }
   }
@@ -291,9 +316,10 @@ export class ServiceRunner {
   // needs confirmation) is ended through stop_session; otherwise the process is stopped as before.
   async stop(serviceId: string) {
     if (!this.state.desktop) return;
-    const session = this.runs()[serviceId]?.session;
+    const run = this.runs()[serviceId];
+    const session = run?.session;
     if (session && session.phase !== 'stopped' && (session.phase !== 'running' || session.serviceId === null)) { await this.stopSession(serviceId); return; }
-    const target = session?.serviceId ?? serviceId;
+    const target = (run && processOf(serviceId, run)) ?? serviceId;
     this.update(serviceId, run => run.state === 'starting' || run.state === 'running' ? { ...run, state: 'stopping' } : run, true);
     try { await this.invoke<void>('stop_service', { serviceId: target }); }
     catch (reason) { this.set({ error: errorMessage(reason) }); }

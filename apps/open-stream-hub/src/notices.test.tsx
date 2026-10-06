@@ -4,8 +4,8 @@ import { FakeStorage } from './fake-storage';
 import { idleFeedState } from './device-feed';
 import type { FeedStoreState } from './device-feed';
 import type { LiveDevice } from './contracts';
-import { NoticeList } from './NoticeRegion';
-import { NoticeStore, coalesceMs, defaultTtl, maxVisible, noticesFromInventory, noticesFromRuns, noticesStorageKey } from './notices';
+import { focusWhenRendered, NoticeList } from './NoticeRegion';
+import { NoticeStore, coalesceMs, noticeFocusAfterDismiss, defaultTtl, maxVisible, noticesFromInventory, noticesFromRuns, noticesStorageKey } from './notices';
 import type { NoticeEnv } from './notices';
 import type { ServiceRun } from './service-runner';
 
@@ -233,5 +233,35 @@ describe('NoticeList', () => {
     expect(markup.match(/>Review</g)).toHaveLength(1);
     expect(markup).toContain('Dismiss notice: 3-knob module connected');
     expect(markup).not.toContain('autofocus');
+  });
+  it('marks each toast with its id so dismiss can find the next one', () => {
+    const markup = render();
+    expect(markup).toContain('data-notice-id="1"');
+    expect(markup).toContain('data-notice-id="2"');
+  });
+});
+
+describe('notice focus', () => {
+  it('moves focus to the next notice, else the previous, else none', () => {
+    expect(noticeFocusAfterDismiss([1, 2, 3], 1)).toBe(2);
+    expect(noticeFocusAfterDismiss([1, 2, 3], 2)).toBe(3);
+    expect(noticeFocusAfterDismiss([1, 2, 3], 3)).toBe(2);
+    expect(noticeFocusAfterDismiss([4], 4)).toBeNull();
+    expect(noticeFocusAfterDismiss([1, 2], 9)).toBeNull();
+  });
+  it('focuses a target once it renders and gives up after the frame budget', () => {
+    const queue: (() => void)[] = [];
+    const schedule = (callback: () => void) => { queue.push(callback); };
+    const run = () => { while (queue.length) queue.shift()!(); };
+    let focused = 0;
+    let frames = 0;
+    focusWhenRendered(() => (++frames >= 3 ? { focus: () => { focused += 1; } } : null), schedule, 10);
+    run();
+    expect(focused).toBe(1);
+    expect(frames).toBe(3);
+    let lookups = 0;
+    focusWhenRendered(() => { lookups += 1; return null; }, schedule, 4);
+    run();
+    expect(lookups).toBe(5);
   });
 });

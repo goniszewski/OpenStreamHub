@@ -21,6 +21,14 @@ export const failureTtl = 10000;
 export const maxVisible = 3;
 export const noticesStorageKey = 'open-stream-hub.connection-notices';
 
+// Which notice should take focus when `id` is dismissed while focus is inside it:
+// the next one, else the previous one, else none (the caller uses a stable target).
+export function noticeFocusAfterDismiss(ids: number[], id: number): number | null {
+  const index = ids.indexOf(id);
+  if (index < 0) return null;
+  return ids[index + 1] ?? ids[index - 1] ?? null;
+}
+
 const nameOf = (device: LiveDevice) => modules.find(module => module.id === device.module)?.shortName ?? device.module;
 const sameModule = (a: LiveDevice, b: LiveDevice) => a.module === b.module && a.serial_number === b.serial_number;
 // Serial tails are shown only when several modules share a type, so the notice can tell them apart.

@@ -79,3 +79,19 @@ export function faderFromPointer(offsetY: number, trackHeight: number, maximum: 
   const ratio = 1 - Math.min(Math.max(offsetY / trackHeight, 0), 1);
   return Math.round(ratio * maximum);
 }
+
+export const faderPageStep = 10;
+
+// The value a slider key moves a fader to, or null for keys the fader does not handle.
+export function faderFromKey(key: string, value: number, maximum: number): number | null {
+  const clamp = (next: number) => Math.min(maximum, Math.max(0, next));
+  switch (key) {
+    case 'ArrowUp': case 'ArrowRight': return clamp(value + 1);
+    case 'ArrowDown': case 'ArrowLeft': return clamp(value - 1);
+    case 'PageUp': return clamp(value + faderPageStep);
+    case 'PageDown': return clamp(value - faderPageStep);
+    case 'Home': return 0;
+    case 'End': return maximum;
+    default: return null;
+  }
+}

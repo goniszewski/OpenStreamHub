@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
 import type { RigItem } from './rig-model';
-import { addRigModule, boundControlCount, controlAction, defaultRig, faderFromPointer, maxRigItems, moveRigModule, readRig, removeRigModule, rigStorageKey, syncDeviceRig, writeRig } from './rig-model';
+import { addRigModule, boundControlCount, controlAction, defaultRig, faderFromKey, faderFromPointer, faderPageStep, maxRigItems, moveRigModule, readRig, removeRigModule, rigStorageKey, syncDeviceRig, writeRig } from './rig-model';
 
 const profile: Profile = { schema_version: 1, name: 'p', bindings: [
   { module: 'm003k', control: 1, gesture: 'pressed', action: { type: 'toggle_mute' } },
@@ -80,5 +80,21 @@ describe('rig control display', () => {
     expect(faderFromPointer(-40, 200, 100)).toBe(100);
     expect(faderFromPointer(999, 200, 100)).toBe(0);
     expect(faderFromPointer(10, 0, 100)).toBe(0);
+  });
+});
+
+describe('fader keyboard', () => {
+  it('steps by one with arrows, by a page with PageUp/PageDown, and jumps with Home/End, clamped', () => {
+    expect(faderFromKey('ArrowUp', 50, 100)).toBe(51);
+    expect(faderFromKey('ArrowDown', 50, 100)).toBe(49);
+    expect(faderFromKey('ArrowRight', 100, 100)).toBe(100);
+    expect(faderFromKey('ArrowLeft', 0, 100)).toBe(0);
+    expect(faderFromKey('PageUp', 50, 100)).toBe(50 + faderPageStep);
+    expect(faderFromKey('PageDown', 5, 100)).toBe(0);
+    expect(faderFromKey('PageUp', 95, 100)).toBe(100);
+    expect(faderFromKey('Home', 42, 100)).toBe(0);
+    expect(faderFromKey('End', 42, 100)).toBe(100);
+    expect(faderFromKey('Enter', 42, 100)).toBeNull();
+    expect(faderFromKey('a', 42, 100)).toBeNull();
   });
 });

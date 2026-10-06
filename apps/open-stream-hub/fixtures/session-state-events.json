@@ -61,7 +61,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 0,
+    "attempt": 1,
     "execute": false,
     "module": "m131e",
     "phase": "waiting_for_device",
@@ -71,7 +71,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 0,
+    "attempt": 1,
     "execute": false,
     "module": "m131e",
     "phase": "reconnecting",
@@ -81,7 +81,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 0,
+    "attempt": 1,
     "execute": false,
     "module": "m131e",
     "phase": "running",
@@ -91,11 +91,11 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 1,
+    "attempt": 2,
     "detail": "masterhub-service: no HID interface matches the selected path",
     "execute": false,
     "module": "m131e",
-    "next_attempt_in_ms": 1000,
+    "next_attempt_in_ms": 2000,
     "phase": "reconnecting",
     "reason": "service_exited",
     "serial_number": "ABCDEF123456",
@@ -103,7 +103,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 1,
+    "attempt": 2,
     "detail": "masterhub-service: no HID interface matches the selected path",
     "execute": false,
     "module": "m131e",
@@ -114,7 +114,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 1,
+    "attempt": 2,
     "execute": false,
     "module": "m131e",
     "phase": "running",
@@ -124,7 +124,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 1,
+    "attempt": 2,
     "execute": false,
     "module": "m131e",
     "phase": "stopped",
@@ -134,7 +134,7 @@
     "session_id": "service:2f6465762f6869647261772d30323032"
   },
   {
-    "attempt": 1,
+    "attempt": 2,
     "execute": false,
     "module": "m131e",
     "phase": "stopped",

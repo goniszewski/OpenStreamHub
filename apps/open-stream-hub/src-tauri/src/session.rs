@@ -4,7 +4,11 @@
 //! request (profile snapshot, `execute`, `software_mode`) and the device
 //! identity (module + serial number, never only the path, which can change
 //! after a replug or wake). The session id is the first process's service id
-//! and stays stable while later processes may run under other ids.
+//! and stays stable while later processes may run under other ids. It is only
+//! a name, never a reservation of that path: duplicate checks use the current
+//! process id and the device identity. When a new session's first service id
+//! is still the name of an older session that moved to another path, the new
+//! one is named `session:<uuid>` instead, so ids stay unique.
 //!
 //! `step` is a pure state machine (no I/O, no clock): the caller passes the
 //! current time and executes the returned actions. `Driver` applies it to every
@@ -183,8 +187,10 @@ fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
 }
 
 impl Session {
-    /// A session for a service already spawned as `service_id` on `device`.
+    /// A session named `session_id` for a service already spawned as
+    /// `service_id` on `device`.
     pub fn start(
+        session_id: String,
         service_id: String,
         device: &LiveDevice,
         execute: bool,
@@ -192,7 +198,7 @@ impl Session {
         now_ms: u64,
     ) -> (Self, Vec<Action>) {
         let mut session = Self {
-            session_id: service_id.clone(),
+            session_id,
             module: device.module,
             serial_number: blank_to_none(device.serial_number.as_deref()),
             execute,
@@ -333,16 +339,18 @@ impl Session {
                     return;
                 }
                 self.confirmed = false;
-                if self.find_device().is_err() {
-                    self.reason = Some(Reason::DeviceRemoved);
-                    self.detail = None;
-                    return;
-                }
                 if process.running && now_ms.saturating_sub(process.started_ms) >= STABLE_RUN_MS {
                     self.attempt = 0;
                 }
-                self.reason = Some(Reason::ServiceExited);
-                self.detail = Some(exit_detail(exit_code, &stderr_tail));
+                // An exit while the device is missing counts too, so a
+                // flapping device backs off and hits the same limit.
+                if self.find_device().is_err() {
+                    self.reason = Some(Reason::DeviceRemoved);
+                    self.detail = None;
+                } else {
+                    self.reason = Some(Reason::ServiceExited);
+                    self.detail = Some(exit_detail(exit_code, &stderr_tail));
+                }
                 if self.attempt >= MAX_ATTEMPTS {
                     self.phase = Phase::Stopped;
                     self.retry_at = None;
@@ -467,6 +475,17 @@ pub trait Runner {
     fn start(&mut self, request: &StartRequest) -> Result<String, String>;
     /// Stops via SIGINT, then kills after the grace period.
     fn stop(&mut self, service_id: &str);
+    /// Stops several processes in parallel (e.g. before sleep), so the wait
+    /// is bounded by one grace period rather than their sum.
+    fn stop_many(&mut self, service_ids: &[String]) {
+        for service_id in service_ids {
+            self.stop(service_id);
+        }
+    }
+    /// True once app exit began; nothing may be started any more.
+    fn closed(&self) -> bool {
+        false
+    }
     fn emit(&mut self, state: &SessionState);
     /// A fresh device inventory when the watcher has not reported the path.
     fn enumerate(&mut self) -> Option<Vec<LiveDevice>>;
@@ -484,6 +503,9 @@ pub struct Driver<R> {
     inventory: Option<Vec<LiveDevice>>,
     timers: BTreeSet<(u64, String)>,
     closed: bool,
+    /// While set, `StopService` actions are collected here and then stopped
+    /// together through `Runner::stop_many`.
+    deferred_stops: Option<Vec<String>>,
 }
 
 impl<R: Runner> Driver<R> {
@@ -494,7 +516,12 @@ impl<R: Runner> Driver<R> {
             inventory: None,
             timers: BTreeSet::new(),
             closed: false,
+            deferred_stops: None,
         }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed || self.runner.closed()
     }
 
     #[cfg(test)]
@@ -510,11 +537,25 @@ impl<R: Runner> Driver<R> {
             .find(|session| session.session_id == session_id)
     }
 
-    /// Session owning `id` as its session id or current process id.
-    fn find(&self, id: &str) -> Option<usize> {
-        self.sessions.iter().position(|managed| {
-            managed.session.session_id == id || managed.session.service_id() == Some(id)
-        })
+    /// The session named `id` or running process `id`. A session name may
+    /// equal another session's current process id (the name's path was
+    /// reused after a replug), so `by_name` picks which match wins.
+    fn find(&self, id: &str, by_name: bool) -> Option<usize> {
+        let named = || {
+            self.sessions
+                .iter()
+                .position(|managed| managed.session.session_id == id)
+        };
+        let running = || {
+            self.sessions
+                .iter()
+                .position(|managed| managed.session.service_id() == Some(id))
+        };
+        if by_name {
+            named().or_else(running)
+        } else {
+            running().or_else(named)
+        }
     }
 
     fn lookup(&mut self, path_hex: &str) -> Option<LiveDevice> {
@@ -535,11 +576,16 @@ impl<R: Runner> Driver<R> {
     /// Starts a run and, when its device is identified, a session for it.
     /// An unidentified device runs unmanaged, exactly as before sessions.
     pub fn start(&mut self, request: StartRequest, now_ms: u64) -> Result<String, String> {
-        if self.closed {
-            return Err("the app is shutting down".into());
+        if self.is_closed() {
+            return Err(service::SHUTTING_DOWN.into());
         }
         let service_id = service::service_id(&request.path_hex)?;
-        if self.find(&service_id).is_some() {
+        // Only a live process holds the path; a session name does not.
+        if self
+            .sessions
+            .iter()
+            .any(|managed| managed.session.service_id() == Some(service_id.as_str()))
+        {
             return Err(format!("service {service_id} is already running"));
         }
         let path_hex = service_id.trim_start_matches("service:").to_owned();
@@ -560,8 +606,23 @@ impl<R: Runner> Driver<R> {
             return Ok(id);
         };
         let inventory = self.inventory.clone().unwrap_or_default();
-        let (session, actions) =
-            Session::start(id.clone(), &device, request.execute, inventory, now_ms);
+        let session_id = if self
+            .sessions
+            .iter()
+            .any(|managed| managed.session.session_id == id)
+        {
+            format!("session:{}", uuid::Uuid::new_v4())
+        } else {
+            id.clone()
+        };
+        let (session, actions) = Session::start(
+            session_id,
+            id.clone(),
+            &device,
+            request.execute,
+            inventory,
+            now_ms,
+        );
         self.sessions.push(Managed { session, request });
         self.execute(self.sessions.len() - 1, actions, now_ms);
         Ok(id)
@@ -569,8 +630,9 @@ impl<R: Runner> Driver<R> {
 
     /// `stop_service` / `stop_session`: ends the owning session from any
     /// phase. Other ids are stopped as plain services unless `sessions_only`.
+    /// `stop_session` matches session names first, `stop_service` processes.
     pub fn stop(&mut self, id: &str, sessions_only: bool, now_ms: u64) {
-        match self.find(id) {
+        match self.find(id, sessions_only) {
             Some(index) => self.apply(index, Event::UserStop, now_ms),
             None if !sessions_only => self.runner.stop(id),
             None => {}
@@ -597,7 +659,9 @@ impl<R: Runner> Driver<R> {
         self.broadcast(|| Event::Inventory(devices.clone()), now_ms);
     }
 
+    /// Every process a sleep (or wake) interrupts is stopped in parallel.
     pub fn power(&mut self, event: PowerEvent, now_ms: u64) {
+        self.deferred_stops = Some(Vec::new());
         self.broadcast(
             || match event {
                 PowerEvent::Suspend => Event::Suspend,
@@ -605,6 +669,10 @@ impl<R: Runner> Driver<R> {
             },
             now_ms,
         );
+        let stops = self.deferred_stops.take().unwrap_or_default();
+        if !stops.is_empty() {
+            self.runner.stop_many(&stops);
+        }
     }
 
     pub fn exited(
@@ -706,7 +774,16 @@ impl<R: Runner> Driver<R> {
                     let id = self.sessions[index].session.session_id.clone();
                     self.timers.insert((now_ms + delay, id));
                 }
-                Action::StopService { service_id } => self.runner.stop(&service_id),
+                Action::StopService { service_id } => match &mut self.deferred_stops {
+                    Some(stops) => stops.push(service_id),
+                    None => self.runner.stop(&service_id),
+                },
+                Action::StartService { .. } if self.is_closed() => {
+                    // App exit began: nothing was spawned, so the session
+                    // ends instead of retrying.
+                    self.sessions[index].session.service = None;
+                    self.apply(index, Event::UserStop, now_ms);
+                }
                 Action::StartService { path_hex, execute } => {
                     let service_id = format!("service:{path_hex}");
                     let busy = self.sessions.iter().enumerate().any(|(other, managed)| {
@@ -826,6 +903,8 @@ pub struct Manager {
     inputs: Sender<Input>,
     receiver: Mutex<Option<Receiver<Input>>>,
     running: AtomicBool,
+    /// Set once app exit began; starts are refused from then on.
+    closed: AtomicBool,
 }
 
 impl Default for Manager {
@@ -835,6 +914,7 @@ impl Default for Manager {
             inputs,
             receiver: Mutex::new(Some(receiver)),
             running: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         }
     }
 }
@@ -883,7 +963,16 @@ impl Manager {
         )
     }
 
+    /// True once `shutdown` was called.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    /// `None` only when no driver ever ran; refused once shut down.
     pub fn start(&self, request: StartRequest) -> Option<Result<String, String>> {
+        if self.is_closed() {
+            return Some(Err(service::SHUTTING_DOWN.into()));
+        }
         self.request(|reply| Input::Start(request, reply))
             .map(|answer| answer.and_then(|started| started))
     }
@@ -906,6 +995,7 @@ impl Manager {
 
     /// App exit: ends every session; waits at most `wait`.
     pub fn shutdown(&self, wait: Duration) {
+        self.closed.store(true, Ordering::SeqCst);
         if !self.running.swap(false, Ordering::SeqCst) {
             return;
         }
@@ -932,6 +1022,9 @@ pub mod fake {
         pub alive: BTreeSet<String>,
         pub fail_next: Option<String>,
         pub devices: Option<Vec<LiveDevice>>,
+        /// Each `stop_many` call, in order.
+        pub batches: Vec<Vec<String>>,
+        pub closed: bool,
     }
 
     impl Runner for FakeRunner {
@@ -947,6 +1040,15 @@ pub mod fake {
 
         fn stop(&mut self, service_id: &str) {
             self.stops.push(service_id.into());
+        }
+
+        fn stop_many(&mut self, service_ids: &[String]) {
+            self.batches.push(service_ids.to_vec());
+            self.stops.extend_from_slice(service_ids);
+        }
+
+        fn closed(&self) -> bool {
+            self.closed
         }
 
         fn emit(&mut self, state: &SessionState) {
@@ -1194,7 +1296,9 @@ mod tests {
         assert_eq!(state.phase, Phase::WaitingForDevice);
         assert_eq!(state.detail.as_deref(), Some(AMBIGUOUS_DEVICE));
         assert_eq!(starts(&mut driver), 1);
-        driver.inventory(vec![device(DIAL, None, "/c")], 4);
+        // The exit while the device was missing counts, so the restart
+        // waits for its 1 s backoff.
+        driver.inventory(vec![device(DIAL, None, "/c")], 1_002);
         let state = last(&mut driver);
         assert_eq!((state.phase, state.detail), (Phase::Running, None));
         assert_eq!(driver.runner().starts[1].path_hex, encode("/c"));
@@ -1281,6 +1385,10 @@ mod tests {
             };
             driver.inventory(devices, now);
         }
+        // The exit counted as a crash: nothing restarts before its backoff.
+        assert_eq!(starts(&mut driver), 1);
+        driver.inventory(vec![dial("/a")], 21);
+        driver.tick(1_002);
         // The FakeRunner asserts that no id is started while still alive.
         assert_eq!(starts(&mut driver), 2);
         assert_eq!(driver.runner().alive.len(), 1);
@@ -1432,7 +1540,14 @@ mod tests {
 
     #[test]
     fn the_pure_step_never_requests_a_second_process() {
-        let (session, _) = Session::start(sid("/a"), &dial("/a"), false, vec![dial("/a")], 0);
+        let (session, _) = Session::start(
+            sid("/a"),
+            sid("/a"),
+            &dial("/a"),
+            false,
+            vec![dial("/a")],
+            0,
+        );
         let events = [
             Event::ServiceExited {
                 exit_code: Some(1),
@@ -1526,6 +1641,117 @@ mod tests {
         assert!(manager.resume(&id).is_err());
         assert!(manager.stop(&id, true).unwrap());
         manager.shutdown(Duration::from_secs(1));
-        assert!(manager.start(request(&dial("/a"), false)).is_none());
+        // Refused rather than falling back to an unmanaged run.
+        assert!(matches!(
+            manager.start(request(&dial("/a"), false)),
+            Some(Err(error)) if error == service::SHUTTING_DOWN
+        ));
+        let idle = Manager::default();
+        assert!(idle.start(request(&dial("/a"), false)).is_none());
+        idle.shutdown(Duration::from_millis(10));
+        assert!(
+            idle.start(request(&dial("/a"), false))
+                .is_some_and(|r| r.is_err())
+        );
+    }
+
+    #[test]
+    fn a_replugged_session_no_longer_reserves_its_original_path() {
+        let (mut driver, id) = running(false);
+        driver.inventory(vec![], 1);
+        exit(&mut driver, &id, "", 2);
+        driver.inventory(vec![dial("/b")], 5_000);
+        assert_eq!(last(&mut driver).service_id, Some(sid("/b")));
+        // Another device now sits at the old path; it can be started.
+        let other = device(DIAL, Some("SER-2"), "/a");
+        driver.inventory(vec![dial("/b"), other.clone()], 5_001);
+        let started = driver.start(request(&other, false), 5_002).unwrap();
+        assert_eq!(started, sid("/a"));
+        let state = last(&mut driver);
+        assert_eq!(state.service_id, Some(sid("/a")));
+        assert_eq!(state.serial_number.as_deref(), Some("SER-2"));
+        // Its name cannot be the old session's, which is still in use.
+        assert!(state.session_id.starts_with("session:"), "{state:?}");
+        assert_ne!(state.session_id, id);
+        let second = state.session_id.clone();
+        // stop_service with the old path's id stops the process running there.
+        driver.stop(&sid("/a"), false, 5_003);
+        assert_eq!(driver.runner().stops, [sid("/a")]);
+        assert_eq!(last(&mut driver).session_id, second);
+        assert_eq!(
+            driver.session(&id).unwrap().phase(),
+            Phase::Running,
+            "the moved session is untouched"
+        );
+        // The first session is still reachable by its name.
+        driver.stop(&id, true, 5_004);
+        assert_eq!(driver.runner().stops, [sid("/a"), sid("/b")]);
+    }
+
+    #[test]
+    fn crashes_while_the_device_is_missing_back_off_and_stop() {
+        let (mut driver, id) = running(false);
+        let mut now = 100;
+        for attempt in 1..=MAX_ATTEMPTS {
+            driver.inventory(vec![], now);
+            exit(&mut driver, &id, "", now + 1);
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.attempt),
+                (
+                    Phase::WaitingForDevice,
+                    Some(Reason::DeviceRemoved),
+                    attempt
+                )
+            );
+            // A replug before the backoff waits for it.
+            driver.inventory(vec![dial("/a")], now + 2);
+            let state = last(&mut driver);
+            assert_eq!(state.phase, Phase::Reconnecting);
+            assert_eq!(state.next_attempt_in_ms, Some(backoff_ms(attempt) - 1));
+            assert_eq!(starts(&mut driver), attempt as usize);
+            now += 1 + backoff_ms(attempt);
+            driver.tick(now);
+            assert_eq!(starts(&mut driver), attempt as usize + 1);
+            now += 10;
+        }
+        driver.inventory(vec![], now);
+        exit(&mut driver, &id, "", now + 1);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.attempt),
+            (Phase::Stopped, Some(Reason::DeviceRemoved), MAX_ATTEMPTS)
+        );
+        assert!(driver.session(&id).is_none());
+    }
+
+    #[test]
+    fn sleep_stops_every_session_in_one_parallel_batch() {
+        let (mut driver, first) = running(false);
+        let keys = device(ServiceModule::M003K, Some("K"), "/k");
+        driver.inventory(vec![dial("/a"), keys.clone()], 1);
+        let second = driver.start(request(&keys, false), 1).unwrap();
+        driver.power(PowerEvent::Suspend, 2);
+        assert_eq!(driver.runner().batches, [vec![first, second]]);
+        // A wake with nothing running stops nothing.
+        driver.power(PowerEvent::Resume, 3);
+        assert_eq!(driver.runner().batches.len(), 1);
+    }
+
+    #[test]
+    fn nothing_restarts_once_the_runner_is_closed() {
+        let (mut driver, id) = running(false);
+        exit(&mut driver, &id, "", 10);
+        driver.runner().closed = true;
+        driver.tick(10 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 1);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.service_id),
+            (Phase::Stopped, Some(Reason::User), None)
+        );
+        assert!(driver.session(&id).is_none());
+        let error = driver.start(request(&dial("/a"), false), 20).unwrap_err();
+        assert_eq!(error, service::SHUTTING_DOWN);
     }
 }

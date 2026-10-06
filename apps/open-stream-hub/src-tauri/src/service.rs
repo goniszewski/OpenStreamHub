@@ -12,8 +12,8 @@
 //!
 //! The binary is bundled as a Tauri sidecar (`bundle.externalBin`), which the
 //! bundler installs next to the app executable without the target-triple
-//! suffix. It is found via `OPEN_STREAM_HUB_SERVICE`, next to the app
-//! executable, or (debug builds only) in a workspace `target/` directory.
+//! suffix. It is found next to the app executable or, in debug builds only,
+//! via `OPEN_STREAM_HUB_SERVICE` or in a workspace `target/` directory.
 
 use crate::{feed, replay};
 use cooltek_sdk_cli::{capture::encode_hex, device::parse_path};
@@ -38,7 +38,7 @@ use std::{
 
 pub const RECORD_EVENT: &str = "service://record";
 pub const STATUS_EVENT: &str = "service://status";
-/// Overrides the service binary location.
+/// Overrides the service binary location (debug builds only).
 pub const BINARY_ENV: &str = "OPEN_STREAM_HUB_SERVICE";
 
 /// Longest stdout line relayed as a record; matches the service's own limit.
@@ -54,6 +54,7 @@ pub const STOP_GRACE: Duration = Duration::from_secs(3);
 const DRAIN_GRACE: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(20);
 const PROFILE_DIR: &str = "service-profiles";
+pub const SHUTTING_DOWN: &str = "the app is shutting down";
 
 fn binary_name() -> &'static str {
     if cfg!(windows) {
@@ -183,9 +184,11 @@ fn is_workspace_root(directory: &Path) -> bool {
     })
 }
 
-/// Finds the service binary: `env_override` when it names a file, then next
-/// to the app executable, then (with `dev_fallback`) `target/debug` and
-/// `target/release` of every ancestor workspace root of `exe_dir`.
+/// Finds the service binary: (with `dev_fallback`) `env_override` when it
+/// names a file, then next to the app executable, then (with `dev_fallback`)
+/// `target/debug` and `target/release` of every ancestor workspace root of
+/// `exe_dir`. Release builds never honor the override, so an environment
+/// variable cannot redirect a shipped app to another binary.
 pub fn resolve_service_binary(
     env_override: Option<&OsStr>,
     exe_dir: Option<&Path>,
@@ -193,7 +196,7 @@ pub fn resolve_service_binary(
 ) -> Result<PathBuf, String> {
     let mut checked = Vec::new();
     let mut candidates = Vec::new();
-    if let Some(path) = env_override.filter(|value| !value.is_empty()) {
+    if let Some(path) = env_override.filter(|value| dev_fallback && !value.is_empty()) {
         candidates.push(PathBuf::from(path));
     }
     if let Some(exe_dir) = exe_dir {
@@ -217,9 +220,16 @@ pub fn resolve_service_binary(
     } else {
         checked.join(", ")
     };
+    let hint = if dev_fallback {
+        format!(
+            "Build it with `cargo build -p cooltek-sdk-cli --bin masterhub-service` or set \
+             {BINARY_ENV} to its path."
+        )
+    } else {
+        "Reinstall the app; the service is bundled next to it.".to_string()
+    };
     Err(format!(
-        "could not find {name}. Checked: {checked}. Build it with `cargo build -p \
-         cooltek-sdk-cli --bin masterhub-service` or set {BINARY_ENV} to its path.",
+        "could not find {name}. Checked: {checked}. {hint}",
         name = binary_name()
     ))
 }
@@ -390,6 +400,19 @@ fn force_kill(child: &mut Child) {
     let _ = child.kill();
 }
 
+/// SIGKILLs what is left of the process group led by the reaped child `pid`,
+/// so grandchildren (e.g. in-flight system tools) do not outlive the service.
+/// The group has no leader any more, so ESRCH (no members) is expected.
+fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    if let Ok(pid) = libc::pid_t::try_from(pid) {
+        // SAFETY: plain syscall on the child's own process group.
+        unsafe { libc::killpg(pid, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
+}
+
 struct ServiceHandle {
     child: Arc<Mutex<Child>>,
     execute: bool,
@@ -443,6 +466,8 @@ fn wait_until(deadline: Instant, mut ready: impl FnMut() -> bool) -> bool {
 #[derive(Default)]
 pub struct Services {
     services: Mutex<HashMap<String, ServiceHandle>>,
+    /// Set by `stop_all` (app exit) under the lock; no child starts after it.
+    closed: AtomicBool,
 }
 
 impl Services {
@@ -450,6 +475,11 @@ impl Services {
         self.services
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// True once app exit began; every later start is refused.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 
     pub fn is_running(&self, service_id: &str) -> bool {
@@ -472,7 +502,8 @@ impl Services {
 
     /// Spawns `program args` as `service_id`, emitting `starting`, then
     /// `running` or `failed`. A duplicate running id is rejected without any
-    /// event. `profile` is removed once the child is reaped.
+    /// event. `profile` is removed once the child is reaped. Refused without
+    /// any event once `stop_all` began.
     pub fn start(
         &self,
         service_id: String,
@@ -483,6 +514,9 @@ impl Services {
         emit: Emit,
     ) -> Result<String, String> {
         let mut services = self.lock();
+        if self.is_closed() {
+            return Err(SHUTTING_DOWN.into());
+        }
         if let Some(handle) = services.get(&service_id) {
             if !handle.finished() {
                 return Err(format!("service {service_id} is already running"));
@@ -603,11 +637,27 @@ impl Services {
         Ok(())
     }
 
+    /// Stops several services in parallel: every SIGINT goes out at once, so
+    /// the whole call is bounded by one `stop`, not by their sum.
+    pub fn stop_many(&self, service_ids: &[String], grace: Duration) {
+        thread::scope(|scope| {
+            for service_id in service_ids {
+                scope.spawn(move || {
+                    if let Err(error) = self.stop(service_id, grace) {
+                        eprintln!("could not stop {service_id}: {error}");
+                    }
+                });
+            }
+        });
+    }
+
     /// App exit: SIGINT every child, wait up to `grace`, SIGKILL the rest, and
     /// wait briefly for reaping without joining threads, so a stuck pipe never
-    /// blocks exit. Profile snapshots are removed either way.
+    /// blocks exit. Profile snapshots are removed either way. Later starts are
+    /// refused.
     pub fn stop_all(&self, grace: Duration) {
         let services = self.lock();
+        self.closed.store(true, Ordering::SeqCst);
         for (service_id, handle) in services.iter() {
             handle.request_stop(service_id);
         }
@@ -674,7 +724,9 @@ impl Supervisor {
         }
         drop(drained_tx);
 
+        let pid = lock_child(&self.child).id();
         let status = self.reap();
+        kill_group(pid);
         let deadline = Instant::now() + DRAIN_GRACE;
         for _ in 0..readers {
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -763,6 +815,9 @@ pub fn start_service(
     emit: Emit,
 ) -> Result<String, String> {
     let service_id = service_id(&request.path_hex)?;
+    if services.is_closed() {
+        return Err(SHUTTING_DOWN.into());
+    }
     if services.is_running(&service_id) {
         return Err(format!("service {service_id} is already running"));
     }
@@ -799,6 +854,19 @@ pub fn start_service(
         Some(profile),
         emit,
     )
+}
+
+/// A read-only live feed may not open an interface a service owns.
+pub fn check_feed_allowed(services: &Services, source: &feed::FeedSource) -> Result<(), String> {
+    if let feed::FeedSource::Live { path_hex } = source {
+        let service_id = service_id(path_hex)?;
+        if services.is_running(&service_id) {
+            return Err(format!(
+                "service {service_id} is using this device; stop it before starting a feed"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -927,8 +995,15 @@ mod tests {
         fs::write(&custom, b"").unwrap();
         assert_eq!(
             resolve_service_binary(Some(custom.as_os_str()), Some(&exe_dir), true),
-            Ok(custom)
+            Ok(custom.clone())
         );
+        // Release builds ignore the override and do not suggest it.
+        assert_eq!(
+            resolve_service_binary(Some(custom.as_os_str()), Some(&exe_dir), false),
+            Ok(beside.clone())
+        );
+        let error = resolve_service_binary(Some(custom.as_os_str()), None, false).unwrap_err();
+        assert!(!error.contains("custom-service") && !error.contains(BINARY_ENV));
         // A missing override falls through to the next location.
         let missing = root.join("missing");
         assert_eq!(
@@ -1196,7 +1271,7 @@ mod tests {
     fn real_service_rejects_an_absent_interface_after_loading_the_snapshot() {
         use process::*;
         let program =
-            resolve_service_binary(std::env::var_os(BINARY_ENV).as_deref(), None, false).unwrap();
+            resolve_service_binary(std::env::var_os(BINARY_ENV).as_deref(), None, true).unwrap();
         let services = Services::default();
         let root = tempfile::tempdir().unwrap();
         let (emit, messages) = collector();
@@ -1340,5 +1415,117 @@ mod tests {
             .is_err()
         );
         assert_eq!(states(&messages), [ServiceState::Failed]);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn grandchildren_are_killed_once_the_service_exits() {
+        use process::*;
+        let services = Services::default();
+        let (emit, messages) = collector();
+        // The service exits on its own and leaves a background tool behind.
+        let script = "sleep 30 >/dev/null 2>&1 & printf '{\"pid\":%d}\\n' $!; exit 0";
+        start_script(&services, "service:46", script, None, emit).unwrap();
+        wait_done(&services, "service:46");
+        let pid = records(&messages)[0]["pid"].as_i64().unwrap();
+        let pid = libc::pid_t::try_from(pid).unwrap();
+        // SAFETY: signal 0 only checks whether the process still exists.
+        let alive = || unsafe { libc::kill(pid, 0) } == 0;
+        assert!(
+            wait_until(Instant::now() + Duration::from_secs(3), || !alive()),
+            "the grandchild outlived the service"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_many_stops_services_in_parallel() {
+        use process::*;
+        let services = Services::default();
+        let (emit, messages) = collector();
+        let ids: Vec<String> = (47..50).map(|n| format!("service:{n}")).collect();
+        for id in &ids {
+            start_script(
+                &services,
+                id,
+                "trap '' INT; exec sleep 30",
+                None,
+                Arc::clone(&emit),
+            )
+            .unwrap();
+        }
+        thread::sleep(Duration::from_millis(100));
+        let started = Instant::now();
+        services.stop_many(&ids, Duration::from_millis(400));
+        let elapsed = started.elapsed();
+        // Serially this would take at least 1.2 s.
+        assert!(elapsed < Duration::from_millis(1_100), "took {elapsed:?}");
+        assert!(services.running_ids().is_empty());
+        let stopping = states(&messages)
+            .into_iter()
+            .filter(|state| *state == ServiceState::Stopping)
+            .count();
+        assert_eq!(stopping, 3);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nothing_starts_once_stop_all_began() {
+        use process::*;
+        let services = Services::default();
+        services.stop_all(Duration::from_millis(10));
+        assert!(services.is_closed());
+        let (emit, messages) = collector();
+        let error = start_script(&services, "service:50", "exit 0", None, emit).unwrap_err();
+        assert_eq!(error, SHUTTING_DOWN);
+        assert!(messages.lock().unwrap().is_empty());
+        let root = tempfile::tempdir().unwrap();
+        let (emit, messages) = collector();
+        let request = StartRequest {
+            profile: test_profiles::folders(),
+            path_hex: "4A".into(),
+            execute: false,
+            software_mode: false,
+        };
+        let error = start_service(
+            &services,
+            request,
+            Ok(root.path()),
+            Ok(PathBuf::from("/bin/sh")),
+            |_| panic!("no feed is stopped during shutdown"),
+            emit,
+        )
+        .unwrap_err();
+        assert_eq!(error, SHUTTING_DOWN);
+        assert!(messages.lock().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_live_feed_is_refused_while_a_service_owns_the_interface() {
+        use process::*;
+        let services = Services::default();
+        let live = |path_hex: &str| feed::FeedSource::Live {
+            path_hex: path_hex.into(),
+        };
+        assert!(check_feed_allowed(&services, &live("4A")).is_ok());
+        let (emit, _) = collector();
+        start_script(&services, "service:4a", "exec sleep 30", None, emit).unwrap();
+        let error = check_feed_allowed(&services, &live("4A")).unwrap_err();
+        assert!(error.contains("service:4a"), "{error}");
+        assert!(check_feed_allowed(&services, &live("4B")).is_ok());
+        assert!(
+            check_feed_allowed(
+                &services,
+                &feed::FeedSource::Demo {
+                    demo: replay::DemoKind::Dial
+                }
+            )
+            .is_ok()
+        );
+        assert!(check_feed_allowed(&services, &live("00")).is_err());
+        services
+            .stop("service:4a", Duration::from_millis(200))
+            .unwrap();
+        assert!(check_feed_allowed(&services, &live("4A")).is_ok());
     }
 }

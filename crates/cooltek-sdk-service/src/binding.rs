@@ -23,6 +23,11 @@ impl DeviceContext {
             serial_number,
         })
     }
+
+    /// Applies [`DeviceContext::new`] normalization to a possibly struct-literal context.
+    pub(crate) fn normalized(&self) -> Result<Self, String> {
+        Self::new(self.module, self.serial_number.clone())
+    }
 }
 
 /// A validated profile with deterministic serial-specific binding precedence.
@@ -79,6 +84,7 @@ impl BindingEngine {
         event: &InputEvent,
     ) -> Result<Option<Action>, String> {
         event.validate_for(device.module)?;
+        let device = &device.normalized()?;
         if device.module == ServiceModule::M4315 && self.profile.keypad.is_some() {
             return Err("keypad pages require stateful ProfileSession routing".into());
         }
@@ -224,6 +230,24 @@ mod tests {
         let device = DeviceContext::new(ServiceModule::M003K, Some("unit-1".into())).unwrap();
         assert_eq!(device.serial_number.as_deref(), Some("unit-1"));
         assert!(DeviceContext::new(ServiceModule::M003K, Some("a\u{1}b".into())).is_err());
+    }
+
+    #[test]
+    fn action_for_normalizes_struct_literal_blank_serials() {
+        let engine = engine(vec![binding(None, 5)]);
+        let blank = DeviceContext {
+            module: ServiceModule::M003K,
+            serial_number: Some(String::new()),
+        };
+        assert_eq!(
+            engine.action_for(&blank, &event()).unwrap(),
+            Some(Action::Volume { delta: 5 })
+        );
+        let invalid = DeviceContext {
+            module: ServiceModule::M003K,
+            serial_number: Some("a\u{1}b".into()),
+        };
+        assert!(engine.action_for(&invalid, &event()).is_err());
     }
 
     #[test]

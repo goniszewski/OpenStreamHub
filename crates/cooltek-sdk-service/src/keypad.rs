@@ -246,7 +246,6 @@ pub enum KeypadResolution {
 #[derive(Clone, Debug)]
 struct HeldKey {
     page_id: String,
-    serial_number: Option<String>,
     action_tile: bool,
 }
 
@@ -256,13 +255,14 @@ struct HeldKey {
 /// Schema-2 keypad presses capture the original page and serial before navigating;
 /// their release can resolve only on that original action tile. Navigation keys,
 /// empty keys, duplicate presses, and unmatched releases never invoke a child
-/// action. Use a separate session for each physical keypad and reset after
+/// action. Held keys are tracked per `(serial, key)` so a transition from one
+/// keypad never clears or completes another keypad's held key. Reset after
 /// disconnect, suspension, or replacing the selected profile.
 #[derive(Clone, Debug)]
 pub struct ProfileSession {
     engine: BindingEngine,
     path: Vec<String>,
-    held: [Option<HeldKey>; KeypadLayout::KEY_COUNT],
+    held: HashMap<(Option<String>, usize), HeldKey>,
 }
 
 impl ProfileSession {
@@ -272,7 +272,7 @@ impl ProfileSession {
         Ok(Self {
             engine: BindingEngine::from_validated(profile),
             path: vec![KeypadLayout::ROOT_PAGE_ID.into()],
-            held: std::array::from_fn(|_| None),
+            held: HashMap::new(),
         })
     }
 
@@ -342,7 +342,7 @@ impl ProfileSession {
     }
 
     fn clear_held(&mut self) {
-        self.held = std::array::from_fn(|_| None);
+        self.held.clear();
     }
 
     /// Resolves one normalized input without hardware or operating-system I/O.
@@ -352,7 +352,7 @@ impl ProfileSession {
         event: &InputEvent,
     ) -> Result<KeypadResolution, String> {
         event.validate_for(device.module)?;
-        crate::profile::validate_serial_number(device.serial_number.as_deref())?;
+        let device = &device.normalized()?;
         if device.module != ServiceModule::M4315 || self.profile().keypad.is_none() {
             return Ok(match self.engine.action_for(device, event)? {
                 Some(action) => KeypadResolution::Action {
@@ -365,7 +365,8 @@ impl ProfileSession {
         let index = event.control as usize;
         match event.gesture {
             Gesture::Pressed => {
-                if self.held[index].is_some() {
+                let key = (device.serial_number.clone(), index);
+                if self.held.contains_key(&key) {
                     return Ok(KeypadResolution::Unbound);
                 }
                 let page = self.current_page().expect("validated current keypad page");
@@ -383,11 +384,13 @@ impl ProfileSession {
                     }
                     _ => None,
                 };
-                self.held[index] = Some(HeldKey {
-                    page_id: page_id.clone(),
-                    serial_number: device.serial_number.clone(),
-                    action_tile,
-                });
+                self.held.insert(
+                    key,
+                    HeldKey {
+                        page_id: page_id.clone(),
+                        action_tile,
+                    },
+                );
                 if back || folder.is_some() {
                     if back {
                         self.path.pop();
@@ -411,12 +414,12 @@ impl ProfileSession {
                 }))
             }
             Gesture::Released => {
-                // Any release clears the key so a mismatched serial cannot leave it
-                // stuck; only a release from the pressing serial may act.
-                let Some(held) = self.held[index].take() else {
+                // Only the pressing serial's own release clears or completes its
+                // held key; another keypad's release on the same slot is unmatched.
+                let Some(held) = self.held.remove(&(device.serial_number.clone(), index)) else {
                     return Ok(KeypadResolution::Unbound);
                 };
-                if held.serial_number != device.serial_number || !held.action_tile {
+                if !held.action_tile {
                     return Ok(KeypadResolution::Unbound);
                 }
                 let page = self
@@ -561,32 +564,79 @@ mod tests {
         assert_eq!(session.depth(), 0);
     }
     #[test]
-    fn release_from_another_serial_clears_the_held_key() {
-        let mut session = ProfileSession::new(fixture()).unwrap();
-        let unit = DeviceContext {
-            serial_number: Some("unit".into()),
+    fn release_from_another_serial_keeps_the_original_held_key() {
+        let mut profile = fixture();
+        let Some(KeypadTile::Action { bindings, .. }) =
+            &mut profile.keypad.as_mut().unwrap().pages[0].slots[0]
+        else {
+            panic!("root slot 0 action missing")
+        };
+        bindings.push(KeypadBinding {
+            gesture: Gesture::Released,
+            serial_number: None,
+            action: Action::ToggleMute,
+        });
+        let mut session = ProfileSession::new(profile).unwrap();
+        let a = DeviceContext {
+            serial_number: Some("keypad-a".into()),
+            ..device()
+        };
+        let b = DeviceContext {
+            serial_number: Some("keypad-b".into()),
             ..device()
         };
         assert!(matches!(
-            session.resolve(&unit, &event(0, Gesture::Pressed)).unwrap(),
+            session.resolve(&a, &event(0, Gesture::Pressed)).unwrap(),
             KeypadResolution::Action { .. }
         ));
+        // B never pressed slot 0, so its release is unmatched and leaves A held.
         assert_eq!(
-            session
-                .resolve(&device(), &event(0, Gesture::Released))
-                .unwrap(),
+            session.resolve(&b, &event(0, Gesture::Released)).unwrap(),
             KeypadResolution::Unbound
         );
-        // The key is no longer held: the matching release cannot act late,
-        // and a new press is accepted instead of being treated as a duplicate.
+        // B's own press on the same slot is independent of A's held key.
+        assert!(matches!(
+            session.resolve(&b, &event(0, Gesture::Pressed)).unwrap(),
+            KeypadResolution::Action { .. }
+        ));
+        // A's release still fires its Released binding.
+        assert_eq!(
+            session.resolve(&a, &event(0, Gesture::Released)).unwrap(),
+            KeypadResolution::Action {
+                action: Action::ToggleMute,
+                page_id: Some("root".into()),
+            }
+        );
+        // And A's key is no longer held: a duplicate release is unmatched.
+        assert_eq!(
+            session.resolve(&a, &event(0, Gesture::Released)).unwrap(),
+            KeypadResolution::Unbound
+        );
+        assert!(matches!(
+            session.resolve(&b, &event(0, Gesture::Released)).unwrap(),
+            KeypadResolution::Action { .. }
+        ));
+    }
+    #[test]
+    fn blank_serial_in_struct_literal_pairs_with_absent_serial() {
+        let mut session = ProfileSession::new(fixture()).unwrap();
+        session
+            .set_path(&["root".into(), "development".into(), "git-tools".into()])
+            .unwrap();
+        let blank = DeviceContext {
+            serial_number: Some(" ".into()),
+            ..device()
+        };
         assert_eq!(
             session
-                .resolve(&unit, &event(0, Gesture::Released))
+                .resolve(&blank, &event(1, Gesture::Pressed))
                 .unwrap(),
             KeypadResolution::Unbound
         );
         assert!(matches!(
-            session.resolve(&unit, &event(0, Gesture::Pressed)).unwrap(),
+            session
+                .resolve(&device(), &event(1, Gesture::Released))
+                .unwrap(),
             KeypadResolution::Action { .. }
         ));
     }

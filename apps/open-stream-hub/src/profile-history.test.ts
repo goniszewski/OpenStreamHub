@@ -6,7 +6,7 @@ import { createKeypadFolder, keypadRoot, upgradeKeypadProfile } from './keypad-m
 import { ProfileSession } from './profile-session';
 import type { Invoke, SessionState } from './profile-session';
 import { browserProfile } from './ui-model';
-import { usablePath } from './useDeviceEditor';
+import { syncKeypad, usablePath } from './useDeviceEditor';
 import { historyLimit } from './edit-history';
 
 interface Call { command: string; args?: Record<string, unknown>; resolve(value: unknown): void; reject(reason: unknown): void }
@@ -247,5 +247,22 @@ describe('keypad folder removed by undo', () => {
     expect(usablePath(state(), keypad)).toEqual([keypadRoot]);
     session.redo();
     expect(usablePath(state(), keypad)).toEqual([keypadRoot, folder]);
+  });
+
+  it('resets the stored path once the folder is gone, so redo stays on the root page', async () => {
+    const { session, take } = harness();
+    const started = session.bootstrap();
+    take('bootstrap').resolve({ profile: null, profiles: [], unreadable: [], storage_path: '/s', desktop: true } satisfies AppBootstrap);
+    await started;
+    const folder = 'page-1';
+    session.edit(createKeypadFolder(session.getState().draft.profile, [keypadRoot], 3, folder));
+    let keypad = { generation: session.getState().draftGeneration, path: [keypadRoot, folder] };
+    expect(syncKeypad(session.getState(), keypad)).toBe(keypad);
+    session.undo();
+    keypad = syncKeypad(session.getState(), keypad);
+    expect(keypad.path).toEqual([keypadRoot]);
+    expect(syncKeypad(session.getState(), keypad)).toBe(keypad);
+    session.redo();
+    expect(syncKeypad(session.getState(), keypad).path).toEqual([keypadRoot]);
   });
 });

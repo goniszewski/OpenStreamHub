@@ -10,13 +10,13 @@
 //! timeout; worker deadlines do not establish a bound on a backend's
 //! synchronous device operations.
 
-use crate::service_events::{PlannedEvent, Work, emit, execution, plan_report, process_work};
+use crate::service_events::{PlannedEvent, Work, emit, end_record, plan_report, process_work};
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, DeviceContext, Gesture, InputSession, KeypadResolution,
     ProfileSession, ServiceModule,
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     io::Write,
     sync::{
@@ -32,6 +32,8 @@ use std::{
 pub const MAX_PENDING_EVENTS: usize = 256;
 /// Read timeout while coalesced work waits for queue space, in milliseconds.
 const PENDING_POLL_MS: i32 = 5;
+/// Error reported when the worker panics while building resources or dispatching.
+const WORKER_PANIC: &str = "action worker panicked; action outcome may be unknown";
 
 /// Bounds for a single live interface.
 #[derive(Clone, Copy, Debug)]
@@ -50,6 +52,8 @@ pub struct LiveOptions {
     pub drain_timeout: Duration,
     /// Maximum time to observe worker completion after cancellation.
     pub cancellation_timeout: Duration,
+    /// Maximum time for the worker to build its resources and write `service_start`.
+    pub startup_timeout: Duration,
     /// End the session on the first failed action instead of logging and continuing.
     pub stop_on_action_error: bool,
 }
@@ -64,6 +68,7 @@ impl Default for LiveOptions {
             queue_capacity: 64,
             drain_timeout: Duration::from_secs(10),
             cancellation_timeout: Duration::from_secs(2),
+            startup_timeout: Duration::from_secs(5),
             stop_on_action_error: false,
         }
     }
@@ -198,7 +203,7 @@ where
             }))
             .unwrap_or_else(|_| {
                 panic_abort.store(true, Ordering::SeqCst);
-                let error = "action worker panicked; action outcome may be unknown".to_owned();
+                let error = WORKER_PANIC.to_owned();
                 let _ = panic_ready.try_send(Err(error.clone()));
                 WorkerOutcome {
                     summary: LiveSummary::default(),
@@ -217,7 +222,7 @@ where
     let mut counts = Finish::default();
     let mut pending: Option<Work> = None;
     let result: Result<&str, String> = (|| {
-        match ready_rx.recv_timeout(options.cancellation_timeout) {
+        match ready_rx.recv_timeout(options.startup_timeout) {
             Ok(Ok(())) => {}
             Ok(Err(error)) => return Err(error),
             Err(error) => return Err(format!("action worker did not become ready: {error}")),
@@ -248,10 +253,13 @@ where
             if pending.is_some() {
                 timeout = timeout.min(PENDING_POLL_MS);
             }
-            if let Some(raw) = reader
-                .read_input(timeout)
-                .map_err(|error| format!("input read failed: {error}"))?
-            {
+            let read = match reader.read_input(timeout) {
+                Ok(read) => read,
+                // A signal can interrupt the blocking read; that is a requested stop.
+                Err(_) if interrupted.load(Ordering::SeqCst) => return Ok("interrupted"),
+                Err(error) => return Err(format!("input read failed: {error}")),
+            };
+            if let Some(raw) = read {
                 let now = timestamp();
                 counts.reports += 1;
                 if interrupted.load(Ordering::SeqCst) {
@@ -278,9 +286,13 @@ where
         }
     })();
     let normal = matches!(result, Ok("duration_elapsed" | "max_reports"));
+    // One drain budget covers both queueing pending work and worker completion.
+    let drain_deadline = normal.then(|| Instant::now() + options.drain_timeout);
     let mut drain_error = None;
-    if normal && let Some(work) = pending.take() {
-        drain_error = flush_pending(&sender, work, &abort, options.drain_timeout, &mut counts);
+    if let Some(deadline) = drain_deadline
+        && let Some(work) = pending.take()
+    {
+        drain_error = flush_pending(&sender, work, &abort, deadline, &mut counts);
     }
     if !normal {
         abort.store(true, Ordering::SeqCst);
@@ -292,7 +304,12 @@ where
     // Close the queue before monitoring drain/cancellation. Device cleanup is
     // attempted after that finite worker phase, including when the worker fails.
     drop(sender);
-    let outcome = await_worker(&done_rx, &abort, options, normal);
+    let outcome = await_worker(
+        &done_rx,
+        &abort,
+        drain_deadline,
+        options.cancellation_timeout,
+    );
     let mut summary = LiveSummary::default();
     let mut output = None;
     match outcome {
@@ -339,21 +356,7 @@ where
     if let Some(mut output) = output {
         let footer = emit(
             &mut output,
-            json!({
-                "type":"service_end", "schema_version":1,
-                "reason":if counts.error.is_some() {"error"} else {counts.reason.as_str()}, "error":counts.error,
-                "report_count":summary.report_count, "queued_report_count":summary.queued_report_count,
-                "processed_report_count":summary.processed_report_count,
-                "coalesced_report_count":summary.coalesced_report_count,
-                "discarded_report_count":summary.report_count.saturating_sub(summary.processed_report_count),
-                "decoded_event_count":summary.decoded_event_count, "event_count":summary.event_count,
-                "coalesced_event_count":summary.coalesced_event_count,
-                "dropped_event_count":summary.dropped_event_count,
-                "discarded_event_count":summary.decoded_event_count.saturating_sub(summary.event_count),
-                "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
-                "incomplete_action_count":summary.incomplete_action_count,
-                "execution":execution(execute),
-            }),
+            end_record(&counts.reason, counts.error.as_deref(), &summary, execute),
         );
         counts.error = combine_errors(counts.error.take(), footer.err());
     }
@@ -385,10 +388,9 @@ fn flush_pending(
     sender: &SyncSender<Work>,
     mut work: Work,
     abort: &AtomicBool,
-    budget: Duration,
+    deadline: Instant,
     counts: &mut Finish,
 ) -> Option<String> {
-    let started = Instant::now();
     loop {
         match offer(sender, work, counts) {
             Ok(None) => return None,
@@ -398,7 +400,7 @@ fn flush_pending(
         if abort.load(Ordering::SeqCst) {
             return None;
         }
-        if started.elapsed() >= budget {
+        if Instant::now() >= deadline {
             abort.store(true, Ordering::SeqCst);
             return Some("action queue drain deadline exceeded; pending actions cancelled".into());
         }
@@ -418,11 +420,12 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     pending.error = next.error;
     pending.dropped_event_count += next.dropped_event_count;
     for planned in next.events {
+        // Merge only into the immediately preceding event so the order of
+        // events across controls is preserved.
         if let Some(existing) = pending
             .events
-            .iter_mut()
-            .rev()
-            .find(|existing| existing.event.control == planned.event.control)
+            .last_mut()
+            .filter(|existing| existing.event.control == planned.event.control)
             && let Some(merged) = merge_event(existing, &planned)
         {
             *existing = merged;
@@ -508,8 +511,12 @@ fn validate_options(options: LiveOptions, device: &DeviceContext) -> Result<(), 
         || options.drain_timeout > Duration::from_secs(60)
         || options.cancellation_timeout.is_zero()
         || options.cancellation_timeout > Duration::from_secs(10)
+        || options.startup_timeout.is_zero()
+        || options.startup_timeout > Duration::from_secs(30)
     {
-        return Err("worker drain/cancellation budgets must be positive and bounded".into());
+        return Err(
+            "worker drain/cancellation/startup budgets must be positive and bounded".into(),
+        );
     }
     if options.max_reports == Some(0) || options.duration.is_some_and(|duration| duration.is_zero())
     {
@@ -529,14 +536,15 @@ fn mode_module(module: ServiceModule) -> Option<ModuleKind> {
     }
 }
 
+/// Waits for the worker outcome. `drain_deadline` is set after a normal input
+/// limit; without it the worker is already cancelled.
 fn await_worker<W>(
     done: &Receiver<WorkerOutcome<W>>,
     abort: &AtomicBool,
-    options: LiveOptions,
-    normal: bool,
+    drain_deadline: Option<Instant>,
+    cancellation_timeout: Duration,
 ) -> Result<WorkerOutcome<W>, String> {
-    let started = Instant::now();
-    let mut cancelled_at = (!normal).then_some(started);
+    let mut cancelled_at = drain_deadline.is_none().then(Instant::now);
     let mut drain_error = None;
     loop {
         match done.try_recv() {
@@ -552,13 +560,15 @@ fn await_worker<W>(
         if cancelled_at.is_none() && abort.load(Ordering::SeqCst) {
             cancelled_at = Some(Instant::now());
         }
-        if cancelled_at.is_none() && started.elapsed() >= options.drain_timeout {
+        if cancelled_at.is_none()
+            && drain_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+        {
             drain_error =
                 Some("action queue drain deadline exceeded; pending actions cancelled".to_owned());
             abort.store(true, Ordering::SeqCst);
             cancelled_at = Some(Instant::now());
         }
-        if cancelled_at.is_some_and(|time| time.elapsed() >= options.cancellation_timeout) {
+        if cancelled_at.is_some_and(|time| time.elapsed() >= cancellation_timeout) {
             return Err(combine_errors(
                 drain_error,
                 Some(
@@ -626,15 +636,20 @@ where
         if abort.load(Ordering::SeqCst) {
             continue;
         }
-        if let Err(error) = process_work(
-            work,
-            &mut dispatcher,
-            &mut output,
-            &abort,
-            execute,
-            stop_on_action_error,
-            &mut outcome.summary,
-        ) {
+        // Contain a dispatch panic here so the writer survives to log `service_end`.
+        let processed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            process_work(
+                work,
+                &mut dispatcher,
+                &mut output,
+                &abort,
+                execute,
+                stop_on_action_error,
+                &mut outcome.summary,
+            )
+        }))
+        .unwrap_or_else(|_| Err(WORKER_PANIC.to_owned()));
+        if let Err(error) = processed {
             outcome.error = Some(error);
             abort.store(true, Ordering::SeqCst);
         }
@@ -660,6 +675,7 @@ mod tests {
     use cooltek_sdk_masterhub::dial;
     use cooltek_sdk_masterhub::hidapi::{HidError, HidResult};
     use cooltek_sdk_service::Profile;
+    use serde_json::json;
     use std::{
         cell::RefCell,
         collections::VecDeque,
@@ -1018,6 +1034,11 @@ mod tests {
         ] {
             assert!(event.get(key).is_some(), "missing {key}: {event}");
         }
+        let executed = rows
+            .iter()
+            .find(|row| row["type"] == "action_executed")
+            .unwrap();
+        assert_eq!(executed["schema_version"], 1);
         assert_eq!(rows.last().unwrap()["reason"], "max_reports");
     }
 
@@ -1243,6 +1264,27 @@ mod tests {
     }
 
     #[test]
+    fn coalescing_never_reorders_events_across_controls() {
+        let mut counts = Finish::default();
+        let step = |control| {
+            planned(
+                control,
+                Gesture::Clockwise,
+                action(Action::Volume { delta: 5 }),
+            )
+        };
+        let mut pending = work(vec![step(0)]);
+        coalesce(&mut pending, work(vec![step(1)]), &mut counts);
+        coalesce(&mut pending, work(vec![step(0)]), &mut counts);
+        let controls: Vec<_> = pending.events.iter().map(|e| e.event.control).collect();
+        assert_eq!(controls, vec![0, 1, 0]);
+        assert_eq!(counts.coalesced_events, 0);
+        coalesce(&mut pending, work(vec![step(0)]), &mut counts);
+        assert_eq!(pending.events.len(), 3);
+        assert_eq!(pending.events[2].coalesced, 2);
+    }
+
+    #[test]
     fn enable_unplug_and_cleanup_failures_retain_original_causes() {
         for (fail_enable, fail_cleanup, source) in [
             (true, false, "enable failed"),
@@ -1390,12 +1432,12 @@ mod tests {
         assert_eq!(summary.processed_report_count, 3);
         assert_eq!(*writes.lock().unwrap(), modes());
         let rows = output.rows();
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row["type"] == "action_failed")
-                .count(),
-            3
-        );
+        let failed: Vec<_> = rows
+            .iter()
+            .filter(|row| row["type"] == "action_failed")
+            .collect();
+        assert_eq!(failed.len(), 3);
+        assert!(failed.iter().all(|row| row["schema_version"] == 1));
         let footer = rows.last().unwrap();
         assert_eq!(footer["reason"], "max_reports");
         assert_eq!(footer["failed_action_count"], 3);
@@ -1469,11 +1511,12 @@ mod tests {
         let mut configuration = options();
         configuration.max_reports = None;
         let started = Instant::now();
+        let output = Output::default();
         let error = run_fake(
             Transport::new([dial(3, 0, 1)]),
             configuration,
             Arc::new(AtomicBool::new(false)),
-            Output::default(),
+            output.clone(),
             |stop| {
                 let mut actions = simple_actions(stop, Arc::new(Mutex::new(Vec::new())));
                 actions.panic = true;
@@ -1483,6 +1526,115 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("worker panicked"));
         assert!(started.elapsed() < Duration::from_secs(2));
+        // The writer survives a dispatch panic, so the session still has a footer.
+        let footer = output.rows().last().unwrap().clone();
+        assert_eq!(footer["type"], "service_end");
+        assert_eq!(footer["reason"], "error");
+        assert!(
+            footer["error"]
+                .as_str()
+                .unwrap()
+                .contains("worker panicked")
+        );
+        assert_eq!(footer["incomplete_action_count"], 1);
+    }
+
+    #[test]
+    fn read_error_after_an_interrupt_ends_as_interrupted_and_restores_mode() {
+        struct SignalledRead {
+            flag: Arc<AtomicBool>,
+            writes: Arc<Mutex<Vec<Vec<u8>>>>,
+        }
+        impl ReportTransport for SignalledRead {
+            fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+                self.flag.store(true, Ordering::SeqCst);
+                Err(hid_error("read interrupted"))
+            }
+            fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
+                panic!("runtime must not query features")
+            }
+            fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
+                self.writes.lock().unwrap().push(bytes.to_vec());
+                Ok(())
+            }
+        }
+        let flag = Arc::new(AtomicBool::new(false));
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let output = Output::default();
+        let writer = output.clone();
+        let mut configuration = options();
+        configuration.software_mode = true;
+        run_with_clock(
+            &mut InputReader::new(SignalledRead {
+                flag: Arc::clone(&flag),
+                writes: Arc::clone(&writes),
+            }),
+            profile(),
+            device(),
+            false,
+            json!({}),
+            configuration,
+            flag,
+            move |stop| {
+                Ok((
+                    simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                    writer,
+                ))
+            },
+            || 0,
+        )
+        .unwrap();
+        let footer = output.rows().last().unwrap().clone();
+        assert_eq!(footer["reason"], "interrupted");
+        assert!(footer["error"].is_null());
+        assert_eq!(*writes.lock().unwrap(), modes());
+    }
+
+    #[test]
+    fn worker_startup_uses_its_own_timeout_rather_than_the_cancellation_budget() {
+        let mut configuration = options();
+        configuration.cancellation_timeout = Duration::from_millis(10);
+        configuration.startup_timeout = Duration::from_secs(2);
+        let output = Output::default();
+        let writer = output.clone();
+        let clock = Arc::new(AtomicU64::new(0));
+        let time = Arc::clone(&clock);
+        run_with_clock(
+            &mut InputReader::new(Transport::new([dial(3, 0, 1)])),
+            profile(),
+            device(),
+            false,
+            json!({}),
+            configuration,
+            Arc::new(AtomicBool::new(false)),
+            move |stop| {
+                thread::sleep(Duration::from_millis(50));
+                Ok((
+                    simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                    writer,
+                ))
+            },
+            move || time.load(Ordering::SeqCst),
+        )
+        .unwrap();
+        assert_eq!(output.rows().last().unwrap()["reason"], "max_reports");
+        let mut invalid = options();
+        invalid.startup_timeout = Duration::ZERO;
+        assert!(validate_options(invalid, &device()).is_err());
+    }
+
+    #[test]
+    fn worker_await_shares_the_drain_deadline_already_spent_on_flushing() {
+        let (_done_tx, done_rx) = mpsc::sync_channel::<WorkerOutcome<Output>>(1);
+        let abort = AtomicBool::new(false);
+        let started = Instant::now();
+        // The deadline was consumed while flushing; waiting must not restart it.
+        let error = await_worker(&done_rx, &abort, Some(started), Duration::from_millis(20))
+            .err()
+            .unwrap();
+        assert!(error.contains("drain deadline exceeded"));
+        assert!(abort.load(Ordering::SeqCst));
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

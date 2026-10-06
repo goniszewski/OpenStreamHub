@@ -2,20 +2,17 @@
 //! into the exact JPEG a module display would receive; `save_artwork` writes
 //! that JPEG under `<app data>/artwork/`. Nothing is uploaded and nothing is
 //! ever sent to a device. Files are never overwritten and only the newest
-//! `KEEP_ARTWORK` files matching the artwork name pattern are kept.
+//! `KEEP_ARTWORK` files of each slug matching the artwork name pattern are kept.
 
 use crate::{
     diagnostics::utc_stamps,
-    export::{slug, write_new},
+    export::{prune_per_slug, slug, write_new},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cooltek_sdk_cli::image_prep::{FitMode, PrepareOptions, prepare_image, prepare_keypad_image};
 use cooltek_sdk_masterhub::{dial, keypad};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 pub const DIRECTORY: &str = "artwork";
 pub const KEEP_ARTWORK: usize = 50;
@@ -187,9 +184,9 @@ pub fn file_name(name: &str, target: Target, stamp: &str) -> String {
     format!("{slug}-{}-{stamp}.jpg", target.label())
 }
 
-/// The sort stamp of `<slug>-<dial|keypad>-yyyymmdd-hhmmss.jpg`, or None for
-/// any other name.
-fn artwork_stamp(name: &str) -> Option<&str> {
+/// `(slug, sort stamp)` of `<slug>-<dial|keypad>-yyyymmdd-hhmmss.jpg`, or None
+/// for any other name.
+fn artwork_stamp(name: &str) -> Option<(&str, &str)> {
     let body = name.strip_suffix(".jpg")?;
     let stamp = body.get(body.len().checked_sub(STAMP_LEN)?..)?;
     let rest = body[..body.len() - STAMP_LEN].strip_suffix('-')?;
@@ -208,28 +205,13 @@ fn artwork_stamp(name: &str) -> Option<&str> {
         && slug
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
-    (stamp_ok && slug_ok).then_some(stamp)
+    (stamp_ok && slug_ok).then_some((slug, stamp))
 }
 
-/// Deletes all but the newest `keep` artwork files; other files are ignored.
+/// Deletes all but the newest `keep` artwork files of each slug (both
+/// targets together); other files are ignored.
 pub fn prune(directory: &Path, keep: usize) {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return;
-    };
-    let mut files: Vec<(String, String, PathBuf)> = entries
-        .flatten()
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .filter_map(|entry| {
-            let name = entry.file_name().into_string().ok()?;
-            let stamp = artwork_stamp(&name)?.to_string();
-            Some((stamp, name, entry.path()))
-        })
-        .collect();
-    files.sort();
-    let excess = files.len().saturating_sub(keep);
-    for (_, _, path) in files.into_iter().take(excess) {
-        let _ = fs::remove_file(path);
-    }
+    prune_per_slug(directory, keep, artwork_stamp);
 }
 
 /// The save command without Tauri: prepares, writes, prunes.
@@ -263,6 +245,7 @@ mod tests {
         ExtendedColorType, ImageEncoder, ImageFormat, Rgb, RgbImage, RgbaImage,
         codecs::{jpeg::JpegEncoder, png::PngEncoder},
     };
+    use std::{fs, path::PathBuf};
 
     fn png(image: &RgbImage) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -603,9 +586,17 @@ mod tests {
     }
 
     #[test]
-    fn retention_keeps_the_newest_artwork_and_ignores_other_files() {
+    fn retention_keeps_the_newest_artwork_per_slug_and_ignores_other_files() {
         let directory = tempfile::tempdir().unwrap();
         let directory = directory.path();
+        // Older artwork under another name survives many newer saves of "art".
+        let logo = [
+            file_name("Logo", Target::Dial, "20000101-000000"),
+            file_name("Logo", Target::Keypad, "20000101-000001"),
+        ];
+        for name in &logo {
+            fs::write(directory.join(name), "x").unwrap();
+        }
         for index in 0..53 {
             let target = if index % 2 == 0 {
                 Target::Dial
@@ -633,9 +624,18 @@ mod tests {
             .collect();
         let kept = names
             .iter()
-            .filter(|name| artwork_stamp(name).is_some() && *name != "art-dial-20000101-000000.jpg")
+            .filter(|name| {
+                *name != "art-dial-20000101-000000.jpg"
+                    && artwork_stamp(name).is_some_and(|(slug, _)| slug == "art")
+            })
             .count();
         assert_eq!(kept, KEEP_ARTWORK);
+        for name in &logo {
+            assert!(names.contains(name), "{name}");
+        }
+        assert!(!names.contains(&file_name("art", Target::Keypad, "20261005-120001")));
+        assert!(!names.contains(&file_name("art", Target::Dial, "20261005-120002")));
+        assert!(names.contains(&file_name("art", Target::Keypad, "20261005-120003")));
         assert!(!names.contains(&file_name("art", Target::Dial, "20261005-120000")));
         assert!(names.contains(&file_name("art", Target::Keypad, "20261005-120051")));
         assert!(names.contains(&file_name("art", Target::Dial, "20261005-120052")));

@@ -117,6 +117,32 @@ pub fn execution(execute: bool) -> &'static str {
     if execute { "macos" } else { "dry_run" }
 }
 
+/// The `service_end` record shared by replay and live sessions.
+///
+/// A present `error` always reports the reason as `error`.
+pub fn end_record(
+    reason: &str,
+    error: Option<&str>,
+    summary: &LiveSummary,
+    execute: bool,
+) -> Value {
+    json!({
+        "type":"service_end", "schema_version":1,
+        "reason":if error.is_some() {"error"} else {reason}, "error":error,
+        "report_count":summary.report_count, "queued_report_count":summary.queued_report_count,
+        "processed_report_count":summary.processed_report_count,
+        "coalesced_report_count":summary.coalesced_report_count,
+        "discarded_report_count":summary.report_count.saturating_sub(summary.processed_report_count),
+        "decoded_event_count":summary.decoded_event_count, "event_count":summary.event_count,
+        "coalesced_event_count":summary.coalesced_event_count,
+        "dropped_event_count":summary.dropped_event_count,
+        "discarded_event_count":summary.decoded_event_count.saturating_sub(summary.event_count),
+        "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
+        "incomplete_action_count":summary.incomplete_action_count,
+        "execution":execution(execute),
+    })
+}
+
 /// Writes records for one work item and dispatches its actions in order.
 ///
 /// Each intended action is logged before dispatch, so a failed log write never
@@ -174,7 +200,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             summary.failed_action_count += planned.coalesced;
             emit(
                 output,
-                json!({"type":"action_failed", "event":planned.event, "action":action, "error":error}),
+                json!({"type":"action_failed", "schema_version":1, "event":planned.event, "action":action, "error":error}),
             )?;
             if stop_on_action_error {
                 return Err(format!("action failed: {error}"));
@@ -185,7 +211,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         if execute {
             emit(
                 output,
-                json!({"type":"action_executed", "event":planned.event, "action":action}),
+                json!({"type":"action_executed", "schema_version":1, "event":planned.event, "action":action}),
             )?;
         }
     }

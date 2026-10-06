@@ -120,7 +120,7 @@ describe('undo, redo and find', () => {
   });
 
   it('leaves undo and redo to the browser while focus is in a text field', () => {
-    for (const target of [{ tagName: 'INPUT', type: 'text' }, { tagName: 'INPUT' }, { tagName: 'INPUT', type: 'number' }, { tagName: 'INPUT', type: 'search' }, { tagName: 'TEXTAREA' }, { tagName: 'SELECT' }, { tagName: 'DIV', isContentEditable: true }]) {
+    for (const target of [{ tagName: 'INPUT', type: 'text' }, { tagName: 'INPUT' }, { tagName: 'INPUT', type: 'number' }, { tagName: 'INPUT', type: 'search' }, { tagName: 'TEXTAREA' }, { tagName: 'DIV', isContentEditable: true }]) {
       expect(isTextEntryTarget(target)).toBe(true);
       expect(shortcutAction(key('z', { metaKey: true, target }), true)).toBeNull();
       expect(shortcutAction(key('z', { metaKey: true, shiftKey: true, target }), true)).toBeNull();
@@ -128,8 +128,8 @@ describe('undo, redo and find', () => {
     }
   });
 
-  it('still intercepts on buttons, checkboxes, ranges, the body and with no target', () => {
-    for (const target of [{ tagName: 'BUTTON' }, { tagName: 'BODY' }, { tagName: 'INPUT', type: 'checkbox' }, { tagName: 'INPUT', type: 'range' }, { tagName: 'INPUT', type: 'radio' }, null, undefined]) {
+  it('still intercepts on buttons, selects, checkboxes, ranges, the body and with no target', () => {
+    for (const target of [{ tagName: 'BUTTON' }, { tagName: 'BODY' }, { tagName: 'SELECT' }, { tagName: 'select' }, { tagName: 'INPUT', type: 'checkbox' }, { tagName: 'INPUT', type: 'range' }, { tagName: 'INPUT', type: 'radio' }, null, undefined]) {
       expect(isTextEntryTarget(target)).toBe(false);
       expect(shortcutAction(key('z', { metaKey: true, target }), true)).toEqual({ type: 'undo' });
     }

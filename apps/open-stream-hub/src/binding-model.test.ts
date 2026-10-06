@@ -68,8 +68,21 @@ describe('bindingWarnings', () => {
 
   it('scopes the overlap rule by serial', () => {
     expect(bindingWarnings(profileWith(dial('released', 'A'), dial('short_press', 'B')))).toEqual([]);
+    expect(bindingWarnings(profileWith(dial('released', 'A'), dial('long_press', 'B')))).toEqual([]);
     expect(bindingWarnings(profileWith(dial('released', 'A'), dial('short_press', 'A')))).toHaveLength(1);
     expect(bindingWarnings(profileWith(dial('released', 'A'), dial('short_press', 'A')))[0].message).toContain('serial A');
+  });
+
+  it('warns when an any-serial binding overlaps a serial-specific one and names the serial', () => {
+    const anyRelease = bindingWarnings(profileWith(dial('released'), dial('short_press', 'A')));
+    expect(anyRelease).toHaveLength(1);
+    expect(anyRelease[0]).toMatchObject({ kind: 'release-overlap', entryIds: ['flat:0', 'flat:1'] });
+    expect(anyRelease[0].message).toContain('serial A');
+    const anyPress = bindingWarnings(profileWith(dial('released', 'B'), dial('long_press')));
+    expect(anyPress).toHaveLength(1);
+    expect(anyPress[0].message).toContain('Long press');
+    expect(anyPress[0].message).toContain('serial B');
+    expect(bindingWarnings(profileWith(dial('released'), dial('short_press')))[0].message).not.toContain('serial');
   });
 
   it('warns about identical selectors but not about a serial next to an any-serial binding', () => {

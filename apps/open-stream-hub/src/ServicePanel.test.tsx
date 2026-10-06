@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, runBlocker, ServicePanel } from './ServicePanel';
+import { confirmCopy, countdownSeconds, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -106,8 +106,14 @@ describe('ServicePanel markup', () => {
 });
 
 describe('session banners', () => {
-  const sessionFor = (phase: string, extra: Record<string, unknown> = {}, execute = true) => fixtures(execute, 'running', {
-    session: { serviceId: null, phase, reason: null, attempt: 0, module: 'm131e', serialNumber: 'ABCDEF123456', ...extra } });
+  // A session without a process belongs to the device with its module and serial, not to whatever sits at its old path.
+  const sessionFor = (phase: string, extra: Record<string, unknown> = {}, execute = true) => {
+    const result = fixtures(execute, 'running', {
+      session: { serviceId: null, phase, reason: null, attempt: 0, module: 'm131e', serialNumber: 'ABCDEF123456', ...extra } });
+    const device = { ...dial, serial_number: 'ABCDEF123456' };
+    (result.feed as unknown as { state: unknown }).state = { ...result.feed.getState(), devices: [device] };
+    return result;
+  };
   const liveBanner = 'Actions are running on this Mac';
 
   it('shows the execute-live banner only while running', () => {
@@ -124,6 +130,7 @@ describe('session banners', () => {
     expect(markup).toContain('service-banner paused attention');
     expect(markup).toContain('Actions are paused. Nothing will run until you resume.');
     expect(markup).toContain('Resume actions…');
+    expect(markup).toContain(`id="${serviceResumeId}"`);
     expect(markup).toContain('>Stop<');
     expect(markup).toContain('>Needs confirmation<');
   });
@@ -178,5 +185,17 @@ describe('session banners', () => {
     expect(copy.message).toContain('Profile "Gaming"');
     expect(copy.message).toContain('Encoder …1234');
     expect(confirmCopy('start', 'Gaming', 'X').confirm).toBe('Run actions');
+  });
+});
+
+describe('ServicePanel lifecycle helpers', () => {
+  it('answers a pending confirmation with false once, on unmount', async () => {
+    let resolve: ((ok: boolean) => void) | null = null;
+    const answer = new Promise<boolean>(done => { resolve = done; });
+    const pending = { current: resolve as ((ok: boolean) => void) | null };
+    settlePendingConfirm(pending);
+    expect(pending.current).toBeNull();
+    expect(await answer).toBe(false);
+    expect(() => settlePendingConfirm(pending)).not.toThrow();
   });
 });

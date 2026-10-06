@@ -15,6 +15,14 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
   try { keypadPagesAtPath(state.draft.profile, keypad.path); return keypad.path; } catch { return [keypadRoot]; }
 }
 
+// The stored keypad view state, reset to the root page once the open folder is gone.
+// Returns the same object while the path is usable. Without the reset, undoing
+// Create folder and then redoing it would jump back into the folder.
+export function syncKeypad(state: SessionState, keypad: { generation: number; path: string[] }) {
+  const path = usablePath(state, keypad);
+  return path === keypad.path ? keypad : { generation: state.draftGeneration, path };
+}
+
 // View state for the Devices page and inspector: which module, control,
 // gesture and keypad folder is selected. The draft itself lives in ProfileSession.
 export function useDeviceEditor(session: ProfileSession, state: SessionState, setPage: (page: Page) => void, confirm: (request: ConfirmRequest) => void) {
@@ -24,7 +32,10 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
   const [serialScope, setSerialScope] = useState<SerialScope>('any');
   const [faderPosition, setFaderPosition] = useState(50);
   const [keypad, setKeypad] = useState({ generation: state.draftGeneration, path: [keypadRoot] });
-  const keypadPath = usablePath(state, keypad);
+  const synced = syncKeypad(state, keypad);
+  // Adjusting state during render (React's derived-state pattern); it settles in one extra render.
+  if (synced !== keypad) setKeypad(synced);
+  const keypadPath = synced.path;
   const setKeypadPath = (path: string[]) => setKeypad({ generation: session.getState().draftGeneration, path });
 
   const selected = modules.find(module => module.id === selectedModule)!;

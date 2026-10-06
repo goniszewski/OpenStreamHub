@@ -50,9 +50,11 @@ export function OnboardingDialog({ open, step, mac = true, onStep, onSkip, onDon
     <div className="dialog-actions">
       {!last && <button className="button" onClick={onSkip}>Skip guide</button>}
       <span className="spacer" />
-      {step > 0 && <button className="button" onClick={() => onStep(step - 1)}>Back</button>}
+      {/* Back stays rendered (disabled on the first step) so the buttons do not shift. When Back
+          is disabled under focus, Next remounts on the first step and its autoFocus takes focus. */}
+      <button className="button" disabled={step === 0} onClick={() => onStep(step - 1)}>Back</button>
       {last ? <button key="done" className="button primary" autoFocus onClick={onDone}>Done</button>
-        : <button key="next" className="button primary" autoFocus onClick={() => onStep(step + 1)}>Next</button>}
+        : <button key={step === 0 ? 'next-first' : 'next'} className="button primary" autoFocus onClick={() => onStep(step + 1)}>Next</button>}
     </div>
   </ModalDialog>;
 }

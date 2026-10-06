@@ -285,6 +285,14 @@ fn knob_replay_plans_actions_and_deduplicates_press_snapshots() {
     assert_eq!(end["type"], "service_end");
     assert_eq!(end["action_count"], 3);
     assert_eq!(end["event_count"], 6);
+    // Replay shares the live footer shape, including the detailed counters.
+    assert_eq!(end["schema_version"], 1);
+    assert_eq!(end["reason"], "capture_complete");
+    assert_eq!(end["processed_report_count"], end["report_count"]);
+    assert_eq!(end["discarded_report_count"], 0);
+    assert_eq!(end["decoded_event_count"], 6);
+    assert_eq!(end["discarded_event_count"], 0);
+    assert_eq!(end["incomplete_action_count"], 0);
     assert!(
         !records
             .iter()

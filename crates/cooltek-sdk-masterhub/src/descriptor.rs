@@ -26,7 +26,8 @@ struct Globals {
 /// length (`u16`) produce [`HidError::HidApiError`]. This function performs no HID
 /// operations.
 pub fn output_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize> {
-    report_length(descriptor, report_id, OUTPUT, "output")
+    report_length(descriptor, report_id, OUTPUT, "output")?
+        .ok_or_else(|| absent("output", report_id))
 }
 
 /// Derives a feature report's length from a complete HID report descriptor.
@@ -40,7 +41,21 @@ pub fn output_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize
 /// Returns [`HidError::HidApiError`] for malformed descriptors or an absent
 /// feature Report ID. This function performs no HID operations.
 pub fn feature_report_length(descriptor: &[u8], report_id: u8) -> HidResult<usize> {
+    declared_feature_report_length(descriptor, report_id)?
+        .ok_or_else(|| absent("feature", report_id))
+}
+
+/// Like [`feature_report_length`], but reports an undeclared ID as `Ok(None)`
+/// so callers can tell it apart from a malformed descriptor.
+pub(crate) fn declared_feature_report_length(
+    descriptor: &[u8],
+    report_id: u8,
+) -> HidResult<Option<usize>> {
     report_length(descriptor, report_id, FEATURE, "feature")
+}
+
+fn absent(type_name: &str, report_id: u8) -> HidError {
+    descriptor_error(&format!("{type_name} Report ID {report_id:#04x} is absent"))
 }
 
 const OUTPUT: usize = 1;
@@ -51,7 +66,7 @@ fn report_length(
     report_id: u8,
     report_type: usize,
     type_name: &str,
-) -> HidResult<usize> {
+) -> HidResult<Option<usize>> {
     if descriptor.len() > MAX_DESCRIPTOR_LENGTH {
         return Err(descriptor_error("descriptor exceeds 4096 bytes"));
     }
@@ -112,10 +127,9 @@ fn report_length(
                     .pop()
                     .ok_or_else(|| descriptor_error("Pop has no matching Push"))?;
             }
+            // A zero-length payload is valid and means flags = 0; flags never
+            // affect length, so the payload is not inspected.
             (0, 8 | 9 | 11) => {
-                if data.is_empty() {
-                    return Err(descriptor_error("Input, Output, and Feature need flags"));
-                }
                 let report_size = globals
                     .report_size
                     .ok_or_else(|| descriptor_error("data field has no Report Size"))?;
@@ -182,13 +196,12 @@ fn report_length(
     }
     let bits = report_bits[report_type][usize::from(report_id)];
     if bits == 0 {
-        return Err(descriptor_error(&format!(
-            "{type_name} Report ID {report_id:#04x} is absent"
-        )));
+        return Ok(None);
     }
     bits.checked_add(7)
         .and_then(|bits| (bits / 8).checked_add(1))
         .filter(|length| *length <= usize::from(u16::MAX))
+        .map(Some)
         .ok_or_else(|| descriptor_error(&format!("{type_name} report exceeds 65535 bytes")))
 }
 
@@ -354,12 +367,33 @@ mod tests {
             vec![0x75, 0],
             vec![0x95, 0],
             vec![0x85, 0],
-            vec![0x84],                   // Report ID without integer
-            vec![0x86, 2, 0],             // Report ID with two bytes
-            vec![0x75, 8, 0x95, 1, 0x90], // Output without flags
+            vec![0x84],       // Report ID without integer
+            vec![0x86, 2, 0], // Report ID with two bytes
         ] {
             assert!(output_report_length(&descriptor, 2).is_err());
         }
+    }
+
+    #[test]
+    fn zero_length_main_item_payload_is_flags_zero() {
+        // Output (bSize 0): a valid short item whose flags default to 0.
+        assert_eq!(
+            output_report_length(&[0x75, 8, 0x95, 1, 0x90], 0).unwrap(),
+            2
+        );
+        assert_eq!(
+            feature_report_length(&[0x85, 3, 0x75, 8, 0x95, 31, 0xb0], 3).unwrap(),
+            32
+        );
+    }
+
+    #[test]
+    fn declared_feature_length_separates_absent_from_malformed() {
+        assert_eq!(
+            declared_feature_report_length(&[0x85, 3, 0x75, 8, 0x95, 1, 0x91, 2], 3).unwrap(),
+            None
+        );
+        assert!(declared_feature_report_length(&[0x75], 3).is_err());
     }
 
     #[test]

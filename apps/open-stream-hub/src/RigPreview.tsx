@@ -7,7 +7,7 @@ import type { ModuleLive } from './live-state';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { moduleArtwork } from './module-controls';
-import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, faderFromPointer, isDeviceItem, moveRigModule, readRig, removeRigModule, syncDeviceRig, writeRig } from './rig-model';
+import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, faderFromKey, faderFromPointer, isDeviceItem, moveRigModule, readRig, removeRigModule, syncDeviceRig, writeRig } from './rig-model';
 import type { RigItem } from './rig-model';
 import type { SessionState } from './profile-session';
 import { controlLabel, faderMaximum, gestures, modules, replayLabels } from './ui-model';
@@ -101,11 +101,12 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
               }
               if (item.module === 'm005s') {
                 const value = faderValue(item, area.control);
-                return <button key={area.control} type="button" className={`image-control fader${action ? ' bound' : ''}${picked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}`} style={style} aria-label={`${controlLabel(item.module, area.control)} position ${value}`} aria-pressed={picked}
+                return <div key={area.control} role="slider" tabIndex={0} className={`image-control fader${action ? ' bound' : ''}${picked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}`} style={style}
+                  aria-label={controlLabel(item.module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value}
                   onPointerDown={event => dragFader(item, area.control, event)} onPointerMove={event => dragFader(item, area.control, event)}
-                  onKeyDown={event => { const step = event.key === 'ArrowUp' ? 1 : event.key === 'ArrowDown' ? -1 : 0; if (step) { event.preventDefault(); select(item, area.control); editor.changeFaderPosition(Math.min(faderMaximum, Math.max(0, value + step))); } }}>
+                  onKeyDown={event => { const next = faderFromKey(event.key, value, faderMaximum); if (next !== null) { event.preventDefault(); select(item, area.control); editor.changeFaderPosition(next); } }}>
                   <span className="fader-thumb" style={{ bottom: `${value}%` }} />
-                </button>;
+                </div>;
               }
               const pulse = live?.pulses[area.control];
               return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>

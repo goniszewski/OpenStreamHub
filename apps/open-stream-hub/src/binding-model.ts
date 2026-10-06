@@ -78,8 +78,9 @@ export interface BindingWarning {
 // - docs/masterhub-keypad-folders.md: keypad slots keep pressed/released
 //   bindings side by side (a press and its release are separate moments), so
 //   same-slot pressed + released is not warned about either.
-// Only m131e has short/long press gestures. The overlap rule is limited to the
-// same serial scope; mixed scopes are not warned about.
+// Only m131e has short/long press gestures. The overlap rule applies whenever the
+// serial scopes overlap: the same serial, or either binding is any-serial (an
+// any-serial Release still fires on a device whose Short press is serial-bound).
 export function bindingWarnings(profile: Profile): BindingWarning[] {
   const entries = listBindings(profile);
   const warnings: BindingWarning[] = [];
@@ -96,12 +97,14 @@ export function bindingWarnings(profile: Profile): BindingWarning[] {
   const releases = entries.filter(entry => !entry.keypad && entry.gesture === 'released');
   for (const release of releases) {
     for (const press of entries) {
-      if (press.keypad || press.module !== release.module || press.control !== release.control || press.serial !== release.serial) continue;
+      if (press.keypad || press.module !== release.module || press.control !== release.control) continue;
+      if (press.serial !== release.serial && press.serial !== '' && release.serial !== '') continue;
       if (press.gesture !== 'short_press' && press.gesture !== 'long_press') continue;
       const name = gestureLabels[press.gesture];
+      const serial = release.serial || press.serial;
       warnings.push({
         id: `overlap:${release.id}:${press.id}`, kind: 'release-overlap', entryIds: [release.id, press.id],
-        message: `${controlLabel(release.module, release.control)}: Release and ${name} both fire when the button is let go${release.serial ? ` (serial ${release.serial})` : ''}. Every ${name.toLowerCase()} runs both actions, Release first.`,
+        message: `${controlLabel(release.module, release.control)}: Release and ${name} both fire when the button is let go${serial ? ` (serial ${serial})` : ''}. Every ${name.toLowerCase()} runs both actions, Release first.`,
       });
     }
   }

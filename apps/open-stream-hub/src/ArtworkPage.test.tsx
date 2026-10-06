@@ -65,6 +65,8 @@ describe('ArtworkPage', () => {
     expect(html).toContain('/modules/encoder.png');
     expect(html).toContain('artwork-display round');
     expect(html).toContain('left:20%;top:14%;width:60%;height:56%');
+    // Same two-level geometry as the hero: the box, then the round screen inside it (styles.css).
+    expect(html).toMatch(/artwork-dial-box" style="left:20%[^>]*><div class="artwork-display round"/);
     expect(html).toContain('width="240" height="240"');
   });
 

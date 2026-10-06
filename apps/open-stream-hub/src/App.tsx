@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, RotateCcw, Save, Settings, Sun, Workflow, X } from 'lucide-react';
+import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
@@ -15,7 +15,8 @@ import { CompatibilityPage, SettingsPage } from './InfoPages';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
-import { installShortcuts, isMacPlatform, shortcutPages, withHint } from './shortcuts';
+import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
+import { bindingSearchId } from './BindingsPanel';
 import { appearanceStorageKey, browserProfile, errorMessage, readAppearance } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
@@ -81,14 +82,22 @@ export default function App() {
     return () => { document.removeEventListener('visibilitychange', hidden); window.removeEventListener('pagehide', flush); window.removeEventListener('beforeunload', flush); flush(); };
   }, [session]);
 
-  const latest = useRef({ desktop, ready: state.ready });
-  latest.current = { desktop, ready: state.ready };
+  const latest = useRef({ desktop, ready: state.ready, page });
+  latest.current = { desktop, ready: state.ready, page };
   useEffect(() => installShortcuts(document, () => ({
     mac,
     isPageEnabled: page => shortcutPages.includes(page),
     setPage,
     save: () => { if (!latest.current.desktop) session.setNotice('Saving needs the desktop app.'); else if (latest.current.ready) void session.saveOrNote(); },
     duplicate: () => { if (!latest.current.desktop) session.setNotice('Duplicating needs the desktop app.'); else session.requestDuplicate(); },
+    undo: () => { session.undo(); },
+    redo: () => { session.redo(); },
+    // Search belongs to the Profiles page; elsewhere the browser keeps Cmd/Ctrl+F.
+    find: () => {
+      const input = latest.current.page === 'profiles' ? document.getElementById(bindingSearchId) as HTMLInputElement | null : null;
+      input?.focus(); input?.select();
+      return input !== null;
+    },
   })), [session]);
 
   useEffect(() => {
@@ -128,6 +137,10 @@ export default function App() {
         {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
       </div>
       <div className="header-actions"><span className="mode-pill"><Activity size={16} />Device-free</span>
+        <div className="history-buttons" role="group" aria-label="Draft history">
+          <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+          <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+        </div>
         <button className="button primary" disabled={disabled || !unsaved} title={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
       </div>
     </header>

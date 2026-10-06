@@ -10,7 +10,7 @@ export interface ConfirmRequest { title: string; description: string; confirmLab
 export type SerialScope = 'any' | 'exact';
 
 // Falls back to the root page if an edit or reload removed the open folder.
-function usablePath(state: SessionState, keypad: { generation: number; path: string[] }) {
+export function usablePath(state: SessionState, keypad: { generation: number; path: string[] }) {
   if (keypad.generation !== state.draftGeneration) return [keypadRoot];
   try { keypadPagesAtPath(state.draft.profile, keypad.path); return keypad.path; } catch { return [keypadRoot]; }
 }
@@ -36,12 +36,14 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
   const folderPage = keypadSlot?.type === 'folder' ? profile.keypad!.pages.find(item => item.id === keypadSlot.page_id) : undefined;
   const binding = isKeypad ? keypadBindingAt(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial) : profile.bindings.find(item => sameSelector(item, selection));
 
-  function mutateAction(action: BindingAction | null) {
+  // `field` names a typed field, so rapid edits of it share one undo step.
+  function mutateAction(action: BindingAction | null, field?: string) {
+    const key = field && `${field}:${selection.module}:${keypadPath.join('/')}:${selection.control}:${selection.gesture}:${selection.serial}`;
     try {
       if (isKeypad) {
         if (action?.type === 'volume_from_position') throw new Error('This action is available only for faders.');
-        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(actionLabel(action))));
-      } else session.edit(editBinding(profile, selection, action));
+        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(actionLabel(action))), key);
+      } else session.edit(editBinding(profile, selection, action), key);
     } catch (reason) { session.setError(errorMessage(reason)); }
   }
 

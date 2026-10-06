@@ -1,7 +1,0 @@
-{
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"ls src src-tauri/src && grep -rniE \\\"artwork|preview\\\" src --include=*.tsx --include=*.ts -l && grep -nE \\\"tauri::command|emit|listen\\\" -r src-tauri/src src | head -30\"}",
-  "error": "Exit code 1\nsrc:\nApp.tsx\ncomponents.test.tsx\ncontracts.test.ts\ncontracts.ts\ncontrols.tsx\nDevicesPage.tsx\nDisplayContent.test.tsx\nDisplayContent.tsx\ndraft-model.test.ts\ndraft-model.ts\nInfoPages.tsx\nInspector.tsx\nkeypad-model.test.ts\nkeypad-model.ts\nKeypadScreen.tsx\nmain.tsx\nmodule-controls.ts\nprofile-session.test.ts\nprofile-session.ts\nProfilesPage.tsx\nstyles.css\nui-model.test.ts\nui-model.ts\nuseDeviceEditor.ts\n\nsrc-tauri/src:\ncontract_fixtures.rs\nlib.rs\nmain.rs\nmigration.rs\nquit.rs\nreplay.rs\nstore...",
-  "timestamp": "2026-10-05T14:49:21.336Z",
-  "retry_count": 1
-}

@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: check (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15 # Apple Silicon (arm64)
+            label: macos-arm64
+          - os: macos-15-intel # x86_64 compile coverage
+            label: macos-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml selects stable plus both Apple targets; rustup
+      # installs them on first use. The repo requires Rust >= 1.97.
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+          cargo --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/open-stream-hub/src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: npm
+          cache-dependency-path: apps/open-stream-hub/package-lock.json
+
+      # --- Root Rust workspace ---
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo test (workspace)
+        run: cargo test --workspace --locked
+
+      # --- Desktop app frontend ---
+      - name: npm ci
+        working-directory: apps/open-stream-hub
+        run: npm ci
+      - name: Typecheck
+        working-directory: apps/open-stream-hub
+        run: npx tsc --noEmit
+      - name: Frontend tests
+        working-directory: apps/open-stream-hub
+        run: npm test
+
+      # --- Desktop app Rust (needs the sidecar file to exist) ---
+      - name: Prepare sidecar
+        working-directory: apps/open-stream-hub
+        run: npm run sidecar
+      - name: cargo clippy (src-tauri)
+        working-directory: apps/open-stream-hub/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (src-tauri)
+        working-directory: apps/open-stream-hub/src-tauri
+        run: cargo test

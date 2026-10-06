@@ -1,0 +1,134 @@
+name: Release (macOS bundle)
+
+# Builds the OpenStreamHub.app bundle. Never creates a GitHub release: the
+# result is only a workflow artifact. Signing and notarization run only when
+# the Apple secrets are configured; otherwise an artifact named "...-UNSIGNED"
+# is produced.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bundle:
+    name: bundle (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    # Per-arch native builds, not universal: scripts/prepare-sidecar.mjs builds
+    # one sidecar for one triple (masterhub-service-<triple>) and Tauri's
+    # externalBin for universal-apple-darwin would need a lipo'd
+    # masterhub-service-universal-apple-darwin, which the script does not
+    # produce. Native runners keep the host triple correct without cross flags.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            arch: aarch64
+          - os: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/open-stream-hub/src-tauri -> target
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12"
+          cache: npm
+          cache-dependency-path: apps/open-stream-hub/package-lock.json
+
+      - name: npm ci
+        working-directory: apps/open-stream-hub
+        run: npm ci
+
+      # Secrets cannot be tested in `if:` directly. Export them to the job
+      # environment only when ALL required ones are present, so Tauri never
+      # sees empty values and signs nothing by accident.
+      - name: Detect signing credentials
+        id: signing
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ] \
+            && [ -n "$APPLE_SIGNING_IDENTITY" ] && [ -n "$APPLE_ID" ] \
+            && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "APPLE_CERTIFICATE<<EOF_CERT"
+              echo "$APPLE_CERTIFICATE"
+              echo "EOF_CERT"
+              echo "APPLE_CERTIFICATE_PASSWORD=$APPLE_CERTIFICATE_PASSWORD"
+              echo "APPLE_SIGNING_IDENTITY=$APPLE_SIGNING_IDENTITY"
+              echo "APPLE_ID=$APPLE_ID"
+              echo "APPLE_PASSWORD=$APPLE_PASSWORD"
+              echo "APPLE_TEAM_ID=$APPLE_TEAM_ID"
+            } >> "$GITHUB_ENV"
+            echo "Apple credentials found: bundle will be signed and notarized."
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple signing secrets missing; producing an UNSIGNED, un-notarized bundle."
+          fi
+
+      # beforeBuildCommand runs `npm run sidecar:release`, then `npm run build`.
+      # Tauri signs the app and, per its bundler, the externalBin sidecar, when
+      # APPLE_SIGNING_IDENTITY / APPLE_CERTIFICATE are set, and notarizes when
+      # APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID are set.
+      - name: Build Tauri bundle
+        working-directory: apps/open-stream-hub
+        run: npx tauri build --bundles app
+
+      # Fail the signed path if the sidecar or app is not validly signed.
+      - name: Verify signatures
+        if: steps.signing.outputs.signed == 'true'
+        working-directory: apps/open-stream-hub/src-tauri/target/release/bundle/macos
+        run: |
+          codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/masterhub-service
+          codesign --verify --deep --strict --verbose=2 OpenStreamHub.app
+          spctl --assess --type execute --verbose=4 OpenStreamHub.app
+          xcrun stapler validate OpenStreamHub.app || true
+
+      - name: Archive bundle
+        id: archive
+        working-directory: apps/open-stream-hub/src-tauri/target/release/bundle/macos
+        run: |
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            name="OpenStreamHub-${{ matrix.arch }}-signed"
+          else
+            name="OpenStreamHub-${{ matrix.arch }}-UNSIGNED"
+          fi
+          ditto -c -k --keepParent OpenStreamHub.app "$RUNNER_TEMP/$name.zip"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "path=$RUNNER_TEMP/$name.zip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: ${{ steps.archive.outputs.path }}
+          if-no-files-found: error
+          retention-days: 14

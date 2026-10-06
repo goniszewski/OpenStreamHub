@@ -3,6 +3,10 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
+import { NoticeStore } from './notices';
+import { NoticeRegion } from './NoticeRegion';
+import { OnboardingDialog } from './OnboardingDialog';
+import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
@@ -24,6 +28,9 @@ import type { ConfirmRequest } from './useDeviceEditor';
 
 const desktop = isTauri();
 const invokeCommand = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+function webStorage(): Storage | null {
+  try { return localStorage; } catch { return null; }
+}
 const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
 
 // Crash-recovery drafts work without storage; the store then does nothing.
@@ -45,7 +52,12 @@ export default function App() {
     return created;
   });
   const [runner] = useState(() => new ServiceRunner((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop));
-  useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); return () => { feed.dispose(); runner.dispose(); }; }, [feed, runner]);
+  const [notices] = useState(() => new NoticeStore());
+  useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); const stopNotices = notices.connect(feed, runner); return () => { stopNotices(); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices]);
+  const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
+  // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
+  const [guide, setGuide] = useState<{ open: boolean; step: number }>(() => ({ open: shouldAutoOpenOnboarding(webStorage(), desktop), step: 0 }));
+  const closeGuide = () => { markOnboardingDone(webStorage()); setGuide({ open: false, step: 0 }); };
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const [page, setPage] = useState<Page>('devices');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
@@ -153,7 +165,7 @@ export default function App() {
           <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
-        <div className="sidebar-bottom"><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
+        <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
       </aside>
       <main className="main-content">
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and replay run in the native app.</span></div></div>}
@@ -172,9 +184,11 @@ export default function App() {
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
+    <NoticeRegion store={notices} onReview={() => setPage('devices')} />
+    <OnboardingDialog open={guide.open} step={guide.step} mac={mac} onStep={step => setGuide({ open: true, step })} onSkip={closeGuide} onDone={closeGuide} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>

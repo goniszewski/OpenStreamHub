@@ -11,6 +11,8 @@ export interface FeedStatus { feedId: string; state: DeviceStatusPayload['state'
 export interface FeedStoreState {
   desktop: boolean;
   devices: LiveDevice[];
+  // True once the first inventory snapshot (even an empty one) has been applied.
+  inventoryLoaded: boolean;
   autoDetect: boolean;
   feeds: Record<string, FeedStatus>;
   live: LiveState;
@@ -18,7 +20,7 @@ export interface FeedStoreState {
 }
 
 export const isRunning = (state: FeedStoreState) => Object.values(state.feeds).some(feed => feed.state === 'running');
-export const idleFeedState: FeedStoreState = { desktop: false, devices: [], autoDetect: true, feeds: {}, live: emptyLive, error: null };
+export const idleFeedState: FeedStoreState = { desktop: false, devices: [], inventoryLoaded: false, autoDetect: true, feeds: {}, live: emptyLive, error: null };
 
 export const autoDetectStorageKey = 'open-stream-hub.auto-detect';
 export const readAutoDetect = (storage: Pick<Storage, 'getItem'>): boolean => {
@@ -128,7 +130,7 @@ export class DeviceFeed {
 
   private applyInventory(devices: LiveDevice[]) {
     const { added, removed } = diffDevices(this.state.devices, devices);
-    if (!added.length && !removed.length) return;
+    if (!added.length && !removed.length) { if (!this.state.inventoryLoaded) this.set({ inventoryLoaded: true }); return; }
     const feeds = { ...this.state.feeds };
     let error = this.state.error;
     for (const device of removed) {
@@ -141,7 +143,7 @@ export class DeviceFeed {
       delete feeds[feedId];
     }
     if (removed.length && !Object.values(feeds).some(feed => feed.state === 'running')) this.pendingLive = resetLive();
-    this.set({ devices, feeds, error });
+    this.set({ devices, inventoryLoaded: true, feeds, error });
     if (this.state.autoDetect) added.forEach(device => void this.startAuto(device.path_hex));
   }
 

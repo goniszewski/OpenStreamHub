@@ -343,3 +343,21 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .binding-warnings li>span { flex:1; min-width:0; overflow-wrap:anywhere; }
 .inspector .binding-warnings { margin:12px 0; }
 .empty-state .button { margin-left:8px; }
+
+.toast-region { position:fixed; right:18px; bottom:18px; z-index:20; display:flex; flex-direction:column; gap:8px; width:min(360px,calc(100vw - 36px)); pointer-events:none; }
+.toast { pointer-events:auto; display:flex; align-items:center; gap:10px; padding:10px 10px 10px 13px; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--text); box-shadow:0 8px 28px #19122a26; font-size:13px; animation:toast-in .18s ease-out both; }
+.toast>svg { flex:none; color:var(--muted); }.toast.connected>svg,.toast.reconnected>svg { color:var(--green); }.toast.paused,.toast.stopped { border-color:var(--red); }.toast.paused>svg,.toast.stopped>svg { color:var(--red); }
+.toast-text { flex:1; min-width:0; overflow-wrap:anywhere; line-height:1.45; }
+.toast .button.compact { flex:none; }
+.toast-close { display:flex; align-items:center; justify-content:center; flex:none; width:26px; height:26px; padding:0; border:0; border-radius:6px; background:transparent; color:var(--muted); }.toast-close:hover { color:var(--text); background:var(--selected); }
+@keyframes toast-in { from { opacity:0; transform:translateY(8px); } }
+@media(prefers-reduced-motion:reduce) { .toast { animation:none; } }
+.setting-toggle { display:flex; align-items:center; gap:9px; margin-top:12px; cursor:pointer; }
+.settings-actions { display:flex; gap:10px; margin-top:12px; }
+.onboarding-dialog { width:min(560px,calc(100vw - 36px)); }
+.onboarding-steps { display:flex; gap:6px; margin:0 0 16px; padding:0; list-style:none; }
+.onboarding-steps li { flex:1; height:4px; border-radius:2px; background:var(--line); }.onboarding-steps li.done { background:var(--accent); }.onboarding-steps li.current { background:var(--accent); }
+.onboarding-count { margin:0 0 6px; font-size:12px; color:var(--muted); }
+.onboarding-dialog h2 { margin-bottom:10px; }.onboarding-dialog ul { margin:10px 0 0; padding-left:20px; font-size:13px; color:var(--muted); line-height:1.7; }
+.onboarding-dialog .dialog-actions { align-items:center; }.onboarding-dialog .dialog-actions .spacer { flex:1; }
+.help-link { display:flex; align-items:center; gap:13px; width:100%; min-height:43px; padding:8px 13px; border:0; border-radius:9px; background:transparent; text-align:left; color:var(--muted); }.help-link:hover { color:var(--text); background:var(--selected); }

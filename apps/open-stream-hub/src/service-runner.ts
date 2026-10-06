@@ -37,7 +37,7 @@ export const isActiveState = (state: ServiceState) => state === 'starting' || st
 // A session that is suspended, waiting, reconnecting or needs confirmation still owns its device. Only 'stopped' releases it.
 export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== undefined && (run.session ? run.session.phase !== 'stopped' : isActiveState(run.state));
 export const maxReconnectAttempts = 5;
-const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you' };
 
 // The run a device belongs to: a live session (matched by current process or module and serial) first, then the plain per-path run.
 export function findRun(runs: Record<string, ServiceRun>, device: LiveDevice | undefined): ServiceRun | undefined {

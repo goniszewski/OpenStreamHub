@@ -36,8 +36,8 @@ export function LabelError({ id, value, field }: { id: string; value: string; fi
 
 // A modal driven by state. showModal() runs only when the dialog is closed,
 // which avoids the InvalidStateError thrown for an already-open dialog.
-export function ModalDialog({ open, labelledBy, describedBy, onCancel, children }: {
-  open: boolean; labelledBy: string; describedBy?: string; onCancel(): void; children: ReactNode;
+export function ModalDialog({ open, labelledBy, describedBy, onCancel, className, children }: {
+  open: boolean; labelledBy: string; describedBy?: string; onCancel(): void; className?: string; children: ReactNode;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -46,7 +46,7 @@ export function ModalDialog({ open, labelledBy, describedBy, onCancel, children 
     if (open && !element.open) element.showModal();
     else if (!open && element.open) element.close();
   }, [open]);
-  return <dialog ref={dialog} className="unsaved-dialog" aria-labelledby={labelledBy} aria-describedby={describedBy}
+  return <dialog ref={dialog} className={`unsaved-dialog${className ? ` ${className}` : ''}`} aria-labelledby={labelledBy} aria-describedby={describedBy}
     onCancel={event => { event.preventDefault(); onCancel(); }}>{children}</dialog>;
 }
 

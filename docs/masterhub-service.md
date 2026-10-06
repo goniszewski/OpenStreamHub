@@ -71,6 +71,10 @@ The native backend checks the shared cancellation flag before each subprocess an
 
 Requested IPS module hardware-mode restoration is attempted once after the worker phase. Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
 
+## How the desktop app finds the binary
+
+The desktop app runs profile actions only through this binary. It looks in this order: the path in `OPEN_STREAM_HUB_SERVICE`, then `masterhub-service` next to the app executable, then (debug builds only) `target/debug` and `target/release` of each enclosing Cargo workspace. A built `OpenStreamHub.app` bundles the binary as a Tauri sidecar (`bundle.externalBin`), which the bundler installs at `Contents/MacOS/masterhub-service`, so the second location normally finds it. See [Building the desktop app](building-the-desktop-app.md).
+
 ## Profiles and gestures
 
 The [sample profile](../examples/profiles/macos.json) defines these actions:

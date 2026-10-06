@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.cooltek.openstreamhub",
   "build": {
-    "beforeDevCommand": "npm run dev",
-    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run sidecar && npm run dev",
+    "beforeBuildCommand": "npm run sidecar:release && npm run build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../dist"
   },
@@ -30,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "externalBin": ["binaries/masterhub-service"],
     "category": "Productivity",
     "shortDescription": "Configure OpenStreamHub profiles and preview input actions.",
     "icon": ["icons/icon.png", "icons/icon.icns"],

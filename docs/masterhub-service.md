@@ -69,7 +69,7 @@ When a duration or report limit is reached, the service stops reading, closes th
 
 The native backend checks the shared cancellation flag before each subprocess and between volume/mute queries and setters. An in-flight system-tool process is stopped with bounded kill/reap cleanup when cancellation is observed; completed effects cannot be undone. The worker owns logging and action dispatch, and returns its writer to the coordinator before the final footer is written after requested dial cleanup. A worker whose completion cannot be observed is not joined indefinitely.
 
-Requested IPS module hardware-mode restoration is attempted once after the worker phase, also after a contained panic in the input loop (reported as `input loop panicked`). Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
+Requested IPS module hardware-mode restoration is attempted once after the worker phase, also after a contained panic in the input loop (reported as `input loop panicked`) or later on the coordinator thread during drain and worker completion (reported as `live session coordinator panicked`, without a `service_end` footer). On that coordinator-panic path the worker is cancelled but not awaited, and the restore runs immediately; the worker never touches the device transport, so this causes no device contention. Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
 
 ### Keypad display sync (experimental)
 

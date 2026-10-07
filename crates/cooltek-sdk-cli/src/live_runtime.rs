@@ -54,6 +54,9 @@ const PENDING_POLL_MS: i32 = 5;
 const WORKER_PANIC: &str = "action worker panicked; action outcome may be unknown";
 /// Error reported when the input loop panics; cleanup still runs.
 const INPUT_PANIC: &str = "input loop panicked";
+/// Error reported when the coordinator panics after the input loop; the
+/// hardware-mode restore still runs.
+const COORDINATOR_PANIC: &str = "live session coordinator panicked";
 
 /// Bounds for a single live interface.
 #[derive(Clone, Copy, Debug)]
@@ -699,6 +702,7 @@ where
             if let Some(display) = &display_thread {
                 display.request(&session, "software_mode");
             }
+            panic_point("software_mode_enabled");
         }
         loop {
             if interrupted.load(Ordering::SeqCst) {
@@ -758,79 +762,99 @@ where
             }
         }
     });
-    let result = std::panic::catch_unwind(input_loop).unwrap_or_else(|payload| {
-        let message = payload
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("non-string panic payload");
-        Err(format!("{INPUT_PANIC}: {message}"))
-    });
-    // No display sync starts during drain or cancellation.
-    if let Some(display) = &display_thread {
-        display.stop();
-    }
+    let result = std::panic::catch_unwind(input_loop)
+        .unwrap_or_else(|payload| Err(format!("{INPUT_PANIC}: {}", panic_message(&*payload))));
+    // A panic after the input loop (display coordination, drain, worker
+    // completion) is contained too, so the hardware-mode restore below runs on
+    // every exit path once software mode was attempted. The loop's outcome is
+    // recorded first so a later panic cannot discard it.
     let normal = matches!(result, Ok("duration_elapsed" | "max_reports"));
-    // One drain budget covers both queueing pending work and worker completion.
-    let drain_deadline = normal.then(|| Instant::now() + options.drain_timeout);
-    let mut drain_error = None;
-    if let Some(deadline) = drain_deadline
-        && let Some(work) = pending.take()
-    {
-        drain_error = flush_pending(&sender, work, &abort, deadline, &mut counts);
-    }
-    if !normal {
-        abort.store(true, Ordering::SeqCst);
-    }
-    input.reset();
-    session.reset();
     counts.reason = result.as_ref().copied().unwrap_or("error").to_owned();
-    counts.error = combine_errors(result.err(), drain_error);
-    // The write gate closed when the loop ended, so an in-flight sync fails its
-    // remaining writes at once. Wait (bounded) for the thread so its record
-    // reaches the worker before the queue closes. If a write is stuck inside
-    // the backend, the thread outlives this wait: `display_stopped` is false,
-    // the hardware-mode restore below may find the device busy, and no further
-    // image report can start because the gate stays closed. A stalled sink is
-    // not an error by itself.
-    let display_stopped = display_thread
-        .as_mut()
-        .map(|display| display.finish(options.cancellation_timeout));
-    // Close the queue before monitoring drain/cancellation. Device cleanup is
-    // attempted after that finite worker phase, including when the worker fails.
-    drop(sender);
-    let outcome = await_worker(
-        &done_rx,
-        &abort,
-        drain_deadline,
-        options.cancellation_timeout,
-    );
-    let mut summary = LiveSummary::default();
-    let mut output = None;
-    match outcome {
-        Ok(outcome) => {
-            summary = outcome.summary;
-            output = outcome.output;
-            counts.error = combine_errors(counts.error.take(), outcome.error);
-            let deadline = Instant::now() + options.cancellation_timeout;
-            while !handle.is_finished() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(1));
-            }
-            let join_error = if handle.is_finished() {
-                handle
-                    .join()
-                    .err()
-                    .map(|_| "action worker panicked".to_owned())
-            } else {
-                Some(
-                    "worker completion was reported but thread did not exit; thread was not joined"
-                        .into(),
-                )
-            };
-            counts.error = combine_errors(counts.error.take(), join_error);
+    counts.error = result.err();
+    let coordination = std::panic::AssertUnwindSafe(|| {
+        // No display sync starts during drain or cancellation.
+        if let Some(display) = &display_thread {
+            display.stop();
         }
-        Err(error) => counts.error = combine_errors(counts.error.take(), Some(error)),
-    }
+        panic_point("display_stopped");
+        // One drain budget covers both queueing pending work and worker completion.
+        let drain_deadline = normal.then(|| Instant::now() + options.drain_timeout);
+        let mut drain_error = None;
+        if let Some(deadline) = drain_deadline
+            && let Some(work) = pending.take()
+        {
+            drain_error = flush_pending(&sender, work, &abort, deadline, &mut counts);
+        }
+        if !normal {
+            abort.store(true, Ordering::SeqCst);
+        }
+        input.reset();
+        session.reset();
+        counts.error = combine_errors(counts.error.take(), drain_error);
+        // The write gate closed when the loop ended, so an in-flight sync fails its
+        // remaining writes at once. Wait (bounded) for the thread so its record
+        // reaches the worker before the queue closes. If a write is stuck inside
+        // the backend, the thread outlives this wait: `display_stopped` is false,
+        // the hardware-mode restore below may find the device busy, and no further
+        // image report can start because the gate stays closed. A stalled sink is
+        // not an error by itself.
+        let display_stopped = display_thread
+            .as_mut()
+            .map(|display| display.finish(options.cancellation_timeout));
+        // Close the queue before monitoring drain/cancellation. Device cleanup is
+        // attempted after that finite worker phase, including when the worker fails.
+        drop(sender);
+        panic_point("queue_closed");
+        let outcome = await_worker(
+            &done_rx,
+            &abort,
+            drain_deadline,
+            options.cancellation_timeout,
+        );
+        let mut summary = LiveSummary::default();
+        let mut output = None;
+        match outcome {
+            Ok(outcome) => {
+                summary = outcome.summary;
+                output = outcome.output;
+                counts.error = combine_errors(counts.error.take(), outcome.error);
+                let deadline = Instant::now() + options.cancellation_timeout;
+                while !handle.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                let join_error = if handle.is_finished() {
+                    handle
+                        .join()
+                        .err()
+                        .map(|_| "action worker panicked".to_owned())
+                } else {
+                    Some(
+                        "worker completion was reported but thread did not exit; thread was not joined"
+                            .into(),
+                    )
+                };
+                counts.error = combine_errors(counts.error.take(), join_error);
+            }
+            Err(error) => counts.error = combine_errors(counts.error.take(), Some(error)),
+        }
+        panic_point("before_restore");
+        (display_stopped, summary, output)
+    });
+    let (display_stopped, mut summary, output) = std::panic::catch_unwind(coordination)
+        .unwrap_or_else(|payload| {
+            // The queue sender and worker handle were dropped while unwinding;
+            // cancel the worker and keep the display gate closed for the restore.
+            abort.store(true, Ordering::SeqCst);
+            if let Some(display) = &display_thread {
+                display.stop();
+            }
+            counts.reason = "error".into();
+            counts.error = combine_errors(
+                counts.error.take(),
+                Some(format!("{COORDINATOR_PANIC}: {}", panic_message(&*payload))),
+            );
+            (None, LiveSummary::default(), None)
+        });
     let cleanup = if mode_attempted {
         restore_hardware_mode(reader.transport(), device.module)
     } else {
@@ -1066,6 +1090,32 @@ fn validate_options(options: LiveOptions, device: &DeviceContext) -> Result<(), 
     }
     Ok(())
 }
+
+/// Returns a panic payload's message, if it is a string.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Named coordinator point at which a test injects a panic.
+    static PANIC_AT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// Panics when a test armed `point` on this thread; a no-op outside tests.
+#[cfg(test)]
+fn panic_point(point: &'static str) {
+    if PANIC_AT.with(|armed| armed.get()) == Some(point) {
+        panic!("injected panic at {point}");
+    }
+}
+
+#[cfg(not(test))]
+fn panic_point(_: &'static str) {}
 
 /// Restores hardware mode, retrying once when a shared device was busy.
 ///
@@ -3327,5 +3377,123 @@ mod tests {
         assert_eq!(*writes.lock().unwrap(), modes());
         let footer = output.rows().last().unwrap().clone();
         assert_eq!(footer["reason"], "error");
+    }
+
+    /// Arms a coordinator panic point on this thread until dropped.
+    struct ArmedPanic;
+    impl ArmedPanic {
+        fn at(point: &'static str) -> Self {
+            PANIC_AT.with(|armed| armed.set(Some(point)));
+            Self
+        }
+    }
+    impl Drop for ArmedPanic {
+        fn drop(&mut self) {
+            PANIC_AT.with(|armed| armed.set(None));
+        }
+    }
+
+    #[test]
+    fn a_coordinator_panic_at_any_point_after_enabling_still_restores_hardware_mode() {
+        for (point, expected) in [
+            ("software_mode_enabled", INPUT_PANIC),
+            ("display_stopped", COORDINATOR_PANIC),
+            ("queue_closed", COORDINATOR_PANIC),
+            ("before_restore", COORDINATOR_PANIC),
+        ] {
+            let _armed = ArmedPanic::at(point);
+            let transport = Transport::new([dial(0, 1, 10)]);
+            let writes = Arc::clone(&transport.writes);
+            let mut configuration = options();
+            configuration.software_mode = true;
+            let error = run_fake(
+                transport,
+                configuration,
+                Arc::new(AtomicBool::new(false)),
+                Output::default(),
+                |stop| simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{point}: {error}");
+            assert!(
+                error.contains(&format!("injected panic at {point}")),
+                "{point}: {error}"
+            );
+            assert_eq!(*writes.lock().unwrap(), modes(), "{point}");
+        }
+    }
+
+    #[test]
+    fn a_coordinator_panic_keeps_the_input_loops_own_error_or_panic() {
+        for (step, original) in [
+            (Step::Unplug, "synthetic unplug"),
+            (
+                Step::Run(Box::new(|| panic!("synthetic read panic"))),
+                "synthetic read panic",
+            ),
+        ] {
+            let _armed = ArmedPanic::at("display_stopped");
+            let transport = Transport::new([step]);
+            let writes = Arc::clone(&transport.writes);
+            let mut configuration = options();
+            configuration.software_mode = true;
+            let error = run_fake(
+                transport,
+                configuration,
+                Arc::new(AtomicBool::new(false)),
+                Output::default(),
+                |stop| simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+            )
+            .unwrap_err();
+            assert!(error.contains(original), "{error}");
+            assert!(error.contains(COORDINATOR_PANIC), "{error}");
+            assert!(
+                error.contains("injected panic at display_stopped"),
+                "{error}"
+            );
+            assert_eq!(*writes.lock().unwrap(), modes());
+        }
+    }
+
+    #[test]
+    fn a_coordinator_panic_keeps_restore_failures_and_the_single_retry() {
+        let _armed = ArmedPanic::at("queue_closed");
+        let mut transport = Transport::new([dial(0, 1, 10)]);
+        transport.fail_cleanup = true;
+        let writes = Arc::clone(&transport.writes);
+        let mut configuration = options();
+        configuration.software_mode = true;
+        let error = run_fake(
+            transport,
+            configuration,
+            Arc::new(AtomicBool::new(false)),
+            Output::default(),
+            |stop| simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+        )
+        .unwrap_err();
+        assert!(error.contains(COORDINATOR_PANIC), "{error}");
+        assert!(error.contains("cleanup failed"), "{error}");
+        // A non-busy failure is not retried, exactly as on the normal path.
+        assert_eq!(*writes.lock().unwrap(), modes());
+    }
+
+    #[test]
+    fn a_coordinator_panic_with_a_stuck_display_write_still_yields_to_the_restore() {
+        let _armed = ArmedPanic::at("display_stopped");
+        let run = run_gated(Duration::from_secs(5), |shared, gate| {
+            assert!(wait_until(|| shared.priority_waiters() > 0));
+            *gate.0.lock().unwrap() = true;
+            gate.1.notify_all();
+        });
+        let error = run.result.unwrap_err();
+        assert!(error.contains(COORDINATOR_PANIC), "{error}");
+        assert!(
+            error.contains("injected panic at display_stopped"),
+            "{error}"
+        );
+        assert_eq!(*run.log.lock().unwrap(), vec!["on", "out", "off"]);
+        // No further image report can start after the restore.
+        let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
+        assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
     }
 }

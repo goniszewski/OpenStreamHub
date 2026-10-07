@@ -46,6 +46,7 @@ The desktop app (`apps/open-stream-hub`) can switch the profile of a running ses
 | `set_focus_rules_enabled` | `enabled` | `{enabled, rules}` |
 | `focus_current_app` | none | `{supported, bundle_id}`: the last app other than OpenStreamHub that was frontmost |
 | `switch_session_profile` | `sessionId`, `profileId` | the `StoredProfile` that the session now uses, plus `profile_generation`: the session's new generation |
+| `session_profile` | `sessionId`, `profileGeneration` | `{profile_id, profile_generation, profile}`: the profile `resume_session` would restart, or the error `session::PROFILE_CHANGED` |
 | `resume_session` | `sessionId`, `profileGeneration` | `null`, or the error `session::PROFILE_CHANGED` when the generation is no longer the session's |
 
 Event `focus://changed`: `{bundle_id, rule_id, profile_id}`. `rule_id` and `profile_id` are null unless the rules are enabled and a rule matched an existing profile. Session events (`session://state`) carry `profile_generation` and the profile of that generation: `profile_id` (the saved profile a switch put in place, `null` while the session still runs the profile it was started with) and `profile_name`. Shared contract fixtures are in `apps/open-stream-hub/fixtures/focus-*.json`, `session-switch-events.json` and `session-command-*.json`. Regenerate them with `UPDATE_FIXTURES=1 cargo test`.
@@ -65,6 +66,7 @@ When the latest event carries a `profile_id`, the frontend calls `switch_session
 - Switch requests queued for the driver at the same time (one focus change, several sessions) are handled together, and every process they interrupt is stopped in one parallel batch (`Runner::stop_many`, as for sleep), so N sessions take one stop grace period rather than N.
 - Queued sleep/wake events are handled before any other queued input. A sleep never waits behind queued switches, and a dry run that a switch just stopped is not restarted only to be stopped again by the sleep; it restarts after wake with the new profile.
 - Once a focused-app rule switched a run, the Resume text says that the switched saved profile resumes, even when a later pause (sleep, crash) is the reason for the confirmation.
+- A [profile key](masterhub-actions.md#profile-nextprevious-profile) (`profile` action, next/previous) switches through the same `Driver` path with reason `profile_action`. The backend picks the saved profile itself (`Driver::profile_step`), so no `switch_session_profile` call is involved; the frontend resyncs the run from `session://state`. Its notice reads "Profile key switched the profile — confirm to resume actions". Shared fixture: `apps/open-stream-hub/fixtures/session-profile-action-events.json`.
 
 ### Confirmation is tied to the profile shown
 

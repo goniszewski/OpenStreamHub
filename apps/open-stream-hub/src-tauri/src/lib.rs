@@ -268,15 +268,18 @@ fn run_service(
     sessions: Option<mpsc::Sender<session::Input>>,
 ) -> Result<String, String> {
     let handle = app.clone();
+    // Profile key requests are asked for only for processes the session
+    // driver starts, and only when the profile binds a `profile` action. A
+    // driver start on a device it cannot identify still runs without a
+    // session; the driver then ignores that process's requests.
+    let profile_switch_requests =
+        sessions.is_some() && service::uses_profile_action(&request.profile);
+    // One forwarder per spawn: nothing of this process reaches the driver
+    // after its exit (see `SpawnForwarder`).
+    let forwarder = sessions.map(session::SpawnForwarder::new);
     let emit: service::Emit = Arc::new(move |message| {
-        if let (Some(sessions), service::ServiceMessage::Status(status)) = (&sessions, &message)
-            && status.state == service::ServiceState::Exited
-        {
-            let _ = sessions.send(session::Input::Exited {
-                service_id: status.service_id.clone(),
-                exit_code: status.exit_code.flatten(),
-                stderr_tail: status.stderr_tail.clone().unwrap_or_default(),
-            });
+        if let Some(forwarder) = &forwarder {
+            forwarder.forward(&message);
         }
         let emitted = match message {
             service::ServiceMessage::Record(payload) => handle.emit(service::RECORD_EVENT, payload),
@@ -290,6 +293,7 @@ fn run_service(
     service::start_service(
         &state.services,
         request.clone(),
+        profile_switch_requests,
         state.app_data.as_deref().map_err(Clone::clone),
         service_program(),
         |feed_id| state.feeds.stop(feed_id),
@@ -363,6 +367,30 @@ impl session::Runner for AppRunner {
     fn enumerate(&mut self) -> Option<Vec<feed::LiveDevice>> {
         let registry = cooltek_sdk_masterhub::DeviceRegistry::new().ok()?;
         Some(feed::live_devices(&registry.devices()))
+    }
+
+    // Unreadable or invalid saved profiles are skipped, as
+    // `switch_session_profile` would refuse them. The store lock is taken
+    // once for the listing and then once per profile, never across the whole
+    // read, so editor commands are not held up behind it. A profile saved or
+    // deleted in between is read as it is then (saves are atomic renames) or
+    // skipped.
+    fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+        let state = self.app.state::<AppState>();
+        let ids: Vec<String> = state.with_store(|store| {
+            Ok(store
+                .list()?
+                .profiles
+                .into_iter()
+                .map(|summary| summary.id)
+                .collect())
+        })?;
+        Ok(ids
+            .iter()
+            .filter_map(|id| state.with_store(|store| store.load(id)).ok())
+            .filter(|stored| replay::validate_profile(&stored.profile).is_ok())
+            .map(|stored| (stored.id, stored.profile))
+            .collect())
     }
 }
 
@@ -539,6 +567,21 @@ fn switch_session_profile(
     })
 }
 
+// The profile a paused session holds for `profile_generation`, exactly as
+// `resume_session` restarts it. The Resume dialog lists its capabilities
+// after a switch whose reply carried no profile body (a profile key). A stale
+// generation is refused with `session::PROFILE_CHANGED`.
+#[tauri::command(async)]
+fn session_profile(
+    state: State<'_, AppState>,
+    session_id: String,
+    profile_generation: u64,
+) -> Result<session::HeldProfile, String> {
+    state
+        .sessions
+        .session_profile(&session_id, profile_generation)
+}
+
 /// Matches a frontmost-app change and tells the frontend.
 fn focus_changed(app: &tauri::AppHandle, bundle_id: Option<String>) {
     let state = app.state::<AppState>();
@@ -654,6 +697,7 @@ pub fn run() {
             set_focus_rules_enabled,
             focus_current_app,
             switch_session_profile,
+            session_profile,
             create_diagnostics,
             prepare_artwork,
             save_artwork
@@ -750,6 +794,50 @@ mod tests {
         let bootstrap = state.bootstrap().unwrap();
         assert_eq!(bootstrap.profiles.len(), 1);
         assert!(state.with_store(|store| store.list()).is_ok());
+    }
+
+    /// Every command in `generate_handler!` must also be in the build.rs app
+    /// manifest (which generates its permission file) and allowed by the main
+    /// capability, or Tauri refuses it at runtime.
+    #[test]
+    fn invoke_handlers_build_manifest_and_capability_list_the_same_commands() {
+        use std::collections::BTreeSet;
+        fn quoted_or_bare(block: &str) -> BTreeSet<String> {
+            block
+                .split(',')
+                .map(|item| item.trim().trim_matches('"').to_owned())
+                .filter(|item| !item.is_empty())
+                .collect()
+        }
+        let source = include_str!("lib.rs");
+        let needle = concat!("generate_", "handler![");
+        let start = source.find(needle).unwrap() + needle.len();
+        let handlers = quoted_or_bare(&source[start..start + source[start..].find(']').unwrap()]);
+        let build = include_str!("../build.rs");
+        let start = build.find(".commands(&[").unwrap() + ".commands(&[".len();
+        let manifest = quoted_or_bare(&build[start..start + build[start..].find(']').unwrap()]);
+        assert_eq!(handlers, manifest, "generate_handler! vs build.rs");
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/main.json")).unwrap();
+        let allowed: BTreeSet<String> = capability["permissions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|permission| permission.as_str())
+            .filter_map(|permission| permission.strip_prefix("allow-"))
+            .map(|permission| permission.replace('-', "_"))
+            .collect();
+        assert_eq!(
+            handlers, allowed,
+            "generate_handler! vs capabilities/main.json"
+        );
+        let generated = Path::new(env!("CARGO_MANIFEST_DIR")).join("permissions/autogenerated");
+        for command in &handlers {
+            assert!(
+                generated.join(format!("{command}.toml")).is_file(),
+                "missing permissions/autogenerated/{command}.toml"
+            );
+        }
     }
 
     #[test]

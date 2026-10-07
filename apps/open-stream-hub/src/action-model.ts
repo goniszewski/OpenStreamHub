@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, StepAction, SystemCommand } from './contracts';
+import type { Action, MediaCommand, ProfileDirection, StepAction, SystemCommand } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -19,6 +19,11 @@ export const mediaLabels: Record<MediaCommand, string> = {
 
 export const systemLabels: Record<SystemCommand, string> = {
   undo: 'Undo', redo: 'Redo', screenshot: 'Screenshot to clipboard',
+};
+
+// Mirrors ProfileDirection in crates/cooltek-sdk-service/src/profile.rs (a closed set).
+export const profileDirectionLabels: Record<ProfileDirection, string> = {
+  next: 'Next profile', previous: 'Previous profile',
 };
 
 // Limits enforced by the Rust service (Action::MAX_* constants).
@@ -46,6 +51,10 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
   }
+}
+
+export function defaultProfileAction(): Action {
+  return { type: 'profile', direction: 'next' };
 }
 
 export function defaultMultiAction(): Action {

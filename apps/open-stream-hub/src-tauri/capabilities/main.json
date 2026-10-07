@@ -30,6 +30,7 @@
     "allow-set-focus-rules-enabled",
     "allow-focus-current-app",
     "allow-switch-session-profile",
+    "allow-session-profile",
     "allow-create-diagnostics",
     "allow-prepare-artwork",
     "allow-save-artwork"

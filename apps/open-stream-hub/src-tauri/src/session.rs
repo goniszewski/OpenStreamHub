@@ -26,14 +26,19 @@
 //! generation whose profile the user confirmed and is refused once another
 //! switch replaced it, so a confirmation never starts a profile the user did
 //! not see.
-//! See `docs/masterhub-session-manager.md` and `docs/masterhub-focus-rules.md`.
+//! A `profile` key action (next/previous) takes the same path: the service
+//! only reports `profile_switch_requested`, and `Driver::profile_step`
+//! resolves it against the saved profiles in a stable order and switches
+//! through the focused-app path (reason `profile_action`).
+//! See `docs/masterhub-session-manager.md`, `docs/masterhub-focus-rules.md`
+//! and `docs/masterhub-actions.md`.
 
 use crate::{
     feed::LiveDevice,
     power::PowerEvent,
     service::{self, StartRequest},
 };
-use cooltek_sdk_service::{Profile, ServiceModule};
+use cooltek_sdk_service::{Profile, ProfileDirection, ServiceModule};
 use serde::Serialize;
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -95,6 +100,11 @@ pub const MISSED_WAKE_MS: u64 = 10 * 60_000;
 /// `resume_session` error when the profile changed after the confirmation
 /// was shown. The frontend matches it to ask again.
 pub const PROFILE_CHANGED: &str = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
+/// Profile key requests of one session closer together than this after an
+/// accepted one are dropped, so a bouncing key or a held rotation switches
+/// once. Requests from a process that is already stopping (the switch it
+/// requested is under way) are dropped as well.
+pub const PROFILE_STEP_DEBOUNCE_MS: u64 = 500;
 
 /// Restart delay for crash attempt `attempt` (1-based): 1 s, 2 s, 4 s, 8 s, 8 s.
 pub fn backoff_ms(attempt: u32) -> u64 {
@@ -121,6 +131,8 @@ pub enum Reason {
     User,
     /// A focused-app rule replaced the session's profile.
     ProfileSwitch,
+    /// A `profile` key action (next/previous) replaced the session's profile.
+    ProfileAction,
 }
 
 /// Payload of `session://state`.
@@ -172,6 +184,8 @@ pub enum Event {
     ProfileSwitched {
         profile_id: String,
         profile_name: String,
+        /// `ProfileSwitch` (focused-app rule) or `ProfileAction` (profile key).
+        reason: Reason,
     },
 }
 
@@ -461,6 +475,7 @@ impl Session {
             Event::ProfileSwitched {
                 profile_id,
                 profile_name,
+                reason,
             } if !stopped => {
                 self.profile_generation += 1;
                 self.profile_id = Some(profile_id);
@@ -470,7 +485,7 @@ impl Session {
                     .as_ref()
                     .is_some_and(|process| !process.stopping)
                 {
-                    self.interrupt(Reason::ProfileSwitch);
+                    self.interrupt(reason);
                     self.stop_process(actions);
                 }
             }
@@ -603,11 +618,143 @@ pub trait Runner {
     fn emit(&mut self, state: &SessionState);
     /// A fresh device inventory when the watcher has not reported the path.
     fn enumerate(&mut self) -> Option<Vec<LiveDevice>>;
+    /// Every readable, valid saved profile as `(id, profile)`, in any order
+    /// (`resolve_profile_step` sorts them). Read only for an accepted profile
+    /// key request.
+    fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+        Ok(Vec::new())
+    }
+}
+
+/// The saved profile a `profile` key action switches to, or `None` when
+/// there is nothing to switch to (fewer than two saved profiles).
+///
+/// The order is stable and independent of modification times: by name
+/// (ignoring case), then by exact name, then by id. The current position is
+/// `current_id` (the saved profile the session last switched to, or the one
+/// it was started from), otherwise, when that id is unknown or no longer
+/// saved, the first saved profile equal to the running snapshot. The target
+/// is never the profile named by `current_id`. A run on a profile
+/// that matches none of them (an unsaved draft) goes to the first profile for
+/// `next` and the last for `previous`. Both ends wrap around.
+pub fn resolve_profile_step(
+    mut saved: Vec<(String, Profile)>,
+    current_id: Option<&str>,
+    current: &Profile,
+    direction: ProfileDirection,
+) -> Option<(String, Profile)> {
+    if saved.len() < 2 {
+        return None;
+    }
+    saved.sort_by(|(left_id, left), (right_id, right)| {
+        left.name
+            .to_lowercase()
+            .cmp(&right.name.to_lowercase())
+            .then_with(|| left.name.cmp(&right.name))
+            .then_with(|| left_id.cmp(right_id))
+    });
+    let position = current_id
+        .and_then(|id| saved.iter().position(|(saved_id, _)| saved_id == id))
+        .or_else(|| saved.iter().position(|(_, profile)| profile == current));
+    let count = saved.len();
+    let target = match (position, direction) {
+        (Some(index), ProfileDirection::Next) => (index + 1) % count,
+        (Some(index), ProfileDirection::Previous) => (index + count - 1) % count,
+        (None, ProfileDirection::Next) => 0,
+        (None, ProfileDirection::Previous) => count - 1,
+    };
+    if current_id.is_some_and(|id| saved[target].0 == id) {
+        return None;
+    }
+    Some(saved.swap_remove(target))
+}
+
+/// The direction of a `profile_switch_requested` service record, or `None`
+/// for any other record. Strict: schema 1 and a direction from the closed
+/// set only; anything else is ignored rather than guessed.
+pub fn profile_switch_request(record: &serde_json::Value) -> Option<ProfileDirection> {
+    if record.get("type")?.as_str()? != "profile_switch_requested"
+        || record.get("schema_version")?.as_u64()? != 1
+    {
+        return None;
+    }
+    serde_json::from_value(record.get("direction")?.clone()).ok()
+}
+
+/// Why `Driver::profile_step` dropped a request.
+pub const STEP_ASLEEP: &str = "the Mac is asleep";
+pub const STEP_NOT_RUNNING: &str = "no running session owns this service";
+pub const STEP_DEBOUNCED: &str = "debounced";
+pub const STEP_NO_TARGET: &str = "fewer than two saved profiles";
+
+/// The profile a session holds for its current generation, exactly as
+/// `resume_session` would restart it (`session_profile`).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HeldProfile {
+    /// The saved profile it came from: the last switch's, or the one the run
+    /// was started from; null for an unsaved draft.
+    pub profile_id: Option<String>,
+    pub profile_generation: u64,
+    pub profile: Profile,
+}
+
+/// Forwards one service process's messages to the driver: its exit, and
+/// strictly parsed profile key requests. Each spawn gets its own forwarder,
+/// and nothing is forwarded after that spawn's exit, so a late record of a
+/// stopped process can never switch the process that replaced it under the
+/// same service id. The lock keeps "exited" and every forwarded request in
+/// the order the driver receives them.
+pub struct SpawnForwarder {
+    sessions: Sender<Input>,
+    exited: Mutex<bool>,
+}
+
+impl SpawnForwarder {
+    pub fn new(sessions: Sender<Input>) -> Self {
+        Self {
+            sessions,
+            exited: Mutex::new(false),
+        }
+    }
+
+    pub fn forward(&self, message: &service::ServiceMessage) {
+        let mut exited = self
+            .exited
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *exited {
+            return;
+        }
+        match message {
+            service::ServiceMessage::Status(status)
+                if status.state == service::ServiceState::Exited =>
+            {
+                *exited = true;
+                let _ = self.sessions.send(Input::Exited {
+                    service_id: status.service_id.clone(),
+                    exit_code: status.exit_code.flatten(),
+                    stderr_tail: status.stderr_tail.clone().unwrap_or_default(),
+                });
+            }
+            service::ServiceMessage::Record(payload) => {
+                if let Some(direction) = profile_switch_request(&payload.record) {
+                    let _ = self.sessions.send(Input::ProfileStep {
+                        service_id: payload.service_id.clone(),
+                        direction,
+                    });
+                }
+            }
+            service::ServiceMessage::Status(_) => {}
+        }
+    }
 }
 
 struct Managed {
     session: Session,
     request: StartRequest,
+    /// When the last profile key request of this session passed the state
+    /// checks (see `profile_step`).
+    last_profile_step_ms: Option<u64>,
 }
 
 /// Owns every managed session and executes their actions.
@@ -789,7 +936,11 @@ impl<R: Runner> Driver<R> {
         } else {
             session
         };
-        self.sessions.push(Managed { session, request });
+        self.sessions.push(Managed {
+            session,
+            request,
+            last_profile_step_ms: None,
+        });
         self.execute(self.sessions.len() - 1, actions, now_ms);
         Ok(session_id)
     }
@@ -848,6 +999,24 @@ impl<R: Runner> Driver<R> {
         profile: Profile,
         now_ms: u64,
     ) -> Result<u64, String> {
+        self.replace_profile(
+            session_id,
+            profile_id,
+            profile,
+            Reason::ProfileSwitch,
+            now_ms,
+        )
+    }
+
+    /// The shared switch path of focused-app rules and profile keys.
+    fn replace_profile(
+        &mut self,
+        session_id: &str,
+        profile_id: String,
+        profile: Profile,
+        reason: Reason,
+        now_ms: u64,
+    ) -> Result<u64, String> {
         let index = self
             .sessions
             .iter()
@@ -858,14 +1027,109 @@ impl<R: Runner> Driver<R> {
         }
         let profile_name = profile.name.clone();
         self.sessions[index].request.profile = profile;
+        self.sessions[index].request.profile_id = Some(profile_id.clone());
         let event = Event::ProfileSwitched {
             profile_id,
             profile_name,
+            reason,
         };
         self.apply(index, event, now_ms);
         let generation = self.sessions[index].session.profile_generation;
         self.prune();
         Ok(generation)
+    }
+
+    /// A `profile` key action of the process `service_id` asked for the next
+    /// or previous saved profile. Considered only while the Mac is awake and
+    /// the session that owns that process is `running` with it (not stopping
+    /// for an earlier switch). The debounce window starts at every request
+    /// that passes those checks, before storage is read, even when it then
+    /// finds no target: a flood of presses reads the saved profiles at most
+    /// once per `PROFILE_STEP_DEBOUNCE_MS`.
+    /// The target comes from `resolve_profile_step`, and the switch takes the
+    /// focused-app path (`replace_profile`): a new profile generation, a dry
+    /// run restarts at once, an executing session waits in
+    /// `needs_confirmation` and is never confirmed here. `Err` names why the
+    /// request was dropped; nothing changed then.
+    pub fn profile_step(
+        &mut self,
+        service_id: &str,
+        direction: ProfileDirection,
+        now_ms: u64,
+    ) -> Result<u64, String> {
+        if self.asleep {
+            return Err(STEP_ASLEEP.into());
+        }
+        if self.is_closed() {
+            return Err(service::SHUTTING_DOWN.into());
+        }
+        let index = self
+            .sessions
+            .iter()
+            .position(|managed| {
+                let session = &managed.session;
+                session.phase == Phase::Running
+                    && session.service.as_ref().is_some_and(|process| {
+                        process.service_id == service_id && process.running && !process.stopping
+                    })
+            })
+            .ok_or(STEP_NOT_RUNNING)?;
+        if self.sessions[index]
+            .last_profile_step_ms
+            .is_some_and(|last| now_ms.saturating_sub(last) < PROFILE_STEP_DEBOUNCE_MS)
+        {
+            return Err(STEP_DEBOUNCED.into());
+        }
+        self.sessions[index].last_profile_step_ms = Some(now_ms);
+        let saved = self.runner.saved_profiles()?;
+        let managed = &self.sessions[index];
+        let current_id = managed
+            .session
+            .profile_id
+            .as_deref()
+            .or(managed.request.profile_id.as_deref());
+        let (profile_id, profile) =
+            resolve_profile_step(saved, current_id, &managed.request.profile, direction)
+                .ok_or(STEP_NO_TARGET)?;
+        let session_id = managed.session.session_id.clone();
+        self.replace_profile(
+            &session_id,
+            profile_id,
+            profile,
+            Reason::ProfileAction,
+            now_ms,
+        )
+    }
+
+    /// The profile `session_id` holds, exactly as `resume_session` would
+    /// restart it, for the generation the frontend is about to show. A stale
+    /// generation is refused with `PROFILE_CHANGED` (and the current state is
+    /// emitted again), so the dialog never lists another profile than the
+    /// one a confirmation of that generation starts.
+    pub fn session_profile(
+        &mut self,
+        session_id: &str,
+        profile_generation: u64,
+    ) -> Result<HeldProfile, String> {
+        let managed = self
+            .sessions
+            .iter()
+            .find(|managed| managed.session.session_id == session_id)
+            .ok_or_else(|| format!("unknown session {session_id}"))?;
+        if managed.session.profile_generation != profile_generation {
+            let state = managed
+                .session
+                .last_emitted
+                .clone()
+                .unwrap_or_else(|| managed.session.state(None));
+            self.runner.emit(&state);
+            return Err(PROFILE_CHANGED.into());
+        }
+        Ok(HeldProfile {
+            profile_id: managed.request.profile_id.clone(),
+            profile_generation,
+            profile: managed.request.profile.clone(),
+        })
     }
 
     /// Several switches at once (one focus change, several sessions): every
@@ -1067,6 +1331,13 @@ pub enum Input {
     /// Session id, saved profile id and profile; answered with the new
     /// profile generation.
     SwitchProfile(String, String, Box<Profile>, Sender<Result<u64, String>>),
+    /// Session id and the generation the Resume dialog is about to show.
+    SessionProfile(String, u64, Sender<Result<HeldProfile, String>>),
+    /// A service process reported `profile_switch_requested` (a profile key).
+    ProfileStep {
+        service_id: String,
+        direction: ProfileDirection,
+    },
     Inventory(Vec<LiveDevice>),
     /// `done` is answered once the event's actions ran (e.g. the stop before
     /// sleep).
@@ -1099,6 +1370,17 @@ impl<R: Runner> Driver<R> {
             }
             Input::SwitchProfile(id, profile_id, profile, reply) => {
                 self.handle_switches(vec![(id, profile_id, profile, reply)], now_ms);
+            }
+            Input::SessionProfile(id, generation, reply) => {
+                let _ = reply.send(self.session_profile(&id, generation));
+            }
+            Input::ProfileStep {
+                service_id,
+                direction,
+            } => {
+                // A dropped request changes nothing; the service log already
+                // shows the request itself.
+                let _ = self.profile_step(&service_id, direction, now_ms);
             }
             Input::Inventory(devices) => self.inventory(devices, now_ms),
             Input::Power(event, done) => {
@@ -1332,6 +1614,16 @@ impl Manager {
         .and_then(|switched| switched)
     }
 
+    pub fn session_profile(
+        &self,
+        session_id: &str,
+        profile_generation: u64,
+    ) -> Result<HeldProfile, String> {
+        self.request(|reply| Input::SessionProfile(session_id.into(), profile_generation, reply))
+            .unwrap_or_else(|| Err(format!("unknown session {session_id}")))
+            .and_then(|held| held)
+    }
+
     /// App exit: ends every session; waits at most `wait`.
     pub fn shutdown(&self, wait: Duration) {
         self.closed.store(true, Ordering::SeqCst);
@@ -1364,6 +1656,10 @@ pub mod fake {
         /// Each `stop_many` call, in order.
         pub batches: Vec<Vec<String>>,
         pub closed: bool,
+        /// What `saved_profiles` returns.
+        pub saved: Vec<(String, Profile)>,
+        /// Number of `saved_profiles` reads.
+        pub saved_reads: usize,
     }
 
     impl Runner for FakeRunner {
@@ -1405,6 +1701,11 @@ pub mod fake {
         fn enumerate(&mut self) -> Option<Vec<LiveDevice>> {
             self.devices.clone()
         }
+
+        fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+            self.saved_reads += 1;
+            Ok(self.saved.clone())
+        }
     }
 
     pub fn device(module: ServiceModule, serial: Option<&str>, path: &str) -> LiveDevice {
@@ -1421,6 +1722,7 @@ pub mod fake {
             path_hex: device.path_hex.to_uppercase(),
             execute,
             software_mode: true,
+            profile_id: None,
         }
     }
 
@@ -2301,6 +2603,379 @@ mod tests {
         assert!(second_answer.try_recv().unwrap().is_err());
         assert!(finished.try_recv().is_ok());
         assert_eq!(driver.runner().batches, [vec![id]]);
+    }
+
+    fn saved(names: &[(&str, &str)]) -> Vec<(String, Profile)> {
+        names
+            .iter()
+            .map(|(id, name)| ((*id).into(), renamed(name)))
+            .collect()
+    }
+
+    fn step_target(
+        names: &[(&str, &str)],
+        current_id: Option<&str>,
+        current: &str,
+        direction: ProfileDirection,
+    ) -> Option<String> {
+        resolve_profile_step(saved(names), current_id, &renamed(current), direction)
+            .map(|(id, _)| id)
+    }
+
+    #[test]
+    fn profile_steps_follow_a_stable_name_order_and_wrap_around() {
+        use ProfileDirection::{Next, Previous};
+        // Listed in storage order (most recently modified first); the
+        // switch order is by name, ignoring case, then by id.
+        let names = [
+            ("p3", "streaming"),
+            ("p1", "Browser"),
+            ("p2", "Editor"),
+            ("p0", "Editor"),
+        ];
+        assert_eq!(
+            step_target(&names, Some("p1"), "x", Next).as_deref(),
+            Some("p0")
+        );
+        assert_eq!(
+            step_target(&names, Some("p0"), "x", Next).as_deref(),
+            Some("p2")
+        );
+        assert_eq!(
+            step_target(&names, Some("p3"), "x", Next).as_deref(),
+            Some("p1")
+        );
+        assert_eq!(
+            step_target(&names, Some("p1"), "x", Previous).as_deref(),
+            Some("p3")
+        );
+        assert_eq!(
+            step_target(&names, Some("p2"), "x", Previous).as_deref(),
+            Some("p0")
+        );
+        // Without a switched id the running snapshot is matched by content.
+        assert_eq!(
+            step_target(&names, None, "Browser", Next).as_deref(),
+            Some("p0")
+        );
+        // A deleted switched profile falls back to the content match.
+        assert_eq!(
+            step_target(&names, Some("gone"), "streaming", Next).as_deref(),
+            Some("p1")
+        );
+        // An unsaved draft matches nothing: next is first, previous is last.
+        assert_eq!(
+            step_target(&names, None, "Draft", Next).as_deref(),
+            Some("p1")
+        );
+        assert_eq!(
+            step_target(&names, None, "Draft", Previous).as_deref(),
+            Some("p3")
+        );
+        // Nothing to switch between with fewer than two saved profiles.
+        assert_eq!(step_target(&names[..1], None, "Draft", Next), None);
+        assert_eq!(
+            step_target(&names[..1], Some("p3"), "streaming", Previous),
+            None
+        );
+        assert_eq!(step_target(&[], None, "Draft", Next), None);
+    }
+
+    #[test]
+    fn profile_switch_requests_are_parsed_strictly() {
+        use serde_json::json;
+        let record = |value: serde_json::Value| profile_switch_request(&value);
+        assert_eq!(
+            record(
+                json!({"type":"profile_switch_requested","schema_version":1,"direction":"next","event":{}})
+            ),
+            Some(ProfileDirection::Next)
+        );
+        assert_eq!(
+            record(
+                json!({"type":"profile_switch_requested","schema_version":1,"direction":"previous"})
+            ),
+            Some(ProfileDirection::Previous)
+        );
+        for other in [
+            json!({"type":"profile_switch_requested","schema_version":1,"direction":"first"}),
+            json!({"type":"profile_switch_requested","schema_version":1,"direction":"Next"}),
+            json!({"type":"profile_switch_requested","schema_version":2,"direction":"next"}),
+            json!({"type":"profile_switch_requested","direction":"next"}),
+            json!({"type":"profile_switch_requested","schema_version":1}),
+            json!({"type":"profile_switch_requested","schema_version":1,"direction":{"name":"Desk"}}),
+            json!({"type":"action_unavailable","schema_version":1,"direction":"next"}),
+            json!({"type":"raw","line":"profile_switch_requested next"}),
+            json!(["profile_switch_requested"]),
+        ] {
+            assert_eq!(record(other.clone()), None, "{other}");
+        }
+    }
+
+    /// A running dry or executing session on `dial("/a")` whose snapshot is
+    /// the saved "Folders" profile, with two other saved profiles.
+    fn keyed(execute: bool) -> (Driver<FakeRunner>, String) {
+        let (mut driver, id) = running(execute);
+        driver.runner().saved = vec![
+            ("id-c".into(), renamed("Streaming")),
+            ("id-a".into(), renamed("Browser")),
+            ("id-b".into(), crate::test_profiles::folders()),
+        ];
+        (driver, id)
+    }
+
+    #[test]
+    fn a_profile_key_switches_a_dry_run_through_the_focused_app_path() {
+        let (mut driver, id) = keyed(false);
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 1_000),
+            Ok(1)
+        );
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        let state = last(&mut driver);
+        assert_eq!(
+            (
+                state.reason,
+                state.profile_generation,
+                state.profile_id.as_deref()
+            ),
+            (Some(Reason::ProfileAction), 1, Some("id-c"))
+        );
+        assert_eq!(state.profile_name, "Streaming");
+        // More requests from the stopping process are dropped (coalesced).
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 2_000),
+            Err(STEP_NOT_RUNNING.into())
+        );
+        exit(&mut driver, &id, "", 2_100);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.runner().starts[1].profile.name, "Streaming");
+        assert!(!driver.runner().starts[1].execute);
+        assert_eq!(
+            (phase(&mut driver), last(&mut driver).reason),
+            (Phase::Running, None)
+        );
+        // The restarted process: wraps around from the last profile.
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 2_200),
+            Ok(2)
+        );
+        assert_eq!(last(&mut driver).profile_id.as_deref(), Some("id-a"));
+        exit(&mut driver, &id, "", 2_300);
+        // Debounced: within PROFILE_STEP_DEBOUNCE_MS of the accepted one.
+        let reads = driver.runner().saved_reads;
+        assert_eq!(
+            driver.profile_step(
+                &id,
+                ProfileDirection::Previous,
+                2_200 + PROFILE_STEP_DEBOUNCE_MS - 1
+            ),
+            Err(STEP_DEBOUNCED.into())
+        );
+        assert_eq!(
+            driver.runner().saved_reads,
+            reads,
+            "dropped before storage is read"
+        );
+        assert_eq!(
+            driver.profile_step(
+                &id,
+                ProfileDirection::Previous,
+                2_200 + PROFILE_STEP_DEBOUNCE_MS
+            ),
+            Ok(3)
+        );
+        assert_eq!(last(&mut driver).profile_id.as_deref(), Some("id-c"));
+    }
+
+    #[test]
+    fn a_profile_key_never_resumes_an_executing_session_on_its_own() {
+        let (mut driver, id) = keyed(true);
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Previous, 1_000),
+            Ok(1)
+        );
+        exit(&mut driver, &id, "", 1_100);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.service_id.as_deref()),
+            (Phase::NeedsConfirmation, Some(Reason::ProfileAction), None)
+        );
+        assert_eq!(state.profile_name, "Browser");
+        // Nothing runs, so later presses cannot switch or confirm anything.
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 5_000),
+            Err(STEP_NOT_RUNNING.into())
+        );
+        driver.tick(1_000_000);
+        driver.inventory(vec![dial("/a")], 1_000_001);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        assert_eq!(
+            driver.resume(&id, 0, 1_000_002),
+            Err(PROFILE_CHANGED.into())
+        );
+        driver.resume(&id, 1, 1_000_003).unwrap();
+        let restarted = driver.runner().starts[1].clone();
+        assert!(restarted.execute);
+        assert_eq!(restarted.profile.name, "Browser");
+    }
+
+    #[test]
+    fn a_profile_key_does_nothing_asleep_alone_or_for_unknown_processes() {
+        let (mut driver, id) = running(false);
+        driver.runner().saved = saved(&[("only", "Browser")]);
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 1_000),
+            Err(STEP_NO_TARGET.into())
+        );
+        assert_eq!(
+            driver.profile_step("service:unknown", ProfileDirection::Next, 5_000),
+            Err(STEP_NOT_RUNNING.into())
+        );
+        driver.runner().saved = saved(&[("a", "Browser"), ("b", "Editor")]);
+        driver.power(PowerEvent::Suspend, 6_000);
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 6_001),
+            Err(STEP_ASLEEP.into())
+        );
+        assert!(driver.runner().stops.iter().all(|stop| stop == &id));
+        assert_eq!(driver.runner().stops.len(), 1, "only the sleep stopped it");
+        assert!(
+            driver
+                .runner()
+                .emitted
+                .iter()
+                .all(|state| state.profile_generation == 0)
+        );
+    }
+
+    #[test]
+    fn a_profile_key_starts_from_the_saved_profile_the_run_was_started_from() {
+        // The run started from saved "Folders" unchanged (the frontend sends
+        // its id), and the saved file was edited afterwards, so the running
+        // copy no longer equals any saved profile. The id still places it:
+        // next is "Streaming", not the first profile.
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/a")], 0);
+        let mut start = request(&dial("/a"), false);
+        start.profile_id = Some("00000000-0000-4000-8000-0000000000b2".into());
+        let id = driver.start(start, 0).unwrap();
+        driver.runner().saved = vec![
+            (
+                "00000000-0000-4000-8000-0000000000b1".into(),
+                renamed("Browser"),
+            ),
+            (
+                "00000000-0000-4000-8000-0000000000b2".into(),
+                renamed("Folders v2"),
+            ),
+            (
+                "00000000-0000-4000-8000-0000000000b3".into(),
+                renamed("Streaming"),
+            ),
+        ];
+        driver
+            .profile_step(&id, ProfileDirection::Next, 1_000)
+            .unwrap();
+        assert_eq!(last(&mut driver).profile_name, "Streaming");
+        // Previous from a known id never lands on that same id.
+        assert_eq!(
+            step_target(
+                &[("a", "A"), ("b", "B")],
+                Some("a"),
+                "A",
+                ProfileDirection::Previous
+            )
+            .as_deref(),
+            Some("b")
+        );
+    }
+
+    #[test]
+    fn session_profile_returns_the_held_profile_of_the_shown_generation_only() {
+        let (mut driver, id) = keyed(true);
+        driver
+            .profile_step(&id, ProfileDirection::Next, 1_000)
+            .unwrap();
+        exit(&mut driver, &id, "", 1_100);
+        let held = driver.session_profile(&id, 1).unwrap();
+        assert_eq!(held.profile_id.as_deref(), Some("id-c"));
+        assert_eq!(held.profile_generation, 1);
+        assert_eq!(held.profile.name, "Streaming");
+        // A later edit of the saved profile does not change what resume runs.
+        driver.runner().saved[0].1.name = "Streaming v2".into();
+        assert_eq!(
+            driver.session_profile(&id, 1).unwrap().profile.name,
+            "Streaming"
+        );
+        let emitted = driver.runner().emitted.len();
+        assert_eq!(driver.session_profile(&id, 0), Err(PROFILE_CHANGED.into()));
+        assert_eq!(
+            driver.runner().emitted.len(),
+            emitted + 1,
+            "the current state is sent again"
+        );
+        assert!(driver.session_profile("service:unknown", 1).is_err());
+        driver.resume(&id, 1, 2_000).unwrap();
+        assert_eq!(driver.runner().starts[1].profile.name, "Streaming");
+    }
+
+    #[test]
+    fn a_spawn_forwards_nothing_after_its_exit() {
+        use serde_json::json;
+        let (sender, receiver) = mpsc::channel();
+        let forwarder = SpawnForwarder::new(sender);
+        let record = |direction: &str| {
+            service::ServiceMessage::Record(service::RecordPayload {
+                service_id: "service:41".into(),
+                record: json!({"type":"profile_switch_requested","schema_version":1,"direction":direction}),
+            })
+        };
+        forwarder.forward(&record("next"));
+        forwarder.forward(&service::ServiceMessage::Record(service::RecordPayload {
+            service_id: "service:41".into(),
+            record: json!({"type":"event","status":"planned"}),
+        }));
+        forwarder.forward(&service::ServiceMessage::Status(
+            service::StatusPayload::exited("service:41", false, Some(0), String::new()),
+        ));
+        // A late record of the stopped process: its successor shares the id.
+        forwarder.forward(&record("previous"));
+        let inputs: Vec<_> = receiver.try_iter().collect();
+        assert_eq!(inputs.len(), 2);
+        assert!(matches!(
+            &inputs[0],
+            Input::ProfileStep { service_id, direction: ProfileDirection::Next } if service_id == "service:41"
+        ));
+        assert!(matches!(
+            &inputs[1],
+            Input::Exited {
+                exit_code: Some(0),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_driver_thread_applies_queued_profile_steps() {
+        let (mut driver, id) = keyed(false);
+        let (inputs, receiver) = mpsc::channel();
+        for _ in 0..3 {
+            inputs
+                .send(Input::ProfileStep {
+                    service_id: id.clone(),
+                    direction: ProfileDirection::Next,
+                })
+                .unwrap();
+        }
+        let (done, finished) = mpsc::channel();
+        inputs.send(Input::Shutdown(done)).unwrap();
+        run_driver(&mut driver, &receiver, || 1_000);
+        assert!(finished.try_recv().is_ok());
+        // Three queued presses switch once: the process is stopping after the first.
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        assert_eq!(driver.runner().saved_reads, 1);
     }
 
     #[test]

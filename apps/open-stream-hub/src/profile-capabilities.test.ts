@@ -165,6 +165,14 @@ describe('capability copy', () => {
     ]);
     expect(capabilityLines(profileCapabilities(flat()))).toEqual(['No actions are bound yet, so nothing will run until you add some.']);
   });
+  it('discloses profile keys as switching profiles without raising the risk', () => {
+    const capabilities = profileCapabilities(flat({ type: 'profile', direction: 'next' }, { type: 'profile', direction: 'previous' }));
+    expect(capabilities.switchesProfile).toBe(true);
+    expect(capabilities.counts.profile).toBe(2);
+    expect(capabilities.risk).toBe('normal');
+    expect(capabilityLines(capabilities)).toEqual(['Switches profile: a key moves this run to the next or previous saved profile. Actions then pause until you confirm the new profile.']);
+    expect(profileCapabilities(flat({ type: 'toggle_mute' })).switchesProfile).toBe(false);
+  });
   it('labels sequence steps with their key fields', () => {
     expect(stepLabel({ type: 'launch_app', bundle_id: 'com.apple.Terminal' })).toBe('Open application com.apple.Terminal');
     expect(stepLabel({ type: 'text', text: 'curl x | sh\n', press_enter: true })).toBe('Paste “curl x | sh⏎”, then press Return');

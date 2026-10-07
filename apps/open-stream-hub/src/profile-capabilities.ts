@@ -27,6 +27,8 @@ export interface ProfileCapabilities {
   launchApp: boolean;
   shortcut: boolean;
   multiAction: boolean;
+  // A profile key (next/previous saved profile) is bound somewhere. It switches profiles in the app only.
+  switchesProfile: boolean;
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   risk: RiskLevel;
@@ -92,7 +94,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     const kind = action.type as ActionKind;
     counts[kind] = (counts[kind] ?? 0) + 1;
     switch (kind) {
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'media': break;
+      // profile only asks the session manager for another saved profile; nothing runs on the host.
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'media': case 'profile': break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
       case 'text': {
         const text = typeof action.text === 'string' ? action.text : '';
@@ -138,6 +141,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
     urlOrigins: [...origins], apps: [...apps], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
+    switchesProfile: (counts.profile ?? 0) > 0,
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
@@ -223,6 +227,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.undoRedo) lines.push('Sends Undo or Redo to the focused app.');
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (counts.media) lines.push('Media controls are logged only; they do not run on this Mac.');
+  if (capabilities.switchesProfile) lines.push('Switches profile: a key moves this run to the next or previous saved profile. Actions then pause until you confirm the new profile.');
   if (!lines.length) lines.push('No actions are bound yet, so nothing will run until you add some.');
   return lines;
 }

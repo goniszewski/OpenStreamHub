@@ -17,7 +17,7 @@
 
 use crate::{feed, replay};
 use cooltek_sdk_cli::{capture::encode_hex, device::parse_path};
-use cooltek_sdk_service::Profile;
+use cooltek_sdk_service::{Action, Profile};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -71,6 +71,42 @@ pub struct StartRequest {
     pub path_hex: String,
     pub execute: bool,
     pub software_mode: bool,
+    /// The saved profile `profile` was started from, when the editor holds
+    /// it unchanged; null for an unsaved draft. Only used to find the current
+    /// position for a profile key (next/previous).
+    #[serde(default)]
+    pub profile_id: Option<String>,
+}
+
+/// True when `profile` binds a `profile` action anywhere: flat bindings,
+/// keypad action tiles on any page, or dial function bindings. Only then is
+/// `--profile-switch-requests` passed, so a profile without the feature
+/// runs with exactly the arguments it had before (an older sidecar keeps
+/// working).
+pub fn uses_profile_action(profile: &Profile) -> bool {
+    let is_profile = |action: &Action| matches!(action, Action::Profile { .. });
+    profile
+        .bindings
+        .iter()
+        .any(|binding| is_profile(&binding.action))
+        || profile.keypad.iter().any(|keypad| {
+            keypad
+                .pages
+                .iter()
+                .flat_map(|page| page.slots.iter().flatten())
+                .any(|tile| match tile {
+                    cooltek_sdk_service::KeypadTile::Action { bindings, .. } => {
+                        bindings.iter().any(|binding| is_profile(&binding.action))
+                    }
+                    _ => false,
+                })
+        })
+        || profile.dial_functions.iter().flatten().any(|function| {
+            function
+                .bindings
+                .iter()
+                .any(|binding| is_profile(&binding.action))
+        })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -153,11 +189,15 @@ pub fn check_execute_supported(execute: bool) -> Result<(), String> {
 }
 
 /// Arguments for `masterhub-service`; passed directly, never through a shell.
+/// `profile_switch_requests` is set for session-managed runs: the service then
+/// reports `profile` key actions as `profile_switch_requested` records, which
+/// the session driver resolves against the saved profiles.
 pub fn service_args(
     profile: &Path,
     path_hex: &str,
     execute: bool,
     software_mode: bool,
+    profile_switch_requests: bool,
 ) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "run".into(),
@@ -171,6 +211,9 @@ pub fn service_args(
     }
     if software_mode {
         args.push("--software-mode".into());
+    }
+    if profile_switch_requests {
+        args.push("--profile-switch-requests".into());
     }
     args
 }
@@ -808,6 +851,9 @@ fn keep_tail(mut stderr: impl Read, tail: &Mutex<Vec<u8>>) {
 /// same checks for a start while asleep, which spawns nothing yet.
 pub fn check_request(request: &StartRequest) -> Result<(), String> {
     replay::validate_profile(&request.profile)?;
+    if let Some(id) = &request.profile_id {
+        crate::store::validate_id(id)?;
+    }
     check_execute_supported(request.execute)
 }
 
@@ -817,6 +863,7 @@ pub fn check_request(request: &StartRequest) -> Result<(), String> {
 pub fn start_service(
     services: &Services,
     request: StartRequest,
+    profile_switch_requests: bool,
     app_data: Result<&Path, String>,
     program: Result<PathBuf, String>,
     stop_feed: impl FnOnce(&str) -> Result<(), String>,
@@ -852,6 +899,7 @@ pub fn start_service(
         &path_hex,
         request.execute,
         request.software_mode,
+        profile_switch_requests,
     );
     services.start(
         service_id,
@@ -928,10 +976,49 @@ mod tests {
     }
 
     #[test]
+    fn only_profiles_with_a_profile_action_ask_for_switch_requests() {
+        use serde_json::json;
+        let parse = |value: serde_json::Value| {
+            Profile::from_json(&serde_json::to_vec(&value).unwrap()).unwrap()
+        };
+        let key = json!({"type":"profile","direction":"next"});
+        assert!(!uses_profile_action(&test_profiles::folders()));
+        let mut flat = test_profiles::folders_json();
+        flat["bindings"][0]["action"] = key.clone();
+        assert!(uses_profile_action(&parse(flat)));
+        let mut tile = test_profiles::folders_json();
+        // A tile inside a folder page.
+        tile["keypad"]["pages"][2]["slots"][1]["bindings"][0]["action"] = key.clone();
+        assert!(uses_profile_action(&parse(tile)));
+        let dial = parse(
+            json!({"schema_version":1,"name":"Dial","bindings":[],"dial_functions":[
+                {"name":"Volume","bindings":[{"gesture":"right","action":{"type":"volume","delta":5}}]},
+                {"name":"Profiles","bindings":[{"gesture":"long_press","action":key}]}
+            ]}),
+        );
+        assert!(uses_profile_action(&dial));
+    }
+
+    #[test]
+    fn a_start_request_names_its_saved_profile_only_by_canonical_uuid() {
+        let mut request: StartRequest = serde_json::from_value(serde_json::json!({
+            "profile": test_profiles::folders_json(), "path_hex": "41",
+            "execute": false, "software_mode": false,
+            "profile_id": "00000000-0000-4000-8000-0000000000a1",
+        }))
+        .unwrap();
+        assert!(check_request(&request).is_ok());
+        for bad in ["../x", "00000000-0000-4000-8000-0000000000A1", ""] {
+            request.profile_id = Some(bad.into());
+            assert!(check_request(&request).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn ids_args_and_execute_policy() {
         assert_eq!(service_id("4A42").unwrap(), "service:4a42");
         assert!(service_id("00").is_err());
-        let args = service_args(Path::new("/p.json"), "4a", true, false);
+        let args = service_args(Path::new("/p.json"), "4a", true, false, false);
         assert_eq!(
             args,
             [
@@ -944,9 +1031,12 @@ mod tests {
             ]
             .map(OsString::from)
         );
-        let args = service_args(Path::new("/p.json"), "4a", false, true);
+        let args = service_args(Path::new("/p.json"), "4a", false, true, false);
         assert_eq!(args.last().unwrap(), "--software-mode");
         assert!(!args.iter().any(|arg| arg == "--execute"));
+        assert!(!args.iter().any(|arg| arg == "--profile-switch-requests"));
+        let args = service_args(Path::new("/p.json"), "4a", false, false, true);
+        assert_eq!(args.last().unwrap(), "--profile-switch-requests");
         assert!(check_execute_supported(false).is_ok());
         assert_eq!(
             check_execute_supported(true).is_ok(),
@@ -1287,10 +1377,12 @@ mod tests {
             path_hex: encode_hex(b"/no/such/opensteamhub/interface"),
             execute: false,
             software_mode: false,
+            profile_id: None,
         };
         let id = start_service(
             &services,
             request,
+            false,
             Ok(root.path()),
             Ok(program),
             |_| Ok(()),
@@ -1319,6 +1411,7 @@ mod tests {
             path_hex: "4A".into(),
             execute,
             software_mode: true,
+            profile_id: None,
         };
 
         // A missing binary: one `failed` status, no snapshot left behind.
@@ -1326,6 +1419,7 @@ mod tests {
         let error = start_service(
             &services,
             request(false),
+            false,
             Ok(root.path()),
             Err("could not find masterhub-service".into()),
             |_| panic!("the feed must not be stopped before the binary is found"),
@@ -1343,6 +1437,7 @@ mod tests {
         start_service(
             &services,
             request(false),
+            false,
             Ok(root.path()),
             Ok(root.path().join("no-such-binary")),
             |_| Ok(()),
@@ -1370,6 +1465,7 @@ mod tests {
         let id = start_service(
             &services,
             request(false),
+            false,
             Ok(root.path()),
             Ok(fake.clone()),
             |feed_id| {
@@ -1398,6 +1494,7 @@ mod tests {
                 start_service(
                     &services,
                     request(true),
+                    false,
                     Ok(root.path()),
                     Ok(fake.clone()),
                     |_| Ok(()),
@@ -1414,6 +1511,7 @@ mod tests {
             start_service(
                 &services,
                 invalid,
+                false,
                 Ok(root.path()),
                 Ok(fake),
                 |_| Ok(()),
@@ -1492,10 +1590,12 @@ mod tests {
             path_hex: "4A".into(),
             execute: false,
             software_mode: false,
+            profile_id: None,
         };
         let error = start_service(
             &services,
             request,
+            false,
             Ok(root.path()),
             Ok(PathBuf::from("/bin/sh")),
             |_| panic!("no feed is stopped during shutdown"),

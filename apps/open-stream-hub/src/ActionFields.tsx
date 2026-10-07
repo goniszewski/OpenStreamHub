@@ -1,9 +1,9 @@
 import { Plus, Trash2 } from 'lucide-react';
-import type { BindingAction, MediaCommand, Modifier, StepAction, SystemCommand } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ProfileDirection, StepAction, SystemCommand } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultStepAction, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, stepActionTypes,
-  systemLabels, textIssue, urlIssue,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, maxTextBytes, mediaLabels, multiActionSteps, namedKeys,
+  profileDirectionLabels, stepActionTypes, systemLabels, textIssue, urlIssue,
 } from './action-model';
 import type { StepActionType } from './action-model';
 
@@ -18,17 +18,24 @@ export function ActionFields({ action, fader, selectorKey, onChange }: {
     <label htmlFor="binding-action">Action</label>
     <SelectField id="binding-action" value={action?.type ?? 'unbound'} onChange={event => {
       const type = event.target.value;
-      onChange(type === 'unbound' ? null : type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction() : defaultStepAction(type as StepActionType));
+      onChange(type === 'unbound' ? null : type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction()
+        : type === 'profile' ? defaultProfileAction() : defaultStepAction(type as StepActionType));
     }}>
       <option value="unbound">Unbound</option>
       {fader ? <option value="volume_from_position">Output volume follows position</option> : <>
         {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
         <option value="multi_action">Multi-action</option>
+        <option value="profile">Switch profile</option>
       </>}
     </SelectField>
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} />}
-    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' &&
+    {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
+      <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
+        {(Object.keys(profileDirectionLabels) as ProfileDirection[]).map(direction => <option key={direction} value={direction}>{profileDirectionLabels[direction]}</option>)}
+      </SelectField>
+      <p className="fine-print">Switches the run to the next or previous saved profile, in name order, wrapping around. Only runs started from this app switch; it does nothing with a single saved profile or in the standalone service. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</p></div>}
+    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' && action.type !== 'profile' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} />}
   </>;
 }

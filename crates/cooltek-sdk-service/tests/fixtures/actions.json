@@ -20,7 +20,9 @@
     {"type":"system","command":"redo"},
     {"type":"system","command":"screenshot"},
     {"type":"text","text":"Thanks for watching!\nSee you","press_enter":true},
-    {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]}
+    {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]},
+    {"type":"profile","direction":"next"},
+    {"type":"profile","direction":"previous"}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -34,6 +36,12 @@
     {"type":"text","text":"bell\u0007"},
     {"type":"multi_action","actions":[{"type":"toggle_mute"}]},
     {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"toggle_mute"}]}]},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"volume_from_position"}]}
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"volume_from_position"}]},
+    {"type":"profile","direction":"first"},
+    {"type":"profile","direction":"Next"},
+    {"type":"profile"},
+    {"type":"profile","direction":"next","name":"Streaming"},
+    {"type":"profile","name":"Streaming"},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]}
   ]
 }

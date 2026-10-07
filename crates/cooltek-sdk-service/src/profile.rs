@@ -176,6 +176,20 @@ pub enum SystemCommand {
     Screenshot,
 }
 
+/// Which neighbouring saved profile a `profile` action asks for.
+///
+/// The service does not own the profile list: it only reports the request.
+/// A supervising session manager resolves it against its saved profiles,
+/// wrapping around at either end.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileDirection {
+    /// The next saved profile.
+    Next,
+    /// The previous saved profile.
+    Previous,
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -238,6 +252,12 @@ pub enum Action {
     MultiAction {
         /// Ordered steps; a failure stops the remaining steps.
         actions: Vec<Action>,
+    },
+    /// Ask the supervising session manager to switch to a neighbouring saved
+    /// profile. Never executed on the host; not allowed as a multi-action step.
+    Profile {
+        /// Next or previous saved profile.
+        direction: ProfileDirection,
     },
 }
 
@@ -392,6 +412,9 @@ impl<'de> Deserialize<'de> for Action {
             MultiAction {
                 actions: Vec<Action>,
             },
+            Profile {
+                direction: ProfileDirection,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -405,6 +428,7 @@ impl<'de> Deserialize<'de> for Action {
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
+            Shape::Profile { direction } => Self::Profile { direction },
         })
     }
 }
@@ -433,6 +457,7 @@ impl Action {
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
             Self::MultiAction { .. } => "multi_action",
+            Self::Profile { .. } => "profile",
         }
     }
 
@@ -516,7 +541,12 @@ impl Action {
                     ));
                 }
                 for (index, step) in actions.iter().enumerate() {
-                    if matches!(step, Self::MultiAction { .. } | Self::VolumeFromPosition) {
+                    // A profile switch stops the running service, so it
+                    // could never be followed by the remaining steps.
+                    if matches!(
+                        step,
+                        Self::MultiAction { .. } | Self::VolumeFromPosition | Self::Profile { .. }
+                    ) {
                         return Err(format!(
                             "multi_action step {}: {} cannot be a multi_action step",
                             index + 1,
@@ -533,7 +563,8 @@ impl Action {
             | Self::VolumeFromPosition
             | Self::ToggleMute
             | Self::Media { .. }
-            | Self::System { .. } => Ok(()),
+            | Self::System { .. }
+            | Self::Profile { .. } => Ok(()),
         }
     }
 
@@ -1040,6 +1071,58 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn profile_actions_are_a_closed_strict_set_and_never_multi_action_steps() {
+        for (json, direction) in [
+            (
+                r#"{"type":"profile","direction":"next"}"#,
+                ProfileDirection::Next,
+            ),
+            (
+                r#"{"type":"profile","direction":"previous"}"#,
+                ProfileDirection::Previous,
+            ),
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert_eq!(action, Action::Profile { direction });
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+            assert_eq!(action.type_name(), "profile");
+            action.validate_executable().unwrap();
+        }
+        for json in [
+            r#"{"type":"profile"}"#,
+            r#"{"type":"profile","direction":"first"}"#,
+            r#"{"type":"profile","direction":"NEXT"}"#,
+            r#"{"type":"profile","direction":1}"#,
+            r#"{"type":"profile","direction":"next","name":"Desk"}"#,
+            r#"{"type":"profile","name":"Desk"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        let error = Action::MultiAction {
+            actions: vec![
+                Action::ToggleMute,
+                Action::Profile {
+                    direction: ProfileDirection::Next,
+                },
+            ],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("step 2: profile cannot be a multi_action step"),
+            "{error}"
+        );
+        let mut profile = sample();
+        profile.bindings[0].action = Action::Profile {
+            direction: ProfileDirection::Previous,
+        };
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(profile.validate().is_err());
     }
 
     #[test]

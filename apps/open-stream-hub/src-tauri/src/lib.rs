@@ -171,8 +171,17 @@ fn preview_binding(
     gesture: Gesture,
     serial_number: Option<String>,
     value: Option<InputValue>,
+    dial_function: Option<usize>,
 ) -> Result<replay::ReplayEvent, String> {
-    replay::preview_binding(profile, module, control, gesture, serial_number, value)
+    replay::preview_binding(
+        profile,
+        module,
+        control,
+        gesture,
+        serial_number,
+        value,
+        dial_function,
+    )
 }
 
 #[tauri::command]

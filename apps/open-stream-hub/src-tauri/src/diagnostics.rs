@@ -265,6 +265,69 @@ fn redact_fields(value: &mut Value, replacements: &mut Vec<(String, String)>) {
     }
 }
 
+/// Shortest snippet or URL that is also scrubbed from free text (error
+/// messages, stderr tails). Shorter values are too likely to match unrelated
+/// text, so only their structural field is replaced.
+const MIN_SCRUBBED_PAYLOAD_CHARS: usize = 8;
+
+/// `scheme://host[:port]` of a URL, dropping any user information, path,
+/// query and fragment; `<url>` when the value has no `scheme://` prefix.
+fn url_origin(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return "<url>".into();
+    };
+    // Client JSON is not validated: only a real scheme (RFC 3986 `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`)
+    // is kept, so a malformed value cannot leak whatever text precedes "://".
+    let mut chars = scheme.chars();
+    if !chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        || !chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    {
+        return "<url>".into();
+    }
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    format!("{scheme}://{host}")
+}
+
+/// Replaces user-authored action payloads wherever an action object appears
+/// (bindings, `multi_action` steps, keypad tiles, dial functions, client
+/// activity): `text` snippets become `<N chars>` and `open_url` URLs keep
+/// only their origin. Long enough raw values are also queued for the text scrub.
+fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, String)>) {
+    match value {
+        Value::Object(map) => {
+            let field = match map.get("type").and_then(Value::as_str) {
+                Some("text") => Some("text"),
+                Some("open_url") => Some("url"),
+                _ => None,
+            };
+            if let Some(field) = field
+                && let Some(Value::String(raw)) = map.get_mut(field)
+            {
+                let redacted = if field == "text" {
+                    format!("<{} chars>", raw.chars().count())
+                } else {
+                    url_origin(raw)
+                };
+                if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
+                    replacements.push((raw.clone(), redacted.clone()));
+                }
+                *raw = redacted;
+            }
+            for (key, item) in map.iter_mut() {
+                if !is_data_key(key) {
+                    redact_action_payloads(item, replacements);
+                }
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| redact_action_payloads(item, replacements)),
+        _ => {}
+    }
+}
+
 /// Raw report bytes are never rewritten by text scrubbing.
 fn is_data_key(key: &str) -> bool {
     matches!(key, "hex" | "report_descriptor_hex")
@@ -673,8 +736,10 @@ pub fn build_bundle(inputs: &BundleInputs, probe: &mut dyn DeviceProbe) -> Bundl
     if redact {
         if let Some(profile) = &mut profile {
             redact_fields(profile, &mut replacements);
+            redact_action_payloads(profile, &mut replacements);
         }
         redact_fields(&mut client, &mut replacements);
+        redact_action_payloads(&mut client, &mut replacements);
         for device in &devices {
             seed_path(device.path.as_bytes(), &mut replacements);
             if let Some(serial) = &device.serial_number {
@@ -1314,6 +1379,122 @@ mod tests {
             bundle.value["runtime"]["client"]["activity"][0]["devices"][0]["path_hex"],
             gone_hex
         );
+    }
+
+    fn action_payload_profile() -> Value {
+        json!({
+            "bindings": [
+                { "action": { "type": "text", "text": "my secret password\n", "press_enter": true } },
+                { "action": { "type": "open_url", "url": "https://docs.example.com:8443/private/token?id=42#x" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "open_url", "url": "http://user:pw@intranet.local/reset" },
+                    { "type": "text", "text": "żółć 🎉", "press_enter": false },
+                ] } },
+            ],
+            "keypad": { "pages": [{ "slots": [
+                { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
+            ] }] },
+            "dial_functions": [{ "name": "Links", "bindings": [
+                { "gesture": "right", "action": { "type": "open_url", "url": "https://dial.example.org/a/b" } },
+            ] }],
+        })
+    }
+
+    #[test]
+    fn text_and_url_action_payloads_are_redacted_everywhere() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(action_payload_profile()),
+            client: ClientContext {
+                activity: vec![
+                    json!({ "kind": "service_record", "record": { "type": "action_failed",
+                        "action": { "type": "text", "text": "activity snippet text", "press_enter": false },
+                        "error": "pasting \"activity snippet text\" failed" } }),
+                    json!({ "kind": "binding", "action": { "type": "open_url", "url": "https://activity.example.net/secret-path" } }),
+                    json!({ "type": "open_url", "url": "not a url" }),
+                ],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let text = bundle.value.to_string();
+        for secret in [
+            "my secret password",
+            "private/token",
+            "id=42",
+            "user:pw",
+            "/reset",
+            "żółć",
+            "keypad tile snippet",
+            "/a/b",
+            "activity snippet text",
+            "secret-path",
+            "not a url",
+        ] {
+            assert!(!text.contains(secret), "{secret} leaked: {text}");
+        }
+        let profile = &bundle.value["profile"];
+        assert_eq!(profile["bindings"][0]["action"]["text"], "<19 chars>");
+        assert_eq!(profile["bindings"][0]["action"]["press_enter"], true);
+        assert_eq!(
+            profile["bindings"][1]["action"]["url"],
+            "https://docs.example.com:8443"
+        );
+        let steps = &profile["bindings"][2]["action"]["actions"];
+        assert_eq!(steps[0]["url"], "http://intranet.local");
+        assert_eq!(steps[1]["text"], "<6 chars>");
+        assert_eq!(
+            profile["keypad"]["pages"][0]["slots"][0]["action"]["text"],
+            "<19 chars>"
+        );
+        assert_eq!(
+            profile["dial_functions"][0]["bindings"][0]["action"]["url"],
+            "https://dial.example.org"
+        );
+        let activity = &bundle.value["runtime"]["client"]["activity"];
+        assert_eq!(activity[0]["record"]["action"]["text"], "<21 chars>");
+        // Long raw snippets are scrubbed from free text too.
+        assert_eq!(
+            activity[0]["record"]["error"],
+            "pasting \"<21 chars>\" failed"
+        );
+        assert_eq!(activity[1]["action"]["url"], "https://activity.example.net");
+        assert_eq!(activity[2]["url"], "<url>");
+    }
+
+    #[test]
+    fn unredacted_bundles_keep_text_and_url_action_payloads() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(action_payload_profile()),
+            ..request(false, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        assert!(!bundle.summary.redacted);
+        assert_eq!(bundle.value["profile"], action_payload_profile());
+    }
+
+    #[test]
+    fn url_origin_keeps_only_scheme_and_host() {
+        for (url, origin) in [
+            ("https://example.com", "https://example.com"),
+            ("https://example.com/", "https://example.com"),
+            ("https://example.com?q=1", "https://example.com"),
+            ("https://example.com#frag", "https://example.com"),
+            ("http://[::1]:8080/x", "http://[::1]:8080"),
+            ("https://a:b@host.test/p", "https://host.test"),
+            ("mailto:someone@example.com", "<url>"),
+            ("", "<url>"),
+            ("HTTPS://Example.com/x", "https://Example.com"),
+            ("my secret token https://x", "<url>"),
+            ("1http://x", "<url>"),
+            ("://x", "<url>"),
+            ("ht tp://x", "<url>"),
+        ] {
+            assert_eq!(url_origin(url), origin, "{url}");
+        }
     }
 
     #[test]

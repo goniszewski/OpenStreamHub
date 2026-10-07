@@ -56,7 +56,7 @@ export function DiagnosticsPanel({ desktop, invoke, profile, runner, feed, initi
       </div>
       <p className="fine-print">The capture only listens. Modules in use by a device feed or a running service are skipped, so stop those first. Move or press controls on the modules during the capture.</p>
       <label className="service-option"><input type="checkbox" checked={options.includeProfile} disabled={locked} onChange={event => set('includeProfile', event.target.checked)} />Include current profile</label>
-      <p className="fine-print">The profile draft is included as it is now. Application bundle IDs and keyboard shortcuts in it would be part of the file.</p>
+      <p className="fine-print">The profile draft is included as it is now. Application bundle IDs, keyboard shortcuts, text snippets and web addresses in it would be part of the file. With Hide serial numbers on, each text snippet is replaced by its length and each web address is reduced to its site address (no path or query).</p>
       <label htmlFor="diagnostics-notes">Notes (optional)</label>
       <textarea id="diagnostics-notes" rows={3} maxLength={maxNotesChars} value={options.notes} disabled={locked} placeholder="What were you trying to do?" onChange={event => set('notes', event.target.value)} />
       <p className="fine-print diagnostics-counter">{options.notes.length} / {maxNotesChars}</p>

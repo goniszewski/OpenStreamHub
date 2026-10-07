@@ -14,9 +14,13 @@ use cooltek_sdk_cli::capture::{
 };
 use cooltek_sdk_cli::{
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
+    display_artwork::PreparedKeyArtwork,
+    display_sink::{SharedTransport, live_display},
     live_output::TimedStdout,
-    live_runtime::{LiveOptions, LiveSummary, run_live},
-    service_events::{emit, end_record, plan_report, process_work, start_record},
+    live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
+    service_events::{
+        dial_function_details, emit, end_record, plan_report, process_work, start_record,
+    },
 };
 use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
 use cooltek_sdk_service::{
@@ -79,6 +83,12 @@ enum Command {
         /// End the session on the first failed action instead of logging it and continuing.
         #[arg(long)]
         stop_on_action_error: bool,
+        /// Experimental, hardware-unverified: draw M4315 key images for a schema-2
+        /// keypad profile and redraw after folder navigation. Requires
+        /// --software-mode. Off by default; display failures are logged and never
+        /// end the session.
+        #[arg(long)]
+        display_sync: bool,
     },
 }
 
@@ -117,12 +127,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             max_reports,
             timeout_ms,
             stop_on_action_error,
+            display_sync,
         } => {
             let profile = load_profile(profile)?;
             let profile_name = profile.name.clone();
+            check_display_sync(display_sync, software_mode, &profile)?;
             if execute && !cfg!(target_os = "macos") {
                 return Err("--execute is supported only on macOS".into());
             }
+            // Prepared before any HID access, so nothing is encoded per input event.
+            let artwork = display_sync.then(PreparedKeyArtwork::prepare).transpose()?;
             // Reject unsupported stdout (such as a regular file) before any HID access.
             let stdout = TimedStdout::new(Duration::from_millis(500))?;
             let stopped = cooltek_sdk_cli::interrupt::install()?;
@@ -134,8 +148,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 selected.product_id,
                 selected.serial_number.clone(),
             )?;
-            let engine = live_bindings(profile, device.module)?;
-            let reader = InputReader::new(registry.open(selected)?);
+            let engine = live_bindings(profile, device.module, display_sync)?;
+            if let Some(functions) = dial_function_details(&engine, &device) {
+                // stdout carries JSONL only; the same facts are in `service_start`.
+                eprintln!(
+                    "masterhub-service: dial functions active ({} configured, starting at the first); a short click switches functions and never runs an action; the current function resets to the first whenever this process restarts",
+                    functions["count"]
+                );
+            }
+            let opened = registry.open(selected)?;
             let details = json!({
                 "source":"hardware", "profile":profile_name, "path_hex":encode_hex(&path_hex),
                 "vendor_id":selected.vendor_id, "product_id":selected.product_id,
@@ -144,36 +165,95 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "queue_capacity":64, "log_timeout_ms":500,
                 "drain_timeout_ms":10000, "cancellation_timeout_ms":2000,
                 "stop_on_action_error":stop_on_action_error,
+                "display_sync_requested":display_sync,
             });
-            run_live(
-                reader,
-                engine,
-                device,
-                execute,
-                details,
-                LiveOptions {
-                    software_mode,
-                    duration: duration_secs.map(Duration::from_secs),
-                    max_reports,
-                    timeout_ms,
-                    stop_on_action_error,
-                    ..LiveOptions::default()
-                },
-                stopped,
-                move |abort| Ok((Dispatcher::new(execute, abort), stdout)),
-            )?;
+            let options = LiveOptions {
+                software_mode,
+                duration: duration_secs.map(Duration::from_secs),
+                max_reports,
+                timeout_ms,
+                stop_on_action_error,
+                ..LiveOptions::default()
+            };
+            let factory = move |abort| Ok((Dispatcher::new(execute, abort), stdout));
+            match artwork {
+                None => {
+                    run_live(
+                        InputReader::new(opened),
+                        engine,
+                        device,
+                        execute,
+                        details,
+                        options,
+                        stopped,
+                        factory,
+                    )?;
+                }
+                // Hardware only: one opened handle shared by the input reader and
+                // the display thread. Never constructed in tests.
+                Some(artwork) => {
+                    let shared = SharedTransport::new(opened);
+                    // Fail closed before software mode: folder navigation must
+                    // not run live without its display.
+                    let display = Some(live_display(&shared, selected.module, artwork)?);
+                    run_live_with_display(
+                        InputReader::new(shared),
+                        engine,
+                        device,
+                        execute,
+                        details,
+                        options,
+                        stopped,
+                        display,
+                        factory,
+                    )?;
+                }
+            }
         }
     }
     Ok(())
 }
 
-// Folder pages need display updates before their mappings can be used live.
+/// Rejects invalid `--display-sync` combinations before any HID access.
+fn check_display_sync(
+    display_sync: bool,
+    software_mode: bool,
+    profile: &Profile,
+) -> Result<(), String> {
+    if !display_sync {
+        return Ok(());
+    }
+    if !software_mode {
+        return Err("--display-sync requires --software-mode".into());
+    }
+    if profile.schema_version != 2 || profile.keypad.is_none() {
+        return Err("--display-sync requires a schema-2 keypad profile".into());
+    }
+    Ok(())
+}
+
+// Folder pages need display updates before their mappings can be used live, so
+// a schema-2 M4315 run is refused unless --display-sync opts in to the
+// experimental, hardware-unverified display path.
 // Other modules can retain their existing flat bindings from the same profile.
-fn live_bindings(mut profile: Profile, module: ServiceModule) -> Result<ProfileSession, String> {
+// Dial functions are accepted live although the dial screen cannot show the
+// current function yet: a short click only switches state and never
+// dispatches, and `service_start` records that the function resets on restart.
+fn live_bindings(
+    mut profile: Profile,
+    module: ServiceModule,
+    display_sync: bool,
+) -> Result<ProfileSession, String> {
     profile.validate()?;
+    if display_sync && module != ServiceModule::M4315 {
+        return Err("--display-sync requires an M4315 keypad interface".into());
+    }
     if profile.schema_version == 2 {
         if module == ServiceModule::M4315 {
-            return Err("nested keypad profiles are offline only until live display integration is implemented".into());
+            if !display_sync {
+                return Err("nested keypad profiles are offline only until live display integration is implemented".into());
+            }
+            return ProfileSession::new(profile);
         }
         profile.schema_version = 1;
         profile.keypad = None;
@@ -247,14 +327,11 @@ fn replay(
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
     let mut matched_actions = 0u64;
-    emit(
-        output,
-        start_record(
-            &device,
-            false,
-            json!({"source":session.source, "identity":session.identity}),
-        ),
-    )?;
+    let mut details = json!({"source":session.source, "identity":session.identity});
+    if let Some(functions) = dial_function_details(&engine, &device) {
+        details["dial_functions"] = functions;
+    }
+    emit(output, start_record(&device, false, details))?;
     let result = (|| {
         while let Some(report) = reader.next_report()? {
             summary.report_count += 1;
@@ -329,14 +406,58 @@ mod tests {
 
     #[test]
     fn live_keypad_folders_are_rejected_before_a_reader_can_be_opened() {
-        let error = live_bindings(nested_profile(), ServiceModule::M4315).unwrap_err();
-        assert!(error.contains("offline only"));
-        assert!(error.contains("display integration"));
+        let error = live_bindings(nested_profile(), ServiceModule::M4315, false).unwrap_err();
+        assert_eq!(
+            error,
+            "nested keypad profiles are offline only until live display integration is implemented"
+        );
+    }
+
+    #[test]
+    fn display_sync_opt_in_keeps_the_keypad_tree_for_an_m4315_only() {
+        let mut engine = live_bindings(nested_profile(), ServiceModule::M4315, true).unwrap();
+        assert!(engine.profile().keypad.is_some());
+        let device = DeviceContext {
+            module: ServiceModule::M4315,
+            serial_number: None,
+        };
+        let press = InputEvent {
+            timestamp_micros: 0,
+            control: 1,
+            gesture: Gesture::Pressed,
+            value: None,
+        };
+        assert!(matches!(
+            engine.resolve(&device, &press).unwrap(),
+            KeypadResolution::Navigation { .. }
+        ));
+        assert_eq!(engine.path(), ["root", "development"]);
+        for module in [ServiceModule::M131E, ServiceModule::M003K] {
+            let error = live_bindings(nested_profile(), module, true).unwrap_err();
+            assert!(error.contains("requires an M4315"), "{error}");
+        }
+    }
+
+    #[test]
+    fn display_sync_combinations_are_checked_before_any_hid_access() {
+        let flat =
+            Profile::from_json(include_bytes!("../../../../examples/profiles/macos.json")).unwrap();
+        assert!(check_display_sync(false, false, &flat).is_ok());
+        assert!(check_display_sync(true, true, &nested_profile()).is_ok());
+        assert_eq!(
+            check_display_sync(true, false, &nested_profile()).unwrap_err(),
+            "--display-sync requires --software-mode"
+        );
+        assert!(
+            check_display_sync(true, true, &flat)
+                .unwrap_err()
+                .contains("schema-2 keypad profile")
+        );
     }
 
     #[test]
     fn other_modules_keep_their_bindings_in_a_folder_profile() {
-        let mut engine = live_bindings(nested_profile(), ServiceModule::M003K).unwrap();
+        let mut engine = live_bindings(nested_profile(), ServiceModule::M003K, false).unwrap();
         let device = DeviceContext {
             module: ServiceModule::M003K,
             serial_number: None,
@@ -354,6 +475,35 @@ mod tests {
                 page_id: None
             }
         );
+    }
+
+    #[test]
+    fn live_dial_functions_are_accepted_and_a_click_only_switches() {
+        let profile = Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/dial-functions.json"
+        ))
+        .unwrap();
+        let mut engine = live_bindings(profile, ServiceModule::M131E, false).unwrap();
+        let device = DeviceContext {
+            module: ServiceModule::M131E,
+            serial_number: None,
+        };
+        let details = dial_function_details(&engine, &device).unwrap();
+        assert_eq!(details["resets_on_restart"], true);
+        assert_eq!(details["initial_index"], 0);
+        let event = |gesture| InputEvent {
+            timestamp_micros: 0,
+            control: 0,
+            gesture,
+            value: None,
+        };
+        for gesture in [Gesture::Pressed, Gesture::Released, Gesture::ShortPress] {
+            assert!(!matches!(
+                engine.route(&device, &event(gesture)).unwrap(),
+                cooltek_sdk_service::ProfileResolution::Action { .. }
+            ));
+        }
+        assert_eq!(engine.dial_function_index(), Some(1));
     }
 
     #[test]

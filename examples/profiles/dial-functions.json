@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "name": "Dial functions",
+  "bindings": [
+    {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}},
+    {"module":"m003k","control":0,"gesture":"counter_clockwise","action":{"type":"volume","delta":-5}}
+  ],
+  "dial_functions": [
+    {
+      "name": "Volume",
+      "bindings": [
+        {"gesture":"right","action":{"type":"volume","delta":5}},
+        {"gesture":"left","action":{"type":"volume","delta":-5}},
+        {"gesture":"long_press","action":{"type":"toggle_mute"}}
+      ]
+    },
+    {
+      "name": "Scroll",
+      "bindings": [
+        {"gesture":"right","action":{"type":"shortcut","key":"j","modifiers":[]}},
+        {"gesture":"left","action":{"type":"shortcut","key":"k","modifiers":[]}}
+      ]
+    },
+    {
+      "name": "Apps",
+      "bindings": [
+        {"gesture":"long_press","action":{"type":"launch_app","bundle_id":"com.apple.finder"}}
+      ]
+    }
+  ]
+}

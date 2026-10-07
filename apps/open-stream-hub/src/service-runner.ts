@@ -1,4 +1,5 @@
 import type { LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
+import { urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
 import type { Listen, Scheduler } from './device-feed';
 import type { Invoke } from './profile-session';
@@ -133,6 +134,13 @@ function describeAction(action: unknown): string {
       return `shortcut ${[...modifiers, String(action.key)].join('+')}`;
     }
     case 'launch_app': return `open ${String(action.bundle_id)}`;
+    // Only the origin: paths and queries can carry tokens.
+    case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;
+    case 'media': return `media ${String(action.command)}`;
+    case 'system': return `system ${String(action.command)}`;
+    // The snippet itself is not written to the activity log.
+    case 'text': return `paste text (${typeof action.chars === 'number' ? action.chars : (typeof action.text === 'string' ? action.text.length : 0)} characters)`;
+    case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }
 }
@@ -161,15 +169,20 @@ export function summarizeRecord(record: unknown, at: number): ActivityEntry | nu
       return error || record.status === 'parse_error' ? entry('error', `Unreadable input report${error ? `: ${clip(error)}` : '.'}`) : null;
     }
     case 'event': {
-      const text = describeEvent(record.event);
+      const function_ = isObject(record.dial_function) ? str(record.dial_function.name) : undefined;
+      const text = describeEvent(record.event) + (function_ ? ` [${function_}]` : '');
       switch (record.status) {
+        case 'dial_function': {
+          const change = isObject(record.navigation) ? record.navigation : {};
+          return entry('event', `Dial function: ${str(change.from_function) ?? '?'} → ${str(change.to_function) ?? '?'} (${typeof change.index === 'number' ? change.index + 1 : '?'}/${String(change.count ?? '?')})`);
+        }
         case 'planned': return entry('action', `${text}: planned ${describeAction(record.action)}`);
         case 'navigation': return entry('event', `${text}: folder navigation`);
         case 'unbound': return entry('event', `${text}: no action bound`);
         default: return entry('event', text);
       }
     }
-    case 'action_executed': return entry('action', `Executed ${describeAction(record.action)} (${describeEvent(record.event)}).`);
+    case 'action_executed': return entry('action', `Executed ${describeAction(record.action)} (${describeEvent(record.event)}${isObject(record.dial_function) && str(record.dial_function.name) ? `, ${str(record.dial_function.name)}` : ''}).`);
     case 'action_failed': return entry('action_failed', `${describeAction(record.action)} failed: ${clip(str(record.error) ?? 'unknown error')}`);
     case 'service_end': {
       const error = str(record.error);

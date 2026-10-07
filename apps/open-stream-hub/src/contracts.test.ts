@@ -21,9 +21,9 @@ const shapes = {
   bootstrap: keys<AppBootstrap>()(['profile', 'profiles', 'unreadable', 'storage_path', 'desktop']),
   keypadPreview: keys<KeypadPreviewResult>()(['path', 'depth', 'events', 'planned_action_count']),
   replayResult: keys<ReplayResult>()(['source', 'synthetic', 'status', 'report_count', 'event_count', 'planned_action_count', 'events', 'diagnostics']),
-  event: keys<ReplayEvent>()(['timestamp_us', 'module', 'control', 'gesture', 'value', 'serial_number', 'action', 'page_id', 'navigation']),
+  event: keys<ReplayEvent>()(['timestamp_us', 'module', 'control', 'gesture', 'value', 'serial_number', 'action', 'page_id', 'navigation', 'dial_function', 'dial_function_switch']),
 };
-const optionalEventKeys = ['value', 'page_id', 'navigation'];
+const optionalEventKeys = ['value', 'page_id', 'navigation', 'dial_function', 'dial_function_switch'];
 
 const sorted = (value: object) => Object.keys(value).sort();
 const expectKeys = (value: object, list: readonly string[]) => expect(sorted(value)).toEqual([...list].sort());

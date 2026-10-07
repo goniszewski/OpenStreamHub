@@ -3,12 +3,24 @@ export type Gesture = 'clockwise' | 'counter_clockwise' | 'pressed' | 'released'
 export type ReplayKind = 'knobs' | 'dial' | 'keys' | 'faders' | 'rollers';
 export interface PositionValue { type: 'position'; raw: number; maximum: number }
 export type Modifier = 'command' | 'control' | 'option' | 'shift';
-export type BindingAction =
+export type MediaCommand = 'play_pause' | 'next_track' | 'previous_track' | 'stop';
+export type SystemCommand = 'undo' | 'redo' | 'screenshot';
+// One step of a multi_action: any executable action except another multi_action.
+export type StepAction =
   | { type: 'volume'; delta: number }
   | { type: 'toggle_mute' }
+  // key: one ASCII letter, digit or space, or a named key (see namedKeys in action-model.ts).
   | { type: 'shortcut'; key: string; modifiers: Modifier[] }
   | { type: 'launch_app'; bundle_id: string }
   | { type: 'set_volume'; percent: number }
+  | { type: 'open_url'; url: string }
+  | { type: 'media'; command: MediaCommand }
+  | { type: 'system'; command: SystemCommand }
+  // press_enter may be omitted in JSON (defaults to false); the service always writes it.
+  | { type: 'text'; text: string; press_enter?: boolean };
+export type BindingAction =
+  | StepAction
+  | { type: 'multi_action'; actions: StepAction[] }
   | { type: 'volume_from_position' };
 export type Action = Exclude<BindingAction, { type: 'volume_from_position' }>;
 export interface Binding {
@@ -24,7 +36,7 @@ export interface KeypadPage { id: string; name: string; slots: KeypadSlot[] }
 // Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
 export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }
 export interface DialFunction { name: string; bindings: DialBinding[] }
-// dial_functions is hand-authored or imported (no editor yet); every edit path must carry it through untouched.
+// dial_functions is edited in the Profiles page (DialFunctionsPanel) or imported; edit paths that do not touch it must carry it through untouched.
 export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[] }
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number }
 export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number }
@@ -35,7 +47,9 @@ export interface ProfileListing { profiles: ProfileSummary[]; unreadable: Unread
 export interface AppBootstrap { profile: StoredProfile | null; profiles: ProfileSummary[]; unreadable: UnreadableProfile[]; storage_path: string; desktop: boolean }
 export interface BootstrapError { message: string; storage_path: string | null }
 export interface KeypadNavigation { from_page: string; to_page: string; path: string[]; depth: number }
-export interface ReplayEvent { timestamp_us: number; module: ServiceModule; control: number; gesture: Gesture; value?: PositionValue; serial_number: string | null; action: Action | null; page_id?: string; navigation?: KeypadNavigation }
+export interface DialFunctionSwitch { from_function: string; to_function: string; index: number; count: number }
+// dial_function names the function that routed the event; dial_function_switch marks a short click that only switched functions (action is null then).
+export interface ReplayEvent { timestamp_us: number; module: ServiceModule; control: number; gesture: Gesture; value?: PositionValue; serial_number: string | null; action: Action | null; page_id?: string; navigation?: KeypadNavigation; dial_function?: string; dial_function_switch?: DialFunctionSwitch }
 export interface KeypadPreviewResult { path: string[]; depth: number; events: ReplayEvent[]; planned_action_count: number }
 export interface ReplayResult {
   source: string;

@@ -1,0 +1,39 @@
+{
+  "named_keys": [
+    "return", "tab", "space", "delete", "escape", "forward_delete", "home", "end", "page_up", "page_down",
+    "arrow_left", "arrow_right", "arrow_down", "arrow_up",
+    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
+    "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20"
+  ],
+  "valid": [
+    {"type":"volume","delta":5},
+    {"type":"set_volume","percent":63},
+    {"type":"toggle_mute"},
+    {"type":"shortcut","key":"c","modifiers":["command"]},
+    {"type":"shortcut","key":"arrow_left","modifiers":["command","option"]},
+    {"type":"shortcut","key":"f12","modifiers":[]},
+    {"type":"launch_app","bundle_id":"com.apple.finder"},
+    {"type":"open_url","url":"https://example.com/search?q=masterhub#top"},
+    {"type":"media","command":"play_pause"},
+    {"type":"media","command":"stop"},
+    {"type":"system","command":"undo"},
+    {"type":"system","command":"redo"},
+    {"type":"system","command":"screenshot"},
+    {"type":"text","text":"Thanks for watching!\nSee you","press_enter":true},
+    {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]}
+  ],
+  "invalid": [
+    {"type":"open_url","url":"file:///etc/passwd"},
+    {"type":"open_url","url":"https://user:secret@example.com/"},
+    {"type":"open_url","url":"https://example.com/\" & do shell script \"id\""},
+    {"type":"shortcut","key":"F1","modifiers":[]},
+    {"type":"shortcut","key":"key code 36","modifiers":[]},
+    {"type":"media","command":"fast_forward"},
+    {"type":"system","command":"lock_screen"},
+    {"type":"text","text":""},
+    {"type":"text","text":"bell\u0007"},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"}]},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"toggle_mute"}]}]},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"volume_from_position"}]}
+  ]
+}

@@ -111,6 +111,48 @@ impl Iterator for JpegPackets<'_> {
 impl ExactSizeIterator for JpegPackets<'_> {}
 impl std::iter::FusedIterator for JpegPackets<'_> {}
 
+/// Explicitly uploads one key's encoded JPEG using complete output reports.
+///
+/// Same as [`display_jpeg_with_pacing`] without a pacing hook.
+///
+/// # Errors
+/// Same as [`display_jpeg_with_pacing`].
+pub fn display_jpeg<T: ReportTransport + ?Sized>(
+    transport: &T,
+    key_index: u8,
+    jpeg: &[u8],
+    output_report_length: usize,
+) -> HidResult<usize> {
+    display_jpeg_with_pacing(transport, key_index, jpeg, output_report_length, |_| {})
+}
+
+/// Explicitly uploads one key's encoded JPEG, mirroring the dial writer.
+///
+/// Validates the key index, the complete image, and `output_report_length` (from
+/// the selected interface's descriptor, including the report ID) before the
+/// first write. Writes [`JpegPackets`] in order and returns the report count.
+/// `between_chunks` receives the number of reports already written and runs
+/// after each successful write except the last. Stops at the first error or
+/// short write without retrying or reading an acknowledgement; earlier reports
+/// may already have reached the device. Does not enter software mode, which the
+/// caller must do first. Hardware acceptance, pacing, and key placement are
+/// unverified.
+///
+/// # Errors
+/// Returns validation errors before any write, transport failures, or a write
+/// count that differs from the report length as
+/// [`HidError::IncompleteSendError`] (see [`crate::ShortWrite::from_error`]).
+pub fn display_jpeg_with_pacing<T: ReportTransport + ?Sized>(
+    transport: &T,
+    key_index: u8,
+    jpeg: &[u8],
+    output_report_length: usize,
+    between_chunks: impl FnMut(usize),
+) -> HidResult<usize> {
+    let packets = JpegPackets::new(key_index, jpeg, output_report_length)?;
+    crate::transport::write_reports(transport, packets, between_chunks)
+}
+
 /// Builds the explicit command to enter (`true`) or leave (`false`) software mode.
 ///
 /// The native setter sends `03 3a <bool>` in a 32-byte feature report. Both
@@ -137,7 +179,7 @@ pub fn set_software_mode<T: ReportTransport + ?Sized>(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
+    use std::{cell::RefCell, collections::VecDeque};
 
     use hidapi::HidError;
 
@@ -147,6 +189,8 @@ mod tests {
     struct Fake {
         reports: RefCell<Vec<Vec<u8>>>,
         fail: bool,
+        outputs: RefCell<Vec<Vec<u8>>>,
+        output_results: RefCell<VecDeque<HidResult<usize>>>,
     }
 
     impl ReportTransport for Fake {
@@ -165,6 +209,13 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+        fn write_output(&self, data: &[u8]) -> HidResult<usize> {
+            self.outputs.borrow_mut().push(data.to_vec());
+            self.output_results
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or(Ok(data.len()))
         }
     }
 
@@ -372,6 +423,94 @@ mod tests {
                 .to_string()
                 .contains("Dial JPEG dimensions must be 240×240")
         );
+    }
+
+    #[test]
+    fn live_upload_writes_every_packet_in_order_with_pacing_between_reports() {
+        for key_index in [0, 7, 14] {
+            let fake = Fake::default();
+            let mut calls = Vec::new();
+            let count = display_jpeg_with_pacing(&fake, key_index, REAL_JPEG, 65, |sent| {
+                assert_eq!(fake.outputs.borrow().len(), sent);
+                calls.push(sent);
+            })
+            .unwrap();
+            let expected: Vec<_> = JpegPackets::new(key_index, REAL_JPEG, 65)
+                .unwrap()
+                .collect();
+            assert!(expected.len() > 1);
+            assert_eq!(count, expected.len());
+            assert_eq!(fake.outputs.borrow().as_slice(), expected.as_slice());
+            assert_eq!(calls, (1..count).collect::<Vec<_>>());
+            assert!(fake.reports.borrow().is_empty());
+        }
+        let single = Fake::default();
+        let mut called = false;
+        let count = display_jpeg_with_pacing(&single, 3, REAL_JPEG, REAL_JPEG.len() + 8, |_| {
+            called = true
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        assert!(!called);
+        assert_eq!(display_jpeg(&Fake::default(), 3, REAL_JPEG, 65).unwrap(), {
+            JpegPackets::new(3, REAL_JPEG, 65).unwrap().len()
+        });
+    }
+
+    #[test]
+    fn live_upload_stops_on_short_write_or_error_without_retry() {
+        for (result, short) in [
+            (Ok(64), Some(64)),
+            (Ok(66), Some(66)),
+            (Ok(0), Some(0)),
+            (
+                Err(HidError::HidApiError {
+                    message: "disconnected".into(),
+                }),
+                None,
+            ),
+        ] {
+            let fake = Fake {
+                output_results: RefCell::new(VecDeque::from([Ok(65), result])),
+                ..Fake::default()
+            };
+            let mut calls = 0;
+            let error =
+                display_jpeg_with_pacing(&fake, 2, REAL_JPEG, 65, |_| calls += 1).unwrap_err();
+            assert_eq!(
+                crate::ShortWrite::from_error(&error),
+                short.map(|written| crate::ShortWrite {
+                    written,
+                    expected: 65
+                })
+            );
+            assert_eq!(fake.outputs.borrow().len(), 2);
+            assert_eq!(calls, 1);
+        }
+    }
+
+    #[test]
+    fn live_upload_validates_everything_before_the_first_write() {
+        let fake = Fake::default();
+        let mut truncated = REAL_JPEG.to_vec();
+        truncated.pop();
+        assert!(display_jpeg(&fake, 0, &truncated, 65).is_err());
+        assert!(display_jpeg(&fake, 0, &[], 65).is_err());
+        assert!(display_jpeg(&fake, 15, REAL_JPEG, 65).is_err());
+        assert!(display_jpeg(&fake, 0, REAL_JPEG, 8).is_err());
+        let dial_sized = {
+            let frame = REAL_JPEG
+                .windows(2)
+                .position(|bytes| bytes == [0xff, 0xc0])
+                .unwrap();
+            let mut image = REAL_JPEG.to_vec();
+            image[frame + 8] = 71;
+            image
+        };
+        let error = display_jpeg(&fake, 0, &dial_sized, 65).unwrap_err();
+        assert_eq!(crate::ShortWrite::from_error(&error), None);
+        assert!(fake.outputs.borrow().is_empty());
+        assert!(fake.reports.borrow().is_empty());
     }
 
     // Synthetic entropy expansion tests framing and sequence bounds only; the

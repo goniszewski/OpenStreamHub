@@ -637,3 +637,240 @@ fn run_help_explains_tee_capture_and_action_error_policy() {
     assert!(help.contains("--stop-on-action-error"), "{help}");
     assert!(help.contains("1 to 1000 ms"), "{help}");
 }
+
+#[test]
+fn dial_function_replay_switches_on_short_clicks_and_never_dispatches_a_click() {
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/dial-functions.json");
+    let validated = run(&["validate", profile.to_str().unwrap()]);
+    assert!(validated.status.success(), "{validated:?}");
+    assert_eq!(output_records(&validated)[0]["binding_count"], 8);
+
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.to_str().unwrap(),
+        fixture("m131e-dial-functions-synthetic.jsonl")
+            .to_str()
+            .unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    let start = &records[0];
+    assert_eq!(start["type"], "service_start");
+    assert_eq!(
+        start["details"]["dial_functions"],
+        json!({"count":3, "names":["Volume","Scroll","Apps"], "initial_index":0,
+               "short_press":"switches_function", "resets_on_restart":true}),
+    );
+    let events: Vec<&Value> = records.iter().filter(|r| r["type"] == "event").collect();
+
+    // Every planned action names the function that selected it.
+    let planned: Vec<_> = events
+        .iter()
+        .filter(|r| r["status"] == "planned")
+        .map(|r| {
+            (
+                r["dial_function"]["name"].clone(),
+                r["dial_function"]["index"].clone(),
+                r["event"]["gesture"].clone(),
+                r["action"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        planned,
+        vec![
+            (
+                json!("Volume"),
+                json!(0),
+                json!("right"),
+                json!({"type":"volume","delta":5})
+            ),
+            (
+                json!("Volume"),
+                json!(0),
+                json!("left"),
+                json!({"type":"volume","delta":-5})
+            ),
+            (
+                json!("Scroll"),
+                json!(1),
+                json!("right"),
+                json!({"type":"shortcut","key":"j","modifiers":[]})
+            ),
+            (
+                json!("Scroll"),
+                json!(1),
+                json!("right"),
+                json!({"type":"shortcut","key":"j","modifiers":[]})
+            ),
+            (
+                json!("Apps"),
+                json!(2),
+                json!("long_press"),
+                json!({"type":"launch_app","bundle_id":"com.apple.finder"})
+            ),
+            (
+                json!("Volume"),
+                json!(0),
+                json!("right"),
+                json!({"type":"volume","delta":5})
+            ),
+            (
+                json!("Scroll"),
+                json!(1),
+                json!("left"),
+                json!({"type":"shortcut","key":"k","modifiers":[]})
+            ),
+        ],
+    );
+
+    // Short clicks (including one just under 600 ms) switch and wrap around.
+    let switches: Vec<_> = events
+        .iter()
+        .filter(|r| r["status"] == "dial_function")
+        .collect();
+    assert_eq!(
+        switches
+            .iter()
+            .map(|r| r["navigation"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"from_function":"Volume","to_function":"Scroll","index":1,"count":3}),
+            json!({"from_function":"Scroll","to_function":"Apps","index":2,"count":3}),
+            json!({"from_function":"Apps","to_function":"Volume","index":0,"count":3}),
+            json!({"from_function":"Volume","to_function":"Scroll","index":1,"count":3}),
+        ],
+    );
+    for switch in &switches {
+        assert_eq!(switch["event"]["gesture"], "short_press");
+        assert!(switch["action"].is_null());
+        assert!(switch["binding"].is_null());
+        assert!(switch.get("dial_function").is_none());
+        assert_eq!(switch["schema_version"], 1);
+    }
+    // A long press without a binding in the current function stays unbound.
+    let unbound_long = events
+        .iter()
+        .find(|r| r["event"]["gesture"] == "long_press" && r["status"] == "unbound")
+        .unwrap();
+    assert_eq!(unbound_long["dial_function"]["name"], "Scroll");
+    // Raw transitions never act.
+    assert!(
+        events
+            .iter()
+            .filter(|r| matches!(r["event"]["gesture"].as_str(), Some("pressed" | "released")))
+            .all(|r| r["status"] == "unbound")
+    );
+    assert!(!records.iter().any(|r| matches!(
+        r["type"].as_str(),
+        Some("action_executed" | "action_failed")
+    )));
+    let end = records.last().unwrap();
+    assert_eq!(end["type"], "service_end");
+    assert_eq!(end["action_count"], 7);
+    assert_eq!(end["dial_function_switch_count"], 4);
+    assert_eq!(end["dropped_dial_function_count"], 0);
+    assert_eq!(end["report_count"], 19);
+}
+
+#[test]
+fn profiles_without_dial_functions_keep_flat_short_press_and_omit_function_fields() {
+    let output = replay(&fixture("m131e-software-derived-synthetic.jsonl"));
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    assert!(records[0]["details"].get("dial_functions").is_none());
+    assert!(records.iter().all(|r| r.get("dial_function").is_none()));
+    assert!(records.iter().all(|r| r["status"] != "dial_function"));
+    assert_eq!(records.last().unwrap()["dial_function_switch_count"], 0);
+}
+
+#[test]
+fn display_sync_rejects_invalid_combinations_before_any_hid_access() {
+    let keypad =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/keypad-folders.json");
+    for (profile, extra, expected) in [
+        (keypad, &[][..], "--display-sync requires --software-mode"),
+        (
+            example_profile(),
+            &["--software-mode"][..],
+            "--display-sync requires a schema-2 keypad profile",
+        ),
+    ] {
+        let mut arguments = vec![
+            "run",
+            "--profile",
+            profile.to_str().unwrap(),
+            "--path-hex",
+            "ab",
+            "--display-sync",
+        ];
+        arguments.extend_from_slice(extra);
+        let output = run(&arguments);
+        assert_failure(&output, expected);
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !error.contains("inventory"),
+            "must fail before HID: {error}"
+        );
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn run_help_marks_display_sync_as_experimental_and_unverified() {
+    let output = run(&["run", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--display-sync"), "{help}");
+    assert!(help.contains("hardware-unverified"), "{help}");
+    assert!(help.contains("Requires --software-mode"), "{help}");
+}
+
+#[test]
+fn replay_records_never_contain_snippet_text_or_url_paths_and_queries() {
+    let profile = TempFile::new(
+        r#"{"schema_version":1,"name":"redaction","bindings":[
+        {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"text","text":"hunter2-secret-snippet","press_enter":true}},
+        {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"open_url","url":"https://Example.com:8443/reset?token=s3cr3t#frag"}},
+        {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"multi_action","actions":[
+            {"type":"text","text":"nested-secret","press_enter":false},
+            {"type":"open_url","url":"https://nested.test/p?k=v"}]}}
+        ]}"#,
+    );
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.0.to_str().unwrap(),
+        fixture("m003k-synthetic.jsonl").to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for secret in [
+        "hunter2",
+        "s3cr3t",
+        "frag",
+        "reset",
+        "nested-secret",
+        "p?k=v",
+        "/p",
+    ] {
+        assert!(!stdout.contains(secret), "leaked {secret}: {stdout}");
+    }
+    let actions = planned_actions(&output_records(&output));
+    assert!(actions.contains(&json!({"type":"text","chars":22,"press_enter":true})));
+    assert!(actions.contains(&json!({"type":"open_url","origin":"https://Example.com:8443"})));
+    assert!(actions.contains(&json!({"type":"multi_action","actions":[
+        {"type":"text","chars":13,"press_enter":false},
+        {"type":"open_url","origin":"https://nested.test"}]})));
+}
+
+#[test]
+fn replay_logs_other_actions_unchanged() {
+    let output = replay(&fixture("m003k-synthetic.jsonl"));
+    assert!(output.status.success(), "{output:?}");
+    let actions = planned_actions(&output_records(&output));
+    assert!(actions.contains(&json!({"type":"shortcut","key":"v","modifiers":["command"]})));
+    assert!(actions.contains(&json!({"type":"toggle_mute"})));
+}

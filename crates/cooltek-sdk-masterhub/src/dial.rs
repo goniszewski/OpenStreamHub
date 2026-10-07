@@ -307,6 +307,9 @@ impl std::iter::FusedIterator for JpegPackets<'_> {}
 ///
 /// # Errors
 /// Returns validation errors, transport failures, or incomplete write counts.
+/// A write count that differs from the report length is returned as
+/// [`HidError::IncompleteSendError`]; [`crate::ShortWrite::from_error`]
+/// extracts it so callers can avoid retrying a partial image.
 pub fn display_jpeg<T: ReportTransport + ?Sized>(
     transport: &T,
     jpeg: &[u8],
@@ -329,23 +332,10 @@ pub fn display_jpeg_with_pacing<T: ReportTransport + ?Sized>(
     transport: &T,
     jpeg: &[u8],
     output_report_length: usize,
-    mut between_chunks: impl FnMut(usize),
+    between_chunks: impl FnMut(usize),
 ) -> HidResult<usize> {
     let packets = JpegPackets::new(jpeg, output_report_length)?;
-    let count = packets.len();
-    for (index, report) in packets.enumerate() {
-        if index > 0 {
-            between_chunks(index);
-        }
-        let written = transport.write_output(&report)?;
-        if written != report.len() {
-            return Err(invalid(format!(
-                "Dial image output write returned {written} bytes for a {}-byte report",
-                report.len()
-            )));
-        }
-    }
-    Ok(count)
+    crate::transport::write_reports(transport, packets, between_chunks)
 }
 
 /// Checks the conservative JPEG format accepted by [`JpegPackets`], without I/O.
@@ -749,12 +739,24 @@ mod tests {
     #[test]
     fn short_or_failed_output_stops_without_retry_or_acknowledgement() {
         let jpeg = real_jpeg();
-        for result in [Ok(71), Ok(73), Err(invalid("disconnected"))] {
+        for (result, short) in [
+            (Ok(71), Some(71)),
+            (Ok(73), Some(73)),
+            (Ok(0), Some(0)),
+            (Err(invalid("disconnected")), None),
+        ] {
             let fake = Fake {
                 output_results: RefCell::new(VecDeque::from([Ok(72), result])),
                 ..Fake::default()
             };
-            assert!(display_jpeg(&fake, &jpeg, 72).is_err());
+            let error = display_jpeg(&fake, &jpeg, 72).unwrap_err();
+            assert_eq!(
+                crate::ShortWrite::from_error(&error),
+                short.map(|written| crate::ShortWrite {
+                    written,
+                    expected: 72
+                })
+            );
             assert_eq!(fake.output_writes.borrow().len(), 2);
             assert!(fake.feature_queries.borrow().is_empty());
             assert!(fake.feature_writes.borrow().is_empty());

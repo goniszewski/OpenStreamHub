@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { Binding, Profile } from './contracts';
-import { bindingWarnings, entryOnControl, filterBindings, listBindings, warningsForControl } from './binding-model';
+import type { Binding, DialFunction, Profile } from './contracts';
+import { bindingWarnings, dialEditorGestures, editorGestures, entryOnControl, filterBindings, listBindings, warningsForControl } from './binding-model';
 import { editKeypadBinding, keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { browserProfile } from './ui-model';
 
@@ -119,5 +120,66 @@ describe('bindingWarnings', () => {
     const keyEntries = listBindings(keypad);
     expect(entryOnControl(keyEntries[0], { module: 'm4315', control: 2, keypadPageId: 'root' })).toBe(true);
     expect(entryOnControl(keyEntries[0], { module: 'm4315', control: 2, keypadPageId: 'other' })).toBe(false);
+  });
+});
+
+describe('dial functions in listBindings and bindingWarnings', () => {
+  const fixture = JSON.parse(readFileSync(new URL('../../../crates/cooltek-sdk-service/tests/fixtures/dial-functions.json', import.meta.url), 'utf8')) as Profile;
+  const withFunctions = (functions: DialFunction[], ...bindings: Binding[]): Profile => ({ ...profileWith(...bindings), dial_functions: functions });
+
+  it('lists function bindings under their function after the flat bindings', () => {
+    const entries = listBindings(fixture);
+    const dialEntries = entries.filter(entry => entry.dialFunction);
+    expect(entries[0].id).toBe('flat:0');
+    expect(dialEntries.map(entry => entry.id)).toEqual(['dial:0:0', 'dial:0:1', 'dial:0:2', 'dial:0:3', 'dial:1:0', 'dial:1:1', 'dial:2:0']);
+    expect(dialEntries[1]).toMatchObject({ module: 'm131e', control: 0, gesture: 'right', serial: 'desk-dial', title: 'Encoder · Volume · Right', dialFunction: { index: 0, name: 'Volume' } });
+    expect(dialEntries.at(-1)!.title).toBe('Encoder · Apps · Long press');
+    expect(filterBindings(entries, 'scroll').map(entry => entry.id)).toEqual(['dial:1:0', 'dial:1:1']);
+  });
+
+  it('keeps a valid fixture free of warnings, including serial and wildcard on one gesture', () => {
+    expect(bindingWarnings(fixture)).toEqual([]);
+  });
+
+  it('warns about flat encoder bindings next to dial functions, which the service rejects', () => {
+    const warnings = bindingWarnings(withFunctions([{ name: 'A', bindings: [{ gesture: 'right', action: mute }] }], dial('short_press'), dial('released')));
+    const conflict = warnings.find(warning => warning.kind === 'dial-flat-conflict')!;
+    expect(conflict.entryIds).toEqual(['flat:0', 'flat:1']);
+    expect(conflict.message).toContain('rejects flat encoder bindings');
+    // Flat Release + Short press overlap is still reported, but never for function bindings.
+    expect(warnings.filter(warning => warning.kind === 'release-overlap')).toHaveLength(1);
+  });
+
+  it('warns about functions without bindings, duplicate and invalid names, and duplicate selectors per function', () => {
+    const right = { gesture: 'right', action: mute } as const;
+    const warnings = bindingWarnings(withFunctions([
+      { name: 'Same', bindings: [right, right] }, { name: 'Same', bindings: [right] }, { name: ' Padded', bindings: [] }, { name: 'Zero​width', bindings: [right] },
+    ]));
+    expect(warnings.map(warning => warning.kind).sort()).toEqual(['dial-function-empty', 'dial-function-name', 'dial-function-name', 'dial-function-name', 'duplicate-selector'].sort());
+    expect(warnings.find(warning => warning.kind === 'duplicate-selector')!.entryIds).toEqual(['dial:0:0', 'dial:0:1']);
+    const names = warnings.filter(warning => warning.kind === 'dial-function-name').map(warning => warning.id);
+    // The duplicate is reported once, at the second occurrence.
+    expect(names).toEqual(['dial-function-name:1', 'dial-function-name:2', 'dial-function-name:3']);
+    expect(warnings.find(warning => warning.kind === 'dial-function-empty')!.message).toContain('does nothing');
+    // The same selector in two different functions is not a duplicate.
+    expect(bindingWarnings(withFunctions([{ name: 'A', bindings: [right] }, { name: 'B', bindings: [right] }]))).toEqual([]);
+  });
+
+  it('never offers encoder gestures, including Short press, to the flat editor while dial functions exist', () => {
+    expect(editorGestures(fixture, 'm131e')).toEqual([]);
+    expect(editorGestures(fixture, 'm003k')).toContain('clockwise');
+    expect(editorGestures(profileWith(), 'm131e')).toContain('short_press');
+    expect(dialEditorGestures).toEqual(['right', 'left', 'long_press']);
+  });
+});
+
+describe('Inspector warnings and dial functions', () => {
+  it('keeps warnings about dial function bindings out of the Inspector, where Show could not reach them', () => {
+    const right = { gesture: 'right', action: mute } as const;
+    const profile: Profile = { ...profileWith(dial('short_press')), dial_functions: [{ name: 'A', bindings: [right, right] }, { name: 'A', bindings: [right] }] };
+    const warnings = bindingWarnings(profile);
+    const shown = warningsForControl(warnings, listBindings(profile), { module: 'm131e', control: 0 });
+    expect(warnings.some(warning => warning.kind === 'duplicate-selector')).toBe(true);
+    expect(shown.map(warning => warning.kind)).toEqual(['dial-flat-conflict']);
   });
 });

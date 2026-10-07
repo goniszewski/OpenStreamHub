@@ -99,6 +99,83 @@ pub enum Modifier {
     Shift,
 }
 
+/// Named non-character keys accepted by `shortcut` and their macOS virtual key codes.
+///
+/// The table is the allow-list: a `shortcut` key is either one ASCII
+/// alphanumeric byte or space (sent as a literal keystroke) or exactly one of
+/// these lowercase names (sent by integer key code). Codes are the Carbon
+/// `kVK_*` values from `HIToolbox/Events.h`; hardware behaviour is unverified.
+pub(crate) const NAMED_KEYS: &[(&str, u8)] = &[
+    ("return", 36),
+    ("tab", 48),
+    ("space", 49),
+    ("delete", 51),
+    ("escape", 53),
+    ("forward_delete", 117),
+    ("home", 115),
+    ("end", 119),
+    ("page_up", 116),
+    ("page_down", 121),
+    ("arrow_left", 123),
+    ("arrow_right", 124),
+    ("arrow_down", 125),
+    ("arrow_up", 126),
+    ("f1", 122),
+    ("f2", 120),
+    ("f3", 99),
+    ("f4", 118),
+    ("f5", 96),
+    ("f6", 97),
+    ("f7", 98),
+    ("f8", 100),
+    ("f9", 101),
+    ("f10", 109),
+    ("f11", 103),
+    ("f12", 111),
+    ("f13", 105),
+    ("f14", 107),
+    ("f15", 113),
+    ("f16", 106),
+    ("f17", 64),
+    ("f18", 79),
+    ("f19", 80),
+    ("f20", 90),
+];
+
+/// Returns the macOS virtual key code of an allow-listed named key.
+pub(crate) fn named_key_code(name: &str) -> Option<u8> {
+    NAMED_KEYS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, code)| *code)
+}
+
+/// A media transport command, matching the official `media-track-control` options.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaCommand {
+    /// Toggle playback.
+    PlayPause,
+    /// Skip to the next track.
+    NextTrack,
+    /// Return to the previous track.
+    PreviousTrack,
+    /// Stop playback.
+    Stop,
+}
+
+/// A fixed system command, a subset of the official app's system actions.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemCommand {
+    /// Command-Z in the focused application.
+    Undo,
+    /// Shift-Command-Z in the focused application.
+    Redo,
+    /// Capture the whole screen to the clipboard.
+    Screenshot,
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -120,9 +197,10 @@ pub enum Action {
     VolumeFromPosition,
     /// Invert the default output's current mute state.
     ToggleMute,
-    /// Send one ASCII alphanumeric key or space with explicit modifiers.
+    /// Send one key with explicit modifiers.
     Shortcut {
-        /// Exactly one ASCII alphanumeric byte or ASCII space.
+        /// One ASCII alphanumeric byte or ASCII space, or one allow-listed
+        /// named key such as `arrow_left`, `return`, or `f5`.
         key: String,
         /// Distinct modifiers; order does not change the action.
         modifiers: Vec<Modifier>,
@@ -132,6 +210,143 @@ pub enum Action {
         /// Dotted ASCII identifier, such as `com.apple.calculator`.
         bundle_id: String,
     },
+    /// Open an `http` or `https` URL with the default handler.
+    OpenUrl {
+        /// Printable ASCII URL with a host and no user information.
+        url: String,
+    },
+    /// Send a media transport command. Plan-only on the macOS backend.
+    Media {
+        /// Transport command.
+        command: MediaCommand,
+    },
+    /// Run a fixed system command.
+    System {
+        /// System command.
+        command: SystemCommand,
+    },
+    /// Paste a bounded text snippet into the focused application.
+    Text {
+        /// Nonempty text without control characters other than newline and
+        /// tab, and without invisible format (`Cf`) or line/paragraph
+        /// separator (`Zl`/`Zp`) characters.
+        text: String,
+        /// Press Return after pasting.
+        press_enter: bool,
+    },
+    /// Run 2 to 8 executable, non-nested actions in order with fixed spacing.
+    MultiAction {
+        /// Ordered steps; a failure stops the remaining steps.
+        actions: Vec<Action>,
+    },
+}
+
+/// Characters a `text` snippet must not contain beyond the control-character
+/// rule: Unicode `Cf` (format) characters such as zero-width spaces, bidi
+/// embeddings/overrides/isolates and the BOM, plus the `Zl`/`Zp` line and
+/// paragraph separators. They are invisible in an editor, so a profile could
+/// otherwise paste text that differs from what the user reviewed.
+fn is_invisible_text_character(c: char) -> bool {
+    // U+2065 is unassigned but sits inside the reserved invisible-operator
+    // block, so the whole U+2060..=U+206F range is rejected.
+    crate::dial::is_format_character(c) || matches!(c, '\u{2028}' | '\u{2029}' | '\u{2065}')
+}
+
+fn validate_url(url: &str) -> Result<(), String> {
+    const ALLOWED: &[u8] = b"-._~:/?#[]@!$&'()*+,;=%";
+    if url.len() > Action::MAX_URL_BYTES {
+        return Err(format!(
+            "URL must be at most {} bytes",
+            Action::MAX_URL_BYTES
+        ));
+    }
+    if !url
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || ALLOWED.contains(&byte))
+    {
+        return Err(
+            "URL must contain only unreserved, reserved, or percent-encoded ASCII characters"
+                .into(),
+        );
+    }
+    let bytes = url.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte == b'%'
+            && !(bytes.get(index + 1).is_some_and(u8::is_ascii_hexdigit)
+                && bytes.get(index + 2).is_some_and(u8::is_ascii_hexdigit))
+        {
+            return Err("URL percent escapes must use two hexadecimal digits".into());
+        }
+    }
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .ok_or("URL must start with lowercase http:// or https://")?;
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(authority_end);
+    if authority.contains('@') {
+        return Err("URL must not contain user information".into());
+    }
+    if tail.contains(['[', ']']) {
+        return Err("URL brackets are allowed only around an IPv6 host".into());
+    }
+    let (_host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
+        let (host, after) = bracketed
+            .split_once(']')
+            .ok_or("URL IPv6 host must be closed by ]")?;
+        if host.is_empty()
+            || !host.contains(':')
+            || !host
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.')
+        {
+            return Err("URL IPv6 host is malformed".into());
+        }
+        match after {
+            "" => (host, None),
+            _ => (
+                host,
+                Some(
+                    after
+                        .strip_prefix(':')
+                        .ok_or("URL IPv6 host must be followed by a port or path")?,
+                ),
+            ),
+        }
+    } else {
+        if authority.contains(['[', ']']) {
+            return Err("URL brackets are allowed only around an IPv6 host".into());
+        }
+        let (host, port) = match authority.split_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        };
+        if host.is_empty()
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+                    || !label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+        {
+            return Err(
+                "URL must have a host of dot-separated letters, digits, and hyphens".into(),
+            );
+        }
+        (host, port)
+    };
+    if let Some(port) = port
+        && (port.is_empty()
+            || port.len() > 5
+            || !port.bytes().all(|byte| byte.is_ascii_digit())
+            || !port.parse::<u16>().is_ok_and(|port| port != 0))
+    {
+        return Err("URL port must be a number between 1 and 65535".into());
+    }
+    Ok(())
 }
 
 impl<'de> Deserialize<'de> for Action {
@@ -160,6 +375,23 @@ impl<'de> Deserialize<'de> for Action {
             LaunchApp {
                 bundle_id: String,
             },
+            OpenUrl {
+                url: String,
+            },
+            Media {
+                command: MediaCommand,
+            },
+            System {
+                command: SystemCommand,
+            },
+            Text {
+                text: String,
+                #[serde(default)]
+                press_enter: bool,
+            },
+            MultiAction {
+                actions: Vec<Action>,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -168,11 +400,42 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ToggleMute {} => Self::ToggleMute,
             Shape::Shortcut { key, modifiers } => Self::Shortcut { key, modifiers },
             Shape::LaunchApp { bundle_id } => Self::LaunchApp { bundle_id },
+            Shape::OpenUrl { url } => Self::OpenUrl { url },
+            Shape::Media { command } => Self::Media { command },
+            Shape::System { command } => Self::System { command },
+            Shape::Text { text, press_enter } => Self::Text { text, press_enter },
+            Shape::MultiAction { actions } => Self::MultiAction { actions },
         })
     }
 }
 
 impl Action {
+    /// Maximum `open_url` URL length in bytes.
+    pub const MAX_URL_BYTES: usize = 2048;
+    /// Maximum `text` snippet length in UTF-8 bytes.
+    pub const MAX_TEXT_BYTES: usize = 2048;
+    /// Minimum number of `multi_action` steps.
+    pub const MIN_MULTI_ACTION_STEPS: usize = 2;
+    /// Maximum number of `multi_action` steps.
+    pub const MAX_MULTI_ACTION_STEPS: usize = 8;
+
+    /// The JSON `type` tag of this action, for diagnostics.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Volume { .. } => "volume",
+            Self::SetVolume { .. } => "set_volume",
+            Self::VolumeFromPosition => "volume_from_position",
+            Self::ToggleMute => "toggle_mute",
+            Self::Shortcut { .. } => "shortcut",
+            Self::LaunchApp { .. } => "launch_app",
+            Self::OpenUrl { .. } => "open_url",
+            Self::Media { .. } => "media",
+            Self::System { .. } => "system",
+            Self::Text { .. } => "text",
+            Self::MultiAction { .. } => "multi_action",
+        }
+    }
+
     /// Validates bounds before an action can reach an operating-system adapter.
     pub fn validate(&self) -> Result<(), String> {
         match self {
@@ -183,10 +446,13 @@ impl Action {
                 Err("absolute volume must be between 0 and 100".into())
             }
             Self::Shortcut { key, modifiers } => {
-                if key.len() != 1
-                    || !key.as_bytes()[0].is_ascii_alphanumeric() && key.as_bytes()[0] != b' '
-                {
-                    return Err("shortcut key must be one ASCII alphanumeric key or space".into());
+                let literal = key.len() == 1
+                    && (key.as_bytes()[0].is_ascii_alphanumeric() || key.as_bytes()[0] == b' ');
+                if !literal && named_key_code(key).is_none() {
+                    return Err(
+                        "shortcut key must be one ASCII alphanumeric key, space, or a supported named key"
+                            .into(),
+                    );
                 }
                 if modifiers.len() > 4 {
                     return Err("shortcut must contain at most four modifiers".into());
@@ -214,10 +480,60 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::OpenUrl { url } => validate_url(url),
+            Self::Text { text, .. } => {
+                if text.is_empty() || text.len() > Self::MAX_TEXT_BYTES {
+                    return Err(format!(
+                        "text must be nonempty and at most {} bytes",
+                        Self::MAX_TEXT_BYTES
+                    ));
+                }
+                if text
+                    .chars()
+                    .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+                {
+                    return Err(
+                        "text must not contain control characters other than newline and tab"
+                            .into(),
+                    );
+                }
+                if text.chars().any(is_invisible_text_character) {
+                    return Err(
+                        "text must not contain invisible format or line/paragraph separator characters"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
+            Self::MultiAction { actions } => {
+                if !(Self::MIN_MULTI_ACTION_STEPS..=Self::MAX_MULTI_ACTION_STEPS)
+                    .contains(&actions.len())
+                {
+                    return Err(format!(
+                        "multi_action must contain {} to {} steps",
+                        Self::MIN_MULTI_ACTION_STEPS,
+                        Self::MAX_MULTI_ACTION_STEPS
+                    ));
+                }
+                for (index, step) in actions.iter().enumerate() {
+                    if matches!(step, Self::MultiAction { .. } | Self::VolumeFromPosition) {
+                        return Err(format!(
+                            "multi_action step {}: {} cannot be a multi_action step",
+                            index + 1,
+                            step.type_name()
+                        ));
+                    }
+                    step.validate()
+                        .map_err(|error| format!("multi_action step {}: {error}", index + 1))?;
+                }
+                Ok(())
+            }
             Self::Volume { .. }
             | Self::SetVolume { .. }
             | Self::VolumeFromPosition
-            | Self::ToggleMute => Ok(()),
+            | Self::ToggleMute
+            | Self::Media { .. }
+            | Self::System { .. } => Ok(()),
         }
     }
 
@@ -631,5 +947,424 @@ mod tests {
             .validate()
             .is_ok()
         );
+    }
+
+    fn url(url: &str) -> Action {
+        Action::OpenUrl { url: url.into() }
+    }
+
+    fn key(key: &str, modifiers: Vec<Modifier>) -> Action {
+        Action::Shortcut {
+            key: key.into(),
+            modifiers,
+        }
+    }
+
+    fn text(text: &str) -> Action {
+        Action::Text {
+            text: text.into(),
+            press_enter: false,
+        }
+    }
+
+    #[test]
+    fn new_actions_have_exact_strict_json_round_trips() {
+        for (json, action) in [
+            (
+                r#"{"type":"open_url","url":"https://example.com/a?b=1#c"}"#,
+                url("https://example.com/a?b=1#c"),
+            ),
+            (
+                r#"{"type":"shortcut","key":"arrow_left","modifiers":["command","shift"]}"#,
+                key("arrow_left", vec![Modifier::Command, Modifier::Shift]),
+            ),
+            (
+                r#"{"type":"media","command":"play_pause"}"#,
+                Action::Media {
+                    command: MediaCommand::PlayPause,
+                },
+            ),
+            (
+                r#"{"type":"media","command":"previous_track"}"#,
+                Action::Media {
+                    command: MediaCommand::PreviousTrack,
+                },
+            ),
+            (
+                r#"{"type":"system","command":"screenshot"}"#,
+                Action::System {
+                    command: SystemCommand::Screenshot,
+                },
+            ),
+            (
+                r#"{"type":"text","text":"hi\nthere","press_enter":true}"#,
+                Action::Text {
+                    text: "hi\nthere".into(),
+                    press_enter: true,
+                },
+            ),
+            (
+                r#"{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"system","command":"undo"}]}"#,
+                Action::MultiAction {
+                    actions: vec![
+                        Action::ToggleMute,
+                        Action::System {
+                            command: SystemCommand::Undo,
+                        },
+                    ],
+                },
+            ),
+        ] {
+            let decoded: Action = serde_json::from_str(json).unwrap();
+            assert_eq!(decoded, action);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+            assert!(decoded.validate_executable().is_ok(), "{json}");
+        }
+        assert_eq!(
+            serde_json::from_str::<Action>(r#"{"type":"text","text":"x"}"#).unwrap(),
+            text("x")
+        );
+        for json in [
+            r#"{"type":"open_url","url":"https://a.b","extra":1}"#,
+            r#"{"type":"open_url"}"#,
+            r#"{"type":"media","command":"fast_forward"}"#,
+            r#"{"type":"media","command":"play_pause","app":"Music"}"#,
+            r#"{"type":"system","command":"shutdown"}"#,
+            r#"{"type":"system","command":"undo","modifiers":[]}"#,
+            r#"{"type":"text","text":"x","press_enter":"yes"}"#,
+            r#"{"type":"text","text":"x","after_enter":true}"#,
+            r#"{"type":"multi_action","actions":[{"type":"toggle_mute","x":1},{"type":"toggle_mute"}]}"#,
+            r#"{"type":"multi_action","actions":[],"spacing_ms":0}"#,
+            r#"{"type":"multi_action","actions":{"type":"toggle_mute"}}"#,
+            r#"{"type":"run_script","script":"do shell script \"x\""}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn open_url_accepts_only_bounded_http_urls_with_a_host() {
+        for valid in [
+            "https://example.com",
+            "http://localhost:8080/path?q=1&r=2#frag",
+            "https://[::1]:443/",
+            "https://[2001:db8::1]",
+            "https://192.168.0.1/x",
+            "https://example.com/a%20b",
+            "https://example.com:65535/it's",
+            "https://sub.EXAMPLE.com/(x)*+,;=!$~",
+        ] {
+            assert!(url(valid).validate().is_ok(), "{valid}");
+        }
+        let long = format!("https://example.com/{}", "a".repeat(Action::MAX_URL_BYTES));
+        for invalid in [
+            "",
+            "example.com",
+            "ftp://example.com",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "HTTP://example.com",
+            "http:/example.com",
+            "https://",
+            "https:///path",
+            "https://?q",
+            "https://user:pw@example.com",
+            "https://example.com@evil.com/",
+            "https://@example.com",
+            "https://ex ample.com",
+            " https://example.com",
+            "-u https://example.com",
+            "https://example.com/\"; do shell script \"rm -rf ~\"",
+            "https://example.com/\" & do shell script \"x\" & \"",
+            "https://example.com/a\\b",
+            "https://example.com\\@evil.com",
+            "https://example.com/\n",
+            "https://example.com/\r\nx",
+            "https://example.com/\t",
+            "https://example.com/\0",
+            "https://example.com/<script>",
+            "https://example.com/`x`",
+            "https://example.com/%zz",
+            "https://example.com/%4",
+            "https://example.com:0",
+            "https://example.com:65536",
+            "https://example.com:",
+            "https://example.com:8a",
+            "https://-example.com",
+            "https://example-.com",
+            "https://a..com",
+            "https://.example.com",
+            "https://exa_mple.com",
+            "https://é.com",
+            "https://[::1",
+            "https://[zz]",
+            "https://[]",
+            "https://[::1]x",
+            "https://example.com/[x]",
+            "https://ex[a]mple.com",
+            &long,
+        ] {
+            assert!(url(invalid).validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn shortcut_named_keys_are_an_exact_allow_list() {
+        for (name, _) in NAMED_KEYS {
+            assert!(
+                key(
+                    name,
+                    vec![
+                        Modifier::Command,
+                        Modifier::Control,
+                        Modifier::Option,
+                        Modifier::Shift
+                    ]
+                )
+                .validate()
+                .is_ok(),
+                "{name}"
+            );
+        }
+        assert_eq!(NAMED_KEYS.len(), 34);
+        let mut codes: Vec<_> = NAMED_KEYS.iter().map(|(_, code)| *code).collect();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), NAMED_KEYS.len(), "key codes must be distinct");
+        for invalid in [
+            "F1",
+            "f0",
+            "f21",
+            "Return",
+            "enter",
+            "esc",
+            "left",
+            "arrow",
+            "return ",
+            "return;",
+            "\"return\"",
+            "key code 36",
+            "return\n",
+            "36",
+            "\" & do shell script \"x",
+            ";",
+            "-",
+        ] {
+            assert!(key(invalid, vec![]).validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn text_is_bounded_and_free_of_unsafe_control_characters() {
+        for valid in [
+            "hello",
+            "line one\nline two\tend",
+            "zażółć gęślą jaźń",
+            "\"; do shell script \"rm -rf ~\" --",
+            "\\\" & quit",
+        ] {
+            assert!(text(valid).validate().is_ok(), "{valid:?}");
+        }
+        assert!(text(&"x".repeat(Action::MAX_TEXT_BYTES)).validate().is_ok());
+        for invalid in [
+            String::new(),
+            "x".repeat(Action::MAX_TEXT_BYTES + 1),
+            "é".repeat(Action::MAX_TEXT_BYTES / 2 + 1),
+            "a\rb".into(),
+            "\u{7}".into(),
+            "\u{1b}[31m".into(),
+            "nul\0".into(),
+            "\u{85}".into(),
+        ] {
+            assert!(text(&invalid).validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn text_rejects_invisible_format_and_separator_characters() {
+        let mut invisible: Vec<char> = Vec::new();
+        invisible.extend('\u{200B}'..='\u{200F}');
+        invisible.extend('\u{202A}'..='\u{202E}');
+        invisible.extend('\u{2060}'..='\u{2069}');
+        invisible.extend([
+            '\u{2028}',
+            '\u{2029}',
+            '\u{FEFF}',
+            '\u{00AD}',
+            '\u{061C}',
+            '\u{180E}',
+            '\u{206F}',
+            '\u{FFF9}',
+            '\u{E0001}',
+            '\u{E0041}',
+        ]);
+        for character in invisible {
+            let snippet = format!("safe{character}text");
+            assert!(
+                text(&snippet).validate().is_err(),
+                "U+{:04X} must be rejected",
+                character as u32
+            );
+        }
+        for valid in [
+            "Zażółć gęślą jaźń ĄĆĘŁŃÓŚŹŻ",
+            "Thanks! 🎉👍",
+            "heart ❤️ (with variation selector)",
+            "flag 🇵🇱",
+            "日本語 ελληνικά русский",
+            "tab\tand\nnewline",
+        ] {
+            assert!(text(valid).validate().is_ok(), "{valid:?}");
+        }
+        // Emoji ZWJ sequences contain U+200D, so they are rejected too.
+        assert!(text("family 👨\u{200D}👩\u{200D}👧").validate().is_err());
+    }
+
+    #[test]
+    fn multi_action_is_bounded_flat_and_validates_every_step() {
+        let step = Action::ToggleMute;
+        for count in [2, 8] {
+            assert!(
+                Action::MultiAction {
+                    actions: vec![step.clone(); count]
+                }
+                .validate_executable()
+                .is_ok()
+            );
+        }
+        for count in [0, 1, 9] {
+            assert!(
+                Action::MultiAction {
+                    actions: vec![step.clone(); count]
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        let nested = Action::MultiAction {
+            actions: vec![step.clone(), step.clone()],
+        };
+        let error = Action::MultiAction {
+            actions: vec![step.clone(), nested],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(error.contains("step 2: multi_action cannot be a multi_action step"));
+        assert!(
+            Action::MultiAction {
+                actions: vec![Action::VolumeFromPosition, step.clone()]
+            }
+            .validate()
+            .unwrap_err()
+            .contains("step 1: volume_from_position")
+        );
+        assert!(
+            Action::MultiAction {
+                actions: vec![step.clone(), url("ftp://example.com")]
+            }
+            .validate()
+            .unwrap_err()
+            .starts_with("multi_action step 2: URL")
+        );
+        let json = r#"{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"toggle_mute"}]}]}"#;
+        let decoded: Action = serde_json::from_str(json).unwrap();
+        assert!(decoded.validate().is_err());
+    }
+
+    #[test]
+    fn dry_run_plans_new_actions_through_executable_validation() {
+        use crate::{ActionDispatcher, DryRunDispatcher};
+        let mut dispatcher = DryRunDispatcher::default();
+        let plan_only = Action::Media {
+            command: MediaCommand::NextTrack,
+        };
+        let multi = Action::MultiAction {
+            actions: vec![url("https://example.com"), plan_only.clone(), text("x")],
+        };
+        dispatcher.dispatch(&plan_only).unwrap();
+        dispatcher.dispatch(&multi).unwrap();
+        for invalid in [
+            url("file:///etc/passwd"),
+            text(""),
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, multi.clone()],
+            },
+        ] {
+            assert!(dispatcher.dispatch(&invalid).is_err());
+        }
+        assert_eq!(dispatcher.actions, [plan_only, multi]);
+    }
+
+    #[test]
+    fn profiles_accept_new_actions_on_discrete_controls_only() {
+        let mut profile = sample();
+        profile.bindings[0].action = Action::MultiAction {
+            actions: vec![url("https://example.com"), key("f5", vec![])],
+        };
+        assert!(profile.validate().is_ok());
+        let encoded = serde_json::to_vec(&profile).unwrap();
+        assert_eq!(Profile::from_json(&encoded).unwrap(), profile);
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(profile.validate().is_err());
+        let mut profile = sample();
+        profile.bindings[0].action = text("\u{7}");
+        assert!(
+            profile
+                .validate()
+                .unwrap_err()
+                .starts_with("binding 0: text")
+        );
+    }
+
+    #[test]
+    fn existing_profile_files_round_trip_unchanged() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut paths: Vec<_> = std::fs::read_dir(root.join("../../examples/profiles"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        paths.push(root.join("tests/fixtures/dial-functions.json"));
+        assert!(paths.len() > 1);
+        for path in paths {
+            let bytes = std::fs::read(&path).unwrap();
+            let profile = Profile::from_json(&bytes)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert_eq!(
+                serde_json::to_value(&profile).unwrap(),
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                "{}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn shared_action_fixture_matches_the_rust_contract() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/actions.json")).unwrap();
+        let names: Vec<_> = fixture["named_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|name| name.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            NAMED_KEYS.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+        );
+        for json in fixture["valid"].as_array().unwrap() {
+            let action: Action = serde_json::from_value(json.clone()).unwrap();
+            action.validate_executable().unwrap();
+            assert_eq!(&serde_json::to_value(&action).unwrap(), json);
+        }
+        for json in fixture["invalid"].as_array().unwrap() {
+            let rejected = serde_json::from_value::<Action>(json.clone())
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable());
+            assert!(rejected.is_err(), "{json}");
+        }
     }
 }

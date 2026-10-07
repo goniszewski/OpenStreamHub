@@ -80,7 +80,8 @@ function bootstrapFailure(reason: unknown): { message: string; storagePath: stri
   return { message: errorMessage(reason), storagePath: null };
 }
 
-export interface BindingPreviewRequest { module: ServiceModule; control: number; gesture: Gesture; serial: string; faderPosition: number }
+// dialFunction selects the M131E dial function to preview; omitted, the service previews the first one.
+export interface BindingPreviewRequest { module: ServiceModule; control: number; gesture: Gesture; serial: string; faderPosition: number; dialFunction?: number }
 export interface KeypadPreviewRequest { path: string[]; control: number; serial: string }
 
 // Owns the profile draft and every request to the Rust service. Each request
@@ -428,6 +429,7 @@ export class ProfileSession {
       const event = await this.invoke<ReplayEvent>('preview_binding', {
         profile: snapshot, module: request.module, control: request.control, gesture: request.gesture, serialNumber: request.serial || null,
         value: request.module === 'm005s' ? { type: 'position', raw: request.faderPosition, maximum: faderMaximum } : null,
+        ...(request.dialFunction === undefined ? {} : { dialFunction: request.dialFunction }),
       });
       if (sequence === this.sequence.preview) this.set({ preview: { status: 'completed', event } });
     } catch (reason) {

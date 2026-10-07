@@ -58,6 +58,104 @@ impl ReportTransport for HidDevice {
     }
 }
 
+/// Forwards every operation to a shared transport.
+///
+/// These impls let one opened device be shared, for example between an input
+/// reader and a display writer on the same thread (`Rc`), without any new I/O.
+macro_rules! forward_transport {
+    ($($wrapper:ty),+) => {$(
+        impl<T: ReportTransport + ?Sized> ReportTransport for $wrapper {
+            fn read_timeout(&self, buffer: &mut [u8], timeout_ms: i32) -> HidResult<usize> {
+                (**self).read_timeout(buffer, timeout_ms)
+            }
+
+            fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+                (**self).get_feature_report(buffer)
+            }
+
+            fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+                (**self).send_feature_report(data)
+            }
+
+            fn write_output(&self, data: &[u8]) -> HidResult<usize> {
+                (**self).write_output(data)
+            }
+
+            fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+                (**self).get_report_descriptor(buffer)
+            }
+        }
+    )+};
+}
+
+forward_transport!(&T, std::rc::Rc<T>, std::sync::Arc<T>);
+
+/// A display output report that the transport accepted only partly.
+///
+/// The display writers ([`crate::dial::display_jpeg_with_pacing`] and
+/// [`crate::keypad::display_jpeg_with_pacing`]) report a write count that differs
+/// from the report length as [`HidError::IncompleteSendError`], the typed HIDAPI
+/// variant. Use [`ShortWrite::from_error`] to tell it apart from other failures.
+/// A short write must never be retried: earlier reports of the image already
+/// reached the device, and the device may now hold a partial image.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ShortWrite {
+    /// Bytes the transport reported as written. It can exceed `expected` when a
+    /// backend reports an impossible count; that is treated the same way.
+    pub written: usize,
+    /// Bytes in the complete output report, including its report ID.
+    pub expected: usize,
+}
+
+impl ShortWrite {
+    /// Returns the short write carried by `error`, or `None` for any other error.
+    pub fn from_error(error: &HidError) -> Option<Self> {
+        match *error {
+            HidError::IncompleteSendError { sent, all } => Some(Self {
+                written: sent,
+                expected: all,
+            }),
+            _ => None,
+        }
+    }
+
+    fn into_error(self) -> HidError {
+        HidError::IncompleteSendError {
+            sent: self.written,
+            all: self.expected,
+        }
+    }
+}
+
+/// Writes already-validated reports in order with a pacing hook between them.
+///
+/// Stops at the first transport error or at a write count that differs from the
+/// report length, which becomes [`HidError::IncompleteSendError`]. Never retries
+/// and never reads an acknowledgement. `between_chunks` receives the number of
+/// reports already written and runs only between two reports.
+pub(crate) fn write_reports<T: ReportTransport + ?Sized>(
+    transport: &T,
+    reports: impl Iterator<Item = Vec<u8>>,
+    mut between_chunks: impl FnMut(usize),
+) -> HidResult<usize> {
+    let mut count = 0;
+    for report in reports {
+        if count > 0 {
+            between_chunks(count);
+        }
+        let written = transport.write_output(&report)?;
+        if written != report.len() {
+            return Err(ShortWrite {
+                written,
+                expected: report.len(),
+            }
+            .into_error());
+        }
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// Queries and parses a descriptor to obtain an output length including its ID.
 ///
 /// Errors propagate rather than substituting a default packet size.

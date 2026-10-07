@@ -1,6 +1,6 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
-use crate::{Action, ActionDispatcher, Modifier};
+use crate::{Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand};
 use std::{
     sync::{
         Arc,
@@ -11,8 +11,28 @@ use std::{
 
 const OSASCRIPT: &str = "/usr/bin/osascript";
 const OPEN: &str = "/usr/bin/open";
+const PBCOPY: &str = "/usr/bin/pbcopy";
+const PBPASTE: &str = "/usr/bin/pbpaste";
+const SCREENCAPTURE: &str = "/usr/sbin/screencapture";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 const OUTPUT_LIMIT: usize = 16 * 1024;
+/// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
+/// writing it before monitoring the child cannot block on a child that never reads.
+const STDIN_LIMIT: usize = 8 * 1024;
+/// Fixed delay between `multi_action` steps, matching the official app.
+const STEP_SPACING: Duration = Duration::from_millis(280);
+/// Delay before restoring the clipboard, so the target application can read
+/// the pasted snippet first. A slower application can still paste the restored text.
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
+/// Pasteboard tools choose their text encoding from the locale; a bundled app
+/// can start without one, so clipboard tools always run with UTF-8.
+const UTF8_ENV: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")];
+/// Upper bound on the wall-clock time of a whole `multi_action`. It is checked
+/// before each step starts; a step that is already running is bounded only by
+/// its own subprocess timeouts.
+const MULTI_ACTION_DEADLINE: Duration = Duration::from_secs(15);
+/// Clipboard type names that `clipboard info` reports for plain text only.
+const PLAIN_TEXT_TYPES: &[&str] = &["«class utf8»", "«class ut16»", "string", "Unicode text"];
 
 /// The system output's volume and mute state, suitable for exact restoration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +61,7 @@ impl AudioSnapshot {
 /// an action may already have taken effect before its process reports a failure.
 pub struct MacOsDispatcher {
     runner: Box<dyn ProcessRunner>,
+    sleeper: Box<dyn Sleeper>,
 }
 
 impl MacOsDispatcher {
@@ -48,6 +69,7 @@ impl MacOsDispatcher {
     pub fn new() -> Self {
         Self {
             runner: Box::new(SystemProcessRunner { cancellation: None }),
+            sleeper: Box::new(SystemSleeper),
         }
     }
 
@@ -60,6 +82,7 @@ impl MacOsDispatcher {
             runner: Box::new(SystemProcessRunner {
                 cancellation: Some(cancellation),
             }),
+            sleeper: Box::new(SystemSleeper),
         }
     }
 
@@ -99,12 +122,27 @@ impl MacOsDispatcher {
     }
 
     fn run(&mut self, program: &'static str, args: Vec<String>) -> Result<Vec<u8>, String> {
-        check_cancellation(self.runner.cancellation(), program)?;
-        let output = self.runner.run(&ProcessRequest {
+        self.run_request(ProcessRequest {
             program,
             args,
+            ..ProcessRequest::default()
+        })
+    }
+
+    fn run_request(&mut self, request: ProcessRequest) -> Result<Vec<u8>, String> {
+        let program = request.program;
+        check_cancellation(self.runner.cancellation(), program)?;
+        if request
+            .stdin
+            .as_ref()
+            .is_some_and(|input| input.len() > STDIN_LIMIT)
+        {
+            return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
+        }
+        let output = self.runner.run(&ProcessRequest {
             timeout: PROCESS_TIMEOUT,
             output_limit: OUTPUT_LIMIT,
+            ..request
         })?;
         if output.stdout.len() > OUTPUT_LIMIT || output.stderr.len() > OUTPUT_LIMIT {
             return Err(format!(
@@ -125,6 +163,214 @@ impl MacOsDispatcher {
 
     fn apple_script(&mut self, script: String) -> Result<Vec<u8>, String> {
         self.run(OSASCRIPT, vec!["-e".into(), script])
+    }
+
+    fn pause(&mut self, duration: Duration) -> Result<(), String> {
+        self.sleeper.sleep(duration, self.runner.cancellation())
+    }
+
+    fn set_clipboard(&mut self, text: Vec<u8>) -> Result<(), String> {
+        self.run_request(ProcessRequest {
+            program: PBCOPY,
+            stdin: Some(text),
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        })
+        .map(drop)
+    }
+
+    /// Returns the current clipboard text when it is small, plain text only.
+    ///
+    /// Any failure other than cancellation means "do not restore": the snippet
+    /// is still pasted, and the clipboard keeps it afterwards.
+    fn plain_text_clipboard(&mut self) -> Result<Option<Vec<u8>>, String> {
+        let info = match self.run_request(ProcessRequest {
+            program: OSASCRIPT,
+            args: vec!["-e".into(), "clipboard info".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(info) => info,
+            Err(error) => {
+                check_cancellation(self.runner.cancellation(), OSASCRIPT).map_err(|_| error)?;
+                return Ok(None);
+            }
+        };
+        if has_sensitive_clipboard_marker(&info) || !is_plain_text_clipboard(&info) {
+            return Ok(None);
+        }
+        match self.run_request(ProcessRequest {
+            program: PBPASTE,
+            args: vec!["-Prefer".into(), "txt".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(text)
+                if !text.is_empty()
+                    && text.len() <= STDIN_LIMIT
+                    && std::str::from_utf8(&text).is_ok() =>
+            {
+                Ok(Some(text))
+            }
+            Ok(_) => Ok(None),
+            Err(error) => {
+                check_cancellation(self.runner.cancellation(), PBPASTE).map_err(|_| error)?;
+                Ok(None)
+            }
+        }
+    }
+
+    /// Restores `saved` only while the clipboard still holds exactly `snippet`,
+    /// so anything copied after the snippet was placed is never overwritten.
+    ///
+    /// A failed re-read (other than cancellation) skips the restore: the
+    /// clipboard contents cannot be confirmed, so they are left alone.
+    fn restore_clipboard_if_unchanged(
+        &mut self,
+        snippet: &[u8],
+        saved: Vec<u8>,
+    ) -> Result<(), String> {
+        match self.run_request(ProcessRequest {
+            program: PBPASTE,
+            args: vec!["-Prefer".into(), "txt".into()],
+            env: UTF8_ENV,
+            ..ProcessRequest::default()
+        }) {
+            Ok(current) if current == snippet => self.set_clipboard(saved),
+            Ok(_) => Ok(()),
+            Err(error) => {
+                check_cancellation(self.runner.cancellation(), PBPASTE).map_err(|_| error)
+            }
+        }
+    }
+
+    fn paste_text(&mut self, text: &str, press_enter: bool) -> Result<(), String> {
+        let saved = self.plain_text_clipboard()?;
+        self.set_clipboard(text.as_bytes().to_vec())?;
+        // Fixed script lines only; the snippet travels through pbcopy's stdin.
+        let mut lines = vec![
+            "tell application \"System Events\"",
+            "keystroke \"v\" using {command down}",
+        ];
+        if press_enter {
+            lines.push("key code 36");
+        }
+        lines.push("end tell");
+        let pasted = self.run(
+            OSASCRIPT,
+            lines
+                .into_iter()
+                .flat_map(|line| ["-e".to_string(), line.to_string()])
+                .collect(),
+        );
+        let Some(saved) = saved else {
+            return pasted.map(drop);
+        };
+        if let Err(error) = pasted {
+            // Nothing pasted, so restore immediately; report both outcomes.
+            return Err(
+                match self.restore_clipboard_if_unchanged(text.as_bytes(), saved) {
+                    Ok(()) => error,
+                    Err(restore) => {
+                        format!("{error}; restoring the previous clipboard text failed: {restore}")
+                    }
+                },
+            );
+        }
+        self.pause(CLIPBOARD_RESTORE_DELAY)
+            .and_then(|()| self.restore_clipboard_if_unchanged(text.as_bytes(), saved))
+            .map_err(|error| {
+                format!(
+                    "text was pasted, but restoring the previous clipboard text failed: {error}"
+                )
+            })
+    }
+
+    fn execute(&mut self, action: &Action) -> Result<(), String> {
+        match action {
+            Action::Volume { delta } => {
+                let current = self.output_volume()?;
+                let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
+                self.apple_script(format!("set volume output volume {target}"))?;
+            }
+            Action::SetVolume { percent } => {
+                self.apple_script(format!("set volume output volume {percent}"))?;
+            }
+            Action::VolumeFromPosition => {
+                unreachable!("unresolved templates are rejected before host operations")
+            }
+            Action::ToggleMute => {
+                let target = !self.output_muted()?;
+                self.apple_script(format!("set volume output muted {target}"))?;
+            }
+            Action::Shortcut { key, modifiers } => {
+                self.apple_script(keystroke_script(key, modifiers))?;
+            }
+            Action::LaunchApp { bundle_id } => {
+                self.run(OPEN, vec!["-b".into(), bundle_id.clone()])?;
+            }
+            Action::OpenUrl { url } => {
+                // The validated URL starts with http:// or https://, so it cannot be
+                // read as an option; -u forces URL handling even if it matches a path.
+                self.run(OPEN, vec!["-u".into(), url.clone()])?;
+            }
+            Action::Media { command } => {
+                let name = match command {
+                    MediaCommand::PlayPause => "play_pause",
+                    MediaCommand::NextTrack => "next_track",
+                    MediaCommand::PreviousTrack => "previous_track",
+                    MediaCommand::Stop => "stop",
+                };
+                return Err(format!(
+                    "media {name} is unsupported on the macOS backend: System Events cannot post hardware media keys; no action was taken"
+                ));
+            }
+            Action::System { command } => match command {
+                SystemCommand::Undo => {
+                    self.apple_script(keystroke_script("z", &[Modifier::Command]))?;
+                }
+                SystemCommand::Redo => {
+                    self.apple_script(keystroke_script(
+                        "z",
+                        &[Modifier::Command, Modifier::Shift],
+                    ))?;
+                }
+                SystemCommand::Screenshot => {
+                    self.run(SCREENCAPTURE, vec!["-c".into()])?;
+                }
+            },
+            Action::Text { text, press_enter } => self.paste_text(text, *press_enter)?,
+            Action::MultiAction { actions } => {
+                let count = actions.len();
+                let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
+                for (index, step) in actions.iter().enumerate() {
+                    if index > 0 {
+                        self.pause(STEP_SPACING).map_err(|error| {
+                            format!(
+                                "multi_action stopped before step {} of {count}: {error}",
+                                index + 1
+                            )
+                        })?;
+                    }
+                    if self.sleeper.now() >= deadline {
+                        return Err(format!(
+                            "multi_action stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
+                            index + 1,
+                            step.type_name(),
+                            MULTI_ACTION_DEADLINE.as_secs()
+                        ));
+                    }
+                    self.execute(step).map_err(|error| {
+                        format!(
+                            "multi_action step {} of {count} ({}) failed: {error}",
+                            index + 1,
+                            step.type_name()
+                        )
+                    })?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn query(&mut self, property: &str) -> Result<String, String> {
@@ -163,56 +409,112 @@ impl Default for MacOsDispatcher {
 
 impl ActionDispatcher for MacOsDispatcher {
     fn dispatch(&mut self, action: &Action) -> Result<(), String> {
-        // Validate even when the caller did not use the profile loader.
+        // Validate even when the caller did not use the profile loader. This
+        // also validates every multi_action step before the first one runs.
         action.validate_executable()?;
-        match action {
-            Action::Volume { delta } => {
-                let current = self.output_volume()?;
-                let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
-                self.apple_script(format!("set volume output volume {target}"))?;
-            }
-            Action::SetVolume { percent } => {
-                self.apple_script(format!("set volume output volume {percent}"))?;
-            }
-            Action::VolumeFromPosition => {
-                unreachable!("unresolved templates are rejected before host operations")
-            }
-            Action::ToggleMute => {
-                let target = !self.output_muted()?;
-                self.apple_script(format!("set volume output muted {target}"))?;
-            }
-            Action::Shortcut { key, modifiers } => {
-                // The validated key contains one ASCII alphanumeric character or space,
-                // so it cannot introduce AppleScript syntax or additional commands.
-                let mut script =
-                    format!("tell application \"System Events\" to keystroke \"{key}\"");
-                if !modifiers.is_empty() {
-                    let names = modifiers
-                        .iter()
-                        .map(|modifier| match modifier {
-                            Modifier::Command => "command down",
-                            Modifier::Control => "control down",
-                            Modifier::Option => "option down",
-                            Modifier::Shift => "shift down",
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    script.push_str(&format!(" using {{{names}}}"));
-                }
-                self.apple_script(script)?;
-            }
-            Action::LaunchApp { bundle_id } => {
-                self.run(OPEN, vec!["-b".into(), bundle_id.clone()])?;
-            }
-        }
-        Ok(())
+        self.execute(action)
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// Builds a System Events keystroke from a validated key. A literal key is one
+/// ASCII alphanumeric character or space and cannot introduce AppleScript
+/// syntax; a named key is sent as an integer from the closed key-code table.
+fn keystroke_script(key: &str, modifiers: &[Modifier]) -> String {
+    let mut script = match crate::profile::named_key_code(key) {
+        Some(code) => format!("tell application \"System Events\" to key code {code}"),
+        None => {
+            debug_assert!(
+                key.len() == 1 && (key.as_bytes()[0].is_ascii_alphanumeric() || key == " ")
+            );
+            format!("tell application \"System Events\" to keystroke \"{key}\"")
+        }
+    };
+    if !modifiers.is_empty() {
+        let names = modifiers
+            .iter()
+            .map(|modifier| match modifier {
+                Modifier::Command => "command down",
+                Modifier::Control => "control down",
+                Modifier::Option => "option down",
+                Modifier::Shift => "shift down",
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        script.push_str(&format!(" using {{{names}}}"));
+    }
+    script
+}
+
+/// Accepts `clipboard info` output listing only plain-text types, such as
+/// `«class utf8», 5, «class ut16», 12, string, 5, Unicode text, 10`.
+fn is_plain_text_clipboard(info: &[u8]) -> bool {
+    let Ok(info) = std::str::from_utf8(info) else {
+        return false;
+    };
+    let items: Vec<_> = info.trim().split(", ").collect();
+    !info.trim().is_empty()
+        && items.len() % 2 == 0
+        && items.chunks(2).all(|pair| {
+            PLAIN_TEXT_TYPES.contains(&pair[0])
+                && pair[1]
+                    .parse::<usize>()
+                    .is_ok_and(|size| size <= 2 * STDIN_LIMIT)
+        })
+}
+
+/// Rejects a clipboard whose `clipboard info` names any pasteboard-marker type,
+/// such as `org.nspasteboard.ConcealedType` or `TransientType`, regardless of
+/// whether every other listed type is plain text. Whether AppleScript lists
+/// these markers at all is unverified, so this is a best-effort extra check.
+fn has_sensitive_clipboard_marker(info: &[u8]) -> bool {
+    let info = String::from_utf8_lossy(info).to_lowercase();
+    ["nspasteboard", "concealed", "transient"]
+        .iter()
+        .any(|marker| info.contains(marker))
+}
+
+/// Waits between steps and reads the time; injected so tests never sleep.
+trait Sleeper: Send {
+    /// Monotonic time used for the `multi_action` deadline.
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    fn sleep(
+        &mut self,
+        duration: Duration,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<(), String>;
+}
+
+struct SystemSleeper;
+
+impl Sleeper for SystemSleeper {
+    fn sleep(
+        &mut self,
+        duration: Duration,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + duration;
+        loop {
+            check_cancellation(cancellation, "action pause")?;
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                return Ok(());
+            }
+            std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
+        }
+    }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
 struct ProcessRequest {
     program: &'static str,
     args: Vec<String>,
+    /// Bytes written to stdin before monitoring; `None` connects /dev/null.
+    stdin: Option<Vec<u8>>,
+    /// Fixed variables added to the inherited environment.
+    env: &'static [(&'static str, &'static str)],
     timeout: Duration,
     output_limit: usize,
 }
@@ -263,12 +565,18 @@ impl ProcessRunner for SystemProcessRunner {
         check_cancellation(self.cancellation(), request.program)?;
         let mut child = Command::new(request.program)
             .args(&request.args)
-            .stdin(Stdio::null())
+            .envs(request.env.iter().copied())
+            .stdin(if request.stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|error| format!("{}: could not start process: {error}", request.program))?;
-        let result = collect_child_output(&mut child, request, self.cancellation());
+        let result = write_child_stdin(&mut child, request)
+            .and_then(|()| collect_child_output(&mut child, request, self.cancellation()));
         if let Err(error) = result {
             // Stop the direct system-tool process on all monitoring failures. No retry
             // is safe: a partially completed action could otherwise execute twice.
@@ -285,6 +593,25 @@ impl ProcessRunner for SystemProcessRunner {
     fn cancellation(&self) -> Option<&AtomicBool> {
         self.cancellation.as_deref()
     }
+}
+
+#[cfg(target_os = "macos")]
+fn write_child_stdin(
+    child: &mut std::process::Child,
+    request: &ProcessRequest,
+) -> Result<(), String> {
+    use std::io::Write;
+    let Some(input) = &request.stdin else {
+        return Ok(());
+    };
+    // Callers bound input below the pipe buffer, so this write cannot block.
+    // Dropping the pipe afterwards signals end of input.
+    let mut pipe = child
+        .stdin
+        .take()
+        .ok_or_else(|| format!("{}: missing subprocess stdin pipe", request.program))?;
+    pipe.write_all(input)
+        .map_err(|error| format!("{}: could not write stdin: {error}", request.program))
 }
 
 #[cfg(target_os = "macos")]
@@ -466,6 +793,26 @@ mod tests {
     struct FakeState {
         requests: Vec<ProcessRequest>,
         results: VecDeque<Result<ProcessOutput, String>>,
+        /// Pauses, recorded after the number of requests already started.
+        pauses: Vec<(usize, Duration)>,
+        /// Virtual time since the dispatcher was built; pauses advance it.
+        elapsed: Duration,
+        /// Virtual time each subprocess takes.
+        request_cost: Duration,
+    }
+    struct FakeSleeper(Arc<Mutex<FakeState>>, std::time::Instant);
+    impl Sleeper for FakeSleeper {
+        fn sleep(&mut self, duration: Duration, _: Option<&AtomicBool>) -> Result<(), String> {
+            let mut state = self.0.lock().unwrap();
+            let started = state.requests.len();
+            state.pauses.push((started, duration));
+            state.elapsed += duration;
+            Ok(())
+        }
+
+        fn now(&self) -> std::time::Instant {
+            self.1 + self.0.lock().unwrap().elapsed
+        }
     }
     struct FakeRunner(Arc<Mutex<FakeState>>);
     impl ProcessRunner for FakeRunner {
@@ -474,9 +821,13 @@ mod tests {
             state.requests.push(ProcessRequest {
                 program: request.program,
                 args: request.args.clone(),
+                stdin: request.stdin.clone(),
+                env: request.env,
                 timeout: request.timeout,
                 output_limit: request.output_limit,
             });
+            let cost = state.request_cost;
+            state.elapsed += cost;
             state.results.pop_front().expect("unexpected subprocess")
         }
     }
@@ -494,11 +845,12 @@ mod tests {
         results: Vec<Result<ProcessOutput, String>>,
     ) -> (MacOsDispatcher, Arc<Mutex<FakeState>>) {
         let state = Arc::new(Mutex::new(FakeState {
-            requests: Vec::new(),
             results: results.into(),
+            ..FakeState::default()
         }));
         let dispatcher = MacOsDispatcher {
             runner: Box::new(FakeRunner(state.clone())),
+            sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
         };
         (dispatcher, state)
     }
@@ -759,6 +1111,7 @@ mod tests {
                 args: vec![],
                 timeout: PROCESS_TIMEOUT,
                 output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
             };
             let error = collect_output(
                 &mut OpenPipe,
@@ -783,6 +1136,7 @@ mod tests {
             args: vec![],
             timeout: PROCESS_TIMEOUT,
             output_limit: OUTPUT_LIMIT,
+            ..ProcessRequest::default()
         };
         let result = collect_output(
             &mut std::io::Cursor::new(b"result"),
@@ -832,6 +1186,7 @@ mod tests {
                 args: vec![],
                 timeout: PROCESS_TIMEOUT,
                 output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
             })
             .err()
             .unwrap();
@@ -849,6 +1204,8 @@ mod tests {
                 self.requests.lock().unwrap().push(ProcessRequest {
                     program: request.program,
                     args: request.args.clone(),
+                    stdin: request.stdin.clone(),
+                    env: request.env,
                     timeout: request.timeout,
                     output_limit: request.output_limit,
                 });
@@ -866,6 +1223,7 @@ mod tests {
                 cancellation: Arc::new(AtomicBool::new(false)),
                 requests: requests.clone(),
             }),
+            sleeper: Box::new(SystemSleeper),
         };
         assert!(
             dispatcher
@@ -953,6 +1311,7 @@ mod tests {
         }
         let mut dispatcher = MacOsDispatcher {
             runner: Box::new(CancelledRunner(AtomicBool::new(true))),
+            sleeper: Box::new(SystemSleeper),
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -985,6 +1344,7 @@ mod tests {
                 args: vec![],
                 timeout: PROCESS_TIMEOUT,
                 output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
             },
             || {
                 polls.set(polls.get() + 1);
@@ -1003,6 +1363,633 @@ mod tests {
         assert!(error.contains("action may already have taken effect"));
         assert_eq!(polls.get(), 1);
         assert_eq!(elapsed.get(), Duration::from_millis(10));
+    }
+
+    fn failure(stderr: &str) -> Result<ProcessOutput, String> {
+        Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
+    fn args(request: &ProcessRequest) -> Vec<&str> {
+        request.args.iter().map(String::as_str).collect()
+    }
+
+    const PLAIN_INFO: &str = "«class utf8», 3, «class ut16», 8, string, 3, Unicode text, 6\n";
+    const PASTE_ARGS: [&str; 6] = [
+        "-e",
+        "tell application \"System Events\"",
+        "-e",
+        "keystroke \"v\" using {command down}",
+        "-e",
+        "end tell",
+    ];
+
+    #[test]
+    fn open_url_passes_the_url_as_one_argument_to_open() {
+        let url = "https://example.com/a?b=1&c=it's#frag";
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher
+            .dispatch(&Action::OpenUrl { url: url.into() })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 1);
+        assert_eq!(state.requests[0].program, OPEN);
+        assert_eq!(args(&state.requests[0]), ["-u", url]);
+        assert_eq!(state.requests[0].stdin, None);
+        assert_eq!(state.requests[0].timeout, PROCESS_TIMEOUT);
+    }
+
+    #[test]
+    fn named_keys_use_closed_integer_key_codes() {
+        let cases = [
+            (
+                "arrow_left",
+                vec![Modifier::Command, Modifier::Shift],
+                "tell application \"System Events\" to key code 123 using {command down, shift down}",
+            ),
+            (
+                "f20",
+                vec![],
+                "tell application \"System Events\" to key code 90",
+            ),
+            (
+                "return",
+                vec![Modifier::Option],
+                "tell application \"System Events\" to key code 36 using {option down}",
+            ),
+            (
+                "space",
+                vec![Modifier::Control],
+                "tell application \"System Events\" to key code 49 using {control down}",
+            ),
+            (
+                "page_down",
+                vec![],
+                "tell application \"System Events\" to key code 121",
+            ),
+        ];
+        let (mut dispatcher, state) = fake(cases.iter().map(|_| success("")).collect());
+        for (key, modifiers, _) in &cases {
+            dispatcher
+                .dispatch(&Action::Shortcut {
+                    key: (*key).into(),
+                    modifiers: modifiers.clone(),
+                })
+                .unwrap();
+        }
+        let state = state.lock().unwrap();
+        for (request, (_, _, script)) in state.requests.iter().zip(&cases) {
+            assert_eq!(request.program, OSASCRIPT);
+            assert_eq!(args(request), ["-e", script]);
+        }
+    }
+
+    #[test]
+    fn media_commands_are_plan_only_and_never_start_processes() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for command in [
+            MediaCommand::PlayPause,
+            MediaCommand::NextTrack,
+            MediaCommand::PreviousTrack,
+            MediaCommand::Stop,
+        ] {
+            let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
+            assert!(
+                error.contains("unsupported on the macOS backend"),
+                "{error}"
+            );
+            assert!(error.contains("no action was taken"));
+        }
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn system_commands_use_fixed_keystrokes_and_screencapture() {
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        for command in [
+            SystemCommand::Undo,
+            SystemCommand::Redo,
+            SystemCommand::Screenshot,
+        ] {
+            dispatcher.dispatch(&Action::System { command }).unwrap();
+        }
+        let state = state.lock().unwrap();
+        assert_eq!(
+            args(&state.requests[0]),
+            [
+                "-e",
+                "tell application \"System Events\" to keystroke \"z\" using {command down}"
+            ]
+        );
+        assert_eq!(
+            args(&state.requests[1]),
+            [
+                "-e",
+                "tell application \"System Events\" to keystroke \"z\" using {command down, shift down}"
+            ]
+        );
+        assert_eq!(state.requests[2].program, SCREENCAPTURE);
+        assert_eq!(args(&state.requests[2]), ["-c"]);
+    }
+
+    #[test]
+    fn text_pastes_through_stdin_and_restores_plain_clipboard_text() {
+        for press_enter in [false, true] {
+            let (mut dispatcher, state) = fake(vec![
+                success(PLAIN_INFO),
+                success("old"),
+                success(""),
+                success(""),
+                success("zażółć\nnext"),
+                success(""),
+            ]);
+            dispatcher
+                .dispatch(&Action::Text {
+                    text: "zażółć\nnext".into(),
+                    press_enter,
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            let requests = &state.requests;
+            assert_eq!(requests.len(), 6);
+            assert_eq!(requests[0].program, OSASCRIPT);
+            assert_eq!(args(&requests[0]), ["-e", "clipboard info"]);
+            assert_eq!(requests[1].program, PBPASTE);
+            assert_eq!(args(&requests[1]), ["-Prefer", "txt"]);
+            assert_eq!(requests[2].program, PBCOPY);
+            assert!(requests[2].args.is_empty());
+            assert_eq!(
+                requests[2].stdin.as_deref(),
+                Some("zażółć\nnext".as_bytes())
+            );
+            assert_eq!(requests[3].program, OSASCRIPT);
+            let mut expected = PASTE_ARGS.to_vec();
+            if press_enter {
+                expected.splice(4..4, ["-e", "key code 36"]);
+            }
+            assert_eq!(args(&requests[3]), expected);
+            assert_eq!(requests[3].stdin, None);
+            // The clipboard is re-read after the wait and restored only while
+            // it still holds the snippet.
+            assert_eq!(requests[4].program, PBPASTE);
+            assert_eq!(args(&requests[4]), ["-Prefer", "txt"]);
+            assert_eq!(requests[5].program, PBCOPY);
+            assert_eq!(requests[5].stdin.as_deref(), Some(b"old".as_slice()));
+            for index in [0, 1, 2, 4, 5] {
+                assert_eq!(requests[index].env, UTF8_ENV);
+            }
+            assert_eq!(state.pauses, [(4, CLIPBOARD_RESTORE_DELAY)]);
+        }
+    }
+
+    #[test]
+    fn text_with_script_syntax_never_reaches_osascript_arguments() {
+        let hostile = "\" & (do shell script \"touch /tmp/pwned\") & \"\\\nend tell";
+        let (mut dispatcher, state) = fake(vec![
+            success("«class PNGf», 2048, «class utf8», 3\n"),
+            success(""),
+            success(""),
+        ]);
+        dispatcher
+            .dispatch(&Action::Text {
+                text: hostile.into(),
+                press_enter: false,
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        // Rich or non-text clipboard contents are neither read nor restored.
+        assert_eq!(state.requests.len(), 3);
+        assert_eq!(state.requests[1].program, PBCOPY);
+        assert_eq!(state.requests[1].stdin.as_deref(), Some(hostile.as_bytes()));
+        assert_eq!(args(&state.requests[2]), PASTE_ARGS);
+        for request in &state.requests {
+            assert!(request.args.iter().all(|arg| !arg.contains("pwned")));
+        }
+        assert!(state.pauses.is_empty());
+    }
+
+    #[test]
+    fn text_skips_restore_for_unreadable_empty_or_large_clipboards() {
+        let large = "x".repeat(STDIN_LIMIT + 1);
+        for snapshot in [
+            vec![Err("synthetic clipboard info failure".to_string())],
+            vec![success("")],
+            vec![success("«class utf8», 3, «class RTF », 90")],
+            vec![success(PLAIN_INFO), success("")],
+            vec![success(PLAIN_INFO), success(&large)],
+            vec![success(PLAIN_INFO), failure("pbpaste failed")],
+        ] {
+            let snapshot_requests = snapshot.len();
+            let mut results = snapshot;
+            results.extend([success(""), success("")]);
+            let (mut dispatcher, state) = fake(results);
+            dispatcher
+                .dispatch(&Action::Text {
+                    text: "x".into(),
+                    press_enter: false,
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), snapshot_requests + 2);
+            assert_eq!(state.requests.last().unwrap().program, OSASCRIPT);
+            assert!(state.pauses.is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_paste_restores_immediately_and_reports_the_failure() {
+        let (mut dispatcher, state) = fake(vec![
+            success(PLAIN_INFO),
+            success("old"),
+            success(""),
+            failure("not allowed assistive access (-1719)"),
+            success("x"),
+            success(""),
+        ]);
+        let error = dispatcher
+            .dispatch(&Action::Text {
+                text: "x".into(),
+                press_enter: true,
+            })
+            .unwrap_err();
+        assert!(error.contains("-1719"));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 6);
+        assert_eq!(state.requests[4].program, PBPASTE);
+        assert_eq!(state.requests[5].stdin.as_deref(), Some(b"old".as_slice()));
+        assert!(state.pauses.is_empty());
+
+        let (mut dispatcher, _) = fake(vec![
+            success(PLAIN_INFO),
+            success("old"),
+            success(""),
+            success(""),
+            success("x"),
+            failure("pbcopy failed"),
+        ]);
+        let error = dispatcher
+            .dispatch(&Action::Text {
+                text: "x".into(),
+                press_enter: false,
+            })
+            .unwrap_err();
+        assert!(error.starts_with("text was pasted, but restoring"));
+    }
+
+    #[test]
+    fn plain_text_clipboard_detection_is_strict() {
+        assert!(is_plain_text_clipboard(PLAIN_INFO.as_bytes()));
+        assert!(is_plain_text_clipboard(b"string, 4"));
+        for info in [
+            "".as_bytes(),
+            b"\n",
+            b"\xff\xfe",
+            "«class utf8», 3, «class RTF », 80".as_bytes(),
+            "«class utf8»".as_bytes(),
+            "«class utf8», x".as_bytes(),
+            "«class utf8», 99999999".as_bytes(),
+            b"org.nspasteboard.ConcealedType, 0, string, 8",
+            b"{string, 4}",
+        ] {
+            assert!(!is_plain_text_clipboard(info), "{info:?}");
+        }
+    }
+
+    #[test]
+    fn text_never_overwrites_a_clipboard_changed_during_the_wait() {
+        for current in [
+            success("copied meanwhile"),
+            success(""),
+            // A prefix or a trailing newline is not byte-for-byte equal.
+            success("snippe"),
+            success("snippet\n"),
+            failure("pbpaste failed"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![
+                success(PLAIN_INFO),
+                success("old"),
+                success(""),
+                success(""),
+                current,
+            ]);
+            dispatcher
+                .dispatch(&Action::Text {
+                    text: "snippet".into(),
+                    press_enter: false,
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 5);
+            assert_eq!(state.requests[4].program, PBPASTE);
+            assert!(
+                state
+                    .requests
+                    .iter()
+                    .all(|request| request.stdin.as_deref() != Some(b"old".as_slice()))
+            );
+            assert_eq!(state.pauses, [(4, CLIPBOARD_RESTORE_DELAY)]);
+        }
+
+        // Same rule for the immediate restore after a failed paste.
+        let (mut dispatcher, state) = fake(vec![
+            success(PLAIN_INFO),
+            success("old"),
+            success(""),
+            failure("paste failed"),
+            success("copied meanwhile"),
+        ]);
+        let error = dispatcher
+            .dispatch(&Action::Text {
+                text: "snippet".into(),
+                press_enter: false,
+            })
+            .unwrap_err();
+        assert!(error.contains("paste failed"));
+        assert_eq!(state.lock().unwrap().requests.len(), 5);
+    }
+
+    #[test]
+    fn text_skips_saving_concealed_or_transient_clipboards() {
+        for info in [
+            "org.nspasteboard.ConcealedType, 0, «class utf8», 3",
+            "«class utf8», 3, org.nspasteboard.TransientType, 0",
+            "«class utf8», 3, ORG.NSPASTEBOARD.AutoGeneratedType, 0",
+            "«class utf8», 3, «class Conc», 0, concealed, 0",
+            "«class utf8», 3, Transient, 0",
+        ] {
+            assert!(has_sensitive_clipboard_marker(info.as_bytes()), "{info}");
+            let (mut dispatcher, state) = fake(vec![success(info), success(""), success("")]);
+            dispatcher
+                .dispatch(&Action::Text {
+                    text: "x".into(),
+                    press_enter: false,
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            // Never read with pbpaste, so nothing is restored and there is no wait.
+            assert_eq!(state.requests.len(), 3);
+            assert!(state.requests.iter().all(|r| r.program != PBPASTE));
+            assert_eq!(state.requests[1].program, PBCOPY);
+            assert!(state.pauses.is_empty());
+        }
+        assert!(!has_sensitive_clipboard_marker(PLAIN_INFO.as_bytes()));
+    }
+
+    #[test]
+    fn multi_action_stops_when_the_overall_deadline_passes() {
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        // Each subprocess "takes" 7 s of virtual time; no real time passes.
+        state.lock().unwrap().request_cost = Duration::from_secs(7);
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 10 },
+                    Action::SetVolume { percent: 20 },
+                    Action::OpenUrl {
+                        url: "https://example.com".into(),
+                    },
+                    Action::SetVolume { percent: 40 },
+                ],
+            })
+            .unwrap_err();
+        // 7 s + 0.28 s + 7 s + 0.28 s = 14.56 s, so step 3 starts; at 21.84 s
+        // step 4 is refused.
+        assert!(
+            error.starts_with("multi_action stopped before step 4 of 4 (set_volume)"),
+            "{error}"
+        );
+        assert!(error.contains("15 s overall deadline"));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 3);
+        assert_eq!(state.requests[2].program, OPEN);
+        assert_eq!(MULTI_ACTION_DEADLINE, Duration::from_secs(15));
+    }
+
+    #[test]
+    fn multi_action_deadline_is_checked_after_the_last_pause_before_a_step() {
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        // The first step ends just under the deadline; the pause crosses it.
+        state.lock().unwrap().request_cost = MULTI_ACTION_DEADLINE - Duration::from_millis(1);
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 10 },
+                    Action::SetVolume { percent: 20 },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.starts_with("multi_action stopped before step 2 of 2"));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 1);
+        assert_eq!(state.pauses, [(1, STEP_SPACING)]);
+    }
+
+    #[test]
+    fn oversize_stdin_is_rejected_before_any_process() {
+        let (mut dispatcher, state) = fake(vec![]);
+        let error = dispatcher
+            .set_clipboard(vec![b'x'; STDIN_LIMIT + 1])
+            .unwrap_err();
+        assert!(error.contains("stdin exceeds"));
+        assert!(state.lock().unwrap().requests.is_empty());
+        const { assert!(Action::MAX_TEXT_BYTES <= STDIN_LIMIT) };
+    }
+
+    #[test]
+    fn invalid_new_actions_never_start_subprocesses() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for action in [
+            Action::OpenUrl {
+                url: "file:///etc/passwd".into(),
+            },
+            Action::OpenUrl {
+                url: "https://example.com/\"; do shell script \"x\"".into(),
+            },
+            Action::Shortcut {
+                key: "key code 36".into(),
+                modifiers: vec![],
+            },
+            Action::Text {
+                text: "a\u{1b}b".into(),
+                press_enter: false,
+            },
+            Action::Text {
+                text: "x".repeat(Action::MAX_TEXT_BYTES + 1),
+                press_enter: false,
+            },
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute],
+            },
+            Action::MultiAction {
+                actions: vec![
+                    Action::ToggleMute,
+                    Action::MultiAction {
+                        actions: vec![Action::ToggleMute, Action::ToggleMute],
+                    },
+                ],
+            },
+            // An invalid later step blocks the whole sequence before step 1 runs.
+            Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 10 },
+                    Action::OpenUrl {
+                        url: "javascript:alert(1)".into(),
+                    },
+                ],
+            },
+        ] {
+            assert!(dispatcher.dispatch(&action).is_err(), "{action:?}");
+        }
+        assert!(state.lock().unwrap().requests.is_empty());
+        assert!(state.lock().unwrap().pauses.is_empty());
+    }
+
+    #[test]
+    fn multi_action_runs_steps_in_order_with_fixed_spacing() {
+        let (mut dispatcher, state) = fake(vec![
+            success(""),
+            success(""),
+            success("true\n"),
+            success(""),
+        ]);
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::OpenUrl {
+                        url: "https://example.com".into(),
+                    },
+                    Action::Shortcut {
+                        key: "tab".into(),
+                        modifiers: vec![Modifier::Command],
+                    },
+                    Action::ToggleMute,
+                ],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 4);
+        assert_eq!(state.requests[0].program, OPEN);
+        assert_eq!(
+            args(&state.requests[1]),
+            [
+                "-e",
+                "tell application \"System Events\" to key code 48 using {command down}"
+            ]
+        );
+        assert_eq!(
+            args(&state.requests[3]),
+            ["-e", "set volume output muted false"]
+        );
+        // Spacing runs between steps only, never before the first or after the last.
+        assert_eq!(state.pauses, [(1, STEP_SPACING), (2, STEP_SPACING)]);
+        assert_eq!(STEP_SPACING, Duration::from_millis(280));
+    }
+
+    #[test]
+    fn multi_action_stops_at_the_first_failed_step() {
+        let (mut dispatcher, state) = fake(vec![success(""), failure("denied")]);
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 20 },
+                    Action::System {
+                        command: SystemCommand::Undo,
+                    },
+                    Action::SetVolume { percent: 30 },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.starts_with("multi_action step 2 of 3 (system) failed:"));
+        assert!(error.contains("denied"));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 2);
+        assert_eq!(state.pauses.len(), 1);
+
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 20 },
+                    Action::Media {
+                        command: MediaCommand::PlayPause,
+                    },
+                    Action::SetVolume { percent: 30 },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.starts_with("multi_action step 2 of 3 (media) failed:"));
+        assert!(error.contains("unsupported on the macOS backend"));
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+    }
+
+    #[test]
+    fn multi_action_cancellation_during_spacing_stops_remaining_steps() {
+        struct FlagRunner {
+            cancellation: Arc<AtomicBool>,
+            requests: Arc<Mutex<Vec<ProcessRequest>>>,
+        }
+        impl ProcessRunner for FlagRunner {
+            fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
+                self.requests.lock().unwrap().push(ProcessRequest {
+                    program: request.program,
+                    args: request.args.clone(),
+                    ..ProcessRequest::default()
+                });
+                success("")
+            }
+
+            fn cancellation(&self) -> Option<&AtomicBool> {
+                Some(&self.cancellation)
+            }
+        }
+        struct CancellingSleeper(Arc<AtomicBool>);
+        impl Sleeper for CancellingSleeper {
+            fn sleep(
+                &mut self,
+                _: Duration,
+                cancellation: Option<&AtomicBool>,
+            ) -> Result<(), String> {
+                self.0.store(true, Ordering::Release);
+                check_cancellation(cancellation, "action pause")
+            }
+        }
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let mut dispatcher = MacOsDispatcher {
+            runner: Box::new(FlagRunner {
+                cancellation: cancellation.clone(),
+                requests: requests.clone(),
+            }),
+            sleeper: Box::new(CancellingSleeper(cancellation)),
+        };
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 20 },
+                    Action::SetVolume { percent: 30 },
+                ],
+            })
+            .unwrap_err();
+        assert!(error.starts_with("multi_action stopped before step 2 of 2"));
+        assert!(error.contains("action execution cancelled"));
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn system_sleeper_observes_cancellation_without_waiting() {
+        let mut sleeper = SystemSleeper;
+        assert!(sleeper.sleep(Duration::ZERO, None).is_ok());
+        let cancelled = AtomicBool::new(true);
+        assert!(
+            sleeper
+                .sleep(Duration::from_secs(60), Some(&cancelled))
+                .unwrap_err()
+                .contains("action execution cancelled")
+        );
     }
 
     #[cfg(not(target_os = "macos"))]

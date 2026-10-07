@@ -1,4 +1,5 @@
-import type { Action, Binding, BindingAction, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
+import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
+import { keyLabel, mediaLabels, systemLabels } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -60,15 +61,28 @@ export function controlLabel(module: ServiceModule, control: number) {
   }
 }
 
-export function actionLabel(action: Action | BindingAction | null) {
+// 'Volume → Brightness (2/3)': index is the zero-based new current function.
+export function dialSwitchLabel(change: DialFunctionSwitch): string {
+  return `${change.from_function} → ${change.to_function} (${change.index + 1}/${change.count})`;
+}
+
+export function actionLabel(action: Action | BindingAction | null): string {
   if (!action) return 'Unbound';
   switch (action.type) {
     case 'volume': return `Output volume ${action.delta > 0 ? '+' : ''}${action.delta} points`;
     case 'toggle_mute': return 'Toggle output mute';
-    case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${action.key === ' ' ? 'Space' : action.key.toUpperCase()}`;
+    case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${keyLabel(action.key)}`;
     case 'launch_app': return `Open ${action.bundle_id}`;
     case 'volume_from_position': return 'Follow fader position for output volume';
     case 'set_volume': return `Set output volume to ${action.percent}%`;
+    case 'open_url': return `Open ${action.url}`;
+    case 'media': return mediaLabels[action.command];
+    case 'system': return systemLabels[action.command];
+    case 'text': {
+      const flat = action.text.replace(/\s+/g, ' ').trim();
+      return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
+    }
+    case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
   }
 }
 

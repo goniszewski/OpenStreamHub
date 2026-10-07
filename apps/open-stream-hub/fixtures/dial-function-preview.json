@@ -1,0 +1,58 @@
+{
+  "first_function": {
+    "action": {
+      "delta": 5,
+      "type": "volume"
+    },
+    "control": 0,
+    "dial_function": "Volume",
+    "gesture": "right",
+    "module": "m131e",
+    "serial_number": null,
+    "timestamp_us": 0
+  },
+  "request": {
+    "control": 0,
+    "dialFunction": 1,
+    "gesture": "right",
+    "module": "m131e",
+    "serialNumber": null,
+    "value": null
+  },
+  "rotation": {
+    "action": {
+      "key": "j",
+      "modifiers": [],
+      "type": "shortcut"
+    },
+    "control": 0,
+    "dial_function": "Scroll",
+    "gesture": "right",
+    "module": "m131e",
+    "serial_number": null,
+    "timestamp_us": 0
+  },
+  "switch": {
+    "action": null,
+    "control": 0,
+    "dial_function_switch": {
+      "count": 3,
+      "from_function": "Apps",
+      "index": 0,
+      "to_function": "Volume"
+    },
+    "gesture": "short_press",
+    "module": "m131e",
+    "serial_number": null,
+    "timestamp_us": 0
+  },
+  "unbound": {
+    "action": null,
+    "control": 0,
+    "dial_function": "Scroll",
+    "gesture": "long_press",
+    "module": "m131e",
+    "serial_number": null,
+    "timestamp_us": 0
+  }
+}

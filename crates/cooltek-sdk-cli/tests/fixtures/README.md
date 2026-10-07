@@ -76,3 +76,12 @@ replay command to fail.
 `m003k-empty-serial-synthetic.jsonl` is `m003k-synthetic.jsonl` with the
 identity serial set to `""`, as some HID backends report for devices without a
 serial. Replay must treat it exactly like an absent serial.
+
+`m131e-dial-functions-synthetic.jsonl` drives
+[`examples/profiles/dial-functions.json`](../../../../examples/profiles/dial-functions.json)
+through every dial function: rotations, short clicks that switch and wrap
+around, a short click released 1 µs before the 600 ms threshold, a long press
+released exactly at it, and a long press in a function without a long-press
+binding. It uses the software-derived queue-0 selectors (`03` rotation, `04`
+button) with byte 1 set to zero. The click sequence and threshold are not
+verified on hardware.

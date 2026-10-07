@@ -7,6 +7,8 @@ import type { DeviceFeed } from './device-feed';
 import { findRun, idleServiceState, isActiveRun, isStale, maxReconnectAttempts } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
+import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
+import type { RiskLevel } from './profile-capabilities';
 
 // The Resume actions button, focused after Review on a paused-run notice.
 export const serviceResumeId = 'service-resume';
@@ -41,19 +43,43 @@ const sessionDeviceName = (session: { module: ServiceModule; serialNumber: strin
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
 const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile' } as const;
 
-// Copy for the Execute confirmation, used when starting a run and when resuming a paused one.
-// A run a focused-app rule switched resumes with the saved profile it switched to, not the original snapshot.
-export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false) {
-  return kind === 'start'
-    ? { title: 'Run actions on this Mac?', confirm: 'Run actions', message: `Profile "${profileName}" will run on ${deviceLabel}. Volume, shortcut and app-launch actions from the profile will really run on this Mac whenever you use the module.` }
-    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? 'the saved profile a focused-app rule switched to' : 'as it was when this run started'}) will resume on ${deviceLabel}. Volume, shortcut and app-launch actions will really run on this Mac again whenever you use the module.` };
+export interface ConfirmCopy {
+  title: string; confirm: string; message: string; risk: RiskLevel;
+  // The capabilities in plain language, then every distinct text snippet and multi-step sequence.
+  lines: string[]; snippets: { text: string; more: number; pressEnter: boolean }[]; sequences: string[][];
+  // Set for a high-risk profile: the warning shown above the details and the label of the box that must be ticked.
+  warning: string | null; acknowledge: string | null;
+}
+
+const unknownContents = 'This app cannot read the contents of this profile here, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Review it on the Profiles page before you continue.';
+
+// Copy for the Execute confirmation, used when starting a run and when resuming a paused one. It discloses what the
+// profile will actually do (profileCapabilities over the whole profile). A null profile is one whose contents the
+// frontend does not hold (a run it did not start, or one a backend switch moved to another profile): that is treated
+// as high risk. A run a focused-app rule switched resumes with the saved profile it switched to, not the original snapshot.
+export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false, profile: Profile | null = null): ConfirmCopy {
+  const head = kind === 'start'
+    ? { title: 'Run actions on this Mac?', confirm: 'Run actions', message: `Profile "${profileName}" will run on ${deviceLabel}. Everything listed here will really run on this Mac whenever you use the module, without asking again.` }
+    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? 'the saved profile a focused-app rule switched to' : 'as it was when this run started'}) will resume on ${deviceLabel}. Everything listed here will really run on this Mac again whenever you use the module, without asking again.` };
+  const capabilities = profile ? profileCapabilities(profile) : null;
+  const risk: RiskLevel = capabilities?.risk ?? 'high';
+  const reasons = capabilities ? capabilities.riskReasons : ['The profile contents could not be checked.'];
+  return {
+    ...head, risk,
+    lines: capabilities ? capabilityLines(capabilities) : [unknownContents],
+    snippets: capabilities?.texts.map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter })) ?? [],
+    sequences: capabilities?.sequences.map(steps => steps.map(stepLabel)) ?? [],
+    warning: risk === 'high' ? `High risk. ${reasons.join(' ')} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote this profile or reviewed every snippet and step below and trust where it came from.` : null,
+    acknowledge: risk === 'high' ? 'I reviewed this profile and trust its source' : null,
+  };
 }
 
 // Resume copy for the run resumeSession holds (by its session id), never the run the device selection shows now:
 // the selection can move while the dialog is open (a module plugged in or out). Null once that run is gone.
 export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string | null) {
   const run = sessionId === null ? undefined : runs[sessionId];
-  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true) : null;
+  // The run's own snapshot, never the draft: resuming restarts the profile the run holds.
+  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true, snapshotProfile(run.snapshot)) : null;
 }
 
 // The copy of the open confirmation. Null for a resume whose run disappeared while its dialog was open: the panel then
@@ -94,6 +120,8 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   const [confirmKind, setConfirmKind] = useState<'start' | 'resume'>('start');
   // The run being resumed. The dialog names it, not whatever run the device selection shows by the time it renders.
   const [resumeId, setResumeId] = useState<string | null>(null);
+  // The high-risk acknowledgement. Cleared with every answer, so each confirmation asks again.
+  const [acknowledged, setAcknowledged] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
   const log = useRef<HTMLOListElement>(null);
   // A confirmation still open when the panel unmounts (page change) answers false, so the start or resume never hangs.
@@ -135,9 +163,9 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
     const sessionId = run.serviceId;
     void runner.resumeSession(sessionId, () => new Promise<boolean>(resolve => { setConfirmKind('resume'); setResumeId(sessionId); setConfirm(() => resolve); }));
   };
-  const answer = (ok: boolean) => { confirm?.(ok); setConfirm(null); };
+  const answer = (ok: boolean) => { confirm?.(ok); setConfirm(null); setAcknowledged(false); };
 
-  const startCopy = confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module');
+  const startCopy = confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module', false, profile);
   const dialog = dialogCopy(confirmKind, service.runs, resumeId, startCopy);
   const resumeGone = confirm !== null && dialog === null;
   useEffect(() => { if (resumeGone) answer(false); });
@@ -145,7 +173,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
 
   return <section className="service-panel" aria-label="Run profile">
     <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${phaseClass(run)}`} role="status">{phaseLabel(run)}</span></div>
-    {run && active && phase === 'running' && run.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>Actions are running on this Mac</strong><span>Volume, shortcut and app-launch actions from this profile really run when you use the module. Stop to end it.</span></div></div>}
+    {run && active && phase === 'running' && run.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>Actions are running on this Mac</strong><span>Every action in this profile, including pasted text, web pages and multi-step sequences, really runs when you use the module. Stop to end it.</span></div></div>}
     {run && active && phase === 'running' && !run.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>Dry run: actions are logged only. Nothing changes on this Mac.</span></div>}
     {run && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{run.execute ? 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
     {run && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{run.execute ? 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
@@ -184,10 +212,28 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>
     </>}
-    <ModalDialog open={confirm !== null && !resumeGone} labelledBy="execute-title" describedBy="execute-message" onCancel={() => answer(false)}>
+    <ModalDialog open={confirm !== null && !resumeGone} role="alertdialog" labelledBy="execute-title" describedBy={copy.warning ? 'execute-warning execute-message' : 'execute-message'} onCancel={() => answer(false)} className="execute-dialog">
       <h2 id="execute-title">{copy.title}</h2>
+      {copy.warning && <p id="execute-warning" className="execute-warning"><TriangleAlert size={18} aria-hidden="true" /><span>{copy.warning}</span></p>}
       <p id="execute-message">{copy.message}</p>
-      <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" onClick={() => answer(true)}>{copy.confirm}</button></div>
+      <div className="execute-details" tabIndex={0} role="region" aria-label="What this profile will do">
+        <ul className="execute-capabilities">{copy.lines.map(line => <li key={line}>{line}</li>)}</ul>
+        {copy.snippets.length > 0 && <>
+          <h3>Text snippets</h3>
+          <p className="fine-print">Shown exactly as they will be pasted: ⏎ is a line break, ⇥ a tab and \u{'{…}'} an invisible character or a stack of combining marks.</p>
+          <ol className="execute-snippets">{copy.snippets.map((snippet, index) => <li key={index}>
+            <code>{snippet.text}</code>
+            {snippet.more > 0 && <span className="fine-print"> … and {snippet.more} more characters not shown</span>}
+            {snippet.pressEnter && <strong className="execute-enter"> Then presses Return.</strong>}
+          </li>)}</ol>
+        </>}
+        {copy.sequences.length > 0 && <>
+          <h3>Multi-step sequences</h3>
+          {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={`Sequence ${index + 1}`}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
+        </>}
+      </div>
+      {copy.acknowledge && <label className="service-option execute-acknowledge"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />{copy.acknowledge}</label>}
+      <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" disabled={copy.acknowledge !== null && !acknowledged} onClick={() => answer(true)}>{copy.confirm}</button></div>
     </ModalDialog>
   </section>;
 }

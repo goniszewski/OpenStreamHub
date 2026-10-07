@@ -77,6 +77,8 @@ describe('DiagnosticsPanel markup', () => {
     expect(html).toMatch(/checked=""[^>]*\/>Hide serial numbers/);
     expect(html).not.toMatch(/checked=""[^>]*\/>Include a short input capture/);
     expect(html).not.toMatch(/checked=""[^>]*\/>Include current profile/);
+    expect(html).toContain('text snippets and web addresses in it would be part of the file');
+    expect(html).toContain('each text snippet is replaced by its length and each web address is reduced to its site address');
     expect(html).toContain('Nothing is uploaded or sent');
     expect(html).toContain('0 / 2000');
     expect(html).toContain('<option value="3" selected="">3 seconds</option>');

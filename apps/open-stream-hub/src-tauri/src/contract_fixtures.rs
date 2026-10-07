@@ -561,3 +561,38 @@ fn focus_rule_payloads_match_the_shared_fixtures() {
         &serde_json::to_value(&driver.runner().emitted).unwrap(),
     );
 }
+
+#[test]
+fn dial_function_preview_matches_the_shared_fixture() {
+    let profile = Profile::from_json(include_bytes!(
+        "../../../../examples/profiles/dial-functions.json"
+    ))
+    .unwrap();
+    let preview = |gesture, function| {
+        replay::preview_binding(
+            profile.clone(),
+            cooltek_sdk_service::ServiceModule::M131E,
+            0,
+            gesture,
+            None,
+            None,
+            function,
+        )
+        .unwrap()
+    };
+    use cooltek_sdk_service::Gesture;
+    check_or_update(
+        "dial-function-preview.json",
+        &json!({
+            // `preview_binding` arguments as the frontend sends them; `dialFunction` is optional.
+            "request": {
+                "module": "m131e", "control": 0, "gesture": "right",
+                "serialNumber": null, "value": null, "dialFunction": 1,
+            },
+            "rotation": preview(Gesture::Right, Some(1)),
+            "unbound": preview(Gesture::LongPress, Some(1)),
+            "switch": preview(Gesture::ShortPress, Some(2)),
+            "first_function": preview(Gesture::Right, None),
+        }),
+    );
+}

@@ -1,0 +1,95 @@
+import { Plus, Trash2 } from 'lucide-react';
+import type { BindingAction, MediaCommand, Modifier, StepAction, SystemCommand } from './contracts';
+import { IntegerField, SelectField } from './controls';
+import {
+  defaultMultiAction, defaultStepAction, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, stepActionTypes,
+  systemLabels, textIssue, urlIssue,
+} from './action-model';
+import type { StepActionType } from './action-model';
+
+type Change = (action: BindingAction | null, field?: string) => void;
+
+// The action select and its parameter fields. Top-level ids keep their
+// historical names; multi-action steps prefix theirs with `step-N-`.
+export function ActionFields({ action, fader, selectorKey, onChange }: {
+  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change;
+}) {
+  return <>
+    <label htmlFor="binding-action">Action</label>
+    <SelectField id="binding-action" value={action?.type ?? 'unbound'} onChange={event => {
+      const type = event.target.value;
+      onChange(type === 'unbound' ? null : type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction() : defaultStepAction(type as StepActionType));
+    }}>
+      <option value="unbound">Unbound</option>
+      {fader ? <option value="volume_from_position">Output volume follows position</option> : <>
+        {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
+        <option value="multi_action">Multi-action</option>
+      </>}
+    </SelectField>
+    {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
+    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} />}
+    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' &&
+      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} />}
+  </>;
+}
+
+function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction[]; selectorKey: string; onChange: Change }) {
+  const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
+  return <div className="action-fields">
+    <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
+    <ol className="action-steps">
+      {steps.map((step, index) => {
+        const prefix = `step-${index + 1}-`;
+        return <li key={`${index}:${step.type}`}>
+          <label htmlFor={`${prefix}action`}>Step {index + 1}</label>
+          <SelectField id={`${prefix}action`} value={step.type} onChange={event => update(steps.map((item, at) => at === index ? defaultStepAction(event.target.value as StepActionType) : item))}>
+            {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
+          </SelectField>
+          <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
+            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} />
+          <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}
+            aria-label={`Remove step ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
+        </li>;
+      })}
+    </ol>
+    <button type="button" className="button compact" disabled={steps.length >= multiActionSteps.maximum}
+      onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add step</button>
+  </div>;
+}
+
+function StepFields({ prefix, action, inputKey, onChange }: {
+  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void;
+}) {
+  const id = (name: string) => `${prefix}${name}`;
+  switch (action.type) {
+    case 'toggle_mute': return null;
+    case 'set_volume': return <div className="action-fields"><label htmlFor={id('volume-percent')}>Output volume (%)</label><IntegerField key={inputKey} id={id('volume-percent')} value={action.percent} minimum={0} maximum={100} onCommit={percent => onChange({ type: 'set_volume', percent }, 'volume-percent')} /><p className="fine-print">Plans an absolute output volume from 0% to 100%.</p></div>;
+    case 'volume': return <div className="action-fields"><label htmlFor={id('volume-delta')}>Volume change (points)</label><IntegerField key={inputKey} id={id('volume-delta')} value={action.delta} minimum={-100} maximum={100} nonZero onCommit={delta => onChange({ type: 'volume', delta }, 'volume-delta')} /><p className="fine-print">Signed percentage points, −100 to +100, excluding zero.</p></div>;
+    case 'shortcut': {
+      const named = namedKeys.some(([name]) => name === action.key);
+      return <div className="action-fields">
+        <label htmlFor={id('shortcut-key-kind')}>Key</label>
+        <SelectField id={id('shortcut-key-kind')} value={named ? action.key : 'character'} onChange={event => onChange({ ...action, key: event.target.value === 'character' ? 'a' : event.target.value }, 'shortcut-key')}>
+          <option value="character">Letter, digit or space</option>
+          {namedKeys.map(([name, label]) => <option key={name} value={name}>{label}</option>)}
+        </SelectField>
+        {!named && <><label className="spaced-label" htmlFor={id('shortcut-key')}>Character</label><input id={id('shortcut-key')} value={action.key} maxLength={1} onChange={event => onChange({ ...action, key: event.target.value }, 'shortcut-key')} /></>}
+        <p className="fine-print">One ASCII letter, digit or space, or a named key such as an arrow, Return or F1–F20. Punctuation and key sequences are not supported.</p>
+        <fieldset className="modifiers"><legend>Modifiers</legend>{(['command', 'control', 'option', 'shift'] as Modifier[]).map(modifier => <label key={modifier}><input type="checkbox" checked={action.modifiers.includes(modifier)} onChange={event => onChange({ ...action, modifiers: event.target.checked ? [...action.modifiers, modifier] : action.modifiers.filter(item => item !== modifier) })} />{modifier[0].toUpperCase() + modifier.slice(1)}</label>)}</fieldset>
+      </div>;
+    }
+    case 'launch_app': return <div className="action-fields"><label htmlFor={id('app-bundle-id')}>Application bundle ID</label><input id={id('app-bundle-id')} spellCheck={false} value={action.bundle_id} onChange={event => onChange({ type: 'launch_app', bundle_id: event.target.value }, 'bundle-id')} /><p className="fine-print">For example, com.apple.finder. The service validates the identifier; replay does not open it.</p></div>;
+    case 'open_url': {
+      const issue = urlIssue(action.url);
+      return <div className="action-fields"><label htmlFor={id('open-url')}>Web address</label><input id={id('open-url')} type="url" spellCheck={false} value={action.url} aria-invalid={!!issue} aria-describedby={issue ? id('open-url-error') : undefined} onChange={event => onChange({ type: 'open_url', url: event.target.value }, 'open-url')} />{issue && <p id={id('open-url-error')} className="field-error" role="alert">{issue}</p>}<p className="fine-print">http and https only, opened in the default browser. Replay does not open it.</p></div>;
+    }
+    case 'text': {
+      const issue = textIssue(action.text);
+      return <div className="action-fields"><label htmlFor={id('text-snippet')}>Text to paste</label><textarea id={id('text-snippet')} rows={3} value={action.text} aria-invalid={!!issue} aria-describedby={issue ? id('text-snippet-error') : undefined} onChange={event => onChange({ ...action, text: event.target.value }, 'text-snippet')} />{issue && <p id={id('text-snippet-error')} className="field-error" role="alert">{issue}</p>}
+        <label className="setting-toggle"><input type="checkbox" checked={!!action.press_enter} onChange={event => onChange({ ...action, press_enter: event.target.checked })} />Press Return after pasting</label>
+        <p className="fine-print">Up to {maxTextBytes} bytes. Pasting replaces the clipboard; plain text already on it is put back afterwards, other content is not. Needs macOS Accessibility permission.</p></div>;
+    }
+    case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">Preview only: the macOS service cannot send media keys yet and reports this action as unsupported.</p></div>;
+    case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
+  }
+}

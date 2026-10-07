@@ -4,11 +4,12 @@ import { LabelError, SelectField } from './controls';
 import { profileBindingCount } from './keypad-model';
 import { isUnsaved } from './profile-session';
 import type { ProfileSession, ReplaySession, SessionState } from './profile-session';
-import { actionLabel, controlLabel, gestureLabels, replayLabels } from './ui-model';
+import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels } from './ui-model';
 import type { Page } from './ui-model';
 import type { ConfirmRequest, DeviceEditor } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { BindingsPanel } from './BindingsPanel';
+import { DialFunctionsPanel } from './DialFunctionsPanel';
 import { FocusRulesPanel } from './FocusRulesPanel';
 import type { FocusRulesStore } from './focus-rules';
 
@@ -41,6 +42,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />Current draft is valid.</p>}
       <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
       <BindingsPanel profile={profile} session={session} editor={editor} disabled={disabled} />
+      <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} />
       <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
     </section></div>
     <FocusRulesPanel store={focusRules} profiles={state.profiles} disabled={!desktop || !state.ready} />
@@ -50,12 +52,12 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
   </section>;
 }
 
-function SessionView({ session }: { session: ReplaySession }) {
+export function SessionView({ session }: { session: ReplaySession }) {
   if (session.status === 'idle') return <p className="empty-state">Replay results appear here. Editing the profile clears previous results.</p>;
   if (session.status === 'running') return <div className="session-status" role="status"><LoaderCircle size={21} className="spinning" /><span>Running {session.name}…</span></div>;
   if (session.status === 'failed') return <div className="session-status failed" role="alert"><CircleHelp size={21} /><div><strong>Replay failed</strong><p>{session.error}</p></div></div>;
   const { result } = session;
-  return <div className="session-results"><div className="session-status completed" role="status"><CheckCircle2 size={21} /><span>Completed · {session.name}</span></div><div className="session-counts"><div><strong>{result.report_count}</strong><span>Reports</span></div><div><strong>{result.event_count}</strong><span>Normalized events</span></div><div><strong>{result.planned_action_count}</strong><span>Planned actions</span></div><div><strong>{result.events.filter(event => event.action === null && !event.navigation).length}</strong><span>Unbound events</span></div></div>
-    <p className="fine-print">Synthetic source: <code>{result.source}</code>. Planned actions were not executed.</p><div className="table-scroll"><table className="events-table"><caption>Normalized events</caption><thead><tr><th>Time (µs)</th><th>Control</th><th>Gesture</th><th>Value</th><th>Planned action</th></tr></thead><tbody>{result.events.map((event, index) => <tr key={index}><td>{event.timestamp_us}</td><td>{controlLabel(event.module, event.control)}<small>{event.serial_number ? `Serial: ${event.serial_number}` : 'No serial'}</small></td><td>{gestureLabels[event.gesture]}</td><td>{event.value ? `${event.value.raw}/${event.value.maximum}` : '—'}</td><td className={event.action ? '' : 'muted'}>{event.navigation ? `Navigate to ${event.navigation.to_page} · L${event.navigation.depth}` : actionLabel(event.action)}</td></tr>)}</tbody></table></div><div className="diagnostics"><h3>Diagnostics <span className="small-label">{result.diagnostics.length}</span></h3>{result.diagnostics.length ? <ul>{result.diagnostics.map((diagnostic, index) => <li key={index}><code>{diagnostic.timestamp_us} µs</code><span>{diagnostic.message}</span></li>)}</ul> : <p className="fine-print">No parser diagnostics.</p>}</div>
+  return <div className="session-results"><div className="session-status completed" role="status"><CheckCircle2 size={21} /><span>Completed · {session.name}</span></div><div className="session-counts"><div><strong>{result.report_count}</strong><span>Reports</span></div><div><strong>{result.event_count}</strong><span>Normalized events</span></div><div><strong>{result.planned_action_count}</strong><span>Planned actions</span></div><div><strong>{result.events.filter(event => event.action === null && !event.navigation && !event.dial_function_switch).length}</strong><span>Unbound events</span></div></div>
+    <p className="fine-print">Synthetic source: <code>{result.source}</code>. Planned actions were not executed.</p><div className="table-scroll"><table className="events-table"><caption>Normalized events</caption><thead><tr><th>Time (µs)</th><th>Control</th><th>Gesture</th><th>Value</th><th>Planned action</th></tr></thead><tbody>{result.events.map((event, index) => <tr key={index}><td>{event.timestamp_us}</td><td>{controlLabel(event.module, event.control)}<small>{event.serial_number ? `Serial: ${event.serial_number}` : 'No serial'}</small></td><td>{gestureLabels[event.gesture]}{event.dial_function && <small>Function: {event.dial_function}</small>}</td><td>{event.value ? `${event.value.raw}/${event.value.maximum}` : '—'}</td><td className={event.action ? '' : 'muted'}>{event.dial_function_switch ? <span className="dial-switch">Dial function: {dialSwitchLabel(event.dial_function_switch)}</span> : event.navigation ? `Navigate to ${event.navigation.to_page} · L${event.navigation.depth}` : actionLabel(event.action)}</td></tr>)}</tbody></table></div><div className="diagnostics"><h3>Diagnostics <span className="small-label">{result.diagnostics.length}</span></h3>{result.diagnostics.length ? <ul>{result.diagnostics.map((diagnostic, index) => <li key={index}><code>{diagnostic.timestamp_us} µs</code><span>{diagnostic.message}</span></li>)}</ul> : <p className="fine-print">No parser diagnostics.</p>}</div>
   </div>;
 }

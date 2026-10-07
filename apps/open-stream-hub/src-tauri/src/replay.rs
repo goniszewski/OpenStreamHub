@@ -1,9 +1,9 @@
 use cooltek_sdk_cli::capture::{CaptureReader, EndReason, Source, decode_hex};
 use cooltek_sdk_masterhub::ModuleKind;
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, DeviceContext, DryRunDispatcher, Gesture, InputEvent, InputSession,
-    InputUpdate, InputValue, KeypadNavigation, KeypadResolution, Profile, ProfileSession,
-    ServiceModule,
+    Action, ActionDispatcher, DeviceContext, DialFunctionNavigation, DryRunDispatcher, Gesture,
+    InputEvent, InputSession, InputUpdate, InputValue, KeypadNavigation, Profile,
+    ProfileResolution, ProfileSession, ServiceModule,
 };
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -47,6 +47,13 @@ pub struct ReplayEvent {
     pub page_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub navigation: Option<KeypadNavigation>,
+    /// Dial function current while an M131E event of a profile with
+    /// `dial_functions` was routed; absent for switches and other profiles.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dial_function: Option<String>,
+    /// A short-click function switch; such an event never has an action.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dial_function_switch: Option<DialFunctionNavigation>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -191,6 +198,12 @@ fn replay_capture(profile: Profile, capture: &str, source: &str) -> Result<Repla
     })
 }
 
+/// Plans one gesture against a fresh session.
+///
+/// `dial_function` selects the current dial function before planning, so the
+/// rotation and long-press bindings of any function can be previewed. A
+/// `short_press` preview returns the planned switch and never an action.
+/// Omitting it previews the first function, as after a service start.
 pub fn preview_binding(
     profile: Profile,
     module: ServiceModule,
@@ -198,9 +211,13 @@ pub fn preview_binding(
     gesture: Gesture,
     serial_number: Option<String>,
     value: Option<InputValue>,
+    dial_function: Option<usize>,
 ) -> Result<ReplayEvent, String> {
     validate_profile(&profile)?;
     reject_blank_serial(&serial_number)?;
+    if dial_function.is_some() && module != ServiceModule::M131E {
+        return Err("a dial function can be selected only for the M131E dial".into());
+    }
     let event = InputEvent {
         timestamp_micros: 0,
         control,
@@ -212,6 +229,9 @@ pub fn preview_binding(
         && module == ServiceModule::M4315
         && gesture == Gesture::Released;
     let mut session = ProfileSession::new(profile)?;
+    if let Some(index) = dial_function {
+        session.set_dial_function(index)?;
+    }
     let context = DeviceContext {
         module,
         serial_number,
@@ -296,11 +316,18 @@ fn plan_event(
     event: InputEvent,
     dispatcher: &mut DryRunDispatcher,
 ) -> Result<ReplayEvent, String> {
-    let (action, page_id, navigation) = match session.resolve(context, &event)? {
-        KeypadResolution::Action { action, page_id } => (Some(action), page_id, None),
-        KeypadResolution::Navigation { navigation } => (None, None, Some(navigation)),
-        KeypadResolution::Unbound => (None, None, None),
+    let current = (context.module == ServiceModule::M131E)
+        .then(|| session.current_dial_function().map(|f| f.name.clone()))
+        .flatten();
+    let (action, page_id, navigation, switch) = match session.route(context, &event)? {
+        ProfileResolution::Action {
+            action, page_id, ..
+        } => (Some(action), page_id, None, None),
+        ProfileResolution::Navigation { navigation } => (None, None, Some(navigation), None),
+        ProfileResolution::DialFunction { navigation } => (None, None, None, Some(navigation)),
+        ProfileResolution::Unbound => (None, None, None, None),
     };
+    let dial_function = if switch.is_some() { None } else { current };
     if let Some(action) = &action {
         dispatcher.dispatch(action)?;
     }
@@ -314,6 +341,8 @@ fn plan_event(
         action,
         page_id,
         navigation,
+        dial_function,
+        dial_function_switch: switch,
     })
 }
 
@@ -480,6 +509,7 @@ mod tests {
                 Gesture::Clockwise,
                 serial.map(str::to_owned),
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(result.action, Some(Action::Volume { delta }));
@@ -490,6 +520,7 @@ mod tests {
                 ServiceModule::M003K,
                 1,
                 Gesture::Clockwise,
+                None,
                 None,
                 None
             )
@@ -504,6 +535,7 @@ mod tests {
                 3,
                 Gesture::Clockwise,
                 None,
+                None,
                 None
             )
             .is_err()
@@ -514,6 +546,7 @@ mod tests {
                 ServiceModule::M003K,
                 0,
                 Gesture::Right,
+                None,
                 None,
                 None
             )
@@ -526,6 +559,7 @@ mod tests {
                 0,
                 Gesture::Clockwise,
                 Some(String::new()),
+                None,
                 None
             )
             .is_err()
@@ -544,6 +578,7 @@ mod tests {
                 0,
                 Gesture::Clockwise,
                 None,
+                None,
                 None
             )
             .is_err()
@@ -557,6 +592,7 @@ mod tests {
             ServiceModule::M003K,
             0,
             Gesture::Pressed,
+            None,
             None,
             None,
         )
@@ -632,6 +668,7 @@ mod tests {
             Gesture::PositionChanged,
             None,
             value,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -660,7 +697,8 @@ mod tests {
                     0,
                     Gesture::PositionChanged,
                     None,
-                    invalid
+                    invalid,
+                    None
                 )
                 .is_err()
             );
@@ -672,7 +710,8 @@ mod tests {
                 0,
                 Gesture::Pressed,
                 None,
-                value
+                value,
+                None
             )
             .is_err()
         );
@@ -683,7 +722,8 @@ mod tests {
                 5,
                 Gesture::PositionChanged,
                 None,
-                value
+                value,
+                None
             )
             .is_err()
         );
@@ -694,7 +734,8 @@ mod tests {
                 0,
                 Gesture::PositionChanged,
                 Some(String::new()),
-                value
+                value,
+                None
             )
             .is_err()
         );
@@ -799,6 +840,7 @@ mod tests {
             Gesture::Released,
             None,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(event.action, Some(Action::ToggleMute));
@@ -809,6 +851,7 @@ mod tests {
             ServiceModule::M4315,
             0,
             Gesture::Released,
+            None,
             None,
             None,
         )
@@ -907,6 +950,151 @@ mod tests {
                 .iter()
                 .filter(|event| event.action.is_some())
                 .all(|event| event.page_id.as_deref() == Some("root"))
+        );
+    }
+
+    fn dial_functions() -> Profile {
+        Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/dial-functions.json"
+        ))
+        .unwrap()
+    }
+
+    fn dial_preview(gesture: Gesture, function: Option<usize>) -> Result<ReplayEvent, String> {
+        preview_binding(
+            dial_functions(),
+            ServiceModule::M131E,
+            0,
+            gesture,
+            None,
+            None,
+            function,
+        )
+    }
+
+    #[test]
+    fn dial_preview_uses_the_selected_function_and_defaults_to_the_first() {
+        let first = dial_preview(Gesture::Right, None).unwrap();
+        assert_eq!(first.action, Some(Action::Volume { delta: 5 }));
+        assert_eq!(first.dial_function.as_deref(), Some("Volume"));
+        let scroll = dial_preview(Gesture::Right, Some(1)).unwrap();
+        assert_eq!(
+            scroll.action,
+            Some(Action::Shortcut {
+                key: "j".into(),
+                modifiers: vec![]
+            })
+        );
+        assert_eq!(scroll.dial_function.as_deref(), Some("Scroll"));
+        let apps = dial_preview(Gesture::LongPress, Some(2)).unwrap();
+        assert_eq!(
+            apps.action,
+            Some(Action::LaunchApp {
+                bundle_id: "com.apple.finder".into()
+            })
+        );
+        let unbound = dial_preview(Gesture::LongPress, Some(1)).unwrap();
+        assert!(unbound.action.is_none());
+        assert_eq!(unbound.dial_function.as_deref(), Some("Scroll"));
+        assert!(unbound.dial_function_switch.is_none());
+    }
+
+    #[test]
+    fn short_click_preview_returns_the_planned_switch_without_an_action() {
+        let switch = dial_preview(Gesture::ShortPress, Some(2)).unwrap();
+        assert!(switch.action.is_none());
+        assert!(switch.dial_function.is_none());
+        let navigation = switch.dial_function_switch.unwrap();
+        assert_eq!(
+            (
+                navigation.from_function.as_str(),
+                navigation.to_function.as_str(),
+                navigation.index,
+                navigation.count
+            ),
+            ("Apps", "Volume", 0, 3)
+        );
+        for gesture in [Gesture::Pressed, Gesture::Released] {
+            let event = dial_preview(gesture, Some(1)).unwrap();
+            assert!(event.action.is_none() && event.dial_function_switch.is_none());
+        }
+    }
+
+    #[test]
+    fn dial_function_selection_is_validated_and_the_old_call_shape_is_unchanged() {
+        assert!(dial_preview(Gesture::Right, Some(3)).is_err());
+        assert!(
+            preview_binding(
+                dial_functions(),
+                ServiceModule::M003K,
+                0,
+                Gesture::Clockwise,
+                None,
+                None,
+                Some(0)
+            )
+            .is_err()
+        );
+        assert!(
+            preview_binding(
+                sample(),
+                ServiceModule::M131E,
+                0,
+                Gesture::Right,
+                None,
+                None,
+                Some(0)
+            )
+            .is_err()
+        );
+        // Without dial functions nothing new is serialized.
+        let flat = preview_binding(
+            sample(),
+            ServiceModule::M131E,
+            0,
+            Gesture::ShortPress,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(flat).unwrap(),
+            json!({
+                "timestamp_us": 0, "module": "m131e", "control": 0, "gesture": "short_press",
+                "serial_number": null, "action": {"type": "toggle_mute"},
+            })
+        );
+    }
+
+    #[test]
+    fn dial_replay_reports_switches_and_each_functions_actions() {
+        let result = replay_demo(dial_functions(), DemoKind::Dial).unwrap();
+        let switches: Vec<_> = result
+            .events
+            .iter()
+            .filter_map(|event| event.dial_function_switch.as_ref())
+            .map(|navigation| navigation.to_function.as_str())
+            .collect();
+        assert_eq!(switches, ["Scroll"]);
+        assert!(result.events.iter().all(|event| {
+            event.gesture != Gesture::ShortPress
+                || (event.action.is_none() && event.dial_function_switch.is_some())
+        }));
+        assert!(
+            result
+                .events
+                .iter()
+                .filter(|event| event.action.is_some())
+                .all(|event| event.dial_function.is_some())
+        );
+        assert_eq!(
+            result.planned_action_count,
+            result
+                .events
+                .iter()
+                .filter(|event| event.action.is_some())
+                .count()
         );
     }
 }

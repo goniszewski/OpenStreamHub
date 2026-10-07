@@ -3,6 +3,8 @@ import { Search, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Profile } from './contracts';
 import { bindingWarnings, entryOnControl, filterBindings, listBindings, warningsForControl } from './binding-model';
 import type { BindingEntry, BindingWarning, SelectedControl } from './binding-model';
+import { removeDialBinding } from './dial-function-model';
+import { focusDialFunction } from './DialFunctionsPanel';
 import { profileBindingCount } from './keypad-model';
 import type { ProfileSession } from './profile-session';
 import { gestureLabels, controlLabel } from './ui-model';
@@ -13,6 +15,7 @@ export const bindingSearchId = 'binding-search';
 // Opens the binding in the Devices editor.
 export function showEntry(editor: DeviceEditor, entry: BindingEntry) {
   if (entry.keypad && entry.keypadBinding) editor.selectKeypadBinding(entry.keypad.pageId, entry.control, entry.keypadBinding);
+  else if (entry.dialFunction) focusDialFunction(entry.dialFunction.index);
   else if (entry.flat) editor.selectBinding(entry.flat);
 }
 
@@ -51,6 +54,7 @@ export function BindingsPanel({ profile, session, editor, disabled, initialQuery
   const searching = query.trim() !== '';
   const remove = (entry: BindingEntry) => {
     if (entry.keypad && entry.keypadBinding) editor.removeKeypadBinding(entry.keypad.pageId, entry.control, entry.keypadBinding);
+    else if (entry.dialFunction) { const index = entry.dialFunction.index; session.update(latest => removeDialBinding(latest, index, entry.index)); }
     else session.update(latest => ({ ...latest, bindings: latest.bindings.filter((_, position) => position !== entry.index) }));
   };
   return <>
@@ -66,7 +70,7 @@ export function BindingsPanel({ profile, session, editor, disabled, initialQuery
     {shown.length > 0 && <div className="binding-list">{shown.map(entry => <div key={entry.id} className="binding-row"><div>
       <strong>{entry.title}</strong><span>{entry.actionText}</span><small>{entry.serial ? `Serial: ${entry.serial}` : 'Any device serial'}</small></div>
       <button className="button compact" onClick={() => showEntry(editor, entry)}>Edit</button>
-      <button className="icon-button" aria-label={`Remove ${entry.keypad ? `${entry.keypad.pageName} Key ${entry.control + 1}` : controlLabel(entry.module, entry.control)} ${gestureLabels[entry.gesture]} binding`} disabled={disabled} onClick={() => remove(entry)}><Trash2 size={17} /></button>
+      <button className="icon-button" aria-label={`Remove ${entry.keypad ? `${entry.keypad.pageName} Key ${entry.control + 1}` : entry.dialFunction ? `Encoder ${entry.dialFunction.name}` : controlLabel(entry.module, entry.control)} ${gestureLabels[entry.gesture]} binding`} disabled={disabled} onClick={() => remove(entry)}><Trash2 size={17} /></button>
     </div>)}</div>}
     {entries.length === 0 && <p className="empty-state">No bindings yet. Select a module in Devices and choose an action to add one.</p>}
     {entries.length > 0 && shown.length === 0 && <p className="empty-state" role="status">No bindings match “{query.trim()}”. <button type="button" className="button compact" onClick={() => setQuery('')}>Clear search</button></p>}

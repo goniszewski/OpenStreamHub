@@ -140,6 +140,7 @@ export function keypadPathToPage(profile: Profile, target: string): string[] {
   return found;
 }
 
+// Mirrors Profile::binding_count: flat, keypad and dial function bindings.
 export function profileBindingCount(profile: Profile) {
-  return profile.bindings.length + (profile.keypad?.pages.reduce((total, page) => total + page.slots.reduce((count, slot) => count + (slot?.type === 'action' ? slot.bindings.length : 0), 0), 0) ?? 0);
+  return profile.bindings.length + (profile.dial_functions ?? []).reduce((total, item) => total + item.bindings.length, 0) + (profile.keypad?.pages.reduce((total, page) => total + page.slots.reduce((count, slot) => count + (slot?.type === 'action' ? slot.bindings.length : 0), 0), 0) ?? 0);
 }

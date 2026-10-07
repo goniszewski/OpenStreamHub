@@ -1,11 +1,13 @@
 // Pure helpers for listing, searching and checking the bindings of a draft.
-import type { Binding, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
-import { actionLabel, controlLabel, gestureLabels, modules } from './ui-model';
+import type { Binding, DialBinding, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
+import { dialFunctionGestures, dialFunctionNameIssue, maxDialFunctions } from './dial-function-model';
+import { actionLabel, controlLabel, gestureLabels, gestures, modules } from './ui-model';
 
 export interface BindingEntry {
-  // Stable within one profile value: `flat:<index>` or `keypad:<page>:<slot>:<index>`.
+  // Stable within one profile value: `flat:<index>`, `dial:<function>:<index>` or `keypad:<page>:<slot>:<index>`.
   id: string;
-  // Position in the profile's flat bindings, or in the key's bindings for keypad entries.
+  // Position in the profile's flat bindings, in the key's bindings for keypad
+  // entries, or in the function's bindings for `dial:` entries.
   index: number;
   module: ServiceModule;
   control: number;
@@ -16,19 +18,28 @@ export interface BindingEntry {
   // Set only for flat bindings (the Edit/Remove paths differ for keypad bindings).
   flat?: Binding;
   keypadBinding?: KeypadBinding;
+  // The dial function of an M131E binding listed under `dial_functions`.
+  dialFunction?: { index: number; name: string };
+  dialBinding?: DialBinding;
   title: string;
   actionText: string;
 }
 
 const moduleName = (module: ServiceModule) => modules.find(item => item.id === module)!;
 
-// Every binding of the profile: flat bindings first, then the keypad pages in
-// layout order. Keypad bindings are listed with module m4315.
+// Every binding of the profile: flat bindings first, then dial function
+// bindings in function order, then the keypad pages in layout order. Keypad
+// bindings are listed with module m4315, dial function bindings with m131e.
 export function listBindings(profile: Profile): BindingEntry[] {
   const entries: BindingEntry[] = profile.bindings.map((item, index) => ({
     id: `flat:${index}`, index, module: item.module, control: item.control, gesture: item.gesture, serial: item.serial_number ?? '',
     keypad: null, flat: item, title: `${controlLabel(item.module, item.control)} · ${gestureLabels[item.gesture]}`, actionText: actionLabel(item.action),
   }));
+  (profile.dial_functions ?? []).forEach((dialFunction, functionIndex) => dialFunction.bindings.forEach((item, index) => entries.push({
+    id: `dial:${functionIndex}:${index}`, index, module: 'm131e', control: 0, gesture: item.gesture, serial: item.serial_number ?? '',
+    keypad: null, dialFunction: { index: functionIndex, name: dialFunction.name }, dialBinding: item,
+    title: `Encoder · ${dialFunction.name} · ${gestureLabels[item.gesture]}`, actionText: actionLabel(item.action),
+  })));
   for (const page of profile.keypad?.pages ?? []) {
     page.slots.forEach((slot, control) => {
       if (slot?.type !== 'action') return;
@@ -45,7 +56,7 @@ export function listBindings(profile: Profile): BindingEntry[] {
 function haystack(entry: BindingEntry) {
   const module = moduleName(entry.module);
   return [module.name, module.shortName, controlLabel(entry.module, entry.control), gestureLabels[entry.gesture], entry.actionText,
-    entry.keypad?.keyLabel, entry.keypad?.pageName, entry.serial].filter(Boolean).join('\n').toLowerCase();
+    entry.keypad?.keyLabel, entry.keypad?.pageName, entry.dialFunction?.name, entry.serial].filter(Boolean).join('\n').toLowerCase();
 }
 
 // Case-insensitive; every whitespace-separated word of the query must match
@@ -57,7 +68,7 @@ export function filterBindings(entries: BindingEntry[], query: string): BindingE
   return entries.filter(entry => { const text = haystack(entry); return words.every(word => text.includes(word)); });
 }
 
-export type WarningKind = 'release-overlap' | 'duplicate-selector';
+export type WarningKind = 'release-overlap' | 'duplicate-selector' | 'dial-flat-conflict' | 'dial-function-empty' | 'dial-function-name' | 'dial-function-count';
 export interface BindingWarning {
   id: string;
   kind: WarningKind;
@@ -86,7 +97,7 @@ export function bindingWarnings(profile: Profile): BindingWarning[] {
   const warnings: BindingWarning[] = [];
   const seen = new Map<string, BindingEntry>();
   for (const entry of entries) {
-    const selector = `${entry.module}|${entry.keypad?.pageId ?? ''}|${entry.control}|${entry.gesture}|${entry.serial}`;
+    const selector = `${entry.module}|${entry.keypad?.pageId ?? ''}|${entry.dialFunction?.index ?? ''}|${entry.control}|${entry.gesture}|${entry.serial}`;
     const first = seen.get(selector);
     if (!first) { seen.set(selector, entry); continue; }
     warnings.push({
@@ -94,10 +105,10 @@ export function bindingWarnings(profile: Profile): BindingWarning[] {
       message: `${entry.title} is bound more than once${entry.serial ? ` for serial ${entry.serial}` : ''}. The service rejects duplicate bindings, so remove one before saving.`,
     });
   }
-  const releases = entries.filter(entry => !entry.keypad && entry.gesture === 'released');
+  const releases = entries.filter(entry => !entry.keypad && !entry.dialFunction && entry.gesture === 'released');
   for (const release of releases) {
     for (const press of entries) {
-      if (press.keypad || press.module !== release.module || press.control !== release.control) continue;
+      if (press.keypad || press.dialFunction || press.module !== release.module || press.control !== release.control) continue;
       if (press.serial !== release.serial && press.serial !== '' && release.serial !== '') continue;
       if (press.gesture !== 'short_press' && press.gesture !== 'long_press') continue;
       const name = gestureLabels[press.gesture];
@@ -108,8 +119,48 @@ export function bindingWarnings(profile: Profile): BindingWarning[] {
       });
     }
   }
+  warnings.push(...dialFunctionWarnings(profile, entries));
   return warnings;
 }
+
+// Mirrors the service's dial function rules (docs/masterhub-dial-functions.md#validation).
+function dialFunctionWarnings(profile: Profile, entries: BindingEntry[]): BindingWarning[] {
+  const functions = profile.dial_functions;
+  if (!functions) return [];
+  const warnings: BindingWarning[] = [];
+  const flat = entries.filter(entry => entry.flat && entry.module === 'm131e');
+  if (flat.length) warnings.push({
+    id: 'dial-flat-conflict', kind: 'dial-flat-conflict', entryIds: flat.map(entry => entry.id),
+    message: `${flat.length === 1 ? 'An encoder binding is' : `${flat.length} encoder bindings are`} outside the dial functions. The service rejects flat encoder bindings while dial functions exist; move them into a function or remove them before saving.`,
+  });
+  if (functions.length === 0 || functions.length > maxDialFunctions) warnings.push({
+    id: 'dial-function-count', kind: 'dial-function-count', entryIds: [],
+    message: 'A profile with dial functions needs 1 to 16 of them.',
+  });
+  functions.forEach((item, index) => {
+    // Compared with earlier functions only, so a duplicate is reported once, at its second occurrence.
+    const issue = dialFunctionNameIssue(item.name, functions.slice(0, index + 1), index);
+    if (issue) warnings.push({
+      id: `dial-function-name:${index}`, kind: 'dial-function-name', entryIds: entries.filter(entry => entry.dialFunction?.index === index).map(entry => entry.id).slice(0, 1),
+      message: `Dial function ${index + 1}${item.name.trim() ? ` (“${item.name}”)` : ''}: ${issue}`,
+    });
+    if (!item.bindings.length) warnings.push({
+      id: `dial-function-empty:${index}`, kind: 'dial-function-empty', entryIds: [],
+      message: `Dial function “${item.name}” has no bindings, so the encoder does nothing while it is selected.`,
+    });
+  });
+  return warnings;
+}
+
+// Gestures the flat binding editor may offer. While dial functions exist every
+// encoder binding belongs to a function, and a short press switches functions,
+// so the flat editor offers no encoder gesture.
+export function editorGestures(profile: Profile, module: ServiceModule): Gesture[] {
+  return module === 'm131e' && profile.dial_functions ? [] : gestures[module];
+}
+
+// Gestures a dial function binding may use: never Short press, Press or Release.
+export const dialEditorGestures: ReadonlyArray<DialBinding['gesture']> = dialFunctionGestures;
 
 export interface SelectedControl { module: ServiceModule; control: number; keypadPageId?: string }
 
@@ -119,8 +170,10 @@ export function entryOnControl(entry: BindingEntry, selected: SelectedControl): 
   return selected.module !== 'm4315' || entry.keypad?.pageId === selected.keypadPageId;
 }
 
-// Warnings that involve at least one binding on the selected control.
+// Warnings that involve at least one flat or keypad binding on the selected
+// control. Dial function bindings are edited on the Profiles page, so warnings
+// about them stay in the full binding list rather than the Inspector.
 export function warningsForControl(warnings: BindingWarning[], entries: BindingEntry[], selected: SelectedControl): BindingWarning[] {
   const byId = new Map(entries.map(entry => [entry.id, entry]));
-  return warnings.filter(warning => warning.entryIds.some(id => { const entry = byId.get(id); return entry !== undefined && entryOnControl(entry, selected); }));
+  return warnings.filter(warning => warning.entryIds.some(id => { const entry = byId.get(id); return entry !== undefined && !entry.dialFunction && entryOnControl(entry, selected); }));
 }

@@ -115,7 +115,7 @@ pub(crate) fn validate(functions: &[DialFunction]) -> Result<(), String> {
 
 /// Unicode General Category `Cf` (format) characters, which include the bidi
 /// embedding, override, isolate, and mark controls plus invisible joiners.
-fn is_format_character(c: char) -> bool {
+pub(crate) fn is_format_character(c: char) -> bool {
     matches!(
         c,
         '\u{00AD}'

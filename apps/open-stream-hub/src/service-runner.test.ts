@@ -38,6 +38,15 @@ function setup(desktop = true) {
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 const options = { profile, pathHex: 'AABB', execute: false, softwareMode: false, draftUnsaved: false };
 
+describe('summarizeRecord dial functions', () => {
+  const event = { module: 'm131e', control: 0, gesture: 'right' };
+  it('shows the current function and switches', () => {
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'volume', delta: 5 }, dial_function: { name: 'Volume', index: 0 } }, 1)?.text).toContain('[Volume]');
+    expect(summarizeRecord({ type: 'event', status: 'dial_function', event, action: null, navigation: { from_function: 'Volume', to_function: 'Scroll', index: 1, count: 3 } }, 1)).toEqual({ kind: 'event', text: 'Dial function: Volume → Scroll (2/3)', at: 1 });
+    expect(summarizeRecord({ type: 'action_executed', action: { type: 'toggle_mute' }, event, dial_function: { name: 'Scroll', index: 1 } }, 1)?.text).toContain(', Scroll)');
+  });
+});
+
 describe('summarizeRecord', () => {
   it('describes the service record schema', () => {
     expect(summarizeRecord({ type: 'service_start', device: { module: 'm003k' }, execution: 'dry_run' }, 1)).toMatchObject({ kind: 'info', text: expect.stringContaining('dry run') });
@@ -50,6 +59,22 @@ describe('summarizeRecord', () => {
     expect(summarizeRecord({ type: 'service_end', reason: 'capture_complete', error: null }, 1)?.kind).toBe('info');
     expect(summarizeRecord({ type: 'report', status: 'decoded', error: null }, 1)).toBeNull();
     expect(summarizeRecord({ type: 'report', status: 'parse_error', error: 'short' }, 1)?.kind).toBe('error');
+  });
+  it('logs only the origin of an opened URL, never its path or query', () => {
+    const url = 'https://Example.com:8443/reset?token=s3cr3t#frag';
+    const planned = summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'open_url', url } }, 1)!.text;
+    expect(planned).toBe('m003k control 1 pressed: planned open URL https://example.com:8443');
+    const executed = summarizeRecord({ type: 'action_executed', event, action: { type: 'multi_action', actions: [{ type: 'open_url', url: 'https://user:pw@host.test/a?b=c' }, { type: 'toggle_mute' }] } }, 1)!.text;
+    expect(executed).toContain('open URL https://host.test,');
+    for (const text of [planned, executed]) expect(text).not.toMatch(/token|s3cr3t|frag|\/a\?|pw/);
+  });
+  it('renders redacted records (origin, chars) and old records (url, text) alike', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    expect(at({ type: 'open_url', origin: 'https://host.test:8443' })).toContain('open URL https://host.test:8443');
+    expect(at({ type: 'text', chars: 12, press_enter: true })).toContain('paste text (12 characters)');
+    expect(at({ type: 'text', text: 'hello', press_enter: false })).toContain('paste text (5 characters)');
+    expect(at({ type: 'multi_action', actions: [{ type: 'open_url', origin: 'https://a.test' }, { type: 'text', chars: 3, press_enter: false }] }))
+      .toContain('multi-action [open URL https://a.test, paste text (3 characters)]');
   });
   it('tolerates unknown shapes', () => {
     expect(summarizeRecord({ type: 'raw', line: 'hello' }, 1)).toEqual({ kind: 'raw', text: 'hello', at: 1 });

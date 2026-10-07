@@ -16,6 +16,7 @@ import type { KeypadPreview, SessionState } from './profile-session';
 import { actionLabel, controlCounts, controlLabel, faderMaximum, gestureLabels, gestures, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
+import { bindingPreviewText } from './DialFunctionsPanel';
 
 export function ModuleCatalog({ editor }: { editor: DeviceEditor }) {
   return <aside className="catalog" aria-label="Module catalog"><h2>Modules</h2>
@@ -71,8 +72,9 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
           {preview.status === 'idle' ? <><CircleHelp size={20} /><span>{desktop ? 'Choose a gesture to preview its binding through the service.' : 'Launch the desktop app to preview bindings.'}</span></> :
             preview.status === 'running' ? <><LoaderCircle size={20} className="spinning" /><span>Resolving binding…</span></> :
             preview.status === 'failed' ? <><CircleHelp size={20} /><span className="error-text">{preview.error}</span></> :
-            <><CheckCircle2 size={22} /><span>{gestureLabels[preview.event.gesture]}{preview.event.value ? ` ${preview.event.value.raw}/${preview.event.value.maximum}` : ''}: {preview.event.action ? `Would ${actionLabel(preview.event.action).toLowerCase()}.` : 'No action is bound to this event.'}</span></>}
+            <><CheckCircle2 size={22} /><span>{bindingPreviewText(preview.event)}</span></>}
         </div>}
+        {selection.module === 'm131e' && profile.dial_functions && <p className="fine-print">This profile uses dial functions. These previews use the first function, where the service starts; a short press shows the planned switch. <button type="button" className="button compact" onClick={() => setPage('profiles')}>Preview other functions</button></p>}
         <p className="fine-print">No volume changes, shortcuts or application launches are executed.</p>
       </section>
     </> : <div className="planned-panel"><h2>Input support is planned</h2><p>{selected.name} is included in the module catalog. Its input decoder and binding support are not implemented in this app.</p><p>Display uploads and physical device behavior still require validation.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}

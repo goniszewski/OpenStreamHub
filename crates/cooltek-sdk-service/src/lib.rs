@@ -23,4 +23,6 @@ pub use keypad::{
     ProfileResolution, ProfileSession,
 };
 pub use macos::MacOsDispatcher;
-pub use profile::{Action, Binding, Gesture, Modifier, Profile, ServiceModule};
+pub use profile::{
+    Action, Binding, Gesture, MediaCommand, Modifier, Profile, ServiceModule, SystemCommand,
+};

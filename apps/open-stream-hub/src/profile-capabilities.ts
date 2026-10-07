@@ -32,6 +32,11 @@ export interface ProfileCapabilities {
   // A timer is bound somewhere: at its end the service shows a notification and plays a fixed system sound. Low risk,
   // so it never raises the level, but Execute discloses it.
   timers: boolean;
+  // A play/pause, next or previous media key is bound somewhere: it reaches whichever app controls playback. Low risk.
+  mediaKeys: boolean;
+  // A media stop is bound somewhere: it stops Music or pauses Spotify when already running and does not start one that is
+  // not running (macOS may relaunch one that quits at that very instant, without playing). Low risk.
+  mediaStop: boolean;
   // Distinct OBS scene names of every obs_scene, in profile order. Each switches the OBS program scene over the
   // loopback OBS WebSocket configured in Settings.
   obsScenes: string[];
@@ -94,6 +99,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   let screenshot = false;
   let undoRedo = false;
   let submits = false;
+  let mediaKeys = false;
+  let mediaStop = false;
 
   const visit = (action: unknown, depth: number) => {
     if (!isRecord(action)) return;
@@ -103,7 +110,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
       // timer shows a notification and plays a fixed system sound; its label is plain notification text.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'media': case 'profile': case 'timer': break;
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'profile': case 'timer': break;
+      // A media key or a stop of an already running player: disclosed, but low risk.
+      case 'media': if (action.command === 'stop') mediaStop = true; else mediaKeys = true; break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
       case 'text': {
         const text = typeof action.text === 'string' ? action.text : '';
@@ -156,6 +165,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
     timers: (counts.timer ?? 0) > 0,
+    mediaKeys, mediaStop,
     obsScenes: [...obsScenes],
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
@@ -213,7 +223,7 @@ export function stepLabel(step: StepAction): string {
       const preview = snippetPreview(String(step.url));
       return `Open web page ${preview.text}${preview.more ? `… (${preview.more} more characters not shown)` : ''}`;
     }
-    case 'media': return `${mediaLabels[step.command] ?? String(step.command)} (logged only, not executed)`;
+    case 'media': return step.command === 'stop' ? 'Stop Music or Spotify if running' : `Press the ${step.command === 'play_pause' ? 'Play/pause' : mediaLabels[step.command] ?? String(step.command)} media key`;
     case 'system': return step.command === 'screenshot' ? 'Capture the whole screen to the clipboard' : systemLabels[step.command] ?? String(step.command);
     case 'obs_scene': {
       const preview = snippetPreview(String(step.scene));
@@ -246,7 +256,8 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.undoRedo) lines.push('Sends Undo or Redo to the focused app.');
   if (capabilities.obsScenes.length) lines.push(`Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsScenes.map(scene => `“${snippetPreview(scene).text}”`).join(', ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
-  if (counts.media) lines.push('Media controls are logged only; they do not run on this Mac.');
+  if (capabilities.mediaKeys) lines.push('Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.');
+  if (capabilities.mediaStop) lines.push('Stops Music or Spotify if running; it does not start a player that is not running (one that quits at that instant may be relaunched by macOS, without playing). macOS may ask for Automation permission to control them.');
   if (capabilities.timers) lines.push(`Runs countdown timers (${plural(counts.timer ?? 0, 'timer')} bound). When one ends, macOS shows a notification and plays a system sound. Pressing the same control again cancels it; stopping the run cancels them all.`);
   if (capabilities.switchesProfile) lines.push('Switches profile: a key moves this run to the next or previous saved profile. Actions then pause until you confirm the new profile.');
   if (!lines.length) lines.push('No actions are bound yet, so nothing will run until you add some.');

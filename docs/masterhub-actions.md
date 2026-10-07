@@ -13,13 +13,14 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"system","command":"undo"}` / `"redo"` | Executes: System Events `keystroke "z"` with Command / Command+Shift | Accessibility, Automation |
 | `{"type":"system","command":"screenshot"}` | Executes: `/usr/sbin/screencapture -c` (whole screen to the clipboard) | Screen Recording |
 | `{"type":"text","text":"Hello","press_enter":false}` | Executes: pasteboard plus Command-V (see below) | Accessibility, Automation |
-| `{"type":"media","command":"play_pause"}` (also `next_track`, `previous_track`, `stop`) | **Plan-only.** Validated and planned by dry runs and replay; execution returns `unsupported on the macOS backend` and does nothing | n/a |
+| `{"type":"media","command":"play_pause"}` (also `next_track`, `previous_track`) | Executes: `/usr/bin/osascript -l JavaScript` (fixed script; after `--`, the key type and a `request`/`check` mode) posts a hardware media key, down then up, to whichever app owns media keys (see below) | Accessibility (posting events) |
+| `{"type":"media","command":"stop"}` | **Best effort, two players only.** macOS has no stop media key: a fixed script stops Apple Music and pauses Spotify, each only if already running; with neither running it succeeds and does nothing | Automation (control of Music or Spotify) |
 | `{"type":"multi_action","actions":[…]}` | Executes each step in order, 280 ms apart, within a 15 s overall deadline | Whatever the steps need |
 | `{"type":"profile","direction":"next"}` (or `"previous"`) | **Never executed on the host.** The service reports a request; the OpenStreamHub session manager switches the run to another saved profile. Standalone runs log it as unavailable and do nothing | Nothing (no macOS permission) |
 | `{"type":"timer","seconds":300,"label":"Tea","sound":"glass"}` | The service counts down; a second press of the same control cancels. At the end: `/usr/bin/osascript` (fixed script, label as an argv item) posts a notification, then `/usr/bin/afplay /System/Library/Sounds/<Name>.aiff` plays the sound | Notification permission for the process macOS attributes `osascript` to (unverified; a refusal that prints to stderr is logged as `timer_alert_warning`) |
 | `{"type":"obs_scene","scene":"Live"}` | Executes when the run has an OBS endpoint: one loopback obs-websocket v5 connection, `SetCurrentProgramScene`, close. Without an endpoint it is logged as unavailable and does nothing | OBS 28+ with its WebSocket server on; OBS turned on in OpenStreamHub Settings (or `--obs-endpoint`) |
 
-Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution. Plan-only media actions also pass in dry runs. They fail only when executed.
+Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution.
 
 ## open_url
 
@@ -42,9 +43,47 @@ Any subset of `command`, `control`, `option`, `shift` can be added, with no dupl
 - `undo` and `redo` send Command-Z and Shift-Command-Z to the focused application. Each app decides what those keys do.
 - `screenshot` runs `/usr/sbin/screencapture -c`. It captures the whole screen to the clipboard, which replaces the clipboard's contents, and plays the system shutter sound. Without Screen Recording permission, macOS may capture only the desktop background. The official app's other system actions (switch desktop, zoom, custom scaling, scroll) are not implemented.
 
-## Media control (plan-only)
+## Media control (`media`)
 
-`media` accepts `play_pause`, `next_track`, `previous_track` and `stop`, matching the official `media-track-control` options. System Events can only send ordinary key codes. Hardware media keys (`NX_KEYTYPE_*`) need private or low-level event APIs, and this backend deliberately does not use those. Scripting one specific player such as Music would not be a system-wide media key, so it is not used either. The variant exists so profiles can carry it and replay can plan it. On macOS, execution returns an error saying no action was taken. `media-fast-back-forward` and the official `play-pause` (play an audio file) are not implemented.
+`media` accepts `play_pause`, `next_track`, `previous_track` and `stop`, matching the official `media-track-control` options. It is allowed as a `multi_action` step: each command is one bounded subprocess, like a shortcut. Everything below is tested only against a mock process host and by compiling the scripts. No media key has been posted and no player has been stopped by this code on a real Mac (see "Unverified" below).
+
+### play_pause, next_track, previous_track
+
+These post the same events a keyboard's media keys produce, so they reach whatever app currently owns media-key handling (Music, Spotify, a browser tab, QuickTime and so on), exactly as pressing the key would. The backend runs `/usr/bin/osascript -l JavaScript` with a fixed script (`MEDIA_KEY_SCRIPT` in `crates/cooltek-sdk-service/src/macos.rs`), then `--` and two argv items: the key type `16` (`NX_KEYTYPE_PLAY`), `17` (`NX_KEYTYPE_NEXT`) or `18` (`NX_KEYTYPE_PREVIOUS`), mapped in Rust from the closed `MediaCommand` enum, and the mode `request` or `check`. The script accepts only those values. No profile text ever reaches the process.
+
+The script:
+
+1. Checks `CGPreflightPostEventAccess()`. If posting events is not allowed, it fails with `media-key: not allowed to post events`. Without this check `CGEventPost` would drop the events silently and the action would look successful. In `request` mode it first calls `CGRequestPostEventAccess()`, which asks macOS to show its permission prompt. The service passes `request` only with the first media key of a run (one `masterhub-service` process); every later media key passes `check`, so turning a knob bound to `next_track` while access is denied cannot stack prompts. After allowing access, later presses work without a restart; if you dismissed the prompt, allow the app in System Settings or restart the run to be asked again.
+2. Builds a key-down and a key-up `NX_SYSDEFINED` event (type 14, subtype 8, `data1 = key type << 16 | state << 8`, state `0xA` down and `0xB` up, the same state in the flags). The usual recipe makes these with `NSEvent.otherEventWithType…` and posts its `CGEvent`, but inside `osascript` that `CGEvent` reference comes back unusable (reads as type 0; checked on macOS 27 without posting anything). So the events are built with the public CoreGraphics setters on field numbers that Apple does not document: 83 (subtype), 149 (`data1`) and 150 (`data2`). A Swift comparison found these events byte-for-byte identical to the `NSEvent`-built ones apart from an unused location field.
+3. Reads both events back through `NSEvent.eventWithCGEvent` and requires type 14, subtype 8 and the expected `data1`. If a future macOS moves those fields, the script fails with `media-key: event check failed` and posts nothing.
+4. Posts the key-down, then the key-up, with `CGEventPost` to the HID event tap.
+
+A missing permission is reported as `macOS did not allow posting the media key. Allow the app that runs the service in System Settings > Privacy & Security > Accessibility, then try again`. Other failures report the exit status and the size of stderr, never its text. Like a shortcut, the first press may only bring up the permission prompt.
+
+### stop (best effort, two players only)
+
+macOS has no stop media key, and `play_pause` would toggle rather than stop. So `stop` does something narrower:
+
+- It looks for running copies of Apple Music (`com.apple.Music`) and Spotify (`com.spotify.client`) with `NSRunningApplication`, which starts nothing.
+- Immediately before each command it checks again that the process id still belongs to that player, and skips it otherwise.
+- Music gets its own `stop` command (event `hook`/`Stop` from its scripting dictionary) as an Apple event addressed to its process id. Such an event cannot start a process: sent to one that has quit, it just fails. This was checked with TextEdit, which stayed closed. The error code of a failed send cannot be read safely in `osascript`, so a Music failure is reported as "no answer".
+- Spotify gets `pause` through JavaScript for Automation (`Application(pid).pause()`), because Spotify's event codes could not be checked here (it is not installed on the development Mac). JXA may resolve that target by name, so if Spotify quits in the instant between the check and the command, macOS may relaunch it.
+- In short: `stop` does not start a player that is not running. If a player quits in the instant between the check and the command, macOS may relaunch it (Spotify; Music's pid-addressed event cannot), which does not start playback.
+- If both are running, both are stopped. If neither is running, the action succeeds and does nothing; the script prints `nothing to stop` (the service logs it as an ordinary `action_executed`, without that detail).
+- Any other player (a browser, VLC, Podcasts, Apple TV and so on) is not affected.
+
+Sending a command to Music or Spotify needs the Automation permission (System Settings > Privacy & Security > Automation) for the app that runs the service. A Spotify refusal (`-1743`) is reported with that guidance; a Music failure says it got no answer and may lack the permission. Each hint names only the player it belongs to, a player that failed does not stop the other one from being stopped, and a failure of a player that has meanwhile quit is not reported. While the permission prompt is open the script waits, so the first `stop` can hit the 5 s timeout. Press it again after allowing.
+
+### Unverified
+
+- That the posted events reach the media-key owner on a real Mac, for each of Music, Spotify and a browser. Posting needs a GUI login session.
+- Which process macOS asks about and holds responsible for the Accessibility and Automation permissions when `osascript` is started by the bundled sidecar, and whether `CGPreflightPostEventAccess` reflects that process.
+- That Music's pid-addressed `stop` event and Spotify's `pause` reach the players. Neither was ever sent to them, and Spotify was not installed on the development Mac.
+- Whether `CGRequestPostEventAccess` shows its prompt again on a later call after a denial, or only once per app (the service calls it at most once per run either way).
+- What happens to a macOS Automation (or Accessibility) prompt when `osascript` is killed at the 5 s timeout: the prompt may stay on screen, and its answer then applies only to later presses.
+- The undocumented field numbers have been checked on one macOS version only (27). The read-back check is there so a different layout fails instead of posting something else.
+
+`media-fast-back-forward` and the official `play-pause` (play an audio file) are not implemented.
 
 ## Text snippet (`text`)
 
@@ -219,6 +258,7 @@ Actions run with your user account's permissions, in whatever application is foc
 - A `text` action with `press_enter: true`, or with a newline in its text, that is pasted into a focused terminal **executes commands**. The snippet is pasted, and Return (or the newline) submits it to the shell.
 - `multi_action` can combine `launch_app` or `open_url` with `text` and `shortcut` steps. One key press can open Terminal and run arbitrary commands, or open a web page and paste the current clipboard (Command-V) into it.
 - `system` `screenshot` copies the whole screen to the clipboard. A later paste, possibly by another step in the same multi-action, can put it into any application or web page.
+- `media` keys go to whichever app owns media keys, not to a chosen app. `stop` only affects Apple Music and Spotify.
 - `obs_scene` changes what OBS shows or streams. A profile can switch a live stream to any scene that exists in OBS, but it cannot choose where it connects (the endpoint is an app setting, loopback only) and never sees the password.
 - `text` replaces the clipboard while it runs, and may restore earlier clipboard text afterwards (see the concealed-item caveat above).
 - Only run profiles you wrote yourself or reviewed line by line. Treat a shared profile like a shell script from a stranger.
@@ -235,7 +275,8 @@ Profile limits are unchanged: 1 MiB of JSON and 256 bindings, where a multi-acti
 | `open_url.url` | `open` argv (one element, after `-u`) | Scheme allow-list, ASCII URL character set, host grammar, no userinfo, ≤ 2048 bytes; no shell |
 | `shortcut.key` | AppleScript text | One `[A-Za-z0-9 ]` character (cannot form AppleScript syntax) or a name mapped to an integer key code |
 | `shortcut.modifiers` | AppleScript text | Closed enum mapped to fixed strings |
-| `system.command`, `media.command` | Fixed argv / fixed script / no process | Closed enums |
+| `system.command` | Fixed argv / fixed script | Closed enum |
+| `media.command` | `osascript` argv: a fixed JavaScript script plus, for keys, `--`, one item from `16`/`17`/`18` and one of `request`/`check` | Closed enum mapped in Rust; the script accepts only those values; `stop` takes no argv |
 | `text.text` | `pbcopy` stdin only | ≤ 2048 bytes, no control characters except newline and tab, no invisible format or separator characters; stdin is capped at 8 KiB so the write cannot block |
 | Previous clipboard text | `pbcopy` stdin only | Restored only when plain text with no `nspasteboard`/`concealed`/`transient` type marker, valid UTF-8, ≤ 8 KiB, and the clipboard still holds exactly the snippet after the wait |
 | `launch_app.bundle_id` (existing) | `open -b` argv | Dotted ASCII identifier |
@@ -256,4 +297,4 @@ Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the ti
 - Showing a timer's remaining time on the key (see above), and importing official timers from `.mhz` files.
 - Recorded key macros, clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
 - Every OBS action except switching the program scene: recording and streaming start/stop/toggle, studio mode and preview scene, transitions, source and scene-item visibility, audio mute and volume, replay buffer, virtual camera, screenshots, filters and the rest of the official app's roughly 18 OBS actions. Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
-- Executable media keys on macOS (see above).
+- A media stop for players other than Apple Music and Spotify, fast-forward/rewind (`media-fast-back-forward`) and playing an audio file (`play-pause`).

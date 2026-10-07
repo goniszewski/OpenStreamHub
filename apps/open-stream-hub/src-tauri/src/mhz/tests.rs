@@ -576,6 +576,27 @@ fn every_mapped_action_type_is_converted_and_every_unbound_type_is_reported() {
         (Outcome::UnboundUnsupported, Some("Thing.app"))
     );
     assert!(
+        row(&report, "Keypad · page 1 · key 10")
+            .reason
+            .contains("macOS media key")
+    );
+    let stop = convert_one(&profile_with(vec![vec![tile(
+        0,
+        "media-track-control",
+        json!({"dropdownOption": 5}),
+    )]]));
+    assert_eq!(
+        bound(&stop.profile, "root", 0),
+        Some(Action::Media {
+            command: cooltek_sdk_service::MediaCommand::Stop
+        })
+    );
+    assert!(
+        row(&stop.report, "Keypad · page 1 · key 1")
+            .reason
+            .contains("Apple Music or pauses Spotify")
+    );
+    assert!(
         row(&report, "Keypad · page 2 · key 7")
             .reason
             .contains("Twitch")

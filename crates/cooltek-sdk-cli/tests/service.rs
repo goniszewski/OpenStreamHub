@@ -592,6 +592,46 @@ fn replay_reports_obs_scene_as_unavailable_without_an_endpoint() {
     }
 }
 
+#[test]
+fn replay_plans_media_actions_without_executing_them() {
+    let profile = TempFile::new(
+        &json!({
+            "schema_version": 1,
+            "name": "Media",
+            "bindings": [
+                {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}},
+                {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"media","command":"play_pause"}},
+                {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"multi_action","actions":[{"type":"media","command":"next_track"},{"type":"media","command":"stop"}]}}
+            ]
+        })
+        .to_string(),
+    );
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.0.to_str().unwrap(),
+        fixture("m003k-synthetic.jsonl").to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    assert_eq!(
+        planned_actions(&records),
+        vec![
+            json!({"type":"volume", "delta":5}),
+            json!({"type":"media", "command":"play_pause"}),
+            json!({"type":"multi_action", "actions":[{"type":"media","command":"next_track"},{"type":"media","command":"stop"}]}),
+        ],
+    );
+    // Replay only plans: nothing is executed, failed or unavailable.
+    assert!(!records.iter().any(|record| matches!(
+        record["type"].as_str(),
+        Some("action_executed" | "action_failed" | "action_unavailable")
+    )));
+    let end = records.last().unwrap();
+    assert_eq!(end["action_count"], 3);
+    assert_eq!(end["failed_action_count"], 0);
+}
+
 fn run_with_stdin(arguments: &[&str], stdin: &[u8]) -> Output {
     use std::io::Write;
     let mut child = Command::new(env!("CARGO_BIN_EXE_masterhub-service"))

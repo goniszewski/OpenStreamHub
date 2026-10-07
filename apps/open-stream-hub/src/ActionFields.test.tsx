@@ -51,7 +51,12 @@ describe('action fields', () => {
     expect(text).toContain('Press Return after pasting');
     expect(text).not.toContain('role="alert"');
     expectAccessible(text);
-    expect(render({ type: 'media', command: 'stop' })).toContain('Preview only');
+    const stop = render({ type: 'media', command: 'stop' });
+    expect(stop).toContain('Apple Music');
+    expect(stop).not.toContain('Preview only');
+    expect(stop).toContain('does not start a player that is not running');
+    expect(stop).not.toContain('never opens');
+    expect(render({ type: 'media', command: 'play_pause' })).toContain('Accessibility');
     expect(render({ type: 'system', command: 'screenshot' })).toContain('Screen Recording');
   });
 

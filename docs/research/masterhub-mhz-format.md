@@ -222,7 +222,7 @@ Target: `Profile` in `crates/cooltek-sdk-service/src/profile.rs` (`schema_versio
 | `profile` | `profile` `{direction}` | Lossy. `dropdownOption` 0 → `next`, 1 → `previous`. The official runtime selects `func.profileId` when it is set (`App.vue` l.1391); that id refers to the exporting machine's profiles and is dropped and reported |
 | `volume-control` (key) | `volume` or `toggle_mute`, chosen by `volumeAction` (`volume-up`, `volume-down`; the mute value is Unverified) and checked against `dropdownOption` (0 up, 1 down, 2/3 mute) | Lossy. Step size is not in the file; use a fixed default (for example ±5) and report it. A non-zero `volumeControlProcessId` (per-app volume) is Unsupported |
 | `volume-control` (knob, dial or roller sides) | `volume {delta: ±N}` per side | Lossy (step size) |
-| `media-track-control` | `media` (4 `play_pause`, 5 `stop`, 2 `previous_track`, 3 `next_track`) | Lossless in the profile. Plan-only on macOS |
+| `media-track-control` | `media` (4 `play_pause`, 5 `stop`, 2 `previous_track`, 3 `next_track`) | Lossless in the profile. Keys run as macOS media keys; `stop` reaches only a running Apple Music or Spotify |
 | `undo-redo` | `system undo` / `redo` (by `dropdownOption`) | Lossless in intent. Windows actually presses the stored hotkey |
 | `screen-capture` | `system screenshot` | Lossy (Windows region snip vs whole screen to the clipboard). Flagged |
 | `app-files` (Open) | none | **Dangerous, Unsupported.** It launches an arbitrary Windows executable path through a shell. Never converted to `launch_app`, never guessed into a bundle id. The path is kept in the report only, redacted to its basename |

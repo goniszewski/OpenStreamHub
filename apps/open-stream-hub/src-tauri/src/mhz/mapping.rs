@@ -1214,11 +1214,12 @@ impl Mapper {
                     Some(3) => MediaCommand::NextTrack,
                     _ => return unsupported("unknown media option"),
                 };
-                mapped(
-                    Action::Media { command },
-                    false,
-                    "media keys are planned only on macOS",
-                )
+                let reason = if command == MediaCommand::Stop {
+                    "macOS has no stop media key: stops Apple Music or pauses Spotify, only when one is already running"
+                } else {
+                    "sent as a macOS media key to whichever app controls playback"
+                };
+                mapped(Action::Media { command }, false, reason)
             }
             "undo-redo" => {
                 let command = match node.get("dropdownOption").index() {

@@ -85,7 +85,7 @@ Still open:
 
 - Sending images to the module displays is experimental and unverified on hardware; GIF animation, dial backlight and colour, and firmware controls are not implemented.
 - Remaining OBS actions (recording, streaming, studio mode, transitions, sources, audio, replay buffer, virtual camera) and Keychain storage for the OBS password; Twitch, Discord and Streamlabs integrations.
-- Macro recording, and executable media keys (media actions are plan-only on macOS).
+- Macro recording. Media keys and media stop (Apple Music and Spotify only) execute but are unverified on a real Mac.
 - Official `.mhz` export (a nice-to-have), and checking the importer against a real user export.
 - Multi-module live action routing, browser-tab cards, flows and script integrations (the last three do not exist in the official app).
 - Hardware acceptance of input, displays, timers, OBS and sleep/wake, then signing and notarization (including the sidecar) before a public release.

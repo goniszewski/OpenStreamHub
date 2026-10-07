@@ -160,7 +160,8 @@ pub enum MediaCommand {
     NextTrack,
     /// Return to the previous track.
     PreviousTrack,
-    /// Stop playback.
+    /// Stop playback. macOS has no stop media key, so this stops Apple Music
+    /// and pauses Spotify, each only when already running.
     Stop,
 }
 
@@ -310,7 +311,9 @@ pub enum Action {
         /// Printable ASCII URL with a host and no user information.
         url: String,
     },
-    /// Send a media transport command. Plan-only on the macOS backend.
+    /// Send a media transport command: a hardware media key on macOS for
+    /// play/pause, next and previous; `stop` reaches only an already running
+    /// Apple Music or Spotify.
     Media {
         /// Transport command.
         command: MediaCommand,
@@ -1822,13 +1825,13 @@ mod tests {
     fn dry_run_plans_new_actions_through_executable_validation() {
         use crate::{ActionDispatcher, DryRunDispatcher};
         let mut dispatcher = DryRunDispatcher::default();
-        let plan_only = Action::Media {
+        let media = Action::Media {
             command: MediaCommand::NextTrack,
         };
         let multi = Action::MultiAction {
-            actions: vec![url("https://example.com"), plan_only.clone(), text("x")],
+            actions: vec![url("https://example.com"), media.clone(), text("x")],
         };
-        dispatcher.dispatch(&plan_only).unwrap();
+        dispatcher.dispatch(&media).unwrap();
         dispatcher.dispatch(&multi).unwrap();
         // Dry runs plan obs_scene without any network access.
         dispatcher.dispatch(&obs("Live")).unwrap();
@@ -1842,7 +1845,7 @@ mod tests {
         ] {
             assert!(dispatcher.dispatch(&invalid).is_err());
         }
-        assert_eq!(dispatcher.actions, [plan_only, multi, obs("Live")]);
+        assert_eq!(dispatcher.actions, [media, multi, obs("Live")]);
     }
 
     #[test]

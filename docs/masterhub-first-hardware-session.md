@@ -381,7 +381,35 @@ masterhub-service run --profile captures/hardware/timer.json \
 | Stop mid-countdown | Ctrl-C before 10 s: `timer_cancelled` with reason `stopped`, no notification or sound afterwards | Cancel on stop |
 | Label privacy | `grep -c Tea captures/hardware/service-timer.jsonl` prints 0 | Records carry `label_chars`, never the label |
 
-#### 7c. Profile next/previous (desktop app, dry run is enough)
+#### 7c. Media keys and media stop (optional; executes, no module writes)
+
+Needs Apple Music and, if possible, Spotify, each with a few tracks queued. It changes playback only. Save this as `captures/hardware/media.json`, check it with `masterhub-service validate`, then run it with `--execute`:
+
+```json
+{"schema_version":1,"name":"Media check","bindings":[
+  {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"media","command":"play_pause"}},
+  {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"media","command":"next_track"}},
+  {"module":"m003k","control":0,"gesture":"counter_clockwise","action":{"type":"media","command":"previous_track"}},
+  {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"media","command":"stop"}}]}
+```
+
+```sh
+masterhub-service run --profile captures/hardware/media.json \
+  --path-hex HEX_OF_THE_KNOBS --execute --duration-secs 90 | tee captures/hardware/service-media.jsonl
+```
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Accessibility prompt | The first knob 1 press either works or logs `action_failed` with "did not allow posting the media key" and macOS shows an Accessibility prompt. Record which app macOS names (Terminal here, OpenStreamHub in the app). Allow it and press again | Post-event permission check and which process macOS holds responsible (unverified) |
+| Play/pause, next, previous with Music | With Music frontmost and then in the background: knob 1 press toggles playback, turning right skips, turning left goes back, exactly like the keyboard's media keys | The undocumented event fields (83, 149, 150) and `CGEventPost` from `osascript` |
+| The same with Spotify, and with a browser tab playing | Whichever app macOS currently routes media keys to reacts; record which one | Media-key routing |
+| Stop with Music playing | Knob 2 press: Music stops (position resets); first time, macOS asks for Automation permission to control Music. The first press may log a 5 s timeout while the prompt is open | Music `stop` by process id |
+| Stop with Spotify playing | Knob 2 press pauses Spotify (Automation prompt for Spotify) | Spotify `pause` by process id |
+| Stop with neither running | Quit both, press knob 2: `action_executed`, neither app opens (check the Dock) | Does not start a player that is not running |
+| Repeated presses while Accessibility is denied | Deny the prompt, turn the knob several times: each step logs `action_failed`, and at most one prompt appears per run | Request-once rule |
+| Stop with Automation denied | Deny the prompt (or turn it off in System Settings > Privacy & Security > Automation), press knob 2: `action_failed` naming the player and Automation | `-1743` handling |
+
+#### 7d. Profile next/previous (desktop app, dry run is enough)
 
 Save two or three profiles in the app, one of them with a `{"type":"profile","direction":"next"}` binding on a real control. Start it as a dry run with the module's real interface and press the control.
 
@@ -391,7 +419,7 @@ Save two or three profiles in the app, one of them with a `{"type":"profile","di
 | Is it ignored with one saved profile, and does an Execute run pause for confirmation? | No restart with one profile; with Execute the session waits in `needs_confirmation` | Safety rule |
 | Standalone service | The same profile under `masterhub-service run` without `--profile-switch-requests` logs `action_unavailable` and does nothing | CLI contract |
 
-#### 7d. Importing a real `.mhz` export (no hardware needed, needs a real file)
+#### 7e. Importing a real `.mhz` export (no hardware needed, needs a real file)
 
 Every importer test so far uses synthetic files. Export a profile from the official Windows MasterHUB app that has key images (`uploadImages/`), a folder, a multi-action and a dial function, and, if possible, a multi-profile `.zip`. In the app choose **Import official .mhz** on the Profiles page.
 
@@ -471,8 +499,9 @@ Copy to a new file in `captures/hardware/` and fill it in. Use `confirmed`, `ref
 | T7.1 | 7 | all | Service plan matches physical gestures | | | | | |
 | T7.2 | 7a | knobs | `obs_scene` against a real OBS 28+ | | | | | |
 | T7.3 | 7b | knobs | Timer notification and sound on a real Mac | | | | | |
-| T7.4 | 7c | any | Profile key switches the managed run | | | | | |
-| T7.5 | 7d | none | Real `.mhz` export imports; report accounts for every control | | | | | |
+| T7.4 | 7c | knobs | Media keys reach Music/Spotify; stop affects only running players and does not start one that is not running | | | | | |
+| T7.5 | 7d | any | Profile key switches the managed run | | | | | |
+| T7.6 | 7e | none | Real `.mhz` export imports; report accounts for every control | | | | | |
 | T8.1 | 8 | all | Replug behavior and path change | | | | | |
 | T8.2 | 8 | all | Sleep/wake behavior | | | | | |
 | T8.3 | 8 | dial | Software mode across sleep/wake | | | | | |

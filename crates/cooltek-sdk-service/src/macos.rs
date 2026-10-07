@@ -35,6 +35,118 @@ const TIMER_NOTIFICATION_SCRIPT: [&str; 3] = [
     "display notification (item 2 of argv) with title (item 1 of argv)",
     "end run",
 ];
+/// `NX_KEYTYPE_PLAY`, `NX_KEYTYPE_NEXT` and `NX_KEYTYPE_PREVIOUS` from IOKit's
+/// `ev_keymap.h`: the key types a keyboard's media keys report.
+const NX_KEYTYPE_PLAY: u8 = 16;
+const NX_KEYTYPE_NEXT: u8 = 17;
+const NX_KEYTYPE_PREVIOUS: u8 = 18;
+/// Fixed JavaScript for Automation script that posts one hardware media key,
+/// as a keyboard's media key does, so it reaches whichever app currently owns
+/// media-key handling. The key type is its only input: one argv item from
+/// the closed set above, which the script checks again.
+///
+/// Each event is an `NX_SYSDEFINED` (14) event of subtype 8
+/// (`NX_SUBTYPE_AUX_CONTROL_BUTTONS`) whose `data1` is
+/// `key type << 16 | key state << 8`, state 0xA down and 0xB up, with the same
+/// state in the flags' second byte. The usual recipe builds it with
+/// `NSEvent.otherEventWithType…` and takes its `CGEvent`, but in `osascript`
+/// that `CGEvent` reference comes back unusable (`CGEventGetType` reads 0;
+/// checked on macOS 27 without posting). So the event is built with public
+/// CoreGraphics setters on undocumented field numbers: 83 subtype, 149
+/// `data1`, 150 `data2`. A Swift comparison found the result byte-identical to
+/// the `NSEvent` one apart from an unused location. Before anything is posted,
+/// both events are read back through `NSEvent.eventWithCGEvent` and must show
+/// exactly type 14, subtype 8 and the expected `data1`; if a future macOS
+/// moved those fields, the script fails and posts nothing.
+///
+/// Posting needs the Accessibility (post event) permission of the process
+/// macOS holds responsible. Without it `CGEventPost` drops events silently,
+/// so the script checks first and fails. Its second argv item is `request` or
+/// `check`: only `request` also asks macOS to show its permission prompt, and
+/// a dispatcher passes it on its first media key only, so a knob turned while
+/// access is denied cannot pile up prompts.
+const MEDIA_KEY_SCRIPT: &[&str] = &[
+    "ObjC.import('AppKit');",
+    "ObjC.import('CoreGraphics');",
+    "ObjC.bindFunction('CGPreflightPostEventAccess', ['bool', []]);",
+    "ObjC.bindFunction('CGRequestPostEventAccess', ['bool', []]);",
+    "function run(argv) {",
+    "if (argv.length !== 2 || ['16', '17', '18'].indexOf(argv[0]) < 0 || ['request', 'check'].indexOf(argv[1]) < 0) throw new Error('media-key: unknown key type');",
+    "var key = Number(argv[0]);",
+    "if (!$.CGPreflightPostEventAccess()) {",
+    "if (argv[1] === 'request') $.CGRequestPostEventAccess();",
+    "throw new Error('media-key: not allowed to post events');",
+    "}",
+    "var events = [0xA, 0xB].map(function (state) {",
+    "var data1 = (key << 16) | (state << 8);",
+    "var event = $.CGEventCreate(null);",
+    "$.CGEventSetType(event, 14);",
+    "$.CGEventSetFlags(event, state << 8);",
+    "$.CGEventSetIntegerValueField(event, 83, 8);",
+    "$.CGEventSetIntegerValueField(event, 149, data1);",
+    "$.CGEventSetIntegerValueField(event, 150, -1);",
+    "var check = $.NSEvent.eventWithCGEvent(event);",
+    "if (check.isNil() || Number(check.type) !== 14 || Number(check.subtype) !== 8 || Number(check.data1) !== data1) throw new Error('media-key: event check failed');",
+    "return event;",
+    "});",
+    "events.forEach(function (event) { $.CGEventPost(0, event); });",
+    "}",
+];
+/// Marker the media-key script throws when posting events is not allowed.
+const MEDIA_KEY_DENIED: &str = "media-key: not allowed to post events";
+/// Marker the media-key script throws when the built event reads back wrong.
+const MEDIA_KEY_CHECK_FAILED: &str = "media-key: event check failed";
+/// macOS has no stop media key, so `stop` asks Apple Music (`stop`) and
+/// Spotify (`pause`) directly, and only copies that are already running, found
+/// with `NSRunningApplication` (which starts nothing). Immediately before each
+/// command the script checks again that the process id still belongs to that
+/// player, and skips it otherwise.
+///
+/// Music gets its `stop` event (`hook`/`Stop` in its sdef) as an Apple event
+/// addressed to the process id. Such an event cannot start a process: sent to
+/// a process that has quit it just fails (checked with TextEdit, which stayed
+/// closed). Its error cannot be read safely in `osascript` (reading the
+/// `NSError` reference crashed it), so a failure is reported as `no reply`.
+/// Spotify's event codes cannot be checked here, so it keeps
+/// `Application(pid).pause()`. JXA may resolve that by name, so if Spotify
+/// quits in the instant between the re-check and the command, macOS may
+/// relaunch it; that does not start playback.
+///
+/// A failure for a player that has meanwhile quit is not reported. Nothing
+/// running is a successful no-op that prints `nothing to stop`. The fixed
+/// script takes no input. Commands need the Automation permission for each
+/// player.
+const MEDIA_STOP_SCRIPT: &[&str] = &[
+    "ObjC.import('AppKit');",
+    "function running(pid, bundle) {",
+    "var app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(pid);",
+    "return !app.isNil() && ObjC.unwrap(app.bundleIdentifier) === bundle;",
+    "}",
+    "function stopMusic(pid) {",
+    "var target = $.NSAppleEventDescriptor.descriptorWithProcessIdentifier(pid);",
+    "var event = $.NSAppleEventDescriptor.appleEventWithEventClassEventIDTargetDescriptorReturnIDTransactionID(0x686F6F6B, 0x53746F70, target, -1, 0);",
+    "if (event.sendEventWithOptionsTimeoutError(3, 2, null).isNil()) throw new Error('no reply');",
+    "}",
+    "function pauseSpotify(pid) { Application(pid).pause(); }",
+    "function run(argv) {",
+    "var players = [['com.apple.Music', 'Music', stopMusic], ['com.spotify.client', 'Spotify', pauseSpotify]];",
+    "var stopped = [];",
+    "var failed = [];",
+    "players.forEach(function (player) {",
+    "var found = $.NSRunningApplication.runningApplicationsWithBundleIdentifier(player[0]);",
+    "for (var index = 0; index < found.count; index++) {",
+    "var pid = found.objectAtIndex(index).processIdentifier;",
+    "if (!running(pid, player[0])) continue;",
+    "try { player[2](pid); stopped.push(player[1]); }",
+    "catch (error) { if (running(pid, player[0])) failed.push('media-stop: ' + player[1] + ' failed (' + (error.errorNumber ? Number(error.errorNumber) : 'no reply') + ')'); }",
+    "}",
+    "});",
+    "if (failed.length) throw new Error(failed.join('; '));",
+    "return stopped.length ? 'stopped ' + stopped.join(', ') : 'nothing to stop';",
+    "}",
+];
+/// The players `stop` addresses, as named in the stop script's failures.
+const MEDIA_STOP_PLAYERS: [&str; 2] = ["Music", "Spotify"];
 const OUTPUT_LIMIT: usize = 16 * 1024;
 /// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
 /// writing it before monitoring the child cannot block on a child that never reads.
@@ -74,8 +186,9 @@ impl AudioSnapshot {
     }
 }
 
-/// Executes validated actions on macOS. Shortcut execution may require the user's
-/// Accessibility and Automation permissions for the invoking application.
+/// Executes validated actions on macOS. Shortcut and media-key execution may
+/// require the user's Accessibility and Automation permissions for the
+/// invoking application.
 ///
 /// Failed or timed-out actions are returned to the caller and are never retried;
 /// an action may already have taken effect before its process reports a failure.
@@ -84,6 +197,9 @@ pub struct MacOsDispatcher {
     sleeper: Box<dyn Sleeper>,
     /// The loopback OBS client for `obs_scene`, when this run has an endpoint.
     obs: Option<ObsClient>,
+    /// Set once a media key has asked macOS for the Accessibility prompt;
+    /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
+    media_access_requested: bool,
 }
 
 impl MacOsDispatcher {
@@ -93,6 +209,7 @@ impl MacOsDispatcher {
             runner: Box::new(SystemProcessRunner { cancellation: None }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            media_access_requested: false,
         }
     }
 
@@ -107,6 +224,7 @@ impl MacOsDispatcher {
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            media_access_requested: false,
         }
     }
 
@@ -184,6 +302,29 @@ impl MacOsDispatcher {
         stderr_in_errors: bool,
     ) -> Result<ProcessOutput, String> {
         let program = request.program;
+        let output = self.run_bounded(request)?;
+        if !output.success {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let details = stderr.trim();
+            return Err(if details.is_empty() {
+                format!("{program}: {}", output.status)
+            } else if !stderr_in_errors {
+                format!(
+                    "{program}: {} (stderr: {} bytes, not shown)",
+                    output.status,
+                    output.stderr.len()
+                )
+            } else {
+                format!("{program}: {}: {details}", output.status)
+            });
+        }
+        Ok(output)
+    }
+
+    /// Runs one request within the timeout and output limits; the output is
+    /// returned whatever the exit status.
+    fn run_bounded(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
+        let program = request.program;
         check_cancellation(self.runner.cancellation(), program)?;
         if request
             .stdin
@@ -207,21 +348,6 @@ impl MacOsDispatcher {
             return Err(format!(
                 "{program}: subprocess output exceeded {OUTPUT_LIMIT} bytes"
             ));
-        }
-        if !output.success {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let details = stderr.trim();
-            return Err(if details.is_empty() {
-                format!("{program}: {}", output.status)
-            } else if !stderr_in_errors {
-                format!(
-                    "{program}: {} (stderr: {} bytes, not shown)",
-                    output.status,
-                    output.stderr.len()
-                )
-            } else {
-                format!("{program}: {}: {details}", output.status)
-            });
         }
         Ok(output)
     }
@@ -379,17 +505,7 @@ impl MacOsDispatcher {
                 // read as an option; -u forces URL handling even if it matches a path.
                 self.run(OPEN, vec!["-u".into(), url.clone()])?;
             }
-            Action::Media { command } => {
-                let name = match command {
-                    MediaCommand::PlayPause => "play_pause",
-                    MediaCommand::NextTrack => "next_track",
-                    MediaCommand::PreviousTrack => "previous_track",
-                    MediaCommand::Stop => "stop",
-                };
-                return Err(format!(
-                    "media {name} is unsupported on the macOS backend: System Events cannot post hardware media keys; no action was taken"
-                ));
-            }
+            Action::Media { command } => self.media(*command)?,
             Action::System { command } => match command {
                 SystemCommand::Undo => {
                     self.apple_script(keystroke_script("z", &[Modifier::Command]))?;
@@ -479,6 +595,43 @@ impl MacOsDispatcher {
         obs.clone()
             .with_timeout(remaining)
             .set_current_program_scene(scene)
+    }
+
+    /// Posts a media key, or stops Music and Spotify, through one fixed
+    /// `osascript` JavaScript run (see [`MEDIA_KEY_SCRIPT`] and
+    /// [`MEDIA_STOP_SCRIPT`]). No profile text reaches the process: the only
+    /// argv item beyond the fixed lines is a key type from a closed set. A
+    /// failure names a fixed cause and never contains stderr text.
+    fn media(&mut self, command: MediaCommand) -> Result<(), String> {
+        let (script, key_type) = match command {
+            MediaCommand::PlayPause => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PLAY)),
+            MediaCommand::NextTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_NEXT)),
+            MediaCommand::PreviousTrack => (MEDIA_KEY_SCRIPT, Some(NX_KEYTYPE_PREVIOUS)),
+            MediaCommand::Stop => (MEDIA_STOP_SCRIPT, None),
+        };
+        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
+        for line in script {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        if let Some(key_type) = key_type {
+            // `--` ends osascript's options; the script checks both items again.
+            let access = if std::mem::replace(&mut self.media_access_requested, true) {
+                "check"
+            } else {
+                "request"
+            };
+            args.extend(["--".to_string(), key_type.to_string(), access.to_string()]);
+        }
+        let output = self.run_bounded(ProcessRequest {
+            program: OSASCRIPT,
+            args,
+            ..ProcessRequest::default()
+        })?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(media_failure(&output))
+        }
     }
 
     fn query(&mut self, property: &str) -> Result<String, String> {
@@ -580,6 +733,7 @@ impl ActionDispatcher for MacOsDispatcher {
             runner: self.runner.fork(cancel)?,
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            media_access_requested: false,
         }))
     }
 }
@@ -614,6 +768,46 @@ fn notification_warning(stderr: &[u8]) -> Option<String> {
     Some(format!(
         "timer notification may not have been shown: {category}"
     ))
+}
+
+/// Describes a failed media script by fixed markers in its stderr, which is
+/// otherwise reported only by size.
+fn media_failure(output: &ProcessOutput) -> String {
+    let has = |marker: &str| {
+        output
+            .stderr
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    };
+    // Each player's own result decides its hint, so an Automation denial of
+    // one player is never attributed to the other.
+    let failed_players: Vec<_> = MEDIA_STOP_PLAYERS
+        .into_iter()
+        .filter(|player| has(&format!("media-stop: {player} failed")))
+        .map(|player| {
+            let detail = if has(&format!("media-stop: {player} failed (-1743)")) {
+                "macOS denied control of the player; allow it in System Settings > Privacy & Security > Automation"
+            } else if has(&format!("media-stop: {player} failed (no reply)")) {
+                "no answer: the player did not accept the command, or the Automation permission for it is missing"
+            } else {
+                "failed"
+            };
+            format!("{player} ({detail})")
+        })
+        .collect();
+    let cause = if has(MEDIA_KEY_DENIED) {
+        "macOS did not allow posting the media key. Allow the app that runs the service in System Settings > Privacy & Security > Accessibility, then try again".to_string()
+    } else if has(MEDIA_KEY_CHECK_FAILED) {
+        "this macOS did not accept the media-key event layout, so no media key was sent".to_string()
+    } else if !failed_players.is_empty() {
+        format!(
+            "stop failed for {}; any other running player may already have stopped",
+            failed_players.join(", ")
+        )
+    } else {
+        format!("stderr: {} bytes, not shown", output.stderr.len())
+    };
+    format!("{OSASCRIPT}: {} ({cause})", output.status)
 }
 
 /// Builds a System Events keystroke from a validated key. A literal key is one
@@ -1075,6 +1269,7 @@ mod tests {
             runner: Box::new(FakeRunner(state.clone())),
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
             obs: None,
+            media_access_requested: false,
         };
         (dispatcher, state)
     }
@@ -1449,6 +1644,7 @@ mod tests {
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            media_access_requested: false,
         };
         assert!(
             dispatcher
@@ -1538,6 +1734,7 @@ mod tests {
             runner: Box::new(CancelledRunner(AtomicBool::new(true))),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            media_access_requested: false,
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -2203,23 +2400,297 @@ mod tests {
         assert!(closed.accept().is_err(), "OBS was contacted");
     }
 
+    /// `-l JavaScript`, then each fixed script line as its own `-e` item.
+    fn jxa(lines: &[&str]) -> Vec<String> {
+        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
+        for line in lines {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        args
+    }
+
+    fn failed_with(stderr: &str) -> Result<ProcessOutput, String> {
+        Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        })
+    }
+
     #[test]
-    fn media_commands_are_plan_only_and_never_start_processes() {
-        let (mut dispatcher, state) = fake(vec![]);
+    fn media_keys_run_one_fixed_script_with_a_closed_key_type() {
+        for (command, key_type) in [
+            (MediaCommand::PlayPause, "16"),
+            (MediaCommand::NextTrack, "17"),
+            (MediaCommand::PreviousTrack, "18"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher.dispatch(&Action::Media { command }).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1, "{command:?}");
+            let request = &state.requests[0];
+            assert_eq!(request.program, OSASCRIPT);
+            let mut expected = jxa(MEDIA_KEY_SCRIPT);
+            // `--` ends osascript's options; a fresh dispatcher may ask
+            // macOS to show its Accessibility prompt.
+            expected.extend(["--".into(), key_type.into(), "request".into()]);
+            assert_eq!(request.args, expected, "{command:?}");
+            // Nothing but the fixed lines, `--`, one closed-set number and
+            // one closed-set mode.
+            assert_eq!(&request.args[..2], ["-l", "JavaScript"]);
+            assert_eq!(request.stdin, None);
+            assert!(request.env.is_empty());
+            assert_eq!(request.timeout, PROCESS_TIMEOUT);
+            assert_eq!(request.output_limit, OUTPUT_LIMIT);
+            assert!(state.pauses.is_empty());
+        }
+        // The script posts a key-down and a key-up system-defined event
+        // (type 14, subtype 8) and checks the permission first.
+        let script = MEDIA_KEY_SCRIPT.join("\n");
+        for needle in [
+            "['16', '17', '18'].indexOf(argv[0])",
+            "['request', 'check'].indexOf(argv[1])",
+            "CGPreflightPostEventAccess",
+            "if (argv[1] === 'request') $.CGRequestPostEventAccess();",
+            "[0xA, 0xB].map",
+            "CGEventSetType(event, 14)",
+            "CGEventSetIntegerValueField(event, 83, 8)",
+            "CGEventSetIntegerValueField(event, 149, data1)",
+            "NSEvent.eventWithCGEvent(event)",
+            "CGEventPost(0, event)",
+            MEDIA_KEY_DENIED,
+            MEDIA_KEY_CHECK_FAILED,
+        ] {
+            assert!(script.contains(needle), "missing {needle}");
+        }
+        assert_eq!(
+            MEDIA_KEY_SCRIPT
+                .iter()
+                .filter(|line| line.contains("CGEventPost"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn media_keys_ask_for_the_accessibility_prompt_at_most_once_per_dispatcher() {
+        let denied = "execution error: Error: Error: media-key: not allowed to post events (-2700)";
+        let (mut dispatcher, state) = fake(vec![
+            failed_with(denied),
+            success("nothing to stop\n"),
+            failed_with(denied),
+            success(""),
+        ]);
+        for command in [
+            MediaCommand::PlayPause,
+            MediaCommand::Stop,
+            MediaCommand::NextTrack,
+            MediaCommand::PlayPause,
+        ] {
+            let _ = dispatcher.dispatch(&Action::Media { command });
+        }
+        let state = state.lock().unwrap();
+        let modes: Vec<_> = state
+            .requests
+            .iter()
+            .map(|request| request.args.last().unwrap().as_str())
+            .collect();
+        // Only the first key press may prompt, even though it was denied;
+        // later presses only check and fail with the same message. A stop
+        // never takes a mode.
+        assert_eq!(
+            modes,
+            [
+                "request",
+                MEDIA_STOP_SCRIPT.last().unwrap(),
+                "check",
+                "check"
+            ]
+        );
+    }
+
+    #[test]
+    fn media_stop_pauses_only_running_music_or_spotify_by_process_id() {
+        for stdout in ["nothing to stop\n", "stopped Music, Spotify\n"] {
+            let (mut dispatcher, state) = fake(vec![success(stdout)]);
+            dispatcher
+                .dispatch(&Action::Media {
+                    command: MediaCommand::Stop,
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            assert_eq!(state.requests[0].program, OSASCRIPT);
+            // No argv after the script: the player set is fixed.
+            assert_eq!(state.requests[0].args, jxa(MEDIA_STOP_SCRIPT));
+            assert_eq!(state.requests[0].timeout, PROCESS_TIMEOUT);
+        }
+        let script = MEDIA_STOP_SCRIPT.join("\n");
+        for needle in [
+            "['com.apple.Music', 'Music', stopMusic]",
+            "['com.spotify.client', 'Spotify', pauseSpotify]",
+            "runningApplicationsWithBundleIdentifier",
+            // Music's `stop` (hook/Stop) as an Apple event addressed to the
+            // process id, which cannot start a process that has quit.
+            "descriptorWithProcessIdentifier(pid)",
+            "0x686F6F6B, 0x53746F70",
+            // Spotify's codes are unverified here, so it keeps JXA, which can
+            // resolve the app by name and relaunch one that just quit.
+            "Application(pid).pause();",
+            "'nothing to stop'",
+        ] {
+            assert!(script.contains(needle), "missing {needle}");
+        }
+        // The liveness re-check runs immediately before every send, and a
+        // player that quit after a failed send is skipped, not reported.
+        let recheck = script
+            .find("if (!running(pid, player[0])) continue;")
+            .expect("re-check before the send");
+        let send = script.find("player[2](pid);").unwrap();
+        assert!(recheck < send);
+        assert!(script.contains("catch (error) { if (running(pid, player[0]))"));
+        assert!(script.contains("runningApplicationWithProcessIdentifier(pid)"));
+        // No player is ever addressed by name or bundle id.
+        for forbidden in [
+            "Application('",
+            "Application(player",
+            "Application(pid).stop",
+            "tell application",
+            "launch",
+            "activate",
+            "CGEventPost",
+        ] {
+            assert!(!script.contains(forbidden), "found {forbidden}");
+        }
+    }
+
+    #[test]
+    fn media_failures_name_a_fixed_cause_and_never_echo_stderr() {
+        let cases = [
+            (
+                MediaCommand::PlayPause,
+                "execution error: Error: Error: media-key: not allowed to post events (-2700)",
+                "Accessibility",
+            ),
+            (
+                MediaCommand::NextTrack,
+                "execution error: Error: Error: media-key: event check failed (-2700)",
+                "no media key was sent",
+            ),
+            (
+                MediaCommand::Stop,
+                "execution error: Error: Error: media-stop: Spotify failed (-1743) (-2700)",
+                "Automation",
+            ),
+            (
+                MediaCommand::PreviousTrack,
+                "something unexpected /Users/someone/secret",
+                "stderr: 42 bytes, not shown",
+            ),
+        ];
+        for (command, stderr, expected) in cases {
+            let (mut dispatcher, state) = fake(vec![failed_with(stderr)]);
+            let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(error.contains("exit status: 1"), "{error}");
+            assert!(!error.contains("execution error"), "{error}");
+            assert!(!error.contains("secret"), "{error}");
+            assert_eq!(state.lock().unwrap().requests.len(), 1);
+        }
+        // The Automation hint belongs only to the player that reported -1743.
+        for (stderr, music, spotify) in [
+            (
+                "media-stop: Music failed (no reply); media-stop: Spotify failed (-1743)",
+                "Music (no answer",
+                "Spotify (macOS denied control",
+            ),
+            (
+                "media-stop: Music failed (-1743); media-stop: Spotify failed (-600)",
+                "Music (macOS denied control",
+                "Spotify (failed)",
+            ),
+        ] {
+            let (mut dispatcher, _) = fake(vec![failed_with(stderr)]);
+            let error = dispatcher
+                .dispatch(&Action::Media {
+                    command: MediaCommand::Stop,
+                })
+                .unwrap_err();
+            assert!(error.contains(music), "{error}");
+            assert!(error.contains(spotify), "{error}");
+            assert_eq!(error.matches("denied control").count(), 1, "{error}");
+        }
+
+        // Timeouts propagate once, without a retry.
+        let (mut dispatcher, state) =
+            fake(vec![Err("/usr/bin/osascript: subprocess timed out after 5000 ms; action may already have taken effect".into())]);
+        let error = dispatcher
+            .dispatch(&Action::Media {
+                command: MediaCommand::PlayPause,
+            })
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+    }
+
+    #[test]
+    fn cancelled_media_actions_never_start_a_process() {
+        struct CancelledRunner(AtomicBool, usize);
+        impl ProcessRunner for CancelledRunner {
+            fn run(&mut self, _: &ProcessRequest) -> Result<ProcessOutput, String> {
+                self.1 += 1;
+                success("")
+            }
+
+            fn cancellation(&self) -> Option<&AtomicBool> {
+                Some(&self.0)
+            }
+        }
         for command in [
             MediaCommand::PlayPause,
             MediaCommand::NextTrack,
             MediaCommand::PreviousTrack,
             MediaCommand::Stop,
         ] {
+            let mut dispatcher = MacOsDispatcher {
+                runner: Box::new(CancelledRunner(AtomicBool::new(true), 0)),
+                sleeper: Box::new(SystemSleeper),
+                obs: None,
+                media_access_requested: false,
+            };
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
-            assert!(
-                error.contains("unsupported on the macOS backend"),
-                "{error}"
-            );
-            assert!(error.contains("no action was taken"));
+            assert!(error.contains("action execution cancelled"), "{error}");
+            assert!(dispatcher.unavailable(&Action::Media { command }).is_none());
         }
-        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    /// Proves every fixed media script compiles as JavaScript for Automation.
+    /// `osacompile` only parses: no script runs, no event is posted and no
+    /// player is touched.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn media_scripts_compile_with_osacompile() {
+        let directory =
+            std::env::temp_dir().join(format!("cooltek-media-scripts-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        for (name, lines) in [("key", MEDIA_KEY_SCRIPT), ("stop", MEDIA_STOP_SCRIPT)] {
+            let source = directory.join(format!("{name}.js"));
+            // osascript joins `-e` items with newlines, so this is the same text.
+            std::fs::write(&source, lines.join("\n")).unwrap();
+            let output = std::process::Command::new("/usr/bin/osacompile")
+                .args(["-l", "JavaScript", "-o"])
+                .arg(directory.join(format!("{name}.scpt")))
+                .arg(&source)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 
     #[test]
@@ -2664,7 +3135,12 @@ mod tests {
         assert_eq!(state.requests.len(), 2);
         assert_eq!(state.pauses.len(), 1);
 
-        let (mut dispatcher, state) = fake(vec![success("")]);
+        let (mut dispatcher, state) = fake(vec![
+            success(""),
+            failed_with(
+                "execution error: Error: Error: media-key: not allowed to post events (-2700)",
+            ),
+        ]);
         let error = dispatcher
             .dispatch(&Action::MultiAction {
                 actions: vec![
@@ -2677,8 +3153,33 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.starts_with("multi_action step 2 of 3 (media) failed:"));
-        assert!(error.contains("unsupported on the macOS backend"));
-        assert_eq!(state.lock().unwrap().requests.len(), 1);
+        assert!(error.contains("Accessibility"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+    }
+
+    #[test]
+    fn media_steps_run_inside_a_multi_action() {
+        let (mut dispatcher, state) =
+            fake(vec![success(""), success(""), success("nothing to stop\n")]);
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::Media {
+                        command: MediaCommand::NextTrack,
+                    },
+                    Action::SetVolume { percent: 30 },
+                    Action::Media {
+                        command: MediaCommand::Stop,
+                    },
+                ],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        let mut next = jxa(MEDIA_KEY_SCRIPT);
+        next.extend(["--".into(), "17".into(), "request".into()]);
+        assert_eq!(state.requests[0].args, next);
+        assert_eq!(state.requests[2].args, jxa(MEDIA_STOP_SCRIPT));
+        assert_eq!(state.pauses, [(1, STEP_SPACING), (2, STEP_SPACING)]);
     }
 
     #[test]
@@ -2721,6 +3222,7 @@ mod tests {
             }),
             sleeper: Box::new(CancellingSleeper(cancellation)),
             obs: None,
+            media_access_requested: false,
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

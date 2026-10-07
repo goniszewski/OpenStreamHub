@@ -161,7 +161,7 @@ describe('capability copy', () => {
       'Runs 1 multi-step sequence (up to 8 steps each, shown below).',
       'Sends Undo or Redo to the focused app.',
       'Changes the output volume or mute.',
-      'Media controls are logged only; they do not run on this Mac.',
+      'Stops Music or Spotify if running; it does not start a player that is not running (one that quits at that instant may be relaunched by macOS, without playing). macOS may ask for Automation permission to control them.',
     ]);
     expect(capabilityLines(profileCapabilities(flat()))).toEqual(['No actions are bound yet, so nothing will run until you add some.']);
   });
@@ -177,6 +177,19 @@ describe('capability copy', () => {
     const nested: Profile = { schema_version: 2, name: 'P', bindings: [], keypad: { pages: [{ id: 'root', name: 'Root', slots: [{ type: 'action', label: 'Tea', bindings: [{ gesture: 'pressed', action: { type: 'timer', seconds: 1 } }] }] }] },
       dial_functions: [{ name: 'Fn', bindings: [{ gesture: 'long_press', action: { type: 'timer', seconds: 2 } }] }] } as Profile;
     expect(profileCapabilities(nested).counts.timer).toBe(2);
+  });
+
+  it('discloses media keys and stop without raising the risk', () => {
+    const keys = profileCapabilities(flat({ type: 'media', command: 'play_pause' }, { type: 'media', command: 'next_track' }));
+    expect(keys.mediaKeys).toBe(true);
+    expect(keys.mediaStop).toBe(false);
+    expect(keys.risk).toBe('normal');
+    expect(capabilityLines(keys)).toEqual(['Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.']);
+    const both = profileCapabilities(flat({ type: 'multi_action', actions: [{ type: 'media', command: 'previous_track' }, { type: 'media', command: 'stop' }] }));
+    expect([both.mediaKeys, both.mediaStop]).toEqual([true, true]);
+    expect(capabilityLines(both).filter(line => line.includes('Music') || line.includes('media keys'))).toHaveLength(2);
+    expect(capabilityLines(both).join(' ')).not.toMatch(/never (opens|launches)/);
+    expect(profileCapabilities(flat({ type: 'toggle_mute' })).mediaKeys).toBe(false);
   });
 
   it('discloses profile keys as switching profiles without raising the risk', () => {
@@ -195,7 +208,9 @@ describe('capability copy', () => {
     expect(stepLabel({ type: 'shortcut', key: 'return', modifiers: [] })).toBe('Press Return');
     expect(stepLabel({ type: 'open_url', url: 'https://example.com/a?b=c' })).toBe('Open web page https://example.com/a?b=c');
     expect(stepLabel({ type: 'system', command: 'screenshot' })).toBe('Capture the whole screen to the clipboard');
-    expect(stepLabel({ type: 'media', command: 'play_pause' })).toBe('Play/pause media (logged only, not executed)');
+    expect(stepLabel({ type: 'media', command: 'play_pause' })).toBe('Press the Play/pause media key');
+    expect(stepLabel({ type: 'media', command: 'previous_track' })).toBe('Press the Previous track media key');
+    expect(stepLabel({ type: 'media', command: 'stop' })).toBe('Stop Music or Spotify if running');
   });
 });
 

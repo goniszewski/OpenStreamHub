@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::{KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
+use crate::{DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
 
 /// Modules whose input is supported by the binding service.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -262,6 +262,13 @@ pub struct Profile {
     /// Schema-2 keypad pages; omitted from existing schema-1 profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keypad: Option<KeypadLayout>,
+    /// Optional ordered M131E functions cycled by a short click (schema 1 or 2).
+    ///
+    /// When present, every M131E binding lives in these functions and flat
+    /// `bindings` must not select M131E. Omitted when absent, so existing
+    /// profiles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial_functions: Option<Vec<DialFunction>>,
 }
 
 impl Profile {
@@ -303,6 +310,9 @@ impl Profile {
                     .into(),
             );
         }
+        if let Some(functions) = &self.dial_functions {
+            crate::dial::validate(functions)?;
+        }
         if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
         }
@@ -311,6 +321,11 @@ impl Profile {
             if self.schema_version == 2 && binding.module == ServiceModule::M4315 {
                 return Err(format!(
                     "binding {index}: schema 2 keypad bindings belong in keypad action tiles"
+                ));
+            }
+            if self.dial_functions.is_some() && binding.module == ServiceModule::M131E {
+                return Err(format!(
+                    "binding {index}: m131e bindings belong in dial_functions when dial functions are defined"
                 ));
             }
             binding
@@ -342,9 +357,11 @@ impl Profile {
         Ok(())
     }
 
-    /// Counts flat bindings and bindings on all nested keypad action tiles.
+    /// Counts flat bindings, nested keypad action tile bindings, and dial function bindings.
     pub fn binding_count(&self) -> usize {
-        self.bindings.len() + self.keypad.as_ref().map_or(0, KeypadLayout::binding_count)
+        self.bindings.len()
+            + self.keypad.as_ref().map_or(0, KeypadLayout::binding_count)
+            + crate::dial::binding_count(self)
     }
 
     /// Converts a valid flat profile into schema 2 without writing to storage.
@@ -421,6 +438,7 @@ mod tests {
                 action: Action::Volume { delta: 5 },
             }],
             keypad: None,
+            dial_functions: None,
         }
     }
 

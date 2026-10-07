@@ -1,5 +1,6 @@
 use crate::{
-    Action, Binding, BindingEngine, DeviceContext, Gesture, InputEvent, Profile, ServiceModule,
+    Action, Binding, BindingEngine, DeviceContext, DialFunction, DialFunctionNavigation, Gesture,
+    InputEvent, Profile, ServiceModule,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -243,6 +244,48 @@ pub enum KeypadResolution {
     Unbound,
 }
 
+/// The complete outcome of [`ProfileSession::route`], including dial function switches.
+///
+/// [`KeypadResolution`] remains the compatibility view returned by
+/// [`ProfileSession::resolve`]; it reports a dial function switch as `Unbound`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProfileResolution {
+    /// A concrete operation that may be previewed or explicitly dispatched.
+    Action {
+        /// Resolved host action, including any input-dependent value.
+        action: Action,
+        /// Original keypad page for schema-2 keys; absent otherwise.
+        page_id: Option<String>,
+        /// Current dial function for M131E bindings selected through `dial_functions`.
+        dial_function: Option<String>,
+    },
+    /// A keypad page change with no host action.
+    Navigation {
+        /// Completed folder or Back transition.
+        navigation: KeypadNavigation,
+    },
+    /// A short-click dial function switch with no host action.
+    DialFunction {
+        /// Previous and new current function.
+        navigation: DialFunctionNavigation,
+    },
+    /// No selected action, including duplicate presses or unmatched releases.
+    Unbound,
+}
+
+impl From<ProfileResolution> for KeypadResolution {
+    fn from(resolution: ProfileResolution) -> Self {
+        match resolution {
+            ProfileResolution::Action {
+                action, page_id, ..
+            } => Self::Action { action, page_id },
+            ProfileResolution::Navigation { navigation } => Self::Navigation { navigation },
+            ProfileResolution::DialFunction { .. } | ProfileResolution::Unbound => Self::Unbound,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct HeldKey {
     page_id: String,
@@ -256,13 +299,16 @@ struct HeldKey {
 /// their release can resolve only on that original action tile. Navigation keys,
 /// empty keys, duplicate presses, and unmatched releases never invoke a child
 /// action. Held keys are tracked per `(serial, key)` so a transition from one
-/// keypad never clears or completes another keypad's held key. Reset after
-/// disconnect, suspension, or replacing the selected profile.
+/// keypad never clears or completes another keypad's held key. Profiles with
+/// `dial_functions` keep one current M131E function index, starting at the
+/// first function and shared by every dial routed through this session. Reset
+/// after disconnect, suspension, or replacing the selected profile.
 #[derive(Clone, Debug)]
 pub struct ProfileSession {
     engine: BindingEngine,
     path: Vec<String>,
     held: HashMap<(Option<String>, usize), HeldKey>,
+    dial_function: usize,
 }
 
 impl ProfileSession {
@@ -273,6 +319,7 @@ impl ProfileSession {
             engine: BindingEngine::from_validated(profile),
             path: vec![KeypadLayout::ROOT_PAGE_ID.into()],
             held: HashMap::new(),
+            dial_function: 0,
         })
     }
 
@@ -281,9 +328,11 @@ impl ProfileSession {
         self.engine.profile()
     }
 
-    /// Returns the original flat selector, or `None` for schema-2 keypad routing.
+    /// Returns the original flat selector, or `None` for schema-2 keypad or dial function routing.
     pub fn binding_for(&self, device: &DeviceContext, event: &InputEvent) -> Option<&Binding> {
-        if device.module == ServiceModule::M4315 && self.profile().keypad.is_some() {
+        if device.module == ServiceModule::M4315 && self.profile().keypad.is_some()
+            || device.module == ServiceModule::M131E && self.profile().dial_functions.is_some()
+        {
             None
         } else {
             self.engine.binding_for(device, event)
@@ -335,9 +384,41 @@ impl ProfileSession {
         Ok(())
     }
 
-    /// Returns to root and forgets held keys without synthetic releases or actions.
+    /// Returns the current dial function index, or `None` without `dial_functions`.
+    pub fn dial_function_index(&self) -> Option<usize> {
+        self.profile()
+            .dial_functions
+            .as_ref()
+            .map(|_| self.dial_function)
+    }
+
+    /// Returns the current dial function, or `None` without `dial_functions`.
+    pub fn current_dial_function(&self) -> Option<&DialFunction> {
+        self.profile()
+            .dial_functions
+            .as_ref()?
+            .get(self.dial_function)
+    }
+
+    /// Selects a dial function by index without running any action.
+    ///
+    /// An out-of-range index or a profile without functions leaves state unchanged.
+    pub fn set_dial_function(&mut self, index: usize) -> Result<(), String> {
+        let count = self.profile().dial_functions.as_ref().map_or(0, Vec::len);
+        if index >= count {
+            return Err(format!(
+                "dial function index {index} is outside the profile's {count} functions"
+            ));
+        }
+        self.dial_function = index;
+        Ok(())
+    }
+
+    /// Returns to root and the first dial function, and forgets held keys
+    /// without synthetic releases or actions.
     pub fn reset(&mut self) {
         self.path.truncate(1);
+        self.dial_function = 0;
         self.clear_held();
     }
 
@@ -346,20 +427,73 @@ impl ProfileSession {
     }
 
     /// Resolves one normalized input without hardware or operating-system I/O.
+    ///
+    /// This is the compatibility view of [`ProfileSession::route`]: a dial
+    /// function switch still advances state but is reported as `Unbound`, so
+    /// existing callers never dispatch anything for a short click.
     pub fn resolve(
         &mut self,
         device: &DeviceContext,
         event: &InputEvent,
     ) -> Result<KeypadResolution, String> {
+        self.route(device, event).map(Into::into)
+    }
+
+    /// Resolves one normalized input, reporting dial function switches explicitly.
+    ///
+    /// With `dial_functions`, an M131E `short_press` advances to the next
+    /// function (wrapping) and returns [`ProfileResolution::DialFunction`]
+    /// without a host action. `right`, `left`, and `long_press` select the
+    /// current function's binding, preferring an exact serial over a wildcard.
+    /// Raw `pressed` and `released` transitions are always unbound.
+    pub fn route(
+        &mut self,
+        device: &DeviceContext,
+        event: &InputEvent,
+    ) -> Result<ProfileResolution, String> {
         event.validate_for(device.module)?;
         let device = &device.normalized()?;
+        if device.module == ServiceModule::M131E
+            && let Some(functions) = &self.profile().dial_functions
+        {
+            let count = functions.len();
+            let current = &functions[self.dial_function];
+            return Ok(match event.gesture {
+                Gesture::ShortPress => {
+                    let from_function = current.name.clone();
+                    let index = (self.dial_function + 1) % count;
+                    let to_function = functions[index].name.clone();
+                    self.dial_function = index;
+                    ProfileResolution::DialFunction {
+                        navigation: DialFunctionNavigation {
+                            from_function,
+                            to_function,
+                            index,
+                            count,
+                        },
+                    }
+                }
+                Gesture::Right | Gesture::Left | Gesture::LongPress => {
+                    match crate::dial::select_action(current, device, event.gesture) {
+                        Some(action) => ProfileResolution::Action {
+                            action,
+                            page_id: None,
+                            dial_function: Some(current.name.clone()),
+                        },
+                        None => ProfileResolution::Unbound,
+                    }
+                }
+                _ => ProfileResolution::Unbound,
+            });
+        }
         if device.module != ServiceModule::M4315 || self.profile().keypad.is_none() {
             return Ok(match self.engine.action_for(device, event)? {
-                Some(action) => KeypadResolution::Action {
+                Some(action) => ProfileResolution::Action {
                     action,
                     page_id: None,
+                    dial_function: None,
                 },
-                None => KeypadResolution::Unbound,
+                None => ProfileResolution::Unbound,
             });
         }
         let index = event.control as usize;
@@ -367,7 +501,7 @@ impl ProfileSession {
             Gesture::Pressed => {
                 let key = (device.serial_number.clone(), index);
                 if self.held.contains_key(&key) {
-                    return Ok(KeypadResolution::Unbound);
+                    return Ok(ProfileResolution::Unbound);
                 }
                 let page = self.current_page().expect("validated current keypad page");
                 let page_id = page.id.clone();
@@ -397,7 +531,7 @@ impl ProfileSession {
                     } else if let Some(folder) = folder {
                         self.path.push(folder);
                     }
-                    return Ok(KeypadResolution::Navigation {
+                    return Ok(ProfileResolution::Navigation {
                         navigation: KeypadNavigation {
                             from_page: page_id,
                             to_page: self.path.last().expect("root path cannot be empty").clone(),
@@ -406,10 +540,11 @@ impl ProfileSession {
                         },
                     });
                 }
-                Ok(action.map_or(KeypadResolution::Unbound, |action| {
-                    KeypadResolution::Action {
+                Ok(action.map_or(ProfileResolution::Unbound, |action| {
+                    ProfileResolution::Action {
                         action,
                         page_id: Some(page_id),
+                        dial_function: None,
                     }
                 }))
             }
@@ -417,10 +552,10 @@ impl ProfileSession {
                 // Only the pressing serial's own release clears or completes its
                 // held key; another keypad's release on the same slot is unmatched.
                 let Some(held) = self.held.remove(&(device.serial_number.clone(), index)) else {
-                    return Ok(KeypadResolution::Unbound);
+                    return Ok(ProfileResolution::Unbound);
                 };
                 if !held.action_tile {
-                    return Ok(KeypadResolution::Unbound);
+                    return Ok(ProfileResolution::Unbound);
                 }
                 let page = self
                     .profile()
@@ -430,13 +565,14 @@ impl ProfileSession {
                     .page(&held.page_id)
                     .expect("immutable validated origin page");
                 let Some(KeypadTile::Action { bindings, .. }) = &page.slots[index] else {
-                    return Ok(KeypadResolution::Unbound);
+                    return Ok(ProfileResolution::Unbound);
                 };
                 Ok(select_action(bindings, device, Gesture::Released).map_or(
-                    KeypadResolution::Unbound,
-                    |action| KeypadResolution::Action {
+                    ProfileResolution::Unbound,
+                    |action| ProfileResolution::Action {
                         action,
                         page_id: Some(held.page_id),
+                        dial_function: None,
                     },
                 ))
             }

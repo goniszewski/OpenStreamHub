@@ -43,6 +43,9 @@ impl BindingEngine {
         if profile.keypad.is_some() {
             return Err("keypad page profiles require a stateful ProfileSession".into());
         }
+        if profile.dial_functions.is_some() {
+            return Err("dial function profiles require a stateful ProfileSession".into());
+        }
         Ok(Self { profile })
     }
 
@@ -87,6 +90,9 @@ impl BindingEngine {
         let device = &device.normalized()?;
         if device.module == ServiceModule::M4315 && self.profile.keypad.is_some() {
             return Err("keypad pages require stateful ProfileSession routing".into());
+        }
+        if device.module == ServiceModule::M131E && self.profile.dial_functions.is_some() {
+            return Err("dial functions require stateful ProfileSession routing".into());
         }
         let Some(binding) = self.binding_for(device, event) else {
             return Ok(None);
@@ -156,6 +162,7 @@ mod tests {
             name: "Desk".into(),
             bindings,
             keypad: None,
+            dial_functions: None,
         })
         .unwrap()
     }
@@ -257,6 +264,7 @@ mod tests {
             name: "Desk".into(),
             bindings: vec![binding(None, 0)],
             keypad: None,
+            dial_functions: None,
         };
         assert!(BindingEngine::new(invalid).is_err());
     }

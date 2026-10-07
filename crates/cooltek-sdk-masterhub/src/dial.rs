@@ -348,7 +348,15 @@ pub fn display_jpeg_with_pacing<T: ReportTransport + ?Sized>(
     Ok(count)
 }
 
-fn validate_jpeg(jpeg: &[u8]) -> HidResult<()> {
+/// Checks the conservative JPEG format accepted by [`JpegPackets`], without I/O.
+///
+/// Requires 240×240, 8-bit, three-component baseline JFIF with one interleaved
+/// scan and a final EOI marker. Entropy-coded pixels are not decoded. This is an
+/// SDK policy, not proof of the firmware's complete set of accepted formats.
+///
+/// # Errors
+/// Rejects oversized images, unsupported dimensions, and unsupported framing.
+pub fn validate_jpeg(jpeg: &[u8]) -> HidResult<()> {
     crate::jpeg::validate(jpeg, "Dial", IMAGE_WIDTH, IMAGE_HEIGHT)
 }
 

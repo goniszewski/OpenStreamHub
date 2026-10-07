@@ -21,7 +21,11 @@ export interface Binding {
 export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
 export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
 export interface KeypadPage { id: string; name: string; slots: KeypadSlot[] }
-export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] } }
+// Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
+export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }
+export interface DialFunction { name: string; bindings: DialBinding[] }
+// dial_functions is hand-authored or imported (no editor yet); every edit path must carry it through untouched.
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[] }
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number }
 export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number }
 export interface ValidationResult { valid: true }

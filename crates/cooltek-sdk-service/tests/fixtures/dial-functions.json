@@ -1,0 +1,43 @@
+{
+  "schema_version": 2,
+  "name": "Dial functions",
+  "bindings": [
+    {"module": "m003k", "control": 0, "gesture": "clockwise", "action": {"type": "volume", "delta": 2}}
+  ],
+  "keypad": {
+    "pages": [
+      {
+        "id": "root",
+        "name": "Root",
+        "slots": [
+          {"type": "action", "label": "Mute", "bindings": [{"gesture": "pressed", "action": {"type": "toggle_mute"}}]},
+          null, null, null, null, null, null, null, null, null, null, null, null, null, null
+        ]
+      }
+    ]
+  },
+  "dial_functions": [
+    {
+      "name": "Volume",
+      "bindings": [
+        {"gesture": "right", "action": {"type": "volume", "delta": 5}},
+        {"gesture": "right", "serial_number": "desk-dial", "action": {"type": "volume", "delta": 1}},
+        {"gesture": "left", "action": {"type": "volume", "delta": -5}},
+        {"gesture": "long_press", "action": {"type": "toggle_mute"}}
+      ]
+    },
+    {
+      "name": "Scroll",
+      "bindings": [
+        {"gesture": "right", "action": {"type": "shortcut", "key": "j", "modifiers": []}},
+        {"gesture": "left", "action": {"type": "shortcut", "key": "k", "modifiers": []}}
+      ]
+    },
+    {
+      "name": "Apps",
+      "bindings": [
+        {"gesture": "long_press", "action": {"type": "launch_app", "bundle_id": "com.apple.finder"}}
+      ]
+    }
+  ]
+}

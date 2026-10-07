@@ -7,17 +7,20 @@
 #![deny(missing_docs)]
 
 mod binding;
+mod dial;
 mod input;
 mod keypad;
 mod profile;
 
+pub mod display_sync;
 pub mod macos;
 
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher};
+pub use dial::{DialBinding, DialFunction, DialFunctionNavigation};
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use keypad::{
     KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution, KeypadTile,
-    ProfileSession,
+    ProfileResolution, ProfileSession,
 };
 pub use macos::MacOsDispatcher;
 pub use profile::{Action, Binding, Gesture, Modifier, Profile, ServiceModule};

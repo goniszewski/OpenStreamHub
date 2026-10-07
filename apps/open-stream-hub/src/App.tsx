@@ -5,6 +5,8 @@ import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
 import { NoticeStore } from './notices';
 import { FocusRulesStore } from './focus-rules';
+import { DisplaySettingsStore } from './display-settings';
+import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
@@ -56,6 +58,7 @@ export default function App() {
   const [runner] = useState(() => new ServiceRunner((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop));
   const [notices] = useState(() => new NoticeStore());
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
+  const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   useEffect(() => { feed.setBlocker(runner.isActivePath); feed.connect(); runner.connect(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
   // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
@@ -181,13 +184,13 @@ export default function App() {
 
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} />
-          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} />
+          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} displaySettings={displaySettings} />
           <Inspector editor={editor} session={session} state={state} disabled={disabled} />
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} display={<DisplaySettingsPanel store={displaySettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('devices'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

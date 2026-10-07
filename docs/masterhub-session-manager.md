@@ -49,13 +49,21 @@ The desktop app (`apps/open-stream-hub`) wraps every `masterhub-service run` tha
 
 Dependencies: `block2`, `objc2-foundation`, and `objc2-app-kit` are now direct macOS-only dependencies. The same versions were already in `Cargo.lock` as Tauri dependencies, so nothing new is downloaded. The only newly enabled features are `NSOperation` on `objc2-foundation` and `NSWorkspace` on `objc2-app-kit`. `NSWorkspaceScreensDidWakeNotification` is part of the `NSWorkspace` feature, so it needs nothing new.
 
+## Experimental display images
+
+Settings has an opt-in toggle, **Experimental: send images to module displays**, and a choice of what the dial screen shows (function name, digital clock, analog clock, or nothing). Both are stored in `<app data>/display-settings.json` with the same bounded, symlink-safe read and atomic owner-only (0600) write as `focus-rules.json` (`src-tauri/src/display.rs`). A missing file means off; a damaged file is reported, never overwritten, and treated as off. The commands are `display_settings` and `set_display_settings`.
+
+- **Read once per Start.** `Driver::start` reads the settings when the user starts a profile and keeps them, with the device's module, in the session's stored request (`StartRequest.display`, which the frontend cannot send: the field is skipped on deserialization and named fields are refused). Wake, reconnect, crash and profile-switch restarts reuse that copy. Changing the setting never stops, restarts or resumes anything; it applies at the next Start, and the Settings panel says so, including how many profiles keep their old value. An unidentified device (unmanaged run) runs without display flags.
+- **Flags per spawn.** `display::display_args` adds flags only for a session-managed process whose session started with the toggle on and whose run requests software mode: `--display-sync` for an M4315 with a schema-2 keypad profile, `--display-sync --dial-content <value>` for an M131E unless the dial content is off. Anything else (toggle off, no software mode, a flat profile on the keypad after a switch, other modules) runs with exactly the arguments it had before. The session also records whether the run the user started got flags (`DisplayLaunch::active_at_start`), which is when the Run panel showed its hardware-unverified warning. If it did not, no later process gets them: a focused-app rule or profile key that switches a keypad session to a keypad-folder profile fails closed exactly as with the toggle off. The service refuses the folders with a message that says to start a session with that profile, software mode and the setting on (a session started without display images cannot switch into one), and the session reports it like any failed restart. This holds even when the toggle is already on, because the setting is read only at Start. `display::spawn_args` keeps all of this to session-managed processes.
+- **Invariants.** Nothing is spawned while asleep (a Start while asleep only snapshots the settings), executing sessions still wait in `needs_confirmation` after any interruption and resume with the value they started with, and the confirmation flows are unchanged. With the toggle on and software mode requested, the Run panel no longer refuses keypad folders on the 15-key module and shows a hardware-unverified warning before Start.
+
 ## Comparison with the official app (unverified)
 
 Static analysis of MasterHUB 1.0.0.113 ([research notes](research/masterhub-1.0.0.113-static-analysis.md#startup-and-macos-transport-implications)) shows that on suspend the official app sets hardware mode. On resume, it waits 2 s, re-enters software mode, queries firmware, and requests a display refresh. OpenStreamHub does the following:
 
 - It restores hardware mode by stopping the service, which already does that on SIGINT when it enabled software mode.
 - It re-enters software mode by restarting the service with the same `--software-mode` flag.
-- It does not query firmware or refresh the display; the service has neither feature.
+- It does not query firmware. It refreshes the displays only when the session started with the experimental display toggle on: the restarted service then redraws keys or the dial from scratch.
 
 The 2 s settle delay is copied from the official app and has not been checked against real hardware. None of the following has been checked on hardware either:
 

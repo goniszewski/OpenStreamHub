@@ -26,7 +26,7 @@ use cooltek_sdk_service::display_sync::{
     DisplayCapabilities, DisplaySink, DisplayTarget, KEY_COUNT, KeyImageProvider, SinkError,
 };
 
-use crate::live_runtime::LiveDisplay;
+use crate::{dial_artwork::DialArtwork, live_runtime::LiveDisplay};
 
 /// Output report ID that carries image chunks on both IPS modules.
 pub const DISPLAY_REPORT_ID: u8 = 0x02;
@@ -449,6 +449,28 @@ pub fn live_display<T: ReportTransport + Send + 'static>(
     let sink = HidDisplaySink::new(shared.clone(), module)
         .map_err(|error| format!("--display-sync setup failed: {error}"))?;
     Ok(LiveDisplay::new(sink, artwork, shared.write_gate()))
+}
+
+/// Builds the live M131E dial display over a shared device, wired to its
+/// write gate. Used by `masterhub-service run --display-sync --dial-content`.
+///
+/// Fails closed exactly like [`live_display`]: an error here must end the run
+/// before software mode. Reads the descriptor once and sends no reports.
+///
+/// # Errors
+/// Fails when [`HidDisplaySink::new`] fails or the module has no dial display,
+/// prefixed with `--display-sync setup failed`.
+pub fn live_dial_display<T: ReportTransport + Send + 'static>(
+    shared: &SharedTransport<T>,
+    module: Option<ModuleKind>,
+    artwork: DialArtwork,
+) -> Result<LiveDisplay, String> {
+    let sink = HidDisplaySink::new(shared.clone(), module)
+        .map_err(|error| format!("--display-sync setup failed: {error}"))?;
+    if !sink.capabilities().dial {
+        return Err("--display-sync setup failed: dial content needs an M131E dial".into());
+    }
+    Ok(LiveDisplay::dial(sink, artwork, shared.write_gate()))
 }
 
 #[cfg(test)]
@@ -949,6 +971,49 @@ mod tests {
                 .outputs
                 .borrow()
                 .is_empty()
+        );
+    }
+
+    fn dial_artwork() -> DialArtwork {
+        use crate::dial_artwork::{DialContent, ManualClock, WallTime};
+        DialArtwork::prepare(
+            DialContent::Clock,
+            &session().profile().clone(),
+            Box::new(ManualClock::new(WallTime::new(12, 0))),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn live_dial_display_setup_fails_closed_without_touching_the_device() {
+        // No descriptor, a keypad module, and no module: each fails before any
+        // report. `Fake` panics on any feature report, so only outputs are checked.
+        for (fake, module, expected) in [
+            (Fake::default(), Some(ModuleKind::M131E), "HID descriptor"),
+            (Fake::new(), Some(ModuleKind::M4315), "needs an M131E dial"),
+            (Fake::new(), None, "M4315 and M131E"),
+        ] {
+            let shared = SharedTransport::new(fake);
+            let error = live_dial_display(&shared, module, dial_artwork())
+                .err()
+                .unwrap();
+            assert!(error.starts_with("--display-sync setup failed"), "{error}");
+            assert!(error.contains(expected), "{error}");
+            let device = shared.shared.device.lock().unwrap();
+            assert!(device.outputs.borrow().is_empty());
+        }
+        let shared = SharedTransport::new(Fake::new());
+        let mut display =
+            live_dial_display(&shared, Some(ModuleKind::M131E), dial_artwork()).unwrap();
+        assert!(display.sink.capabilities().dial);
+        display.write_gate.store(true, Ordering::SeqCst);
+        let error = display
+            .sink
+            .write_dial_image(&dial_jpeg(), &mut |_| {})
+            .unwrap_err();
+        assert!(
+            matches!(&error, SinkError::Transport(message) if message.contains(SHARED_WRITES_CLOSED)),
+            "{error:?}"
         );
     }
 

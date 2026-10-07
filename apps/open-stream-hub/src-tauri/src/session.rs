@@ -34,6 +34,7 @@
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
+    display::{DisplayLaunch, DisplaySettings},
     feed::LiveDevice,
     power::PowerEvent,
     service::{self, StartRequest},
@@ -624,6 +625,11 @@ pub trait Runner {
     fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
         Ok(Vec::new())
     }
+    /// The experimental display settings a session started now keeps for its
+    /// whole life. Read once per user Start; off when unreadable.
+    fn display_settings(&mut self) -> DisplaySettings {
+        DisplaySettings::default()
+    }
 }
 
 /// The saved profile a `profile` key action switches to, or `None` when
@@ -866,7 +872,7 @@ impl<R: Runner> Driver<R> {
     ///
     /// Returns the session id (which may be `session:<uuid>`), or the service
     /// id of an unmanaged run, so the frontend can key the run at once.
-    pub fn start(&mut self, request: StartRequest, now_ms: u64) -> Result<String, String> {
+    pub fn start(&mut self, mut request: StartRequest, now_ms: u64) -> Result<String, String> {
         if self.is_closed() {
             return Err(service::SHUTTING_DOWN.into());
         }
@@ -898,6 +904,18 @@ impl<R: Runner> Driver<R> {
         // The spawning path checks again inside `start`; asleep nothing
         // spawns, so this is the only check before the session exists.
         self.runner.check(&request)?;
+        // Read once, here: every later process of this session (wake,
+        // reconnect, crash or profile-switch restarts) keeps these display
+        // settings, so changing them never alters or restarts a running
+        // session. An unidentified device runs without them.
+        request.display = device.as_ref().map(|device| {
+            DisplayLaunch::at_start(
+                self.runner.display_settings(),
+                device.module,
+                request.software_mode,
+                &request.profile,
+            )
+        });
         let id = if deferred {
             if device.is_none() {
                 return Err(if woke { JUST_WOKE } else { ASLEEP }.into());
@@ -1660,6 +1678,8 @@ pub mod fake {
         pub saved: Vec<(String, Profile)>,
         /// Number of `saved_profiles` reads.
         pub saved_reads: usize,
+        /// What `display_settings` returns.
+        pub display: DisplaySettings,
     }
 
     impl Runner for FakeRunner {
@@ -1706,6 +1726,10 @@ pub mod fake {
             self.saved_reads += 1;
             Ok(self.saved.clone())
         }
+
+        fn display_settings(&mut self) -> DisplaySettings {
+            self.display
+        }
     }
 
     pub fn device(module: ServiceModule, serial: Option<&str>, path: &str) -> LiveDevice {
@@ -1723,6 +1747,7 @@ pub mod fake {
             execute,
             software_mode: true,
             profile_id: None,
+            display: None,
         }
     }
 
@@ -3317,5 +3342,159 @@ mod tests {
         let error = driver.start(request(&dial("/u"), false), 6).unwrap_err();
         assert!(error.contains("already running"), "{error}");
         assert!(driver.session(&sid("/u")).is_none());
+    }
+
+    const DISPLAY_ON: DisplaySettings = DisplaySettings {
+        enabled: true,
+        dial_content: crate::display::DialContent::Clock,
+    };
+
+    fn launched(driver: &mut Driver<FakeRunner>, index: usize) -> Option<DisplayLaunch> {
+        driver.runner().starts[index].display
+    }
+
+    #[test]
+    fn display_settings_are_read_once_per_start_and_kept_through_restarts() {
+        let mut driver = Driver::new(FakeRunner {
+            display: DISPLAY_ON,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        let id = driver.start(request(&dial("/a"), false), 0).unwrap();
+        let expected = Some(DisplayLaunch {
+            settings: DISPLAY_ON,
+            module: DIAL,
+            active_at_start: true,
+        });
+        assert_eq!(launched(&mut driver, 0), expected);
+        // Turning the setting off mid-run changes nothing and restarts nothing.
+        driver.runner().display = DisplaySettings::default();
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 1);
+        assert!(driver.runner().stops.is_empty());
+        // Wake, crash and profile-switch restarts keep the starting value.
+        driver.power(PowerEvent::Suspend, 10);
+        exit(&mut driver, &id, "", 11);
+        driver.power(PowerEvent::Resume, 20);
+        driver.tick(20 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(launched(&mut driver, 1), expected);
+        let current = last(&mut driver).service_id.unwrap();
+        exit(&mut driver, &current, "boom", 3_000);
+        driver.tick(3_000 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(launched(&mut driver, 2), expected);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 5_000)
+            .unwrap();
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 5_001);
+        assert_eq!(starts(&mut driver), 4);
+        assert_eq!(launched(&mut driver, 3), expected);
+        assert_eq!(driver.runner().starts[3].profile.name, "Browser");
+
+        // The next Start reads the setting again.
+        driver.stop(&id, true, 6_000);
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 6_001);
+        driver.start(request(&dial("/a"), false), 7_000).unwrap();
+        let off = Some(DisplayLaunch {
+            settings: DisplaySettings::default(),
+            module: DIAL,
+            active_at_start: false,
+        });
+        assert_eq!(launched(&mut driver, 4), off);
+    }
+
+    #[test]
+    fn a_display_change_never_resumes_an_executing_session() {
+        let mut driver = Driver::new(FakeRunner {
+            display: DISPLAY_ON,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        let id = driver.start(request(&dial("/a"), true), 0).unwrap();
+        driver.power(PowerEvent::Suspend, 1);
+        exit(&mut driver, &id, "", 2);
+        driver.runner().display = DisplaySettings::default();
+        driver.power(PowerEvent::Resume, 3);
+        driver.tick(3 + SETTLE_DELAY_MS);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 1, "resumed without confirmation");
+        driver.resume(&id, 0, 1_000_001).unwrap();
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.runner().starts[1].execute);
+        // Confirmation restarts with the value the session started with.
+        assert_eq!(launched(&mut driver, 1).unwrap().settings, DISPLAY_ON);
+    }
+
+    #[test]
+    fn a_start_while_asleep_snapshots_display_settings_and_spawns_only_after_wake() {
+        let mut driver = Driver::new(FakeRunner {
+            display: DISPLAY_ON,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        driver.power(PowerEvent::Suspend, 1);
+        driver.start(request(&dial("/a"), false), 2).unwrap();
+        driver.runner().display = DisplaySettings::default();
+        assert_eq!(starts(&mut driver), 0, "spawned across sleep");
+        driver.power(PowerEvent::Resume, 10);
+        driver.tick(10 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(launched(&mut driver, 0).unwrap().settings, DISPLAY_ON);
+    }
+
+    #[test]
+    fn a_switch_into_keypad_folders_never_starts_display_writes_mid_session() {
+        let keypad = |path: &str| device(ServiceModule::M4315, Some("KEY-1"), path);
+        let mut driver = Driver::new(FakeRunner {
+            display: DISPLAY_ON,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![keypad("/k")], 0);
+        let mut flat = crate::test_profiles::folders();
+        flat.schema_version = 1;
+        flat.keypad = None;
+        flat.name = "Flat".into();
+        let id = driver
+            .start(
+                StartRequest {
+                    profile: flat,
+                    ..request(&keypad("/k"), false)
+                },
+                0,
+            )
+            .unwrap();
+        let args = |driver: &mut Driver<FakeRunner>, index: usize| {
+            let started = driver.runner().starts[index].clone();
+            crate::display::display_args(
+                started.display.as_ref(),
+                started.software_mode,
+                &started.profile,
+            )
+        };
+        assert!(args(&mut driver, 0).is_empty());
+        // A focused-app rule switches the dry run to a keypad-folder profile.
+        driver
+            .switch_profile(&id, "Folders".into(), crate::test_profiles::folders(), 10)
+            .unwrap();
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 11);
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.runner().starts[1].profile.keypad.is_some());
+        // No display flags: the service refuses the folders, as with the setting off.
+        assert!(args(&mut driver, 1).is_empty());
+    }
+
+    #[test]
+    fn an_unidentified_device_runs_without_display_settings() {
+        let mut driver = Driver::new(FakeRunner {
+            display: DISPLAY_ON,
+            ..FakeRunner::default()
+        });
+        driver.start(request(&dial("/x"), false), 0).unwrap();
+        assert_eq!(launched(&mut driver, 0), None);
     }
 }

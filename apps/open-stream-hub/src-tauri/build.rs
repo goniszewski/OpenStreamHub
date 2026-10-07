@@ -23,6 +23,8 @@ fn main() {
             "delete_focus_rule",
             "set_focus_rules_enabled",
             "focus_current_app",
+            "display_settings",
+            "set_display_settings",
             "switch_session_profile",
             "session_profile",
             "create_diagnostics",

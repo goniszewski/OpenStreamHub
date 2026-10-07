@@ -12,16 +12,19 @@
 //! timeout; worker deadlines do not establish a bound on a backend's
 //! synchronous device operations.
 //!
-//! Optional keypad display synchronization ([`LiveDisplay`], opt-in and
+//! Optional display synchronization ([`LiveDisplay`], opt-in and
 //! hardware-unverified) runs on its own thread with a single coalescing
-//! request slot. The input owner only records the newest page path there after
-//! the work for that report was queued or coalesced, and never waits for the
-//! display thread, so display work and display failures never dispatch,
-//! suppress, or reorder an action. When the sink shares the input device, an
+//! request slot: M4315 key pages, or the M131E dial (a dial function name or a
+//! clock, at most one dial write per [`DIAL_MIN_INTERVAL`]). The input owner
+//! only records the newest page path and dial function there after the work
+//! for that report was queued or coalesced, and never waits for the display
+//! thread, so display work and display failures never dispatch, suppress, or
+//! reorder an action. When the sink shares the input device, an
 //! in-flight image write can delay reading input reports (they queue in the OS
 //! meanwhile); the input loop itself keeps running its interrupt and limit
 //! checks. Display outcomes reach the log through the action worker.
 
+use crate::dial_artwork::DialArtwork;
 use crate::service_events::{
     PlannedEvent, Work, dial_function_details, emit, end_record, plan_report, process_work,
 };
@@ -30,8 +33,8 @@ use cooltek_sdk_service::{
     Action, ActionDispatcher, DeviceContext, Gesture, InputSession, ProfileResolution,
     ProfileSession, ServiceModule,
     display_sync::{
-        ApplyReport, DisplayCapabilities, DisplaySink, DisplaySync, DisplayTarget,
-        KeyImageProvider, SinkError,
+        ApplyReport, DialImageRequest, DisplayCapabilities, DisplaySink, DisplaySync,
+        DisplayTarget, KeyImageProvider, SinkError,
     },
 };
 use serde_json::{Value, json};
@@ -145,7 +148,12 @@ const DISPLAY_ERROR_CHARS: usize = 240;
 /// Display records waiting for the action worker; later records are dropped and counted.
 const DISPLAY_RECORD_QUEUE: usize = 32;
 
-/// Opt-in keypad display synchronization for one live M4315 run.
+/// Shortest time between two dial writes: the dial is redrawn at most about once a second.
+pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// How often the dial thread re-checks its clock and a rate-limited request.
+const DIAL_TICK: Duration = Duration::from_millis(100);
+
+/// Opt-in display synchronization for one live M4315 or M131E run.
 ///
 /// Hardware-unverified: physical key order, orientation, pacing, and firmware
 /// image acceptance are unknown. The sink and provider move to a dedicated
@@ -153,8 +161,19 @@ const DISPLAY_RECORD_QUEUE: usize = 32;
 /// counted in `service_end`, but never ends the session or changes its result.
 pub struct LiveDisplay {
     pub(crate) sink: Box<dyn DisplaySink + Send>,
-    artwork: Box<dyn KeyImageProvider + Send>,
+    content: DisplayContent,
     pub(crate) write_gate: Arc<AtomicBool>,
+}
+
+/// What a [`LiveDisplay`] draws.
+enum DisplayContent {
+    /// M4315 key pages from prepared key artwork.
+    Keys(Box<dyn KeyImageProvider + Send>),
+    /// The M131E dial, rate limited to one write per `min_interval`.
+    Dial {
+        artwork: DialArtwork,
+        min_interval: Duration,
+    },
 }
 
 impl LiveDisplay {
@@ -174,9 +193,41 @@ impl LiveDisplay {
     ) -> Self {
         Self {
             sink: Box::new(sink),
-            artwork: Box::new(artwork),
+            content: DisplayContent::Keys(Box::new(artwork)),
             write_gate,
         }
+    }
+
+    /// Pairs a dial sink with prepared dial artwork and the sink transport's
+    /// write gate, under the same gate contract as [`Self::new`]. The dial is
+    /// written at most once per [`DIAL_MIN_INTERVAL`], only when its face
+    /// changes (a dial function switch or a new clock minute).
+    pub fn dial(
+        sink: impl DisplaySink + Send + 'static,
+        artwork: DialArtwork,
+        write_gate: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            sink: Box::new(sink),
+            content: DisplayContent::Dial {
+                artwork,
+                min_interval: DIAL_MIN_INTERVAL,
+            },
+            write_gate,
+        }
+    }
+
+    /// True for a dial display.
+    fn is_dial(&self) -> bool {
+        matches!(self.content, DisplayContent::Dial { .. })
+    }
+
+    #[cfg(test)]
+    fn with_dial_interval(mut self, interval: Duration) -> Self {
+        if let DisplayContent::Dial { min_interval, .. } = &mut self.content {
+            *min_interval = interval;
+        }
+        self
     }
 }
 
@@ -223,9 +274,12 @@ impl DisplaySink for BoxedSink {
     }
 }
 
-/// One pending page redraw; a newer request replaces an older one.
+/// One pending redraw; a newer request replaces an older one.
 struct DisplayRequest {
+    /// Keypad page path (keys).
     path: Vec<String>,
+    /// Current dial function index (dial).
+    dial_function: Option<usize>,
     trigger: &'static str,
 }
 
@@ -267,15 +321,13 @@ impl DisplayThread {
             .spawn(move || {
                 let LiveDisplay {
                     sink,
-                    artwork,
+                    content,
                     write_gate: gate,
                 } = display;
                 // Built here: `DisplaySync` is not `Send`.
                 let mut sync = DisplaySync::new(BoxedSink { sink, gate });
-                while let Some(request) = next_display_request(&thread_slot, &abort) {
-                    let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        sync_page(&mut sync, &mut session, &*artwork, &request, &thread_counts)
-                    }));
+                // Logs one sync; a panic disables the display for this run.
+                let finish = |record: std::thread::Result<Value>, failed: Value| {
                     let (record, panicked) = match record {
                         Ok(record) => (record, false),
                         Err(_) => {
@@ -286,20 +338,69 @@ impl DisplayThread {
                             slot.pending = None;
                             drop(slot);
                             thread_counts.failures.fetch_add(1, Ordering::SeqCst);
-                            let record = display_record(
-                                &request,
-                                None,
-                                &[],
-                                Some("display sync panicked; display disabled for this run"),
-                            );
-                            (record, true)
+                            (failed, true)
                         }
                     };
                     if records.try_send(record).is_err() {
                         thread_counts.dropped_records.fetch_add(1, Ordering::SeqCst);
                     }
-                    if panicked {
-                        return;
+                    panicked
+                };
+                match content {
+                    DisplayContent::Keys(artwork) => {
+                        while let Wake::Request(request) =
+                            next_display_request(&thread_slot, &abort, None)
+                        {
+                            let record =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    sync_page(
+                                        &mut sync,
+                                        &mut session,
+                                        &*artwork,
+                                        &request,
+                                        &thread_counts,
+                                    )
+                                }));
+                            let failed = display_record(&request, None, &[], Some(DISPLAY_PANIC));
+                            if finish(record, failed) {
+                                return;
+                            }
+                        }
+                    }
+                    DisplayContent::Dial {
+                        artwork,
+                        min_interval,
+                    } => {
+                        let mut dial = DialState::default();
+                        loop {
+                            match next_display_request(&thread_slot, &abort, Some(DIAL_TICK)) {
+                                Wake::Stopped => return,
+                                Wake::Request(request) => dial.requested(request),
+                                Wake::Tick => {}
+                            }
+                            let Some((request, trigger)) = dial.due(&artwork, min_interval) else {
+                                continue;
+                            };
+                            let record =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    sync_dial(
+                                        &mut sync,
+                                        &artwork,
+                                        &request,
+                                        trigger,
+                                        &thread_counts,
+                                    )
+                                }));
+                            let outcome = record
+                                .as_ref()
+                                .map_or(DialOutcome::Failed, |(_, outcome)| *outcome);
+                            let failed =
+                                dial_record(trigger, &request, None, false, Some(DISPLAY_PANIC));
+                            if finish(record.map(|(record, _)| record), failed) {
+                                return;
+                            }
+                            dial.finished(outcome);
+                        }
                     }
                 }
             })
@@ -314,7 +415,8 @@ impl DisplayThread {
         })
     }
 
-    /// Records the newest page to draw without waiting for the display thread.
+    /// Records the newest page and dial function to draw without waiting for
+    /// the display thread.
     fn request(&self, session: &ProfileSession, trigger: &'static str) {
         let (lock, changed) = &*self.slot;
         let mut slot = lock.lock().unwrap_or_else(PoisonError::into_inner);
@@ -323,6 +425,7 @@ impl DisplayThread {
         }
         let request = DisplayRequest {
             path: session.path().to_vec(),
+            dial_function: session.dial_function_index(),
             trigger,
         };
         if slot.pending.replace(request).is_some() {
@@ -368,26 +471,211 @@ impl Drop for DisplayThread {
     }
 }
 
-/// Blocks the display thread until a request arrives; `None` once stopped or aborted.
+/// Record error for a sync that panicked.
+const DISPLAY_PANIC: &str = "display sync panicked; display disabled for this run";
+
+/// Why the display thread woke.
+enum Wake {
+    Request(DisplayRequest),
+    /// `tick` elapsed without a request.
+    Tick,
+    /// Stopped or aborted: no further sync may start.
+    Stopped,
+}
+
+/// Blocks the display thread until a request arrives, or at most `tick`.
 fn next_display_request(
     slot: &(Mutex<DisplaySlot>, Condvar),
     abort: &AtomicBool,
-) -> Option<DisplayRequest> {
+    tick: Option<Duration>,
+) -> Wake {
+    let deadline = tick.map(|tick| Instant::now() + tick);
     let (lock, changed) = slot;
     let mut slot = lock.lock().unwrap_or_else(PoisonError::into_inner);
     loop {
         if slot.stopped || abort.load(Ordering::SeqCst) {
-            return None;
+            return Wake::Stopped;
         }
         if let Some(request) = slot.pending.take() {
-            return Some(request);
+            return Wake::Request(request);
+        }
+        let mut wait = Duration::from_millis(50);
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Wake::Tick;
+            }
+            wait = wait.min(remaining);
         }
         // Bounded wait so a set interrupt flag is observed without a notification.
         slot = changed
-            .wait_timeout(slot, Duration::from_millis(50))
+            .wait_timeout(slot, wait)
             .unwrap_or_else(PoisonError::into_inner)
             .0;
     }
+}
+
+/// The dial thread's view of what to draw and when it last tried.
+#[derive(Default)]
+struct DialState {
+    /// Set by the first request, sent once software mode is on: nothing is
+    /// drawn before it.
+    started: bool,
+    dial_function: Option<usize>,
+    /// Trigger of the newest request not yet drawn.
+    trigger: Option<&'static str>,
+    /// The face last attempted, written or not. A short write is never
+    /// repeated for the same face; the next face change redraws.
+    last_face: Option<Option<String>>,
+    last_attempt: Option<Instant>,
+    /// The face whose plain transport failure already used its one retry.
+    /// Cleared by a successful write and whenever another face is attempted.
+    retried: Option<Option<String>>,
+    /// The face waiting for its one retry after a plain transport failure.
+    retry_pending: Option<Option<String>>,
+}
+
+/// How one dial attempt ended, for the retry bookkeeping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DialOutcome {
+    /// Written, or unchanged and so nothing to write.
+    Done,
+    /// A plain transport failure while the write gate was open.
+    TransportFailed,
+    /// A short write, a closed gate, or a planning error: never retried.
+    Failed,
+}
+
+impl DialState {
+    fn requested(&mut self, request: DisplayRequest) {
+        self.started = true;
+        self.dial_function = request.dial_function;
+        self.trigger = Some(request.trigger);
+    }
+
+    /// The request to draw now, if the face changed and the rate limit allows.
+    fn due(
+        &mut self,
+        artwork: &DialArtwork,
+        min_interval: Duration,
+    ) -> Option<(DialImageRequest, &'static str)> {
+        if !self.started {
+            return None;
+        }
+        let request = artwork.request(self.dial_function);
+        if self.last_face.as_ref() == Some(&request.function) {
+            self.trigger = None;
+            return None;
+        }
+        if self
+            .last_attempt
+            .is_some_and(|last| last.elapsed() < min_interval)
+        {
+            return None;
+        }
+        let face = Some(request.function.clone());
+        if self.retried != face {
+            self.retried = None;
+        }
+        let retrying = self.retry_pending.take() == face;
+        self.last_face = face;
+        self.last_attempt = Some(Instant::now());
+        let clock_face = request
+            .function
+            .as_deref()
+            .is_some_and(|face| face.starts_with("clock:") || face.starts_with("analog:"));
+        let trigger = match self.trigger.take() {
+            _ if retrying => "retry",
+            // In clock modes a function switch changes nothing; the minute did.
+            Some("dial_function") | None if clock_face => "clock",
+            Some(trigger) => trigger,
+            None => "clock",
+        };
+        Some((request, trigger))
+    }
+
+    /// Retry bookkeeping after an attempt. After a plain transport failure
+    /// (not a short write, never with the write gate closed), the same face may
+    /// be tried once more once the interval has passed, so a busy device does
+    /// not leave a function name stale until the next click. A face that
+    /// already used its retry is left alone until a successful write or
+    /// another face resets it.
+    fn finished(&mut self, outcome: DialOutcome) {
+        match outcome {
+            DialOutcome::Done => self.retried = None,
+            DialOutcome::TransportFailed
+                if self.last_face.is_some() && self.retried != self.last_face =>
+            {
+                self.retried = self.last_face.clone();
+                self.retry_pending = self.last_face.take();
+            }
+            DialOutcome::TransportFailed | DialOutcome::Failed => {}
+        }
+    }
+}
+
+/// Plans and applies one dial face; every failure is reported in the record only.
+fn sync_dial<S: DisplaySink>(
+    sync: &mut DisplaySync<S>,
+    artwork: &DialArtwork,
+    request: &DialImageRequest,
+    trigger: &'static str,
+    counts: &DisplayCounts,
+) -> (Value, DialOutcome) {
+    counts.syncs.fetch_add(1, Ordering::SeqCst);
+    let (report, missing, error) = match sync.plan_dial(request.clone(), artwork) {
+        Ok(plan) => {
+            let missing = plan.is_missing();
+            match sync.apply_dial(plan) {
+                Ok(report) => (Some(report), missing, None),
+                Err(error) => (None, missing, Some(error.to_string())),
+            }
+        }
+        Err(error) => (None, false, Some(error.to_string())),
+    };
+    if missing || error.is_some() || report.as_ref().is_some_and(|report| !report.is_complete()) {
+        counts.failures.fetch_add(1, Ordering::SeqCst);
+    }
+    let outcome = match &report {
+        Some(report) if error.is_none() && report.is_complete() => DialOutcome::Done,
+        Some(report)
+            if report.failures.iter().all(|failure| {
+                matches!(&failure.error, SinkError::Transport(message)
+                    if !message.contains(DISPLAY_WRITES_CLOSED)
+                        && !message.contains(crate::display_sink::SHARED_WRITES_CLOSED))
+            }) && !report.failures.is_empty() =>
+        {
+            DialOutcome::TransportFailed
+        }
+        _ => DialOutcome::Failed,
+    };
+    let record = dial_record(trigger, request, report.as_ref(), missing, error.as_deref());
+    (record, outcome)
+}
+
+/// A dial `display_sync` record.
+fn dial_record(
+    trigger: &'static str,
+    request: &DialImageRequest,
+    report: Option<&ApplyReport>,
+    missing: bool,
+    error: Option<&str>,
+) -> Value {
+    let failed = report
+        .and_then(|report| report.failures.first())
+        .map(|failure| {
+            json!({
+                "short_write":matches!(failure.error, SinkError::ShortWrite { .. }),
+                "attempts":failure.attempts, "error":bounded(&failure.error.to_string()),
+            })
+        });
+    json!({
+        "type":"display_sync", "schema_version":1, "target":"dial", "trigger":trigger,
+        "face":request.function,
+        "written":report.is_some_and(|report| report.written.contains(&DisplayTarget::Dial)),
+        "failed":failed, "missing":missing, "error":error.map(bounded),
+        "complete":!missing && error.is_none() && report.is_some_and(ApplyReport::is_complete),
+    })
 }
 
 /// Plans and applies one page; every failure is reported in the record only.
@@ -526,14 +814,16 @@ where
     )
 }
 
-/// [`run_live`] with optional, opt-in keypad display synchronization.
+/// [`run_live`] with optional, opt-in keypad or dial display synchronization.
 ///
-/// `display` requires `options.software_mode`, an M4315 session, and a schema-2
-/// keypad profile; anything else, or a display thread that cannot start, is
-/// rejected before the worker starts or software mode is entered. The
-/// first sync is requested right after software mode is enabled, and another
-/// after each report whose work contains a keypad navigation, once that work
-/// was queued or coalesced. No sync starts once the input loop has ended.
+/// A keypad `display` requires `options.software_mode`, an M4315 session, and a
+/// schema-2 keypad profile; a dial `display` ([`LiveDisplay::dial`]) requires
+/// software mode and an M131E session. Anything else, or a display thread that
+/// cannot start, is rejected before the worker starts or software mode is
+/// entered. The first sync is requested right after software mode is enabled,
+/// and another after each report whose work contains a keypad navigation or a
+/// dial function switch, once that work was queued or coalesced. No sync starts
+/// once the input loop has ended.
 #[allow(clippy::too_many_arguments)]
 pub fn run_live_with_display<T, D, W, F>(
     mut reader: InputReader<T>,
@@ -620,8 +910,8 @@ where
     F: FnOnce(Arc<AtomicBool>) -> Result<(D, W), String> + Send + 'static,
 {
     validate_options(options, &device)?;
-    if display.is_some() {
-        validate_display(options, &device, &session)?;
+    if let Some(display) = &display {
+        validate_display(options, &device, &session, display.is_dial())?;
     }
     let mut details = details;
     if let (Some(object), Some(functions)) = (
@@ -635,14 +925,21 @@ where
     // Fail closed: folder navigation must not run live without its display.
     let (display_records, display_thread) = match display {
         Some(display) => {
+            let mut summary = json!({"enabled":true, "hardware_verified":false});
+            if let DisplayContent::Dial {
+                artwork,
+                min_interval,
+            } = &display.content
+            {
+                summary["target"] = json!("dial");
+                summary["dial_content"] = json!(artwork.content().as_str());
+                summary["min_interval_ms"] = json!(min_interval.as_millis() as u64);
+            }
             let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
             let spawned =
                 DisplayThread::spawn(display, session.clone(), Arc::clone(&abort), records_tx)?;
             if let Some(object) = details.as_object_mut() {
-                object.insert(
-                    "display_sync".into(),
-                    json!({"enabled":true, "hardware_verified":false}),
-                );
+                object.insert("display_sync".into(), summary);
             }
             (Some(records_rx), Some(spawned))
         }
@@ -750,6 +1047,10 @@ where
                 let navigated = work.events.iter().any(|planned| {
                     matches!(planned.resolution, ProfileResolution::Navigation { .. })
                 });
+                let switched = work
+                    .events
+                    .iter()
+                    .any(PlannedEvent::is_dial_function_switch);
                 pending = match pending.take() {
                     Some(mut earlier) => {
                         coalesce(&mut earlier, work, &mut counts);
@@ -758,8 +1059,12 @@ where
                     None => offer(&sender, work, &mut counts)?,
                 };
                 // Only after the work was queued or coalesced, and never blocking.
-                if navigated && let Some(display) = &display_thread {
-                    display.request(&session, "navigation");
+                if let Some(display) = &display_thread {
+                    if navigated {
+                        display.request(&session, "navigation");
+                    } else if switched {
+                        display.request(&session, "dial_function");
+                    }
                 }
                 if options
                     .max_reports
@@ -1151,7 +1456,17 @@ fn validate_display(
     options: LiveOptions,
     device: &DeviceContext,
     session: &ProfileSession,
+    dial: bool,
 ) -> Result<(), String> {
+    if dial {
+        if device.module != ServiceModule::M131E {
+            return Err("dial display sync requires an M131E dial session".into());
+        }
+        if !options.software_mode {
+            return Err("display sync requires software mode".into());
+        }
+        return Ok(());
+    }
     if device.module != ServiceModule::M4315 {
         return Err("display sync requires an M4315 keypad session".into());
     }
@@ -1438,6 +1753,8 @@ mod tests {
         signal_second: Option<SyncSender<()>>,
         fail_enable: bool,
         fail_cleanup: bool,
+        /// Shared event log: mode reports are logged as `on` and `off`.
+        log: Option<Arc<Mutex<Vec<&'static str>>>>,
     }
     impl Transport {
         fn new(steps: impl IntoIterator<Item = Step>) -> Self {
@@ -1451,6 +1768,7 @@ mod tests {
                 signal_second: None,
                 fail_enable: false,
                 fail_cleanup: false,
+                log: None,
             }
         }
     }
@@ -1495,6 +1813,11 @@ mod tests {
         }
         fn send_feature_report(&self, bytes: &[u8]) -> HidResult<()> {
             self.writes.lock().unwrap().push(bytes.to_vec());
+            if let Some(log) = &self.log {
+                log.lock()
+                    .unwrap()
+                    .push(if bytes[2] == 1 { "on" } else { "off" });
+            }
             if self.fail_enable && bytes[2] == 1 {
                 Err(hid_error("enable failed"))
             } else if self.fail_cleanup && bytes[2] == 0 {
@@ -3158,6 +3481,558 @@ mod tests {
         assert_eq!(written(&fake), 15);
     }
 
+    use crate::dial_artwork::{Clock, DialContent, ManualClock, WallTime};
+    use cooltek_sdk_service::display_sync::DialImageProvider;
+
+    /// A dial-only sink over a shared [`FakeDisplaySink`] that logs each
+    /// attempt reaching it (`dial`) and when it happened.
+    struct DialSink {
+        fake: Arc<Mutex<FakeDisplaySink>>,
+        log: Option<Arc<Mutex<Vec<&'static str>>>>,
+        times: Arc<Mutex<Vec<Instant>>>,
+    }
+    impl DisplaySink for DialSink {
+        fn capabilities(&self) -> DisplayCapabilities {
+            DisplayCapabilities {
+                key_count: 0,
+                dial: true,
+            }
+        }
+        fn write_key_image(
+            &mut self,
+            _: u8,
+            _: &[u8],
+            _: &mut dyn FnMut(usize),
+        ) -> Result<(), SinkError> {
+            panic!("dial display sync never writes keys")
+        }
+        fn write_dial_image(
+            &mut self,
+            jpeg: &[u8],
+            between_chunks: &mut dyn FnMut(usize),
+        ) -> Result<(), SinkError> {
+            if let Some(log) = &self.log {
+                log.lock().unwrap().push("dial");
+            }
+            self.times.lock().unwrap().push(Instant::now());
+            self.fake
+                .lock()
+                .unwrap()
+                .write_dial_image(jpeg, between_chunks)
+        }
+    }
+
+    fn clock_artwork(content: DialContent, clock: impl Clock + 'static) -> DialArtwork {
+        DialArtwork::prepare(content, two_functions().profile(), Box::new(clock)).unwrap()
+    }
+
+    struct DialHarness {
+        display: LiveDisplay,
+        fake: Arc<Mutex<FakeDisplaySink>>,
+        times: Arc<Mutex<Vec<Instant>>>,
+    }
+
+    fn dial_harness(
+        artwork: DialArtwork,
+        interval: Duration,
+        log: Option<Arc<Mutex<Vec<&'static str>>>>,
+    ) -> DialHarness {
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let times = Arc::new(Mutex::new(Vec::new()));
+        let sink = DialSink {
+            fake: Arc::clone(&fake),
+            log,
+            times: Arc::clone(&times),
+        };
+        let display = LiveDisplay::dial(sink, artwork, Arc::new(AtomicBool::new(false)))
+            .with_dial_interval(interval);
+        DialHarness {
+            display,
+            fake,
+            times,
+        }
+    }
+
+    fn dial_writes(fake: &Arc<Mutex<FakeDisplaySink>>) -> Vec<Vec<u8>> {
+        let fake = fake.lock().unwrap();
+        fake.writes
+            .iter()
+            .filter(|write| write.fault.is_none())
+            .map(|write| write.jpeg.clone())
+            .collect()
+    }
+
+    fn run_dial(
+        transport: Transport,
+        session: ProfileSession,
+        options: LiveOptions,
+        display: Option<LiveDisplay>,
+        received: Arc<Mutex<Vec<Action>>>,
+    ) -> DisplayRun {
+        let clock = Arc::clone(&transport.clock);
+        let writes = Arc::clone(&transport.writes);
+        let output = Output::default();
+        let writer = output.clone();
+        let actions = Arc::clone(&received);
+        let result = run_inner(
+            &mut InputReader::new(transport),
+            session,
+            device(),
+            false,
+            json!({"source":"synthetic"}),
+            options,
+            Arc::new(AtomicBool::new(false)),
+            display,
+            move |stop| Ok((simple_actions(stop, actions), writer)),
+            move || clock.load(Ordering::SeqCst),
+        );
+        let actions = received.lock().unwrap().clone();
+        let mode_writes = writes.lock().unwrap().clone();
+        DisplayRun {
+            result,
+            rows: output.rows(),
+            actions,
+            mode_writes,
+        }
+    }
+
+    #[test]
+    fn dial_display_requires_software_mode_and_an_m131e_before_any_worker() {
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        for (options, device, expected) in [
+            (options(), device(), "software mode"),
+            (keypad_options(1), keypad_device(), "M131E"),
+        ] {
+            let harness = dial_harness(
+                clock_artwork(DialContent::Clock, clock.clone()),
+                Duration::from_millis(10),
+                None,
+            );
+            let transport = Transport::new([]);
+            let writes = Arc::clone(&transport.writes);
+            let error = run_inner(
+                &mut InputReader::new(transport),
+                two_functions(),
+                device,
+                false,
+                json!({}),
+                options,
+                Arc::new(AtomicBool::new(false)),
+                Some(harness.display),
+                |_| -> Result<(Actions, Output), String> { panic!("must not construct worker") },
+                || 0,
+            )
+            .unwrap_err();
+            assert!(error.contains(expected), "{error}");
+            assert!(harness.fake.lock().unwrap().writes.is_empty());
+            // Fail closed: no mode command was sent.
+            assert!(writes.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_dial_function_switch_redraws_the_dial_and_the_click_dispatches_nothing() {
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let expected = clock_artwork(DialContent::Function, clock.clone());
+        let harness = dial_harness(
+            clock_artwork(DialContent::Function, clock),
+            Duration::from_millis(20),
+            None,
+        );
+        let fake = Arc::clone(&harness.fake);
+        let transport = Transport::new([
+            wait_for_writes(&fake, 1),
+            dial(4, 1, 5),
+            dial(4, 0, 100_005),
+            wait_for_writes(&fake, 2),
+            dial(3, 0, 100_006),
+        ]);
+        let run = run_dial(
+            transport,
+            two_functions(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(3),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        let summary = run.result.unwrap();
+        assert_eq!(run.mode_writes, modes());
+        // The rotation after the click ran the second function's action only.
+        assert_eq!(run.actions, vec![Action::Volume { delta: 1 }]);
+        assert_eq!(
+            dial_writes(&fake),
+            vec![
+                expected.function_face(0).unwrap().to_vec(),
+                expected.function_face(1).unwrap().to_vec()
+            ]
+        );
+        let records = display_rows(&run.rows);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["target"], "dial");
+        assert_eq!(records[0]["trigger"], "software_mode");
+        assert_eq!(records[0]["face"], "function:0");
+        assert_eq!(records[0]["written"], true);
+        assert_eq!(records[0]["complete"], true);
+        assert_eq!(records[1]["trigger"], "dial_function");
+        assert_eq!(records[1]["face"], "function:1");
+        assert_eq!(summary.display_sync_count, 2);
+        assert_eq!(summary.display_failure_count, 0);
+        assert_eq!(
+            run.rows[0]["details"]["display_sync"],
+            json!({"enabled":true, "hardware_verified":false, "target":"dial",
+                "dial_content":"function", "min_interval_ms":20})
+        );
+        let footer = run.rows.last().unwrap();
+        assert_eq!(footer["display_sync_count"], 2);
+        assert_eq!(footer["display_stopped"], true);
+    }
+
+    #[test]
+    fn the_clock_redraws_on_a_new_minute_only_and_at_most_once_per_interval() {
+        assert_eq!(DIAL_MIN_INTERVAL, Duration::from_secs(1));
+        // Long enough that the two clock changes below always land inside one
+        // interval, even on a heavily loaded test runner.
+        let interval = Duration::from_secs(2);
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let expected = clock_artwork(DialContent::Clock, clock.clone());
+        let harness = dial_harness(
+            clock_artwork(DialContent::Clock, clock.clone()),
+            interval,
+            None,
+        );
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        // Nothing is drawn before the first request (sent once software mode is on).
+        thread::sleep(Duration::from_millis(250));
+        assert!(written(&harness.fake) == 0);
+        display.request(&session, "software_mode");
+        assert!(wait_until(|| written(&harness.fake) == 1));
+        // Two new minutes right after a write: only the newest is drawn, once
+        // the interval since that write has passed.
+        clock.set(WallTime::new(9, 1));
+        thread::sleep(Duration::from_millis(30));
+        clock.set(WallTime::new(9, 2));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while written(&harness.fake) < 2 {
+            assert!(Instant::now() < deadline, "the new minute was never drawn");
+            thread::sleep(Duration::from_millis(5));
+        }
+        // The same minute is never redrawn, however often it is requested.
+        display.request(&session, "dial_function");
+        thread::sleep(Duration::from_millis(400));
+        assert!(display.finish(Duration::from_secs(2)));
+        let writes = dial_writes(&harness.fake);
+        assert_eq!(writes.len(), 2);
+        let request = expected.request(None);
+        assert_eq!(request.function.as_deref(), Some("clock:09:02"));
+        assert_eq!(writes[1], expected.dial_image(&request).unwrap());
+        let times = harness.times.lock().unwrap().clone();
+        // Encoding time varies a little between faces; allow for it.
+        assert!(times[1] - times[0] >= interval - Duration::from_millis(50));
+        let records: Vec<Value> = records_rx.try_iter().collect();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0]["face"], "clock:09:00");
+        assert_eq!(records[1]["face"], "clock:09:02");
+        assert_eq!(records[1]["trigger"], "clock");
+        assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_plain_transport_failure_is_retried_once_after_the_interval() {
+        let busy = || SinkError::Transport(crate::display_sink::SHARED_BUSY.into());
+        // Function content: without a retry a busy device would leave the old
+        // name up until the next click.
+        let start = |faults: usize| {
+            let harness = dial_harness(
+                clock_artwork(DialContent::Function, ManualClock::new(WallTime::new(9, 0))),
+                Duration::from_millis(50),
+                None,
+            );
+            for _ in 0..faults {
+                harness
+                    .fake
+                    .lock()
+                    .unwrap()
+                    .fail_next(DisplayTarget::Dial, busy());
+            }
+            let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+            let session = two_functions();
+            let display = DisplayThread::spawn(
+                harness.display,
+                session.clone(),
+                Arc::new(AtomicBool::new(false)),
+                records_tx,
+            )
+            .unwrap();
+            display.request(&session, "software_mode");
+            (display, harness.fake, harness.times, records_rx, session)
+        };
+
+        // One busy failure: the same face is redrawn once, after the interval.
+        let (mut display, fake, times, records, _) = start(1);
+        let first = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        let second = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(first["written"], false);
+        assert_eq!(first["failed"]["short_write"], false);
+        assert_eq!(second["trigger"], "retry");
+        assert_eq!(second["face"], "function:0");
+        assert_eq!(second["written"], true);
+        thread::sleep(Duration::from_millis(200));
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(written(&fake), 2);
+        let times = times.lock().unwrap().clone();
+        assert!(times[1] - times[0] >= Duration::from_millis(40));
+
+        // Two busy failures: one retry only, then nothing until the face changes.
+        let (mut display, fake, _, records, mut session) = start(2);
+        records.recv_timeout(Duration::from_secs(2)).unwrap();
+        let retried = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(retried["written"], false);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(written(&fake), 2);
+        session.set_dial_function(1).unwrap();
+        display.request(&session, "dial_function");
+        let next = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(next["face"], "function:1");
+        assert_eq!(next["written"], true);
+        assert_eq!(written(&fake), 3);
+    }
+
+    #[test]
+    fn a_face_can_use_its_retry_again_after_another_face_and_labels_follow_the_face() {
+        let busy = || SinkError::Transport(crate::display_sink::SHARED_BUSY.into());
+        // Function 0 fails twice (attempt and retry), 1 is written, then 0 fails
+        // once more: it gets a fresh retry, which succeeds.
+        let harness = dial_harness(
+            clock_artwork(DialContent::Function, ManualClock::new(WallTime::new(9, 0))),
+            Duration::from_millis(50),
+            None,
+        );
+        {
+            let mut fake = harness.fake.lock().unwrap();
+            fake.fail_next(DisplayTarget::Dial, busy());
+            fake.fail_next(DisplayTarget::Dial, busy());
+            fake.fail_after(DisplayTarget::Dial, 1, busy());
+        }
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        let next = || records.recv_timeout(Duration::from_secs(2)).unwrap();
+        display.request(&session, "software_mode");
+        let (first, retry) = (next(), next());
+        assert_eq!(
+            (first["written"].clone(), retry["trigger"].clone()),
+            (json!(false), json!("retry"))
+        );
+        assert_eq!(retry["written"], false);
+        session.set_dial_function(1).unwrap();
+        display.request(&session, "dial_function");
+        let one = next();
+        assert_eq!(
+            (one["face"].clone(), one["written"].clone()),
+            (json!("function:1"), json!(true))
+        );
+        assert_eq!(one["trigger"], "dial_function");
+        session.set_dial_function(0).unwrap();
+        display.request(&session, "dial_function");
+        let (again, retried) = (next(), next());
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(again["face"], "function:0");
+        assert_eq!(again["written"], false);
+        assert_eq!(retried["trigger"], "retry");
+        assert_eq!(retried["written"], true);
+        assert_eq!(written(&harness.fake), 5);
+
+        // Clock mode: a failure, then the minute rolls over before the retry.
+        // The new minute is drawn instead, labelled `clock`, not `retry`.
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let harness = dial_harness(
+            clock_artwork(DialContent::Clock, clock.clone()),
+            Duration::from_millis(200),
+            None,
+        );
+        harness
+            .fake
+            .lock()
+            .unwrap()
+            .fail_next(DisplayTarget::Dial, busy());
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        let failed = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        clock.set(WallTime::new(9, 1));
+        let rolled = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(400));
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(failed["written"], false);
+        assert_eq!(rolled["face"], "clock:09:01");
+        assert_eq!(rolled["trigger"], "clock");
+        assert_eq!(rolled["written"], true);
+        // The stale 9:00 face is never retried after the new minute was drawn.
+        assert_eq!(written(&harness.fake), 2);
+    }
+
+    #[test]
+    fn writes_refused_by_the_closed_gate_are_never_retried() {
+        let mut state = DialState {
+            started: true,
+            last_face: Some(Some("function:0".into())),
+            ..DialState::default()
+        };
+        state.finished(DialOutcome::Failed);
+        assert_eq!(state.retry_pending, None);
+        assert!(state.last_face.is_some());
+        // The classification: a closed gate is `Failed`, a busy device is a retry.
+        let mut sink = FakeDisplaySink::default();
+        sink.fail_next(
+            DisplayTarget::Dial,
+            SinkError::Transport(DISPLAY_WRITES_CLOSED.into()),
+        );
+        sink.fail_next(
+            DisplayTarget::Dial,
+            SinkError::Transport(crate::display_sink::SHARED_WRITES_CLOSED.into()),
+        );
+        sink.fail_next(
+            DisplayTarget::Dial,
+            SinkError::Transport(crate::display_sink::SHARED_BUSY.into()),
+        );
+        let mut sync = DisplaySync::new(sink);
+        let artwork = clock_artwork(DialContent::Clock, ManualClock::new(WallTime::new(9, 0)));
+        let counts = DisplayCounts::default();
+        let outcomes: Vec<DialOutcome> = (0..4)
+            .map(|_| {
+                sync_dial(
+                    &mut sync,
+                    &artwork,
+                    &artwork.request(None),
+                    "clock",
+                    &counts,
+                )
+                .1
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                DialOutcome::Failed,
+                DialOutcome::Failed,
+                DialOutcome::TransportFailed,
+                DialOutcome::Done
+            ]
+        );
+    }
+
+    #[test]
+    fn a_failed_dial_write_is_not_retried_until_the_face_changes() {
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let harness = dial_harness(
+            clock_artwork(DialContent::Clock, clock.clone()),
+            Duration::from_millis(20),
+            None,
+        );
+        harness.fake.lock().unwrap().fail_next(
+            DisplayTarget::Dial,
+            SinkError::ShortWrite {
+                written: 10,
+                expected: 65,
+            },
+        );
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        let failed = records_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(failed["written"], false);
+        assert_eq!(failed["failed"]["short_write"], true);
+        assert_eq!(failed["failed"]["attempts"], 1);
+        assert_eq!(failed["complete"], false);
+        // Many intervals pass and requests repeat; the same face is not resent.
+        display.request(&session, "dial_function");
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(written(&harness.fake), 1);
+        clock.set(WallTime::new(9, 1));
+        let redrawn = records_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(redrawn["written"], true);
+        assert_eq!(redrawn["face"], "clock:09:01");
+        assert_eq!(written(&harness.fake), 2);
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 1);
+    }
+
+    /// Reports a new minute on every call, so every dial tick has a new face.
+    struct Racing(AtomicU64);
+    impl Clock for Racing {
+        fn now(&self) -> WallTime {
+            let tick = self.0.fetch_add(1, Ordering::SeqCst);
+            WallTime::new((tick / 60 % 24) as u8, (tick % 60) as u8)
+        }
+    }
+
+    #[test]
+    fn dial_writes_reach_the_sink_only_between_enabling_and_restoring_hardware_mode() {
+        // One log shared by the mode transport (`on`/`off`) and the dial sink
+        // (`dial`), so their relative order is exact.
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let harness = dial_harness(
+            clock_artwork(DialContent::Clock, Racing(AtomicU64::new(0))),
+            Duration::from_millis(10),
+            Some(Arc::clone(&log)),
+        );
+        let fake = Arc::clone(&harness.fake);
+        let mut transport = Transport::new([wait_for_writes(&fake, 3), dial(3, 0, 10)]);
+        transport.log = Some(Arc::clone(&log));
+        let run = run_dial(
+            transport,
+            profile(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(1),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        run.result.unwrap();
+        // Writes kept being due; give a detached thread time to misbehave.
+        thread::sleep(Duration::from_millis(200));
+        let log = log.lock().unwrap().clone();
+        assert_eq!(log.first(), Some(&"on"), "{log:?}");
+        assert_eq!(log.last(), Some(&"off"), "{log:?}");
+        assert_eq!(log.iter().filter(|&&event| event == "off").count(), 1);
+        assert!(log.iter().filter(|&&event| event == "dial").count() >= 3);
+        assert_eq!(run.mode_writes, modes());
+        assert_eq!(run.rows.last().unwrap()["display_stopped"], true);
+    }
+
     use crate::display_sink::{SHARED_BUSY, SHARED_WRITES_CLOSED, SharedTransport};
 
     /// A thread-safe M4315 HID fake whose first output report blocks on a gate,
@@ -3216,10 +4091,12 @@ mod tests {
         returned: Receiver<()>,
     }
 
-    /// Runs a keypad session whose first display report blocks; `release`
-    /// decides when the controller opens the gate (given the shared transport).
+    /// Runs a keypad (or, with `dial`, an M131E dial clock) session whose
+    /// first display report blocks; `release` decides when the controller
+    /// opens the gate (given the shared transport).
     fn run_gated(
         lock_timeout: Duration,
+        dial: bool,
         release: impl FnOnce(&SharedTransport<GatedHid>, &Gate) + Send + 'static,
     ) -> GatedRun {
         let log = Arc::new(Mutex::new(Vec::new()));
@@ -3235,12 +4112,23 @@ mod tests {
             },
             lock_timeout,
         );
-        let display = crate::display_sink::live_display(
-            &shared,
-            Some(ModuleKind::M4315),
-            PreparedKeyArtwork::prepare().unwrap(),
-        )
-        .unwrap();
+        let (display, session, device) = if dial {
+            let display = crate::display_sink::live_dial_display(
+                &shared,
+                Some(ModuleKind::M131E),
+                clock_artwork(DialContent::Clock, ManualClock::new(WallTime::new(9, 0))),
+            )
+            .unwrap();
+            (display, profile(), device())
+        } else {
+            let display = crate::display_sink::live_display(
+                &shared,
+                Some(ModuleKind::M4315),
+                PreparedKeyArtwork::prepare().unwrap(),
+            )
+            .unwrap();
+            (display, keypad_profile(), keypad_device())
+        };
         let interrupted = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&interrupted);
         let controlled = shared.clone();
@@ -3258,8 +4146,8 @@ mod tests {
         let handle = shared.clone();
         let result = run_inner(
             &mut InputReader::new(shared),
-            keypad_profile(),
-            keypad_device(),
+            session,
+            device,
             false,
             json!({}),
             configuration,
@@ -3286,40 +4174,47 @@ mod tests {
 
     #[test]
     fn a_stuck_display_write_yields_to_the_restore_and_no_report_follows_it() {
-        let run = run_gated(Duration::from_secs(5), |shared, gate| {
-            // Release the stuck write only once the restore is waiting for it.
-            assert!(wait_until(|| shared.priority_waiters() > 0));
-            *gate.0.lock().unwrap() = true;
-            gate.1.notify_all();
-        });
-        let summary = run.result.unwrap();
-        // One report went out before cleanup; the closed gate refused the rest.
-        assert_eq!(*run.log.lock().unwrap(), vec!["on", "out", "off"]);
-        assert_eq!(summary.report_count, 0);
-        let footer = run.rows.last().unwrap();
-        assert_eq!(footer["reason"], "interrupted");
-        assert_eq!(footer["display_stopped"], false);
+        // The same holds for a key page and for a dial clock face.
+        for dial in [false, true] {
+            let run = run_gated(Duration::from_secs(5), dial, |shared, gate| {
+                // Release the stuck write only once the restore is waiting for it.
+                assert!(wait_until(|| shared.priority_waiters() > 0));
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
+            });
+            let summary = run.result.unwrap();
+            // One report went out before cleanup; the closed gate refused the rest.
+            assert_eq!(*run.log.lock().unwrap(), vec!["on", "out", "off"], "{dial}");
+            assert_eq!(summary.report_count, 0);
+            let footer = run.rows.last().unwrap();
+            assert_eq!(footer["reason"], "interrupted");
+            assert_eq!(footer["display_stopped"], false);
+            let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
+            assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
+        }
     }
 
     #[test]
     fn a_restore_that_never_gets_the_device_retries_once_and_the_run_still_ends() {
-        let run = run_gated(Duration::from_millis(30), |_, _| {});
-        let error = run.result.unwrap_err();
-        assert!(error.contains("first attempt"), "{error}");
-        assert!(error.contains("retry"), "{error}");
-        assert_eq!(error.matches(SHARED_BUSY).count(), 2, "{error}");
-        assert_eq!(*run.log.lock().unwrap(), vec!["on", "out"]);
-        let footer = run.rows.last().unwrap();
-        assert_eq!(footer["reason"], "error");
-        assert_eq!(footer["display_stopped"], false);
-        // Free the detached display thread: the stuck write returns, and any
-        // further report is refused by the gate that closed at loop end.
-        *run.gate.0.lock().unwrap() = true;
-        run.gate.1.notify_all();
-        run.returned.recv_timeout(Duration::from_secs(5)).unwrap();
-        let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
-        assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
-        assert_eq!(*run.log.lock().unwrap(), vec!["on", "out"]);
+        for dial in [false, true] {
+            let run = run_gated(Duration::from_millis(30), dial, |_, _| {});
+            let error = run.result.unwrap_err();
+            assert!(error.contains("first attempt"), "{error}");
+            assert!(error.contains("retry"), "{error}");
+            assert_eq!(error.matches(SHARED_BUSY).count(), 2, "{error}");
+            assert_eq!(*run.log.lock().unwrap(), vec!["on", "out"], "{dial}");
+            let footer = run.rows.last().unwrap();
+            assert_eq!(footer["reason"], "error");
+            assert_eq!(footer["display_stopped"], false);
+            // Free the detached display thread: the stuck write returns, and any
+            // further report is refused by the gate that closed at loop end.
+            *run.gate.0.lock().unwrap() = true;
+            run.gate.1.notify_all();
+            run.returned.recv_timeout(Duration::from_secs(5)).unwrap();
+            let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
+            assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
+            assert_eq!(*run.log.lock().unwrap(), vec!["on", "out"], "{dial}");
+        }
     }
 
     #[test]
@@ -3492,20 +4387,22 @@ mod tests {
     #[test]
     fn a_coordinator_panic_with_a_stuck_display_write_still_yields_to_the_restore() {
         let _armed = ArmedPanic::at("display_stopped");
-        let run = run_gated(Duration::from_secs(5), |shared, gate| {
-            assert!(wait_until(|| shared.priority_waiters() > 0));
-            *gate.0.lock().unwrap() = true;
-            gate.1.notify_all();
-        });
-        let error = run.result.unwrap_err();
-        assert!(error.contains(COORDINATOR_PANIC), "{error}");
-        assert!(
-            error.contains("injected panic at display_stopped"),
-            "{error}"
-        );
-        assert_eq!(*run.log.lock().unwrap(), vec!["on", "out", "off"]);
-        // No further image report can start after the restore.
-        let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
-        assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
+        for dial in [false, true] {
+            let run = run_gated(Duration::from_secs(5), dial, |shared, gate| {
+                assert!(wait_until(|| shared.priority_waiters() > 0));
+                *gate.0.lock().unwrap() = true;
+                gate.1.notify_all();
+            });
+            let error = run.result.unwrap_err();
+            assert!(error.contains(COORDINATOR_PANIC), "{error}");
+            assert!(
+                error.contains("injected panic at display_stopped"),
+                "{error}"
+            );
+            assert_eq!(*run.log.lock().unwrap(), vec!["on", "out", "off"], "{dial}");
+            // No further image report can start after the restore.
+            let refused = run.shared.write_output(&[2, 0]).unwrap_err().to_string();
+            assert!(refused.contains(SHARED_WRITES_CLOSED), "{refused}");
+        }
     }
 }

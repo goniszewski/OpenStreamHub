@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, dialogCopy, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { confirmCopy, countdownSeconds, dialogCopy, displayRunNote, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { DisplaySettingsStore } from './display-settings';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -25,6 +26,10 @@ describe('platform and blockers', () => {
     expect(hasKeypadFolders(nested)).toBe(true);
     expect(hasKeypadFolders(flat)).toBe(false);
     expect(runBlocker({ desktop: true, device: keypad, profile: nested })).toContain('folders');
+    // The experimental display setting lifts the refusal only together with software mode.
+    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: true, softwareMode: true })).toBeNull();
+    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: true, softwareMode: false })).toContain('Request device software mode');
+    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: false, softwareMode: true })).toContain('Settings');
     expect(runBlocker({ desktop: true, device: dial, profile: nested })).toBeNull();
     expect(runBlocker({ desktop: true, device: keypad, profile: flat })).toBeNull();
     expect(runBlocker({ desktop: true, device: undefined, profile: flat })).toContain('No module');
@@ -128,6 +133,17 @@ describe('ServicePanel markup', () => {
     const markup = render({ feed, runner, profile: nested });
     expect(markup).toContain('keypad folders');
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run</s);
+  });
+  it('with the display setting on, asks for software mode instead of refusing keypad folders', () => {
+    const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [keypad] };
+    const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
+    const displaySettings = new DisplaySettingsStore(async <T,>() => ({ enabled: true, dial_content: 'function' }) as T, true);
+    (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings: { enabled: true, dial_content: 'function' } };
+    const markup = renderToStaticMarkup(<ServicePanel runner={runner} feed={feed} profile={nested} desktop unsaved={false} platform={mac} now={2000} displaySettings={displaySettings} />);
+    expect(markup).toContain('turn on &quot;Request device software mode&quot; below');
+    // Software mode is off by default, so nothing would be sent yet.
+    expect(markup).not.toContain(displayRunNote);
   });
   it('is disabled in the browser preview', () => {
     const markup = render({ desktop: false });

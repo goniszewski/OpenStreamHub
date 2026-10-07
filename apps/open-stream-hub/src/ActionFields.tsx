@@ -1,9 +1,10 @@
 import { Plus, Trash2 } from 'lucide-react';
-import type { BindingAction, MediaCommand, Modifier, ProfileDirection, StepAction, SystemCommand } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, maxTextBytes, mediaLabels, multiActionSteps, namedKeys,
-  profileDirectionLabels, stepActionTypes, systemLabels, textIssue, urlIssue,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxRunningTimers,
+  maxTextBytes, mediaLabels, multiActionSteps, namedKeys, profileDirectionLabels, stepActionTypes, systemLabels, textIssue,
+  timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
 } from './action-model';
 import type { StepActionType } from './action-model';
 
@@ -19,13 +20,14 @@ export function ActionFields({ action, fader, selectorKey, onChange }: {
     <SelectField id="binding-action" value={action?.type ?? 'unbound'} onChange={event => {
       const type = event.target.value;
       onChange(type === 'unbound' ? null : type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction()
-        : type === 'profile' ? defaultProfileAction() : defaultStepAction(type as StepActionType));
+        : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction() : defaultStepAction(type as StepActionType));
     }}>
       <option value="unbound">Unbound</option>
       {fader ? <option value="volume_from_position">Output volume follows position</option> : <>
         {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
         <option value="multi_action">Multi-action</option>
         <option value="profile">Switch profile</option>
+        <option value="timer">Timer</option>
       </>}
     </SelectField>
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
@@ -35,9 +37,35 @@ export function ActionFields({ action, fader, selectorKey, onChange }: {
         {(Object.keys(profileDirectionLabels) as ProfileDirection[]).map(direction => <option key={direction} value={direction}>{profileDirectionLabels[direction]}</option>)}
       </SelectField>
       <p className="fine-print">Switches the run to the next or previous saved profile, in name order, wrapping around. Only runs started from this app switch; it does nothing with a single saved profile or in the standalone service. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</p></div>}
-    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' && action.type !== 'profile' &&
+    {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
+    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} />}
   </>;
+}
+
+type TimerAction = Extract<BindingAction, { type: 'timer' }>;
+
+function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inputKey: string; onChange: Change }) {
+  const issue = timerLabelIssue(action.label ?? '');
+  // An empty label is omitted, never written as "" (which the service rejects).
+  const withLabel = (label: string): TimerAction => {
+    const { label: _previous, ...rest } = action;
+    return label ? { ...rest, label } : rest;
+  };
+  return <div className="action-fields">
+    <label htmlFor="timer-seconds">Countdown (seconds)</label>
+    <IntegerField key={inputKey} id="timer-seconds" value={action.seconds} minimum={timerSeconds.minimum} maximum={timerSeconds.maximum}
+      onCommit={seconds => onChange({ ...action, seconds }, 'timer-seconds')} />
+    <label className="spaced-label" htmlFor="timer-label">Notification text (optional)</label>
+    <input id="timer-label" spellCheck={false} value={action.label ?? ''} aria-invalid={!!issue} aria-describedby={issue ? 'timer-label-error' : undefined}
+      onChange={event => onChange(withLabel(event.target.value), 'timer-label')} />
+    {issue && <p id="timer-label-error" className="field-error" role="alert">{issue}</p>}
+    <label className="spaced-label" htmlFor="timer-sound">End sound</label>
+    <SelectField id="timer-sound" value={action.sound ?? defaultTimerSound} onChange={event => onChange({ ...action, sound: event.target.value as TimerSound })}>
+      {(Object.keys(timerSoundLabels) as TimerSound[]).map(sound => <option key={sound} value={sound}>{timerSoundLabels[sound]}</option>)}
+    </SelectField>
+    <p className="fine-print">1 second to 24 hours. The running service counts down; pressing the same control again cancels it. When it ends, macOS shows a notification and plays the sound. The countdown is not shown on the key, and stopping the run (or the Mac going to sleep) cancels every timer. At most {maxRunningTimers} run at once. It cannot be a multi-action step.</p>
+  </div>;
 }
 
 function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction[]; selectorKey: string; onChange: Change }) {

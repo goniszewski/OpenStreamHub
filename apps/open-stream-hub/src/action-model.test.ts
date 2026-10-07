@@ -1,13 +1,61 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
-import { defaultMultiAction, defaultProfileAction, defaultStepAction, keyLabel, namedKeys, profileDirectionLabels, stepActionTypes, textIssue, urlIssue } from './action-model';
+import {
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, keyLabel, maxTimerLabelBytes, namedKeys,
+  profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
+} from './action-model';
 import { actionLabel } from './ui-model';
 
 // Shared with the Rust service tests (profile.rs), so both sides agree on action shapes.
 const fixture = JSON.parse(readFileSync(new URL('../../../crates/cooltek-sdk-service/tests/fixtures/actions.json', import.meta.url), 'utf8')) as {
-  named_keys: string[]; valid: Action[]; invalid: unknown[];
+  named_keys: string[]; timer_sounds: string[]; valid: Action[]; invalid: unknown[];
 };
+
+describe('timer contract', () => {
+  type LooseTimer = { type?: string; seconds?: unknown; label?: unknown; sound?: unknown; actions?: { type?: string }[] };
+  // Mirrors the Rust checks for one timer action, so the fixture's invalid entries are explained on this side too.
+  const timerAccepted = (action: LooseTimer) =>
+    Object.keys(action).every(key => ['type', 'seconds', 'label', 'sound'].includes(key))
+    && Number.isInteger(action.seconds) && (action.seconds as number) >= timerSeconds.minimum && (action.seconds as number) <= timerSeconds.maximum
+    && (action.label === undefined || (typeof action.label === 'string' && action.label !== '' && timerLabelIssue(action.label) === null))
+    && (action.sound === undefined || Object.keys(timerSoundLabels).includes(String(action.sound)));
+
+  it('mirrors the closed sound set in order', () => {
+    expect(Object.keys(timerSoundLabels)).toEqual(fixture.timer_sounds);
+  });
+
+  it('agrees with the shared fixture on valid and invalid timers', () => {
+    const valid = fixture.valid.filter(action => action.type === 'timer');
+    expect(valid.length).toBeGreaterThan(0);
+    for (const action of valid) expect(timerAccepted(action), JSON.stringify(action)).toBe(true);
+    const invalid = (fixture.invalid as LooseTimer[]).filter(action => action.type === 'timer');
+    expect(invalid.length).toBeGreaterThan(5);
+    for (const action of invalid) expect(timerAccepted(action), JSON.stringify(action)).toBe(false);
+    // Never a multi-action step, on either side.
+    expect(stepActionTypes.map(([type]) => type)).not.toContain('timer');
+    expect((fixture.invalid as LooseTimer[]).some(action => action.type === 'multi_action' && action.actions?.some(step => step.type === 'timer'))).toBe(true);
+  });
+
+  it('flags labels the service rejects', () => {
+    for (const label of ['', 'Tea', 'Stream break — 5 min', '"; do shell script "id" `id` $(id)', 'é'.repeat(maxTimerLabelBytes / 2)]) {
+      expect(timerLabelIssue(label), label).toBeNull();
+    }
+    for (const label of [' ', ' lead', 'trail ', 'line\nbreak', 'tab\tx', 'rtl‮txt', 'zw​sp', 'x'.repeat(maxTimerLabelBytes + 1)]) {
+      expect(timerLabelIssue(label), JSON.stringify(label)).not.toBeNull();
+    }
+  });
+
+  it('labels timers with their duration and builds a valid default', () => {
+    expect(timerDuration(1)).toBe('0:01');
+    expect(timerDuration(300)).toBe('5:00');
+    expect(timerDuration(3661)).toBe('1:01:01');
+    expect(timerDuration(86_400)).toBe('24:00:00');
+    expect(actionLabel({ type: 'timer', seconds: 90, label: 'Tea' })).toBe('Timer 1:30 “Tea”');
+    expect(actionLabel(defaultTimerAction())).toBe('Timer 5:00');
+    expect(timerAccepted(defaultTimerAction() as LooseTimer)).toBe(true);
+  });
+});
 
 describe('action contract', () => {
   it('mirrors the Rust named-key allow-list in order', () => {

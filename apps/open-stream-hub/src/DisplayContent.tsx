@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowLeftRight, Camera, Folder, Globe, Keyboard, ListOrdered, Monitor, Play, Type, Undo2, Volume2, VolumeX } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, Camera, Folder, Globe, Keyboard, ListOrdered, Monitor, Play, Timer, Type, Undo2, Volume2, VolumeX } from 'lucide-react';
 import type { BindingAction, KeypadPage, KeypadSlot } from './contracts';
 import { actionLabel } from './ui-model';
 
@@ -6,7 +6,7 @@ export function ActionIcon({ action }: { action?: BindingAction }) {
   const Icon = action?.type === 'toggle_mute' ? VolumeX : action?.type === 'launch_app' ? Monitor :
     action?.type === 'volume' || action?.type === 'set_volume' || action?.type === 'volume_from_position' ? Volume2 :
     action?.type === 'open_url' ? Globe : action?.type === 'media' ? Play : action?.type === 'text' ? Type :
-    action?.type === 'multi_action' ? ListOrdered : action?.type === 'profile' ? ArrowLeftRight : action?.type === 'system' ? (action.command === 'screenshot' ? Camera : Undo2) : Keyboard;
+    action?.type === 'multi_action' ? ListOrdered : action?.type === 'profile' ? ArrowLeftRight : action?.type === 'timer' ? Timer : action?.type === 'system' ? (action.command === 'screenshot' ? Camera : Undo2) : Keyboard;
   return <Icon aria-hidden="true" />;
 }
 

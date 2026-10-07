@@ -1,4 +1,5 @@
-use crate::{Action, Binding, InputEvent, InputValue, Profile, ServiceModule};
+use crate::{Action, Binding, InputEvent, InputValue, Profile, ServiceModule, TimerAlert};
+use std::sync::{Arc, atomic::AtomicBool};
 
 /// Independently identified device attributes used when matching a binding.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +125,37 @@ impl BindingEngine {
 pub trait ActionDispatcher {
     /// Executes one action or reports failure without an implicit retry.
     fn dispatch(&mut self, action: &Action) -> Result<(), String>;
+
+    /// Shows the end of an expired `timer` countdown (notification and sound).
+    ///
+    /// `Ok(Some(warning))` reports an alert whose tools exited successfully
+    /// but printed a diagnostic, such as a notification macOS refused to show.
+    /// The countdown itself is owned by the service worker, never by a
+    /// dispatcher. The default refuses, so a dispatcher that does not opt in
+    /// never silently drops an alert.
+    fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        alert.validate()?;
+        Err("timer alerts are not supported by this dispatcher; nothing was shown or played".into())
+    }
+
+    /// A separate alerter that a service may move to its own thread, so slow
+    /// alerts (a sound plays for up to about 3 s) never delay later actions.
+    ///
+    /// The alerter must stop starting processes, and kill a running one, once
+    /// `cancel` is set; the caller sets it on a stop and at the end of the
+    /// session. `None`, the default, means alerts run inline through
+    /// [`ActionDispatcher::timer_alert`].
+    fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
+        let _ = cancel;
+        None
+    }
+}
+
+/// Runs timer alerts away from the action dispatcher; see
+/// [`ActionDispatcher::timer_alerter`].
+pub trait TimerAlerter: Send {
+    /// Same contract as [`ActionDispatcher::timer_alert`].
+    fn alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String>;
 }
 
 /// A dispatcher that validates and records actions without operating-system I/O.
@@ -131,6 +163,8 @@ pub trait ActionDispatcher {
 pub struct DryRunDispatcher {
     /// Validated actions in the order received.
     pub actions: Vec<Action>,
+    /// Validated timer alerts in the order received; nothing is shown or played.
+    pub timer_alerts: Vec<TimerAlert>,
 }
 
 impl ActionDispatcher for DryRunDispatcher {
@@ -138,6 +172,12 @@ impl ActionDispatcher for DryRunDispatcher {
         action.validate_executable()?;
         self.actions.push(action.clone());
         Ok(())
+    }
+
+    fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        alert.validate()?;
+        self.timer_alerts.push(alert.clone());
+        Ok(None)
     }
 }
 

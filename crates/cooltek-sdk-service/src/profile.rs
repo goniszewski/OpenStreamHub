@@ -190,6 +190,87 @@ pub enum ProfileDirection {
     Previous,
 }
 
+/// The end sound of a `timer`, from a closed set of macOS system sounds.
+///
+/// Each name maps to one fixed file under `/System/Library/Sounds`; a profile
+/// can never name a path. `none` plays nothing.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerSound {
+    /// `Basso.aiff`.
+    Basso,
+    /// `Blow.aiff`.
+    Blow,
+    /// `Bottle.aiff`.
+    Bottle,
+    /// `Frog.aiff`.
+    Frog,
+    /// `Funk.aiff`.
+    Funk,
+    /// `Glass.aiff`, the default when a timer names no sound.
+    Glass,
+    /// `Hero.aiff`.
+    Hero,
+    /// `Morse.aiff`.
+    Morse,
+    /// `Ping.aiff`.
+    Ping,
+    /// `Pop.aiff`.
+    Pop,
+    /// `Purr.aiff`.
+    Purr,
+    /// `Sosumi.aiff`.
+    Sosumi,
+    /// `Submarine.aiff`.
+    Submarine,
+    /// `Tink.aiff`.
+    Tink,
+    /// No sound; only the notification is shown.
+    None,
+}
+
+impl TimerSound {
+    /// Every sound in declaration order, `none` last.
+    pub const ALL: [Self; 15] = [
+        Self::Basso,
+        Self::Blow,
+        Self::Bottle,
+        Self::Frog,
+        Self::Funk,
+        Self::Glass,
+        Self::Hero,
+        Self::Morse,
+        Self::Ping,
+        Self::Pop,
+        Self::Purr,
+        Self::Sosumi,
+        Self::Submarine,
+        Self::Tink,
+        Self::None,
+    ];
+
+    /// The fixed system sound file, or `None` for [`TimerSound::None`].
+    pub fn path(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Basso => "/System/Library/Sounds/Basso.aiff",
+            Self::Blow => "/System/Library/Sounds/Blow.aiff",
+            Self::Bottle => "/System/Library/Sounds/Bottle.aiff",
+            Self::Frog => "/System/Library/Sounds/Frog.aiff",
+            Self::Funk => "/System/Library/Sounds/Funk.aiff",
+            Self::Glass => "/System/Library/Sounds/Glass.aiff",
+            Self::Hero => "/System/Library/Sounds/Hero.aiff",
+            Self::Morse => "/System/Library/Sounds/Morse.aiff",
+            Self::Ping => "/System/Library/Sounds/Ping.aiff",
+            Self::Pop => "/System/Library/Sounds/Pop.aiff",
+            Self::Purr => "/System/Library/Sounds/Purr.aiff",
+            Self::Sosumi => "/System/Library/Sounds/Sosumi.aiff",
+            Self::Submarine => "/System/Library/Sounds/Submarine.aiff",
+            Self::Tink => "/System/Library/Sounds/Tink.aiff",
+            Self::None => return None,
+        })
+    }
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -259,6 +340,48 @@ pub enum Action {
         /// Next or previous saved profile.
         direction: ProfileDirection,
     },
+    /// Start a countdown owned by the running service, or cancel it when the
+    /// same binding is pressed again while it runs. At expiry the host shows a
+    /// notification and plays the sound. Not allowed as a multi-action step.
+    Timer {
+        /// Countdown length in whole seconds, 1 to 86400 inclusive.
+        seconds: u32,
+        /// Optional notification text, validated like a dial function name.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// End sound; absent means [`TimerSound::Glass`].
+        #[serde(skip_serializing_if = "Option::is_none")]
+        sound: Option<TimerSound>,
+    },
+}
+
+/// Deserializes a present field as `Some`, so an explicit `null` is rejected
+/// instead of being read as absent (which would not round-trip).
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+/// Checks a `timer` label: nonempty, no leading or trailing whitespace, at
+/// most [`Action::MAX_TIMER_LABEL_BYTES`], and free of control and invisible
+/// characters (newlines included), so the notification shows what was reviewed.
+pub(crate) fn validate_timer_label(label: &str) -> Result<(), String> {
+    if label.trim().is_empty()
+        || label.trim() != label
+        || label.len() > Action::MAX_TIMER_LABEL_BYTES
+        || label
+            .chars()
+            .any(|c| c.is_control() || is_invisible_text_character(c))
+    {
+        return Err(format!(
+            "timer label must be nonempty, without leading or trailing whitespace, free of control and invisible characters, and at most {} bytes",
+            Action::MAX_TIMER_LABEL_BYTES
+        ));
+    }
+    Ok(())
 }
 
 /// Characters a `text` snippet must not contain beyond the control-character
@@ -416,6 +539,13 @@ impl<'de> Deserialize<'de> for Action {
             Profile {
                 direction: ProfileDirection,
             },
+            Timer {
+                seconds: u32,
+                #[serde(default, deserialize_with = "present")]
+                label: Option<String>,
+                #[serde(default, deserialize_with = "present")]
+                sound: Option<TimerSound>,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -430,6 +560,15 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
             Shape::Profile { direction } => Self::Profile { direction },
+            Shape::Timer {
+                seconds,
+                label,
+                sound,
+            } => Self::Timer {
+                seconds,
+                label,
+                sound,
+            },
         })
     }
 }
@@ -443,6 +582,12 @@ impl Action {
     pub const MIN_MULTI_ACTION_STEPS: usize = 2;
     /// Maximum number of `multi_action` steps.
     pub const MAX_MULTI_ACTION_STEPS: usize = 8;
+    /// Shortest `timer` countdown in seconds.
+    pub const MIN_TIMER_SECONDS: u32 = 1;
+    /// Longest `timer` countdown in seconds (24 hours).
+    pub const MAX_TIMER_SECONDS: u32 = 86_400;
+    /// Maximum `timer` label length in UTF-8 bytes.
+    pub const MAX_TIMER_LABEL_BYTES: usize = 64;
 
     /// The JSON `type` tag of this action, for diagnostics.
     pub fn type_name(&self) -> &'static str {
@@ -459,6 +604,7 @@ impl Action {
             Self::Text { .. } => "text",
             Self::MultiAction { .. } => "multi_action",
             Self::Profile { .. } => "profile",
+            Self::Timer { .. } => "timer",
         }
     }
 
@@ -543,10 +689,15 @@ impl Action {
                 }
                 for (index, step) in actions.iter().enumerate() {
                     // A profile switch stops the running service, so it
-                    // could never be followed by the remaining steps.
+                    // could never be followed by the remaining steps. A timer
+                    // toggles per binding, which a step does not have; the
+                    // official app refuses timers in multi-task lists too.
                     if matches!(
                         step,
-                        Self::MultiAction { .. } | Self::VolumeFromPosition | Self::Profile { .. }
+                        Self::MultiAction { .. }
+                            | Self::VolumeFromPosition
+                            | Self::Profile { .. }
+                            | Self::Timer { .. }
                     ) {
                         return Err(format!(
                             "multi_action step {}: {} cannot be a multi_action step",
@@ -558,6 +709,16 @@ impl Action {
                         .map_err(|error| format!("multi_action step {}: {error}", index + 1))?;
                 }
                 Ok(())
+            }
+            Self::Timer { seconds, label, .. } => {
+                if !(Self::MIN_TIMER_SECONDS..=Self::MAX_TIMER_SECONDS).contains(seconds) {
+                    return Err(format!(
+                        "timer seconds must be between {} and {}",
+                        Self::MIN_TIMER_SECONDS,
+                        Self::MAX_TIMER_SECONDS
+                    ));
+                }
+                label.as_deref().map_or(Ok(()), validate_timer_label)
             }
             Self::Volume { .. }
             | Self::SetVolume { .. }
@@ -1126,6 +1287,172 @@ mod tests {
         assert!(profile.validate().is_err());
     }
 
+    fn timer(seconds: u32, label: Option<&str>, sound: Option<TimerSound>) -> Action {
+        Action::Timer {
+            seconds,
+            label: label.map(str::to_owned),
+            sound,
+        }
+    }
+
+    #[test]
+    fn timer_actions_have_strict_bounded_round_trips() {
+        for (json, action) in [
+            (r#"{"type":"timer","seconds":1}"#, timer(1, None, None)),
+            (
+                r#"{"type":"timer","seconds":86400,"label":"Tea","sound":"submarine"}"#,
+                timer(86_400, Some("Tea"), Some(TimerSound::Submarine)),
+            ),
+            (
+                r#"{"type":"timer","seconds":300,"sound":"none"}"#,
+                timer(300, None, Some(TimerSound::None)),
+            ),
+            (
+                r#"{"type":"timer","seconds":5,"label":"\" & do shell script \"id\" `x` $(id)"}"#,
+                timer(5, Some("\" & do shell script \"id\" `x` $(id)"), None),
+            ),
+        ] {
+            let decoded: Action = serde_json::from_str(json).unwrap();
+            assert_eq!(decoded, action);
+            assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+            assert_eq!(decoded.type_name(), "timer");
+            decoded.validate_executable().unwrap();
+        }
+        for json in [
+            r#"{"type":"timer"}"#,
+            r#"{"type":"timer","seconds":0}"#,
+            r#"{"type":"timer","seconds":86401}"#,
+            r#"{"type":"timer","seconds":-1}"#,
+            r#"{"type":"timer","seconds":1.5}"#,
+            r#"{"type":"timer","seconds":"60"}"#,
+            r#"{"type":"timer","seconds":4294967296}"#,
+            r#"{"type":"timer","seconds":60,"minutes":1}"#,
+            r#"{"type":"timer","seconds":60,"label":null}"#,
+            r#"{"type":"timer","seconds":60,"sound":null}"#,
+            r#"{"type":"timer","seconds":60,"label":7}"#,
+            r#"{"type":"timer","seconds":60,"sound":"Glass"}"#,
+            r#"{"type":"timer","seconds":60,"sound":"Glass.aiff"}"#,
+            r#"{"type":"timer","seconds":60,"sound":"/System/Library/Sounds/Glass.aiff"}"#,
+            r#"{"type":"timer","seconds":60,"sound":"../../tmp/x"}"#,
+            r#"{"type":"timer","seconds":60,"sound":"beep"}"#,
+            r#"{"type":"timer","seconds":60,"label":""}"#,
+            r#"{"type":"timer","seconds":60,"label":"a\nb"}"#,
+        ] {
+            let rejected = serde_json::from_str::<Action>(json)
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable());
+            assert!(rejected.is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn timer_labels_follow_the_name_and_invisible_character_rules() {
+        let longest = "é".repeat(Action::MAX_TIMER_LABEL_BYTES / 2);
+        for valid in [
+            "Tea",
+            "Stream break — 5 min",
+            "zażółć 🎉",
+            "'quotes' \"and\" `ticks` $(sub)",
+            longest.as_str(),
+        ] {
+            assert!(timer(60, Some(valid), None).validate().is_ok(), "{valid:?}");
+        }
+        for invalid in [
+            String::new(),
+            " ".into(),
+            " lead".into(),
+            "trail ".into(),
+            "line\nbreak".into(),
+            "cr\rx".into(),
+            "tab\tx".into(),
+            "nul\0".into(),
+            "esc\u{1b}[31m".into(),
+            "rtl\u{202E}txt".into(),
+            "zw\u{200B}sp".into(),
+            "sep\u{2028}x".into(),
+            "bom\u{FEFF}".into(),
+            "x".repeat(Action::MAX_TIMER_LABEL_BYTES + 1),
+        ] {
+            assert!(
+                timer(60, Some(&invalid), None).validate().is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn timer_sounds_are_a_closed_set_of_fixed_system_files() {
+        let names: Vec<_> = TimerSound::ALL
+            .iter()
+            .map(|sound| serde_json::to_value(sound).unwrap())
+            .collect();
+        assert_eq!(names.len(), 15);
+        assert_eq!(names.last().unwrap(), "none");
+        for sound in TimerSound::ALL {
+            match sound.path() {
+                None => assert_eq!(sound, TimerSound::None),
+                Some(path) => {
+                    let name = serde_json::to_value(sound).unwrap();
+                    let name = name.as_str().unwrap();
+                    let expected = format!(
+                        "/System/Library/Sounds/{}{}.aiff",
+                        name[..1].to_uppercase(),
+                        &name[1..]
+                    );
+                    assert_eq!(path, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn timers_bind_to_discrete_controls_only_and_never_as_multi_action_steps() {
+        let error = Action::MultiAction {
+            actions: vec![Action::ToggleMute, timer(5, None, None)],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("step 2: timer cannot be a multi_action step"),
+            "{error}"
+        );
+        let mut profile = sample();
+        profile.bindings[0].action = timer(90, Some("Tea"), Some(TimerSound::Glass));
+        assert!(profile.validate().is_ok());
+        let encoded = serde_json::to_vec(&profile).unwrap();
+        assert_eq!(Profile::from_json(&encoded).unwrap(), profile);
+        profile.bindings[0].module = ServiceModule::M4315;
+        profile.bindings[0].gesture = Gesture::Pressed;
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(
+            profile.validate().is_err(),
+            "faders accept only volume_from_position"
+        );
+        let mut profile = sample();
+        profile.bindings[0].action = timer(0, None, None);
+        assert!(
+            profile
+                .validate()
+                .unwrap_err()
+                .starts_with("binding 0: timer seconds")
+        );
+    }
+
+    #[test]
+    fn dry_run_plans_timers_without_side_effects() {
+        use crate::{ActionDispatcher, DryRunDispatcher, TimerAlert};
+        let mut dispatcher = DryRunDispatcher::default();
+        let action = timer(5, Some("Tea"), None);
+        dispatcher.dispatch(&action).unwrap();
+        assert!(dispatcher.dispatch(&timer(0, None, None)).is_err());
+        let alert = TimerAlert::from_action(&action).unwrap();
+        dispatcher.timer_alert(&alert).unwrap();
+        assert_eq!(dispatcher.actions, [action]);
+        assert_eq!(dispatcher.timer_alerts, [alert]);
+    }
+
     #[test]
     fn open_url_accepts_only_bounded_http_urls_with_a_host() {
         for valid in [
@@ -1438,6 +1765,10 @@ mod tests {
         assert_eq!(
             names,
             NAMED_KEYS.iter().map(|(name, _)| *name).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            fixture["timer_sounds"],
+            serde_json::to_value(TimerSound::ALL).unwrap()
         );
         for json in fixture["valid"].as_array().unwrap() {
             let action: Action = serde_json::from_value(json.clone()).unwrap();

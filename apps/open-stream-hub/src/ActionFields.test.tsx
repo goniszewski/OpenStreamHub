@@ -67,6 +67,34 @@ describe('action fields', () => {
     expect(steps.match(/value="profile"/g)).toHaveLength(1);
   });
 
+  it('offers timers on keys and dials only, never on faders or as a multi-action step', () => {
+    expect(render(null)).toContain('value="timer"');
+    expect(render(null, true)).not.toContain('value="timer"');
+    const steps = render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] });
+    expect(steps.match(/value="timer"/g)).toHaveLength(1);
+  });
+
+  it('renders timer duration, optional label and the closed sound list', () => {
+    const markup = render({ type: 'timer', seconds: 90 });
+    expect(markup).toMatch(/<option value="timer" selected="">Timer<\/option>/);
+    expect(ids(markup)).toEqual(expect.arrayContaining(['timer-seconds', 'timer-label', 'timer-sound']));
+    expect(markup).toMatch(/id="timer-seconds"[^>]*min="1"[^>]*max="86400"/);
+    // Absent sound shows the service default.
+    expect(markup).toMatch(/<option value="glass" selected="">Glass<\/option>/);
+    expect(markup.match(/<option value="[a-z]+"[^>]*>/g)?.filter(option => /basso|blow|bottle|frog|funk|glass|hero|morse|ping|pop|purr|sosumi|submarine|tink|none/.test(option))).toHaveLength(15);
+    expect(markup).toContain('not shown on the key');
+    expect(markup).toContain('pressing the same control again cancels it');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const labelled = render({ type: 'timer', seconds: 5, label: 'Tea', sound: 'none' });
+    expect(labelled).toContain('value="Tea"');
+    expect(labelled).toMatch(/<option value="none" selected="">No sound<\/option>/);
+    const bad = render({ type: 'timer', seconds: 5, label: ' padded' });
+    expect(bad).toContain('aria-invalid="true"');
+    expect(bad).toContain('id="timer-label-error"');
+    expectAccessible(bad);
+  });
+
   it('renders ordered multi-action steps with unique ids and bounded add/remove', () => {
     const steps: StepAction[] = [{ type: 'volume', delta: 5 }, { type: 'shortcut', key: 'tab', modifiers: ['command'] }];
     const two = render({ type: 'multi_action', actions: steps });

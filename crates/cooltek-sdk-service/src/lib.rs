@@ -11,11 +11,12 @@ mod dial;
 mod input;
 mod keypad;
 mod profile;
+mod timer;
 
 pub mod display_sync;
 pub mod macos;
 
-pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher};
+pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
 pub use dial::{DialBinding, DialFunction, DialFunctionNavigation};
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use keypad::{
@@ -25,5 +26,6 @@ pub use keypad::{
 pub use macos::MacOsDispatcher;
 pub use profile::{
     Action, Binding, Gesture, MediaCommand, Modifier, Profile, ProfileDirection, ServiceModule,
-    SystemCommand, is_invisible_text_character,
+    SystemCommand, TimerSound, is_invisible_text_character,
 };
+pub use timer::{RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration};

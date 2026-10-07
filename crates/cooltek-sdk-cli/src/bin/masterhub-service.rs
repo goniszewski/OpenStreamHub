@@ -20,13 +20,14 @@ use cooltek_sdk_cli::{
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
     service_events::{
-        dial_function_details, emit, end_record, plan_report, process_work, start_record,
+        TimerCancelReason, cancel_timers, dial_function_details, emit, end_record, inline_alert,
+        plan_report, process_due_timers, process_work, start_record,
     },
 };
 use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
 use cooltek_sdk_service::{
     ActionDispatcher, DeviceContext, InputSession, Profile, ProfileSession, ServiceModule,
-    macos::MacOsDispatcher,
+    TimerAlert, TimerAlerter, TimerTable, macos::MacOsDispatcher,
 };
 use serde_json::json;
 
@@ -367,6 +368,22 @@ impl ActionDispatcher for Dispatcher {
             Self::MacOs(dispatcher) => dispatcher.dispatch(action),
         }
     }
+
+    fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        match self {
+            // Dry runs and replay log the expiry and show or play nothing.
+            Self::Preview => alert.validate().map(|()| None),
+            Self::MacOs(dispatcher) => dispatcher.timer_alert(alert),
+        }
+    }
+
+    fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
+        match self {
+            // Validation only is instant, so preview alerts stay inline.
+            Self::Preview => None,
+            Self::MacOs(dispatcher) => dispatcher.timer_alerter(cancel),
+        }
+    }
 }
 
 /// Plans a completed capture through the same report/event path as live runs.
@@ -393,9 +410,21 @@ fn replay(
         details["dial_functions"] = functions;
     }
     emit(output, start_record(&device, false, details))?;
+    // Replay runs countdowns on the capture's own timestamps: a timer expires
+    // before the first report at or after its deadline; the rest are cancelled
+    // when the capture ends. Expiry is logged only (preview dispatcher).
+    let mut timers = TimerTable::default();
     let result = (|| {
         while let Some(report) = reader.next_report()? {
             summary.report_count += 1;
+            process_due_timers(
+                &mut timers,
+                report.timestamp_micros,
+                output,
+                &never,
+                &mut summary,
+                inline_alert(&mut dispatcher),
+            )?;
             let raw = decode_hex(&report.raw_hex, MAX_REPORT_BYTES)?;
             let work = plan_report(
                 &mut input,
@@ -415,9 +444,17 @@ fn replay(
                 false,
                 false,
                 false,
+                &mut timers,
+                report.timestamp_micros,
                 &mut summary,
             )?;
         }
+        cancel_timers(
+            &mut timers,
+            TimerCancelReason::SessionEnd,
+            output,
+            &mut summary,
+        )?;
         let end = reader.end().ok_or("capture end missing")?;
         emit(
             output,

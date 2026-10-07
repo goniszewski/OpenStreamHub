@@ -5,6 +5,10 @@
     "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
     "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20"
   ],
+  "timer_sounds": [
+    "basso", "blow", "bottle", "frog", "funk", "glass", "hero", "morse", "ping", "pop",
+    "purr", "sosumi", "submarine", "tink", "none"
+  ],
   "valid": [
     {"type":"volume","delta":5},
     {"type":"set_volume","percent":63},
@@ -22,7 +26,10 @@
     {"type":"text","text":"Thanks for watching!\nSee you","press_enter":true},
     {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]},
     {"type":"profile","direction":"next"},
-    {"type":"profile","direction":"previous"}
+    {"type":"profile","direction":"previous"},
+    {"type":"timer","seconds":300},
+    {"type":"timer","seconds":1,"label":"Tea","sound":"glass"},
+    {"type":"timer","seconds":86400,"label":"Stream break \" `id` $(id)","sound":"none"}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -42,6 +49,21 @@
     {"type":"profile"},
     {"type":"profile","direction":"next","name":"Streaming"},
     {"type":"profile","name":"Streaming"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]}
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]},
+    {"type":"timer"},
+    {"type":"timer","seconds":0},
+    {"type":"timer","seconds":86401},
+    {"type":"timer","seconds":1.5},
+    {"type":"timer","seconds":60,"repeat":true},
+    {"type":"timer","seconds":60,"label":null},
+    {"type":"timer","seconds":60,"label":""},
+    {"type":"timer","seconds":60,"label":" padded"},
+    {"type":"timer","seconds":60,"label":"line\nbreak"},
+    {"type":"timer","seconds":60,"label":"rtl\u202etxt"},
+    {"type":"timer","seconds":60,"label":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+    {"type":"timer","seconds":60,"sound":"Glass"},
+    {"type":"timer","seconds":60,"sound":"/System/Library/Sounds/Glass.aiff"},
+    {"type":"timer","seconds":60,"sound":"beep"},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"timer","seconds":60}]}
   ]
 }

@@ -6,7 +6,7 @@ import sessionResults from '../fixtures/session-command-results.json';
 import sessionEvents from '../fixtures/session-state-events.json';
 import switchEvents from '../fixtures/session-switch-events.json';
 import profileActionEvents from '../fixtures/session-profile-action-events.json';
-import { findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord, unknownSnapshot } from './service-runner';
+import { countRecord, findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord, unknownSnapshot } from './service-runner';
 import type { ServiceRun } from './service-runner';
 import { stableStringify } from './draft-model';
 
@@ -48,6 +48,40 @@ describe('summarizeRecord dial functions', () => {
     expect(summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'volume', delta: 5 }, dial_function: { name: 'Volume', index: 0 } }, 1)?.text).toContain('[Volume]');
     expect(summarizeRecord({ type: 'event', status: 'dial_function', event, action: null, navigation: { from_function: 'Volume', to_function: 'Scroll', index: 1, count: 3 } }, 1)).toEqual({ kind: 'event', text: 'Dial function: Volume → Scroll (2/3)', at: 1 });
     expect(summarizeRecord({ type: 'action_executed', action: { type: 'toggle_mute' }, event, dial_function: { name: 'Scroll', index: 1 } }, 1)?.text).toContain(', Scroll)');
+  });
+});
+
+describe('summarizeRecord timers', () => {
+  const event = { control: 2, gesture: 'pressed' };
+  const action = { type: 'timer', seconds: 300, label_chars: 3, sound: 'ping' };
+  it('describes start, cancel, expiry and alert failure without any label text', () => {
+    expect(summarizeRecord({ type: 'timer_started', event, action, running_count: 1 }, 1)).toEqual({ kind: 'action', text: 'Started timer 5:00 (control 3 pressed).', at: 1 });
+    expect(summarizeRecord({ type: 'timer_cancelled', event, action, reason: 'pressed_again' }, 1)?.text).toBe('Cancelled timer 5:00 (pressed again).');
+    expect(summarizeRecord({ type: 'timer_cancelled', event: null, action, reason: 'stopped' }, 1)?.text).toBe('Cancelled timer 5:00 (run ended).');
+    expect(summarizeRecord({ type: 'timer_expired', action }, 1)?.text).toBe('Countdown ended: timer 5:00.');
+    expect(summarizeRecord({ type: 'timer_alert_failed', action, error: 'timer sound failed: x' }, 1)).toMatchObject({ kind: 'action_failed', text: 'Countdown alert failed (timer 5:00): timer sound failed: x' });
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action }, 1)?.text).toBe('control 3 pressed: planned timer 5:00');
+    expect(summarizeRecord({ type: 'timer_alert_warning', action, warning: 'timer notification may not have been shown: x' }, 1))
+      .toMatchObject({ kind: 'info', text: 'Countdown alert warning (timer 5:00): timer notification may not have been shown: x' });
+  });
+
+  it('counts timer presses as executed and failed alerts on their own, never as failed actions', () => {
+    const zero = { events: 0, planned: 0, executed: 0, failed: 0, timerAlertsFailed: 0 };
+    const records = [
+      { type: 'event', status: 'planned', event, action },
+      { type: 'timer_started', event, action },
+      { type: 'event', status: 'planned', event, action },
+      { type: 'timer_cancelled', event, action, reason: 'pressed_again' },
+      { type: 'timer_expired', action },
+      { type: 'timer_alert_failed', action, error: 'x' },
+      { type: 'timer_alert_warning', action, warning: 'y' },
+      { type: 'timer_cancelled', event: null, action, reason: 'session_end' },
+    ];
+    // Failed stays equal to service_end.failed_action_count (no action_failed here).
+    expect(records.reduce((counters, record) => countRecord(counters, record, true), zero)).toEqual({ events: 2, planned: 2, executed: 2, failed: 0, timerAlertsFailed: 1 });
+    // A dry run executes nothing, as for other actions; a failed alert still counts.
+    expect(records.reduce((counters, record) => countRecord(counters, record, false), zero)).toEqual({ events: 2, planned: 2, executed: 0, failed: 0, timerAlertsFailed: 1 });
+    expect(countRecord(zero, { type: 'action_failed', action, error: 'at most 8 timers can run at once; this timer was not started' }).failed).toBe(1);
   });
 });
 
@@ -106,7 +140,7 @@ describe('ServiceRunner', () => {
     expect(t.runner.getState().runs[t.id].counters.events).toBe(0);
     t.flush();
     const run = t.runner.getState().runs[t.id];
-    expect(run.counters).toEqual({ events: 2, planned: 1, executed: 1, failed: 1 });
+    expect(run.counters).toEqual({ events: 2, planned: 1, executed: 1, failed: 1, timerAlertsFailed: 0 });
     expect(run.entries).toHaveLength(4);
     await t.runner.stop(t.id);
     expect(t.calls.at(-1)).toEqual({ command: 'stop_service', args: { serviceId: t.id } });

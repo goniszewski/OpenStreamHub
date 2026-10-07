@@ -29,6 +29,9 @@ export interface ProfileCapabilities {
   multiAction: boolean;
   // A profile key (next/previous saved profile) is bound somewhere. It switches profiles in the app only.
   switchesProfile: boolean;
+  // A timer is bound somewhere: at its end the service shows a notification and plays a fixed system sound. Low risk,
+  // so it never raises the level, but Execute discloses it.
+  timers: boolean;
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   risk: RiskLevel;
@@ -95,7 +98,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     counts[kind] = (counts[kind] ?? 0) + 1;
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'media': case 'profile': break;
+      // timer shows a notification and plays a fixed system sound; its label is plain notification text.
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'media': case 'profile': case 'timer': break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
       case 'text': {
         const text = typeof action.text === 'string' ? action.text : '';
@@ -142,6 +146,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     urlOrigins: [...origins], apps: [...apps], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
+    timers: (counts.timer ?? 0) > 0,
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
@@ -227,6 +232,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.undoRedo) lines.push('Sends Undo or Redo to the focused app.');
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (counts.media) lines.push('Media controls are logged only; they do not run on this Mac.');
+  if (capabilities.timers) lines.push(`Runs countdown timers (${plural(counts.timer ?? 0, 'timer')} bound). When one ends, macOS shows a notification and plays a system sound. Pressing the same control again cancels it; stopping the run cancels them all.`);
   if (capabilities.switchesProfile) lines.push('Switches profile: a key moves this run to the next or previous saved profile. Actions then pause until you confirm the new profile.');
   if (!lines.length) lines.push('No actions are bound yet, so nothing will run until you add some.');
   return lines;

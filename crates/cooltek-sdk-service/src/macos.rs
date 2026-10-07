@@ -1,6 +1,8 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
-use crate::{Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand};
+use crate::{
+    Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand, TimerAlert, TimerAlerter,
+};
 use std::{
     sync::{
         Arc,
@@ -14,7 +16,24 @@ const OPEN: &str = "/usr/bin/open";
 const PBCOPY: &str = "/usr/bin/pbcopy";
 const PBPASTE: &str = "/usr/bin/pbpaste";
 const SCREENCAPTURE: &str = "/usr/sbin/screencapture";
+const AFPLAY: &str = "/usr/bin/afplay";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bound for the timer notification (`osascript` returns at once once the
+/// notification is posted).
+const TIMER_NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(3);
+/// Bound for the timer sound. The longest closed-set file (`Funk.aiff`) lasts
+/// 2.2 s and `afplay` takes about 2.9 s of wall time for it, so 6 s never cuts
+/// a sound short. Alerts run off the action worker, so this never delays actions.
+const TIMER_SOUND_TIMEOUT: Duration = Duration::from_secs(6);
+/// Fixed notification title of an expired timer.
+const TIMER_TITLE: &str = "Timer finished";
+/// Fixed AppleScript of the timer notification. Title and message arrive as
+/// `argv` items after `--`, so no profile text is ever part of the script.
+const TIMER_NOTIFICATION_SCRIPT: [&str; 3] = [
+    "on run argv",
+    "display notification (item 2 of argv) with title (item 1 of argv)",
+    "end run",
+];
 const OUTPUT_LIMIT: usize = 16 * 1024;
 /// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
 /// writing it before monitoring the child cannot block on a child that never reads.
@@ -130,6 +149,26 @@ impl MacOsDispatcher {
     }
 
     fn run_request(&mut self, request: ProcessRequest) -> Result<Vec<u8>, String> {
+        self.run_checked(request).map(|output| output.stdout)
+    }
+
+    /// [`Self::run_checked`] whose failure message gives only the size of
+    /// stderr, never its text, for tools that receive user text in argv.
+    fn run_quiet(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
+        self.run_checked_with(request, false)
+    }
+
+    /// Runs one bounded request and fails on a nonzero exit; the successful
+    /// output keeps stderr for callers that report diagnostics.
+    fn run_checked(&mut self, request: ProcessRequest) -> Result<ProcessOutput, String> {
+        self.run_checked_with(request, true)
+    }
+
+    fn run_checked_with(
+        &mut self,
+        request: ProcessRequest,
+        stderr_in_errors: bool,
+    ) -> Result<ProcessOutput, String> {
         let program = request.program;
         check_cancellation(self.runner.cancellation(), program)?;
         if request
@@ -139,8 +178,14 @@ impl MacOsDispatcher {
         {
             return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
         }
+        // Only the fixed timer constants of this module set their own bound.
+        let timeout = if request.timeout.is_zero() {
+            PROCESS_TIMEOUT
+        } else {
+            request.timeout
+        };
         let output = self.runner.run(&ProcessRequest {
-            timeout: PROCESS_TIMEOUT,
+            timeout,
             output_limit: OUTPUT_LIMIT,
             ..request
         })?;
@@ -154,11 +199,17 @@ impl MacOsDispatcher {
             let details = stderr.trim();
             return Err(if details.is_empty() {
                 format!("{program}: {}", output.status)
+            } else if !stderr_in_errors {
+                format!(
+                    "{program}: {} (stderr: {} bytes, not shown)",
+                    output.status,
+                    output.stderr.len()
+                )
             } else {
                 format!("{program}: {}: {details}", output.status)
             });
         }
-        Ok(output.stdout)
+        Ok(output)
     }
 
     fn apple_script(&mut self, script: String) -> Result<Vec<u8>, String> {
@@ -348,6 +399,14 @@ impl MacOsDispatcher {
                         .into(),
                 );
             }
+            Action::Timer { .. } => {
+                // The countdown belongs to the service worker (`process_work`),
+                // which calls `timer_alert` only when it ends.
+                return Err(
+                    "timer countdowns are run by the service worker, not the macOS backend; no action was taken"
+                        .into(),
+                );
+            }
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
@@ -422,6 +481,92 @@ impl ActionDispatcher for MacOsDispatcher {
         action.validate_executable()?;
         self.execute(action)
     }
+
+    /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
+    /// in its own subprocess that is killed and reaped on timeout or
+    /// cancellation. Both are attempted independently and their errors
+    /// combined; neither is retried. `osascript` exits 0 even when macOS
+    /// refuses the notification (for example "NSNotificationCenter connection
+    /// invalid"), so a successful run that printed to stderr is returned as a
+    /// fixed-category warning. Neither warnings nor errors ever contain stderr
+    /// text, which could echo the label.
+    fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        alert.validate()?;
+        let mut args = Vec::new();
+        for line in TIMER_NOTIFICATION_SCRIPT {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        // `--` ends osascript's options; the fixed title comes first, so the
+        // message is never read as an option even if it starts with `-`.
+        args.extend(["--".to_string(), TIMER_TITLE.to_string(), alert.message()]);
+        let notification = self
+            .run_quiet(ProcessRequest {
+                program: OSASCRIPT,
+                args,
+                env: UTF8_ENV,
+                timeout: TIMER_NOTIFICATION_TIMEOUT,
+                ..ProcessRequest::default()
+            })
+            .map(|output| notification_warning(&output.stderr))
+            .map_err(|error| format!("timer notification failed: {error}"));
+        let sound = match alert.sound.path() {
+            None => Ok(()),
+            Some(path) => self
+                .run_quiet(ProcessRequest {
+                    program: AFPLAY,
+                    args: vec![path.to_string()],
+                    timeout: TIMER_SOUND_TIMEOUT,
+                    ..ProcessRequest::default()
+                })
+                .map(drop)
+                .map_err(|error| format!("timer sound failed: {error}")),
+        };
+        match (notification, sound) {
+            (Ok(warning), Ok(())) => Ok(warning),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(notification), Err(sound)) => Err(format!("{notification}; {sound}")),
+        }
+    }
+
+    /// A second system dispatcher cancelled by `cancel`, for an alert thread.
+    fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
+        Some(Box::new(MacOsDispatcher {
+            runner: self.runner.fork(cancel)?,
+            sleeper: Box::new(SystemSleeper),
+        }))
+    }
+}
+
+impl TimerAlerter for MacOsDispatcher {
+    fn alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        self.timer_alert(alert)
+    }
+}
+
+/// Classifies the stderr of a notification that exited 0 into a fixed
+/// warning. No stderr text is ever returned: a tool could echo the label in
+/// some altered form (case, whitespace, normalization, invisible characters)
+/// that no redaction reliably catches, so only a known marker is recognized
+/// and anything else is reported by its byte count.
+fn notification_warning(stderr: &[u8]) -> Option<String> {
+    const UNAVAILABLE: &[u8] = b"NSNotificationCenter connection invalid";
+    if stderr.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    let category = if stderr
+        .windows(UNAVAILABLE.len())
+        .any(|window| window == UNAVAILABLE)
+    {
+        "notification service unavailable (NSNotificationCenter connection invalid)".to_string()
+    } else {
+        format!(
+            "the notification tool wrote to stderr ({} bytes)",
+            stderr.len()
+        )
+    };
+    Some(format!(
+        "timer notification may not have been shown: {category}"
+    ))
 }
 
 /// Builds a System Events keystroke from a validated key. A literal key is one
@@ -540,10 +685,24 @@ trait ProcessRunner: Send {
     fn cancellation(&self) -> Option<&AtomicBool> {
         None
     }
+
+    /// An independent system runner cancelled by `cancellation`, if supported.
+    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
+        let _ = cancellation;
+        None
+    }
 }
 
 struct SystemProcessRunner {
     cancellation: Option<Arc<AtomicBool>>,
+}
+
+impl SystemProcessRunner {
+    fn fork_runner(cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
+        Some(Box::new(Self {
+            cancellation: Some(cancellation),
+        }))
+    }
 }
 
 fn check_cancellation(cancellation: Option<&AtomicBool>, program: &str) -> Result<(), String> {
@@ -563,6 +722,10 @@ impl ProcessRunner for SystemProcessRunner {
 
     fn cancellation(&self) -> Option<&AtomicBool> {
         self.cancellation.as_deref()
+    }
+
+    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
+        Self::fork_runner(cancellation)
     }
 }
 
@@ -600,6 +763,10 @@ impl ProcessRunner for SystemProcessRunner {
 
     fn cancellation(&self) -> Option<&AtomicBool> {
         self.cancellation.as_deref()
+    }
+
+    fn fork(&self, cancellation: Arc<AtomicBool>) -> Option<Box<dyn ProcessRunner>> {
+        Self::fork_runner(cancellation)
     }
 }
 
@@ -1468,6 +1635,318 @@ mod tests {
             assert!(error.contains("no action was taken"));
         }
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    fn alert(label: Option<&str>, sound: crate::TimerSound) -> TimerAlert {
+        TimerAlert {
+            seconds: 300,
+            label: label.map(str::to_owned),
+            sound,
+        }
+    }
+
+    #[test]
+    fn timer_presses_never_reach_the_host() {
+        let (mut dispatcher, state) = fake(vec![]);
+        let error = dispatcher
+            .dispatch(&Action::Timer {
+                seconds: 5,
+                label: None,
+                sound: None,
+            })
+            .unwrap_err();
+        assert!(error.contains("service worker"), "{error}");
+        assert!(error.contains("no action was taken"));
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn timer_alert_passes_hostile_labels_only_as_argv_after_a_fixed_script() {
+        for label in [
+            "\" & do shell script \"id\" & \"",
+            "`id` $(id) ${HOME}",
+            "'; quit; '",
+            "-e display dialog \"x\"",
+            "--",
+            "end run",
+            "zażółć 🎉 \\\"",
+        ] {
+            let (mut dispatcher, state) = fake(vec![success(""), success("")]);
+            dispatcher
+                .timer_alert(&alert(Some(label), crate::TimerSound::Ping))
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 2);
+            let notification = &state.requests[0];
+            assert_eq!(notification.program, OSASCRIPT);
+            assert_eq!(
+                args(notification),
+                [
+                    "-e",
+                    "on run argv",
+                    "-e",
+                    "display notification (item 2 of argv) with title (item 1 of argv)",
+                    "-e",
+                    "end run",
+                    "--",
+                    "Timer finished",
+                    label,
+                ],
+                "{label:?}"
+            );
+            // The script lines are the fixed constants; the label is only the last item.
+            assert_eq!(
+                notification.args[..6]
+                    .iter()
+                    .filter(|arg| *arg != "-e")
+                    .collect::<Vec<_>>(),
+                TIMER_NOTIFICATION_SCRIPT
+            );
+            assert_eq!(notification.args.last().unwrap(), label);
+            assert_eq!(notification.stdin, None);
+            assert_eq!(notification.timeout, TIMER_NOTIFICATION_TIMEOUT);
+            let sound = &state.requests[1];
+            assert_eq!(sound.program, AFPLAY);
+            assert_eq!(args(sound), ["/System/Library/Sounds/Ping.aiff"]);
+            assert_eq!(sound.timeout, TIMER_SOUND_TIMEOUT);
+        }
+    }
+
+    #[test]
+    fn timer_alert_labels_with_line_breaks_or_invisible_characters_never_start_processes() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for label in [
+            "a\nb",
+            "a\rb",
+            "\u{202E}gnp.exe",
+            "tab\there",
+            " padded",
+            "",
+        ] {
+            assert!(
+                dispatcher
+                    .timer_alert(&alert(Some(label), crate::TimerSound::Glass))
+                    .is_err(),
+                "{label:?}"
+            );
+        }
+        let mut too_long = alert(None, crate::TimerSound::Glass);
+        too_long.seconds = 0;
+        assert!(dispatcher.timer_alert(&too_long).is_err());
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn timer_alert_without_label_or_sound_uses_fixed_text_and_no_player() {
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher
+            .timer_alert(&alert(None, crate::TimerSound::None))
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 1);
+        assert_eq!(
+            args(&state.requests[0])[6..],
+            ["--", "Timer finished", "5:00 countdown ended"]
+        );
+    }
+
+    #[test]
+    fn every_timer_sound_maps_to_a_fixed_system_file() {
+        for sound in crate::TimerSound::ALL {
+            let (mut dispatcher, state) = fake(vec![success(""), success("")]);
+            dispatcher.timer_alert(&alert(None, sound)).unwrap();
+            let state = state.lock().unwrap();
+            match sound.path() {
+                None => assert_eq!(state.requests.len(), 1),
+                Some(path) => {
+                    assert!(path.starts_with("/System/Library/Sounds/") && path.ends_with(".aiff"));
+                    assert_eq!(state.requests[1].program, AFPLAY);
+                    assert_eq!(args(&state.requests[1]), [path]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn timer_alert_timeouts_are_reported_and_the_sound_is_still_attempted() {
+        let (mut dispatcher, state) = fake(vec![
+            Err("/usr/bin/osascript: subprocess timed out after 3000 ms; action may already have taken effect".into()),
+            failure("afplay: cannot open file"),
+        ]);
+        let error = dispatcher
+            .timer_alert(&alert(Some("Tea"), crate::TimerSound::Hero))
+            .unwrap_err();
+        assert!(error.starts_with("timer notification failed: "), "{error}");
+        assert!(error.contains("timed out after 3000 ms"));
+        assert!(error.contains("timer sound failed: "));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 2, "no retry");
+        assert_eq!(state.requests[0].timeout, TIMER_NOTIFICATION_TIMEOUT);
+        assert_eq!(state.requests[1].timeout, TIMER_SOUND_TIMEOUT);
+    }
+
+    #[test]
+    fn the_sound_bound_leaves_room_for_the_longest_system_sound() {
+        // Funk.aiff, the longest closed-set file, takes about 2.9 s of afplay
+        // wall time; the bound must not cut it short.
+        assert!(TIMER_SOUND_TIMEOUT >= Duration::from_secs(6));
+        assert!(TIMER_NOTIFICATION_TIMEOUT <= PROCESS_TIMEOUT);
+    }
+
+    fn warning_for(label: &str, stderr: Vec<u8>) -> Option<String> {
+        let (mut dispatcher, _) = fake(vec![
+            Ok(ProcessOutput {
+                success: true,
+                status: "exit status: 0".into(),
+                stdout: Vec::new(),
+                stderr,
+            }),
+            success(""),
+        ]);
+        dispatcher
+            .timer_alert(&alert(Some(label), crate::TimerSound::Glass))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_notification_warning_is_a_fixed_category_that_never_contains_stderr_text() {
+        let label = "secret café";
+        let unavailable = "timer notification may not have been shown: notification service unavailable (NSNotificationCenter connection invalid)";
+        // Every way a tool could echo the label back must be reduced to a category.
+        let echoes = [
+            "secret café".to_string(),
+            "secret\tcafé".into(),
+            "secret\ncafé".into(),
+            "secret  café".into(),
+            "secret\u{200B}café".into(),
+            "SECRET CAFÉ".into(),
+            "secret cafe\u{301}".into(),
+            "s\u{202E}éfac terces".into(),
+            "\u{1b}[31msecret café\u{1b}[0m".into(),
+        ];
+        for echo in &echoes {
+            for (stderr, expected) in [
+                (
+                    format!("osascript[1] NSNotificationCenter connection invalid for {echo}\n"),
+                    unavailable.to_string(),
+                ),
+                (
+                    format!("error: {echo}\n"),
+                    format!(
+                        "timer notification may not have been shown: the notification tool wrote to stderr ({} bytes)",
+                        format!("error: {echo}\n").len()
+                    ),
+                ),
+            ] {
+                let warning = warning_for(label, stderr.into_bytes()).unwrap();
+                assert_eq!(warning, expected, "{echo:?}");
+                for piece in ["secret", "SECRET", "caf", "CAF", "terces"] {
+                    assert!(!warning.contains(piece), "{echo:?} leaked {piece}");
+                }
+            }
+        }
+        // Hostile stderr: bidi controls, non-UTF-8 bytes, near the output limit.
+        let mut hostile = b"\xff\xfe\x80 \xe2\x80\xae".to_vec();
+        hostile.extend(std::iter::repeat_n(b'x', OUTPUT_LIMIT - 16));
+        let warning = warning_for(label, hostile.clone()).unwrap();
+        assert_eq!(
+            warning,
+            format!(
+                "timer notification may not have been shown: the notification tool wrote to stderr ({} bytes)",
+                hostile.len()
+            )
+        );
+        assert!(warning.is_ascii());
+        // The category is found even in non-UTF-8 output.
+        let mut mixed = b"\xff".to_vec();
+        mixed.extend(b"NSNotificationCenter connection invalid\x80");
+        assert_eq!(warning_for(label, mixed).unwrap(), unavailable);
+        // A failing tool's stderr never reaches the error either.
+        let (mut dispatcher, _) = fake(vec![
+            failure("execution error: Can’t get \"SECRET CAFÉ\". (-1728)"),
+            failure("afplay: secret\tcafé"),
+        ]);
+        let error = dispatcher
+            .timer_alert(&alert(Some(label), crate::TimerSound::Glass))
+            .unwrap_err();
+        assert!(error.contains("stderr: "), "{error}");
+        for piece in ["secret", "SECRET", "caf", "CAF"] {
+            assert!(!error.contains(piece), "{error}");
+        }
+        // Whitespace-only stderr is no warning.
+        let (mut dispatcher, _) = fake(vec![
+            Ok(ProcessOutput {
+                success: true,
+                status: "exit status: 0".into(),
+                stdout: Vec::new(),
+                stderr: b" \n\t".to_vec(),
+            }),
+            success(""),
+        ]);
+        assert_eq!(
+            dispatcher
+                .timer_alert(&alert(None, crate::TimerSound::Glass))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_alerter_is_cancelled_by_its_own_flag() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut dispatcher = MacOsDispatcher::with_cancellation(Arc::new(AtomicBool::new(false)));
+        let mut alerter = dispatcher
+            .timer_alerter(cancel.clone())
+            .expect("system runner forks");
+        cancel.store(true, Ordering::Release);
+        let error = alerter
+            .alert(&alert(Some("Tea"), crate::TimerSound::Glass))
+            .unwrap_err();
+        assert!(error.contains("action execution cancelled"), "{error}");
+        // Test runners cannot fork, so their alerts stay inline.
+        let (mut fake_dispatcher, _) = fake(vec![]);
+        assert!(fake_dispatcher.timer_alerter(cancel).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cancellation_kills_and_reaps_a_running_child_within_the_budget() {
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let mut runner = SystemProcessRunner {
+            cancellation: Some(cancellation.clone()),
+        };
+        let flag = cancellation.clone();
+        let stopper = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Release);
+        });
+        let started = std::time::Instant::now();
+        // Stands in for a long afplay: only the cancellation can end it early.
+        let error = runner
+            .run(&ProcessRequest {
+                program: "/bin/sleep",
+                args: vec!["30".into()],
+                timeout: TIMER_SOUND_TIMEOUT,
+                output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
+            })
+            .err()
+            .unwrap();
+        stopper.join().unwrap();
+        assert!(error.contains("action execution cancelled"), "{error}");
+        assert!(!error.contains("cleanup failed"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn cancelled_timer_alerts_start_no_process() {
+        let mut dispatcher = MacOsDispatcher::with_cancellation(Arc::new(AtomicBool::new(true)));
+        let error = dispatcher
+            .timer_alert(&alert(Some("Tea"), crate::TimerSound::Glass))
+            .unwrap_err();
+        assert!(error.contains("timer notification failed"));
+        assert!(error.contains("timer sound failed"));
+        assert!(error.contains("action execution cancelled"));
     }
 
     #[test]

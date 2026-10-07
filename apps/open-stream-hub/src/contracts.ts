@@ -7,6 +7,9 @@ export type MediaCommand = 'play_pause' | 'next_track' | 'previous_track' | 'sto
 export type SystemCommand = 'undo' | 'redo' | 'screenshot';
 // The neighbouring saved profile a 'profile' action asks for. The OpenStreamHub session manager resolves it.
 export type ProfileDirection = 'next' | 'previous';
+// End sound of a 'timer' action: a closed set of macOS system sounds (TimerSound in profile.rs). Absent means glass.
+export type TimerSound = 'basso' | 'blow' | 'bottle' | 'frog' | 'funk' | 'glass' | 'hero' | 'morse' | 'ping' | 'pop'
+  | 'purr' | 'sosumi' | 'submarine' | 'tink' | 'none';
 // One step of a multi_action: any executable action except another multi_action.
 export type StepAction =
   | { type: 'volume'; delta: number }
@@ -25,6 +28,8 @@ export type BindingAction =
   | { type: 'multi_action'; actions: StepAction[] }
   // Never a multi_action step: the switch stops the running service, so later steps could not run.
   | { type: 'profile'; direction: ProfileDirection }
+  // A countdown in the running service; pressing the same binding again cancels it. Never a multi_action step.
+  | { type: 'timer'; seconds: number; label?: string; sound?: TimerSound }
   | { type: 'volume_from_position' };
 export type Action = Exclude<BindingAction, { type: 'volume_from_position' }>;
 export interface Binding {

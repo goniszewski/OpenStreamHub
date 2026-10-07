@@ -32,7 +32,7 @@ and sleep/wake recovery still require hardware validation.**
 | --- | --- |
 | Device support | Recognition of both USB ID generations and input decoding for all five control modules |
 | Displays and sessions | Explicit IPS mode controls, firmware queries, descriptor-sized JPEG packets for both IPS modules, and session lifecycle hooks |
-| Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, and app actions |
+| Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, and app actions, plus [countdown timers](docs/masterhub-actions.md#countdown-timer-timer) that end with a notification and a system sound (not shown on the key) |
 | Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
 | Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
 

@@ -26,12 +26,13 @@
 
 use crate::dial_artwork::DialArtwork;
 use crate::service_events::{
-    PlannedEvent, Work, dial_function_details, emit, end_record, plan_report, process_work,
+    PlannedEvent, TimerCancelReason, Work, cancel_timers, dial_function_details, emit, end_record,
+    log_alert_outcome, plan_report, process_due_timers, process_work,
 };
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, DeviceContext, Gesture, InputSession, ProfileResolution,
-    ProfileSession, ServiceModule,
+    ProfileSession, ServiceModule, TimerTable,
     display_sync::{
         ApplyReport, DialImageRequest, DisplayCapabilities, DisplaySink, DisplaySync,
         DisplayTarget, KeyImageProvider, SinkError,
@@ -55,6 +56,8 @@ pub const MAX_PENDING_EVENTS: usize = 256;
 const PENDING_POLL_MS: i32 = 5;
 /// Error reported when the worker panics while building resources or dispatching.
 const WORKER_PANIC: &str = "action worker panicked; action outcome may be unknown";
+/// Longest wait between expiry checks while a countdown runs and no input arrives.
+const TIMER_POLL: Duration = Duration::from_millis(250);
 /// Error reported when the input loop panics; cleanup still runs.
 const INPUT_PANIC: &str = "input loop panicked";
 /// Error reported when the coordinator panics after the input loop; the
@@ -137,6 +140,18 @@ pub struct LiveSummary {
     /// `profile` actions reported as a switch request or as unavailable;
     /// never dispatched, so not in `action_count`.
     pub profile_request_count: u64,
+    /// `timer` presses that started a countdown (counted in `action_count`).
+    pub timer_started_count: u64,
+    /// Countdowns cancelled by a second press or by the end of the session.
+    pub timer_cancelled_count: u64,
+    /// Countdowns that ran to the end.
+    pub timer_expired_count: u64,
+    /// Expired countdowns whose notification or sound failed, or was skipped
+    /// because the session stopped first.
+    pub timer_alert_failed_count: u64,
+    /// Expired countdowns whose notification tool succeeded but reported a
+    /// problem, such as a notification macOS refused to show.
+    pub timer_alert_warning_count: u64,
     /// Display syncs attempted; always 0 without [`LiveDisplay`].
     pub display_sync_count: u64,
     /// Display syncs that failed to plan or apply, or left any key unwritten.
@@ -1586,6 +1601,14 @@ where
     }
     let _ = ready.send(Ok(()));
     let mut display_records = display_records;
+    // Countdowns live only in this worker: they are polled between work items,
+    // never block the input thread, and are cancelled when the queue closes.
+    // Their alerts run on a separate alert thread when the dispatcher offers
+    // one, so a playing sound never delays the next action.
+    let mut timers = TimerTable::default();
+    let mut alerts = Alerts::Unstarted;
+    let origin = Instant::now();
+    let now = || u64::try_from(origin.elapsed().as_micros()).unwrap_or(u64::MAX);
     loop {
         if let Some(records) = &display_records
             && let Err(error) = log_display_records(records, &mut output)
@@ -1595,9 +1618,58 @@ where
             abort.store(true, Ordering::SeqCst);
             display_records = None;
         }
-        let work = match &display_records {
-            // Poll so display records are logged while no input arrives.
-            Some(_) => match receiver.recv_timeout(Duration::from_millis(20)) {
+        alerts.observe_stop(&abort);
+        if let Err(error) = alerts.log_results(&mut output, &mut outcome.summary) {
+            outcome.error = combine_errors(outcome.error.take(), Some(error));
+            abort.store(true, Ordering::SeqCst);
+        }
+        if !timers.is_empty() {
+            let expired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                if abort.load(Ordering::SeqCst) {
+                    // Stopped: nothing expires or plays any more.
+                    return cancel_timers(
+                        &mut timers,
+                        TimerCancelReason::Stopped,
+                        &mut output,
+                        &mut outcome.summary,
+                    );
+                }
+                process_due_timers(
+                    &mut timers,
+                    now(),
+                    &mut output,
+                    &abort,
+                    &mut outcome.summary,
+                    |timer, alert, output, summary| {
+                        alerts.submit(&mut dispatcher, &abort, timer, alert, output, summary)
+                    },
+                )
+            }))
+            .unwrap_or_else(|_| Err(WORKER_PANIC.to_owned()));
+            if let Err(error) = expired {
+                outcome.error = combine_errors(outcome.error.take(), Some(error));
+                abort.store(true, Ordering::SeqCst);
+            }
+        }
+        // Poll while display records, countdowns or alert results are pending;
+        // otherwise block.
+        let polling = display_records.is_some() || alerts.pending() > 0;
+        let wait = match (polling, timers.next_deadline()) {
+            (false, None) => None,
+            (display, deadline) => {
+                let mut wait = if display {
+                    Duration::from_millis(20)
+                } else {
+                    TIMER_POLL
+                };
+                if let Some(deadline) = deadline {
+                    wait = wait.min(Duration::from_micros(deadline.saturating_sub(now())));
+                }
+                Some(wait.max(Duration::from_millis(1)))
+            }
+        };
+        let work = match wait {
+            Some(wait) => match receiver.recv_timeout(wait) {
                 Ok(work) => work,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1620,6 +1692,8 @@ where
                 execute,
                 stop_on_action_error,
                 profile_switch_requests,
+                &mut timers,
+                now(),
                 &mut outcome.summary,
             )
         }))
@@ -1629,6 +1703,20 @@ where
             abort.store(true, Ordering::SeqCst);
         }
     }
+    // The queue closed: no countdown survives the session.
+    let reason = if abort.load(Ordering::SeqCst) {
+        TimerCancelReason::Stopped
+    } else {
+        TimerCancelReason::SessionEnd
+    };
+    if let Err(error) = cancel_timers(&mut timers, reason, &mut output, &mut outcome.summary) {
+        outcome.error = combine_errors(outcome.error.take(), Some(error));
+    }
+    // Queued alerts are skipped; a stop kills the one in flight at once, a
+    // normal end after ALERT_GRACE. The thread is then joined.
+    if let Err(error) = alerts.finish(&mut output, &mut outcome.summary, &abort) {
+        outcome.error = combine_errors(outcome.error.take(), Some(error));
+    }
     // The display thread has stopped (or was detached) before the queue closed.
     if let Some(records) = &display_records
         && let Err(error) = log_display_records(records, &mut output)
@@ -1637,6 +1725,330 @@ where
     }
     outcome.output = Some(output);
     outcome
+}
+
+/// Most timer alerts submitted to the alert thread and not yet reported back
+/// (queued, in flight, or finished but unlogged). Equal to the timer limit.
+const ALERT_LIMIT: usize = TimerTable::MAX_RUNNING;
+/// How long a running alert may go on after a normal end of input (a
+/// duration or report limit) before it is stopped like on a Stop. Most sounds
+/// end within it; the end of a session never waits for a whole alert.
+const ALERT_GRACE: Duration = Duration::from_secs(2);
+/// How long to wait for the alert thread once its alert was stopped: killing
+/// and reaping a subprocess takes at most about 1 s.
+const ALERT_KILL_WAIT: Duration = Duration::from_secs(3);
+/// `timer_alert_failed` error for an alert that never started after a stop.
+const ALERT_SKIPPED: &str = "the session stopped before the alert ran; nothing was shown or played";
+/// `timer_alert_failed` error for an alert that never started after a normal end.
+const ALERT_SKIPPED_AT_END: &str =
+    "the session ended before the alert ran; nothing was shown or played";
+/// `timer_alert_failed` error for a running alert stopped by a Stop.
+const ALERT_STOPPED: &str = "the session stopped while the alert ran; it was cut off";
+/// `timer_alert_failed` error for a running alert stopped at a normal end.
+const ALERT_ENDED: &str = "the session ended while the alert ran; it was cut off";
+/// `timer_alert_failed` error when [`ALERT_LIMIT`] alerts are already pending.
+const ALERT_QUEUE_FULL: &str = "too many timer alerts are pending; nothing was shown or played";
+/// `timer_alert_failed` error for an alert whose thread did not report back.
+const ALERT_UNKNOWN: &str = "alert outcome unknown: the timer alert thread did not stop";
+
+/// Where expired timers' alerts run, chosen at the first expiry.
+enum Alerts {
+    Unstarted,
+    /// Through `ActionDispatcher::timer_alert` on the worker (dispatchers
+    /// without a separate alerter: dry runs and tests; instant).
+    Inline,
+    Thread(AlertThread),
+    /// The alert thread could not start: every alert is logged as failed and
+    /// the session goes on.
+    Failed(String),
+}
+
+impl Alerts {
+    fn submit<D: ActionDispatcher, W: Write>(
+        &mut self,
+        dispatcher: &mut D,
+        abort: &Arc<AtomicBool>,
+        timer: &cooltek_sdk_service::RunningTimer,
+        alert: cooltek_sdk_service::TimerAlert,
+        output: &mut W,
+        summary: &mut LiveSummary,
+    ) -> Result<(), String> {
+        if matches!(self, Self::Unstarted) {
+            let kill = Arc::new(AtomicBool::new(abort.load(Ordering::SeqCst)));
+            *self = match dispatcher.timer_alerter(Arc::clone(&kill)) {
+                Some(alerter) => {
+                    Self::started(AlertThread::spawn(alerter, kill, Arc::clone(abort)))
+                }
+                None => Self::Inline,
+            };
+        }
+        let outcome = match self {
+            Self::Thread(thread) => match thread.submit(timer, alert) {
+                Ok(()) => return Ok(()),
+                Err(error) => Err(error),
+            },
+            Self::Failed(error) => Err(format!("{error}; nothing was shown or played")),
+            _ => dispatcher.timer_alert(&alert),
+        };
+        log_alert_outcome(output, &timer.key, &timer.action, outcome, summary)
+    }
+
+    /// A started alert thread, or the reason it could not start.
+    fn started(spawned: Result<AlertThread, String>) -> Self {
+        match spawned {
+            Ok(thread) => Self::Thread(thread),
+            Err(error) => Self::Failed(error),
+        }
+    }
+
+    /// Kills a running alert as soon as the worker sees the stop flag.
+    fn observe_stop(&self, abort: &AtomicBool) {
+        if let Self::Thread(thread) = self
+            && abort.load(Ordering::SeqCst)
+        {
+            thread.kill.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn pending(&self) -> usize {
+        match self {
+            Self::Thread(thread) => thread.pending.len(),
+            _ => 0,
+        }
+    }
+
+    fn log_results<W: Write>(
+        &mut self,
+        output: &mut W,
+        summary: &mut LiveSummary,
+    ) -> Result<(), String> {
+        match self {
+            Self::Thread(thread) => thread.log_results(output, summary),
+            _ => Ok(()),
+        }
+    }
+
+    fn finish<W: Write>(
+        &mut self,
+        output: &mut W,
+        summary: &mut LiveSummary,
+        abort: &AtomicBool,
+    ) -> Result<(), String> {
+        match self {
+            Self::Thread(thread) => thread.finish(output, summary, abort),
+            _ => Ok(()),
+        }
+    }
+}
+
+struct AlertJob {
+    timer: cooltek_sdk_service::RunningTimer,
+    alert: cooltek_sdk_service::TimerAlert,
+}
+
+struct AlertDone {
+    timer: cooltek_sdk_service::RunningTimer,
+    outcome: Result<Option<String>, String>,
+}
+
+/// One thread per session that runs timer alerts in order, so a playing
+/// sound never blocks the action worker. Its alerter is cancelled by `kill`,
+/// which the worker sets as soon as it sees the stop flag, and at the end of
+/// the session after [`ALERT_GRACE`]: a running subprocess is then killed and
+/// reaped, and no alert starts once the session stops or ends. Only the
+/// worker writes records: results come back over a channel and are logged by it.
+struct AlertThread {
+    jobs: Option<SyncSender<AlertJob>>,
+    done: Receiver<AlertDone>,
+    /// Set at the end of the session: queued alerts are skipped.
+    closing: Arc<AtomicBool>,
+    /// The alerter's cancellation flag.
+    kill: Arc<AtomicBool>,
+    /// Submitted alerts not yet reported back, in submission (= result) order.
+    pending: std::collections::VecDeque<cooltek_sdk_service::RunningTimer>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl AlertThread {
+    fn spawn(
+        mut alerter: Box<dyn cooltek_sdk_service::TimerAlerter>,
+        kill: Arc<AtomicBool>,
+        abort: Arc<AtomicBool>,
+    ) -> Result<Self, String> {
+        let (jobs, job_rx) = mpsc::sync_channel::<AlertJob>(ALERT_LIMIT);
+        // At most ALERT_LIMIT results are ever outstanding, so sends never block.
+        let (done_tx, done) = mpsc::sync_channel(ALERT_LIMIT);
+        let closing = Arc::new(AtomicBool::new(false));
+        let (stop, killed) = (Arc::clone(&closing), Arc::clone(&kill));
+        #[cfg(test)]
+        if FAIL_ALERT_SPAWN.with(std::cell::Cell::get) {
+            return Err("could not start timer alert thread: injected failure".into());
+        }
+        let handle = thread::Builder::new()
+            .name("masterhub-timer-alerts".into())
+            .spawn(move || {
+                let stopped = || abort.load(Ordering::SeqCst);
+                while let Ok(job) = job_rx.recv() {
+                    let outcome = if stopped() {
+                        Err(ALERT_SKIPPED.to_owned())
+                    } else if stop.load(Ordering::SeqCst) || killed.load(Ordering::SeqCst) {
+                        Err(ALERT_SKIPPED_AT_END.to_owned())
+                    } else {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            alerter.alert(&job.alert)
+                        }))
+                        .unwrap_or_else(|_| Err("timer alert panicked".to_owned()))
+                        .map_err(|error| {
+                            // A cut-off alert says why, not just "cancelled".
+                            match (killed.load(Ordering::SeqCst), stopped()) {
+                                (true, true) => format!("{ALERT_STOPPED} ({error})"),
+                                (true, false) => format!("{ALERT_ENDED} ({error})"),
+                                (false, _) => error,
+                            }
+                        })
+                    };
+                    if done_tx
+                        .send(AlertDone {
+                            timer: job.timer,
+                            outcome,
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+            .map_err(|error| format!("could not start timer alert thread: {error}"))?;
+        Ok(Self {
+            jobs: Some(jobs),
+            done,
+            closing,
+            kill,
+            pending: std::collections::VecDeque::new(),
+            handle: Some(handle),
+        })
+    }
+
+    fn submit(
+        &mut self,
+        timer: &cooltek_sdk_service::RunningTimer,
+        alert: cooltek_sdk_service::TimerAlert,
+    ) -> Result<(), String> {
+        if self.pending.len() >= ALERT_LIMIT {
+            return Err(ALERT_QUEUE_FULL.into());
+        }
+        let sender = self.jobs.as_ref().ok_or(ALERT_SKIPPED)?;
+        match sender.try_send(AlertJob {
+            timer: timer.clone(),
+            alert,
+        }) {
+            Ok(()) => {
+                self.pending.push_back(timer.clone());
+                Ok(())
+            }
+            Err(TrySendError::Full(_)) => Err(ALERT_QUEUE_FULL.into()),
+            Err(TrySendError::Disconnected(_)) => {
+                Err("the timer alert thread stopped; nothing was shown or played".into())
+            }
+        }
+    }
+
+    /// Logs every finished alert without waiting.
+    fn log_results<W: Write>(
+        &mut self,
+        output: &mut W,
+        summary: &mut LiveSummary,
+    ) -> Result<(), String> {
+        while let Ok(done) = self.done.try_recv() {
+            self.pending.pop_front();
+            log_alert_outcome(
+                output,
+                &done.timer.key,
+                &done.timer.action,
+                done.outcome,
+                summary,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Skips queued alerts, lets a running one go on for at most
+    /// [`ALERT_GRACE`] (none after a stop), then stops it, logs every result
+    /// and joins the thread. Alerts never turn a clean end into an error:
+    /// only a thread that ignores the kill is reported, with each alert it
+    /// never reported logged as failed.
+    fn finish<W: Write>(
+        &mut self,
+        output: &mut W,
+        summary: &mut LiveSummary,
+        abort: &AtomicBool,
+    ) -> Result<(), String> {
+        self.closing.store(true, Ordering::SeqCst);
+        if abort.load(Ordering::SeqCst) {
+            self.kill.store(true, Ordering::SeqCst);
+        }
+        self.jobs = None;
+        let Some(handle) = self.handle.take() else {
+            return Ok(());
+        };
+        let mut logged = Ok(());
+        for wait in [ALERT_GRACE, ALERT_KILL_WAIT] {
+            let deadline = Instant::now() + wait;
+            while !handle.is_finished() && Instant::now() < deadline {
+                if abort.load(Ordering::SeqCst) {
+                    self.kill.store(true, Ordering::SeqCst);
+                }
+                if logged.is_ok() {
+                    logged = self.log_results(output, summary);
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            self.kill.store(true, Ordering::SeqCst);
+        }
+        if logged.is_ok() {
+            logged = self.log_results(output, summary);
+        }
+        if !handle.is_finished() {
+            let unreported = self.pending.len();
+            for timer in std::mem::take(&mut self.pending) {
+                if logged.is_ok() {
+                    logged = log_alert_outcome(
+                        output,
+                        &timer.key,
+                        &timer.action,
+                        Err(ALERT_UNKNOWN.into()),
+                        summary,
+                    );
+                }
+            }
+            return Err(combine_errors(
+                logged.err(),
+                Some(format!(
+                    "timer alert thread did not stop within {} s after it was cancelled; {unreported} alert(s) unreported; thread was not joined",
+                    ALERT_KILL_WAIT.as_secs()
+                )),
+            )
+            .unwrap());
+        }
+        let joined = handle
+            .join()
+            .map_err(|_| "timer alert thread panicked".to_owned());
+        logged.and(joined)
+    }
+}
+
+impl Drop for AlertThread {
+    fn drop(&mut self) {
+        // Reached without `finish` only while unwinding: stop everything.
+        self.closing.store(true, Ordering::SeqCst);
+        self.kill.store(true, Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Makes the next alert-thread start on this (worker) thread fail.
+    static FAIL_ALERT_SPAWN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Logs every display record received so far, without waiting for more.
@@ -1735,6 +2147,98 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+
+        /// Recorded as the timer action it came from; nothing is shown or played.
+        fn timer_alert(
+            &mut self,
+            alert: &cooltek_sdk_service::TimerAlert,
+        ) -> Result<Option<String>, String> {
+            self.received.lock().unwrap().push(alert_action(alert));
+            Ok(None)
+        }
+    }
+    /// The timer action an alert came from, for recording.
+    fn alert_action(alert: &cooltek_sdk_service::TimerAlert) -> Action {
+        Action::Timer {
+            seconds: alert.seconds,
+            label: alert.label.clone(),
+            sound: Some(alert.sound),
+        }
+    }
+    /// [`Actions`] plus a separate alerter, so alerts run on the alert thread.
+    /// Builds an alerter from the cancellation flag the runtime passes.
+    type AlerterBuilder =
+        Box<dyn FnOnce(Arc<AtomicBool>) -> Box<dyn cooltek_sdk_service::TimerAlerter> + Send>;
+    struct WithAlerter {
+        actions: Actions,
+        alerter: Option<AlerterBuilder>,
+        /// Make the alert thread fail to start (checked on the worker thread).
+        fail_spawn: bool,
+        /// (release, seen): `seen` is set when an action is dispatched while
+        /// the slow alerter is still blocked (`release` unset).
+        probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+    }
+    impl ActionDispatcher for WithAlerter {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            if let Some((release, seen)) = &self.probe
+                && !release.load(Ordering::SeqCst)
+            {
+                seen.store(true, Ordering::SeqCst);
+            }
+            self.actions.dispatch(action)
+        }
+        fn timer_alert(
+            &mut self,
+            alert: &cooltek_sdk_service::TimerAlert,
+        ) -> Result<Option<String>, String> {
+            self.actions.timer_alert(alert)
+        }
+        fn timer_alerter(
+            &mut self,
+            cancel: Arc<AtomicBool>,
+        ) -> Option<Box<dyn cooltek_sdk_service::TimerAlerter>> {
+            FAIL_ALERT_SPAWN.with(|fail| fail.set(self.fail_spawn));
+            self.alerter.take().map(|build| build(cancel))
+        }
+    }
+    /// Shared observations of a [`SlowAlerter`].
+    #[derive(Default)]
+    struct AlertLog {
+        started: Vec<Action>,
+        /// Alerts that ended because the stop flag was set mid-alert.
+        killed: usize,
+        dropped: bool,
+    }
+    /// Stands in for `osascript` + `afplay`: each alert blocks until `release`
+    /// is set or its cancellation flag is (like a killed subprocess), for at
+    /// most 10 s. With `ignore_stop` it behaves like a stuck tool.
+    struct SlowAlerter {
+        log: Arc<Mutex<AlertLog>>,
+        release: Arc<AtomicBool>,
+        stop: Arc<AtomicBool>,
+        ignore_stop: bool,
+    }
+    impl cooltek_sdk_service::TimerAlerter for SlowAlerter {
+        fn alert(
+            &mut self,
+            alert: &cooltek_sdk_service::TimerAlert,
+        ) -> Result<Option<String>, String> {
+            self.log.lock().unwrap().started.push(alert_action(alert));
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !self.release.load(Ordering::SeqCst) && Instant::now() < deadline {
+                if !self.ignore_stop && self.stop.load(Ordering::SeqCst) {
+                    self.log.lock().unwrap().killed += 1;
+                    return Err("/usr/bin/afplay: action execution cancelled".into());
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(None)
+        }
+    }
+    impl Drop for SlowAlerter {
+        fn drop(&mut self) {
+            self.log.lock().unwrap().dropped = true;
         }
     }
     enum Step {
@@ -1963,6 +2467,396 @@ mod tests {
                 assert_eq!(planned["event"]["value"]["raw"], 63);
             }
         }
+    }
+
+    fn timer_session(
+        steps: Vec<Step>,
+        options: LiveOptions,
+        interrupted: Arc<AtomicBool>,
+    ) -> (Result<LiveSummary, String>, Vec<Action>, Vec<Value>) {
+        timer_session_with(steps, options, interrupted, None, None, false)
+    }
+
+    /// Keys 1 and 4 start one-second timers, key 2 a one-hour timer, key 3
+    /// toggles mute. With an `alerter`, alerts run on the alert thread.
+    fn timer_session_with(
+        steps: Vec<Step>,
+        options: LiveOptions,
+        interrupted: Arc<AtomicBool>,
+        alerter: Option<AlerterBuilder>,
+        probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+        fail_spawn: bool,
+    ) -> (Result<LiveSummary, String>, Vec<Action>, Vec<Value>) {
+        let transport = Transport::new(steps);
+        let clock = Arc::clone(&transport.clock);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let actions = Arc::clone(&received);
+        let output = Output::default();
+        let writer = output.clone();
+        let engine = ProfileSession::new(
+            Profile::from_json(br#"{"schema_version":1,"name":"timers","bindings":[
+                {"module":"m4315","control":0,"gesture":"pressed","action":{"type":"timer","seconds":1,"label":"Tea","sound":"none"}},
+                {"module":"m4315","control":1,"gesture":"pressed","action":{"type":"timer","seconds":3600}},
+                {"module":"m4315","control":2,"gesture":"pressed","action":{"type":"toggle_mute"}},
+                {"module":"m4315","control":3,"gesture":"pressed","action":{"type":"timer","seconds":1,"sound":"funk"}}
+            ]}"#)
+            .unwrap(),
+        )
+        .unwrap();
+        let result = run_with_clock(
+            &mut InputReader::new(transport),
+            engine,
+            DeviceContext {
+                module: ServiceModule::M4315,
+                serial_number: None,
+            },
+            true,
+            json!({"source":"synthetic"}),
+            options,
+            interrupted,
+            move |stop| {
+                Ok((
+                    WithAlerter {
+                        actions: simple_actions(stop, actions),
+                        alerter,
+                        fail_spawn,
+                        probe,
+                    },
+                    writer,
+                ))
+            },
+            || clock.load(Ordering::SeqCst),
+        );
+        let received = received.lock().unwrap().clone();
+        (result, received, output.rows())
+    }
+
+    /// Polls `condition` for up to 5 s on the input thread.
+    fn eventually(mut condition: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if condition() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    /// A [`SlowAlerter`] built on the cancellation flag the runtime passes.
+    fn slow_alerter(ignore_stop: bool) -> (AlerterBuilder, Arc<Mutex<AlertLog>>, Arc<AtomicBool>) {
+        let log = Arc::new(Mutex::new(AlertLog::default()));
+        let release = Arc::new(AtomicBool::new(false));
+        let (shared, freed) = (Arc::clone(&log), Arc::clone(&release));
+        let build: AlerterBuilder = Box::new(move |stop| {
+            Box::new(SlowAlerter {
+                log: shared,
+                release: freed,
+                stop,
+                ignore_stop,
+            })
+        });
+        (build, log, release)
+    }
+
+    #[test]
+    fn two_simultaneous_expiries_never_block_a_key_action() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let (alerter, log, release) = slow_alerter(false);
+        let unblocked = Arc::new(AtomicBool::new(false));
+        let (seen, waited, freed, finished) = (
+            Arc::clone(&log),
+            Arc::clone(&unblocked),
+            Arc::clone(&release),
+            Arc::clone(&log),
+        );
+        let probe = (Arc::clone(&release), Arc::clone(&unblocked));
+        let (result, received, rows) = timer_session_with(
+            vec![
+                keys(&[0], 1),
+                keys(&[], 2),
+                keys(&[3], 3),
+                keys(&[], 4),
+                // The first alert is now running (and blocked) on the alert thread.
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| !seen.lock().unwrap().started.is_empty()));
+                })),
+                keys(&[2], 5),
+                // The worker must dispatch the key while the alert is blocked.
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| waited.load(Ordering::SeqCst)));
+                })),
+                Step::Run(Box::new(move || freed.store(true, Ordering::SeqCst))),
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| finished.lock().unwrap().started.len() == 2));
+                })),
+                keys(&[], 6),
+            ],
+            LiveOptions {
+                max_reports: Some(6),
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            interrupted,
+            Some(alerter),
+            Some(probe),
+            false,
+        );
+        let summary = result.unwrap();
+        assert!(unblocked.load(Ordering::SeqCst));
+        // Mute ran on the worker; alerts never went through the dispatcher.
+        assert_eq!(received, [Action::ToggleMute]);
+        assert_eq!(of_type(&rows, "action_executed").len(), 1);
+        assert_eq!(of_type(&rows, "timer_expired").len(), 2);
+        let log = log.lock().unwrap();
+        assert_eq!(log.started.len(), 2);
+        assert_eq!(log.killed, 0);
+        assert!(
+            log.dropped,
+            "the alert thread ended and dropped its alerter"
+        );
+        assert!(of_type(&rows, "timer_alert_failed").is_empty());
+        assert_eq!(summary.timer_expired_count, 2);
+        assert_eq!(rows.last().unwrap()["reason"], "max_reports");
+    }
+
+    #[test]
+    fn a_stop_kills_the_running_alert_and_starts_no_other() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let (alerter, log, _release) = slow_alerter(false);
+        let (seen, stop) = (Arc::clone(&log), Arc::clone(&interrupted));
+        let (result, received, rows) = timer_session_with(
+            vec![
+                keys(&[0], 1),
+                keys(&[], 2),
+                keys(&[3], 3),
+                keys(&[], 4),
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| !seen.lock().unwrap().started.is_empty()));
+                    // Let the second expiry queue behind the first.
+                    thread::sleep(Duration::from_millis(100));
+                    stop.store(true, Ordering::SeqCst);
+                })),
+            ],
+            LiveOptions {
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            interrupted,
+            Some(alerter),
+            None,
+            false,
+        );
+        result.unwrap();
+        assert!(received.is_empty());
+        let log = log.lock().unwrap();
+        assert_eq!(log.started.len(), 1, "nothing starts after the stop");
+        assert_eq!(log.killed, 1, "the running alert saw the stop");
+        assert!(log.dropped, "the alert thread was joined");
+        let failed = of_type(&rows, "timer_alert_failed");
+        assert_eq!(failed.len(), 2);
+        let cut = failed[0]["error"].as_str().unwrap();
+        assert!(
+            cut.starts_with(ALERT_STOPPED) && cut.contains("cancelled"),
+            "{cut}"
+        );
+        assert_eq!(failed[1]["error"], ALERT_SKIPPED);
+        assert_eq!(rows.last().unwrap()["reason"], "interrupted");
+        assert_eq!(rows.last().unwrap()["timer_alert_failed_count"], 2);
+    }
+
+    #[test]
+    fn a_normal_end_cuts_a_running_alert_off_quickly_without_a_drain_error() {
+        let (alerter, log, _release) = slow_alerter(false);
+        let seen = Arc::clone(&log);
+        let started = Instant::now();
+        let (result, _, rows) = timer_session_with(
+            vec![
+                keys(&[0], 1),
+                // The alert is running (blocked) when the report limit is reached.
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| !seen.lock().unwrap().started.is_empty()));
+                })),
+                keys(&[], 2),
+            ],
+            LiveOptions {
+                max_reports: Some(2),
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+            Some(alerter),
+            None,
+            false,
+        );
+        let elapsed = started.elapsed();
+        let summary = result.unwrap();
+        // About 1 s countdown + 2 s grace; never the whole alert or a drain error.
+        assert!(elapsed < Duration::from_secs(6), "{elapsed:?}");
+        let end = rows.last().unwrap();
+        assert_eq!(end["reason"], "max_reports");
+        assert!(end["error"].is_null(), "{end}");
+        let log = log.lock().unwrap();
+        assert_eq!(
+            log.killed, 1,
+            "the alert was stopped after the grace period"
+        );
+        assert!(log.dropped);
+        let failed = of_type(&rows, "timer_alert_failed");
+        assert_eq!(failed.len(), 1);
+        assert!(
+            failed[0]["error"]
+                .as_str()
+                .unwrap()
+                .starts_with(ALERT_ENDED)
+        );
+        assert_eq!(summary.timer_alert_failed_count, 1);
+        assert_eq!(summary.failed_action_count, 0);
+    }
+
+    #[test]
+    fn an_alert_thread_that_cannot_start_fails_each_alert_and_the_session_goes_on() {
+        let (alerter, log, _release) = slow_alerter(false);
+        let (result, received, rows) = timer_session_with(
+            vec![
+                keys(&[0], 1),
+                keys(&[], 2),
+                keys(&[3], 3),
+                keys(&[], 4),
+                Step::Run(Box::new(|| thread::sleep(Duration::from_millis(1_500)))),
+                keys(&[2], 5),
+                keys(&[], 6),
+            ],
+            LiveOptions {
+                max_reports: Some(6),
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+            Some(alerter),
+            None,
+            true,
+        );
+        result.unwrap();
+        assert_eq!(received, [Action::ToggleMute], "later keys still run");
+        assert_eq!(of_type(&rows, "timer_expired").len(), 2);
+        let failed = of_type(&rows, "timer_alert_failed");
+        assert_eq!(failed.len(), 2, "every expiry has an outcome");
+        for record in failed {
+            let error = record["error"].as_str().unwrap();
+            assert!(
+                error.contains("could not start timer alert thread")
+                    && error.ends_with("nothing was shown or played"),
+                "{error}"
+            );
+        }
+        assert!(log.lock().unwrap().started.is_empty());
+        assert_eq!(rows.last().unwrap()["reason"], "max_reports");
+    }
+
+    #[test]
+    fn a_stuck_alert_thread_is_reported_with_its_unreported_alerts() {
+        let (alerter, log, _release) = slow_alerter(true);
+        let seen = Arc::clone(&log);
+        let (result, _, rows) = timer_session_with(
+            vec![
+                keys(&[0], 1),
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| !seen.lock().unwrap().started.is_empty()));
+                })),
+                keys(&[], 2),
+            ],
+            LiveOptions {
+                max_reports: Some(2),
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+            Some(alerter),
+            None,
+            false,
+        );
+        let error = result.unwrap_err();
+        assert!(error.contains("1 alert(s) unreported"), "{error}");
+        assert!(error.contains("thread was not joined"), "{error}");
+        let failed = of_type(&rows, "timer_alert_failed");
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0]["error"], ALERT_UNKNOWN);
+    }
+
+    fn of_type<'a>(rows: &'a [Value], kind: &str) -> Vec<&'a Value> {
+        rows.iter().filter(|row| row["type"] == kind).collect()
+    }
+
+    #[test]
+    fn timers_expire_on_the_worker_and_the_rest_are_cancelled_when_input_ends() {
+        let (result, received, rows) = timer_session(
+            vec![keys(&[0], 1), keys(&[], 2), keys(&[1], 3), keys(&[], 4)],
+            LiveOptions {
+                // A 1.5 s margin past the one-second deadline, for loaded machines.
+                duration: Some(Duration::from_millis(2_500)),
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            Arc::new(AtomicBool::new(false)),
+        );
+        let summary = result.unwrap();
+        // Only the expired one-second timer reached the host, as an alert.
+        assert_eq!(
+            received,
+            [Action::Timer {
+                seconds: 1,
+                label: Some("Tea".into()),
+                sound: Some(cooltek_sdk_service::TimerSound::None),
+            }]
+        );
+        assert_eq!(of_type(&rows, "timer_started").len(), 2);
+        let expired = of_type(&rows, "timer_expired");
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0]["timer"]["control"], 0);
+        assert_eq!(
+            expired[0]["action"],
+            json!({"type":"timer","seconds":1,"label_chars":3,"sound":"none"})
+        );
+        let cancelled = of_type(&rows, "timer_cancelled");
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0]["timer"]["control"], 1);
+        assert_eq!(cancelled[0]["reason"], "session_end");
+        assert_eq!(summary.action_count, 2);
+        assert_eq!(summary.incomplete_action_count, 0);
+        let end = rows.last().unwrap();
+        assert_eq!(end["type"], "service_end");
+        assert_eq!(end["timer_started_count"], 2);
+        assert_eq!(end["timer_expired_count"], 1);
+        assert_eq!(end["timer_cancelled_count"], 1);
+        assert!(!rows.iter().any(|row| row.to_string().contains("Tea")));
+    }
+
+    #[test]
+    fn an_interrupted_session_cancels_running_timers_without_any_alert() {
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&interrupted);
+        let (result, received, rows) = timer_session(
+            vec![
+                keys(&[0], 1),
+                keys(&[], 2),
+                // Give the worker time to start the countdown, then stop.
+                Step::Run(Box::new(|| thread::sleep(Duration::from_millis(200)))),
+                Step::Run(Box::new(move || stop.store(true, Ordering::SeqCst))),
+            ],
+            LiveOptions {
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            interrupted,
+        );
+        result.unwrap();
+        assert!(received.is_empty(), "no alert after a stop");
+        let cancelled = of_type(&rows, "timer_cancelled");
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0]["reason"], "stopped");
+        assert!(of_type(&rows, "timer_expired").is_empty());
+        assert_eq!(rows.last().unwrap()["reason"], "interrupted");
     }
 
     #[test]

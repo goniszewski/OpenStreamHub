@@ -165,6 +165,20 @@ describe('capability copy', () => {
     ]);
     expect(capabilityLines(profileCapabilities(flat()))).toEqual(['No actions are bound yet, so nothing will run until you add some.']);
   });
+  it('discloses timers (notification and sound) without raising the risk', () => {
+    const capabilities = profileCapabilities(flat({ type: 'timer', seconds: 60, label: 'Tea' }, { type: 'timer', seconds: 5, sound: 'none' }));
+    expect(capabilities.timers).toBe(true);
+    expect(capabilities.counts.timer).toBe(2);
+    expect(capabilities.risk).toBe('normal');
+    expect(capabilities.riskReasons).toEqual([]);
+    expect(capabilityLines(capabilities)).toEqual(['Runs countdown timers (2 timers bound). When one ends, macOS shows a notification and plays a system sound. Pressing the same control again cancels it; stopping the run cancels them all.']);
+    expect(profileCapabilities(flat({ type: 'toggle_mute' })).timers).toBe(false);
+    // Bound in a keypad tile or dial function, it is disclosed too.
+    const nested: Profile = { schema_version: 2, name: 'P', bindings: [], keypad: { pages: [{ id: 'root', name: 'Root', slots: [{ type: 'action', label: 'Tea', bindings: [{ gesture: 'pressed', action: { type: 'timer', seconds: 1 } }] }] }] },
+      dial_functions: [{ name: 'Fn', bindings: [{ gesture: 'long_press', action: { type: 'timer', seconds: 2 } }] }] } as Profile;
+    expect(profileCapabilities(nested).counts.timer).toBe(2);
+  });
+
   it('discloses profile keys as switching profiles without raising the risk', () => {
     const capabilities = profileCapabilities(flat({ type: 'profile', direction: 'next' }, { type: 'profile', direction: 'previous' }));
     expect(capabilities.switchesProfile).toBe(true);

@@ -175,7 +175,7 @@ describe('connection notices preference', () => {
 
 function run(key: string, phase: string, extra: Partial<ServiceRun['session'] & object> = {}, state: ServiceRun['state'] = 'running', error?: string): ServiceRun {
   return {
-    serviceId: key, state, execute: true, entries: [], counters: { events: 0, planned: 0, executed: 0, failed: 0 }, startedAt: 0, profileName: 'P', snapshot: '', draftUnsaved: false, ...(error ? { error } : {}),
+    serviceId: key, state, execute: true, entries: [], counters: { events: 0, planned: 0, executed: 0, failed: 0, timerAlertsFailed: 0 }, startedAt: 0, profileName: 'P', snapshot: '', draftUnsaved: false, ...(error ? { error } : {}),
     session: phase === 'none' ? undefined : { serviceId: key, phase: phase as never, reason: null, attempt: 0, module: 'm003k', serialNumber: null, ...extra },
   };
 }

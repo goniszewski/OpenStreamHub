@@ -292,23 +292,25 @@ fn url_origin(url: &str) -> String {
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets become `<N chars>` and `open_url` URLs keep
-/// only their origin. Long enough raw values are also queued for the text scrub.
+/// activity): `text` snippets and `timer` labels become `<N chars>`, and
+/// `open_url` URLs keep only their origin. Long enough raw values are also
+/// queued for the text scrub.
 fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
             let field = match map.get("type").and_then(Value::as_str) {
                 Some("text") => Some("text"),
                 Some("open_url") => Some("url"),
+                Some("timer") => Some("label"),
                 _ => None,
             };
             if let Some(field) = field
                 && let Some(Value::String(raw)) = map.get_mut(field)
             {
-                let redacted = if field == "text" {
-                    format!("<{} chars>", raw.chars().count())
-                } else {
+                let redacted = if field == "url" {
                     url_origin(raw)
+                } else {
+                    format!("<{} chars>", raw.chars().count())
                 };
                 if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
                     replacements.push((raw.clone(), redacted.clone()));
@@ -1393,6 +1395,7 @@ mod tests {
             ],
             "keypad": { "pages": [{ "slots": [
                 { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
+                { "type": "action", "action": { "type": "timer", "seconds": 300, "label": "call the doctor", "sound": "glass" } },
             ] }] },
             "dial_functions": [{ "name": "Links", "bindings": [
                 { "gesture": "right", "action": { "type": "open_url", "url": "https://dial.example.org/a/b" } },
@@ -1432,9 +1435,15 @@ mod tests {
             "activity snippet text",
             "secret-path",
             "not a url",
+            "call the doctor",
         ] {
             assert!(!text.contains(secret), "{secret} leaked: {text}");
         }
+        let timer = &bundle.value["profile"]["keypad"]["pages"][0]["slots"][1]["action"];
+        assert_eq!(
+            timer,
+            &json!({ "type": "timer", "seconds": 300, "label": "<15 chars>", "sound": "glass" })
+        );
         let profile = &bundle.value["profile"];
         assert_eq!(profile["bindings"][0]["action"]["text"], "<19 chars>");
         assert_eq!(profile["bindings"][0]["action"]["press_enter"], true);

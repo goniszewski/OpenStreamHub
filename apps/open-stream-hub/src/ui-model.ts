@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, mediaLabels, profileDirectionLabels, systemLabels } from './action-model';
+import { keyLabel, mediaLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -84,6 +84,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     }
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
+    case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
   }
 }
 

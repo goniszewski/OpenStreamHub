@@ -8,7 +8,8 @@
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, DeviceContext, InputEvent, InputSession, InputUpdate,
-    ProfileResolution, ProfileSession, ServiceModule,
+    ProfileResolution, ProfileSession, RunningTimer, ServiceModule, TimerAlert, TimerKey,
+    TimerTable, TimerToggle,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -24,6 +25,29 @@ pub const MAX_RECORD_BYTES: usize = 65_536;
 /// session manager (no `--profile-switch-requests`).
 pub const PROFILE_SWITCH_UNAVAILABLE: &str =
     "profile switching needs the OpenStreamHub session manager; no action was taken";
+
+/// `action_failed` error for a `timer` press while [`TimerTable::MAX_RUNNING`]
+/// countdowns already run.
+pub const TIMER_LIMIT_REACHED: &str =
+    "at most 8 timers can run at once; this timer was not started";
+
+/// Why running timers were cancelled without a press.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TimerCancelReason {
+    /// The input ended normally (a duration or report limit, or the end of a capture).
+    SessionEnd,
+    /// The session was interrupted or stopped (Ctrl-C, SIGTERM, Stop, sleep, an error).
+    Stopped,
+}
+
+impl TimerCancelReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionEnd => "session_end",
+            Self::Stopped => "stopped",
+        }
+    }
+}
 
 /// The dial function that was current when an M131E event was routed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -196,7 +220,7 @@ pub fn end_record(
     summary: &LiveSummary,
     execute: bool,
 ) -> Value {
-    json!({
+    let mut record = json!({
         "type":"service_end", "schema_version":1,
         "reason":if error.is_some() {"error"} else {reason}, "error":error,
         "report_count":summary.report_count, "queued_report_count":summary.queued_report_count,
@@ -213,7 +237,16 @@ pub fn end_record(
         "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
         "incomplete_action_count":summary.incomplete_action_count,
         "execution":execution(execute),
-    })
+    });
+    // Only when a timer started, so sessions without timers log what they did before.
+    if summary.timer_started_count > 0 {
+        record["timer_started_count"] = json!(summary.timer_started_count);
+        record["timer_cancelled_count"] = json!(summary.timer_cancelled_count);
+        record["timer_expired_count"] = json!(summary.timer_expired_count);
+        record["timer_alert_failed_count"] = json!(summary.timer_alert_failed_count);
+        record["timer_alert_warning_count"] = json!(summary.timer_alert_warning_count);
+    }
+    record
 }
 
 /// Writes records for one work item and dispatches its actions in order.
@@ -228,6 +261,11 @@ pub fn end_record(
 /// the supervising session manager, which owns the saved profiles; without it
 /// it is logged as `action_unavailable` and does nothing. Neither outcome is a
 /// failure, so it never ends the session.
+///
+/// A `timer` action never reaches the dispatcher either: it starts a countdown
+/// in `timers` at `now_micros`, or cancels the countdown its binding already
+/// runs, and is logged as `timer_started` or `timer_cancelled`. A press while
+/// [`TimerTable::MAX_RUNNING`] countdowns run is an `action_failed`.
 #[allow(clippy::too_many_arguments)]
 pub fn process_work<D: ActionDispatcher, W: Write>(
     work: Work,
@@ -237,6 +275,8 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
     execute: bool,
     stop_on_action_error: bool,
     profile_switch_requests: bool,
+    timers: &mut TimerTable,
+    now_micros: u64,
     summary: &mut LiveSummary,
 ) -> Result<(), String> {
     let mut report = json!({
@@ -304,6 +344,34 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             emit(output, record)?;
             continue;
         }
+        if let Action::Timer { .. } = action {
+            let key = timer_key(&planned);
+            let record = match timers.toggle(key.clone(), action, now_micros) {
+                Ok(TimerToggle::Started { running, .. }) => {
+                    summary.timer_started_count += 1;
+                    json!({"type":"timer_started", "schema_version":1, "event":planned.event, "timer":key, "action":loggable(action), "running_count":running})
+                }
+                Ok(TimerToggle::Cancelled(_)) => {
+                    summary.timer_cancelled_count += 1;
+                    json!({"type":"timer_cancelled", "schema_version":1, "event":planned.event, "timer":key, "action":loggable(action), "reason":"pressed_again"})
+                }
+                outcome @ (Ok(TimerToggle::Full) | Err(_)) => {
+                    let error = outcome.err().unwrap_or_else(|| TIMER_LIMIT_REACHED.into());
+                    summary.failed_action_count += planned.coalesced;
+                    emit(
+                        output,
+                        json!({"type":"action_failed", "schema_version":1, "event":planned.event, "action":loggable(action), "error":error}),
+                    )?;
+                    if stop_on_action_error {
+                        return Err(format!("action failed: {error}"));
+                    }
+                    continue;
+                }
+            };
+            summary.action_count += planned.coalesced;
+            emit(output, record)?;
+            continue;
+        }
         if let Err(error) = dispatcher.dispatch(action) {
             summary.failed_action_count += planned.coalesced;
             let mut failed = json!({"type":"action_failed", "schema_version":1, "event":planned.event, "action":loggable(action), "error":error});
@@ -340,8 +408,132 @@ pub fn loggable(action: &Action) -> Value {
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
+        // The label is user text shown in a notification; only its length is logged.
+        Action::Timer {
+            seconds,
+            label,
+            sound,
+        } => {
+            let mut value = json!({"type":"timer", "seconds":seconds});
+            if let Some(label) = label {
+                value["label_chars"] = json!(label.chars().count());
+            }
+            if let Some(sound) = sound {
+                value["sound"] = json!(sound);
+            }
+            value
+        }
         other => json!(other),
     }
+}
+
+/// The binding that owns a `timer` press: control, gesture, keypad page and dial function.
+fn timer_key(planned: &PlannedEvent) -> TimerKey {
+    let (page_id, dial_function) = match &planned.resolution {
+        ProfileResolution::Action {
+            page_id,
+            dial_function,
+            ..
+        } => (page_id.clone(), dial_function.clone()),
+        _ => (None, None),
+    };
+    TimerKey {
+        control: planned.event.control,
+        gesture: planned.event.gesture,
+        page_id,
+        dial_function,
+    }
+}
+
+/// Ends every countdown due at `now_micros`, earliest first: logs
+/// `timer_expired`, then hands the alert to `alert` (inline through the
+/// dispatcher, or to a live session's alert thread). Nothing expires once
+/// `abort` is set. Countdowns are taken one at a time: if writing a record
+/// fails, that countdown is put back and the rest stay in the table, so the
+/// session's final cancellation still reports each of them.
+pub fn process_due_timers<W: Write>(
+    timers: &mut TimerTable,
+    now_micros: u64,
+    output: &mut W,
+    abort: &AtomicBool,
+    summary: &mut LiveSummary,
+    mut alert: impl FnMut(&RunningTimer, TimerAlert, &mut W, &mut LiveSummary) -> Result<(), String>,
+) -> Result<(), String> {
+    while !abort.load(Ordering::SeqCst) {
+        let Some(timer) = timers.pop_due(now_micros) else {
+            break;
+        };
+        if let Err(error) = emit(
+            output,
+            json!({"type":"timer_expired", "schema_version":1, "timer":timer.key, "action":loggable(&timer.action)}),
+        ) {
+            timers.restore(timer);
+            return Err(error);
+        }
+        summary.timer_expired_count += 1;
+        if let Some(details) = TimerAlert::from_action(&timer.action) {
+            alert(&timer, details, output, summary)?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs an alert inline through `dispatcher` and logs its outcome. Used by
+/// replay and by dispatchers without a separate alerter (dry runs, tests).
+pub fn inline_alert<D: ActionDispatcher, W: Write>(
+    dispatcher: &mut D,
+) -> impl FnMut(&RunningTimer, TimerAlert, &mut W, &mut LiveSummary) -> Result<(), String> + '_ {
+    move |timer, alert, output, summary| {
+        let outcome = dispatcher.timer_alert(&alert);
+        log_alert_outcome(output, &timer.key, &timer.action, outcome, summary)
+    }
+}
+
+/// Logs one finished alert: nothing on success, `timer_alert_warning` when
+/// the tools succeeded but reported a problem (such as a notification macOS
+/// refused), or `timer_alert_failed`. Neither ends the session.
+pub fn log_alert_outcome<W: Write>(
+    output: &mut W,
+    key: &TimerKey,
+    action: &Action,
+    outcome: Result<Option<String>, String>,
+    summary: &mut LiveSummary,
+) -> Result<(), String> {
+    match outcome {
+        Ok(None) => Ok(()),
+        Ok(Some(warning)) => {
+            summary.timer_alert_warning_count += 1;
+            emit(
+                output,
+                json!({"type":"timer_alert_warning", "schema_version":1, "timer":key, "action":loggable(action), "warning":warning}),
+            )
+        }
+        Err(error) => {
+            summary.timer_alert_failed_count += 1;
+            emit(
+                output,
+                json!({"type":"timer_alert_failed", "schema_version":1, "timer":key, "action":loggable(action), "error":error}),
+            )
+        }
+    }
+}
+
+/// Cancels every running countdown when a session ends, logging each as
+/// `timer_cancelled` with `reason`. Timers never outlive the process.
+pub fn cancel_timers<W: Write>(
+    timers: &mut TimerTable,
+    reason: TimerCancelReason,
+    output: &mut W,
+    summary: &mut LiveSummary,
+) -> Result<(), String> {
+    for timer in timers.cancel_all() {
+        summary.timer_cancelled_count += 1;
+        emit(
+            output,
+            json!({"type":"timer_cancelled", "schema_version":1, "event":Value::Null, "timer":timer.key, "action":loggable(&timer.action), "reason":reason.as_str()}),
+        )?;
+    }
+    Ok(())
 }
 
 /// `scheme://host[:port]` of a URL, without user information, path, query or fragment.
@@ -449,6 +641,8 @@ mod tests {
                 execute,
                 true,
                 true,
+                &mut TimerTable::default(),
+                0,
                 &mut summary,
             )
             .unwrap();
@@ -482,6 +676,8 @@ mod tests {
             true,
             true,
             false,
+            &mut TimerTable::default(),
+            0,
             &mut summary,
         )
         .unwrap();
@@ -497,6 +693,336 @@ mod tests {
         assert_eq!(summary.failed_action_count, 0);
         let end = end_record("max_reports", None, &summary, true);
         assert_eq!(end["profile_request_count"], 1);
+    }
+
+    /// Records timer alerts; any `dispatch` call fails the test, because a
+    /// timer press must never reach the host.
+    #[derive(Default)]
+    struct Alerts {
+        alerts: Vec<TimerAlert>,
+        fail: bool,
+        warning: Option<String>,
+    }
+
+    impl ActionDispatcher for Alerts {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            panic!("{} reached the dispatcher", action.type_name())
+        }
+
+        fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+            self.alerts.push(alert.clone());
+            if self.fail {
+                Err("timer notification failed: synthetic timeout".into())
+            } else {
+                Ok(self.warning.clone())
+            }
+        }
+    }
+
+    const HOSTILE: &str = "\" & do shell script \"id\" `id` $(id) secret-label";
+
+    fn tea(seconds: u32) -> Action {
+        Action::Timer {
+            seconds,
+            label: Some(HOSTILE.into()),
+            sound: Some(cooltek_sdk_service::TimerSound::Ping),
+        }
+    }
+
+    fn press(control: u8, micros: u64, action: Action) -> Work {
+        let mut work = profile_work(ProfileDirection::Next);
+        work.timestamp_micros = micros;
+        work.events[0].event.control = control;
+        work.events[0].event.timestamp_micros = micros;
+        work.events[0].resolution = ProfileResolution::Action {
+            action,
+            page_id: Some("root".into()),
+            dial_function: None,
+        };
+        work
+    }
+
+    struct Session {
+        timers: TimerTable,
+        output: Vec<u8>,
+        summary: LiveSummary,
+        host: Alerts,
+        abort: AtomicBool,
+    }
+
+    impl Session {
+        fn new() -> Self {
+            Self {
+                timers: TimerTable::default(),
+                output: Vec::new(),
+                summary: LiveSummary::default(),
+                host: Alerts::default(),
+                abort: AtomicBool::new(false),
+            }
+        }
+
+        fn press(
+            &mut self,
+            control: u8,
+            micros: u64,
+            action: Action,
+            stop: bool,
+        ) -> Result<(), String> {
+            process_work(
+                press(control, micros, action),
+                &mut self.host,
+                &mut self.output,
+                &self.abort,
+                true,
+                stop,
+                false,
+                &mut self.timers,
+                micros,
+                &mut self.summary,
+            )
+        }
+
+        fn tick(&mut self, micros: u64) {
+            process_due_timers(
+                &mut self.timers,
+                micros,
+                &mut self.output,
+                &self.abort,
+                &mut self.summary,
+                inline_alert(&mut self.host),
+            )
+            .unwrap();
+        }
+
+        /// Timer records only, without report and event records.
+        fn timer_records(&self) -> Vec<Value> {
+            records(&self.output)
+                .into_iter()
+                .filter(|record| !matches!(record["type"].as_str(), Some("report" | "event")))
+                .collect()
+        }
+    }
+
+    #[test]
+    fn a_fake_clock_drives_a_timer_through_start_cancel_and_expiry() {
+        let mut session = Session::new();
+        session.press(2, 0, tea(5), true).unwrap();
+        session.tick(4_999_999);
+        session.press(2, 1_000_000, tea(5), true).unwrap();
+        // Cancelled: nothing expires at the old deadline.
+        session.tick(5_000_000);
+        session.press(2, 2_000_000, tea(5), true).unwrap();
+        session.tick(6_999_999);
+        assert!(session.host.alerts.is_empty());
+        session.tick(7_000_000);
+        session.tick(60_000_000);
+        let timer = json!({"control":2,"gesture":"pressed","page_id":"root","dial_function":null});
+        let action = json!({"type":"timer","seconds":5,"label_chars":HOSTILE.chars().count(),"sound":"ping"});
+        let event =
+            |micros: u64| json!({"timestamp_micros":micros,"control":2,"gesture":"pressed"});
+        assert_eq!(
+            session.timer_records(),
+            [
+                json!({"type":"timer_started","schema_version":1,"event":event(0),"timer":timer,"action":action,"running_count":1}),
+                json!({"type":"timer_cancelled","schema_version":1,"event":event(1_000_000),"timer":timer,"action":action,"reason":"pressed_again"}),
+                json!({"type":"timer_started","schema_version":1,"event":event(2_000_000),"timer":timer,"action":action,"running_count":1}),
+                json!({"type":"timer_expired","schema_version":1,"timer":timer,"action":action}),
+            ]
+        );
+        assert_eq!(session.host.alerts.len(), 1, "one alert, never repeated");
+        assert_eq!(session.host.alerts[0].label.as_deref(), Some(HOSTILE));
+        assert_eq!(session.summary.action_count, 3);
+        assert_eq!(session.summary.timer_started_count, 2);
+        assert_eq!(session.summary.timer_cancelled_count, 1);
+        assert_eq!(session.summary.timer_expired_count, 1);
+        // The label is never logged, in any record.
+        let log = String::from_utf8(session.output.clone()).unwrap();
+        assert!(!log.contains("secret-label") && !log.contains("shell script"));
+        let end = end_record("max_reports", None, &session.summary, true);
+        assert_eq!(end["timer_started_count"], 2);
+        assert_eq!(end["timer_expired_count"], 1);
+        assert_eq!(end["timer_alert_failed_count"], 0);
+        let quiet = end_record("max_reports", None, &LiveSummary::default(), true);
+        assert!(
+            quiet.get("timer_started_count").is_none(),
+            "unchanged without timers"
+        );
+    }
+
+    #[test]
+    fn a_ninth_timer_fails_without_touching_the_running_eight() {
+        let mut session = Session::new();
+        for control in 0..8 {
+            session.press(control, 0, tea(60), false).unwrap();
+        }
+        session.press(8, 0, tea(60), false).unwrap();
+        let failed = records(&session.output).pop().unwrap();
+        assert_eq!(failed["type"], "action_failed");
+        assert_eq!(failed["error"], TIMER_LIMIT_REACHED);
+        assert_eq!(session.timers.len(), 8);
+        assert_eq!(session.summary.failed_action_count, 1);
+        // A running timer can still be cancelled while the table is full.
+        session.press(0, 1, tea(60), false).unwrap();
+        assert_eq!(session.timers.len(), 7);
+        for control in 0..8 {
+            session.press(10 + control, 2, tea(60), false).ok();
+        }
+        assert!(
+            session
+                .press(9, 3, tea(60), true)
+                .unwrap_err()
+                .contains(TIMER_LIMIT_REACHED)
+        );
+    }
+
+    #[test]
+    fn stopping_cancels_every_timer_and_nothing_expires_after_abort() {
+        let mut session = Session::new();
+        session.press(0, 0, tea(1), true).unwrap();
+        session.press(1, 0, tea(2), true).unwrap();
+        session.abort.store(true, Ordering::SeqCst);
+        session.tick(10_000_000);
+        assert!(session.host.alerts.is_empty());
+        assert_eq!(session.timers.len(), 2, "kept for the final cancellation");
+        cancel_timers(
+            &mut session.timers,
+            TimerCancelReason::Stopped,
+            &mut session.output,
+            &mut session.summary,
+        )
+        .unwrap();
+        assert!(session.timers.is_empty());
+        let cancelled: Vec<_> = session
+            .timer_records()
+            .into_iter()
+            .filter(|record| record["type"] == "timer_cancelled")
+            .collect();
+        assert_eq!(cancelled.len(), 2);
+        assert!(
+            cancelled
+                .iter()
+                .all(|record| record["reason"] == "stopped" && record["event"].is_null())
+        );
+        assert_eq!(session.summary.timer_expired_count, 0);
+    }
+
+    #[test]
+    fn a_failed_alert_is_logged_and_never_ends_the_session() {
+        let mut session = Session::new();
+        session.host.fail = true;
+        session.press(0, 0, tea(1), true).unwrap();
+        session.tick(1_000_000);
+        let records = session.timer_records();
+        assert_eq!(records[1]["type"], "timer_expired");
+        assert_eq!(records[2]["type"], "timer_alert_failed");
+        assert_eq!(
+            records[2]["error"],
+            "timer notification failed: synthetic timeout"
+        );
+        assert_eq!(session.summary.timer_alert_failed_count, 1);
+        assert_eq!(session.summary.failed_action_count, 0);
+    }
+
+    #[test]
+    fn a_notification_warning_is_a_label_free_record_and_not_a_failure() {
+        let mut session = Session::new();
+        session.host.warning =
+            Some("timer notification may not have been shown: connection invalid".into());
+        session.press(0, 0, tea(1), true).unwrap();
+        session.tick(1_000_000);
+        let records = session.timer_records();
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[2]["type"], "timer_alert_warning");
+        assert_eq!(
+            records[2]["warning"],
+            "timer notification may not have been shown: connection invalid"
+        );
+        assert_eq!(records[2]["action"]["label_chars"], HOSTILE.chars().count());
+        assert!(!records[2].to_string().contains("secret-label"));
+        assert_eq!(session.summary.timer_alert_warning_count, 1);
+        assert_eq!(session.summary.timer_alert_failed_count, 0);
+        let end = end_record("max_reports", None, &session.summary, true);
+        assert_eq!(end["timer_alert_warning_count"], 1);
+    }
+
+    #[test]
+    fn a_failed_expiry_record_keeps_every_unprocessed_timer_in_the_table() {
+        /// Accepts `budget` writes, then fails every write.
+        struct Failing {
+            budget: usize,
+        }
+        impl Write for Failing {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.budget == 0 {
+                    return Err(std::io::Error::other("synthetic log failure"));
+                }
+                self.budget -= 1;
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut timers = TimerTable::default();
+        for control in 0..3 {
+            let key = TimerKey {
+                control,
+                gesture: cooltek_sdk_service::Gesture::Pressed,
+                page_id: None,
+                dial_function: None,
+            };
+            timers.toggle(key, &tea(1 + u32::from(control)), 0).unwrap();
+        }
+        let mut summary = LiveSummary::default();
+        let mut host = Alerts::default();
+        // The first expiry record is written, the second fails.
+        let error = process_due_timers(
+            &mut timers,
+            10_000_000,
+            &mut Failing { budget: 1 },
+            &AtomicBool::new(false),
+            &mut summary,
+            inline_alert(&mut host),
+        )
+        .unwrap_err();
+        assert!(error.contains("synthetic log failure"));
+        assert_eq!(summary.timer_expired_count, 1);
+        assert_eq!(host.alerts.len(), 1);
+        // The failed one and the one after it are still running, so the
+        // session's final cancellation counts and reports them.
+        assert_eq!(timers.len(), 2);
+        let mut output = Vec::new();
+        cancel_timers(
+            &mut timers,
+            TimerCancelReason::Stopped,
+            &mut output,
+            &mut summary,
+        )
+        .unwrap();
+        assert_eq!(summary.timer_cancelled_count, 2);
+        assert_eq!(records(&output).len(), 2);
+    }
+
+    #[test]
+    fn invalid_timer_actions_fail_without_starting() {
+        let mut session = Session::new();
+        session
+            .press(
+                0,
+                0,
+                Action::Timer {
+                    seconds: 0,
+                    label: None,
+                    sound: None,
+                },
+                false,
+            )
+            .unwrap();
+        assert!(session.timers.is_empty());
+        assert_eq!(
+            records(&session.output).pop().unwrap()["type"],
+            "action_failed"
+        );
     }
 
     #[test]

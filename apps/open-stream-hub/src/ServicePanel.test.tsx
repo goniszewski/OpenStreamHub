@@ -86,6 +86,14 @@ describe('ServicePanel markup', () => {
     expect(markup).toContain('hid error');
     expect(markup).toContain('>Failed<');
   });
+  it('shows failed timer alerts apart from failed actions, only when there are some', () => {
+    const { feed, runner } = fixtures(true);
+    expect(render({ feed, runner })).not.toContain('Timer alerts failed');
+    setRun(runner, { counters: { ...emptyCounters(), executed: 1, timerAlertsFailed: 2 } });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('<dt>Timer alerts failed</dt><dd>2</dd>');
+    expect(markup).toContain('<dt>Failed</dt><dd>0</dd>');
+  });
   it('confirmation names the profile and device with Cancel focused first', () => {
     const { feed, runner } = fixtures(false, 'failed');
     const markup = render({ feed, runner, profile: { ...flat, name: 'Gaming' } });

@@ -1,5 +1,5 @@
 import type { HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
-import { urlOrigin } from './action-model';
+import { timerDuration, urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
 import type { Listen, Scheduler } from './device-feed';
 import type { Invoke } from './profile-session';
@@ -9,7 +9,8 @@ export type ActivityKind = 'event' | 'action' | 'action_failed' | 'info' | 'erro
 // `seq` is assigned when the runner appends the entry: it increases by one per entry
 // within a run and survives trimming, so it is a stable React key for the log.
 export interface ActivityEntry { kind: ActivityKind; text: string; at: number; seq?: number }
-export interface ServiceCounters { events: number; planned: number; executed: number; failed: number }
+// failed matches service_end.failed_action_count; failed timer alerts (not tied to a press) are counted on their own.
+export interface ServiceCounters { events: number; planned: number; executed: number; failed: number; timerAlertsFailed: number }
 // Sleep/wake and reconnect state for one run. The run is keyed by the stable session id; serviceId here is the current process.
 export interface SessionInfo {
   serviceId: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number;
@@ -122,7 +123,7 @@ const waitsForSession = (key: string, run: ServiceRun | undefined): run is Servi
 // (or by the start result), so it is never matched by device and two serial-less runs of one module cannot be swapped.
 const startedOnMatches = (key: string, run: ServiceRun, payload: SessionStatePayload) => waitsForSession(key, run) && run.startedOn !== undefined
   && run.startedOn.module === payload.module && normalSerial(run.startedOn.serialNumber) === normalSerial(payload.serial_number);
-export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, executed: 0, failed: 0 });
+export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, executed: 0, failed: 0, timerAlertsFailed: 0 });
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -147,6 +148,8 @@ function describeAction(action: unknown): string {
     // The snippet itself is not written to the activity log.
     case 'text': return `paste text (${typeof action.chars === 'number' ? action.chars : (typeof action.text === 'string' ? action.text.length : 0)} characters)`;
     case 'profile': return `${action.direction === 'previous' ? 'previous' : 'next'} profile`;
+    // The service logs only the label's length, never its text.
+    case 'timer': return `timer ${typeof action.seconds === 'number' ? timerDuration(action.seconds) : '?'}`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }
@@ -194,6 +197,11 @@ export function summarizeRecord(record: unknown, at: number): ActivityEntry | nu
     // A profile key: the session manager switches the run when there is another saved profile to switch to.
     case 'profile_switch_requested': return entry('action', `Profile key: ${record.direction === 'previous' ? 'previous' : 'next'} profile requested (${describeEvent(record.event)}).`);
     case 'action_unavailable': return entry('info', `${describeAction(record.action)} not available: ${clip(str(record.reason) ?? 'no action was taken')}`);
+    case 'timer_started': return entry('action', `Started ${describeAction(record.action)} (${describeEvent(record.event)}).`);
+    case 'timer_cancelled': return entry('action', `Cancelled ${describeAction(record.action)} (${record.reason === 'pressed_again' ? 'pressed again' : 'run ended'}).`);
+    case 'timer_expired': return entry('action', `Countdown ended: ${describeAction(record.action)}.`);
+    case 'timer_alert_failed': return entry('action_failed', `Countdown alert failed (${describeAction(record.action)}): ${clip(str(record.error) ?? 'unknown error')}`);
+    case 'timer_alert_warning': return entry('info', `Countdown alert warning (${describeAction(record.action)}): ${clip(str(record.warning) ?? 'no details')}`);
     case 'service_end': {
       const error = str(record.error);
       if (error) return entry('error', `Service ended with an error: ${clip(error)}`);
@@ -205,12 +213,19 @@ export function summarizeRecord(record: unknown, at: number): ActivityEntry | nu
   }
 }
 
-export function countRecord(counters: ServiceCounters, record: unknown): ServiceCounters {
+// A timer press is never an action_executed record: in an executing run its timer_started, or its pressed_again
+// timer_cancelled, counts as executed instead, so a healthy timer run does not look unfinished. Failed counts only
+// action_failed, exactly like service_end.failed_action_count; a failed timer alert (which happens long after the
+// press that counted as executed) has its own counter.
+export function countRecord(counters: ServiceCounters, record: unknown, execute = true): ServiceCounters {
   if (!isObject(record)) return counters;
   switch (record.type) {
     case 'event': return { ...counters, events: counters.events + 1, planned: counters.planned + (record.status === 'planned' ? 1 : 0) };
     case 'action_executed': return { ...counters, executed: counters.executed + 1 };
+    case 'timer_started': return execute ? { ...counters, executed: counters.executed + 1 } : counters;
+    case 'timer_cancelled': return execute && record.reason === 'pressed_again' ? { ...counters, executed: counters.executed + 1 } : counters;
     case 'action_failed': return { ...counters, failed: counters.failed + 1 };
+    case 'timer_alert_failed': return { ...counters, timerAlertsFailed: counters.timerAlertsFailed + 1 };
     default: return counters;
   }
 }
@@ -311,7 +326,7 @@ export class ServiceRunner {
     const at = this.now();
     this.update(id, run => {
       const entry = summarizeRecord(payload.record, at);
-      return { ...run, entries: appendEntry(run.entries, entry), counters: countRecord(run.counters, payload.record) };
+      return { ...run, entries: appendEntry(run.entries, entry), counters: countRecord(run.counters, payload.record, run.execute) };
     }, false);
   }
 
@@ -416,7 +431,8 @@ export class ServiceRunner {
         ...run, session: named.session, state: named.state, execute: named.execute,
         entries: named.entries.reduce((entries, entry) => appendEntry(entries, entry), started.entries),
         counters: { events: started.counters.events + named.counters.events, planned: started.counters.planned + named.counters.planned,
-          executed: started.counters.executed + named.counters.executed, failed: started.counters.failed + named.counters.failed },
+          executed: started.counters.executed + named.counters.executed, failed: started.counters.failed + named.counters.failed,
+          timerAlertsFailed: started.counters.timerAlertsFailed + named.counters.timerAlertsFailed },
         ...(newer ? { profileName: named.profileName, profileGeneration: named.profileGeneration, profileId: named.profileId,
           profileSwitched: named.profileSwitched, profileSwitchedBy: named.profileSwitchedBy, snapshot: named.snapshot, draftUnsaved: named.draftUnsaved } : {}),
       };

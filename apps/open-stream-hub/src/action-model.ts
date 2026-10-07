@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, ProfileDirection, StepAction, SystemCommand } from './contracts';
+import type { Action, MediaCommand, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -26,10 +26,22 @@ export const profileDirectionLabels: Record<ProfileDirection, string> = {
   next: 'Next profile', previous: 'Previous profile',
 };
 
+// Mirrors TimerSound in crates/cooltek-sdk-service/src/profile.rs (a closed set, in order). Each maps to a fixed
+// /System/Library/Sounds file in the service; a profile can never name a path.
+export const timerSoundLabels: Record<TimerSound, string> = {
+  basso: 'Basso', blow: 'Blow', bottle: 'Bottle', frog: 'Frog', funk: 'Funk', glass: 'Glass', hero: 'Hero', morse: 'Morse',
+  ping: 'Ping', pop: 'Pop', purr: 'Purr', sosumi: 'Sosumi', submarine: 'Submarine', tink: 'Tink', none: 'No sound',
+};
+export const defaultTimerSound: TimerSound = 'glass';
+
 // Limits enforced by the Rust service (Action::MAX_* constants).
 export const maxUrlBytes = 2048;
 export const maxTextBytes = 2048;
 export const multiActionSteps = { minimum: 2, maximum: 8 } as const;
+export const timerSeconds = { minimum: 1, maximum: 86_400 } as const;
+export const maxTimerLabelBytes = 64;
+// TimerTable::MAX_RUNNING: more presses fail until one ends or is cancelled.
+export const maxRunningTimers = 8;
 
 export type StepActionType = StepAction['type'];
 
@@ -55,6 +67,18 @@ export function defaultStepAction(type: StepActionType): StepAction {
 
 export function defaultProfileAction(): Action {
   return { type: 'profile', direction: 'next' };
+}
+
+export function defaultTimerAction(): Action {
+  return { type: 'timer', seconds: 300 };
+}
+
+// H:MM:SS from an hour, M:SS below (format_duration in timer.rs).
+export function timerDuration(seconds: number): string {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor(seconds / 60) % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
 export function defaultMultiAction(): Action {
@@ -90,5 +114,16 @@ export function textIssue(text: string): string | null {
   if (utf8.encode(text).length > maxTextBytes) return `Use at most ${maxTextBytes} bytes.`;
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text)) return 'Only newlines and tabs are allowed as control characters.';
   if (invisibleTextCharacter.test(text)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
+  return null;
+}
+
+// Mirrors validate_timer_label in profile.rs. An empty field means no label (the key is omitted), so '' is fine here.
+export function timerLabelIssue(label: string): string | null {
+  if (!label) return null;
+  if (!label.trim()) return 'Enter a label or leave the field empty.';
+  if (label.trim() !== label) return 'Remove spaces at the start or end.';
+  if (utf8.encode(label).length > maxTimerLabelBytes) return `Use at most ${maxTimerLabelBytes} bytes.`;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(label)) return 'Use one line without tabs or control characters.';
+  if (invisibleTextCharacter.test(label)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
   return null;
 }

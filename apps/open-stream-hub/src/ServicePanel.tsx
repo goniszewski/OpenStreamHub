@@ -242,6 +242,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
       <dl className="service-counters" aria-label="Run counters">
         <div><dt>Events</dt><dd>{run.counters.events}</dd></div><div><dt>Planned</dt><dd>{run.counters.planned}</dd></div>
         <div><dt>Executed</dt><dd>{run.counters.executed}</dd></div><div><dt>Failed</dt><dd>{run.counters.failed}</dd></div>
+        {run.counters.timerAlertsFailed > 0 && <div><dt>Timer alerts failed</dt><dd>{run.counters.timerAlertsFailed}</dd></div>}
       </dl>
       <ol className="service-log" ref={log} role="log" aria-label="Service activity" tabIndex={0}>
         {run.entries.length === 0 ? <li className="info">Waiting for activity…</li> : run.entries.slice(-100).map((entry, index) =>

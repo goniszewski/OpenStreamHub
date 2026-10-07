@@ -176,6 +176,93 @@ fn nested_keypad_profile_validates_and_replay_keeps_navigation_releases_on_the_o
 }
 
 #[test]
+fn replay_runs_timers_on_capture_time_and_cancels_the_rest_at_the_end() {
+    let profile = TempFile::new(
+        r#"{"schema_version":1,"name":"Timers","bindings":[
+            {"module":"m4315","control":0,"gesture":"pressed","action":{"type":"timer","seconds":2,"label":"secret tea","sound":"hero"}},
+            {"module":"m4315","control":1,"gesture":"pressed","action":{"type":"timer","seconds":60}}
+        ]}"#,
+    );
+    let original = capture_records("m4315-software-derived-synthetic.jsonl");
+    let mut records = vec![original[0].clone()];
+    // Key 1 starts (0.1 s), key 2 starts (0.2 s), key 2 cancels (0.3 s),
+    // key 2 starts again (0.4 s); key 1's timer expires before the 3 s report.
+    for (micros, control) in [
+        (100_000, Some(0)),
+        (150_000, None),
+        (200_000, Some(1)),
+        (250_000, None),
+        (300_000, Some(1)),
+        (350_000, None),
+        (400_000, Some(1)),
+        (450_000, None),
+        (3_000_000, None),
+    ] {
+        let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+        let mut states = [0u8; 15];
+        if let Some(control) = control {
+            states[control] = 1;
+        }
+        raw.extend_from_slice(&states);
+        let hex: String = raw.iter().map(|byte| format!("{byte:02x}")).collect();
+        records.push(json!({"type":"report","timestamp_micros":micros,"raw_hex":hex}));
+    }
+    records.push(
+        json!({"type":"end","timestamp_micros":3_000_001,"report_count":9,"reason":"max_reports"}),
+    );
+    let capture = TempFile::records(&records);
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.0.to_str().unwrap(),
+        capture.0.to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("secret tea"), "labels are never logged");
+    let rows = output_records(&output);
+    let timers: Vec<_> = rows
+        .iter()
+        .filter(|row| row["type"].as_str().unwrap().starts_with("timer_"))
+        .map(|row| {
+            (
+                row["type"].as_str().unwrap().to_owned(),
+                row["timer"]["control"].as_u64().unwrap(),
+                row["reason"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    let expected: Vec<(String, u64, String)> = [
+        ("timer_started", 0, ""),
+        ("timer_started", 1, ""),
+        ("timer_cancelled", 1, "pressed_again"),
+        ("timer_started", 1, ""),
+        ("timer_expired", 0, ""),
+        ("timer_cancelled", 1, "session_end"),
+    ]
+    .into_iter()
+    .map(|(kind, control, reason)| (kind.to_owned(), control, reason.to_owned()))
+    .collect();
+    assert_eq!(timers, expected);
+    // The expiry is logged before the 3 s report that reached its deadline.
+    let expired = rows
+        .iter()
+        .position(|row| row["type"] == "timer_expired")
+        .unwrap();
+    assert_eq!(rows[expired + 1]["type"], "report");
+    assert_eq!(rows[expired + 1]["timestamp_micros"], 3_000_000);
+    assert!(!rows.iter().any(|row| row["type"] == "timer_alert_failed"));
+    let ending = rows.last().unwrap();
+    assert_eq!(ending["type"], "service_end");
+    assert_eq!(ending["execution"], "dry_run");
+    assert_eq!(ending["action_count"], 4);
+    assert_eq!(ending["incomplete_action_count"], 0);
+    assert_eq!(ending["timer_started_count"], 3);
+    assert_eq!(ending["timer_cancelled_count"], 2);
+    assert_eq!(ending["timer_expired_count"], 1);
+}
+
+#[test]
 fn all_new_modules_replay_offline_and_log_concrete_actions_under_both_pid_generations() {
     let profile =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/all-modules.json");

@@ -3,9 +3,10 @@
 //! This module decides *which* images a MasterHUB display needs and applies
 //! those decisions to a transport-agnostic [`DisplaySink`]. It performs no HID
 //! I/O and renders no artwork or fonts. The CLI crate supplies a hardware-only
-//! `HidDisplaySink` (`display_sink.rs`) and an artwork provider, wired behind the
-//! opt-in, experimental `masterhub-service run --display-sync` flag; the desktop
-//! app does not pass it. Physical key order, orientation, pacing, and firmware
+//! `HidDisplaySink` (`display_sink.rs`) and key and dial artwork providers,
+//! wired behind the opt-in, experimental `masterhub-service run --display-sync`
+//! flag (`--dial-content` for the dial); the desktop app passes it only with its
+//! experimental, off-by-default display setting. Physical key order, orientation, pacing, and firmware
 //! image acceptance are unverified; see `docs/masterhub-display-sync.md`.
 //!
 //! The flow is: a caller-owned [`KeyImageProvider`] turns each

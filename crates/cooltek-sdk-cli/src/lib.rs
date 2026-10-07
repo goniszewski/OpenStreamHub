@@ -2,6 +2,7 @@
 
 pub mod capture;
 pub mod device;
+pub mod dial_artwork;
 pub mod display_artwork;
 pub mod display_sink;
 pub mod image_prep;

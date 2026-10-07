@@ -78,7 +78,7 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
 
   return <section className="dial-functions" aria-labelledby={dialFunctionHeadingId}>
     <h3 id={dialFunctionHeadingId}>Dial functions <span className="small-label">{functions.length ? `${functions.length} of ${maxDialFunctions}` : 'Off'}</span></h3>
-    <p className="fine-print">A short press on the encoder switches to the next function and never runs an action. Rotation and long press use the current function. The service starts at the first function and returns to it whenever it restarts. The encoder display does not show the current function yet.</p>
+    <p className="fine-print">A short press on the encoder switches to the next function and never runs an action. Rotation and long press use the current function. The service starts at the first function and returns to it whenever it restarts. The encoder display shows the current function only with the experimental module display setting in Settings (off by default, never tested on hardware).</p>
     {!functions.length ? <>
       <p className="empty-state">This profile has no dial functions. Encoder bindings work as before, including Short press.</p>
       <button type="button" className="button" disabled={disabled} onClick={() => { run(latest => addDialFunction(latest)); choose(0); }}><Plus size={17} />Add dial functions</button>

@@ -2,6 +2,7 @@ mod artwork;
 #[cfg(test)]
 mod contract_fixtures;
 mod diagnostics;
+mod display;
 mod export;
 mod feed;
 mod focus;
@@ -33,6 +34,7 @@ struct AppState {
     services: service::Services,
     sessions: session::Manager,
     focus: focus::FocusState,
+    display: display::DisplayState,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
     /// requests cannot decode several large images at once.
     artwork: tauri::async_runtime::Mutex<()>,
@@ -59,6 +61,7 @@ impl AppState {
             .clone()
             .and_then(store::ProfileStore::open_for_app_data);
         let focus = focus::FocusState::open(app_data.as_deref().map_err(Clone::clone));
+        let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
             app_data,
@@ -67,6 +70,7 @@ impl AppState {
             services: service::Services::default(),
             sessions: session::Manager::default(),
             focus,
+            display,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
@@ -274,6 +278,9 @@ fn run_service(
     // session; the driver then ignores that process's requests.
     let profile_switch_requests =
         sessions.is_some() && service::uses_profile_action(&request.profile);
+    // Experimental display flags, only for a session-managed process and from
+    // the settings its session started with (never the current setting).
+    let display_args = display::spawn_args(sessions.is_some(), request);
     // One forwarder per spawn: nothing of this process reaches the driver
     // after its exit (see `SpawnForwarder`).
     let forwarder = sessions.map(session::SpawnForwarder::new);
@@ -294,6 +301,7 @@ fn run_service(
         &state.services,
         request.clone(),
         profile_switch_requests,
+        display_args,
         state.app_data.as_deref().map_err(Clone::clone),
         service_program(),
         |feed_id| state.feeds.stop(feed_id),
@@ -391,6 +399,10 @@ impl session::Runner for AppRunner {
             .filter(|stored| replay::validate_profile(&stored.profile).is_ok())
             .map(|stored| (stored.id, stored.profile))
             .collect())
+    }
+
+    fn display_settings(&mut self) -> display::DisplaySettings {
+        self.app.state::<AppState>().display.for_new_session()
     }
 }
 
@@ -528,6 +540,21 @@ fn set_focus_rules_enabled(
     state
         .focus
         .update(|rules| Ok(focus::FocusRules { enabled, ..rules }))
+}
+
+// Experimental display images (`display.rs`). Off by default. A change
+// applies at the next Start; running sessions keep the value they started with.
+#[tauri::command]
+fn display_settings(state: State<'_, AppState>) -> Result<display::DisplaySettings, String> {
+    state.display.get()
+}
+
+#[tauri::command]
+fn set_display_settings(
+    state: State<'_, AppState>,
+    settings: display::DisplaySettings,
+) -> Result<display::DisplaySettings, String> {
+    state.display.set(settings)
 }
 
 // The last app other than OpenStreamHub that was frontmost.
@@ -696,6 +723,8 @@ pub fn run() {
             delete_focus_rule,
             set_focus_rules_enabled,
             focus_current_app,
+            display_settings,
+            set_display_settings,
             switch_session_profile,
             session_profile,
             create_diagnostics,
@@ -751,6 +780,7 @@ mod tests {
             services: service::Services::default(),
             sessions: session::Manager::default(),
             focus: focus::FocusState::open(Err("no app data".into())),
+            display: display::DisplayState::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }

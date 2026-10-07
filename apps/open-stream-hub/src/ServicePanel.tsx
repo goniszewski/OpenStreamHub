@@ -9,6 +9,8 @@ import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
 import type { RiskLevel } from './profile-capabilities';
+import { displayFlags, idleDisplaySettingsState } from './display-settings';
+import type { DisplaySettingsStore } from './display-settings';
 
 // The Resume actions button, focused after Review on a paused-run notice.
 export const serviceResumeId = 'service-resume';
@@ -18,13 +20,21 @@ export const isMacPlatform = (info: PlatformInfo | undefined) => /mac/i.test(`${
 
 export const hasKeypadFolders = (profile: Profile) => profile.keypad?.pages.some(page => page.slots.some(slot => slot?.type === 'folder')) ?? false;
 
-// Why Run is unavailable for this selection, or null. The service refuses nested M4315 profiles itself.
-export function runBlocker(input: { desktop: boolean; device: LiveDevice | undefined; profile: Profile }): string | null {
+// Why Run is unavailable for this selection, or null. The service refuses nested M4315 profiles itself, unless the
+// experimental display setting is on and software mode is requested (`displaySync`): the folders then run live with
+// the hardware-unverified key display. With the setting on but software mode off, the message says what is missing.
+export function runBlocker(input: { desktop: boolean; device: LiveDevice | undefined; profile: Profile; displayEnabled?: boolean; softwareMode?: boolean }): string | null {
   if (!input.desktop) return 'Running a profile needs the desktop app. Launch it to run actions.';
   if (!input.device) return 'No module connected. Connect a module to run this profile on it.';
-  if (input.device.module === 'm4315' && hasKeypadFolders(input.profile)) return 'This profile uses keypad folders. The 15-key display only supports them offline, so the service will not run it live. Remove the folders to run it.';
+  if (input.device.module === 'm4315' && hasKeypadFolders(input.profile)) {
+    if (input.displayEnabled && input.softwareMode) return null;
+    if (input.displayEnabled) return 'This profile uses keypad folders. To run them with the experimental key display, turn on "Request device software mode" below.';
+    return 'This profile uses keypad folders. The 15-key display only supports them offline, so the service will not run it live. Remove the folders to run it, or turn on the experimental module display setting in Settings.';
+  }
   return null;
 }
+
+export const displayRunNote = 'Experimental: this run will send images to the module display. This has never been tested on hardware.';
 
 export const stateLabel = (state: ServiceState | undefined) => state === undefined ? 'Stopped' : state === 'exited' ? 'Stopped' : state[0].toUpperCase() + state.slice(1);
 
@@ -116,13 +126,16 @@ export function settlePendingConfirm(pending: { current: ((ok: boolean) => void)
 const noopSubscribe = () => () => {};
 const idleFeed = () => idleFeedState;
 const idleRunner = () => idleServiceState;
+const idleDisplay = () => idleDisplaySettingsState;
 const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
 
-export function ServicePanel({ runner, feed, profile, profileId = null, desktop, unsaved, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
-  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; desktop: boolean; unsaved: boolean; platform?: PlatformInfo; now?: number;
+export function ServicePanel({ runner, feed, profile, profileId = null, desktop, unsaved, displaySettings, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
+  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; platform?: PlatformInfo; now?: number;
 }) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
+  const display = useSyncExternalStore(displaySettings?.subscribe ?? noopSubscribe, displaySettings?.getState ?? idleDisplay, displaySettings?.getState ?? idleDisplay);
+  useEffect(() => { if (displaySettings && display.desktop && !display.loaded) void displaySettings.load(); }, [displaySettings, display.desktop, display.loaded]);
   const [chosen, setChosen] = useState('');
   const [execute, setExecute] = useState(false);
   const [softwareMode, setSoftwareMode] = useState(false);
@@ -146,7 +159,9 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   const session = run?.session;
   const phase = session?.phase ?? (isActiveRun(run) ? 'running' : undefined);
   const active = isActiveRun(run);
-  const blocker = runBlocker({ desktop: enabled, device, profile });
+  const blocker = runBlocker({ desktop: enabled, device, profile, displayEnabled: display.settings.enabled, softwareMode });
+  // What a start now would pass; the session keeps it for its whole life.
+  const displayActive = device !== undefined && displayFlags(display.settings, device.module, softwareMode, profile).length > 0;
   const stale = isStale(run, profile);
   const now = fixedNow ?? clock;
   const executeSelected = execute && mac;
@@ -206,6 +221,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
         : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} onClick={begin}>{run?.state === 'starting' ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? 'Run with actions' : 'Run'}</button>}
     </div>
     <label className="service-option"><input type="checkbox" checked={softwareMode} disabled={!enabled || active} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
+    {displayActive && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{displayRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
     {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved draft)' : ''} was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}

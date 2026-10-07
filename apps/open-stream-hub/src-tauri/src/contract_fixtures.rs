@@ -641,3 +641,30 @@ fn dial_function_preview_matches_the_shared_fixture() {
         }),
     );
 }
+
+#[test]
+fn display_settings_payloads_match_the_shared_fixture() {
+    use crate::display::{DialContent, DisplaySettings};
+    let chosen = DisplaySettings {
+        enabled: true,
+        dial_content: DialContent::AnalogClock,
+    };
+    let args = json!({ "settings": chosen });
+    // `set_display_settings` arguments as the frontend sends them parse back.
+    let parsed: DisplaySettings = serde_json::from_value(args["settings"].clone()).unwrap();
+    assert_eq!(parsed, chosen);
+    check_or_update(
+        "display-settings.json",
+        &json!({
+            "display_settings_default": DisplaySettings::default(),
+            "set_display_settings_args": args,
+            "set_display_settings_result": chosen,
+            "dial_contents": [
+                DialContent::Off,
+                DialContent::Function,
+                DialContent::Clock,
+                DialContent::AnalogClock,
+            ],
+        }),
+    );
+}

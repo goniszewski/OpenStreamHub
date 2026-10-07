@@ -76,6 +76,11 @@ pub struct StartRequest {
     /// position for a profile key (next/previous).
     #[serde(default)]
     pub profile_id: Option<String>,
+    /// The experimental display settings a managed session started with, set
+    /// by the session driver only. Never deserialized: a request naming it is
+    /// refused as an unknown field.
+    #[serde(skip)]
+    pub display: Option<crate::display::DisplayLaunch>,
 }
 
 /// True when `profile` binds a `profile` action anywhere: flat bindings,
@@ -859,11 +864,15 @@ pub fn check_request(request: &StartRequest) -> Result<(), String> {
 
 /// The `start_service` command without Tauri: validates, stops a read-only
 /// feed on the same interface, writes the snapshot, and spawns `program`.
+/// `display_args` (from `display::display_args`, empty unless a managed
+/// session started with display images on) are appended unchanged.
 /// Failures after the id is known (except a duplicate) emit `failed`.
+#[allow(clippy::too_many_arguments)]
 pub fn start_service(
     services: &Services,
     request: StartRequest,
     profile_switch_requests: bool,
+    display_args: Vec<OsString>,
     app_data: Result<&Path, String>,
     program: Result<PathBuf, String>,
     stop_feed: impl FnOnce(&str) -> Result<(), String>,
@@ -894,13 +903,14 @@ pub fn start_service(
             error.clone(),
         )))
     })?;
-    let args = service_args(
+    let mut args = service_args(
         profile.path(),
         &path_hex,
         request.execute,
         request.software_mode,
         profile_switch_requests,
     );
+    args.extend(display_args);
     services.start(
         service_id,
         request.execute,
@@ -973,6 +983,23 @@ mod tests {
         let raw = record_payload("service:41", b"{}", true).unwrap();
         assert_eq!(raw.record["type"], "raw");
         assert!(record_payload("service:41", b"  \r", false).is_none());
+    }
+
+    #[test]
+    fn a_start_request_cannot_carry_display_settings() {
+        let mut request = serde_json::json!({
+            "profile": test_profiles::folders_json(), "path_hex": "41",
+            "execute": false, "software_mode": true,
+        });
+        let parsed: StartRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.display, None);
+        // Only the session driver sets them; the frontend cannot.
+        request["display"] = serde_json::json!({"settings":{"enabled":true,"dial_content":"clock"},"module":"m131e"});
+        let error = serde_json::from_value::<StartRequest>(request).unwrap_err();
+        assert!(
+            error.to_string().contains("unknown field `display`"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1378,11 +1405,13 @@ mod tests {
             execute: false,
             software_mode: false,
             profile_id: None,
+            display: None,
         };
         let id = start_service(
             &services,
             request,
             false,
+            Vec::new(),
             Ok(root.path()),
             Ok(program),
             |_| Ok(()),
@@ -1412,6 +1441,7 @@ mod tests {
             execute,
             software_mode: true,
             profile_id: None,
+            display: None,
         };
 
         // A missing binary: one `failed` status, no snapshot left behind.
@@ -1420,6 +1450,7 @@ mod tests {
             &services,
             request(false),
             false,
+            Vec::new(),
             Ok(root.path()),
             Err("could not find masterhub-service".into()),
             |_| panic!("the feed must not be stopped before the binary is found"),
@@ -1438,6 +1469,7 @@ mod tests {
             &services,
             request(false),
             false,
+            Vec::new(),
             Ok(root.path()),
             Ok(root.path().join("no-such-binary")),
             |_| Ok(()),
@@ -1466,6 +1498,7 @@ mod tests {
             &services,
             request(false),
             false,
+            Vec::new(),
             Ok(root.path()),
             Ok(fake.clone()),
             |feed_id| {
@@ -1487,6 +1520,33 @@ mod tests {
         assert_eq!(statuses(&messages).last().unwrap().exit_code, Some(Some(0)));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
 
+        // Display arguments from a managed session are appended unchanged.
+        let (emit, messages) = collector();
+        let id = start_service(
+            &services,
+            request(false),
+            false,
+            vec![
+                "--display-sync".into(),
+                "--dial-content".into(),
+                "clock".into(),
+            ],
+            Ok(root.path()),
+            Ok(fake.clone()),
+            |_| Ok(()),
+            emit,
+        )
+        .unwrap();
+        wait_done(&services, &id);
+        let record = &records(&messages)[0];
+        assert_eq!(record["argc"], 9);
+        assert!(
+            record["args"]
+                .as_str()
+                .unwrap()
+                .ends_with(" --path-hex 4a --software-mode --display-sync --dial-content clock")
+        );
+
         // Execute off macOS and invalid profiles fail before spawning.
         if !cfg!(target_os = "macos") {
             let (emit, messages) = collector();
@@ -1495,6 +1555,7 @@ mod tests {
                     &services,
                     request(true),
                     false,
+                    Vec::new(),
                     Ok(root.path()),
                     Ok(fake.clone()),
                     |_| Ok(()),
@@ -1512,6 +1573,7 @@ mod tests {
                 &services,
                 invalid,
                 false,
+                Vec::new(),
                 Ok(root.path()),
                 Ok(fake),
                 |_| Ok(()),
@@ -1591,11 +1653,13 @@ mod tests {
             execute: false,
             software_mode: false,
             profile_id: None,
+            display: None,
         };
         let error = start_service(
             &services,
             request,
             false,
+            Vec::new(),
             Ok(root.path()),
             Ok(PathBuf::from("/bin/sh")),
             |_| panic!("no feed is stopped during shutdown"),

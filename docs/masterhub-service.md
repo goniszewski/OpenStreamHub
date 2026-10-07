@@ -23,7 +23,7 @@ Validation checks the entire profile before printing `profile_valid`. Replay acc
 
 Schema-2 profiles add [nested keypad folders](masterhub-keypad-folders.md); see the [example profile](../examples/profiles/keypad-folders.json). Validation counts actions across all pages. Replay routes key events through a stateful `ProfileSession` and reports navigation separately from planned host actions. A folder's top-left Back key returns one level, with a generated `L1`–`L8` badge in the desktop editor. Key releases retain the page where the press began.
 
-Live M4315 runs reject schema-2 keypad profiles before opening the selected device unless the experimental, hardware-unverified `--display-sync` opt-in is given (see [keypad display sync](#keypad-display-sync-experimental)). Other modules can use their flat bindings from the same profile. Schema-1 live input retains its existing behavior.
+Live M4315 runs reject schema-2 keypad profiles before opening the selected device unless the experimental, hardware-unverified `--display-sync` opt-in is given (see [keypad display sync](#keypad-display-sync-experimental)). The same opt-in with `--dial-content` draws the M131E dial screen (see [dial display sync](#dial-display-sync-experimental)). Other modules can use their flat bindings from the same profile. Schema-1 live input retains its existing behavior.
 
 Replay streams reports and planned bindings as they are read. An invalid or truncated capture, missing footer, or transport-error footer produces a failing exit status even when earlier output was emitted. Check the exit status and final `service_end` before treating the stream as a complete session.
 
@@ -83,7 +83,7 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
 ```
 
 - The flag requires `--software-mode` and a schema-2 keypad profile; both are checked before any HID access. A selected interface that is not an M4315 is rejected before it is opened. The flag is independent of `--execute`.
-- Key images are generated placeholders (`PreparedKeyArtwork`, prepared before the device is opened): blank, action tile, folder silhouette, and a Back arrow with an `L1`–`L8` badge. Profiles have no image field yet. There is no dial artwork.
+- Key images are generated placeholders (`PreparedKeyArtwork`, prepared before the device is opened): blank, action tile, folder silhouette, and a Back arrow with an `L1`–`L8` badge. Profiles have no image field yet. For the dial, see [dial display sync](#dial-display-sync-experimental).
 - The one opened device is shared by the input reader and a dedicated display thread through a mutex with bounded waits (`SharedTransport`). A display writer yields to a waiting input read after at most 16 output reports, and to a hardware-mode command before every report.
 - Setup fails closed. If the display sink cannot be created (for example, no output report `0x02` in the descriptor) or the display thread cannot start, the run exits with an error starting `--display-sync setup failed` before software mode is entered: no mode command is sent, no worker starts, and nothing is written to stdout. Folder navigation never runs live without its display.
 - The first sync is requested right after software mode is enabled. Another is requested after each report whose events include a keypad navigation, only after that report's work was queued or coalesced. The display thread holds at most one pending request; a newer page replaces an older one. Requests never wait for the display thread, and display failures never dispatch, suppress, or reorder an action. An in-flight display write can delay reading input reports: while a write holds the shared device, reads report a normal timeout, input reports queue in the OS, and they are read afterwards. A write stuck inside the HID backend delays input, and unplug detection, until it returns.
@@ -99,6 +99,30 @@ Each sync writes one `display_sync` record (`schema_version` 1), logged by the a
 ```
 
 `trigger` is `software_mode` or `navigation`. `written`, `not_attempted`, and `missing` (keys without artwork) list wire key indexes; `failed` holds at most one entry per key; error text is truncated to 240 characters, so a record stays well below the 64 KiB limit. `error` is set when planning or applying failed before any write. At most 32 records wait for the worker; more are dropped and counted. With the flag, `service_start.details.display_sync` is `{"enabled":true,"hardware_verified":false}`, and `service_end` adds `display_sync_count`, `display_failure_count` (syncs with an error or any key not written), `display_coalesced_request_count`, `display_dropped_record_count`, and `display_stopped` (false when the display thread did not finish within the budget, typically because a write is stuck in the backend; it is left running behind the closed gate). Runs without the flag have none of these fields.
+
+### Dial display sync (experimental)
+
+`--display-sync --dial-content <off|function|clock|analog-clock>` draws the M131E dial screen. It is off by default and **hardware-unverified**, like the keypad path.
+
+```sh
+cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
+  run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX_FROM_INVENTORY --duration-secs 120 \
+  --software-mode --display-sync --dial-content clock
+```
+
+- `--dial-content` is parsed strictly (exactly `off`, `function`, `clock`, `analog-clock`; default `off`). A value other than `off` requires `--display-sync` and `--software-mode` (checked before any HID access) and an M131E interface (checked before it is opened). `--display-sync` without `--dial-content` keeps its keypad meaning. Any profile works; a schema-2 profile is flattened for the dial as before.
+- `function` shows the active dial function's name and position (the profile name without functions); `clock` shows local `HH:MM`; `analog-clock` shows hands. Faces are generated by `DialArtwork` with a built-in bitmap font and seven-segment digits; function faces are prepared before the device is opened.
+- The dial is redrawn right after software mode is enabled, after a dial function switch, and when the clock's minute changes, only when the face changed and at most once a second. Requests never wait for the display thread. A short write is never retried; the next change redraws it. A plain transport failure (for example a busy shared device) is retried once for the same face after the interval (`trigger: retry`), then left until the next change. Setup, the write gate, the shared device, and the hardware-mode restore behave exactly as for keys, and a display failure never changes the exit status by itself.
+
+Each attempt writes one `display_sync` record with `"target":"dial"`:
+
+```json
+{"type":"display_sync","schema_version":1,"target":"dial","trigger":"dial_function","face":"function:1",
+ "written":true,"failed":null,"missing":false,"error":null,"complete":true}
+```
+
+`trigger` is `software_mode`, `dial_function` (function content), `clock` (any redraw of a clock face, including the first after a click in clock mode), or `retry`. `face` names the drawn face (`function:<index>`, `profile`, `clock:HH:MM`, `analog:HH:MM`). `failed` is `null` or `{"short_write":…,"attempts":…,"error":…}`. `service_start.details.display_sync` adds `"target":"dial"`, `"dial_content"` and `"min_interval_ms":1000`, `service_start.details.dial_content` records the flag when it is not `off` (default runs log exactly the fields they did before), and `service_end` carries the same display counters as for keys.
 
 ## How the desktop app finds the binary
 
@@ -193,4 +217,4 @@ An action failure stops further dispatch and is never retried. A timeout, cancel
 
 The `cooltek-sdk-service` crate exposes `Profile`, `InputSession`, `BindingEngine`, `ProfileSession`, and `ActionDispatcher`. `ProfileSession::route` returns a `ProfileResolution` that reports keypad navigation and dial function switches separately from host actions. `ProfileSession::resolve` keeps returning a `KeypadResolution`, in which a function switch shows up as `Unbound`. Callers provide independently established module/serial identity, nondecreasing input timestamps, and a dispatcher. `DryRunDispatcher` records validated actions; `MacOsDispatcher` executes explicit actions and supports `with_cancellation(Arc<AtomicBool>)` for a shared stop flag. Use a separate input session per physical device and reset it on disconnect, suspension, or transport failure.
 
-The CLI loads its profile once and handles one interface per process. Automatic discovery/reconnection, profile reload, native sleep/wake observation, a menu-bar UI, and general image/display management are outside this service; the only display support is the opt-in, experimental, hardware-unverified [keypad display sync](#keypad-display-sync-experimental). Live timestamps represent host read arrival, not device-native event timing. Independent normalization and bounded queues do not establish sustained high-rate throughput, prevent HID/OS buffering loss, or verify physical press timing; those require hardware and runtime testing.
+The CLI loads its profile once and handles one interface per process. Automatic discovery/reconnection, profile reload, native sleep/wake observation, a menu-bar UI, and general image/display management are outside this service; the only display support is the opt-in, experimental, hardware-unverified [keypad](#keypad-display-sync-experimental) and [dial](#dial-display-sync-experimental) display sync. Live timestamps represent host read arrival, not device-native event timing. Independent normalization and bounded queues do not establish sustained high-rate throughput, prevent HID/OS buffering loss, or verify physical press timing; those require hardware and runtime testing.

@@ -353,6 +353,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 @keyframes toast-in { from { opacity:0; transform:translateY(8px); } }
 @media(prefers-reduced-motion:reduce) { .toast { animation:none; } }
 .setting-toggle { display:flex; align-items:center; gap:9px; margin-top:12px; cursor:pointer; }
+.display-warning { display:flex; gap:7px; align-items:flex-start; margin:12px 0 0; color:var(--accent); }.display-warning svg { flex:none; margin-top:2px; }.display-settings-panel>label:not(.setting-toggle) { display:block; font-size:12px; margin-top:14px; }
 .settings-actions { display:flex; gap:10px; margin-top:12px; }
 .onboarding-dialog { width:min(560px,calc(100vw - 36px)); }
 .onboarding-steps { display:flex; gap:6px; margin:0 0 16px; padding:0; list-style:none; }

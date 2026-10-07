@@ -285,6 +285,36 @@ masterhub-diag keypad jpeg captures/hardware/key-0.jpg --key-index 0 \
 
 Record: the output report length, and that live key upload (header `02 36`, byte 6 = key index, final flag in byte 7) remains untested. Do not write the plan to the device by other means in this session.
 
+#### 6d. Experimental dial clock and function name (WRITE, behind the flag)
+
+Only after 6c showed that a dial image appears upright. These runs use the experimental `--display-sync --dial-content` path; no actions execute without `--execute`. Watch the dial and keep the log:
+
+```sh
+masterhub-service run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX --duration-secs 150 \
+  --software-mode --display-sync --dial-content clock | tee captures/hardware/dial-clock.jsonl          # WRITE
+masterhub-service run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX --duration-secs 60 \
+  --software-mode --display-sync --dial-content analog-clock | tee captures/hardware/dial-analog.jsonl  # WRITE
+masterhub-service run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX --duration-secs 60 \
+  --software-mode --display-sync --dial-content function | tee captures/hardware/dial-function.jsonl    # WRITE
+```
+
+In the function run, short-click the dial several times, slowly and then quickly.
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Clock appears right after start? | `HH:MM` local time within about a second; `display_sync` record with `trigger: software_mode`, `complete: true` | Live dial path, generated face acceptance. |
+| Clock advances once per minute? | One `trigger: clock` record per minute boundary, none in between | Minute-change redraw and rate limit. |
+| Legibility and orientation | Digits and hands readable, upright, not clipped by the round mask | Face layout; record a photo. |
+| Function name follows clicks? | Name and `n/N` change after each click; rapid clicks settle on the newest function within about a second | `dial_function` trigger, newest-wins coalescing, 1 s rate limit. |
+| Input stays responsive while drawing? | Rotations log their actions without visible delay during redraws | Shared-device read slicing. |
+| Clean exit | Ctrl-C ends the run; `service_end.display_stopped: true`; dial returns to hardware mode; no image is drawn after exit | Gate closed before the hardware-mode restore. |
+| Short writes | Any `failed.short_write: true`? The same face is not resent; the next minute or click redraws | No-retry policy on hardware. |
+
+The same flags can be tried from the desktop app: Settings → **Experimental: send images to module displays**, choose the dial content, then start a profile with **Request device software mode**. The setting applies at the next Start only.
+
 ### Step 7. Live service on real input (READ, plan-only)
 
 Plan-only run: actions are logged, nothing executes (no `--execute`). A regular-file redirect is rejected; pipe through `tee`.

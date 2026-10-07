@@ -14,8 +14,9 @@ use cooltek_sdk_cli::capture::{
 };
 use cooltek_sdk_cli::{
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
+    dial_artwork::{DialArtwork, DialContent, SystemClock},
     display_artwork::PreparedKeyArtwork,
-    display_sink::{SharedTransport, live_display},
+    display_sink::{SharedTransport, live_dial_display, live_display},
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
     service_events::{
@@ -84,11 +85,18 @@ enum Command {
         #[arg(long)]
         stop_on_action_error: bool,
         /// Experimental, hardware-unverified: draw M4315 key images for a schema-2
-        /// keypad profile and redraw after folder navigation. Requires
-        /// --software-mode. Off by default; display failures are logged and never
-        /// end the session.
+        /// keypad profile and redraw after folder navigation, or, with
+        /// --dial-content, draw the M131E dial screen. Requires --software-mode.
+        /// Off by default; display failures are logged and never end the session.
         #[arg(long)]
         display_sync: bool,
+        /// Experimental, hardware-unverified: what the M131E dial screen shows
+        /// with --display-sync: the active dial function's name (`function`), a
+        /// digital clock (`clock`), or an analog clock (`analog-clock`). Redrawn
+        /// only when it changes, at most once a second. `off` (the default) draws
+        /// nothing; any other value requires --display-sync and an M131E.
+        #[arg(long, value_enum, default_value_t = DialContent::Off)]
+        dial_content: DialContent,
         /// Report `profile` (next/previous) actions as `profile_switch_requested`
         /// records for a supervising session manager, such as the OpenStreamHub
         /// desktop app, which owns the saved profiles. Without it a `profile`
@@ -134,16 +142,26 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             timeout_ms,
             stop_on_action_error,
             display_sync,
+            dial_content,
             profile_switch_requests,
         } => {
             let profile = load_profile(profile)?;
             let profile_name = profile.name.clone();
-            check_display_sync(display_sync, software_mode, &profile)?;
+            check_display_sync(display_sync, software_mode, dial_content, &profile)?;
             if execute && !cfg!(target_os = "macos") {
                 return Err("--execute is supported only on macOS".into());
             }
-            // Prepared before any HID access, so nothing is encoded per input event.
-            let artwork = display_sync.then(PreparedKeyArtwork::prepare).transpose()?;
+            // Prepared before any HID access, so nothing is encoded per input
+            // event (clock faces are drawn once per minute on the display thread).
+            let artwork = match (display_sync, dial_content) {
+                (false, _) => None,
+                (true, DialContent::Off) => Some(Artwork::Keys(PreparedKeyArtwork::prepare()?)),
+                (true, content) => Some(Artwork::Dial(DialArtwork::prepare(
+                    content,
+                    &profile,
+                    Box::new(SystemClock),
+                )?)),
+            };
             // Reject unsupported stdout (such as a regular file) before any HID access.
             let stdout = TimedStdout::new(Duration::from_millis(500))?;
             let stopped = cooltek_sdk_cli::interrupt::install()?;
@@ -155,7 +173,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 selected.product_id,
                 selected.serial_number.clone(),
             )?;
-            let engine = live_bindings(profile, device.module, display_sync)?;
+            let engine = live_bindings(profile, device.module, display_sync, dial_content)?;
             if let Some(functions) = dial_function_details(&engine, &device) {
                 // stdout carries JSONL only; the same facts are in `service_start`.
                 eprintln!(
@@ -164,7 +182,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 );
             }
             let opened = registry.open(selected)?;
-            let details = json!({
+            let mut details = json!({
                 "source":"hardware", "profile":profile_name, "path_hex":encode_hex(&path_hex),
                 "vendor_id":selected.vendor_id, "product_id":selected.product_id,
                 "interface_number":selected.interface_number, "usage_page":selected.usage_page,
@@ -175,6 +193,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "display_sync_requested":display_sync,
                 "profile_switch_requests":profile_switch_requests,
             });
+            // Only when set, so default runs log exactly what they did before.
+            if dial_content != DialContent::Off {
+                details["dial_content"] = json!(dial_content.as_str());
+            }
             let options = LiveOptions {
                 software_mode,
                 duration: duration_secs.map(Duration::from_secs),
@@ -204,7 +226,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     let shared = SharedTransport::new(opened);
                     // Fail closed before software mode: folder navigation must
                     // not run live without its display.
-                    let display = Some(live_display(&shared, selected.module, artwork)?);
+                    let display = Some(match artwork {
+                        Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?,
+                        Artwork::Dial(artwork) => {
+                            live_dial_display(&shared, selected.module, artwork)?
+                        }
+                    });
                     run_live_with_display(
                         InputReader::new(shared),
                         engine,
@@ -223,20 +250,36 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Rejects invalid `--display-sync` combinations before any HID access.
+/// Prepared display artwork, chosen before any HID access.
+enum Artwork {
+    Keys(PreparedKeyArtwork),
+    Dial(DialArtwork),
+}
+
+/// Rejects invalid `--display-sync` and `--dial-content` combinations before
+/// any HID access. The module is checked later by [`live_bindings`], still
+/// before the device is opened.
 fn check_display_sync(
     display_sync: bool,
     software_mode: bool,
+    dial_content: DialContent,
     profile: &Profile,
 ) -> Result<(), String> {
+    if dial_content != DialContent::Off && !display_sync {
+        return Err("--dial-content requires --display-sync".into());
+    }
     if !display_sync {
         return Ok(());
     }
     if !software_mode {
         return Err("--display-sync requires --software-mode".into());
     }
-    if profile.schema_version != 2 || profile.keypad.is_none() {
-        return Err("--display-sync requires a schema-2 keypad profile".into());
+    if dial_content == DialContent::Off && (profile.schema_version != 2 || profile.keypad.is_none())
+    {
+        return Err(
+            "--display-sync requires a schema-2 keypad profile, or --dial-content for an M131E dial"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -245,22 +288,31 @@ fn check_display_sync(
 // a schema-2 M4315 run is refused unless --display-sync opts in to the
 // experimental, hardware-unverified display path.
 // Other modules can retain their existing flat bindings from the same profile.
-// Dial functions are accepted live although the dial screen cannot show the
-// current function yet: a short click only switches state and never
-// dispatches, and `service_start` records that the function resets on restart.
+// Dial functions are accepted live; the dial screen shows the current function
+// only with the experimental --display-sync --dial-content function. A short
+// click only switches state and never dispatches, and `service_start` records
+// that the function resets on restart.
 fn live_bindings(
     mut profile: Profile,
     module: ServiceModule,
     display_sync: bool,
+    dial_content: DialContent,
 ) -> Result<ProfileSession, String> {
     profile.validate()?;
-    if display_sync && module != ServiceModule::M4315 {
+    if dial_content != DialContent::Off {
+        if !display_sync {
+            return Err("--dial-content requires --display-sync".into());
+        }
+        if module != ServiceModule::M131E {
+            return Err("--dial-content requires an M131E dial interface".into());
+        }
+    } else if display_sync && module != ServiceModule::M4315 {
         return Err("--display-sync requires an M4315 keypad interface".into());
     }
     if profile.schema_version == 2 {
         if module == ServiceModule::M4315 {
             if !display_sync {
-                return Err("nested keypad profiles are offline only until live display integration is implemented".into());
+                return Err("nested keypad profiles run live only with the experimental --display-sync opt-in; in OpenStreamHub, turn on module display images in Settings and start a session with this profile and software mode (a session started without display images cannot switch into one)".into());
             }
             return ProfileSession::new(profile);
         }
@@ -417,16 +469,28 @@ mod tests {
 
     #[test]
     fn live_keypad_folders_are_rejected_before_a_reader_can_be_opened() {
-        let error = live_bindings(nested_profile(), ServiceModule::M4315, false).unwrap_err();
+        let error = live_bindings(
+            nested_profile(),
+            ServiceModule::M4315,
+            false,
+            DialContent::Off,
+        )
+        .unwrap_err();
         assert_eq!(
             error,
-            "nested keypad profiles are offline only until live display integration is implemented"
+            "nested keypad profiles run live only with the experimental --display-sync opt-in; in OpenStreamHub, turn on module display images in Settings and start a session with this profile and software mode (a session started without display images cannot switch into one)"
         );
     }
 
     #[test]
     fn display_sync_opt_in_keeps_the_keypad_tree_for_an_m4315_only() {
-        let mut engine = live_bindings(nested_profile(), ServiceModule::M4315, true).unwrap();
+        let mut engine = live_bindings(
+            nested_profile(),
+            ServiceModule::M4315,
+            true,
+            DialContent::Off,
+        )
+        .unwrap();
         assert!(engine.profile().keypad.is_some());
         let device = DeviceContext {
             module: ServiceModule::M4315,
@@ -444,8 +508,84 @@ mod tests {
         ));
         assert_eq!(engine.path(), ["root", "development"]);
         for module in [ServiceModule::M131E, ServiceModule::M003K] {
-            let error = live_bindings(nested_profile(), module, true).unwrap_err();
+            let error =
+                live_bindings(nested_profile(), module, true, DialContent::Off).unwrap_err();
             assert!(error.contains("requires an M4315"), "{error}");
+        }
+    }
+
+    #[test]
+    fn dial_content_needs_display_sync_and_an_m131e_before_the_device_is_opened() {
+        let dial = Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/dial-functions.json"
+        ))
+        .unwrap();
+        for content in [
+            DialContent::Function,
+            DialContent::Clock,
+            DialContent::AnalogClock,
+        ] {
+            // A flat profile is enough for the dial; no keypad tree is needed.
+            assert!(check_display_sync(true, true, content, &dial).is_ok());
+            assert_eq!(
+                check_display_sync(false, true, content, &dial).unwrap_err(),
+                "--dial-content requires --display-sync"
+            );
+            assert_eq!(
+                check_display_sync(true, false, content, &dial).unwrap_err(),
+                "--display-sync requires --software-mode"
+            );
+            let engine = live_bindings(dial.clone(), ServiceModule::M131E, true, content).unwrap();
+            assert_eq!(engine.dial_function_index(), Some(0));
+            for module in [
+                ServiceModule::M4315,
+                ServiceModule::M003K,
+                ServiceModule::M005S,
+            ] {
+                let error = live_bindings(dial.clone(), module, true, content).unwrap_err();
+                assert_eq!(error, "--dial-content requires an M131E dial interface");
+            }
+            let error =
+                live_bindings(dial.clone(), ServiceModule::M131E, false, content).unwrap_err();
+            assert_eq!(error, "--dial-content requires --display-sync");
+            // Keypad folders on an M131E are flattened as before.
+            let engine =
+                live_bindings(nested_profile(), ServiceModule::M131E, true, content).unwrap();
+            assert!(engine.profile().keypad.is_none());
+        }
+        // Off is the default and changes nothing.
+        assert!(check_display_sync(false, false, DialContent::Off, &dial).is_ok());
+        assert!(live_bindings(dial, ServiceModule::M131E, false, DialContent::Off).is_ok());
+    }
+
+    #[test]
+    fn dial_content_values_are_parsed_strictly() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "masterhub-service",
+                "run",
+                "--profile",
+                "p.json",
+                "--path-hex",
+                "41",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args).map(|cli| match cli.command {
+                Command::Run { dial_content, .. } => dial_content,
+                _ => unreachable!(),
+            })
+        };
+        assert_eq!(parse(&[]).unwrap(), DialContent::Off);
+        for (value, content) in [
+            ("off", DialContent::Off),
+            ("function", DialContent::Function),
+            ("clock", DialContent::Clock),
+            ("analog-clock", DialContent::AnalogClock),
+        ] {
+            assert_eq!(parse(&["--dial-content", value]).unwrap(), content);
+        }
+        for bad in ["Clock", "analog", "", "clock,function", "stats", "cpu"] {
+            assert!(parse(&["--dial-content", bad]).is_err(), "{bad:?}");
         }
     }
 
@@ -453,14 +593,15 @@ mod tests {
     fn display_sync_combinations_are_checked_before_any_hid_access() {
         let flat =
             Profile::from_json(include_bytes!("../../../../examples/profiles/macos.json")).unwrap();
-        assert!(check_display_sync(false, false, &flat).is_ok());
-        assert!(check_display_sync(true, true, &nested_profile()).is_ok());
+        let off = DialContent::Off;
+        assert!(check_display_sync(false, false, off, &flat).is_ok());
+        assert!(check_display_sync(true, true, off, &nested_profile()).is_ok());
         assert_eq!(
-            check_display_sync(true, false, &nested_profile()).unwrap_err(),
+            check_display_sync(true, false, off, &nested_profile()).unwrap_err(),
             "--display-sync requires --software-mode"
         );
         assert!(
-            check_display_sync(true, true, &flat)
+            check_display_sync(true, true, off, &flat)
                 .unwrap_err()
                 .contains("schema-2 keypad profile")
         );
@@ -468,7 +609,13 @@ mod tests {
 
     #[test]
     fn other_modules_keep_their_bindings_in_a_folder_profile() {
-        let mut engine = live_bindings(nested_profile(), ServiceModule::M003K, false).unwrap();
+        let mut engine = live_bindings(
+            nested_profile(),
+            ServiceModule::M003K,
+            false,
+            DialContent::Off,
+        )
+        .unwrap();
         let device = DeviceContext {
             module: ServiceModule::M003K,
             serial_number: None,
@@ -494,7 +641,8 @@ mod tests {
             "../../../../examples/profiles/dial-functions.json"
         ))
         .unwrap();
-        let mut engine = live_bindings(profile, ServiceModule::M131E, false).unwrap();
+        let mut engine =
+            live_bindings(profile, ServiceModule::M131E, false, DialContent::Off).unwrap();
         let device = DeviceContext {
             module: ServiceModule::M131E,
             serial_number: None,

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
-import { defaultMultiAction, defaultProfileAction, defaultStepAction, keyLabel, namedKeys, profileDirectionLabels, stepActionTypes, textIssue, urlIssue } from './action-model';
+import { defaultMultiAction, defaultProfileAction, defaultStepAction, keyLabel, maxObsSceneBytes, namedKeys, obsSceneIssue, profileDirectionLabels, stepActionTypes, textIssue, urlIssue } from './action-model';
 import { actionLabel } from './ui-model';
 
 // Shared with the Rust service tests (profile.rs), so both sides agree on action shapes.
@@ -91,5 +91,31 @@ describe('inline action hints', () => {
     const invalid = fixture.invalid.filter((action): action is { type: 'text'; text: string } => (action as { type?: string }).type === 'text');
     expect(invalid.length).toBeGreaterThan(0);
     for (const action of invalid) expect(textIssue(action.text), JSON.stringify(action.text)).not.toBeNull();
+  });
+});
+
+describe('obs_scene', () => {
+  it('mirrors the Rust scene-name rules, including the shared fixture', () => {
+    for (const scene of ['Live', '  padded  ', 'Zażółć 🎥 "quoted" {json}', 'x'.repeat(maxObsSceneBytes)]) expect(obsSceneIssue(scene), scene).toBeNull();
+    for (const scene of ['', '   ', 'x'.repeat(maxObsSceneBytes + 1), 'é'.repeat(maxObsSceneBytes / 2 + 1), 'line\nbreak', 'tab\t', 'nul\u0000', 'esc\u001b[0m', 'zero\u200Bwidth', 'bidi\u202E', 'sep\u2028', 'bom\uFEFF']) {
+      expect(obsSceneIssue(scene), JSON.stringify(scene)).not.toBeNull();
+    }
+    for (const action of fixture.valid) if (action.type === 'obs_scene') expect(obsSceneIssue(action.scene), action.scene).toBeNull();
+    const invalid = (fixture.invalid as { type?: string; scene?: unknown }[]).filter(action => action.type === 'obs_scene');
+    expect(invalid.length).toBeGreaterThan(0);
+    for (const action of invalid) {
+      // Either the name fails the shared rule, or the shape carries a field the service refuses.
+      const strict = Object.keys(action).every(key => key === 'type' || key === 'scene') && typeof action.scene === 'string';
+      expect(strict && obsSceneIssue(action.scene as string) === null, JSON.stringify(action)).toBe(false);
+    }
+  });
+
+  it('is a multi-action step type with a valid default and a label', () => {
+    expect(stepActionTypes.map(([type]) => type)).toContain('obs_scene');
+    const action = defaultStepAction('obs_scene');
+    expect(action).toEqual({ type: 'obs_scene', scene: 'Scene' });
+    expect(obsSceneIssue((action as { scene: string }).scene)).toBeNull();
+    expect(actionLabel({ type: 'obs_scene', scene: 'Starting soon' })).toBe('OBS scene “Starting soon”');
+    expect(actionLabel({ type: 'obs_scene', scene: 'x'.repeat(40) })).toBe(`OBS scene “${'x'.repeat(24)}…”`);
   });
 });

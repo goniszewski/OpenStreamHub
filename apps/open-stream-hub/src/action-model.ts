@@ -30,13 +30,14 @@ export const profileDirectionLabels: Record<ProfileDirection, string> = {
 export const maxUrlBytes = 2048;
 export const maxTextBytes = 2048;
 export const multiActionSteps = { minimum: 2, maximum: 8 } as const;
+export const maxObsSceneBytes = 128;
 
 export type StepActionType = StepAction['type'];
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
-  ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'],
+  ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -50,6 +51,7 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'text': return { type, text: 'Hello', press_enter: false };
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
+    case 'obs_scene': return { type, scene: 'Scene' };
   }
 }
 
@@ -84,6 +86,16 @@ export function urlOrigin(url: string): string {
 // U+2060-206F block (U+2065 is unassigned). They are invisible in an editor, so the pasted text could differ from
 // what the user reviewed. Emoji ZWJ sequences (U+200D) are rejected too, as in Rust.
 export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
+
+// Mirrors the obs_scene rule in Action::validate (profile.rs): the keypad label rules plus the invisible-character rule
+// of text snippets, so the scene OBS receives is exactly the one reviewed.
+export function obsSceneIssue(scene: string): string | null {
+  if (!scene.trim()) return 'Enter the OBS scene name exactly as it appears in OBS.';
+  if (utf8.encode(scene).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(scene)) return 'Remove line breaks, tabs and other control characters.';
+  if (invisibleTextCharacter.test(scene)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
+  return null;
+}
 
 export function textIssue(text: string): string | null {
   if (!text) return 'Enter the text to paste.';

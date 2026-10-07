@@ -22,7 +22,10 @@
     {"type":"text","text":"Thanks for watching!\nSee you","press_enter":true},
     {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]},
     {"type":"profile","direction":"next"},
-    {"type":"profile","direction":"previous"}
+    {"type":"profile","direction":"previous"},
+    {"type":"obs_scene","scene":"Starting soon"},
+    {"type":"obs_scene","scene":"Zażółć 🎥 \"Live\""},
+    {"type":"multi_action","actions":[{"type":"obs_scene","scene":"Live"},{"type":"toggle_mute"}]}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -42,6 +45,15 @@
     {"type":"profile"},
     {"type":"profile","direction":"next","name":"Streaming"},
     {"type":"profile","name":"Streaming"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]}
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]},
+    {"type":"obs_scene"},
+    {"type":"obs_scene","scene":""},
+    {"type":"obs_scene","scene":"   "},
+    {"type":"obs_scene","scene":"line\nbreak"},
+    {"type":"obs_scene","scene":"zero\u200bwidth"},
+    {"type":"obs_scene","scene":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+    {"type":"obs_scene","scene":"Live","endpoint":"127.0.0.1:4455"},
+    {"type":"obs_scene","scene":"Live","password":"secret"},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":""}]}
   ]
 }

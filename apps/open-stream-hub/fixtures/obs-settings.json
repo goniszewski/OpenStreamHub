@@ -1,0 +1,39 @@
+{
+  "clear_obs_password_args": {
+    "password": null
+  },
+  "clear_obs_password_result": {
+    "enabled": true,
+    "host": "::1",
+    "password_set": false,
+    "port": 4456
+  },
+  "obs_settings_default": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "password_set": false,
+    "port": 4455
+  },
+  "set_obs_password_args": {
+    "password": "example-password"
+  },
+  "set_obs_password_result": {
+    "enabled": true,
+    "host": "::1",
+    "password_set": true,
+    "port": 4456
+  },
+  "set_obs_settings_args": {
+    "settings": {
+      "enabled": true,
+      "host": "::1",
+      "port": 4456
+    }
+  },
+  "set_obs_settings_result": {
+    "enabled": true,
+    "host": "::1",
+    "password_set": false,
+    "port": 4456
+  }
+}

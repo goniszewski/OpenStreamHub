@@ -414,6 +414,7 @@ mod tests {
             profile_id: None,
             source_profile_id: None,
             display: Some(launch(ServiceModule::M4315, ON)),
+            obs: None,
         };
         assert_eq!(spawn_args(true, &request), ["--display-sync"]);
         assert!(spawn_args(false, &request).is_empty());

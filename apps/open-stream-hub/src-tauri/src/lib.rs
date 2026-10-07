@@ -9,6 +9,7 @@ mod focus;
 mod import_flags;
 mod mhz;
 mod migration;
+mod obs;
 mod power;
 #[cfg(target_os = "macos")]
 mod quit;
@@ -38,6 +39,8 @@ struct AppState {
     sessions: session::Manager,
     focus: focus::FocusState,
     display: display::DisplayState,
+    /// The OBS endpoint setting and the in-memory OBS password.
+    obs: obs::ObsState,
     /// Import records and the dry-run-only flag of imported profiles.
     imports: import_flags::ImportFlags,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
@@ -67,6 +70,7 @@ impl AppState {
             .and_then(store::ProfileStore::open_for_app_data);
         let focus = focus::FocusState::open(app_data.as_deref().map_err(Clone::clone));
         let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
+        let obs = obs::ObsState::open(app_data.as_deref().map_err(Clone::clone));
         let imports = import_flags::ImportFlags::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
@@ -77,6 +81,7 @@ impl AppState {
             sessions: session::Manager::default(),
             focus,
             display,
+            obs,
             imports,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
@@ -949,6 +954,10 @@ impl session::Runner for AppRunner {
         self.app.state::<AppState>().display.for_new_session()
     }
 
+    fn obs_launch(&mut self) -> Option<obs::ObsLaunch> {
+        self.app.state::<AppState>().obs.for_new_session()
+    }
+
     fn execution_guard(&mut self) -> import_flags::ExecutionGuard {
         self.app.state::<AppState>().execution_guard()
     }
@@ -1103,6 +1112,30 @@ fn set_display_settings(
     settings: display::DisplaySettings,
 ) -> Result<display::DisplaySettings, String> {
     state.display.set(settings)
+}
+
+// The OBS WebSocket setting (`obs.rs`). Off by default; loopback endpoints
+// only. A change applies at the next Start. The password is held in memory
+// only and is never returned: the reply says only whether one is set.
+#[tauri::command]
+fn obs_settings(state: State<'_, AppState>) -> Result<obs::ObsSettingsView, String> {
+    state.obs.get()
+}
+
+#[tauri::command]
+fn set_obs_settings(
+    state: State<'_, AppState>,
+    settings: obs::ObsSettings,
+) -> Result<obs::ObsSettingsView, String> {
+    state.obs.set(settings)
+}
+
+#[tauri::command]
+fn set_obs_password(
+    state: State<'_, AppState>,
+    password: Option<String>,
+) -> Result<obs::ObsSettingsView, String> {
+    state.obs.set_password(password)
 }
 
 // The last app other than OpenStreamHub that was frontmost.
@@ -1276,6 +1309,9 @@ pub fn run() {
             focus_current_app,
             display_settings,
             set_display_settings,
+            obs_settings,
+            set_obs_settings,
+            set_obs_password,
             switch_session_profile,
             session_profile,
             create_diagnostics,
@@ -1332,6 +1368,7 @@ mod tests {
             sessions: session::Manager::default(),
             focus: focus::FocusState::open(Err("no app data".into())),
             display: display::DisplayState::open(Err("no app data".into())),
+            obs: obs::ObsState::open(Err("no app data".into())),
             imports: import_flags::ImportFlags::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }

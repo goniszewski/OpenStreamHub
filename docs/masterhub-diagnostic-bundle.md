@@ -48,9 +48,11 @@ Probing enumerates, opens an interface, reads its report descriptor and, for a c
 - Device paths can embed serials (for example Windows `\\?\HID#VID_2516&PID_…#<serial>` paths), so the real path is removed from the file entirely. Each device gets `path_label: "path-xxxxxxxx"`, the 32-bit FNV-1a hash of the raw path bytes in hex; it is stable for the same path, so entries can be matched across a bundle and across bundles from the same machine, but the path is not stored. `live:<hex>` and `service:<hex>` ids become `live:path-…` and `service:path-…`.
 - Afterwards every text value (error messages, stderr tails, ids in activity) is scrubbed: occurrences of an enumerated device's path hex (either case), its path text (six characters or longer) and its serial (five characters or longer) are replaced with the label or redacted serial. Raw descriptor and report hex are never rewritten. Serials shorter than five characters are only redacted where they appear under a serial key.
 
-- Action payloads are redacted at any depth of the included profile and client data (bindings, `multi_action` steps, keypad tiles, `dial_functions`, activity): `text.text` becomes `<N chars>` and `open_url.url` is reduced to `scheme://host[:port]`, dropping user information, path, query and fragment. Raw snippets and URLs of 8 or more characters are also scrubbed from free text. See [Diagnostics bundle redaction](masterhub-actions.md#diagnostics-bundle-redaction).
+- Action payloads are redacted at any depth of the included profile and client data (bindings, `multi_action` steps, keypad tiles, `dial_functions`, activity): `text.text` and `obs_scene.scene` become `<N chars>` and `open_url.url` is reduced to `scheme://host[:port]`, dropping user information, path, query and fragment. Raw snippets and URLs of 8 or more characters are also scrubbed from free text. See [Diagnostics bundle redaction](masterhub-actions.md#diagnostics-bundle-redaction).
 
 Without redaction the bundle contains real `path_hex` values and serials.
+
+The OBS WebSocket password is never in a bundle, with or without redaction: the app keeps it in memory only and never writes it to any file (`<app data>/obs-settings.json` holds only the on/off switch, host and port, and the bundle does not read that file).
 
 Independently of redaction, the home directory prefix is replaced with `~` in every stored string, including the profile and client data.
 

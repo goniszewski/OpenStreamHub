@@ -147,6 +147,7 @@ function describeAction(action: unknown): string {
     // The snippet itself is not written to the activity log.
     case 'text': return `paste text (${typeof action.chars === 'number' ? action.chars : (typeof action.text === 'string' ? action.text.length : 0)} characters)`;
     case 'profile': return `${action.direction === 'previous' ? 'previous' : 'next'} profile`;
+    case 'obs_scene': return `OBS scene "${clip(String(action.scene), 128)}"`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

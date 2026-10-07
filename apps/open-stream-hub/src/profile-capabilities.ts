@@ -29,6 +29,9 @@ export interface ProfileCapabilities {
   multiAction: boolean;
   // A profile key (next/previous saved profile) is bound somewhere. It switches profiles in the app only.
   switchesProfile: boolean;
+  // Distinct OBS scene names of every obs_scene, in profile order. Each switches the OBS program scene over the
+  // loopback OBS WebSocket configured in Settings.
+  obsScenes: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   risk: RiskLevel;
@@ -82,6 +85,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const texts = new Map<string, TextSnippet>();
   const origins = new Set<string>();
   const apps = new Set<string>();
+  const obsScenes = new Set<string>();
   const sequences = new Map<string, StepAction[]>();
   const reasons = new Set<string>();
   let screenshot = false;
@@ -111,6 +115,11 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         if (codePoints(String(action.url)) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'launch_app': apps.add(String(action.bundle_id)); break;
+      // A host effect (a request to OBS on this Mac) that only changes the visible scene: shown, but low risk.
+      case 'obs_scene':
+        obsScenes.add(String(action.scene));
+        if (codePoints(String(action.scene)) > maxShownChars) reasons.add(tooLongReason);
+        break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
       case 'multi_action': {
         const steps = list(action.actions);
@@ -142,6 +151,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     urlOrigins: [...origins], apps: [...apps], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
+    obsScenes: [...obsScenes],
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
@@ -200,6 +210,10 @@ export function stepLabel(step: StepAction): string {
     }
     case 'media': return `${mediaLabels[step.command] ?? String(step.command)} (logged only, not executed)`;
     case 'system': return step.command === 'screenshot' ? 'Capture the whole screen to the clipboard' : systemLabels[step.command] ?? String(step.command);
+    case 'obs_scene': {
+      const preview = snippetPreview(String(step.scene));
+      return `Switch OBS to the scene “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}`;
+    }
     case 'text': {
       const preview = snippetPreview(typeof step.text === 'string' ? step.text : '');
       return `Paste “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}${step.press_enter ? ', then press Return' : ''}`;
@@ -225,6 +239,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);
   if (capabilities.submitKey && capabilities.texts.length) lines.push('Has a key that submits a line (Return, Control+M, Control+J or Control+O). Pressed after pasted text, it runs commands in a terminal.');
   if (capabilities.undoRedo) lines.push('Sends Undo or Redo to the focused app.');
+  if (capabilities.obsScenes.length) lines.push(`Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsScenes.map(scene => `“${snippetPreview(scene).text}”`).join(', ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (counts.media) lines.push('Media controls are logged only; they do not run on this Mac.');
   if (capabilities.switchesProfile) lines.push('Switches profile: a key moves this run to the next or previous saved profile. Actions then pause until you confirm the new profile.');

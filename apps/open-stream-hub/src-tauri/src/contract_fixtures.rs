@@ -663,12 +663,47 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "display_settings_default": DisplaySettings::default(),
             "set_display_settings_args": args,
             "set_display_settings_result": chosen,
-            "dial_contents": [
-                DialContent::Off,
-                DialContent::Function,
-                DialContent::Clock,
-                DialContent::AnalogClock,
-            ],
+            "dial_contents": DialContent::ALL,
+        }),
+    );
+}
+
+#[test]
+fn obs_settings_payloads_match_the_shared_fixture() {
+    use crate::obs::{ObsSettings, ObsState};
+    let directory = tempfile::tempdir().unwrap();
+    let state = ObsState::open(Ok(directory.path()));
+    let chosen = ObsSettings {
+        enabled: true,
+        host: "::1".into(),
+        port: 4456,
+    };
+    let settings_args = json!({ "settings": chosen });
+    // `set_obs_settings` arguments as the frontend sends them parse back.
+    let parsed: ObsSettings = serde_json::from_value(settings_args["settings"].clone()).unwrap();
+    assert_eq!(parsed, chosen);
+    let default = state.get().unwrap();
+    let saved = state.set(chosen).unwrap();
+    let password_args = json!({ "password": "example-password" });
+    let with_password = state
+        .set_password(serde_json::from_value(password_args["password"].clone()).unwrap())
+        .unwrap();
+    let clear_args = json!({ "password": null });
+    let cleared = state
+        .set_password(serde_json::from_value(clear_args["password"].clone()).unwrap())
+        .unwrap();
+    let replies = json!([default, saved, with_password, cleared]).to_string();
+    assert!(!replies.contains("example-password"), "{replies}");
+    check_or_update(
+        "obs-settings.json",
+        &json!({
+            "obs_settings_default": default,
+            "set_obs_settings_args": settings_args,
+            "set_obs_settings_result": saved,
+            "set_obs_password_args": password_args,
+            "set_obs_password_result": with_password,
+            "clear_obs_password_args": clear_args,
+            "clear_obs_password_result": cleared,
         }),
     );
 }

@@ -3,7 +3,8 @@
     "off",
     "function",
     "clock",
-    "analog_clock"
+    "analog_clock",
+    "cpu"
   ],
   "display_settings_default": {
     "dial_content": "function",

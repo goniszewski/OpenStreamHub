@@ -2,9 +2,9 @@ import { Plus, Trash2 } from 'lucide-react';
 import type { BindingAction, MediaCommand, Modifier, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxRunningTimers,
-  maxTextBytes, mediaLabels, multiActionSteps, namedKeys, profileDirectionLabels, stepActionTypes, systemLabels, textIssue,
-  timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes,
+  maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, obsSceneIssue, profileDirectionLabels,
+  stepActionTypes, systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
 } from './action-model';
 import type { StepActionType } from './action-model';
 
@@ -125,6 +125,11 @@ function StepFields({ prefix, action, inputKey, onChange }: {
         <p className="fine-print">Up to {maxTextBytes} bytes. Pasting replaces the clipboard; plain text already on it is put back afterwards, other content is not. Needs macOS Accessibility permission.</p></div>;
     }
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">Preview only: the macOS service cannot send media keys yet and reports this action as unsupported.</p></div>;
+    case 'obs_scene': {
+      const issue = obsSceneIssue(action.scene);
+      return <div className="action-fields"><label htmlFor={id('obs-scene')}>OBS scene name</label><input id={id('obs-scene')} spellCheck={false} value={action.scene} aria-invalid={!!issue} aria-describedby={issue ? id('obs-scene-error') : undefined} onChange={event => onChange({ type: 'obs_scene', scene: event.target.value }, 'obs-scene')} />{issue && <p id={id('obs-scene-error')} className="field-error" role="alert">{issue}</p>}
+        <p className="fine-print">Makes this scene the current OBS program scene, matched exactly (up to {maxObsSceneBytes} bytes). Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.</p></div>;
+    }
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
 }

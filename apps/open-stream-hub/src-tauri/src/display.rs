@@ -40,9 +40,21 @@ pub enum DialContent {
     Clock,
     /// An analog clock.
     AnalogClock,
+    /// The machine's CPU usage in percent (macOS only; `--` elsewhere).
+    Cpu,
 }
 
 impl DialContent {
+    /// Every value, in the service's `--dial-content` order.
+    #[cfg(test)]
+    pub const ALL: [Self; 5] = [
+        Self::Off,
+        Self::Function,
+        Self::Clock,
+        Self::AnalogClock,
+        Self::Cpu,
+    ];
+
     /// The `masterhub-service --dial-content` value.
     pub fn arg(self) -> &'static str {
         match self {
@@ -50,6 +62,7 @@ impl DialContent {
             Self::Function => "function",
             Self::Clock => "clock",
             Self::AnalogClock => "analog-clock",
+            Self::Cpu => "cpu",
         }
     }
 }
@@ -292,9 +305,14 @@ mod tests {
         let parsed: DisplaySettings =
             serde_json::from_str(r#"{"enabled":true,"dial_content":"analog_clock"}"#).unwrap();
         assert_eq!(parsed.dial_content, DialContent::AnalogClock);
+        let parsed: DisplaySettings =
+            serde_json::from_str(r#"{"enabled":true,"dial_content":"cpu"}"#).unwrap();
+        assert_eq!(parsed.dial_content, DialContent::Cpu);
         for bad in [
             r#"{"enabled":true}"#,
             r#"{"enabled":true,"dial_content":"Clock"}"#,
+            r#"{"enabled":true,"dial_content":"CPU"}"#,
+            r#"{"enabled":true,"dial_content":"gpu"}"#,
             r#"{"enabled":true,"dial_content":"analog-clock"}"#,
             r#"{"enabled":"yes","dial_content":"clock"}"#,
             r#"{"enabled":true,"dial_content":"clock","extra":1}"#,
@@ -308,15 +326,7 @@ mod tests {
 
     #[test]
     fn dial_content_arguments_match_the_service() {
-        let ours: Vec<&str> = [
-            DialContent::Off,
-            DialContent::Function,
-            DialContent::Clock,
-            DialContent::AnalogClock,
-        ]
-        .into_iter()
-        .map(DialContent::arg)
-        .collect();
+        let ours: Vec<&str> = DialContent::ALL.into_iter().map(DialContent::arg).collect();
         let service: Vec<&str> = cooltek_sdk_cli::dial_artwork::DialContent::ALL
             .into_iter()
             .map(|content| content.as_str())
@@ -414,6 +424,7 @@ mod tests {
             profile_id: None,
             source_profile_id: None,
             display: Some(launch(ServiceModule::M4315, ON)),
+            obs: None,
         };
         assert_eq!(spawn_args(true, &request), ["--display-sync"]);
         assert!(spawn_args(false, &request).is_empty());

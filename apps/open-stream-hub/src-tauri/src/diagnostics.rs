@@ -292,9 +292,9 @@ fn url_origin(url: &str) -> String {
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets and `timer` labels become `<N chars>`, and
-/// `open_url` URLs keep only their origin. Long enough raw values are also
-/// queued for the text scrub.
+/// activity): `text` snippets, `timer` labels and `obs_scene` scene names
+/// become `<N chars>`, and `open_url` URLs keep only their origin. Long
+/// enough raw values are also queued for the text scrub.
 fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
@@ -302,6 +302,7 @@ fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, Str
                 Some("text") => Some("text"),
                 Some("open_url") => Some("url"),
                 Some("timer") => Some("label"),
+                Some("obs_scene") => Some("scene"),
                 _ => None,
             };
             if let Some(field) = field
@@ -1391,7 +1392,9 @@ mod tests {
                 { "action": { "type": "multi_action", "actions": [
                     { "type": "open_url", "url": "http://user:pw@intranet.local/reset" },
                     { "type": "text", "text": "żółć 🎉", "press_enter": false },
+                    { "type": "obs_scene", "scene": "Interview guest cam" },
                 ] } },
+                { "action": { "type": "obs_scene", "scene": "Private call scene" } },
             ],
             "keypad": { "pages": [{ "slots": [
                 { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
@@ -1436,6 +1439,8 @@ mod tests {
             "secret-path",
             "not a url",
             "call the doctor",
+            "Private call",
+            "Interview guest",
         ] {
             assert!(!text.contains(secret), "{secret} leaked: {text}");
         }
@@ -1454,6 +1459,8 @@ mod tests {
         let steps = &profile["bindings"][2]["action"]["actions"];
         assert_eq!(steps[0]["url"], "http://intranet.local");
         assert_eq!(steps[1]["text"], "<6 chars>");
+        assert_eq!(steps[2]["scene"], "<19 chars>");
+        assert_eq!(profile["bindings"][3]["action"]["scene"], "<18 chars>");
         assert_eq!(
             profile["keypad"]["pages"][0]["slots"][0]["action"]["text"],
             "<19 chars>"

@@ -109,3 +109,26 @@ describe('action fields', () => {
     expect(eight).not.toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove step 1"/);
   });
 });
+
+describe('obs_scene fields', () => {
+  it('edits the scene name with inline problems and explains what it needs', () => {
+    const markup = render({ type: 'obs_scene', scene: 'Live' });
+    expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
+    expect(markup).toContain('value="Live"');
+    expect(markup).not.toContain('role="alert"');
+    expect(markup).toContain('OBS turned on in Settings');
+    expectAccessible(markup);
+    const blank = render({ type: 'obs_scene', scene: ' ' });
+    expect(blank).toContain('aria-invalid="true"');
+    expect(blank).toContain('role="alert"');
+    expect(render(null)).toContain('value="obs_scene"');
+    expect(render(null, true)).not.toContain('value="obs_scene"');
+  });
+
+  it('is offered as a multi-action step with prefixed ids', () => {
+    const markup = render({ type: 'multi_action', actions: [{ type: 'obs_scene', scene: 'Live' }, { type: 'toggle_mute' }] });
+    expect(ids(markup)).toContain('step-1-obs-scene');
+    expect(markup).toMatch(/<option value="obs_scene" selected="">Switch OBS scene<\/option>/);
+    expectAccessible(markup);
+  });
+});

@@ -86,6 +86,11 @@ pub struct StartRequest {
     /// refused as an unknown field.
     #[serde(skip)]
     pub display: Option<crate::display::DisplayLaunch>,
+    /// The OBS endpoint and in-memory password a managed session started
+    /// with, set by the session driver only. Never deserialized, so a profile
+    /// or a frontend request can never choose where `obs_scene` connects.
+    #[serde(skip)]
+    pub obs: Option<crate::obs::ObsLaunch>,
 }
 
 /// True when `profile` binds a `profile` action anywhere: flat bindings,
@@ -557,6 +562,7 @@ impl Services {
     /// `running` or `failed`. A duplicate running id is rejected without any
     /// event. `profile` is removed once the child is reaped. Refused without
     /// any event once `stop_all` began.
+    #[cfg(test)]
     pub fn start(
         &self,
         service_id: String,
@@ -564,6 +570,28 @@ impl Services {
         program: &Path,
         args: Vec<OsString>,
         profile: Option<TempProfile>,
+        emit: Emit,
+    ) -> Result<String, String> {
+        self.start_with_stdin(service_id, execute, program, args, profile, None, emit)
+    }
+
+    /// [`Services::start`] that writes `stdin` (the OBS password line) to the
+    /// child's stdin pipe right after spawning and then closes it. Without
+    /// `stdin` the child's stdin is null, exactly as before. The bytes are
+    /// far below the pipe buffer, so the write never blocks. They never appear
+    /// in the arguments, the environment or any emitted message. They are not
+    /// wiped from memory: other plaintext copies of the password stay in this
+    /// process (the in-memory setting and each session's snapshot) and in the
+    /// child for their whole lives, so a core dump would contain it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_stdin(
+        &self,
+        service_id: String,
+        execute: bool,
+        program: &Path,
+        args: Vec<OsString>,
+        profile: Option<TempProfile>,
+        mut stdin: Option<Vec<u8>>,
         emit: Emit,
     ) -> Result<String, String> {
         let mut services = self.lock();
@@ -587,7 +615,11 @@ impl Services {
         let mut command = Command::new(program);
         command
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if stdin.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(unix)]
@@ -604,6 +636,15 @@ impl Services {
                 return Err(error);
             }
         };
+        if let (Some(bytes), Some(mut pipe)) = (stdin.as_mut(), child.stdin.take()) {
+            // A child that exits at once fails its own password read; its
+            // exit is reported like any other.
+            let _ = io::Write::write_all(&mut pipe, bytes);
+            // Best effort only: the compiler may drop this store, and other
+            // plaintext copies of the password remain in memory regardless.
+            bytes.fill(0);
+        }
+        drop(stdin);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let child = Arc::new(Mutex::new(child));
@@ -873,7 +914,9 @@ pub fn check_request(request: &StartRequest) -> Result<(), String> {
 /// The `start_service` command without Tauri: validates, stops a read-only
 /// feed on the same interface, writes the snapshot, and spawns `program`.
 /// `display_args` (from `display::display_args`, empty unless a managed
-/// session started with display images on) are appended unchanged.
+/// session started with display images on) are appended unchanged, then the
+/// session's OBS arguments (`obs::obs_args`); its OBS password, if any, goes
+/// to the child's stdin only.
 /// Failures after the id is known (except a duplicate) emit `failed`.
 #[allow(clippy::too_many_arguments)]
 pub fn start_service(
@@ -919,12 +962,14 @@ pub fn start_service(
         profile_switch_requests,
     );
     args.extend(display_args);
-    services.start(
+    args.extend(crate::obs::obs_args(request.obs.as_ref()));
+    services.start_with_stdin(
         service_id,
         request.execute,
         &program,
         args,
         Some(profile),
+        crate::obs::password_stdin(request.obs.as_ref()),
         emit,
     )
 }
@@ -1415,6 +1460,7 @@ mod tests {
             profile_id: None,
             source_profile_id: None,
             display: None,
+            obs: None,
         };
         let id = start_service(
             &services,
@@ -1452,6 +1498,7 @@ mod tests {
             profile_id: None,
             source_profile_id: None,
             display: None,
+            obs: None,
         };
 
         // A missing binary: one `failed` status, no snapshot left behind.
@@ -1593,6 +1640,102 @@ mod tests {
         );
         assert_eq!(states(&messages), [ServiceState::Failed]);
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_obs_password_reaches_the_service_on_stdin_only() {
+        use process::*;
+        const PASSWORD: &str = "hunter2-obs-secret";
+        let services = Services::default();
+        let root = tempfile::tempdir().unwrap();
+        // Reports its arguments, whether stdin held exactly the password, and
+        // whether the password appears in its environment; never the password.
+        let fake = root.path().join("fake-service");
+        fs::write(
+            &fake,
+            format!(
+                "#!/bin/sh\nIFS= read -r line; status=$?\n\
+                 if [ \"$line\" = '{PASSWORD}' ]; then got=match; elif [ $status -ne 0 ] && [ -z \"$line\" ]; then got=eof; else got=other; fi\n\
+                 env_hits=$(env | grep -c hunter2)\n\
+                 printf '{{\"args\":\"%s\",\"stdin\":\"%s\",\"env\":%d}}\\n' \"$*\" \"$got\" \"$env_hits\"\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let launch = |password: Option<&str>| crate::obs::ObsLaunch {
+            endpoint: cooltek_sdk_service::obs::ObsEndpoint::parse("127.0.0.1:4455").unwrap(),
+            password: password.map(|password| {
+                cooltek_sdk_service::obs::ObsPassword::new(password.into()).unwrap()
+            }),
+        };
+        let run = |obs: Option<crate::obs::ObsLaunch>| {
+            let (emit, messages) = collector();
+            let request = StartRequest {
+                profile: test_profiles::folders(),
+                path_hex: "4A".into(),
+                execute: false,
+                software_mode: false,
+                profile_id: None,
+                source_profile_id: None,
+                display: None,
+                obs,
+            };
+            let id = start_service(
+                &services,
+                request,
+                false,
+                Vec::new(),
+                Ok(root.path()),
+                Ok(fake.clone()),
+                |_| Ok(()),
+                emit,
+            )
+            .unwrap();
+            wait_done(&services, &id);
+            let messages = messages.lock().unwrap().clone();
+            let rendered = format!("{messages:?}");
+            assert!(!rendered.contains("hunter2"), "{rendered}");
+            records(&std::sync::Mutex::new(messages))[0].clone()
+        };
+        let record = run(Some(launch(Some(PASSWORD))));
+        assert_eq!(record["stdin"], "match");
+        assert_eq!(record["env"], 0);
+        assert!(
+            record["args"]
+                .as_str()
+                .unwrap()
+                .ends_with(" --path-hex 4a --obs-endpoint 127.0.0.1:4455 --obs-password-stdin"),
+            "{record}"
+        );
+        // No password: the endpoint only, and stdin stays null.
+        let record = run(Some(launch(None)));
+        assert_eq!(record["stdin"], "eof");
+        assert!(
+            record["args"]
+                .as_str()
+                .unwrap()
+                .ends_with(" --path-hex 4a --obs-endpoint 127.0.0.1:4455"),
+            "{record}"
+        );
+        // OBS off: exactly the arguments a run had before.
+        let record = run(None);
+        assert_eq!(record["stdin"], "eof");
+        assert!(record["args"].as_str().unwrap().ends_with(" --path-hex 4a"));
+    }
+
+    #[test]
+    fn a_start_request_cannot_carry_obs_settings() {
+        let mut request = serde_json::json!({"profile":test_profiles::folders(),"path_hex":"41","execute":false,"software_mode":false});
+        let parsed: StartRequest = serde_json::from_value(request.clone()).unwrap();
+        assert_eq!(parsed.obs, None);
+        for field in ["obs", "obs_endpoint", "obs_password"] {
+            request[field] = serde_json::json!({"endpoint":"192.168.1.2:4455"});
+            let error = serde_json::from_value::<StartRequest>(request.clone()).unwrap_err();
+            assert!(error.to_string().contains("unknown field"), "{error}");
+            request.as_object_mut().unwrap().remove(field);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn grandchildren_are_killed_once_the_service_exits() {
@@ -1665,6 +1808,7 @@ mod tests {
             profile_id: None,
             source_profile_id: None,
             display: None,
+            obs: None,
         };
         let error = start_service(
             &services,

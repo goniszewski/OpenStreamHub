@@ -77,8 +77,8 @@ describe('DiagnosticsPanel markup', () => {
     expect(html).toMatch(/checked=""[^>]*\/>Hide serial numbers/);
     expect(html).not.toMatch(/checked=""[^>]*\/>Include a short input capture/);
     expect(html).not.toMatch(/checked=""[^>]*\/>Include current profile/);
-    expect(html).toContain('text snippets, timer labels and web addresses in it would be part of the file');
-    expect(html).toContain('each text snippet and timer label is replaced by its length and each web address is reduced to its site address');
+    expect(html).toContain('text snippets, timer labels, OBS scene names and web addresses in it would be part of the file');
+    expect(html).toContain('each text snippet, timer label and OBS scene name is replaced by its length and each web address is reduced to its site address');
     expect(html).toContain('Nothing is uploaded or sent');
     expect(html).toContain('0 / 2000');
     expect(html).toContain('<option value="3" selected="">3 seconds</option>');

@@ -150,6 +150,7 @@ function describeAction(action: unknown): string {
     case 'profile': return `${action.direction === 'previous' ? 'previous' : 'next'} profile`;
     // The service logs only the label's length, never its text.
     case 'timer': return `timer ${typeof action.seconds === 'number' ? timerDuration(action.seconds) : '?'}`;
+    case 'obs_scene': return `OBS scene "${clip(String(action.scene), 128)}"`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

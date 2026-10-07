@@ -10,6 +10,14 @@ description = "MasterHUB profiles, input bindings, and macOS action dispatch."
 cooltek-sdk-masterhub = { path = "../cooltek-sdk-masterhub" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# OBS WebSocket v5 client (src/obs.rs): SHA-256 for the challenge
+# authentication, SHA-1 for the RFC 6455 Sec-WebSocket-Accept check, and
+# base64 for both. Same versions the desktop app already locks (sha2, base64,
+# digest); sha1 adds one RustCrypto crate. No async runtime, no TLS, no
+# WebSocket library: framing is hand-written over std::net::TcpStream.
+base64 = "0.22"
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"

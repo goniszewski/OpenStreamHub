@@ -542,6 +542,110 @@ fn replay_rejects_execute_flag() {
 }
 
 #[test]
+fn replay_reports_obs_scene_as_unavailable_without_an_endpoint() {
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/obs-scenes.json");
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.to_str().unwrap(),
+        fixture("m003k-synthetic.jsonl").to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    assert_eq!(
+        planned_actions(&records),
+        vec![
+            json!({"type":"volume", "delta":5}),
+            json!({"type":"obs_scene", "scene":"Starting soon"}),
+            json!({"type":"multi_action", "actions":[{"type":"obs_scene","scene":"Be right back"},{"type":"toggle_mute"}]}),
+        ],
+    );
+    let unavailable: Vec<_> = records
+        .iter()
+        .filter(|record| record["type"] == "action_unavailable")
+        .collect();
+    assert_eq!(unavailable.len(), 2);
+    for record in unavailable {
+        assert!(
+            record["reason"]
+                .as_str()
+                .unwrap()
+                .starts_with("OBS is not configured for this run"),
+            "{record}"
+        );
+    }
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["type"] == "action_failed")
+    );
+    let end = records.last().unwrap();
+    assert_eq!(end["action_count"], 1);
+    assert_eq!(end["unavailable_action_count"], 2);
+    assert_eq!(end["failed_action_count"], 0);
+    assert_eq!(end["incomplete_action_count"], 0);
+}
+
+fn run_with_stdin(arguments: &[&str], stdin: &[u8]) -> Output {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_masterhub-service"))
+        .args(arguments)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let _ = child.stdin.take().unwrap().write_all(stdin);
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn obs_flags_are_checked_and_the_password_never_reaches_output_before_hid() {
+    let profile = example_profile();
+    let base = [
+        "run",
+        "--profile",
+        profile.to_str().unwrap(),
+        "--path-hex",
+        "ab",
+    ];
+    for endpoint in [
+        "192.168.1.2:4455",
+        "0.0.0.0:4455",
+        "example.com:4455",
+        "127.0.0.1:0",
+    ] {
+        let output = run(&[&base[..], &["--obs-endpoint", endpoint]].concat());
+        assert_failure(&output, "OBS endpoint must be");
+        assert!(output.stdout.is_empty());
+    }
+    let output = run(&[&base[..], &["--obs-password-stdin"]].concat());
+    assert_failure(&output, "--obs-endpoint");
+    // An empty or invalid password fails before any HID access, and the
+    // error never repeats what was read.
+    let with_password = [
+        &base[..],
+        &["--obs-endpoint", "127.0.0.1:4455", "--obs-password-stdin"],
+    ]
+    .concat();
+    for (stdin, expected) in [
+        (&b""[..], "OBS password must be nonempty"),
+        (
+            &b"hunter2\x07secret\n"[..],
+            "OBS password must not contain control characters",
+        ),
+    ] {
+        let output = run_with_stdin(&with_password, stdin);
+        assert_failure(&output, expected);
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("hunter2"), "{stderr}");
+        assert!(!stderr.contains("selected path"), "{stderr}");
+    }
+}
+
+#[test]
 fn run_rejects_invalid_profile_before_accessing_the_selected_path() {
     let profile = TempFile::new("{\"schema_version\":999,\"name\":\"invalid\",\"bindings\":[]}");
     let output = run(&[

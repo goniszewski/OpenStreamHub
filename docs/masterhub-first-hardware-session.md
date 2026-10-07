@@ -285,7 +285,7 @@ masterhub-diag keypad jpeg captures/hardware/key-0.jpg --key-index 0 \
 
 Record: the output report length, and that live key upload (header `02 36`, byte 6 = key index, final flag in byte 7) remains untested. Do not write the plan to the device by other means in this session.
 
-#### 6d. Experimental dial clock and function name (WRITE, behind the flag)
+#### 6d. Experimental dial clock, function name and CPU usage (WRITE, behind the flag)
 
 Only after 6c showed that a dial image appears upright. These runs use the experimental `--display-sync --dial-content` path; no actions execute without `--execute`. Watch the dial and keep the log:
 
@@ -299,9 +299,12 @@ masterhub-service run --profile examples/profiles/dial-functions.json \
 masterhub-service run --profile examples/profiles/dial-functions.json \
   --path-hex DIAL_PATH_HEX --duration-secs 60 \
   --software-mode --display-sync --dial-content function | tee captures/hardware/dial-function.jsonl    # WRITE
+masterhub-service run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX --duration-secs 60 \
+  --software-mode --display-sync --dial-content cpu | tee captures/hardware/dial-cpu.jsonl              # WRITE
 ```
 
-In the function run, short-click the dial several times, slowly and then quickly.
+In the function run, short-click the dial several times, slowly and then quickly. In the CPU run (macOS only), start some load in another terminal halfway through (for example `yes > /dev/null`, stopped with Ctrl-C) so the percentage moves.
 
 | Question | Expected observable | Confirms or refutes |
 | --- | --- | --- |
@@ -309,6 +312,8 @@ In the function run, short-click the dial several times, slowly and then quickly
 | Clock advances once per minute? | One `trigger: clock` record per minute boundary, none in between | Minute-change redraw and rate limit. |
 | Legibility and orientation | Digits and hands readable, upright, not clipped by the round mask | Face layout; record a photo. |
 | Function name follows clicks? | Name and `n/N` change after each click; rapid clicks settle on the newest function within about a second | `dial_function` trigger, newest-wins coalescing, 1 s rate limit. |
+| CPU face follows load? | About a second after start, a percentage and ring (no `--` first); a `trigger: cpu` record only when the whole percentage changes, never more than one dial write a second; the value tracks Activity Monitor's CPU total roughly | CPU sampler, change-only redraw, 1 s rate limit under sustained redraws. |
+| Firmware under once-a-second redraws? | Under changing load the dial is written about once a second for the whole run; no tearing, stalls or `failed` records | Whether the 1 s rate limit is safe for continuous redraws. |
 | Input stays responsive while drawing? | Rotations log their actions without visible delay during redraws | Shared-device read slicing. |
 | Clean exit | Ctrl-C ends the run; `service_end.display_stopped: true`; dial returns to hardware mode; no image is drawn after exit | Gate closed before the hardware-mode restore. |
 | Short writes | Any `failed.short_write: true`? The same face is not resent; the next minute or click redraws | No-retry policy on hardware. |
@@ -331,6 +336,27 @@ masterhub-service run --profile examples/profiles/all-modules.json \
 | Stuck presses | Press and hold, Ctrl-C | Clean end, no repeated actions. |
 
 Execution (`--execute`) and volume-changing fader/knob actions need a separate acceptance (see the [service guide](masterhub-service.md) and [macOS smoke checks](masterhub-macos-smoke.md)); leave them out of this session.
+
+#### 7a. OBS scene switching (optional; needs OBS 28+ on this Mac, no module writes)
+
+Only if OBS Studio is installed. In OBS, open Tools > WebSocket Server Settings, enable the server, note the port (default 4455) and, if authentication is on, the password. Create scenes named `Starting soon`, `Live` and `Be right back`. This executes actions, but the only effect is an OBS scene change.
+
+```sh
+printf '%s\n' "$OBS_PASSWORD" | masterhub-service run --profile examples/profiles/obs-scenes.json \
+  --path-hex HEX_OF_THE_KNOBS --execute --duration-secs 60 \
+  --obs-endpoint 127.0.0.1:4455 --obs-password-stdin | tee captures/hardware/service-obs.jsonl
+```
+
+Leave out the `printf … |` and `--obs-password-stdin` when OBS authentication is off. In the desktop app, the same check is Settings > OBS Studio (turn it on, enter the password), then start the profile with Execute.
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Does a press switch the scene? | Knob 1 press: OBS shows `Starting soon`; knob 2: `Live`; `action_executed` records | `obs_scene` against real OBS (only fake servers so far) |
+| Is the password kept out of logs? | `grep -c "$OBS_PASSWORD" captures/hardware/service-obs.jsonl` prints 0; `ps -ww -o args= -p <pid>` during the run shows only `--obs-endpoint 127.0.0.1:4455 --obs-password-stdin` | Password channel |
+| Wrong password | Rerun with a wrong password: each press logs `action_failed` with "authentication failed" and the run continues | Close code 4009 handling |
+| Missing scene | Rename `Live` in OBS and press knob 2: `action_failed` with "no scene with that name" | Request status 600 handling |
+| OBS closed | Quit OBS and press: `action_failed` with "is OBS running" within 3 s; input keeps working | Connect errors, timeout |
+| No endpoint | Rerun without `--obs-endpoint`: each OBS press logs `action_unavailable`; knob 3 (a multi-action with an OBS step) does not toggle mute | Unavailable handling |
 
 ### Step 8. Lifecycle: replug, sleep/wake, permissions (READ)
 

@@ -85,6 +85,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
+    case 'obs_scene': return `OBS scene “${action.scene.length > 24 ? `${action.scene.slice(0, 24)}…` : action.scene}”`;
   }
 }
 

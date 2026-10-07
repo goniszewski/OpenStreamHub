@@ -29,7 +29,10 @@
     {"type":"profile","direction":"previous"},
     {"type":"timer","seconds":300},
     {"type":"timer","seconds":1,"label":"Tea","sound":"glass"},
-    {"type":"timer","seconds":86400,"label":"Stream break \" `id` $(id)","sound":"none"}
+    {"type":"timer","seconds":86400,"label":"Stream break \" `id` $(id)","sound":"none"},
+    {"type":"obs_scene","scene":"Starting soon"},
+    {"type":"obs_scene","scene":"Zażółć 🎥 \"Live\""},
+    {"type":"multi_action","actions":[{"type":"obs_scene","scene":"Live"},{"type":"toggle_mute"}]}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -64,6 +67,15 @@
     {"type":"timer","seconds":60,"sound":"Glass"},
     {"type":"timer","seconds":60,"sound":"/System/Library/Sounds/Glass.aiff"},
     {"type":"timer","seconds":60,"sound":"beep"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"timer","seconds":60}]}
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"timer","seconds":60}]},
+    {"type":"obs_scene"},
+    {"type":"obs_scene","scene":""},
+    {"type":"obs_scene","scene":"   "},
+    {"type":"obs_scene","scene":"line\nbreak"},
+    {"type":"obs_scene","scene":"zero\u200bwidth"},
+    {"type":"obs_scene","scene":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
+    {"type":"obs_scene","scene":"Live","endpoint":"127.0.0.1:4455"},
+    {"type":"obs_scene","scene":"Live","password":"secret"},
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":""}]}
   ]
 }

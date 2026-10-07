@@ -21,7 +21,7 @@ Caveat: "Absent" means the identifiers and behaviors were searched for in the re
 
 | Feature | Verdict | Evidence |
 | --- | --- | --- |
-| Profiles: create, rename, duplicate, delete, import/export `.mhz` | Present | `lang/en_us.js` `profile.*` (l.119-152); `components/Common/TopNav.vue` `.mhz` accept (l.285) and check (l.2352); `lib/profileHelper.js` (`readProfileData`, per-serial files) |
+| Profiles: create, rename, duplicate, delete, import/export `.mhz` | Present | `lang/en_us.js` `profile.*` (l.119-152); import dialog `components/modal/EditProfileModal.vue` l.383-392; `store/index.js` `saveConfigFile` l.1331, `importConfig` l.1537; `lib/profileHelper.js` (`readProfileData`, per-serial files). The `TopNav.vue` `.mhz` accept (l.285) and check (l.2352) belong to the Master ID upload only. Format: [`.mhz` format](masterhub-mhz-format.md) |
 | Profile switching by a bound key | Present | action `profile` next/previous (`store/module/masterHub.js` l.235-246); run at `App.vue` l.1376 |
 | Per-app / focused-window profile rules | Absent | Zero hits for active-win, foreground, GetForegroundWindow, focusedWindow, autoSwitch, processName, exeName, bundleId, app-bind in renderer and `background.js`. Profiles change only via the `profile` key action or the start-up chooser (`profile.description`). Bundled `masterHubConfig_profile_Photoshop.mhz` is a template, not a rule |
 | Browser integration / browser-tab cards | Absent | No extension, native-messaging or `chrome.tabs` code. "browser" appears only in `ipc-open-browser` (`shell.openExternal`, `App.vue` l.2456), the `web-url` action, and a Discord RPC field (`plugins/DiscordSingleton.js` l.57) |
@@ -72,14 +72,14 @@ Focused-app rules, browser-tab cards, user scripts and a plugin SDK do not exist
 | 9 | Stat widgets and clock | Medium | Medium | Sensors needed for temps |
 | 10 | Recorded key macro | Medium | Medium-high | |
 | 11 | Timer | Low-medium | Low-medium | |
-| 12 | `.mhz` import/export | Medium | High | Format not analysed |
+| 12 | `.mhz` import/export | Medium | Medium (import) / High (export) | Plain ZIP + JSON, unsigned; import is lossy. See [`.mhz` format](masterhub-mhz-format.md) |
 | 13 | Lighting | Medium | Medium | Protocol pending hardware |
 | 14 | OBS/Twitch/Discord/etc. | Medium | High each | OBS first |
 | 15 | Master ID backup | Low | High | Proprietary backend; skip |
 
 ## Open items
 
-- `.mhz` schema.
+- ~~`.mhz` schema.~~ Done 7 October 2026: [`.mhz` format](masterhub-mhz-format.md). It is a standard ZIP holding one cleartext JSON profile entry plus optional `uploadImages/` and `gifPools/`, with no encryption, signature or version field. Images are stored as JSON `Buffer` byte arrays. Serials are remapped by position on import. Still open from it: folder Back tile, multi-task `app-files` path field, volume step size, knob/dial/roller directions, and the `7z.exe` zip-slip behaviour.
 - Folder depth and page limits (`store/module/keypad.js`).
 - Whether `clock` exists on keypad tiles.
 - Native addon and `worker/Ctrl.js` contents.

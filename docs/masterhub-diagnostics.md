@@ -150,7 +150,7 @@ Key indices are zero-based, 0–14; their physical positions remain unverified. 
 
 Plans identify `module: m4315` and `key_index` in their header, packet records, and footer. The eight-byte header is `02 36`, followed by a little-endian 16-bit sequence, a little-endian 16-bit payload length, the key index in byte 6, and the final flag in byte 7. Payload starts at byte 8; unused bytes are zeroed. Report lengths are bounded to 9–65,535 bytes and images to 16 MiB, with at most 65,536 chunks to prevent sequence wrap. The JSONL plan is separate from input captures and cannot be passed to `replay`.
 
-Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app does not yet expose display uploads.
+Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app sends images to module displays only through its experimental, off-by-default Settings toggle (see [display sync](masterhub-display-sync.md)); this CLI path stays offline-only except for an explicit `dial jpeg --path-hex`.
 
 ## SDK building blocks
 
@@ -162,7 +162,7 @@ Physical upload, key order, orientation, image acceptance, software-mode require
 - `input::parse_m0_report()` handles the documented outer framing; `parse_m003k_payload()` handles logical knob payloads. `M003KDecoder` adds stateful press transitions.
 - `input::parse_m131e_report()`, `parse_m131e_payload()`, and `M131EDecoder` decode the recovered dial queue without I/O.
 - `dial` exposes pure feature builders, bounded query parsers, `JpegPackets`, and explicit transport operations. Typed M131E handles expose the corresponding commands and descriptor-sized `display_jpeg()`.
-- `keypad` exposes software-mode builders/setters, 72×72 image constants, `validate_jpeg()`, and a pure `JpegPackets` iterator with a required key index. Packet planning performs no I/O; a live keypad upload API is not yet provided.
+- `keypad` exposes software-mode builders/setters, 72×72 image constants, `validate_jpeg()`, and a pure `JpegPackets` iterator with a required key index. Packet planning performs no I/O. `keypad::display_jpeg` and `display_jpeg_with_pacing` write one key image to a transport; the CLI has no live key upload, and only the experimental `masterhub-service --display-sync` uses them, never run on hardware.
 - `DialSession` provides explicit activation, suspension, resume after a caller-timed two-second delay, input reads, and shutdown; drop performs no commands. `DialGestureTracker` accepts monotonic timestamps and classifies known releases at 600 ms.
 
 Automatic macOS sleep/wake observers, reconnect, animation, and firmware writing remain later work. The separate [binding service](masterhub-service.md) handles explicit host actions; image preparation is offline. Lifecycle hooks and packet builders have offline validation; device acceptance remains pending.

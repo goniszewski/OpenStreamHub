@@ -32,13 +32,13 @@ and sleep/wake recovery still require hardware validation.**
 | --- | --- |
 | Device support | Recognition of both USB ID generations and input decoding for all five control modules |
 | Displays and sessions | Explicit IPS mode controls, firmware queries, descriptor-sized JPEG packets for both IPS modules, and session lifecycle hooks |
-| Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, and app actions, plus [countdown timers](docs/masterhub-actions.md#countdown-timer-timer) that end with a notification and a system sound (not shown on the key) |
-| Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
+| Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, text, URL and app actions, profile next/previous, an OBS scene switch, plus [countdown timers](docs/masterhub-actions.md#countdown-timer-timer) that end with a notification and a system sound (not shown on the key) |
+| Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), focused-app profile rules, undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
 | Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
 
 Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac.
 A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
-Sending images to a module display is off by default, because display behavior is not verified on hardware. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, clock or CPU usage on the encoder's screen); it has never run on real hardware.
+Sending images to a module display is off by default, because display behavior is not verified on hardware. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, digital or analog clock, or CPU usage on the encoder's screen); it has never run on real hardware.
 For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
 and [protocol evidence table](docs/masterhub-protocol-evidence.md).
 
@@ -95,7 +95,11 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | --- | --- |
 | [macOS roadmap](docs/masterhub-macos-plan.md) | Target modules, Windows capture procedure, and Raspberry Pi USB limitations |
 | [Diagnostics](docs/masterhub-diagnostics.md) | Device inventory, raw recording, dial command previews, static images, JPEG packet plans, and offline replay |
-| [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, and explicit macOS actions |
+| [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, explicit macOS actions, and the `masterhub-service` options |
+| [Action catalogue](docs/masterhub-actions.md) | Every action, its limits and permissions, including `profile`, `timer` and `obs_scene` |
+| [Dial functions](docs/masterhub-dial-functions.md) | Short click cycles the dial's functions; long press and rotation run the current one |
+| [Display sync](docs/masterhub-display-sync.md) | Experimental, hardware-unverified key images and dial faces |
+| [macOS smoke checks](docs/masterhub-macos-smoke.md) | Device-free audio and scratch-keystroke checks |
 | [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |
 | [Windows parity tracker](docs/windows-parity-gaps.md) | Gaps against the official Windows application |
 | [First hardware session](docs/masterhub-first-hardware-session.md) | Checklist for the first session with physical modules |

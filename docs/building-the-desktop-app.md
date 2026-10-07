@@ -17,3 +17,5 @@ For a cross build, the Tauri CLI sets `TAURI_ENV_TARGET_TRIPLE`; the script uses
 In the app bundle, the sidecar lands at `OpenStreamHub.app/Contents/MacOS/masterhub-service`. The app finds it there. To use a different build, set `OPEN_STREAM_HUB_SERVICE` to its path; the variable takes priority.
 
 Signing and notarization: the sidecar is a second executable inside the bundle and must be signed with the app (Developer ID and the hardened runtime) before notarization. Tauri signs externalBin files when signing is configured. This has not been verified here; only unsigned local builds were made.
+
+The bundle declares no entitlements, usage-description strings or other `Info.plist` additions beyond `LSMinimumSystemVersion` 12.3. Loopback OBS networking, timer notifications and the CPU dial face are described in [release process](release-process.md#permissions-and-entitlements); none of them is verified on a signed bundle.

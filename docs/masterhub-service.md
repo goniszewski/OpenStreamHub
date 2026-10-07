@@ -41,7 +41,7 @@ cargo run -p cooltek-sdk-cli --bin masterhub-service -- \
 
 The path contains the lossless interface bytes without a trailing NUL. The service refuses missing, ambiguous, stale, or unsupported selections; it never falls back to the first matching VID/PID. All five control modules are supported under both known PID generations; see the [additional-module evidence](research/masterhub-additional-modules-1.0.0.113.md). Each process owns one selected interface.
 
-Without `--execute`, matched actions are validated and logged without touching volume, sending shortcuts, or opening applications. Without `--software-mode`, the service sends no configuration commands. Reads default to a 100 ms timeout; `--timeout-ms` accepts 1–1000. Optional `--max-reports` stops after that many nonempty input reports. `--duration-secs` accepts 1–86400; omitting both duration and report limits runs until interrupted or an error occurs.
+Without `--execute`, matched actions are validated and logged without touching volume, sending shortcuts, or opening applications. Without `--software-mode`, the service sends no configuration commands. Reads default to a 100 ms timeout; `--timeout-ms` accepts 1–1000. `--stop-on-action-error` ends the session on the first failed action instead of logging it and continuing. Optional `--max-reports` stops after that many nonempty input reports. `--duration-secs` accepts 1–86400; omitting both duration and report limits runs until interrupted or an error occurs.
 
 Live stdout must be a terminal, pipe, or socket. Direct regular-file redirection is rejected because it cannot provide the required write deadline. To save a live session in zsh or bash, enable pipeline failure reporting and use an actively consumed pipe:
 
@@ -70,6 +70,28 @@ When a duration or report limit is reached, the service stops reading, closes th
 The native backend checks the shared cancellation flag before each subprocess and between volume/mute queries and setters. An in-flight system-tool process is stopped with bounded kill/reap cleanup when cancellation is observed; completed effects cannot be undone. The worker owns logging and action dispatch, and returns its writer to the coordinator before the final footer is written after requested dial cleanup. A worker whose completion cannot be observed is not joined indefinitely.
 
 Requested IPS module hardware-mode restoration is attempted once after the worker phase, also after a contained panic in the input loop (reported as `input loop panicked`) or later on the coordinator thread during drain and worker completion (reported as `live session coordinator panicked`, without a `service_end` footer). On that coordinator-panic path the worker is cancelled but not awaited, and the restore runs immediately; the worker never touches the device transport, so this causes no device contention. Cleanup failures produce a failing exit status. HIDAPI feature writes are synchronous and expose no timeout here, so the worker/log deadlines do not establish a whole-process shutdown bound. Forced termination can prevent cleanup.
+
+### Run options
+
+All options of `masterhub-service run`, as defined in `crates/cooltek-sdk-cli/src/bin/masterhub-service.rs`:
+
+| Option | Meaning |
+| --- | --- |
+| `--profile PATH` | Profile to load (required). |
+| `--path-hex HEX` | Exact interface from `masterhub-diag list` (required). |
+| `--execute` | Run actions on the host (macOS only). Without it actions are only logged. |
+| `--software-mode` | Request IPS dial or key software mode and restore hardware mode on exit. |
+| `--duration-secs N` | Stop after 1–86400 s. |
+| `--max-reports N` | Stop after N nonempty input reports. |
+| `--timeout-ms N` | Read timeout, 1–1000 ms (default 100). |
+| `--stop-on-action-error` | End the session on the first failed action. |
+| `--display-sync` | Experimental: draw M4315 key images, or the dial screen with `--dial-content`. Requires `--software-mode`. |
+| `--dial-content off\|function\|clock\|analog-clock\|cpu` | Experimental: what the M131E dial screen shows (default `off`). Any other value requires `--display-sync`. |
+| `--profile-switch-requests` | Report `profile` actions as `profile_switch_requested` for a supervising session manager. |
+| `--obs-endpoint ADDR` | Loopback obs-websocket endpoint for `obs_scene` (`127.0.0.1:PORT`, `[::1]:PORT` or `localhost:PORT`). |
+| `--obs-password-stdin` | Read the OBS password from the first line of stdin. Requires `--obs-endpoint`. |
+
+`validate` takes a profile path; `replay` takes `--profile PATH` and a capture path.
 
 ### Keypad display sync (experimental)
 
@@ -156,7 +178,7 @@ A profile requires a supported `schema_version`, a nonempty `name`, and a `bindi
 
 Dial short/long gestures are classified on release after an observed press: less than 600 ms is short; at least 600 ms is long. A release emits `released` before the classified gesture, so bindings for both can execute two actions. Repeated button snapshots do not retrigger transitions; repeated rotations remain separate events. A release without a matching observed press produces no short/long gesture. Session reset clears pending presses without synthesizing actions.
 
-A profile in schema 1 or 2 can add an optional `dial_functions` array, which is the official app's model: a short click switches to the next function and runs no action; a long press and rotation run the current function's bindings. With `dial_functions`, flat `bindings` cannot contain `m131e`, and function bindings accept only `right`, `left`, and `long_press`. Profiles without the field keep the flat dial behavior above, and their files are unchanged. See [dial functions](masterhub-dial-functions.md). Replay and live runs route through `ProfileSession::route` and log each switch as its own event record (see [dial function records](#dial-function-records)). Live runs accept these profiles; the current function starts at the first one and resets to it whenever the process restarts, and the dial screen does not show it yet. The [example profile](../examples/profiles/dial-functions.json) and the synthetic capture `crates/cooltek-sdk-cli/tests/fixtures/m131e-dial-functions-synthetic.jsonl` exercise switching, wrap-around, and both sides of the 600 ms threshold.
+A profile in schema 1 or 2 can add an optional `dial_functions` array, which is the official app's model: a short click switches to the next function and runs no action; a long press and rotation run the current function's bindings. With `dial_functions`, flat `bindings` cannot contain `m131e`, and function bindings accept only `right`, `left`, and `long_press`. Profiles without the field keep the flat dial behavior above, and their files are unchanged. See [dial functions](masterhub-dial-functions.md). Replay and live runs route through `ProfileSession::route` and log each switch as its own event record (see [dial function records](#dial-function-records)). Live runs accept these profiles; the current function starts at the first one and resets to it whenever the process restarts, and the dial screen shows it only with the experimental `--display-sync --dial-content function` (see [dial display sync](#dial-display-sync-experimental)). The [example profile](../examples/profiles/dial-functions.json) and the synthetic capture `crates/cooltek-sdk-cli/tests/fixtures/m131e-dial-functions-synthetic.jsonl` exercise switching, wrap-around, and both sides of the 600 ms threshold.
 
 Fader events carry an absolute position as `value: {"type":"position","raw":63,"maximum":100}`. The first valid snapshot emits all five positions; later snapshots emit only changed controls. Reset clears known positions, so a new session can plan the initial fader action immediately. Fader bindings currently require `volume_from_position`, which resolves the value into a concrete `set_volume` action. Keys deduplicate snapshots; roller updates remain separate events, with `ff` interpreted as idle and no inferred distance.
 
@@ -187,7 +209,7 @@ Full rules, the clipboard clobber risk, and the list of untrusted inputs are in 
 
 The backend validates actions again before execution; dry runs and replay use the same executable validation. It invokes absolute `/usr/bin/osascript`, `/usr/bin/open`, `/usr/bin/pbcopy`, `/usr/bin/pbpaste`, `/usr/sbin/screencapture`, and `/usr/bin/afplay` paths with separate arguments, without a shell or arbitrary script actions. User text reaches a process only as one argv element (`open`, or a timer label read by a fixed AppleScript through `on run argv`) or on stdin (`pbcopy`); it is never interpolated into AppleScript. Each subprocess has a five-second timeout (a timer's notification three seconds, its sound six) and separate 16 KiB stdout/stderr limits; failure or cancellation cleanup allows up to one additional second to reap a killed process. Volume and mute actions use a query followed by a setter, so one action can involve two subprocesses; a text snippet uses up to five.
 
-Shortcut, system undo/redo, and text execution may require Accessibility and Automation permissions; a screenshot may require Screen Recording permission. The identity shown by macOS depends on the launching context, such as Terminal versus a bundled application. Only explicit execution can invoke these tools or prompt for permissions; validation, replay, and dry runs do not. Permission failures preserve the system tool's diagnostic and end the session. No permission settings are changed automatically.
+Shortcut, system undo/redo, and text execution may require Accessibility and Automation permissions; a screenshot may require Screen Recording permission. The identity shown by macOS depends on the launching context, such as Terminal versus a bundled application. Only explicit execution can invoke these tools or prompt for permissions; validation, replay, and dry runs do not. A failed action, including one caused by a missing permission, preserves the system tool's diagnostic and is logged as `action_failed`; the session continues unless `--stop-on-action-error` is given. No permission settings are changed automatically.
 
 Apple documents the underlying [volume commands](https://developer.apple.com/library/archive/documentation/AppleScript/Conceptual/AppleScriptLangGuide/reference/ASLR_cmds.html), [System Events UI scripting and Accessibility](https://developer.apple.com/library/archive/documentation/LanguagesUtilities/Conceptual/MacAutomationScriptingGuide/AutomatetheUserInterface.html), and [Automation permissions](https://support.apple.com/en-hk/guide/mac-help/mchl108e1718/mac). These sources establish syntax and permission requirements; they do not verify this service's execution on a particular Mac or audio output.
 
@@ -227,7 +249,7 @@ Live `service_end` records distinguish received `report_count`, `queued_report_c
 
 Live records have a 500 ms total write deadline and a 65,536-byte size limit, including the newline. A partial or failed write permanently disables that writer: retrying it could corrupt the JSONL stream. The writer owns a close-on-exec stdout duplicate, restores the original file status flags when dropped, and has one writer at a time; the application does not run concurrent stdout writes through another owner.
 
-An action failure stops further dispatch and is never retried. A timeout, cancellation, or process error can occur after an action has taken effect. Input, action, cleanup, and output errors are combined when necessary and produce a failing exit status. A failed output stream or unavailable worker result can prevent error/footer records, so stderr and exit status remain relevant.
+A failed action is logged as `action_failed` and never retried; later events still dispatch unless `--stop-on-action-error` ends the session on the first failure. A timeout, cancellation, or process error can occur after an action has taken effect. Input, action, cleanup, and output errors are combined when necessary and produce a failing exit status. A failed output stream or unavailable worker result can prevent error/footer records, so stderr and exit status remain relevant.
 
 The `cooltek-sdk-service` crate exposes `Profile`, `InputSession`, `BindingEngine`, `ProfileSession`, and `ActionDispatcher`. `ProfileSession::route` returns a `ProfileResolution` that reports keypad navigation and dial function switches separately from host actions. `ProfileSession::resolve` keeps returning a `KeypadResolution`, in which a function switch shows up as `Unbound`. Callers provide independently established module/serial identity, nondecreasing input timestamps, and a dispatcher. `DryRunDispatcher` records validated actions; `MacOsDispatcher` executes explicit actions and supports `with_cancellation(Arc<AtomicBool>)` for a shared stop flag. Use a separate input session per physical device and reset it on disconnect, suspension, or transport failure.
 

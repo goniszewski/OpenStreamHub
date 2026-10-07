@@ -51,6 +51,19 @@ The workflow exports these to the job environment only if **all six** are non-em
 
 `masterhub-service` is bundled via `bundle.externalBin` and lands at `OpenStreamHub.app/Contents/MacOS/masterhub-service`. It is a second executable and must be signed with Developer ID and the hardened runtime before notarization, or notarization rejects the app. Tauri's bundler signs `externalBin` files itself when signing is configured: it signs sidecars first and the `.app` last, with the hardened runtime on by default (per Tauri's bundler source and the [macOS signing guide](https://v2.tauri.app/distribute/sign/macos/); not yet exercised in this repository). The workflow still runs `codesign --verify` on the sidecar explicitly in the signed path and fails if it is unsigned. If it fails, sign it manually before bundling (`codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" src-tauri/binaries/masterhub-service-<triple>`) or add a signing step after `prepare-sidecar`. Also confirm the hardened runtime flag (`flags=0x10000(runtime)` in `codesign -dv`). If the app later needs entitlements, they must be configured in `tauri.conf.json` (`bundle.macOS.entitlements`); none are set today.
 
+## Permissions and entitlements
+
+`tauri.conf.json` sets no entitlements and no `Info.plist` additions (`bundle.macOS` has only `minimumSystemVersion`), and the app is not sandboxed. What the bundled code does that macOS may gate:
+
+- **Local networking.** `obs_scene` opens a plain TCP connection from the `masterhub-service` sidecar to a loopback address (`TcpStream` in `crates/cooltek-sdk-service/src/obs.rs`). The webview's CSP does not apply to it. An unsandboxed app needs no network entitlement for this; a future App Sandbox build would need `com.apple.security.network.client`. Not verified on a signed build.
+- **Notifications and sounds.** A timer runs `/usr/bin/osascript` (`display notification`) and `/usr/bin/afplay`. Whether macOS shows the notification, and for which application it asks, is unverified on a real Mac; the service logs `timer_alert_warning` when it is refused.
+- **Accessibility and Automation.** Shortcut, text and undo/redo actions drive System Events through `osascript`. Whether a hardened-runtime build also needs `com.apple.security.automation.apple-events` and an `NSAppleEventsUsageDescription` string for the Automation prompt to appear has not been checked; do not claim it either way until a signed build has been tried.
+- **Input Monitoring.** Reading HID input may need it for the launching application (see the [first hardware session](masterhub-first-hardware-session.md), step 8).
+- **CPU usage.** The `cpu` dial face calls the Mach `host_processor_info` function in-process, which needs no permission or entitlement; it is only drawn behind the experimental display setting.
+
+Record the outcome of each in the first signed run and update this list.
+
+
 ## Local verification commands
 
 Run against a downloaded and unzipped `OpenStreamHub.app`:

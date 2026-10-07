@@ -358,6 +358,52 @@ Leave out the `printf … |` and `--obs-password-stdin` when OBS authentication 
 | OBS closed | Quit OBS and press: `action_failed` with "is OBS running" within 3 s; input keeps working | Connect errors, timeout |
 | No endpoint | Rerun without `--obs-endpoint`: each OBS press logs `action_unavailable`; knob 3 (a multi-action with an OBS step) does not toggle mute | Unavailable handling |
 
+#### 7b. Countdown timer: notification and sound (optional; executes, no module writes)
+
+Needs a Mac with notifications allowed for the app that starts the service (Terminal here, OpenStreamHub in the app). Save this as `captures/hardware/timer.json`, check it with `masterhub-service validate`, then run it with `--execute`:
+
+```json
+{"schema_version":1,"name":"Timer check","bindings":[
+  {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"timer","seconds":10,"label":"Tea","sound":"glass"}},
+  {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"timer","seconds":10}}]}
+```
+
+```sh
+masterhub-service run --profile captures/hardware/timer.json \
+  --path-hex HEX_OF_THE_KNOBS --execute --duration-secs 60 | tee captures/hardware/service-timer.jsonl
+```
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Does the notification appear? | After 10 s a notification titled "Timer finished" with the text `Tea` (knob 2: `0:10 countdown ended`). If macOS refuses it, the log has `timer_alert_warning` and nothing is shown; record which application macOS lists under Notifications. | Notification permission for the process `osascript` is attributed to (unverified) |
+| Does the sound play, without delaying input? | The Glass sound plays; turning a knob during it still logs events at once | `afplay` path, alert thread |
+| Cancel and expiry records | A second press within 10 s logs `timer_cancelled` (`pressed_again`); otherwise `timer_expired` followed by no `timer_alert_failed` | Countdown ownership in the worker |
+| Stop mid-countdown | Ctrl-C before 10 s: `timer_cancelled` with reason `stopped`, no notification or sound afterwards | Cancel on stop |
+| Label privacy | `grep -c Tea captures/hardware/service-timer.jsonl` prints 0 | Records carry `label_chars`, never the label |
+
+#### 7c. Profile next/previous (desktop app, dry run is enough)
+
+Save two or three profiles in the app, one of them with a `{"type":"profile","direction":"next"}` binding on a real control. Start it as a dry run with the module's real interface and press the control.
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Does the key switch the run to the next saved profile (name order)? | The Run panel shows the new profile name and the log shows `profile_switch_requested` then a restarted service; previous wraps around | Session manager `profile_action` path (unit-tested only) |
+| Is it ignored with one saved profile, and does an Execute run pause for confirmation? | No restart with one profile; with Execute the session waits in `needs_confirmation` | Safety rule |
+| Standalone service | The same profile under `masterhub-service run` without `--profile-switch-requests` logs `action_unavailable` and does nothing | CLI contract |
+
+#### 7d. Importing a real `.mhz` export (no hardware needed, needs a real file)
+
+Every importer test so far uses synthetic files. Export a profile from the official Windows MasterHUB app that has key images (`uploadImages/`), a folder, a multi-action and a dial function, and, if possible, a multi-profile `.zip`. In the app choose **Import official .mhz** on the Profiles page.
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Does the real file import without a refusal? | A new `<name> (imported)` profile and a report; images are skipped without being read | [`.mhz` format](research/masterhub-mhz-format.md) assumptions: a ZIP with one cleartext JSON, no version field |
+| Is every control accounted for? | The report lists every control as imported, changed or unbound with a reason; compare with the official app's button list | Mapping table; unsupported controls are never silently dropped |
+| Do shortcuts, folders and dial functions look right? | Windows Ctrl stays Control and Win becomes Command; folders become keypad folders | Shortcut mapping |
+| Dry run only? | Execute is unavailable for the profile until **Allow this imported profile to execute actions** is used; copies and exports stay dry run only | [Importing MasterHUB profiles](importing-masterhub-profiles.md) |
+
+Record any refusal text and the report's counts; keep the file out of the repository.
+
 ### Step 8. Lifecycle: replug, sleep/wake, permissions (READ)
 
 Use a finite recording so the shell is never stuck:
@@ -368,12 +414,14 @@ scripts/hardware/record-session.sh dial 90 --label lifecycle-replug
 
 | Event during the 90 s capture | Expected observable | Confirms or refutes |
 | --- | --- | --- |
-| Unplug and replug the base after about 20 s | Capture ends with a transport error footer and failing status (no automatic reconnect exists). Record exact error text. After replug, rerun `collect-inventory.sh` and compare `path_hex` before and after. | Plan gate "unplug/replug"; "paths may change". |
+| Unplug and replug the base after about 20 s | Capture ends with a transport error footer and failing status (the CLI has no reconnect; the desktop app's session manager does, see the end of this step). Record exact error text. After replug, rerun `collect-inventory.sh` and compare `path_hex` before and after. | Plan gate "unplug/replug"; "paths may change". |
 | Remove and reinsert one module (if hot-swappable; check the vendor guidance first, otherwise skip) | Same; which interfaces vanish and reappear, and their serials | Module reinsertion; serial-based identity. |
-| Sleep the Mac (`pmset sleepnow`) with a capture running, wake after 30 s | Capture ends by deadline or error; note which. After wake: inventory and a fresh capture. | Sleep/wake gate. No observer exists, so a failure here is expected and informative. |
+| Sleep the Mac (`pmset sleepnow`) with a capture running, wake after 30 s | Capture ends by deadline or error; note which. After wake: inventory and a fresh capture. | Sleep/wake gate. The CLI has no sleep/wake observer, so a failure here is expected and informative. |
 | Software mode across sleep/wake (WRITE) | Run `record --software-mode`, sleep, wake; observe display and whether input resumes; whether the module needs `dial mode software` again (the SDK's two-second resume is host policy) | `DialSession` resume policy; mode persistence. |
 | Fresh process after crash | Kill -9 a software-mode record, rerun neutral capture | Restore behavior (see 6a). |
 | macOS permission prompt | Note whether/when an Input Monitoring prompt appears and what happens when denied | macOS access gate. |
+
+Then repeat unplug/replug and sleep/wake with the desktop app: start a dry run, watch the Run panel (`waiting_for_device`, `suspended`, `reconnecting`), and confirm that an Execute run waits in `needs_confirmation` instead of resuming. This exercises [the session manager](masterhub-session-manager.md), which is unit-tested with fakes only. With **Experimental: send images to module displays** on, also confirm that the dial or keys are redrawn after wake.
 
 ## Evidence to save per module
 
@@ -419,7 +467,12 @@ Copy to a new file in `captures/hardware/` and fill it in. Use `confirmed`, `ref
 | T6.7 | 6c | dial | Orientation (rotation to use) | | | | | |
 | T6.8 | 6c | dial | Pacing under back-to-back upload | | | | | |
 | T6.9 | 6c | keys | Real output report length from descriptor | | | | | |
+| T6.10 | 6d | dial | Clock, function and CPU faces appear; once-a-second redraws are stable | | | | | |
 | T7.1 | 7 | all | Service plan matches physical gestures | | | | | |
+| T7.2 | 7a | knobs | `obs_scene` against a real OBS 28+ | | | | | |
+| T7.3 | 7b | knobs | Timer notification and sound on a real Mac | | | | | |
+| T7.4 | 7c | any | Profile key switches the managed run | | | | | |
+| T7.5 | 7d | none | Real `.mhz` export imports; report accounts for every control | | | | | |
 | T8.1 | 8 | all | Replug behavior and path change | | | | | |
 | T8.2 | 8 | all | Sleep/wake behavior | | | | | |
 | T8.3 | 8 | dial | Software mode across sleep/wake | | | | | |

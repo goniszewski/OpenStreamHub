@@ -119,12 +119,12 @@ describe('ObsSettingsPanel markup', () => {
 });
 
 describe('OBS activity records', () => {
-  it('summarize unavailable and failed scene switches with the scene and a bounded reason', () => {
+  it('summarize unavailable and failed scene switches with the scene length (never the name) and a bounded reason', () => {
     const event = { timestamp_micros: 1, control: 0, gesture: 'pressed' };
-    const unavailable = summarizeRecord({ type: 'action_unavailable', schema_version: 1, event, action: { type: 'obs_scene', scene: 'Live' }, reason: 'OBS is not configured for this run (turn on OBS in OpenStreamHub Settings, or pass --obs-endpoint); no action was taken' }, 0);
-    expect(unavailable?.text).toBe('OBS scene "Live" not available: OBS is not configured for this run (turn on OBS in OpenStreamHub Settings, or pass --obs-endpoint); no action was taken');
-    const failed = summarizeRecord({ type: 'action_failed', schema_version: 1, event, action: { type: 'obs_scene', scene: 'Live' }, error: 'OBS at 127.0.0.1:4455: OBS refused the scene switch (no scene with that name)' }, 0);
-    expect(failed?.text).toContain('OBS scene "Live"');
+    const unavailable = summarizeRecord({ type: 'action_unavailable', schema_version: 1, event, action: { type: 'obs_scene', scene_chars: 4 }, reason: 'OBS is not configured for this run (turn on OBS in OpenStreamHub Settings, or pass --obs-endpoint); no action was taken' }, 0);
+    expect(unavailable?.text).toBe('OBS scene (4 characters) not available: OBS is not configured for this run (turn on OBS in OpenStreamHub Settings, or pass --obs-endpoint); no action was taken');
+    const failed = summarizeRecord({ type: 'action_failed', schema_version: 1, event, action: { type: 'obs_scene', scene_chars: 4 }, error: 'OBS at 127.0.0.1:4455: OBS refused the scene switch (no scene with that name)' }, 0);
+    expect(failed?.text).toContain('OBS scene (4 characters) failed');
     expect(failed?.text).toContain('no scene with that name');
   });
 });

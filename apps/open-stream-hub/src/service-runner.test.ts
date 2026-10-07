@@ -114,6 +114,25 @@ describe('summarizeRecord', () => {
     expect(at({ type: 'multi_action', actions: [{ type: 'open_url', origin: 'https://a.test' }, { type: 'text', chars: 3, press_enter: false }] }))
       .toContain('multi-action [open URL https://a.test, paste text (3 characters)]');
   });
+  it('logs only the length of an OBS scene name, from redacted (scene_chars) and old (scene) records alike', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    const long = 'Interview guest cam with a very long name';
+    for (const scene of ['Live', 'BRB', long, 'Zażółć 🎥']) {
+      const lines = [
+        at({ type: 'obs_scene', scene }),
+        at({ type: 'multi_action', actions: [{ type: 'obs_scene', scene }, { type: 'toggle_mute' }] }),
+        summarizeRecord({ type: 'action_failed', event, action: { type: 'obs_scene', scene }, error: 'OBS at 127.0.0.1:4455: timed out' }, 1)!.text,
+        summarizeRecord({ type: 'action_unavailable', event, action: { type: 'obs_scene', scene }, reason: 'OBS is not configured' }, 1)!.text,
+      ];
+      for (const line of lines) expect(line).not.toContain(scene);
+      expect(lines[0]).toContain(`OBS scene (${[...scene].length} characters)`);
+    }
+    expect(at({ type: 'obs_scene', scene_chars: 4 })).toContain('OBS scene (4 characters)');
+    expect(at({ type: 'multi_action', actions: [{ type: 'obs_scene', scene_chars: 3 }, { type: 'toggle_mute' }] }))
+      .toContain('multi-action [OBS scene (3 characters), toggle mute]');
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'obs_scene', scene_chars: 13 } }, 1)!.text)
+      .toBe('m003k control 1 pressed: planned OBS scene (13 characters)');
+  });
   it('tolerates unknown shapes', () => {
     expect(summarizeRecord({ type: 'raw', line: 'hello' }, 1)).toEqual({ kind: 'raw', text: 'hello', at: 1 });
     expect(summarizeRecord('oops', 1)?.kind).toBe('raw');

@@ -150,7 +150,8 @@ function describeAction(action: unknown): string {
     case 'profile': return `${action.direction === 'previous' ? 'previous' : 'next'} profile`;
     // The service logs only the label's length, never its text.
     case 'timer': return `timer ${typeof action.seconds === 'number' ? timerDuration(action.seconds) : '?'}`;
-    case 'obs_scene': return `OBS scene "${clip(String(action.scene), 128)}"`;
+    // Only the name's length: the service logs `scene_chars`, older records the name itself.
+    case 'obs_scene': return `OBS scene (${typeof action.scene_chars === 'number' ? action.scene_chars : (typeof action.scene === 'string' ? [...action.scene].length : 0)} characters)`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

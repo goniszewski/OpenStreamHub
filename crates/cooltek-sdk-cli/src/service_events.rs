@@ -412,8 +412,8 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
 }
 
 /// Redacts an action for a log record: snippet text and URL paths, queries and
-/// user information (often passwords or tokens) are never written. Every other
-/// action serializes unchanged.
+/// user information (often passwords or tokens), timer labels and OBS scene
+/// names are never written. Every other action serializes unchanged.
 pub fn loggable(action: &Action) -> Value {
     match action {
         Action::Text { text, press_enter } => {
@@ -437,6 +437,10 @@ pub fn loggable(action: &Action) -> Value {
                 value["sound"] = json!(sound);
             }
             value
+        }
+        // A scene name is user text too (it can name a private call); only its length is logged.
+        Action::ObsScene { scene } => {
+            json!({"type":"obs_scene", "scene_chars":scene.chars().count()})
         }
         other => json!(other),
     }
@@ -1074,10 +1078,10 @@ mod tests {
             actions: vec![Action::ToggleMute, scene.clone()],
         };
         for (action, logged) in [
-            (scene, json!({"type":"obs_scene","scene":"Live"})),
+            (scene, json!({"type":"obs_scene","scene_chars":4})),
             (
                 multi,
-                json!({"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":"Live"}]}),
+                json!({"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene_chars":4}]}),
             ),
         ] {
             for execute in [false, true] {
@@ -1144,6 +1148,25 @@ mod tests {
             loggable(&nested)["actions"][1],
             json!({"type":"toggle_mute"})
         );
+        // A scene name is user text: only its length is logged, at any depth.
+        for scene in ["Live", "BRB", "Zażółć 🎥 \"quoted\" {json}"] {
+            let obs = Action::ObsScene {
+                scene: scene.into(),
+            };
+            let count = scene.chars().count();
+            assert_eq!(
+                loggable(&obs),
+                json!({"type":"obs_scene", "scene_chars":count})
+            );
+            let nested = Action::MultiAction {
+                actions: vec![Action::ToggleMute, obs],
+            };
+            assert_eq!(
+                loggable(&nested)["actions"][1],
+                json!({"type":"obs_scene", "scene_chars":count})
+            );
+            assert!(!loggable(&nested).to_string().contains(scene));
+        }
         for plain in [
             Action::Volume { delta: -5 },
             Action::ToggleMute,

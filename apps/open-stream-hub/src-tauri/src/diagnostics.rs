@@ -294,8 +294,13 @@ fn url_origin(url: &str) -> String {
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
 /// activity): `text` snippets, `timer` labels and `obs_scene` scene names
 /// become `<N chars>`, and `open_url` URLs keep only their origin. Long
-/// enough raw values are also queued for the text scrub.
-fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, String)>) {
+/// enough raw values are also queued for the text scrub; shorter scene names
+/// go to `short_scenes` for the whole-word scrub of profile and client text.
+fn redact_action_payloads(
+    value: &mut Value,
+    replacements: &mut Vec<(String, String)>,
+    short_scenes: &mut Vec<(String, String)>,
+) {
     match value {
         Value::Object(map) => {
             let field = match map.get("type").and_then(Value::as_str) {
@@ -315,18 +320,20 @@ fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, Str
                 };
                 if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
                     replacements.push((raw.clone(), redacted.clone()));
+                } else if field == "scene" && !raw.is_empty() {
+                    short_scenes.push((raw.clone(), redacted.clone()));
                 }
                 *raw = redacted;
             }
             for (key, item) in map.iter_mut() {
                 if !is_data_key(key) {
-                    redact_action_payloads(item, replacements);
+                    redact_action_payloads(item, replacements, short_scenes);
                 }
             }
         }
         Value::Array(items) => items
             .iter_mut()
-            .for_each(|item| redact_action_payloads(item, replacements)),
+            .for_each(|item| redact_action_payloads(item, replacements, short_scenes)),
         _ => {}
     }
 }
@@ -334,6 +341,47 @@ fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, Str
 /// Raw report bytes are never rewritten by text scrubbing.
 fn is_data_key(key: &str) -> bool {
     matches!(key, "hex" | "report_descriptor_hex")
+}
+
+/// Replaces each `(from, to)` in every string value except raw data, but only
+/// where `from` is a whole word (not next to a letter or digit), so a short
+/// scene name such as `Live` never rewrites `Lively`.
+fn scrub_words(value: &mut Value, replacements: &[(String, String)]) {
+    match value {
+        Value::String(text) => {
+            for (from, to) in replacements {
+                let mut out = String::with_capacity(text.len());
+                let mut rest = text.as_str();
+                while let Some(at) = rest.find(from.as_str()) {
+                    let end = at + from.len();
+                    let before = rest[..at].chars().next_back();
+                    let after = rest[end..].chars().next();
+                    out.push_str(&rest[..at]);
+                    if before.is_some_and(char::is_alphanumeric)
+                        || after.is_some_and(char::is_alphanumeric)
+                    {
+                        out.push_str(from);
+                    } else {
+                        out.push_str(to);
+                    }
+                    rest = &rest[end..];
+                }
+                out.push_str(rest);
+                *text = out;
+            }
+        }
+        Value::Object(map) => {
+            for (key, item) in map.iter_mut() {
+                if !is_data_key(key) {
+                    scrub_words(item, replacements);
+                }
+            }
+        }
+        Value::Array(items) => items
+            .iter_mut()
+            .for_each(|item| scrub_words(item, replacements)),
+        _ => {}
+    }
 }
 
 /// Applies `(from, to)` replacements to every string value except raw data.
@@ -737,12 +785,21 @@ pub fn build_bundle(inputs: &BundleInputs, probe: &mut dyn DeviceProbe) -> Bundl
     let mut profile = inputs.request.profile.clone();
     let mut client = inputs.request.client.clone();
     if redact {
+        // Scene names shorter than the free-text minimum are still removed
+        // from profile and client text (activity lines, errors), as whole words.
+        let mut short_scenes = Vec::new();
         if let Some(profile) = &mut profile {
             redact_fields(profile, &mut replacements);
-            redact_action_payloads(profile, &mut replacements);
+            redact_action_payloads(profile, &mut replacements, &mut short_scenes);
         }
         redact_fields(&mut client, &mut replacements);
-        redact_action_payloads(&mut client, &mut replacements);
+        redact_action_payloads(&mut client, &mut replacements, &mut short_scenes);
+        short_scenes.sort_by_key(|(from, _)| (std::cmp::Reverse(from.len()), from.clone()));
+        short_scenes.dedup();
+        if let Some(profile) = &mut profile {
+            scrub_words(profile, &short_scenes);
+        }
+        scrub_words(&mut client, &short_scenes);
         for device in &devices {
             seed_path(device.path.as_bytes(), &mut replacements);
             if let Some(serial) = &device.serial_number {
@@ -1478,6 +1535,109 @@ mod tests {
         );
         assert_eq!(activity[1]["action"]["url"], "https://activity.example.net");
         assert_eq!(activity[2]["url"], "<url>");
+    }
+
+    fn activity_text(text: &str) -> Value {
+        json!({ "source": "service", "service_id": "service:x", "kind": "action", "text": text, "at": 1 })
+    }
+
+    #[test]
+    fn obs_scene_names_of_any_length_are_scrubbed_from_activity_text() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "obs_scene", "scene": "Live" } },
+                { "action": { "type": "obs_scene", "scene": "BRB" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "toggle_mute" }, { "type": "obs_scene", "scene": "Interview guest cam" },
+                ] } },
+            ] })),
+            client: ClientContext {
+                activity: vec![
+                    // Lines in the old format, which printed the name.
+                    activity_text("Executed OBS scene \"Live\" (m4315 control 1 pressed)."),
+                    activity_text(
+                        "OBS scene \"BRB\" failed: OBS at 127.0.0.1:4455: no scene named BRB",
+                    ),
+                    activity_text("multi-action [toggle mute, OBS scene \"Interview guest cam\"]"),
+                    // A short name inside a longer word is left alone.
+                    activity_text("Lively BRBs and Live."),
+                    activity_text("Executed OBS scene (4 characters)."),
+                ],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let texts: Vec<&str> = bundle.value["runtime"]["client"]["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "Executed OBS scene \"<4 chars>\" (m4315 control 1 pressed).",
+                "OBS scene \"<3 chars>\" failed: OBS at 127.0.0.1:4455: no scene named <3 chars>",
+                "multi-action [toggle mute, OBS scene \"<19 chars>\"]",
+                "Lively BRBs and <4 chars>.",
+                "Executed OBS scene (4 characters).",
+            ]
+        );
+        let profile = &bundle.value["profile"]["bindings"];
+        assert_eq!(profile[0]["action"]["scene"], "<4 chars>");
+        assert_eq!(profile[1]["action"]["scene"], "<3 chars>");
+        assert_eq!(profile[2]["action"]["actions"][1]["scene"], "<19 chars>");
+        assert!(!bundle.value.to_string().contains("Interview guest"));
+    }
+
+    #[test]
+    fn without_the_profile_obs_scene_names_in_client_records_are_still_scrubbed() {
+        let validated = validate(DiagnosticsRequest {
+            client: ClientContext {
+                activity: vec![
+                    json!({ "kind": "service_record", "record": { "type": "action_failed",
+                        "action": { "type": "obs_scene", "scene": "BRB" },
+                        "error": "OBS at 127.0.0.1:4455: no scene named BRB" } }),
+                    activity_text("Executed OBS scene (4 characters)."),
+                ],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let activity = &bundle.value["runtime"]["client"]["activity"];
+        assert_eq!(activity[0]["record"]["action"]["scene"], "<3 chars>");
+        assert_eq!(
+            activity[0]["record"]["error"],
+            "OBS at 127.0.0.1:4455: no scene named <3 chars>"
+        );
+        assert_eq!(activity[1]["text"], "Executed OBS scene (4 characters).");
+        assert_eq!(bundle.value["profile"], Value::Null);
+        assert!(!bundle.value.to_string().contains("BRB"));
+
+        // Without redaction nothing is rewritten.
+        let plain = validate(DiagnosticsRequest {
+            client: ClientContext {
+                activity: vec![activity_text("Executed OBS scene \"Live\".")],
+                notes: None,
+                extra: Map::new(),
+            },
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "obs_scene", "scene": "Live" } },
+            ] })),
+            ..request(false, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&plain, &mut rig(), &|_| false, &Running::default());
+        assert_eq!(
+            bundle.value["runtime"]["client"]["activity"][0]["text"],
+            "Executed OBS scene \"Live\"."
+        );
     }
 
     #[test]

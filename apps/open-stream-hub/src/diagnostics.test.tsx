@@ -7,7 +7,7 @@ import {
 } from './diagnostics';
 import type { DiagnosticsResult } from './diagnostics';
 import { idleFeedState } from './device-feed';
-import { emptyCounters, idleServiceState } from './service-runner';
+import { emptyCounters, idleServiceState, summarizeRecord } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
 
 const profile: Profile = { schema_version: 1, name: 'P', bindings: [] };
@@ -36,6 +36,30 @@ describe('buildDiagnosticsClient', () => {
     expect(client.activity.length).toBeLessThan(202);
     expect(client.activity[client.activity.length - 1].source).toBe('device_feed');
     expect(client.notes).toBeNull();
+  });
+});
+
+describe('OBS scene names in the activity', () => {
+  const scenes = ['Live', 'BRB', 'Interview guest cam with a very long name'];
+  const event = { module: 'm4315', control: 0, gesture: 'pressed' };
+  const texts = scenes.flatMap(scene => [
+    { type: 'event', status: 'planned', event, action: { type: 'obs_scene', scene } },
+    { type: 'action_executed', event, action: { type: 'obs_scene', scene } },
+    { type: 'action_failed', event, action: { type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'obs_scene', scene }] }, error: 'OBS at 127.0.0.1:4455: timed out' },
+    { type: 'action_unavailable', event, action: { type: 'obs_scene', scene_chars: scene.length }, reason: 'OBS is not configured' },
+  ]).map((record, index) => summarizeRecord(record, index)!.text);
+  const sceneProfile: Profile = { ...profile, bindings: scenes.map((scene, control) => ({ module: 'm4315', control, gesture: 'pressed', action: { type: 'obs_scene', scene } })) } as Profile;
+
+  it('are never in the client activity, with or without the profile', () => {
+    const client = buildDiagnosticsClient(service([run('service:a', texts)]), idleFeedState, '');
+    for (const includeProfile of [false, true]) {
+      const request = buildDiagnosticsRequest({ ...defaultDiagnosticsOptions, includeProfile }, sceneProfile, client);
+      const activity = JSON.stringify(request.client);
+      for (const scene of scenes) expect(activity).not.toContain(scene);
+      expect(activity).toContain('OBS scene (4 characters)');
+      expect(activity).toContain('OBS scene (3 characters)');
+      expect(request.include_profile).toBe(includeProfile ? sceneProfile : null);
+    }
   });
 });
 
@@ -79,6 +103,7 @@ describe('DiagnosticsPanel markup', () => {
     expect(html).not.toMatch(/checked=""[^>]*\/>Include current profile/);
     expect(html).toContain('text snippets, timer labels, OBS scene names and web addresses in it would be part of the file');
     expect(html).toContain('each text snippet, timer label and OBS scene name is replaced by its length and each web address is reduced to its site address');
+    expect(html).toContain('The activity never shows text snippets, timer labels or OBS scene names, and shows web addresses only as their site address.');
     expect(html).toContain('Nothing is uploaded or sent');
     expect(html).toContain('0 / 2000');
     expect(html).toContain('<option value="3" selected="">3 seconds</option>');

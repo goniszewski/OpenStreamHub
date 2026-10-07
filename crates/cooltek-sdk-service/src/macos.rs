@@ -2015,10 +2015,14 @@ mod tests {
         assert!(state.lock().unwrap().requests.is_empty());
     }
 
-    #[test]
-    fn obs_scene_with_an_endpoint_switches_through_the_client() {
+    /// A fake OBS on a loopback port that accepts the upgrade and answers one
+    /// `SetCurrentProgramScene` for `scene`, calling `on_request` when the
+    /// request arrives.
+    fn fake_obs(
+        scene: &'static str,
+        on_request: impl FnOnce() + Send + 'static,
+    ) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
-        // A fake OBS that accepts the upgrade and answers one request.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let server = std::thread::spawn(move || {
@@ -2064,13 +2068,20 @@ mod tests {
             );
             let request = crate::obs::tests_support::read_text(&mut stream);
             let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-            assert_eq!(request["d"]["requestData"]["sceneName"], "Live");
+            assert_eq!(request["d"]["requestData"]["sceneName"], scene);
+            on_request();
             send(
                 &mut stream,
                 serde_json::json!({"op":7,"d":{"requestType":"SetCurrentProgramScene","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}})
                     .to_string(),
             );
         });
+        (port, server)
+    }
+
+    #[test]
+    fn obs_scene_with_an_endpoint_switches_through_the_client() {
+        let (port, server) = fake_obs("Live", || {});
         let (dispatcher, state) = fake(vec![]);
         let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
             crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
@@ -2084,6 +2095,56 @@ mod tests {
         server.join().unwrap();
         // No subprocess: OBS is reached over the loopback socket only.
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_multi_action_runs_shortcut_obs_scene_shortcut_in_order() {
+        let (dispatcher, state) = fake(vec![success(""), success("")]);
+        // When OBS gets the request, only the first shortcut has run.
+        let seen = Arc::new(Mutex::new(None));
+        let (shared, record) = (Arc::clone(&state), Arc::clone(&seen));
+        let (port, server) = fake_obs("Be right back", move || {
+            *record.lock().unwrap() = Some(shared.lock().unwrap().requests.len());
+        });
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let shortcut = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![Modifier::Command],
+        };
+        let sequence = Action::MultiAction {
+            actions: vec![
+                shortcut("a"),
+                Action::ObsScene {
+                    scene: "Be right back".into(),
+                },
+                shortcut("b"),
+            ],
+        };
+        assert_eq!(dispatcher.unavailable(&sequence), None);
+        dispatcher.dispatch(&sequence).unwrap();
+        server.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(1));
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 2, "the OBS step starts no subprocess");
+        assert_eq!(
+            args(&state.requests[0]),
+            [
+                "-e",
+                "tell application \"System Events\" to keystroke \"a\" using {command down}"
+            ]
+        );
+        assert_eq!(
+            args(&state.requests[1]),
+            [
+                "-e",
+                "tell application \"System Events\" to keystroke \"b\" using {command down}"
+            ]
+        );
+        // Spacing runs between all three steps, the OBS step included.
+        assert_eq!(state.pauses, [(1, STEP_SPACING), (1, STEP_SPACING)]);
     }
 
     #[test]

@@ -2213,6 +2213,8 @@ mod tests {
         /// (release, seen): `seen` is set when an action is dispatched while
         /// the slow alerter is still blocked (`release` unset).
         probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+        /// A real OBS client for `obs_scene`, cancelled by the session's stop flag.
+        obs: Option<cooltek_sdk_service::obs::ObsClient>,
     }
     impl ActionDispatcher for WithAlerter {
         fn dispatch(&mut self, action: &Action) -> Result<(), String> {
@@ -2220,6 +2222,10 @@ mod tests {
                 && !release.load(Ordering::SeqCst)
             {
                 seen.store(true, Ordering::SeqCst);
+            }
+            if let (Action::ObsScene { scene }, Some(obs)) = (action, &self.obs) {
+                self.actions.received.lock().unwrap().push(action.clone());
+                return obs.set_current_program_scene(scene);
             }
             self.actions.dispatch(action)
         }
@@ -2513,7 +2519,8 @@ mod tests {
     }
 
     /// Keys 1 and 4 start one-second timers, key 2 a one-hour timer, key 3
-    /// toggles mute. With an `alerter`, alerts run on the alert thread.
+    /// toggles mute, key 5 switches to the OBS scene `Live`. With an
+    /// `alerter`, alerts run on the alert thread.
     fn timer_session_with(
         steps: Vec<Step>,
         options: LiveOptions,
@@ -2521,6 +2528,28 @@ mod tests {
         alerter: Option<AlerterBuilder>,
         probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
         fail_spawn: bool,
+    ) -> (Result<LiveSummary, String>, Vec<Action>, Vec<Value>) {
+        timer_session_with_obs(
+            steps,
+            options,
+            interrupted,
+            alerter,
+            probe,
+            fail_spawn,
+            None,
+        )
+    }
+
+    /// [`timer_session_with`], plus a real OBS client for `obs_scene` on
+    /// `127.0.0.1:obs_port` when given.
+    fn timer_session_with_obs(
+        steps: Vec<Step>,
+        options: LiveOptions,
+        interrupted: Arc<AtomicBool>,
+        alerter: Option<AlerterBuilder>,
+        probe: Option<(Arc<AtomicBool>, Arc<AtomicBool>)>,
+        fail_spawn: bool,
+        obs_port: Option<u16>,
     ) -> (Result<LiveSummary, String>, Vec<Action>, Vec<Value>) {
         let transport = Transport::new(steps);
         let clock = Arc::clone(&transport.clock);
@@ -2533,7 +2562,8 @@ mod tests {
                 {"module":"m4315","control":0,"gesture":"pressed","action":{"type":"timer","seconds":1,"label":"Tea","sound":"none"}},
                 {"module":"m4315","control":1,"gesture":"pressed","action":{"type":"timer","seconds":3600}},
                 {"module":"m4315","control":2,"gesture":"pressed","action":{"type":"toggle_mute"}},
-                {"module":"m4315","control":3,"gesture":"pressed","action":{"type":"timer","seconds":1,"sound":"funk"}}
+                {"module":"m4315","control":3,"gesture":"pressed","action":{"type":"timer","seconds":1,"sound":"funk"}},
+                {"module":"m4315","control":4,"gesture":"pressed","action":{"type":"obs_scene","scene":"Live"}}
             ]}"#)
             .unwrap(),
         )
@@ -2550,12 +2580,20 @@ mod tests {
             options,
             interrupted,
             move |stop| {
+                let obs = obs_port.map(|port| {
+                    cooltek_sdk_service::obs::ObsClient::new(
+                        cooltek_sdk_service::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+                        None,
+                    )
+                    .with_cancellation(Arc::clone(&stop))
+                });
                 Ok((
                     WithAlerter {
                         actions: simple_actions(stop, actions),
                         alerter,
                         fail_spawn,
                         probe,
+                        obs,
                     },
                     writer,
                 ))
@@ -2698,6 +2736,86 @@ mod tests {
         assert_eq!(failed[1]["error"], ALERT_SKIPPED);
         assert_eq!(rows.last().unwrap()["reason"], "interrupted");
         assert_eq!(rows.last().unwrap()["timer_alert_failed_count"], 2);
+    }
+
+    #[test]
+    fn a_stop_cuts_off_both_a_running_alert_and_an_obs_request_in_flight() {
+        // A loopback "OBS" that accepts and then never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connected = Arc::new(AtomicBool::new(false));
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let accepted = Arc::clone(&connected);
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            accepted.store(true, Ordering::SeqCst);
+            let _ = wait.recv_timeout(Duration::from_secs(10));
+        });
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let (alerter, log, _release) = slow_alerter(false);
+        let stopped_at = Arc::new(Mutex::new(None));
+        let (seen, stop, stamp) = (
+            Arc::clone(&log),
+            Arc::clone(&interrupted),
+            Arc::clone(&stopped_at),
+        );
+        let (result, received, rows) = timer_session_with_obs(
+            vec![
+                keys(&[0], 1),
+                keys(&[], 2),
+                // The countdown has ended and its alert is running (blocked).
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| !seen.lock().unwrap().started.is_empty()));
+                })),
+                keys(&[4], 3),
+                keys(&[], 4),
+                // The OBS request is in flight: connected, waiting for an answer.
+                Step::Run(Box::new(move || {
+                    assert!(eventually(|| connected.load(Ordering::SeqCst)));
+                    *stamp.lock().unwrap() = Some(Instant::now());
+                    stop.store(true, Ordering::SeqCst);
+                })),
+            ],
+            LiveOptions {
+                timeout_ms: 5,
+                ..LiveOptions::default()
+            },
+            interrupted,
+            Some(alerter),
+            None,
+            false,
+            Some(port),
+        );
+        let ended = stopped_at.lock().unwrap().unwrap().elapsed();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        result.unwrap();
+        // Both are cut off at once: under the 3 s OBS deadline and far under
+        // the 10 s the slow alert would otherwise take.
+        assert!(ended < Duration::from_secs(2), "{ended:?}");
+        assert_eq!(
+            received,
+            [Action::ObsScene {
+                scene: "Live".into()
+            }]
+        );
+        let log = log.lock().unwrap();
+        assert_eq!(log.started.len(), 1);
+        assert_eq!(log.killed, 1, "the running alert saw the stop");
+        assert!(log.dropped, "the alert thread was joined");
+        let failed = of_type(&rows, "action_failed");
+        assert_eq!(failed.len(), 1, "{rows:?}");
+        assert_eq!(
+            failed[0]["action"],
+            json!({"type":"obs_scene","scene_chars":4})
+        );
+        let error = failed[0]["error"].as_str().unwrap();
+        assert!(error.contains("cancelled before OBS answered"), "{error}");
+        let cut = of_type(&rows, "timer_alert_failed");
+        assert_eq!(cut.len(), 1, "{rows:?}");
+        let cut = cut[0]["error"].as_str().unwrap();
+        assert!(cut.starts_with(ALERT_STOPPED), "{cut}");
+        assert_eq!(rows.last().unwrap()["reason"], "interrupted");
     }
 
     #[test]

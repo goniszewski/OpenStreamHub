@@ -557,8 +557,8 @@ fn replay_reports_obs_scene_as_unavailable_without_an_endpoint() {
         planned_actions(&records),
         vec![
             json!({"type":"volume", "delta":5}),
-            json!({"type":"obs_scene", "scene":"Starting soon"}),
-            json!({"type":"multi_action", "actions":[{"type":"obs_scene","scene":"Be right back"},{"type":"toggle_mute"}]}),
+            json!({"type":"obs_scene", "scene_chars":13}),
+            json!({"type":"multi_action", "actions":[{"type":"obs_scene","scene_chars":13},{"type":"toggle_mute"}]}),
         ],
     );
     let unavailable: Vec<_> = records
@@ -585,6 +585,11 @@ fn replay_reports_obs_scene_as_unavailable_without_an_endpoint() {
     assert_eq!(end["unavailable_action_count"], 2);
     assert_eq!(end["failed_action_count"], 0);
     assert_eq!(end["incomplete_action_count"], 0);
+    // Scene names are never written, not even in the event's binding.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for scene in ["Starting soon", "Be right back"] {
+        assert!(!stdout.contains(scene), "{scene} was logged: {stdout}");
+    }
 }
 
 fn run_with_stdin(arguments: &[&str], stdin: &[u8]) -> Output {

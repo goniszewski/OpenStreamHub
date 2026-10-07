@@ -42,7 +42,7 @@ export function DiagnosticsPanel({ desktop, invoke, profile, runner, feed, initi
 
   return <section className="panel diagnostics-panel" aria-labelledby="diagnostics-title">
     <h2 id="diagnostics-title"><LifeBuoy size={18} />Diagnostics</h2>
-    <p>Create a local file that helps explain how this Mac and your modules behave. It contains app and OS information, the USB device list with HID descriptors, an optional short passive input capture, and recent service and device-feed activity.</p>
+    <p>Create a local file that helps explain how this Mac and your modules behave. It contains app and OS information, the USB device list with HID descriptors, an optional short passive input capture, and recent service and device-feed activity. The activity never shows text snippets, timer labels or OBS scene names, and shows web addresses only as their site address.</p>
     <p className="fine-print"><strong>Nothing is uploaded or sent.</strong> The file stays on this Mac. You decide whether to share it.</p>
     {!desktop && <p className="fine-print" role="status">Creating a bundle needs the desktop app.</p>}
     <div className="diagnostics-options">

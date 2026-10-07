@@ -92,8 +92,9 @@ enum Command {
         display_sync: bool,
         /// Experimental, hardware-unverified: what the M131E dial screen shows
         /// with --display-sync: the active dial function's name (`function`), a
-        /// digital clock (`clock`), or an analog clock (`analog-clock`). Redrawn
-        /// only when it changes, at most once a second. `off` (the default) draws
+        /// digital clock (`clock`), an analog clock (`analog-clock`), or the
+        /// machine's CPU usage (`cpu`; macOS only, `--` elsewhere). Redrawn only
+        /// when it changes, at most once a second. `off` (the default) draws
         /// nothing; any other value requires --display-sync and an M131E.
         #[arg(long, value_enum, default_value_t = DialContent::Off)]
         dial_content: DialContent,
@@ -152,7 +153,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 return Err("--execute is supported only on macOS".into());
             }
             // Prepared before any HID access, so nothing is encoded per input
-            // event (clock faces are drawn once per minute on the display thread).
+            // event (clock faces are drawn once per minute, and CPU usage is
+            // sampled at most once a second, on the display thread).
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
                 (true, DialContent::Off) => Some(Artwork::Keys(PreparedKeyArtwork::prepare()?)),
@@ -524,6 +526,7 @@ mod tests {
             DialContent::Function,
             DialContent::Clock,
             DialContent::AnalogClock,
+            DialContent::Cpu,
         ] {
             // A flat profile is enough for the dial; no keypad tree is needed.
             assert!(check_display_sync(true, true, content, &dial).is_ok());
@@ -581,10 +584,21 @@ mod tests {
             ("function", DialContent::Function),
             ("clock", DialContent::Clock),
             ("analog-clock", DialContent::AnalogClock),
+            ("cpu", DialContent::Cpu),
         ] {
             assert_eq!(parse(&["--dial-content", value]).unwrap(), content);
         }
-        for bad in ["Clock", "analog", "", "clock,function", "stats", "cpu"] {
+        for bad in [
+            "Clock",
+            "analog",
+            "",
+            "clock,function",
+            "stats",
+            "CPU",
+            "gpu",
+            "clock+cpu",
+            "cpu-usage",
+        ] {
             assert!(parse(&["--dial-content", bad]).is_err(), "{bad:?}");
         }
     }

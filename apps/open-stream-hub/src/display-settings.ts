@@ -12,10 +12,11 @@ export const dialContentOptions: readonly { value: DialContent; label: string }[
   { value: 'function', label: 'Active dial function name' },
   { value: 'clock', label: 'Digital clock (HH:MM)' },
   { value: 'analog_clock', label: 'Analog clock' },
+  { value: 'cpu', label: 'CPU usage (%, macOS only)' },
   { value: 'off', label: 'Nothing (keys only)' },
 ];
 
-const dialArgs: Record<DialContent, string> = { off: 'off', function: 'function', clock: 'clock', analog_clock: 'analog-clock' };
+const dialArgs: Record<DialContent, string> = { off: 'off', function: 'function', clock: 'clock', analog_clock: 'analog-clock', cpu: 'cpu' };
 
 // Mirrors display::display_args in Rust: the masterhub-service flags a managed run started with `settings` gets.
 // Nothing unless the setting is on and the run requests software mode; the 15-key module only for a schema-2 keypad

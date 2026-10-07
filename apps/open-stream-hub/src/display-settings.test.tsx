@@ -24,7 +24,8 @@ describe('display settings contract', () => {
   });
   it('accepts only the exact settings shape', () => {
     expect(isDisplaySettings({ enabled: false, dial_content: 'function' })).toBe(true);
-    for (const bad of [null, 'on', { enabled: true }, { enabled: 'yes', dial_content: 'clock' }, { enabled: true, dial_content: 'analog-clock' }, { enabled: true, dial_content: 'clock', extra: 1 }]) {
+    expect(isDisplaySettings({ enabled: true, dial_content: 'cpu' })).toBe(true);
+    for (const bad of [null, 'on', { enabled: true }, { enabled: 'yes', dial_content: 'clock' }, { enabled: true, dial_content: 'analog-clock' }, { enabled: true, dial_content: 'CPU' }, { enabled: true, dial_content: 'gpu' }, { enabled: true, dial_content: 'clock', extra: 1 }]) {
       expect(isDisplaySettings(bad)).toBe(false);
     }
   });
@@ -40,6 +41,8 @@ describe('display flags', () => {
     expect(displayFlags(on, 'm4315', true, flat)).toEqual([]);
     expect(displayFlags(on, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'clock']);
     expect(displayFlags({ enabled: true, dial_content: 'analog_clock' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
+    expect(displayFlags({ enabled: true, dial_content: 'cpu' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'cpu']);
+    expect(displayFlags({ enabled: true, dial_content: 'cpu' }, 'm4315', true, flat)).toEqual([]);
     expect(displayFlags({ enabled: true, dial_content: 'off' }, 'm131e', true, flat)).toEqual([]);
     for (const module of ['m003k', 'm005s', 'm032le'] as const) expect(displayFlags(on, module, true, nested)).toEqual([]);
   });
@@ -102,6 +105,7 @@ describe('DisplaySettingsPanel markup', () => {
     expect(markup).toContain('<label for="display-dial-content">Dial screen shows</label>');
     expect(markup).toContain('>Digital clock (HH:MM)</option>');
     expect(markup).toContain('>Analog clock</option>');
+    expect(markup).toContain('<option value="cpu">CPU usage (%, macOS only)</option>');
     expect(markup).toContain('Changes apply the next time you start a profile.');
   });
   it('says running profiles keep their setting and are never restarted', () => {

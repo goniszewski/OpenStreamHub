@@ -137,5 +137,5 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // Experimental module display images (display_settings / set_display_settings; stored in
 // <app data>/display-settings.json). Off by default; read once when a profile is started, so a change applies at the
 // next start. dial_content is what the M131E dial shows while enabled.
-export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock';
+export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu';
 export interface DisplaySettings { enabled: boolean; dial_content: DialContent }

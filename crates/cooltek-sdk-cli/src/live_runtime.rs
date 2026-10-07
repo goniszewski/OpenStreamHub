@@ -324,6 +324,7 @@ impl DisplayThread {
                     content,
                     write_gate: gate,
                 } = display;
+                let gate_closed = Arc::clone(&gate);
                 // Built here: `DisplaySync` is not `Send`.
                 let mut sync = DisplaySync::new(BoxedSink { sink, gate });
                 // Logs one sync; a panic disables the display for this run.
@@ -372,28 +373,46 @@ impl DisplayThread {
                         min_interval,
                     } => {
                         let mut dial = DialState::default();
+                        let closed =
+                            || gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst);
                         loop {
                             match next_display_request(&thread_slot, &abort, Some(DIAL_TICK)) {
                                 Wake::Stopped => return,
                                 Wake::Request(request) => dial.requested(request),
                                 Wake::Tick => {}
                             }
-                            let Some((request, trigger)) = dial.due(&artwork, min_interval) else {
-                                continue;
-                            };
-                            let record =
+                            // Choosing the face (reading the clock or sampling the
+                            // CPU) runs inside the same panic guard as the write.
+                            let mut attempted = None;
+                            let attempt =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                    sync_dial(
+                                    let (request, trigger) =
+                                        dial.due(&artwork, min_interval, &closed)?;
+                                    attempted = Some((request.clone(), trigger));
+                                    Some(sync_dial(
                                         &mut sync,
                                         &artwork,
                                         &request,
                                         trigger,
                                         &thread_counts,
-                                    )
+                                    ))
                                 }));
+                            let record = match attempt {
+                                Ok(None) => continue,
+                                Ok(Some(record)) => Ok(record),
+                                Err(payload) => Err(payload),
+                            };
                             let outcome = record
                                 .as_ref()
                                 .map_or(DialOutcome::Failed, |(_, outcome)| *outcome);
+                            // A panic before a face was chosen has no face or trigger.
+                            let (request, trigger) = attempted.unwrap_or_else(|| {
+                                let request = DialImageRequest {
+                                    profile: String::new(),
+                                    function: None,
+                                };
+                                (request, "panic")
+                            });
                             let failed =
                                 dial_record(trigger, &request, None, false, Some(DISPLAY_PANIC));
                             if finish(record.map(|(record, _)| record), failed) {
@@ -558,11 +577,18 @@ impl DialState {
         &mut self,
         artwork: &DialArtwork,
         min_interval: Duration,
+        closed: &dyn Fn() -> bool,
     ) -> Option<(DialImageRequest, &'static str)> {
-        if !self.started {
+        // Checked right before building the request, which is where a CPU face
+        // samples: no sample starts once the write gate has closed.
+        if !self.started || closed() {
             return None;
         }
         let request = artwork.request(self.dial_function);
+        // A CPU baseline alone would only draw `--`; wait for the next sample.
+        if artwork.awaiting_first_sample() {
+            return None;
+        }
         if self.last_face.as_ref() == Some(&request.function) {
             self.trigger = None;
             return None;
@@ -580,16 +606,21 @@ impl DialState {
         let retrying = self.retry_pending.take() == face;
         self.last_face = face;
         self.last_attempt = Some(Instant::now());
-        let clock_face = request
-            .function
-            .as_deref()
-            .is_some_and(|face| face.starts_with("clock:") || face.starts_with("analog:"));
-        let trigger = match self.trigger.take() {
+        // What changes a face without a request: the clock's minute or a new
+        // CPU percentage.
+        let timed = match request.function.as_deref() {
+            Some(face) if face.starts_with("clock:") || face.starts_with("analog:") => {
+                Some("clock")
+            }
+            Some(face) if face.starts_with("cpu:") => Some("cpu"),
+            _ => None,
+        };
+        let trigger = match (self.trigger.take(), timed) {
             _ if retrying => "retry",
-            // In clock modes a function switch changes nothing; the minute did.
-            Some("dial_function") | None if clock_face => "clock",
-            Some(trigger) => trigger,
-            None => "clock",
+            // In clock and CPU modes a function switch changes nothing; time did.
+            (Some("dial_function") | None, Some(timed)) => timed,
+            (Some(trigger), _) => trigger,
+            (None, None) => "clock",
         };
         Some((request, trigger))
     }
@@ -4031,6 +4062,320 @@ mod tests {
         assert!(log.iter().filter(|&&event| event == "dial").count() >= 3);
         assert_eq!(run.mode_writes, modes());
         assert_eq!(run.rows.last().unwrap()["display_stopped"], true);
+    }
+
+    /// Replays CPU percentages (then nothing), logging each sample in `log`.
+    struct LoggedCpu {
+        readings: std::collections::VecDeque<Option<u8>>,
+        log: Option<Arc<Mutex<Vec<&'static str>>>>,
+        calls: Arc<AtomicU64>,
+    }
+    impl crate::dial_artwork::StatSource for LoggedCpu {
+        fn sample(&mut self) -> Option<crate::dial_artwork::StatReading> {
+            if let Some(log) = &self.log {
+                log.lock().unwrap().push("sample");
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.readings
+                .pop_front()
+                .flatten()
+                .map(|percent| crate::dial_artwork::StatReading {
+                    kind: crate::dial_artwork::StatKind::Cpu,
+                    percent,
+                })
+        }
+    }
+
+    fn cpu_artwork(
+        readings: impl IntoIterator<Item = Option<u8>>,
+        sample_interval: Duration,
+        log: Option<Arc<Mutex<Vec<&'static str>>>>,
+    ) -> (DialArtwork, Arc<AtomicU64>) {
+        let calls = Arc::new(AtomicU64::new(0));
+        let source = LoggedCpu {
+            readings: readings.into_iter().collect(),
+            log,
+            calls: Arc::clone(&calls),
+        };
+        let artwork = clock_artwork(DialContent::Cpu, ManualClock::new(WallTime::new(9, 0)))
+            .with_stat_source(Box::new(source))
+            .with_cpu_interval(sample_interval);
+        (artwork, calls)
+    }
+
+    #[test]
+    fn the_cpu_face_redraws_only_when_the_percentage_changes() {
+        // Samples every 20 ms: 30 three times, 31, then nothing (dashes).
+        let (artwork, calls) = cpu_artwork(
+            [Some(30), Some(30), Some(30), Some(31)],
+            Duration::from_millis(20),
+            None,
+        );
+        let harness = dial_harness(artwork, Duration::from_millis(20), None);
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        // Nothing is sampled or drawn before software mode is on.
+        thread::sleep(Duration::from_millis(250));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(written(&harness.fake), 0);
+        display.request(&session, "software_mode");
+        assert!(wait_until(|| written(&harness.fake) == 3));
+        // A dial click changes nothing on a CPU face.
+        display.request(&session, "dial_function");
+        thread::sleep(Duration::from_millis(300));
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(written(&harness.fake), 3);
+        let records: Vec<Value> = records_rx.try_iter().collect();
+        let faces: Vec<&str> = records
+            .iter()
+            .map(|record| record["face"].as_str().unwrap())
+            .collect();
+        assert_eq!(faces, ["cpu:30", "cpu:31", "cpu:--"]);
+        let triggers: Vec<&str> = records
+            .iter()
+            .map(|record| record["trigger"].as_str().unwrap())
+            .collect();
+        assert_eq!(triggers, ["software_mode", "cpu", "cpu"]);
+        assert!(records.iter().all(|record| record["written"] == true));
+        assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 3);
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn cpu_sampling_and_writes_stay_rate_limited_by_default() {
+        assert_eq!(
+            crate::dial_artwork::CPU_SAMPLE_INTERVAL,
+            Duration::from_secs(1)
+        );
+        // A new percentage on every sample, with the production intervals.
+        let (artwork, calls) = cpu_artwork(
+            (0..100).map(Some),
+            crate::dial_artwork::CPU_SAMPLE_INTERVAL,
+            None,
+        );
+        let harness = dial_harness(artwork, DIAL_MIN_INTERVAL, None);
+        let (records_tx, _records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        thread::sleep(Duration::from_millis(1500));
+        assert!(display.finish(Duration::from_secs(2)));
+        // 100 ms dial ticks over 1.5 s: at most two samples and two writes.
+        let samples = calls.load(Ordering::SeqCst);
+        assert!((1..=2).contains(&samples), "{samples} samples");
+        let times = harness.times.lock().unwrap().clone();
+        assert!((1..=2).contains(&times.len()), "{} writes", times.len());
+        if let [first, second] = times[..] {
+            assert!(second - first >= DIAL_MIN_INTERVAL - Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn cpu_samples_and_writes_happen_only_between_enabling_and_restoring_hardware_mode() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (artwork, _) = cpu_artwork(
+            (0..=100).cycle().take(10_000).map(Some),
+            Duration::ZERO,
+            Some(Arc::clone(&log)),
+        );
+        let harness = dial_harness(artwork, Duration::from_millis(10), Some(Arc::clone(&log)));
+        let fake = Arc::clone(&harness.fake);
+        let mut transport = Transport::new([wait_for_writes(&fake, 3), dial(3, 0, 10)]);
+        transport.log = Some(Arc::clone(&log));
+        let run = run_dial(
+            transport,
+            profile(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(1),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        run.result.unwrap();
+        // Faces kept changing; give a detached thread time to misbehave.
+        thread::sleep(Duration::from_millis(200));
+        let log = log.lock().unwrap().clone();
+        assert_eq!(log.first(), Some(&"on"), "{log:?}");
+        assert_eq!(log.last(), Some(&"off"), "{log:?}");
+        assert_eq!(log.iter().filter(|&&event| event == "off").count(), 1);
+        assert!(log.iter().filter(|&&event| event == "dial").count() >= 3);
+        assert!(log.contains(&"sample"));
+        assert_eq!(run.mode_writes, modes());
+        assert_eq!(run.rows.last().unwrap()["display_stopped"], true);
+        assert_eq!(
+            run.rows[0]["details"]["display_sync"]["dial_content"],
+            "cpu"
+        );
+    }
+
+    /// A clock that panics whenever it is read.
+    struct PanickingClock;
+    impl Clock for PanickingClock {
+        fn now(&self) -> WallTime {
+            panic!("clock failure")
+        }
+    }
+
+    /// A CPU sampler that panics on every call.
+    struct PanickingCpu(Arc<AtomicU64>);
+    impl crate::dial_artwork::StatSource for PanickingCpu {
+        fn sample(&mut self) -> Option<crate::dial_artwork::StatReading> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("sampler failure")
+        }
+    }
+
+    fn settle(duration: Duration) -> Step {
+        Step::Run(Box::new(move || thread::sleep(duration)))
+    }
+
+    #[test]
+    fn a_panic_while_choosing_the_dial_face_is_contained_and_logged() {
+        let harness = dial_harness(
+            clock_artwork(DialContent::Clock, PanickingClock),
+            Duration::from_millis(10),
+            None,
+        );
+        let fake = Arc::clone(&harness.fake);
+        let transport = Transport::new([settle(Duration::from_millis(300)), dial(3, 0, 10)]);
+        let run = run_dial(
+            transport,
+            two_functions(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(1),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        let summary = run.result.unwrap();
+        // Input is unaffected and hardware mode is restored.
+        assert_eq!(run.actions, vec![Action::Volume { delta: 5 }]);
+        assert_eq!(run.mode_writes, modes());
+        assert!(fake.lock().unwrap().writes.is_empty());
+        let records = display_rows(&run.rows);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0]["target"], "dial");
+        assert_eq!(records[0]["error"], DISPLAY_PANIC);
+        assert_eq!(records[0]["face"], Value::Null);
+        assert_eq!(summary.display_failure_count, 1);
+        assert_eq!(run.rows.last().unwrap()["display_stopped"], true);
+    }
+
+    #[test]
+    fn a_panicking_cpu_sampler_shows_dashes_and_the_run_continues() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let artwork = clock_artwork(DialContent::Cpu, ManualClock::new(WallTime::new(9, 0)))
+            .with_stat_source(Box::new(PanickingCpu(Arc::clone(&calls))))
+            .with_cpu_interval(Duration::from_millis(20));
+        let harness = dial_harness(artwork, Duration::from_millis(10), None);
+        let fake = Arc::clone(&harness.fake);
+        let transport = Transport::new([
+            wait_for_writes(&fake, 1),
+            settle(Duration::from_millis(100)),
+            dial(3, 0, 10),
+        ]);
+        let run = run_dial(
+            transport,
+            two_functions(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(1),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        let summary = run.result.unwrap();
+        assert_eq!(run.actions, vec![Action::Volume { delta: 5 }]);
+        assert_eq!(run.mode_writes, modes());
+        let records = display_rows(&run.rows);
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0]["face"], "cpu:--");
+        assert_eq!(records[0]["written"], true);
+        assert_eq!(records[0]["error"], Value::Null);
+        assert_eq!(summary.display_failure_count, 0);
+        // A sampler that panicked once is never called again.
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_first_cpu_face_waits_for_a_real_sample() {
+        // The baseline sample (no value) is taken once software mode is on;
+        // the dial is first drawn with the next sample's percentage.
+        let (artwork, calls) = cpu_artwork([None, Some(40)], Duration::from_millis(50), None);
+        let harness = dial_harness(artwork, Duration::from_millis(10), None);
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        thread::sleep(Duration::from_millis(150));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        display.request(&session, "software_mode");
+        let first = records_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(first["face"], "cpu:40");
+        assert_eq!(first["trigger"], "software_mode");
+        assert_eq!(dial_writes(&harness.fake).len(), 1);
+    }
+
+    #[test]
+    fn no_cpu_sample_starts_once_the_write_gate_is_closed() {
+        let (artwork, calls) = cpu_artwork([Some(1), Some(2)], Duration::ZERO, None);
+        let mut state = DialState {
+            started: true,
+            ..DialState::default()
+        };
+        assert!(state.due(&artwork, Duration::ZERO, &|| true).is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(state.due(&artwork, Duration::ZERO, &|| false).is_some());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cpu_dial_display_fails_closed_without_software_mode() {
+        let (artwork, calls) = cpu_artwork([Some(1)], Duration::ZERO, None);
+        let harness = dial_harness(artwork, Duration::from_millis(10), None);
+        let transport = Transport::new([]);
+        let writes = Arc::clone(&transport.writes);
+        let error = run_inner(
+            &mut InputReader::new(transport),
+            two_functions(),
+            device(),
+            false,
+            json!({}),
+            options(),
+            Arc::new(AtomicBool::new(false)),
+            Some(harness.display),
+            |_| -> Result<(Actions, Output), String> { panic!("must not construct worker") },
+            || 0,
+        )
+        .unwrap_err();
+        assert!(error.contains("software mode"), "{error}");
+        assert!(harness.fake.lock().unwrap().writes.is_empty());
+        assert!(writes.lock().unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     use crate::display_sink::{SHARED_BUSY, SHARED_WRITES_CLOSED, SharedTransport};

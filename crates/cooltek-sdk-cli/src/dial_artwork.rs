@@ -1,8 +1,8 @@
 //! Generated 240×240 M131E dial artwork for `DisplaySync`, offline and deterministic.
 //!
-//! [`DialArtwork`] is a `DialImageProvider` for three kinds of dial content
+//! [`DialArtwork`] is a `DialImageProvider` for four kinds of dial content
 //! ([`DialContent`]): the active dial function's name, a digital `HH:MM` clock,
-//! or a simple analog clock. Everything is drawn into a 240×240 RGB buffer
+//! a simple analog clock, or the machine's CPU usage. Everything is drawn into a 240×240 RGB buffer
 //! with a built-in rasteriser (a 5×7 bitmap font and seven-segment digits, so
 //! no font files are read or downloaded), encoded through
 //! [`crate::image_prep::prepare_image`] (the same encoder and validation as
@@ -11,14 +11,26 @@
 //! Function and profile faces are prepared before a run starts. A clock face
 //! is drawn when its minute is first requested and cached, so at most one image
 //! is encoded per minute. Time comes from an injected [`Clock`], so tests are
-//! deterministic.
+//! deterministic. A CPU face is drawn when its whole percentage is first
+//! requested and cached the same way. Usage comes from an injected
+//! [`StatSource`] (by default [`crate::cpu_usage::MacCpuStat`]), sampled at most
+//! once per [`CPU_SAMPLE_INTERVAL`] and only while building a request, which
+//! the live runtime does on its display thread.
 //!
 //! The provider performs no device I/O. Requests are opaque strings built by
-//! [`DialArtwork::request`]: `profile`, `function:<index>`, `clock:HH:MM`, or
-//! `analog:HH:MM`; anything else returns `None`. Hardware acceptance of the
-//! images is unverified; see `docs/masterhub-display-sync.md`.
+//! [`DialArtwork::request`]: `profile`, `function:<index>`, `clock:HH:MM`,
+//! `analog:HH:MM`, `cpu:<0-100>`, or `cpu:--`; anything else returns `None`.
+//! Hardware acceptance of the images is unverified; see
+//! `docs/masterhub-display-sync.md`.
 
-use std::{cell::RefCell, collections::VecDeque, f64::consts::PI, fmt, io::Cursor};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    f64::consts::PI,
+    fmt,
+    io::{Cursor, Write},
+    time::{Duration, Instant},
+};
 
 use cooltek_sdk_masterhub::dial;
 use cooltek_sdk_service::{
@@ -27,7 +39,10 @@ use cooltek_sdk_service::{
 };
 use image::{ImageFormat, Rgb, RgbImage};
 
-use crate::image_prep::{PrepareOptions, prepare_image};
+use crate::{
+    cpu_usage::MacCpuStat,
+    image_prep::{PrepareOptions, prepare_image},
+};
 
 /// Dial image side in pixels.
 const SIDE: u32 = dial::IMAGE_WIDTH as u32;
@@ -49,6 +64,11 @@ const DIM: [u8; 3] = [90, 98, 112];
 const ACCENT: [u8; 3] = [40, 140, 220];
 const HAND: [u8; 3] = [230, 120, 40];
 
+/// Shortest time between two CPU usage samples.
+pub const CPU_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+/// From this CPU usage up the gauge is drawn in the warning color.
+const CPU_HIGH: u8 = 80;
+
 /// What the dial screen shows behind `--display-sync`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, clap::ValueEnum)]
 pub enum DialContent {
@@ -61,11 +81,20 @@ pub enum DialContent {
     Clock,
     /// A simple analog clock in local time.
     AnalogClock,
+    /// Whole-machine CPU usage in percent with a ring gauge (macOS only;
+    /// elsewhere, or while no sample is available, `--`).
+    Cpu,
 }
 
 impl DialContent {
     /// Every value, in command-line order.
-    pub const ALL: [Self; 4] = [Self::Off, Self::Function, Self::Clock, Self::AnalogClock];
+    pub const ALL: [Self; 5] = [
+        Self::Off,
+        Self::Function,
+        Self::Clock,
+        Self::AnalogClock,
+        Self::Cpu,
+    ];
 
     /// The command-line spelling.
     pub fn as_str(self) -> &'static str {
@@ -74,6 +103,7 @@ impl DialContent {
             Self::Function => "function",
             Self::Clock => "clock",
             Self::AnalogClock => "analog-clock",
+            Self::Cpu => "cpu",
         }
     }
 }
@@ -199,12 +229,12 @@ pub struct StatReading {
     pub percent: u8,
 }
 
-/// Source of CPU or GPU statistics for future dial widgets.
+/// Source of CPU or GPU statistics for dial faces.
 ///
-/// Abstraction only: no sensor implementation ships. On macOS, CPU usage needs
-/// Mach `host_statistics` FFI that the existing dependencies do not expose
-/// safely, and GPU usage needs IOKit, so sensors are pending. Nothing calls this
-/// trait yet; [`FakeStatSource`] exercises its contract.
+/// [`crate::cpu_usage::MacCpuStat`] reports CPU usage on macOS and nothing
+/// elsewhere; [`DialContent::Cpu`] draws it. No GPU source ships: GPU usage and
+/// temperatures need private IOKit or SMC interfaces and are out of scope.
+/// [`FakeStatSource`] replays readings for tests.
 pub trait StatSource {
     /// The latest sample, or `None` when it is unavailable.
     fn sample(&mut self) -> Option<StatReading>;
@@ -237,7 +267,82 @@ impl StatSource for FakeStatSource {
     }
 }
 
-/// Prepared function and profile faces plus a clock for clock faces.
+/// The CPU usage shown on the dial, sampled at most once per `interval`.
+struct CpuGauge {
+    source: Box<dyn StatSource + Send>,
+    interval: Duration,
+    last_sample: Option<Instant>,
+    /// The newest sample's percentage; `None` shows `--`.
+    percent: Option<u8>,
+    samples: u64,
+    /// Set once a missing sample after the baseline was reported.
+    unavailable_logged: bool,
+    /// Set when the source panicked; it is never called again.
+    broken: bool,
+}
+
+impl CpuGauge {
+    fn new(source: Box<dyn StatSource + Send>) -> Self {
+        Self {
+            source,
+            interval: CPU_SAMPLE_INTERVAL,
+            last_sample: None,
+            percent: None,
+            samples: 0,
+            unavailable_logged: false,
+            broken: false,
+        }
+    }
+
+    /// The percentage to show at `now`, sampling first once `interval` has
+    /// passed since the last sample. The first sample is a baseline, so a
+    /// missing value there is expected; the first missing value after it is
+    /// reported once on stderr, and every missing value shows `--`. A source
+    /// that panics counts as unavailable for the rest of the run.
+    fn percent(&mut self, now: Instant) -> Option<u8> {
+        if self
+            .last_sample
+            .is_some_and(|last| now.saturating_duration_since(last) < self.interval)
+        {
+            return self.percent;
+        }
+        self.last_sample = Some(now);
+        self.samples += 1;
+        let reading = if self.broken {
+            None
+        } else {
+            let source = &mut self.source;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| source.sample()))
+                .unwrap_or_else(|_| {
+                    self.broken = true;
+                    None
+                })
+        };
+        self.percent = reading
+            .filter(|reading| reading.kind == StatKind::Cpu)
+            .map(|reading| reading.percent.min(100));
+        if self.percent.is_none() && (self.samples > 1 || self.broken) && !self.unavailable_logged {
+            self.unavailable_logged = true;
+            // stdout carries JSONL only; the dial's `display_sync` record shows
+            // `cpu:--`. A failed stderr write (for example a closed pipe) is
+            // ignored, so logging can never panic.
+            let _ = writeln!(
+                std::io::stderr(),
+                "masterhub-service: CPU usage is unavailable; the dial shows --"
+            );
+        }
+        self.percent
+    }
+
+    /// True while only the baseline was taken and it produced no value, so the
+    /// first face waits for the next sample instead of showing `--`.
+    fn awaiting_first_value(&self) -> bool {
+        self.samples <= 1 && self.percent.is_none() && !self.broken
+    }
+}
+
+/// Prepared function and profile faces, a clock for clock faces, and a CPU
+/// usage sampler for the CPU face.
 pub struct DialArtwork {
     content: DialContent,
     profile_name: String,
@@ -245,7 +350,11 @@ pub struct DialArtwork {
     profile_face: Option<Vec<u8>>,
     functions: Vec<Vec<u8>>,
     clock: Box<dyn Clock>,
-    /// The last clock face drawn: its request key and bytes.
+    /// Only for [`DialContent::Cpu`].
+    /// Boxed: inline, it makes `DialArtwork` large enough to trip clippy's
+    /// `large_enum_variant` on the runtime's `DisplayContent`.
+    cpu: Option<Box<RefCell<CpuGauge>>>,
+    /// The last clock or CPU face drawn: its request key and bytes.
     cached: RefCell<Option<(String, Vec<u8>)>>,
 }
 
@@ -261,7 +370,9 @@ impl fmt::Debug for DialArtwork {
 
 impl DialArtwork {
     /// Draws, encodes, and validates every function and profile face for
-    /// `profile`, and one clock face, so a broken encoder fails before a run.
+    /// `profile`, or one clock or CPU face, so a broken encoder fails before a
+    /// run. CPU content reads [`crate::cpu_usage::MacCpuStat`] unless
+    /// [`Self::with_stat_source`] replaces it; nothing is sampled here.
     ///
     /// # Errors
     /// Fails for [`DialContent::Off`] or when encoding or dial validation fails.
@@ -297,13 +408,29 @@ impl DialArtwork {
                 .transpose()?,
             functions,
             clock,
+            cpu: (content == DialContent::Cpu)
+                .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
             cached: RefCell::new(None),
         };
-        // A clock face cannot be prepared in advance; prove the path works.
-        if content != DialContent::Function {
-            encode(&draw_clock(WallTime::new(0, 0), content))?;
+        // A clock or CPU face cannot be prepared in advance; prove the path works.
+        match content {
+            DialContent::Off | DialContent::Function => {}
+            DialContent::Cpu => {
+                encode(&draw_cpu(Some(100)))?;
+            }
+            DialContent::Clock | DialContent::AnalogClock => {
+                encode(&draw_clock(WallTime::new(0, 0), content))?;
+            }
         }
         Ok(artwork)
+    }
+
+    /// Replaces the CPU usage source (CPU content only; ignored otherwise).
+    pub fn with_stat_source(self, source: Box<dyn StatSource + Send>) -> Self {
+        if let Some(gauge) = &self.cpu {
+            gauge.borrow_mut().source = source;
+        }
+        self
     }
 
     /// The configured content.
@@ -312,8 +439,10 @@ impl DialArtwork {
     }
 
     /// The request for what the dial should show now: the function at
-    /// `dial_function` (or the profile face without functions), or the
-    /// clock's current minute. Two requests are equal exactly when they
+    /// `dial_function` (or the profile face without functions), the clock's
+    /// current minute, or the whole CPU percentage (`cpu:--` while none is
+    /// available). CPU content samples here, at most once per
+    /// [`CPU_SAMPLE_INTERVAL`]. Two requests are equal exactly when they
     /// describe the same face.
     pub fn request(&self, dial_function: Option<usize>) -> DialImageRequest {
         let function = match self.content {
@@ -324,6 +453,10 @@ impl DialArtwork {
                     None => "profile".into(),
                 })
             }
+            DialContent::Cpu => Some(match self.cpu_percent(Instant::now()) {
+                Some(percent) => format!("cpu:{percent}"),
+                None => "cpu:--".into(),
+            }),
             DialContent::Clock | DialContent::AnalogClock => {
                 let time = self.clock.now();
                 let prefix = if self.content == DialContent::Clock {
@@ -340,7 +473,6 @@ impl DialArtwork {
         }
     }
 
-    /// Prepared bytes of the profile face.
     /// Prepared bytes of the profile face (function content only).
     pub fn profile_face(&self) -> Option<&[u8]> {
         self.profile_face.as_deref()
@@ -351,16 +483,53 @@ impl DialArtwork {
         self.functions.get(index).map(Vec::as_slice)
     }
 
-    fn clock_face(&self, key: &str, time: WallTime, content: DialContent) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    pub(crate) fn with_cpu_interval(self, interval: Duration) -> Self {
+        if let Some(gauge) = &self.cpu {
+            gauge.borrow_mut().interval = interval;
+        }
+        self
+    }
+
+    /// True for CPU content until a sample after the baseline was taken (or
+    /// the baseline already had a value): drawing now would only show `--`.
+    pub fn awaiting_first_sample(&self) -> bool {
+        self.cpu
+            .as_ref()
+            .is_some_and(|gauge| gauge.borrow().awaiting_first_value())
+    }
+
+    fn cpu_percent(&self, now: Instant) -> Option<u8> {
+        self.cpu.as_ref()?.borrow_mut().percent(now)
+    }
+
+    /// The clock or CPU face for `key`, drawn by `draw` unless it is cached.
+    fn timed_face(&self, key: &str, draw: impl FnOnce() -> RgbImage) -> Option<Vec<u8>> {
         if let Some((cached, bytes)) = &*self.cached.borrow()
             && cached == key
         {
             return Some(bytes.clone());
         }
-        let bytes = encode(&draw_clock(time, content)).ok()?;
+        let bytes = encode(&draw()).ok()?;
         *self.cached.borrow_mut() = Some((key.to_owned(), bytes.clone()));
         Some(bytes)
     }
+}
+
+/// Parses a CPU face value: `--`, or 0 through 100 without leading zeros.
+fn parse_percent(text: &str) -> Option<Option<u8>> {
+    if text == "--" {
+        return Some(None);
+    }
+    if text.is_empty()
+        || text.len() > 3
+        || !text.bytes().all(|byte| byte.is_ascii_digit())
+        || (text.len() > 1 && text.starts_with('0'))
+    {
+        return None;
+    }
+    let percent: u8 = text.parse().ok()?;
+    (percent <= 100).then_some(Some(percent))
 }
 
 /// Parses `HH:MM` with two digits each, in range.
@@ -385,14 +554,20 @@ impl DialImageProvider for DialArtwork {
             }
             return self.function_face(index.parse().ok()?).map(<[u8]>::to_vec);
         }
-        let (content, time) = match face.split_once(':')? {
+        let (content, value) = match face.split_once(':')? {
             ("clock", time) if self.content == DialContent::Clock => (DialContent::Clock, time),
             ("analog", time) if self.content == DialContent::AnalogClock => {
                 (DialContent::AnalogClock, time)
             }
+            ("cpu", value) if self.content == DialContent::Cpu => (DialContent::Cpu, value),
             _ => return None,
         };
-        self.clock_face(face, parse_time(time)?, content)
+        if content == DialContent::Cpu {
+            let percent = parse_percent(value)?;
+            return self.timed_face(face, || draw_cpu(percent));
+        }
+        let time = parse_time(value)?;
+        self.timed_face(face, || draw_clock(time, content))
     }
 }
 
@@ -491,6 +666,11 @@ const STROKE: i32 = 8;
 
 /// One seven-segment digit with its top-left corner at (`x`, `y`).
 fn segment_digit(image: &mut RgbImage, x: i32, y: i32, digit: u8, color: [u8; 3]) {
+    segment_mask(image, x, y, SEGMENTS[usize::from(digit % 10)], color);
+}
+
+/// The segments set in `mask` of one seven-segment cell at (`x`, `y`).
+fn segment_mask(image: &mut RgbImage, x: i32, y: i32, mask: u8, color: [u8; 3]) {
     let (w, h, t) = (DIGIT_WIDTH, DIGIT_HEIGHT, STROKE);
     let middle = y + (h - t) / 2;
     let rects = [
@@ -502,7 +682,6 @@ fn segment_digit(image: &mut RgbImage, x: i32, y: i32, digit: u8, color: [u8; 3]
         (x, y, t, h / 2),                     // f
         (x, middle, w, t),                    // g
     ];
-    let mask = SEGMENTS[usize::from(digit % 10)];
     for (bit, (rx, ry, rw, rh)) in rects.into_iter().enumerate() {
         if mask & (1 << bit) != 0 {
             fill(image, rx, ry, rw, rh, color);
@@ -550,6 +729,61 @@ fn draw_clock(time: WallTime, content: DialContent) -> RgbImage {
     // Colon between the hour and minute pairs.
     fill(&mut image, 116, 103, STROKE, STROKE, ACCENT);
     fill(&mut image, 116, 129, STROKE, STROKE, ACCENT);
+    image
+}
+
+/// Inner and outer radius of the CPU gauge ring.
+const CPU_RING: (f64, f64) = (102.0, 114.0);
+/// Horizontal distance between seven-segment cells on the CPU face.
+const CPU_DIGIT_PITCH: i32 = DIGIT_WIDTH + 6;
+/// The middle segment only: a dash.
+const DASH: u8 = 0b100_0000;
+
+/// Left edges of `cells` seven-segment cells, centred on the dial.
+fn cpu_digits_x(cells: i32) -> impl Iterator<Item = i32> {
+    let left = (SIDE as i32 - (cells * CPU_DIGIT_PITCH - (CPU_DIGIT_PITCH - DIGIT_WIDTH))) / 2;
+    (0..cells).map(move |cell| left + cell * CPU_DIGIT_PITCH)
+}
+
+/// CPU usage: `CPU` above, the percentage in seven-segment digits (`--` when
+/// unknown), `%` below, and a ring filled clockwise from 12 o'clock.
+fn draw_cpu(percent: Option<u8>) -> RgbImage {
+    let mut image = canvas();
+    let percent = percent.map(|percent| percent.min(100));
+    let (inner, outer) = CPU_RING;
+    let color = match percent {
+        Some(percent) if percent >= CPU_HIGH => HAND,
+        _ => ACCENT,
+    };
+    // Degrees of the ring that are lit.
+    let lit = f64::from(percent.unwrap_or(0)) * 3.6;
+    for py in 0..SIDE {
+        for px in 0..SIDE {
+            let (dx, dy) = (f64::from(px) - CENTRE, f64::from(py) - CENTRE);
+            if !(inner..=outer).contains(&(dx * dx + dy * dy).sqrt()) {
+                continue;
+            }
+            // Clockwise from 12 o'clock, in [0, 360).
+            let angle = dx.atan2(-dy).to_degrees().rem_euclid(360.0);
+            let pixel = if angle < lit { color } else { DIM };
+            image.put_pixel(px, py, Rgb(pixel));
+        }
+    }
+    text(&mut image, 52, "CPU", 2, DIM);
+    match percent {
+        Some(percent) => {
+            let digits: Vec<u8> = percent.to_string().bytes().map(|b| b - b'0').collect();
+            for (x, digit) in cpu_digits_x(digits.len() as i32).zip(digits) {
+                segment_digit(&mut image, x, CLOCK_DIGITS_Y, digit, WHITE);
+            }
+        }
+        None => {
+            for x in cpu_digits_x(2) {
+                segment_mask(&mut image, x, CLOCK_DIGITS_Y, DASH, DIM);
+            }
+        }
+    }
+    text(&mut image, 166, "%", 3, DIM);
     image
 }
 
@@ -739,7 +973,19 @@ mod tests {
         for content in DialContent::value_variants() {
             assert_eq!(DialContent::from_str(content.as_str(), false), Ok(*content));
         }
-        for bad in ["", "Clock", "analog", "analog_clock", "on", " clock"] {
+        assert_eq!(DialContent::from_str("cpu", false), Ok(DialContent::Cpu));
+        for bad in [
+            "",
+            "Clock",
+            "analog",
+            "analog_clock",
+            "on",
+            " clock",
+            "CPU",
+            "cpu ",
+            "gpu",
+            "clock+cpu",
+        ] {
             assert!(DialContent::from_str(bad, false).is_err(), "{bad:?}");
         }
         assert_eq!(DialContent::default(), DialContent::Off);
@@ -1025,6 +1271,277 @@ mod tests {
             })
         );
         assert_eq!(source.sample(), None);
+    }
+
+    fn cpu(percent: u8) -> StatReading {
+        StatReading {
+            kind: StatKind::Cpu,
+            percent,
+        }
+    }
+
+    /// Counts samples and reports `percent` (or nothing) each time.
+    struct Counting {
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        percent: Option<u8>,
+    }
+    impl StatSource for Counting {
+        fn sample(&mut self) -> Option<StatReading> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.percent.map(cpu)
+        }
+    }
+
+    fn cpu_artwork(source: impl StatSource + Send + 'static) -> DialArtwork {
+        artwork(DialContent::Cpu, &clock(0, 0))
+            .with_stat_source(Box::new(source))
+            .with_cpu_interval(Duration::ZERO)
+    }
+
+    fn face(art: &DialArtwork) -> String {
+        art.request(None).function.unwrap()
+    }
+
+    #[test]
+    fn cpu_requests_name_the_percentage_or_dashes() {
+        let art = cpu_artwork(FakeStatSource::new([
+            cpu(0),
+            cpu(37),
+            cpu(250),
+            StatReading {
+                kind: StatKind::Gpu,
+                percent: 5,
+            },
+        ]));
+        let faces: Vec<String> = (0..5).map(|_| face(&art)).collect();
+        // A foreign kind and an exhausted source both show dashes.
+        assert_eq!(faces, ["cpu:0", "cpu:37", "cpu:100", "cpu:--", "cpu:--"]);
+        assert_eq!(art.request(Some(1)).profile, "Dial functions");
+        for face in faces {
+            let request = DialImageRequest {
+                profile: "x".into(),
+                function: Some(face),
+            };
+            dial::validate_jpeg(&art.dial_image(&request).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn cpu_is_sampled_at_most_once_per_interval() {
+        assert_eq!(CPU_SAMPLE_INTERVAL, Duration::from_secs(1));
+        let calls = std::sync::Arc::default();
+        let mut gauge = CpuGauge::new(Box::new(Counting {
+            calls: std::sync::Arc::clone(&calls),
+            percent: Some(12),
+        }));
+        let count = || calls.load(std::sync::atomic::Ordering::SeqCst);
+        let start = Instant::now();
+        assert_eq!(gauge.percent(start), Some(12));
+        for millis in [0, 1, 500, 999] {
+            assert_eq!(
+                gauge.percent(start + Duration::from_millis(millis)),
+                Some(12)
+            );
+        }
+        assert_eq!(count(), 1);
+        gauge.percent(start + Duration::from_secs(1));
+        assert_eq!(count(), 2);
+        // A clock that steps back never samples early.
+        gauge.percent(start);
+        assert_eq!(count(), 2);
+
+        // Preparing CPU artwork samples nothing; requests do.
+        let calls = std::sync::Arc::default();
+        let art = artwork(DialContent::Cpu, &clock(0, 0)).with_stat_source(Box::new(Counting {
+            calls: std::sync::Arc::clone(&calls),
+            percent: Some(1),
+        }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        for _ in 0..20 {
+            art.request(None);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Other content never samples, even with a source installed.
+        let calls = std::sync::Arc::default();
+        let clock_art =
+            artwork(DialContent::Clock, &clock(0, 0)).with_stat_source(Box::new(Counting {
+                calls: std::sync::Arc::clone(&calls),
+                percent: Some(1),
+            }));
+        clock_art.request(None);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_unavailable_cpu_shows_dashes_and_is_reported_once() {
+        let mut gauge = CpuGauge::new(Box::new(FakeStatSource::default()));
+        gauge.interval = Duration::ZERO;
+        let now = Instant::now();
+        // The first sample is only a baseline: nothing to report yet.
+        assert_eq!(gauge.percent(now), None);
+        assert!(!gauge.unavailable_logged);
+        for _ in 0..5 {
+            assert_eq!(gauge.percent(now), None);
+            assert!(gauge.unavailable_logged);
+        }
+        assert_eq!(gauge.samples, 6);
+        let art = cpu_artwork(FakeStatSource::default());
+        assert_eq!(face(&art), "cpu:--");
+        let dashes = art.dial_image(&art.request(None)).unwrap();
+        dial::validate_jpeg(&dashes).unwrap();
+    }
+
+    #[test]
+    fn a_panicking_sampler_shows_dashes_and_is_never_called_again() {
+        struct Panicking(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl StatSource for Panicking {
+            fn sample(&mut self) -> Option<StatReading> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                panic!("sampler failure")
+            }
+        }
+        let calls = std::sync::Arc::default();
+        let mut gauge = CpuGauge::new(Box::new(Panicking(std::sync::Arc::clone(&calls))));
+        gauge.interval = Duration::ZERO;
+        let now = Instant::now();
+        for _ in 0..4 {
+            assert_eq!(gauge.percent(now), None);
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(gauge.unavailable_logged);
+    }
+
+    #[test]
+    fn cpu_faces_are_deterministic_distinct_and_cached() {
+        let (a, b) = (
+            cpu_artwork(FakeStatSource::new([cpu(42)])),
+            cpu_artwork(FakeStatSource::new([cpu(42)])),
+        );
+        let (first, second) = (
+            a.dial_image(&a.request(None)).unwrap(),
+            b.dial_image(&b.request(None)).unwrap(),
+        );
+        assert_eq!(first, second);
+        assert_eq!(a.cached.borrow().as_ref().unwrap().0, "cpu:42");
+        let mut seen = HashSet::new();
+        for percent in [Some(0), Some(42), Some(43), Some(100), None] {
+            assert_eq!(draw_cpu(percent), draw_cpu(percent));
+            assert!(seen.insert(encode(&draw_cpu(percent)).unwrap()));
+        }
+    }
+
+    #[test]
+    fn the_cpu_gauge_fills_clockwise_from_twelve() {
+        // A point on the ring at `degrees` clockwise from 12 o'clock.
+        let ring = |image: &RgbImage, degrees: f64| {
+            let (sin, cos) = (degrees * PI / 180.0).sin_cos();
+            let radius = (CPU_RING.0 + CPU_RING.1) / 2.0;
+            let (x, y) = (CENTRE + sin * radius, CENTRE - cos * radius);
+            image.get_pixel(x.round() as u32, y.round() as u32).0
+        };
+        let half = draw_cpu(Some(50));
+        assert_eq!(ring(&half, 10.0), ACCENT);
+        assert_eq!(ring(&half, 170.0), ACCENT);
+        assert_eq!(ring(&half, 190.0), DIM);
+        assert_eq!(ring(&half, 350.0), DIM);
+        let empty = draw_cpu(Some(0));
+        assert_eq!(ring(&empty, 10.0), DIM);
+        // From the warning threshold up, the gauge changes color.
+        let high = draw_cpu(Some(CPU_HIGH));
+        assert_eq!(ring(&high, 10.0), HAND);
+        let full = draw_cpu(Some(100));
+        for degrees in [0.0, 90.0, 180.0, 270.0, 355.0] {
+            assert_eq!(ring(&full, degrees), HAND);
+        }
+        // Unknown: a dim ring and two dashes.
+        let unknown = draw_cpu(None);
+        assert_eq!(ring(&unknown, 10.0), DIM);
+        let middle = CLOCK_DIGITS_Y + (DIGIT_HEIGHT - STROKE) / 2 + STROKE / 2;
+        for x in cpu_digits_x(2) {
+            assert_eq!(
+                unknown
+                    .get_pixel((x + DIGIT_WIDTH / 2) as u32, middle as u32)
+                    .0,
+                DIM
+            );
+            // The top segment stays dark.
+            assert_eq!(
+                unknown
+                    .get_pixel((x + DIGIT_WIDTH / 2) as u32, (CLOCK_DIGITS_Y + 2) as u32)
+                    .0,
+                BLACK
+            );
+        }
+        // "7" lights segments a, b, c only, centred as a single cell.
+        let seven = draw_cpu(Some(7));
+        let x = cpu_digits_x(1).next().unwrap();
+        assert_eq!(x, (240 - DIGIT_WIDTH) / 2);
+        assert_eq!(
+            seven
+                .get_pixel((x + DIGIT_WIDTH / 2) as u32, (CLOCK_DIGITS_Y + 2) as u32)
+                .0,
+            WHITE
+        );
+        assert_eq!(
+            seven
+                .get_pixel((x + DIGIT_WIDTH / 2) as u32, middle as u32)
+                .0,
+            BLACK
+        );
+    }
+
+    #[test]
+    fn foreign_or_malformed_cpu_requests_have_no_artwork() {
+        let art = cpu_artwork(FakeStatSource::default());
+        let digital = artwork(DialContent::Clock, &clock(12, 0));
+        let request = |face: &str| DialImageRequest {
+            profile: "x".into(),
+            function: Some(face.into()),
+        };
+        for face in [
+            "cpu:",
+            "cpu:101",
+            "cpu:255",
+            "cpu:007",
+            "cpu:00",
+            "cpu:+1",
+            "cpu:-1",
+            "cpu:-",
+            "cpu:---",
+            "cpu: 5",
+            "cpu:1000",
+            "cpu:5%",
+            "clock:12:00",
+            "profile",
+            "function:0",
+        ] {
+            assert_eq!(art.dial_image(&request(face)), None, "{face:?}");
+        }
+        for face in ["cpu:0", "cpu:100", "cpu:--"] {
+            assert!(art.dial_image(&request(face)).is_some(), "{face:?}");
+            assert_eq!(digital.dial_image(&request(face)), None, "{face:?}");
+        }
+    }
+
+    #[test]
+    fn display_sync_writes_the_cpu_face_only_when_the_percentage_changes() {
+        let art = cpu_artwork(FakeStatSource::new([5, 5, 5, 6, 6, 5].into_iter().map(cpu)));
+        let mut sync = DisplaySync::new(FakeDisplaySink::default());
+        let mut faces = Vec::new();
+        for _ in 0..7 {
+            let request = art.request(None);
+            faces.push(request.function.clone().unwrap());
+            let plan = sync.plan_dial(request, &art).unwrap();
+            sync.apply_dial(plan).unwrap();
+        }
+        assert_eq!(
+            faces,
+            [
+                "cpu:5", "cpu:5", "cpu:5", "cpu:6", "cpu:6", "cpu:5", "cpu:--"
+            ]
+        );
+        // 5, 6, 5 and the dashes: unchanged percentages are never rewritten.
+        assert_eq!(sync.sink().successful(), [DisplayTarget::Dial; 4]);
     }
 
     #[test]

@@ -285,7 +285,7 @@ masterhub-diag keypad jpeg captures/hardware/key-0.jpg --key-index 0 \
 
 Record: the output report length, and that live key upload (header `02 36`, byte 6 = key index, final flag in byte 7) remains untested. Do not write the plan to the device by other means in this session.
 
-#### 6d. Experimental dial clock and function name (WRITE, behind the flag)
+#### 6d. Experimental dial clock, function name and CPU usage (WRITE, behind the flag)
 
 Only after 6c showed that a dial image appears upright. These runs use the experimental `--display-sync --dial-content` path; no actions execute without `--execute`. Watch the dial and keep the log:
 
@@ -299,9 +299,12 @@ masterhub-service run --profile examples/profiles/dial-functions.json \
 masterhub-service run --profile examples/profiles/dial-functions.json \
   --path-hex DIAL_PATH_HEX --duration-secs 60 \
   --software-mode --display-sync --dial-content function | tee captures/hardware/dial-function.jsonl    # WRITE
+masterhub-service run --profile examples/profiles/dial-functions.json \
+  --path-hex DIAL_PATH_HEX --duration-secs 60 \
+  --software-mode --display-sync --dial-content cpu | tee captures/hardware/dial-cpu.jsonl              # WRITE
 ```
 
-In the function run, short-click the dial several times, slowly and then quickly.
+In the function run, short-click the dial several times, slowly and then quickly. In the CPU run (macOS only), start some load in another terminal halfway through (for example `yes > /dev/null`, stopped with Ctrl-C) so the percentage moves.
 
 | Question | Expected observable | Confirms or refutes |
 | --- | --- | --- |
@@ -309,6 +312,8 @@ In the function run, short-click the dial several times, slowly and then quickly
 | Clock advances once per minute? | One `trigger: clock` record per minute boundary, none in between | Minute-change redraw and rate limit. |
 | Legibility and orientation | Digits and hands readable, upright, not clipped by the round mask | Face layout; record a photo. |
 | Function name follows clicks? | Name and `n/N` change after each click; rapid clicks settle on the newest function within about a second | `dial_function` trigger, newest-wins coalescing, 1 s rate limit. |
+| CPU face follows load? | About a second after start, a percentage and ring (no `--` first); a `trigger: cpu` record only when the whole percentage changes, never more than one dial write a second; the value tracks Activity Monitor's CPU total roughly | CPU sampler, change-only redraw, 1 s rate limit under sustained redraws. |
+| Firmware under once-a-second redraws? | Under changing load the dial is written about once a second for the whole run; no tearing, stalls or `failed` records | Whether the 1 s rate limit is safe for continuous redraws. |
 | Input stays responsive while drawing? | Rotations log their actions without visible delay during redraws | Shared-device read slicing. |
 | Clean exit | Ctrl-C ends the run; `service_end.display_stopped: true`; dial returns to hardware mode; no image is drawn after exit | Gate closed before the hardware-mode restore. |
 | Short writes | Any `failed.short_write: true`? The same face is not resent; the next minute or click redraws | No-retry policy on hardware. |

@@ -663,12 +663,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "display_settings_default": DisplaySettings::default(),
             "set_display_settings_args": args,
             "set_display_settings_result": chosen,
-            "dial_contents": [
-                DialContent::Off,
-                DialContent::Function,
-                DialContent::Clock,
-                DialContent::AnalogClock,
-            ],
+            "dial_contents": DialContent::ALL,
         }),
     );
 }

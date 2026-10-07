@@ -293,7 +293,9 @@ impl DisplayThread {
                     }
                 }
             })
-            .map_err(|error| format!("could not start display thread: {error}"))?;
+            .map_err(|error| {
+                format!("--display-sync setup failed: could not start display thread: {error}")
+            })?;
         Ok(Self {
             slot,
             counts,
@@ -756,7 +758,14 @@ where
             }
         }
     });
-    let result = std::panic::catch_unwind(input_loop).unwrap_or_else(|_| Err(INPUT_PANIC.into()));
+    let result = std::panic::catch_unwind(input_loop).unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("non-string panic payload");
+        Err(format!("{INPUT_PANIC}: {message}"))
+    });
     // No display sync starts during drain or cancellation.
     if let Some(display) = &display_thread {
         display.stop();
@@ -1598,7 +1607,13 @@ mod tests {
                 move |stop| Ok((simple_actions(stop, actions), output)),
                 || clock.load(Ordering::SeqCst),
             );
-            assert_eq!(result.is_err(), fail_enable);
+            if fail_enable {
+                let error = result.unwrap_err();
+                assert!(error.contains("enable failed"), "{error}");
+                assert!(!error.contains(INPUT_PANIC), "{error}");
+            } else {
+                result.unwrap();
+            }
             assert_eq!(
                 *writes.lock().unwrap(),
                 vec![
@@ -3308,6 +3323,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains(INPUT_PANIC), "{error}");
+        assert!(error.contains("synthetic read panic"), "{error}");
         assert_eq!(*writes.lock().unwrap(), modes());
         let footer = output.rows().last().unwrap().clone();
         assert_eq!(footer["reason"], "error");

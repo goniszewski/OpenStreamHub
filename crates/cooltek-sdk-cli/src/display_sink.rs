@@ -861,7 +861,9 @@ mod tests {
                 .unwrap()
                 .clone()
         };
+        let started = Instant::now() + Duration::from_secs(5);
         while !log(&shared).contains(&'W') {
+            assert!(Instant::now() < started, "the writer never started");
             thread::yield_now();
         }
         // Each read call keeps the reader waiting throughout, slice after slice,
@@ -899,7 +901,9 @@ mod tests {
         let guard = shared.shared.device.lock().unwrap();
         let (restore, writer) = (shared.clone(), shared.clone());
         let feature = thread::spawn(move || restore.send_feature_report(&[0, 0]));
+        let deadline = Instant::now() + Duration::from_secs(5);
         while shared.priority_waiters() == 0 {
+            assert!(Instant::now() < deadline, "the restore never waited");
             thread::yield_now();
         }
         // A write queued behind the waiting priority operation goes out after it.
@@ -931,10 +935,21 @@ mod tests {
                 .borrow()
                 .is_empty()
         );
-        let error = live_display(&SharedTransport::new(Fake::new()), None, Fixture)
-            .err()
-            .unwrap();
+        let unsupported = SharedTransport::new(Fake::new());
+        let error = live_display(&unsupported, None, Fixture).err().unwrap();
+        assert!(error.starts_with("--display-sync setup failed"), "{error}");
         assert!(error.contains("M4315 and M131E"), "{error}");
+        // As above: no output report, and `Fake` would panic on a feature report.
+        assert!(
+            unsupported
+                .shared
+                .device
+                .lock()
+                .unwrap()
+                .outputs
+                .borrow()
+                .is_empty()
+        );
     }
 
     #[test]

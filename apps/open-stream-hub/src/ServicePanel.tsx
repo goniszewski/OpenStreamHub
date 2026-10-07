@@ -129,8 +129,17 @@ const idleRunner = () => idleServiceState;
 const idleDisplay = () => idleDisplaySettingsState;
 const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
 
-export function ServicePanel({ runner, feed, profile, profileId = null, desktop, unsaved, displaySettings, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
-  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; platform?: PlatformInfo; now?: number;
+// dryRunOnly: the open profile (saved, or a draft of it) was imported from a .mhz file and not yet allowed to execute
+// actions. Execute is unavailable; the session manager refuses it too.
+export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Review it on the Profiles page and allow it to execute actions first.';
+export const runBlockNotes = {
+  imported: dryRunOnlyRunNote,
+  deleted: "This draft's saved profile was deleted. Save it to run it with actions.",
+  unreadable: 'The list of imported profiles cannot be read, so every profile runs only as a dry run. Fix it on the Profiles page first.',
+} as const;
+
+export function ServicePanel({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
+  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; sourceProfileId?: string | null; desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; dryRunOnly?: boolean; dryRunNote?: string; platform?: PlatformInfo; now?: number;
 }) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
@@ -164,7 +173,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   const displayActive = device !== undefined && displayFlags(display.settings, device.module, softwareMode, profile).length > 0;
   const stale = isStale(run, profile);
   const now = fixedNow ?? clock;
-  const executeSelected = execute && mac;
+  const executeSelected = execute && mac && !dryRunOnly;
 
   useEffect(() => {
     if (fixedNow !== undefined || !run?.entries.length) return;
@@ -181,7 +190,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
   const begin = () => {
     if (!runner || !device) return;
     const confirmExecute = executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
-    void runner.start({ profile, profileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved, device }, confirmExecute);
+    void runner.start({ profile, profileId, sourceProfileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved, device }, confirmExecute);
   };
   const resume = () => {
     if (!runner || !run) return;
@@ -214,13 +223,14 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
       </SelectField>
       <div className="mode-toggle" role="group" aria-label="Run mode">
         <button type="button" aria-pressed={!executeSelected} disabled={!enabled || active} onClick={() => setExecute(false)}>Dry run (default)</button>
-        <button type="button" aria-pressed={executeSelected} disabled={!enabled || active || !mac} onClick={() => setExecute(true)}>Execute actions</button>
+        <button type="button" aria-pressed={executeSelected} disabled={!enabled || active || !mac || dryRunOnly} onClick={() => setExecute(true)}>Execute actions</button>
       </div>
       {run && active
         ? <button type="button" className="button" disabled={run.state === 'stopping'} onClick={() => { void runner?.stop(run.serviceId); }}><Square size={16} />{run.state === 'stopping' ? 'Stopping…' : 'Stop'}</button>
         : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} onClick={begin}>{run?.state === 'starting' ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? 'Run with actions' : 'Run'}</button>}
     </div>
     <label className="service-option"><input type="checkbox" checked={softwareMode} disabled={!enabled || active} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
+    {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
     {displayActive && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{displayRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
     {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved draft)' : ''} was used when this run started.</p>}

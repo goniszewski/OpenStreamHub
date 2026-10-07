@@ -18,7 +18,7 @@ function backend(initial: Record<string, StoredProfile>, options: { rejectValida
   const files = new Map(Object.entries(initial));
   const calls: { command: string; args?: Record<string, unknown> }[] = [];
   let counter = 0;
-  const summaries = () => [...files.values()].map(item => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms }));
+  const summaries = () => [...files.values()].map(item => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms, dry_run_only: false }));
   const invoke: Invoke = async <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
     calls.push({ command, args });
     switch (command) {
@@ -29,8 +29,9 @@ function backend(initial: Record<string, StoredProfile>, options: { rejectValida
         if ((args!.profile as Profile).name === options.rejectValidation) throw 'unknown field `extra`';
         return { valid: true } as T;
       case 'save_profile': {
-        const id = (args!.id as string | null) ?? `new-${++counter}`;
-        const saved = { id, profile: args!.profile as Profile, modified_at_ms: 2000 + counter };
+        const request = args!.request as { id: string | null; profile: Profile };
+        const id = request.id ?? `new-${++counter}`;
+        const saved = { id, profile: request.profile, modified_at_ms: 2000 + counter };
         files.set(id, saved);
         return saved as T;
       }
@@ -42,7 +43,7 @@ function backend(initial: Record<string, StoredProfile>, options: { rejectValida
   return { files, calls, invoke };
 }
 const stored = (id: string, name: string, modified = 1000): StoredProfile => ({ id, profile: profile(name), modified_at_ms: modified });
-const names = (calls: { command: string; args?: Record<string, unknown> }[], command: string) => calls.filter(call => call.command === command).map(call => (call.args!.profile as Profile)?.name);
+const names = (calls: { command: string; args?: Record<string, unknown> }[], command: string) => calls.filter(call => call.command === command).map(call => ((call.args!.request ?? call.args) as { profile?: Profile }).profile?.name);
 
 async function open(initial: StoredProfile[], options = {}, drafts: DraftPersister | null = null) {
   const fake = backend(Object.fromEntries(initial.map(item => [item.id, item])), options);
@@ -85,7 +86,7 @@ describe('import', () => {
     const validated = calls.find(call => call.command === 'validate_profile')!.args!.profile as Profile;
     expect(validated.schema_version).toBe(2);
     const save = calls.find(call => call.command === 'save_profile')!;
-    expect(save.args).toMatchObject({ id: null, expectedModifiedAtMs: null });
+    expect(save.args!.request).toMatchObject({ id: null, expectedModifiedAtMs: null });
     const state = session.getState();
     expect(state.draft.profileId).toBe('new-1');
     expect(state.draft.profile.name).toBe('Desk');
@@ -141,6 +142,14 @@ describe('export', () => {
     expect(html).toContain('Create a saved copy of this profile (⌘D)');
   });
 
+  it('names the draft source so an exported edit of an imported profile keeps its provenance', async () => {
+    const { session, calls } = await open([stored('a', 'Alpha')]);
+    session.update(item => ({ ...item, name: 'Edited' }));
+    await session.exportProfile();
+    const call = calls.find(item => item.command === 'export_profile')!;
+    expect(call.args).toEqual({ request: { profile: expect.objectContaining({ name: 'Edited' }), sourceProfileId: 'a' } });
+  });
+
   it('reports backend errors', async () => {
     const test = await open([stored('a', 'Alpha')]);
     const session = new ProfileSession(async (command, args) => { if (command === 'export_profile') throw 'invalid profile'; return test.invoke(command, args); }, browserProfile, true);
@@ -166,7 +175,7 @@ describe('duplicate', () => {
     await flush();
     expect(session.getState().duplicatePrompt).toBe(false);
     expect(names(calls, 'save_profile')).toEqual(['Alpha copy']);
-    expect(calls.find(call => call.command === 'save_profile')!.args).toMatchObject({ id: null, expectedModifiedAtMs: null });
+    expect(calls.find(call => call.command === 'save_profile')!.args!.request).toMatchObject({ id: null, expectedModifiedAtMs: null, sourceProfileId: 'a' });
     expect(session.getState().draft.profileId).toBe('new-1');
   });
 
@@ -311,9 +320,24 @@ describe('crash-recovery drafts in the session', () => {
     const { session } = await open([stored('a', 'Alpha')], {}, persister);
     session.update(item => ({ ...item, name: 'Edited' }));
     session.flushDraft();
-    await session.deleteProfile({ id: 'a', name: 'Alpha', binding_count: 0, modified_at_ms: 1000 });
+    await session.deleteProfile({ id: 'a', name: 'Alpha', binding_count: 0, modified_at_ms: 1000, dry_run_only: false });
     expect(store.read('a')).toBeNull();
     expect(session.getState().draft.profileId).toBeNull();
+  });
+
+  it('a recovered draft of a deleted profile keeps its source', async () => {
+    const { store, persister } = persistence();
+    const id = '00000000-0000-4000-8000-0000000000aa';
+    const first = await open([stored(id, 'Alpha')], {}, persister);
+    await first.session.deleteProfile({ id, name: 'Alpha', binding_count: 0, modified_at_ms: 1000, dry_run_only: false });
+    first.session.update(item => ({ ...item, name: 'Edited after delete' }));
+    first.session.flushDraft();
+    expect(store.read(newDraftKey)).not.toBeNull();
+    const second = await open([], {}, new DraftPersister(store, action => { action(); return () => {}; }));
+    expect(second.session.getState().restorePrompt?.key).toBe(newDraftKey);
+    second.session.resolveRestore(true);
+    expect(second.session.getState().draft.profile.name).toBe('Edited after delete');
+    expect(second.session.getState().draft.sourceId).toBe(id);
   });
 
   it('works with no storage at all', async () => {

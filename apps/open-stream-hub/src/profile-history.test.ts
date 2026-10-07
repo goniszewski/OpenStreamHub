@@ -31,7 +31,7 @@ function harness(profile: Profile = browserProfile) {
 
 const stored = (id: string, profile: Profile, modified = 1000): StoredProfile => ({ id, modified_at_ms: modified, profile: upgradeKeypadProfile(profile) });
 const named = (name: string): Profile => ({ schema_version: 1, name, bindings: [] });
-const summary = (item: StoredProfile) => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms });
+const summary = (item: StoredProfile) => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms, dry_run_only: false });
 const listing = (...items: StoredProfile[]): ProfileListing => ({ profiles: items.map(summary), unreadable: [] });
 
 async function opened(profile: Profile = named('Alpha')) {

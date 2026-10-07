@@ -412,6 +412,7 @@ mod tests {
             execute: false,
             software_mode: true,
             profile_id: None,
+            source_profile_id: None,
             display: Some(launch(ServiceModule::M4315, ON)),
         };
         assert_eq!(spawn_args(true, &request), ["--display-sync"]);

@@ -30,12 +30,20 @@
 //! only reports `profile_switch_requested`, and `Driver::profile_step`
 //! resolves it against the saved profiles in a stable order and switches
 //! through the focused-app path (reason `profile_action`).
+//! A profile imported from an official `.mhz` file stays dry-run only until
+//! the user allows it (`import_flags`): `Runner::execution_guard` refuses an
+//! executing Start or resume of it (by saved id, source id or content hash),
+//! and an executing session never switches into it (a focused-app switch is
+//! refused; a profile key skips it). An executing session restarts its
+//! process only through `resume_session` (or its first Start), so every
+//! restart with actions is checked. Dry runs are unaffected.
 //! See `docs/masterhub-session-manager.md`, `docs/masterhub-focus-rules.md`
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
     display::{DisplayLaunch, DisplaySettings},
     feed::LiveDevice,
+    import_flags::ExecutionGuard,
     power::PowerEvent,
     service::{self, StartRequest},
 };
@@ -619,16 +627,25 @@ pub trait Runner {
     fn emit(&mut self, state: &SessionState);
     /// A fresh device inventory when the watcher has not reported the path.
     fn enumerate(&mut self) -> Option<Vec<LiveDevice>>;
-    /// Every readable, valid saved profile as `(id, profile)`, in any order
-    /// (`resolve_profile_step` sorts them). Read only for an accepted profile
-    /// key request.
-    fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+    /// Every readable saved profile as a `SavedEntry`, in any order
+    /// (`resolve_profile_step` sorts them). Read only for an accepted
+    /// profile key request.
+    fn saved_profiles(&mut self) -> Result<Vec<SavedEntry>, String> {
         Ok(Vec::new())
+    }
+    /// The valid saved profile a profile key switches to.
+    fn load_saved(&mut self, _id: &str) -> Result<Profile, String> {
+        Err("no saved profiles".into())
     }
     /// The experimental display settings a session started now keeps for its
     /// whole life. Read once per user Start; off when unreadable.
     fn display_settings(&mut self) -> DisplaySettings {
         DisplaySettings::default()
+    }
+    /// The dry-run-only flags, loaded once per check (`import_flags`). A
+    /// list that cannot be read yields a guard that refuses every Execute run.
+    fn execution_guard(&mut self) -> ExecutionGuard {
+        ExecutionGuard::default()
     }
 }
 
@@ -644,24 +661,31 @@ pub trait Runner {
 /// that matches none of them (an unsaved draft) goes to the first profile for
 /// `next` and the last for `previous`. Both ends wrap around.
 pub fn resolve_profile_step(
-    mut saved: Vec<(String, Profile)>,
+    mut saved: Vec<SavedEntry>,
     current_id: Option<&str>,
     current: &Profile,
     direction: ProfileDirection,
-) -> Option<(String, Profile)> {
+) -> Option<String> {
     if saved.len() < 2 {
         return None;
     }
-    saved.sort_by(|(left_id, left), (right_id, right)| {
+    saved.sort_by(|left, right| {
         left.name
             .to_lowercase()
             .cmp(&right.name.to_lowercase())
             .then_with(|| left.name.cmp(&right.name))
-            .then_with(|| left_id.cmp(right_id))
+            .then_with(|| left.id.cmp(&right.id))
     });
+    // The running snapshot matches a saved profile with the same name and
+    // the same content (hash), exactly as profile equality would.
+    let current_hash = crate::import_flags::content_hash(current);
     let position = current_id
-        .and_then(|id| saved.iter().position(|(saved_id, _)| saved_id == id))
-        .or_else(|| saved.iter().position(|(_, profile)| profile == current));
+        .and_then(|id| saved.iter().position(|entry| entry.id == id))
+        .or_else(|| {
+            saved
+                .iter()
+                .position(|entry| entry.name == current.name && entry.content_hash == current_hash)
+        });
     let count = saved.len();
     let target = match (position, direction) {
         (Some(index), ProfileDirection::Next) => (index + 1) % count,
@@ -669,10 +693,20 @@ pub fn resolve_profile_step(
         (None, ProfileDirection::Next) => 0,
         (None, ProfileDirection::Previous) => count - 1,
     };
-    if current_id.is_some_and(|id| saved[target].0 == id) {
+    if current_id.is_some_and(|id| saved[target].id == id) {
         return None;
     }
-    Some(saved.swap_remove(target))
+    Some(saved.swap_remove(target).id)
+}
+
+/// A saved profile as a profile-key step needs it: no profile body, so a
+/// step reads (and parses) only the profile it switches to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SavedEntry {
+    pub id: String,
+    pub name: String,
+    /// Its content hash (`import_flags::content_hash`), computed at load.
+    pub content_hash: String,
 }
 
 /// The direction of a `profile_switch_requested` service record, or `None`
@@ -904,6 +938,15 @@ impl<R: Runner> Driver<R> {
         // The spawning path checks again inside `start`; asleep nothing
         // spawns, so this is the only check before the session exists.
         self.runner.check(&request)?;
+        if request.execute
+            && let Some(reason) = self.runner.execution_guard().blocks(
+                request.profile_id.as_deref(),
+                request.source_profile_id.as_deref(),
+                &request.profile,
+            )
+        {
+            return Err(reason);
+        }
         // Read once, here: every later process of this session (wake,
         // reconnect, crash or profile-switch restarts) keeps these display
         // settings, so changing them never alters or restarts a running
@@ -1001,6 +1044,16 @@ impl<R: Runner> Driver<R> {
             self.runner.emit(&state);
             return Err(PROFILE_CHANGED.into());
         }
+        let managed = &self.sessions[index];
+        if managed.session.execute
+            && let Some(reason) = self.runner.execution_guard().blocks(
+                managed.request.profile_id.as_deref(),
+                managed.request.source_profile_id.as_deref(),
+                &managed.request.profile,
+            )
+        {
+            return Err(reason);
+        }
         self.apply(index, Event::UserResume, now_ms);
         self.prune();
         Ok(())
@@ -1043,9 +1096,20 @@ impl<R: Runner> Driver<R> {
         if self.sessions[index].session.phase == Phase::Stopped {
             return Err(format!("session {session_id} has stopped"));
         }
+        // An executing session never switches into a dry-run-only profile;
+        // the switch fails closed and the session keeps its profile.
+        if self.sessions[index].session.execute
+            && let Some(reason) =
+                self.runner
+                    .execution_guard()
+                    .blocks(Some(&profile_id), Some(&profile_id), &profile)
+        {
+            return Err(reason);
+        }
         let profile_name = profile.name.clone();
         self.sessions[index].request.profile = profile;
         self.sessions[index].request.profile_id = Some(profile_id.clone());
+        self.sessions[index].request.source_profile_id = Some(profile_id.clone());
         let event = Event::ProfileSwitched {
             profile_id,
             profile_name,
@@ -1099,17 +1163,29 @@ impl<R: Runner> Driver<R> {
             return Err(STEP_DEBOUNCED.into());
         }
         self.sessions[index].last_profile_step_ms = Some(now_ms);
-        let saved = self.runner.saved_profiles()?;
+        let mut saved = self.runner.saved_profiles()?;
+        // An executing session steps over dry-run-only profiles. The flags
+        // are read once for the whole step and checked in memory against
+        // the hashes computed at load time.
+        if self.sessions[index].session.execute {
+            let guard = self.runner.execution_guard();
+            saved.retain(|entry| {
+                guard
+                    .blocks_hash(Some(&entry.id), Some(&entry.id), &entry.content_hash)
+                    .is_none()
+            });
+        }
         let managed = &self.sessions[index];
         let current_id = managed
             .session
             .profile_id
             .as_deref()
             .or(managed.request.profile_id.as_deref());
-        let (profile_id, profile) =
+        let profile_id =
             resolve_profile_step(saved, current_id, &managed.request.profile, direction)
                 .ok_or(STEP_NO_TARGET)?;
         let session_id = managed.session.session_id.clone();
+        let profile = self.runner.load_saved(&profile_id)?;
         self.replace_profile(
             &session_id,
             profile_id,
@@ -1676,10 +1752,18 @@ pub mod fake {
         pub closed: bool,
         /// What `saved_profiles` returns.
         pub saved: Vec<(String, Profile)>,
+        /// Content hashes `execution_guard` refuses.
+        pub dry_run_hashes: BTreeSet<String>,
+        /// Content hashes `saved_profiles` reports instead of computing them.
+        pub saved_hashes: std::collections::BTreeMap<String, String>,
         /// Number of `saved_profiles` reads.
         pub saved_reads: usize,
         /// What `display_settings` returns.
         pub display: DisplaySettings,
+        /// Saved profile ids `execution_guard` refuses.
+        pub dry_run_only: BTreeSet<String>,
+        /// Number of `execution_guard` reads.
+        pub guard_reads: usize,
     }
 
     impl Runner for FakeRunner {
@@ -1722,13 +1806,38 @@ pub mod fake {
             self.devices.clone()
         }
 
-        fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+        fn saved_profiles(&mut self) -> Result<Vec<SavedEntry>, String> {
             self.saved_reads += 1;
-            Ok(self.saved.clone())
+            Ok(self
+                .saved
+                .iter()
+                .map(|(id, profile)| SavedEntry {
+                    id: id.clone(),
+                    name: profile.name.clone(),
+                    content_hash: self
+                        .saved_hashes
+                        .get(id)
+                        .cloned()
+                        .unwrap_or_else(|| crate::import_flags::content_hash(profile)),
+                })
+                .collect())
+        }
+
+        fn load_saved(&mut self, id: &str) -> Result<Profile, String> {
+            self.saved
+                .iter()
+                .find(|(saved, _)| saved == id)
+                .map(|(_, profile)| profile.clone())
+                .ok_or_else(|| "no longer saved".to_string())
         }
 
         fn display_settings(&mut self) -> DisplaySettings {
             self.display
+        }
+
+        fn execution_guard(&mut self) -> ExecutionGuard {
+            self.guard_reads += 1;
+            ExecutionGuard::with_ids(self.dry_run_only.clone(), self.dry_run_hashes.clone())
         }
     }
 
@@ -1747,6 +1856,7 @@ pub mod fake {
             execute,
             software_mode: true,
             profile_id: None,
+            source_profile_id: None,
             display: None,
         }
     }
@@ -2643,8 +2753,15 @@ mod tests {
         current: &str,
         direction: ProfileDirection,
     ) -> Option<String> {
-        resolve_profile_step(saved(names), current_id, &renamed(current), direction)
-            .map(|(id, _)| id)
+        let entries = saved(names)
+            .into_iter()
+            .map(|(id, profile)| SavedEntry {
+                id,
+                name: profile.name.clone(),
+                content_hash: crate::import_flags::content_hash(&profile),
+            })
+            .collect();
+        resolve_profile_step(entries, current_id, &renamed(current), direction)
     }
 
     #[test]
@@ -3496,5 +3613,175 @@ mod tests {
         });
         driver.start(request(&dial("/x"), false), 0).unwrap();
         assert_eq!(launched(&mut driver, 0), None);
+    }
+
+    const IMPORTED: &str = "00000000-0000-4000-8000-0000000000aa";
+
+    /// A running session started from the saved profile `profile_id`.
+    fn running_saved(execute: bool, profile_id: &str) -> (Driver<FakeRunner>, String) {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.inventory(vec![dial("/a")], 0);
+        let mut start = request(&dial("/a"), execute);
+        start.profile_id = Some(profile_id.into());
+        let id = driver.start(start, 0).unwrap();
+        (driver, id)
+    }
+
+    #[test]
+    fn an_imported_dry_run_only_profile_never_starts_with_actions() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.runner().dry_run_only.insert(IMPORTED.into());
+        driver.inventory(vec![dial("/a")], 0);
+        let mut start = request(&dial("/a"), true);
+        start.profile_id = Some(IMPORTED.into());
+        let error = driver.start(start.clone(), 0).unwrap_err();
+        assert_eq!(error, crate::import_flags::DRY_RUN_ONLY);
+        assert_eq!(starts(&mut driver), 0);
+        assert!(driver.runner().emitted.is_empty());
+        // While asleep nothing spawns, but the refusal still comes first.
+        driver.power(PowerEvent::Suspend, 1);
+        assert_eq!(
+            driver.start(start.clone(), 2).unwrap_err(),
+            crate::import_flags::DRY_RUN_ONLY
+        );
+        driver.power(PowerEvent::Resume, 3);
+        // A dry run of the same profile is allowed.
+        start.execute = false;
+        driver.start(start, 4).unwrap();
+        assert_eq!(starts(&mut driver), 1);
+        assert!(!driver.runner().starts[0].execute);
+    }
+
+    #[test]
+    fn a_paused_executing_session_never_resumes_into_a_dry_run_only_profile() {
+        let (mut driver, id) = running_saved(true, IMPORTED);
+        exit(&mut driver, &id, "boom", 10);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        driver.runner().dry_run_only.insert(IMPORTED.into());
+        assert_eq!(
+            driver.resume(&id, 0, 20).unwrap_err(),
+            crate::import_flags::DRY_RUN_ONLY
+        );
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        // Allowed again once the flag is cleared.
+        driver.runner().dry_run_only.clear();
+        driver.resume(&id, 0, 30).unwrap();
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.runner().starts[1].execute);
+    }
+
+    #[test]
+    fn an_executing_session_refuses_a_focused_app_switch_into_a_dry_run_only_profile() {
+        let (mut driver, id) = running(true);
+        driver.runner().dry_run_only.insert(IMPORTED.into());
+        let emitted = driver.runner().emitted.len();
+        let error = driver
+            .switch_profile(&id, IMPORTED.into(), renamed("Imported"), 100)
+            .unwrap_err();
+        assert_eq!(error, crate::import_flags::DRY_RUN_ONLY);
+        // Nothing changed: same process, profile and generation.
+        assert!(driver.runner().stops.is_empty());
+        assert_eq!(driver.runner().emitted.len(), emitted);
+        let held = driver.session_profile(&id, 0).unwrap();
+        assert_eq!(held.profile, crate::test_profiles::folders());
+        assert_eq!(phase(&mut driver), Phase::Running);
+        // The batched path used by the driver thread refuses it too.
+        let results = driver.switch_profiles(
+            vec![(id.clone(), IMPORTED.into(), renamed("Imported"))],
+            110,
+        );
+        assert_eq!(results, [Err(crate::import_flags::DRY_RUN_ONLY.to_owned())]);
+        assert!(driver.runner().batches.is_empty());
+
+        // A dry run may switch into it.
+        let (mut dry, dry_id) = running(false);
+        dry.runner().dry_run_only.insert(IMPORTED.into());
+        assert_eq!(
+            dry.switch_profile(&dry_id, IMPORTED.into(), renamed("Imported"), 100),
+            Ok(1)
+        );
+    }
+
+    #[test]
+    fn a_profile_key_in_an_executing_session_steps_over_dry_run_only_profiles() {
+        // Order by name: Browser (id-a), Folders (id-b, current), Streaming (id-c).
+        let (mut driver, id) = keyed(true);
+        driver.runner().dry_run_only.insert("id-c".into());
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 1_000),
+            Ok(1)
+        );
+        assert_eq!(last(&mut driver).profile_id.as_deref(), Some("id-a"));
+
+        // With every other profile flagged there is nothing to switch to.
+        let (mut driver, id) = keyed(true);
+        driver
+            .runner()
+            .dry_run_only
+            .extend(["id-a".into(), "id-c".into()]);
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 1_000),
+            Err(STEP_NO_TARGET.into())
+        );
+        assert!(driver.runner().stops.is_empty());
+
+        // A dry run steps into the flagged profile as usual.
+        let (mut dry, dry_id) = keyed(false);
+        dry.runner().dry_run_only.insert("id-c".into());
+        assert_eq!(
+            dry.profile_step(&dry_id, ProfileDirection::Next, 1_000),
+            Ok(1)
+        );
+        assert_eq!(last(&mut dry).profile_id.as_deref(), Some("id-c"));
+    }
+
+    #[test]
+    fn a_profile_key_step_reads_the_flags_a_bounded_number_of_times() {
+        let (mut driver, id) = keyed(true);
+        driver.runner().saved.extend(
+            (0..100).map(|index| (format!("id-x{index:03}"), renamed(&format!("X{index:03}")))),
+        );
+        driver.runner().dry_run_only.insert("id-c".into());
+        let before = driver.runner().guard_reads;
+        driver
+            .profile_step(&id, ProfileDirection::Next, 1_000)
+            .unwrap();
+        // One read to filter the 103 saved profiles, one for the switch.
+        assert_eq!(driver.runner().guard_reads - before, 2);
+    }
+
+    #[test]
+    fn an_edited_draft_of_a_dry_run_only_profile_is_refused_through_its_source() {
+        let mut driver = Driver::new(FakeRunner::default());
+        driver.runner().dry_run_only.insert(IMPORTED.into());
+        driver.inventory(vec![dial("/a")], 0);
+        // An unsaved, edited draft: no profile_id, but the source it was opened from.
+        let mut start = request(&dial("/a"), true);
+        start.source_profile_id = Some(IMPORTED.into());
+        start.profile.name = "Edited".into();
+        assert_eq!(
+            driver.start(start.clone(), 0).unwrap_err(),
+            crate::import_flags::DRY_RUN_ONLY
+        );
+        start.source_profile_id = Some("not a uuid".into());
+        assert!(driver.start(start, 0).unwrap_err().contains("UUID"));
+        assert_eq!(starts(&mut driver), 0);
+    }
+
+    #[test]
+    fn r4_a_profile_key_step_uses_the_hashes_computed_at_load_time() {
+        // Order by name: Browser (id-a), Folders (id-b, current), Streaming (id-c).
+        let (mut driver, id) = keyed(true);
+        driver
+            .runner()
+            .saved_hashes
+            .insert("id-c".into(), "precomputed".into());
+        driver.runner().dry_run_hashes.insert("precomputed".into());
+        assert_eq!(
+            driver.profile_step(&id, ProfileDirection::Next, 1_000),
+            Ok(1)
+        );
+        assert_eq!(last(&mut driver).profile_id.as_deref(), Some("id-a"));
     }
 }

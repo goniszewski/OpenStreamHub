@@ -6,6 +6,8 @@ mod display;
 mod export;
 mod feed;
 mod focus;
+mod import_flags;
+mod mhz;
 mod migration;
 mod power;
 #[cfg(target_os = "macos")]
@@ -18,8 +20,9 @@ mod store;
 mod test_profiles;
 
 use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
@@ -35,6 +38,8 @@ struct AppState {
     sessions: session::Manager,
     focus: focus::FocusState,
     display: display::DisplayState,
+    /// Import records and the dry-run-only flag of imported profiles.
+    imports: import_flags::ImportFlags,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
     /// requests cannot decode several large images at once.
     artwork: tauri::async_runtime::Mutex<()>,
@@ -62,6 +67,7 @@ impl AppState {
             .and_then(store::ProfileStore::open_for_app_data);
         let focus = focus::FocusState::open(app_data.as_deref().map_err(Clone::clone));
         let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
+        let imports = import_flags::ImportFlags::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
             app_data,
@@ -71,6 +77,7 @@ impl AppState {
             sessions: session::Manager::default(),
             focus,
             display,
+            imports,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
@@ -95,6 +102,10 @@ impl AppState {
             *store = store::ProfileStore::open_for_app_data(app_data.clone());
         }
         self.with_store(store::ProfileStore::bootstrap)
+            .map(|mut bootstrap| {
+                bootstrap.import_flags_error = self.mark_dry_run_only(&mut bootstrap.profiles);
+                bootstrap
+            })
             .map_err(|message| BootstrapError {
                 message,
                 storage_path: self
@@ -104,6 +115,493 @@ impl AppState {
                     .map(|path| path.join("profiles").to_string_lossy().into_owned()),
             })
     }
+
+    /// Marks profiles that may run only as a dry run: by id or by content
+    /// hash. An unreadable import list marks every profile and is returned,
+    /// so the UI shows the recovery action.
+    fn mark_dry_run_only(&self, profiles: &mut [store::ProfileSummary]) -> Option<String> {
+        match self.imports.load() {
+            Ok(records) => {
+                let ids = records.dry_run_only();
+                for summary in profiles {
+                    summary.dry_run_only = ids.contains(&summary.id)
+                        || records.flagged_hashes.contains_key(&summary.content_hash);
+                }
+                None
+            }
+            Err(error) => {
+                for summary in profiles {
+                    summary.dry_run_only = true;
+                }
+                Some(error)
+            }
+        }
+    }
+
+    fn list(&self) -> Result<store::ProfileListing, String> {
+        let mut listing = self.with_store(store::ProfileStore::list)?;
+        listing.import_flags_error = self.mark_dry_run_only(&mut listing.profiles);
+        Ok(listing)
+    }
+
+    /// Why `profile` must not run with actions, or `None` (see
+    /// `import_flags::ExecutionGuard::blocks`). Reads only the import list,
+    /// never the profile store.
+    fn execution_block(
+        &self,
+        profile_id: Option<&str>,
+        source_profile_id: Option<&str>,
+        profile: &Profile,
+    ) -> Option<String> {
+        self.execution_guard()
+            .blocks(profile_id, source_profile_id, profile)
+    }
+
+    /// The flags for one check. A saved profile whose stored content hash
+    /// is flagged counts as a flagged id even without a record, so a draft
+    /// opened from it (its source) stays blocked after edits. The listing
+    /// re-parses only changed files.
+    fn execution_guard(&self) -> import_flags::ExecutionGuard {
+        let mut guard = self.imports.guard();
+        match self.with_store(|store| store.list()) {
+            Ok(listing) => guard.flag_ids_by_content(
+                listing
+                    .profiles
+                    .iter()
+                    .map(|summary| (summary.id.as_str(), summary.content_hash.as_str())),
+            ),
+            Err(error) => {
+                guard = import_flags::ExecutionGuard::failed(format!(
+                    "the saved profiles cannot be listed: {error}"
+                ))
+            }
+        }
+        guard
+    }
+
+    /// Saves a profile. The saved id becomes dry-run only whenever the
+    /// content's hash is flagged, or the target id or the draft's source id
+    /// is flagged (the new content's hash is then flagged too). The flag is
+    /// recorded before the file is written, under the store lock.
+    fn save_profile(&self, request: SaveProfileRequest) -> Result<store::StoredProfile, String> {
+        let SaveProfileRequest {
+            id,
+            profile,
+            expected_modified_at_ms,
+            source_profile_id,
+        } = request;
+        self.with_store(|store| {
+            let hash = import_flags::content_hash(&profile);
+            // While the list cannot be read, a save that names a saved
+            // profile (its target or its source) could carry imported
+            // content and is refused. A brand-new profile with no source is
+            // still saved. If its content has a flagged hash, it stays
+            // flagged by that hash: no hash a saved profile has is ever
+            // released or evicted, and "Mark all profiles as needing
+            // review" flags every saved profile anyway.
+            let records = match self.imports.load() {
+                Ok(records) => records,
+                Err(error) if id.is_some() || source_profile_id.is_some() => {
+                    return Err(format!(
+                        "this profile cannot be saved while the list of imported profiles is unreadable: {error}"
+                    ));
+                }
+                Err(_) => return store.save(None, profile, expected_modified_at_ms),
+            };
+            // A target or source whose stored content is flagged counts as
+            // flagged even without a record (a copy saved while the list
+            // was unreadable, for example).
+            let listing = store.list()?;
+            let stored_hash = |id: &str| {
+                listing
+                    .profiles
+                    .iter()
+                    .find(|summary| summary.id == id)
+                    .map(|summary| summary.content_hash.as_str())
+            };
+            let ids = records.dry_run_only();
+            let flagged = records.flagged_hashes.contains_key(&hash)
+                || [id.as_deref(), source_profile_id.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|id| {
+                        ids.contains(id)
+                            || stored_hash(id)
+                                .is_some_and(|hash| records.flagged_hashes.contains_key(hash))
+                    });
+            if !flagged {
+                return store.save(id.as_deref(), profile, expected_modified_at_ms);
+            }
+            let target = match &id {
+                Some(id) => {
+                    // The conflict check runs before anything is flagged, so
+                    // a refused save leaves the target as it was.
+                    let current = store.load(id)?;
+                    if expected_modified_at_ms
+                        .is_some_and(|expected| expected != current.modified_at_ms)
+                    {
+                        return Err(store::CONFLICT_ERROR.into());
+                    }
+                    id.clone()
+                }
+                None => uuid::Uuid::new_v4().to_string(),
+            };
+            let before = records;
+            let mut previous_hash = String::new();
+            let tracked = tracked_hash(&profile, &hash);
+            self.imports.update(&saved_hashes(store)?, |records| {
+                previous_hash = records.flag(&target, &tracked, "derived", now_ms());
+                Ok(())
+            })?;
+            let saved = match id {
+                Some(id) => store.save(Some(&id), profile, expected_modified_at_ms),
+                None => store.create(&target, profile),
+            };
+            // A save can fail after the file was replaced (the folder flush):
+            // what is on disk decides, never the error alone.
+            let on_disk = store.load(&target).ok().map(|stored| stored.content_hash);
+            if saved.is_err() && on_disk.as_deref() != Some(hash.as_str()) {
+                // The new content never reached the disk: put back the
+                // target's record as it was (its new hash may stay).
+                let previous = before.profiles.get(&target).cloned();
+                let _ = saved_hashes(store).and_then(|saved| {
+                    self.imports.update(&saved, |records| {
+                        match previous {
+                            Some(record) => records.profiles.insert(target.clone(), record),
+                            None => records.profiles.remove(&target),
+                        };
+                        Ok(())
+                    })
+                });
+            } else if previous_hash != hash {
+                // The new version is on disk; the previous version's hash
+                // goes unless a saved profile or a record still has it.
+                let _ = saved_hashes(store).and_then(|saved| {
+                    self.imports.update(&saved, |records| {
+                        records.release(&previous_hash, &saved);
+                        Ok(())
+                    })
+                });
+            }
+            saved
+        })
+    }
+
+    /// Imports an untrusted `.mhz` file as new, dry-run-only profiles. Never
+    /// overwrites a profile. A failure removes the profiles created so far;
+    /// one that cannot be removed keeps its flag and is named in the error.
+    fn import_mhz(&self, bytes: &[u8], now_ms: u64) -> Result<MhzImport, String> {
+        if bytes.len() > mhz::archive::MAX_ARCHIVE_BYTES {
+            return Err(format!(
+                "this file is larger than {} MiB",
+                mhz::archive::MAX_ARCHIVE_BYTES / 1024 / 1024
+            ));
+        }
+        let converted = mhz::convert(bytes)?;
+        let source_sha256 = mhz::sha256_hex(bytes);
+        self.with_store(|store| {
+            let listing = store.list()?;
+            if listing.profiles.len() + listing.unreadable.len() + converted.len()
+                > store::MAX_PROFILES
+            {
+                return Err(format!(
+                    "profile storage permits at most {} profiles; delete a profile before importing",
+                    store::MAX_PROFILES
+                ));
+            }
+            let mut names: Vec<String> = listing.profiles.into_iter().map(|p| p.name).collect();
+            let mut imported: Vec<ImportedProfile> = Vec::new();
+            for item in converted {
+                let mut report = item.report;
+                let id = uuid::Uuid::new_v4().to_string();
+                let created = (|| {
+                    let name = mhz::unique_name(&report.source_name, &names)?;
+                    let mut profile = item.profile;
+                    profile.name = name.clone();
+                    replay::validate_profile(&profile)?;
+                    let hash = tracked_hash(&profile, &import_flags::content_hash(&profile));
+                    self.imports.update(&saved_hashes(store)?, |records| {
+                        let _ = records.flag(&id, &hash, "mhz", now_ms);
+                        if let Some(record) = records.profiles.get_mut(&id) {
+                            record.source_sha256 = source_sha256.clone();
+                        }
+                        Ok(())
+                    })?;
+                    store.create(&id, profile)
+                })();
+                match created {
+                    Ok(stored) => {
+                        report.profile_name = stored.profile.name.clone();
+                        names.push(stored.profile.name.clone());
+                        imported.push(ImportedProfile { stored, report });
+                    }
+                    Err(error) => {
+                        // A profile that reached the disk although its write
+                        // reported an error (a failing flush) is rolled back
+                        // with the others; one that never reached the disk
+                        // keeps no record (its hash stays flagged).
+                        match store.load(&id) {
+                            Ok(stored) => imported.push(ImportedProfile {
+                                stored,
+                                report: report.clone(),
+                            }),
+                            Err(_) => {
+                                let _ = saved_hashes(store).and_then(|saved| {
+                                    self.imports.update(&saved, |records| {
+                                        records.profiles.remove(&id);
+                                        Ok(())
+                                    })
+                                });
+                            }
+                        }
+                        let left = self.roll_back(store, &imported);
+                        if left.is_empty() {
+                            return Err(error);
+                        }
+                        return Err(format!(
+                            "{error}; these imported profiles could not be removed and stay dry run only: {}",
+                            left.join(", ")
+                        ));
+                    }
+                }
+            }
+            Ok(MhzImport {
+                profiles: imported,
+                source_sha256,
+            })
+        })
+    }
+
+    /// Writes a JSON export. When the draft's source or content is dry-run
+    /// only, the exported content's hash is flagged (and pinned) before the
+    /// file is written, so importing that file again stays dry run only.
+    /// With an unreadable import list nothing is exported.
+    fn export_profile(&self, request: ExportRequest) -> Result<export::ExportResult, String> {
+        let app_data = self.app_data.as_deref().map_err(Clone::clone)?;
+        let hash = import_flags::content_hash(&request.profile);
+        self.with_store(|store| {
+            let records = self.imports.load()?;
+            let flagged = records.flagged_hashes.contains_key(&hash)
+                || request
+                    .source_profile_id
+                    .as_deref()
+                    .is_some_and(|id| records.dry_run_only().contains(id));
+            if flagged && request.profile.binding_count() > 0 {
+                self.imports.update(&saved_hashes(store)?, |records| {
+                    records.flag_hash(&hash, true);
+                    Ok(())
+                })?;
+            }
+            Ok(())
+        })?;
+        export::export(&request.profile, app_data, export::now_seconds()?)
+    }
+
+    /// Deletes a saved profile. Its import record (if any) becomes a
+    /// tombstone with its fingerprint, so its open draft and any copy stay
+    /// dry run only; only tombstones are ever evicted from the list. While
+    /// the list cannot be read, the id goes to the sentinel instead, and
+    /// recovery restores it as a dry-run-only tombstone.
+    fn delete_profile(&self, id: &str, expected_modified_at_ms: Option<u64>) -> Result<(), String> {
+        self.with_store(|store| {
+            match self.imports.load() {
+                Ok(records) => {
+                    store.delete(id, expected_modified_at_ms)?;
+                    if records.profiles.contains_key(id) {
+                        let _ = saved_hashes(store).and_then(|saved| {
+                            self.imports.update(&saved, |records| {
+                                if let Some(record) = records.profiles.get_mut(id) {
+                                    record.deleted = true;
+                                }
+                                Ok(())
+                            })
+                        });
+                    }
+                }
+                Err(_) => {
+                    // Remembered first: a delete that recovery could not
+                    // know about is refused.
+                    self.imports.remember_deleted(id).map_err(|error| {
+                        format!("the profile was not deleted: it could not be remembered for recovering the imported profile list ({error})")
+                    })?;
+                    store.delete(id, expected_modified_at_ms)?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Deletes the profiles of a failed import. A record is dropped only
+    /// when its profile was really deleted; the names of the profiles left
+    /// behind (still flagged) are returned. Content hashes stay flagged.
+    fn roll_back(&self, store: &store::ProfileStore, imported: &[ImportedProfile]) -> Vec<String> {
+        let mut left = Vec::new();
+        for done in imported {
+            if store.delete(&done.stored.id, None).is_ok() {
+                let _ = saved_hashes(store).and_then(|saved| {
+                    self.imports.update(&saved, |records| {
+                        records.profiles.remove(&done.stored.id);
+                        Ok(())
+                    })
+                });
+            } else {
+                left.push(done.stored.profile.name.clone());
+            }
+        }
+        left
+    }
+
+    /// Clears the dry-run-only flag of a saved profile and of its content
+    /// hash. The backend recomputes the hash of the saved file (`load`
+    /// always hashes what it parsed, never a cached value) and requires
+    /// the one the confirmation showed, all under the store lock, so a
+    /// version changed after the dialog opened is refused. The backend
+    /// cannot prove a person clicked; the confirmation dialog is that step.
+    fn allow_execution(&self, request: AllowRequest) -> Result<store::ProfileListing, String> {
+        self.with_store(|store| {
+            let stored = store.load(&request.id)?;
+            if stored.content_hash != request.content_hash {
+                return Err(store::CONFLICT_ERROR.into());
+            }
+            self.imports.update(&saved_hashes(store)?, |records| {
+                let by_id = records
+                    .profiles
+                    .get_mut(&request.id)
+                    .filter(|record| record.dry_run_only)
+                    .map(|record| record.dry_run_only = false)
+                    .is_some();
+                let by_hash = records
+                    .flagged_hashes
+                    .remove(&stored.content_hash)
+                    .is_some();
+                if by_id || by_hash {
+                    Ok(())
+                } else {
+                    Err("this profile is not an imported dry-run-only profile".into())
+                }
+            })?;
+            Ok(())
+        })?;
+        self.list()
+    }
+
+    /// The recovery action "Mark all profiles as needing review": flags
+    /// every saved profile (id and content hash) and rewrites the import
+    /// list, keeping the readable records of a list that can still be read
+    /// and the hashes and ids the sentinel keeps.
+    fn mark_all_for_review(&self) -> Result<store::ProfileListing, String> {
+        self.with_store(|store| {
+            let mut records = self.imports.load_for_recovery()?;
+            let listing = store.list()?;
+            if listing.truncated {
+                return Err(format!(
+                    "more than {} profile files exist, so not every profile can be marked; remove extra files from the profile folder first",
+                    store::MAX_PROFILES
+                ));
+            }
+            for summary in &listing.profiles {
+                let hash = if summary.binding_count == 0 {
+                    ""
+                } else {
+                    summary.content_hash.as_str()
+                };
+                let _ = records.flag(&summary.id, hash, "review", now_ms());
+            }
+            // Profiles that cannot be read are marked by id.
+            for unreadable in &listing.unreadable {
+                if store::validate_id(&unreadable.id).is_ok() {
+                    let _ = records.flag(&unreadable.id, "", "review", now_ms());
+                }
+            }
+            self.imports.replace(&saved_hashes(store)?, &records)
+        })?;
+        self.list()
+    }
+}
+
+/// The content hashes of every saved profile, which the import list never
+/// releases or evicts while a profile has that content. A listing that
+/// fails or cannot show every profile file refuses the write instead of
+/// treating the missing profiles as absent.
+fn saved_hashes(store: &store::ProfileStore) -> Result<BTreeSet<String>, String> {
+    let listing = store.list()?;
+    if listing.truncated {
+        return Err(format!(
+            "more than {} profile files exist, so not every profile can be checked; remove extra files from the profile folder first",
+            store::MAX_PROFILES
+        ));
+    }
+    Ok(listing
+        .profiles
+        .into_iter()
+        .map(|summary| summary.content_hash)
+        .collect())
+}
+
+/// The content hash to flag for `profile`: none for a profile with no
+/// binding, which runs nothing and would otherwise match every blank
+/// profile. Such a profile stays tracked by its id and by the drafts that
+/// name it as their source.
+fn tracked_hash(profile: &Profile, hash: &str) -> String {
+    if profile.binding_count() == 0 {
+        String::new()
+    } else {
+        hash.to_owned()
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// `save_profile` arguments; unknown fields are refused, so a misspelt
+/// `sourceProfileId` cannot silently drop the provenance hint.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SaveProfileRequest {
+    id: Option<String>,
+    profile: Profile,
+    #[serde(default)]
+    expected_modified_at_ms: Option<u64>,
+    /// The saved profile the draft was opened from, also after edits.
+    #[serde(default)]
+    source_profile_id: Option<String>,
+}
+
+/// `export_profile` arguments.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportRequest {
+    profile: Profile,
+    /// The saved profile the draft was opened from, also after edits.
+    #[serde(default)]
+    source_profile_id: Option<String>,
+}
+
+/// `allow_imported_profile_execution` arguments.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AllowRequest {
+    id: String,
+    /// `StoredProfile::content_hash` of the version the confirmation showed.
+    content_hash: String,
+}
+
+/// One profile created by a `.mhz` import and what happened to each control.
+#[derive(Debug, Serialize)]
+struct ImportedProfile {
+    stored: store::StoredProfile,
+    report: mhz::ImportReport,
+}
+
+/// `import_mhz_profile` result.
+#[derive(Debug, Serialize)]
+struct MhzImport {
+    profiles: Vec<ImportedProfile>,
+    /// SHA-256 of the imported file, the only provenance kept besides time.
+    source_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -118,7 +616,7 @@ fn bootstrap(state: State<'_, AppState>) -> Result<store::AppBootstrap, Bootstra
 
 #[tauri::command]
 fn list_profiles(state: State<'_, AppState>) -> Result<store::ProfileListing, String> {
-    state.with_store(store::ProfileStore::list)
+    state.list()
 }
 
 #[tauri::command]
@@ -129,21 +627,55 @@ fn load_profile(state: State<'_, AppState>, id: String) -> Result<store::StoredP
 #[tauri::command]
 fn save_profile(
     state: State<'_, AppState>,
-    id: Option<String>,
-    profile: Profile,
-    expected_modified_at_ms: Option<u64>,
+    request: SaveProfileRequest,
 ) -> Result<store::StoredProfile, String> {
-    replay::validate_profile(&profile)?;
-    state.with_store(|store| store.save(id.as_deref(), profile, expected_modified_at_ms))
+    replay::validate_profile(&request.profile)?;
+    state.save_profile(request)
 }
 
+// Deleting keeps the profile's import record and content hash as tombstones,
+// so its draft (still open in the editor) stays dry run only.
 #[tauri::command]
 fn delete_profile(
     state: State<'_, AppState>,
     id: String,
     expected_modified_at_ms: Option<u64>,
 ) -> Result<(), String> {
-    state.with_store(|store| store.delete(&id, expected_modified_at_ms))
+    state.delete_profile(&id, expected_modified_at_ms)
+}
+
+// Imports an official MasterHUB `.mhz` file (`mhz`). The webview sends the
+// picked or dropped file's bytes as the raw request body; no path is passed.
+// Each profile in it becomes a new, dry-run-only saved profile.
+#[tauri::command(async)]
+fn import_mhz_profile(
+    state: State<'_, AppState>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<MhzImport, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("the .mhz import expects the raw file bytes".into());
+    };
+    state.import_mhz(bytes, now_ms())
+}
+
+// The explicit "Allow this imported profile to execute actions" action. The
+// UI calls it only after a confirmation that names the profile and lists its
+// capabilities, naming the content hash of the saved version it showed.
+#[tauri::command]
+fn allow_imported_profile_execution(
+    state: State<'_, AppState>,
+    request: AllowRequest,
+) -> Result<store::ProfileListing, String> {
+    state.allow_execution(request)
+}
+
+// Recovery when the imported profile list is missing or damaged: every saved
+// profile becomes dry run only until allowed again, one by one.
+#[tauri::command]
+fn mark_all_profiles_for_review(
+    state: State<'_, AppState>,
+) -> Result<store::ProfileListing, String> {
+    state.mark_all_for_review()
 }
 
 #[tauri::command]
@@ -156,10 +688,9 @@ fn validate_profile(profile: Profile) -> Result<ProfileValidity, String> {
 #[tauri::command]
 fn export_profile(
     state: State<'_, AppState>,
-    profile: Profile,
+    request: ExportRequest,
 ) -> Result<export::ExportResult, String> {
-    let app_data = state.app_data.as_deref().map_err(Clone::clone)?;
-    export::export(&profile, app_data, export::now_seconds()?)
+    state.export_profile(request)
 }
 
 #[tauri::command]
@@ -261,6 +792,15 @@ fn start_service(
     }
     if state.sessions.is_closed() || state.services.is_closed() {
         return Err(service::SHUTTING_DOWN.into());
+    }
+    if request.execute
+        && let Some(reason) = state.execution_block(
+            request.profile_id.as_deref(),
+            request.source_profile_id.as_deref(),
+            &request.profile,
+        )
+    {
+        return Err(reason);
     }
     run_service(&app, &request, None)
 }
@@ -377,32 +917,40 @@ impl session::Runner for AppRunner {
         Some(feed::live_devices(&registry.devices()))
     }
 
-    // Unreadable or invalid saved profiles are skipped, as
-    // `switch_session_profile` would refuse them. The store lock is taken
-    // once for the listing and then once per profile, never across the whole
-    // read, so editor commands are not held up behind it. A profile saved or
-    // deleted in between is read as it is then (saves are atomic renames) or
-    // skipped.
-    fn saved_profiles(&mut self) -> Result<Vec<(String, Profile)>, String> {
+    // The listing comes from the store's summary cache (only changed files
+    // are parsed), so a profile key reads and parses just the profile it
+    // switches to (`load_saved`). Unreadable profiles are not listed, as
+    // `switch_session_profile` would refuse them; a listed profile is valid
+    // (it parsed and fits the store limit).
+    fn saved_profiles(&mut self) -> Result<Vec<session::SavedEntry>, String> {
         let state = self.app.state::<AppState>();
-        let ids: Vec<String> = state.with_store(|store| {
-            Ok(store
-                .list()?
-                .profiles
-                .into_iter()
-                .map(|summary| summary.id)
-                .collect())
-        })?;
-        Ok(ids
-            .iter()
-            .filter_map(|id| state.with_store(|store| store.load(id)).ok())
-            .filter(|stored| replay::validate_profile(&stored.profile).is_ok())
-            .map(|stored| (stored.id, stored.profile))
+        Ok(state
+            .with_store(store::ProfileStore::list)?
+            .profiles
+            .into_iter()
+            .map(|summary| session::SavedEntry {
+                id: summary.id,
+                name: summary.name,
+                content_hash: summary.content_hash,
+            })
             .collect())
+    }
+
+    fn load_saved(&mut self, id: &str) -> Result<Profile, String> {
+        let stored = self
+            .app
+            .state::<AppState>()
+            .with_store(|store| store.load(id))?;
+        replay::validate_profile(&stored.profile)?;
+        Ok(stored.profile)
     }
 
     fn display_settings(&mut self) -> display::DisplaySettings {
         self.app.state::<AppState>().display.for_new_session()
+    }
+
+    fn execution_guard(&mut self) -> import_flags::ExecutionGuard {
+        self.app.state::<AppState>().execution_guard()
     }
 }
 
@@ -706,6 +1254,9 @@ pub fn run() {
             load_profile,
             save_profile,
             delete_profile,
+            import_mhz_profile,
+            allow_imported_profile_execution,
+            mark_all_profiles_for_review,
             validate_profile,
             export_profile,
             replay_demo,
@@ -781,6 +1332,7 @@ mod tests {
             sessions: session::Manager::default(),
             focus: focus::FocusState::open(Err("no app data".into())),
             display: display::DisplayState::open(Err("no app data".into())),
+            imports: import_flags::ImportFlags::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }
     }
@@ -876,5 +1428,888 @@ mod tests {
         let state = AppState::open(Ok(directory.path().join("app")));
         let bootstrap = state.bootstrap().unwrap();
         assert_eq!(bootstrap.profiles.len(), 1);
+    }
+
+    fn open_state() -> (tempfile::TempDir, AppState) {
+        let directory = tempfile::tempdir().unwrap();
+        let state = AppState::open(Ok(directory.path().join("app")));
+        state.bootstrap().unwrap();
+        (directory, state)
+    }
+
+    fn imported_state() -> (tempfile::TempDir, AppState, store::StoredProfile) {
+        let (directory, state) = open_state();
+        let file = mhz::tests::mhz(&mhz::tests::full_profile());
+        let stored = state
+            .import_mhz(&file, 1)
+            .unwrap()
+            .profiles
+            .remove(0)
+            .stored;
+        (directory, state, stored)
+    }
+
+    fn save(
+        state: &AppState,
+        id: Option<&str>,
+        profile: &Profile,
+        source: Option<&str>,
+    ) -> Result<store::StoredProfile, String> {
+        state.save_profile(SaveProfileRequest {
+            id: id.map(str::to_owned),
+            profile: profile.clone(),
+            expected_modified_at_ms: None,
+            source_profile_id: source.map(str::to_owned),
+        })
+    }
+
+    fn flagged(state: &AppState, id: &str) -> bool {
+        state
+            .list()
+            .unwrap()
+            .profiles
+            .iter()
+            .find(|summary| summary.id == id)
+            .unwrap()
+            .dry_run_only
+    }
+
+    fn refused() -> Option<String> {
+        Some(import_flags::DRY_RUN_ONLY.to_string())
+    }
+
+    #[test]
+    fn an_mhz_import_creates_new_dry_run_only_profiles_and_never_overwrites() {
+        let (directory, state) = open_state();
+        let existing = state.list().unwrap().profiles[0].clone();
+        let existing_path = directory
+            .path()
+            .join(format!("app/profiles/{}.json", existing.id));
+        let existing_bytes = std::fs::read(&existing_path).unwrap();
+        let file = mhz::tests::mhz(&mhz::tests::full_profile());
+
+        let first = state.import_mhz(&file, 42).unwrap();
+        assert_eq!(first.profiles.len(), 1);
+        assert_eq!(first.source_sha256, mhz::sha256_hex(&file));
+        let imported = &first.profiles[0];
+        assert_eq!(imported.stored.profile.name, "Desk setup (imported)");
+        assert_eq!(imported.report.profile_name, "Desk setup (imported)");
+        let second = state.import_mhz(&file, 43).unwrap();
+        assert_eq!(
+            second.profiles[0].stored.profile.name,
+            "Desk setup (imported 2)"
+        );
+        let listing = state.list().unwrap();
+        assert_eq!(listing.profiles.len(), 3);
+        assert_eq!(listing.import_flags_error, None);
+        for summary in &listing.profiles {
+            assert_eq!(
+                summary.dry_run_only,
+                summary.id != existing.id,
+                "{summary:?}"
+            );
+        }
+        assert!(
+            state
+                .bootstrap()
+                .unwrap()
+                .profiles
+                .iter()
+                .any(|s| s.dry_run_only)
+        );
+        assert_eq!(std::fs::read(&existing_path).unwrap(), existing_bytes);
+        let records = state.imports.load().unwrap();
+        let record = &records.profiles[&imported.stored.id];
+        assert_eq!(
+            (
+                record.source.as_str(),
+                record.dry_run_only,
+                record.imported_at_ms
+            ),
+            ("mhz", true, 42)
+        );
+        assert!(
+            records
+                .flagged_hashes
+                .contains_key(&imported.stored.content_hash)
+        );
+        assert!(
+            directory
+                .path()
+                .join("app/profiles")
+                .join(import_flags::SENTINEL)
+                .is_file()
+        );
+        let stored_text = std::fs::read_to_string(
+            directory
+                .path()
+                .join(format!("app/profiles/{}.json", imported.stored.id)),
+        )
+        .unwrap()
+            + &std::fs::read_to_string(directory.path().join("app/imported-profiles.json"))
+                .unwrap();
+        for secret in [
+            mhz::tests::BASE_SERIAL,
+            mhz::tests::KEYPAD_SERIAL,
+            "someone",
+        ] {
+            assert!(!stored_text.contains(secret), "{secret} stored");
+        }
+    }
+
+    #[test]
+    fn a_rejected_mhz_file_leaves_no_profile_and_no_record() {
+        let (directory, state) = open_state();
+        for bad in [
+            b"garbage".to_vec(),
+            vec![0; mhz::archive::MAX_ARCHIVE_BYTES + 1],
+            mhz::tests::zip(&[mhz::tests::item("profile1_A", b"{")]),
+        ] {
+            assert!(state.import_mhz(&bad, 1).is_err());
+        }
+        assert_eq!(state.list().unwrap().profiles.len(), 1);
+        assert!(!directory.path().join("app/imported-profiles.json").exists());
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        let file = mhz::tests::mhz(&mhz::tests::full_profile());
+        assert!(state.import_mhz(&file, 1).is_err());
+        assert_eq!(state.list().unwrap().profiles.len(), 1);
+    }
+
+    #[test]
+    fn deleting_the_open_profile_keeps_its_draft_dry_run_only_for_start_and_save() {
+        let (_directory, state, imported) = imported_state();
+        state
+            .with_store(|store| store.delete(&imported.id, None))
+            .unwrap();
+        // The draft stays open with no saved id; its source id is gone.
+        assert_eq!(
+            state.execution_block(None, None, &imported.profile),
+            refused()
+        );
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &imported.profile),
+            refused()
+        );
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &edited),
+            refused()
+        );
+        // Saving the draft again, with or without its source, stays flagged.
+        let resaved = save(&state, None, &imported.profile, None).unwrap();
+        assert!(flagged(&state, &resaved.id));
+        let edited_saved = save(&state, None, &edited, Some(&imported.id)).unwrap();
+        assert!(flagged(&state, &edited_saved.id));
+        assert_eq!(
+            state.execution_block(Some(&edited_saved.id), None, &edited),
+            refused()
+        );
+    }
+
+    #[test]
+    fn copies_and_re_imported_exports_stay_dry_run_only_without_any_hint() {
+        let (_directory, state, imported) = imported_state();
+        // A JSON export re-imported: a new profile with a new name, no source.
+        let mut exported = imported.profile.clone();
+        exported.name = "Desk (imported 3)".into();
+        let reimported = save(&state, None, &exported, None).unwrap();
+        assert!(flagged(&state, &reimported.id));
+        assert_eq!(
+            state.execution_block(Some(&reimported.id), None, &reimported.profile),
+            refused()
+        );
+        // A bogus source hint does not help either.
+        let bogus = save(
+            &state,
+            None,
+            &exported,
+            Some(&uuid::Uuid::new_v4().to_string()),
+        )
+        .unwrap();
+        assert!(flagged(&state, &bogus.id));
+        // An edited draft is refused through its source and, once saved with
+        // that source, its new content hash is flagged for later copies.
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        edited.name = "Edited".into();
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &edited),
+            refused()
+        );
+        save(&state, None, &edited, Some(&imported.id)).unwrap();
+        let copy_of_edit = save(&state, None, &edited, None).unwrap();
+        assert!(flagged(&state, &copy_of_edit.id));
+    }
+
+    #[test]
+    fn saving_flagged_content_over_an_unflagged_profile_flags_that_profile() {
+        let (_directory, state, imported) = imported_state();
+        let other = state
+            .list()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|summary| !summary.dry_run_only)
+            .unwrap();
+        let mut over = imported.profile.clone();
+        over.name = "Everyday".into();
+        let saved = save(&state, Some(&other.id), &over, Some(&other.id)).unwrap();
+        assert_eq!(saved.id, other.id);
+        assert!(flagged(&state, &other.id));
+        assert_eq!(
+            state.execution_block(Some(&other.id), Some(&other.id), &over),
+            refused()
+        );
+        // An unrelated profile still runs.
+        let plain = crate::test_profiles::folders();
+        let fresh = save(&state, None, &plain, None).unwrap();
+        assert!(!flagged(&state, &fresh.id));
+        assert_eq!(
+            state.execution_block(Some(&fresh.id), Some(&fresh.id), &plain),
+            None
+        );
+    }
+
+    #[test]
+    fn allowing_needs_the_reviewed_content_hash_and_clears_id_and_hash() {
+        let (_directory, state, imported) = imported_state();
+        let copy = save(&state, None, &imported.profile, Some(&imported.id)).unwrap();
+        let wrong = AllowRequest {
+            id: imported.id.clone(),
+            content_hash: "0".repeat(64),
+        };
+        assert_eq!(
+            state.allow_execution(wrong).unwrap_err(),
+            store::CONFLICT_ERROR
+        );
+        assert!(flagged(&state, &imported.id));
+        let allow = || AllowRequest {
+            id: imported.id.clone(),
+            content_hash: imported.content_hash.clone(),
+        };
+        let listing = state.allow_execution(allow()).unwrap();
+        assert!(
+            !listing
+                .profiles
+                .iter()
+                .find(|p| p.id == imported.id)
+                .unwrap()
+                .dry_run_only
+        );
+        assert_eq!(
+            state.execution_block(Some(&imported.id), Some(&imported.id), &imported.profile),
+            None
+        );
+        assert!(state.allow_execution(allow()).is_err());
+        // The copy keeps its own id flag.
+        assert!(flagged(&state, &copy.id));
+        assert_eq!(
+            state.execution_block(Some(&copy.id), None, &copy.profile),
+            refused()
+        );
+    }
+
+    #[test]
+    fn a_missing_or_damaged_list_fails_closed_until_everything_is_marked_for_review() {
+        let (directory, state, imported) = imported_state();
+        let plain = crate::test_profiles::folders();
+        let list = directory.path().join("app/imported-profiles.json");
+        for damage in [None, Some(&b"{"[..])] {
+            match damage {
+                None => std::fs::remove_file(&list).unwrap(),
+                Some(bytes) => std::fs::write(&list, bytes).unwrap(),
+            }
+            let blocked = state.execution_block(None, None, &plain).unwrap();
+            assert!(blocked.starts_with("actions cannot run"), "{blocked}");
+            let listing = state.list().unwrap();
+            assert!(listing.import_flags_error.is_some());
+            assert!(listing.profiles.iter().all(|summary| summary.dry_run_only));
+            assert!(state.bootstrap().unwrap().import_flags_error.is_some());
+            let listing = state.mark_all_for_review().unwrap();
+            assert_eq!(listing.import_flags_error, None);
+            assert!(listing.profiles.iter().all(|summary| summary.dry_run_only));
+            assert_eq!(
+                state.execution_block(Some(&imported.id), None, &imported.profile),
+                refused()
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_rollback_that_cannot_delete_keeps_the_record_and_reports_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let (directory, state, imported) = imported_state();
+        let profiles = directory.path().join("app/profiles");
+        let done = vec![ImportedProfile {
+            stored: imported.clone(),
+            report: mhz::convert(&mhz::tests::mhz(&mhz::tests::full_profile()))
+                .unwrap()
+                .remove(0)
+                .report,
+        }];
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let left = state
+            .with_store(|store| Ok(state.roll_back(store, &done)))
+            .unwrap();
+        std::fs::set_permissions(&profiles, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(left, std::slice::from_ref(&imported.profile.name));
+        assert!(state.imports.load().unwrap().profiles[&imported.id].dry_run_only);
+        assert!(flagged(&state, &imported.id));
+        // When the delete works, the record goes; the content hash stays.
+        let left = state
+            .with_store(|store| Ok(state.roll_back(store, &done)))
+            .unwrap();
+        assert!(left.is_empty());
+        let records = state.imports.load().unwrap();
+        assert!(!records.profiles.contains_key(&imported.id));
+        assert!(records.flagged_hashes.contains_key(&imported.content_hash));
+    }
+
+    #[test]
+    fn new_command_arguments_refuse_unknown_fields() {
+        let profile = serde_json::to_value(crate::test_profiles::folders()).unwrap();
+        let ok: SaveProfileRequest = serde_json::from_value(serde_json::json!({
+            "id": null, "profile": profile, "expectedModifiedAtMs": null, "sourceProfileId": "x"
+        }))
+        .unwrap();
+        assert_eq!(ok.source_profile_id.as_deref(), Some("x"));
+        for typo in [
+            "copyOf",
+            "sourceProfileID",
+            "source_profile_id",
+            "expected_modified_at_ms",
+        ] {
+            let mut value = serde_json::json!({ "id": null, "profile": profile });
+            value[typo] = serde_json::json!("x");
+            assert!(
+                serde_json::from_value::<SaveProfileRequest>(value).is_err(),
+                "{typo}"
+            );
+        }
+        assert!(
+            serde_json::from_value::<AllowRequest>(
+                serde_json::json!({"id": "a", "contentHash": "h"})
+            )
+            .is_ok()
+        );
+        assert!(
+            serde_json::from_value::<AllowRequest>(
+                serde_json::json!({"id": "a", "expectedModifiedAtMs": 1})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn an_exported_edit_of_a_flagged_draft_stays_flagged_when_imported_again() {
+        let (_directory, state, imported) = imported_state();
+        // Edited, unsaved, then exported: the file holds content nobody saved.
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        edited.name = "Edited".into();
+        state
+            .export_profile(ExportRequest {
+                profile: edited.clone(),
+                source_profile_id: Some(imported.id.clone()),
+            })
+            .unwrap();
+        // Imported again as JSON: a new profile with no source.
+        edited.name = "Edited (imported)".into();
+        let reimported = save(&state, None, &edited, None).unwrap();
+        assert!(flagged(&state, &reimported.id));
+        assert_eq!(state.execution_block(None, None, &edited), refused());
+    }
+
+    #[test]
+    fn a_failed_save_over_an_unflagged_profile_does_not_flag_it() {
+        let (_directory, state, imported) = imported_state();
+        let other = state
+            .list()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|summary| !summary.dry_run_only)
+            .unwrap();
+        let error = state
+            .save_profile(SaveProfileRequest {
+                id: Some(other.id.clone()),
+                profile: imported.profile.clone(),
+                expected_modified_at_ms: Some(other.modified_at_ms + 1),
+                source_profile_id: Some(other.id.clone()),
+            })
+            .unwrap_err();
+        assert_eq!(error, store::CONFLICT_ERROR);
+        assert!(!flagged(&state, &other.id));
+        assert!(
+            !state
+                .imports
+                .load()
+                .unwrap()
+                .profiles
+                .contains_key(&other.id)
+        );
+    }
+
+    #[test]
+    fn marking_everything_for_review_keeps_hashes_of_deleted_imports() {
+        let (directory, state, imported) = imported_state();
+        state
+            .with_store(|store| store.delete(&imported.id, None))
+            .unwrap();
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        state.mark_all_for_review().unwrap();
+        // The deleted profile's open draft, saved again, is still dry run only.
+        assert_eq!(
+            state.execution_block(None, None, &imported.profile),
+            refused()
+        );
+        let resaved = save(&state, None, &imported.profile, None).unwrap();
+        assert!(flagged(&state, &resaved.id));
+    }
+
+    #[test]
+    fn r4_compaction_never_unflags_a_live_profile_and_refuses_an_over_cap_write() {
+        let (_directory, state, imported) = imported_state();
+        // More than 1,024 tombstoned flagged rounds and more than 4,096 pinned
+        // export fingerprints, all newer than the import.
+        let mut records = state.imports.load().unwrap();
+        for index in 0..1100u64 {
+            let id = uuid::Uuid::new_v4().to_string();
+            let _ = records.flag(
+                &id,
+                &format!("{:064x}", index + 1),
+                "derived",
+                1_000 + index,
+            );
+            records.profiles.get_mut(&id).unwrap().deleted = true;
+        }
+        for index in 0..4200u64 {
+            records.flag_hash(&format!("{:064x}", 100_000 + index), true);
+        }
+        state
+            .imports
+            .replace(&state.with_store(saved_hashes).unwrap(), &records)
+            .unwrap();
+        let records = state.imports.load().unwrap();
+        assert!(records.profiles.len() <= import_flags::MAX_RECORDS);
+        assert!(records.flagged_hashes.len() <= import_flags::MAX_HASHES);
+        // The live import stays blocked: listed, Start, a hint-less copy, an
+        // edited draft with its source.
+        assert!(flagged(&state, &imported.id));
+        assert_eq!(
+            state.execution_block(Some(&imported.id), None, &imported.profile),
+            refused()
+        );
+        assert_eq!(
+            state.execution_block(None, None, &imported.profile),
+            refused()
+        );
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &edited),
+            refused()
+        );
+        let copy = save(&state, None, &imported.profile, None).unwrap();
+        assert!(flagged(&state, &copy.id));
+        // More live records than the cap: the write is refused, nothing cleared.
+        let mut over = state.imports.load().unwrap();
+        for index in 0..=import_flags::MAX_RECORDS as u64 {
+            over.flag(
+                &uuid::Uuid::new_v4().to_string(),
+                &format!("{:064x}", 900_000 + index),
+                "derived",
+                5_000 + index,
+            );
+        }
+        assert!(
+            state
+                .imports
+                .replace(&state.with_store(saved_hashes).unwrap(), &over)
+                .is_err()
+        );
+        assert!(flagged(&state, &imported.id));
+        assert_eq!(
+            state.execution_block(None, None, &imported.profile),
+            refused()
+        );
+        // Deleting a saved profile turns its record into a tombstone.
+        state.delete_profile(&copy.id, None).unwrap();
+        assert!(state.imports.load().unwrap().profiles[&copy.id].deleted);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn r4_a_failed_save_keeps_the_fingerprint_of_the_version_on_disk() {
+        let (directory, state, imported) = imported_state();
+        let path = directory
+            .path()
+            .join(format!("app/profiles/{}.json", imported.id));
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        let lock = |flag: &str| {
+            assert!(
+                std::process::Command::new("chflags")
+                    .arg(flag)
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        lock("uchg");
+        let result = save(&state, Some(&imported.id), &edited, Some(&imported.id));
+        lock("nouchg");
+        assert!(result.is_err());
+        // A hint-less copy of the version still on disk stays dry run only.
+        assert_eq!(
+            state.execution_block(None, None, &imported.profile),
+            refused()
+        );
+        let copy = save(&state, None, &imported.profile, None).unwrap();
+        assert!(flagged(&state, &copy.id));
+    }
+
+    #[test]
+    fn r4_saves_that_could_derive_from_flagged_content_are_refused_while_the_list_is_unreadable() {
+        let (directory, state, imported) = imported_state();
+        let other = state
+            .list()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|summary| !summary.dry_run_only)
+            .unwrap();
+        let list = directory.path().join("app/imported-profiles.json");
+        let good = std::fs::read(&list).unwrap();
+        std::fs::write(&list, b"{").unwrap();
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        assert!(save(&state, Some(&other.id), &edited, Some(&other.id)).is_err());
+        assert!(save(&state, None, &edited, Some(&imported.id)).is_err());
+        assert!(save(&state, Some(&imported.id), &edited, Some(&imported.id)).is_err());
+        // A brand-new profile without a source can still be saved; content
+        // matching a flagged fingerprint is caught by content once the list
+        // is readable again.
+        let fresh = save(&state, None, &imported.profile, None).unwrap();
+        std::fs::write(&list, good).unwrap();
+        assert!(flagged(&state, &fresh.id));
+        assert_eq!(
+            state.execution_block(Some(&fresh.id), None, &fresh.profile),
+            refused()
+        );
+    }
+
+    fn unflagged(state: &AppState) -> store::ProfileSummary {
+        state
+            .list()
+            .unwrap()
+            .profiles
+            .into_iter()
+            .find(|summary| !summary.dry_run_only)
+            .unwrap()
+    }
+
+    #[test]
+    fn r5_a_copy_saved_without_a_record_stays_flagged_when_the_original_is_edited() {
+        let (directory, state, imported) = imported_state();
+        let list = directory.path().join("app/imported-profiles.json");
+        let good = std::fs::read(&list).unwrap();
+        std::fs::write(&list, b"{").unwrap();
+        let copy = save(&state, None, &imported.profile, None).unwrap();
+        std::fs::write(&list, good).unwrap();
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        save(&state, Some(&imported.id), &edited, Some(&imported.id)).unwrap();
+        assert!(flagged(&state, &copy.id));
+        assert_eq!(
+            state.execution_block(Some(&copy.id), Some(&copy.id), &copy.profile),
+            refused()
+        );
+    }
+
+    #[test]
+    fn r5_a_save_that_reached_the_disk_keeps_its_flag_when_the_flush_fails() {
+        let (_directory, state, imported) = imported_state();
+        let other = unflagged(&state);
+        let mut over = imported.profile.clone();
+        over.name = "Everyday".into();
+        store::fault::SYNC.with(|fault| fault.set(true));
+        let result = save(&state, Some(&other.id), &over, Some(&other.id));
+        store::fault::SYNC.with(|fault| fault.set(false));
+        assert!(result.is_err());
+        // The new content is on disk, so the target stays flagged by id: an
+        // edit of it (no other hint) is still dry run only.
+        let mut edited = over.clone();
+        edited.bindings.clear();
+        let saved = save(&state, Some(&other.id), &edited, Some(&other.id)).unwrap();
+        assert!(flagged(&state, &saved.id));
+    }
+
+    #[test]
+    fn r5_recovery_restores_the_ids_of_deleted_imports() {
+        let (directory, state, imported) = imported_state();
+        state.delete_profile(&imported.id, None).unwrap();
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        state.mark_all_for_review().unwrap();
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &edited),
+            refused()
+        );
+    }
+
+    #[test]
+    fn r5_a_delete_while_the_list_is_unreadable_is_remembered_for_recovery() {
+        let (directory, state, imported) = imported_state();
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        state.delete_profile(&imported.id, None).unwrap();
+        state.mark_all_for_review().unwrap();
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &edited),
+            refused()
+        );
+    }
+
+    #[test]
+    fn r5_a_failed_import_leaves_no_live_record_for_a_missing_profile() {
+        let (directory, state) = open_state();
+        let file = mhz::tests::mhz(&mhz::tests::full_profile());
+        store::fault::WRITE.with(|fault| fault.set(true));
+        let result = state.import_mhz(&file, 1);
+        store::fault::WRITE.with(|fault| fault.set(false));
+        assert!(result.is_err());
+        let profiles = directory.path().join("app/profiles");
+        for (id, record) in state.imports.load().unwrap().profiles {
+            assert!(
+                record.deleted || profiles.join(format!("{id}.json")).is_file(),
+                "live record for missing {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn r6_a_recordless_flagged_copy_stays_flagged_when_edited() {
+        let (directory, state, imported) = imported_state();
+        let list = directory.path().join("app/imported-profiles.json");
+        let good = std::fs::read(&list).unwrap();
+        std::fs::write(&list, b"{").unwrap();
+        let copy = save(&state, None, &imported.profile, None).unwrap();
+        std::fs::write(&list, good).unwrap();
+        let mut edited = copy.profile.clone();
+        edited.bindings.clear();
+        // An unsaved edit of the copy (the copy is its source) is blocked.
+        assert_eq!(
+            state.execution_block(None, Some(&copy.id), &edited),
+            refused()
+        );
+        // Saving the edit keeps the copy dry run only.
+        let saved = save(&state, Some(&copy.id), &edited, Some(&copy.id)).unwrap();
+        assert!(flagged(&state, &saved.id));
+        assert_eq!(
+            state.execution_block(Some(&saved.id), Some(&saved.id), &saved.profile),
+            refused()
+        );
+    }
+
+    fn parses() -> usize {
+        store::fault::PARSES.with(std::cell::Cell::get)
+    }
+
+    #[test]
+    fn r6_listing_and_flagged_saves_do_not_reparse_every_profile() {
+        let (_directory, state, imported) = imported_state();
+        for index in 0..20 {
+            let mut profile = crate::test_profiles::folders();
+            profile.name = format!("P{index}");
+            profile.bindings[0].action = cooltek_sdk_service::Action::Volume {
+                delta: index as i16 + 1,
+            };
+            save(&state, None, &profile, None).unwrap();
+        }
+        state.list().unwrap();
+        let before = parses();
+        state.list().unwrap();
+        assert_eq!(parses() - before, 0, "an unchanged listing parses nothing");
+        let mut edited = imported.profile.clone();
+        edited.bindings.clear();
+        let before = parses();
+        save(&state, Some(&imported.id), &edited, Some(&imported.id)).unwrap();
+        assert!(parses() - before <= 5, "{}", parses() - before);
+        let before = parses();
+        state.mark_all_for_review().unwrap();
+        assert!(parses() - before <= 2, "{}", parses() - before);
+    }
+
+    #[test]
+    fn r6_mark_all_refuses_when_not_every_profile_can_be_listed() {
+        let (directory, state, _imported) = imported_state();
+        let profiles = directory.path().join("app/profiles");
+        let bytes = serde_json::to_vec(&crate::test_profiles::folders()).unwrap();
+        for _ in 0..store::MAX_PROFILES {
+            std::fs::write(
+                profiles.join(format!("{}.json", uuid::Uuid::new_v4())),
+                &bytes,
+            )
+            .unwrap();
+        }
+        let error = state.mark_all_for_review().unwrap_err();
+        assert!(error.contains("profile files"), "{error}");
+    }
+
+    #[test]
+    fn r6_an_import_whose_flush_fails_leaves_no_unreported_profile() {
+        let (_directory, state) = open_state();
+        let before = state.list().unwrap().profiles.len();
+        let file = mhz::tests::mhz(&mhz::tests::full_profile());
+        store::fault::SYNC.with(|fault| fault.set(true));
+        let result = state.import_mhz(&file, 1);
+        store::fault::SYNC.with(|fault| fault.set(false));
+        let error = result.unwrap_err();
+        let after = state.list().unwrap().profiles;
+        assert!(
+            after.len() == before || after.iter().any(|p| error.contains(&p.name)),
+            "{error}: {after:?}"
+        );
+    }
+
+    #[test]
+    fn r6_recovery_reports_an_unreadable_marker_and_deletes_refuse_without_one() {
+        let (directory, state, imported) = imported_state();
+        let marker = directory
+            .path()
+            .join("app/profiles")
+            .join(import_flags::SENTINEL);
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        // An oversized marker cannot be read: recovery says so.
+        std::fs::write(&marker, vec![b'x'; 2 * 1024 * 1024]).unwrap();
+        let error = state.mark_all_for_review().unwrap_err();
+        assert!(error.contains("marker"), "{error}");
+        // A delete that cannot be remembered for recovery is refused.
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::create_dir(&marker).unwrap();
+        assert!(state.delete_profile(&imported.id, None).is_err());
+        assert!(state.with_store(|store| store.load(&imported.id)).is_ok());
+    }
+
+    #[test]
+    fn r7_allow_recomputes_the_hash_of_a_same_stamp_rewrite() {
+        let (directory, state, imported) = imported_state();
+        let path = directory
+            .path()
+            .join(format!("app/profiles/{}.json", imported.id));
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"delta\": -5"));
+        // Same length, same modification time, different content.
+        std::fs::write(&path, text.replacen("\"delta\": -5", "\"delta\": -6", 1)).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(before))
+            .unwrap();
+        state.list().unwrap();
+        let error = state
+            .allow_execution(AllowRequest {
+                id: imported.id.clone(),
+                content_hash: imported.content_hash.clone(),
+            })
+            .unwrap_err();
+        assert_eq!(error, store::CONFLICT_ERROR);
+        let rewritten = state.with_store(|store| store.load(&imported.id)).unwrap();
+        assert_ne!(rewritten.content_hash, imported.content_hash);
+        assert_eq!(
+            state.execution_block(Some(&imported.id), Some(&imported.id), &rewritten.profile),
+            refused()
+        );
+    }
+
+    #[test]
+    fn r7_an_import_that_binds_nothing_never_flags_blank_profiles() {
+        let (_directory, state) = open_state();
+        let source = serde_json::json!({
+            "profileName": "Nothing",
+            "knobsList": {"MHKBFAKE0003": {"rotateR": {"btnFunc": "timer", "left": {}, "right": {}}}}
+        });
+        let imported = state
+            .import_mhz(&mhz::tests::mhz(&source), 1)
+            .unwrap()
+            .profiles
+            .remove(0)
+            .stored;
+        assert_eq!(imported.profile.binding_count(), 0);
+        assert!(flagged(&state, &imported.id));
+        let blank = Profile {
+            schema_version: 1,
+            name: "New profile".into(),
+            bindings: Vec::new(),
+            keypad: None,
+            dial_functions: None,
+        };
+        let saved = save(&state, None, &blank, None).unwrap();
+        assert!(!flagged(&state, &saved.id));
+        assert_eq!(state.execution_block(None, None, &saved.profile), None);
+        // Edits of the import itself stay tracked by id and source.
+        assert_eq!(
+            state.execution_block(None, Some(&imported.id), &saved.profile),
+            refused()
+        );
+    }
+
+    #[test]
+    fn r7_deleting_drops_the_cached_summary() {
+        let (_directory, state, imported) = imported_state();
+        state.list().unwrap();
+        assert!(
+            state
+                .with_store(|store| Ok(store.cached_ids()))
+                .unwrap()
+                .contains(&imported.id)
+        );
+        state.delete_profile(&imported.id, None).unwrap();
+        assert!(
+            !state
+                .with_store(|store| Ok(store.cached_ids()))
+                .unwrap()
+                .contains(&imported.id)
+        );
+    }
+
+    #[test]
+    fn r7_a_delete_that_cannot_be_remembered_is_refused() {
+        let (directory, state, imported) = imported_state();
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        std::fs::remove_file(
+            directory
+                .path()
+                .join("app/profiles")
+                .join(import_flags::SENTINEL),
+        )
+        .unwrap();
+        let error = state.delete_profile(&imported.id, None).unwrap_err();
+        assert!(error.contains("not deleted"), "{error}");
+        assert!(state.with_store(|store| store.load(&imported.id)).is_ok());
+    }
+
+    #[test]
+    fn r7_an_unreadable_marker_explains_how_to_recover_by_hand() {
+        let (directory, state, _imported) = imported_state();
+        std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+        std::fs::write(
+            directory
+                .path()
+                .join("app/profiles")
+                .join(import_flags::SENTINEL),
+            vec![b'x'; 2 * 1024 * 1024],
+        )
+        .unwrap();
+        let error = state.mark_all_for_review().unwrap_err();
+        assert!(error.contains("empty file"), "{error}");
     }
 }

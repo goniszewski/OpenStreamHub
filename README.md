@@ -33,7 +33,7 @@ and sleep/wake recovery still require hardware validation.**
 | Device support | Recognition of both USB ID generations and input decoding for all five control modules |
 | Displays and sessions | Explicit IPS mode controls, firmware queries, descriptor-sized JPEG packets for both IPS modules, and session lifecycle hooks |
 | Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, and app actions |
-| Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
+| Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
 | Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
 
 Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac.
@@ -100,6 +100,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | [First hardware session](docs/masterhub-first-hardware-session.md) | Checklist for the first session with physical modules |
 | [Release process](docs/release-process.md) | Signing, notarization and release packaging |
 | [Focused-app rules](docs/masterhub-focus-rules.md) | Rules for choosing a profile by the focused application |
+| [Importing MasterHUB profiles](docs/importing-masterhub-profiles.md) | Importing official `.mhz` files, the report, and the dry-run-only rule |
 | [Session manager](docs/masterhub-session-manager.md) | Sleep/wake handling, reconnect rules and the Execute safety rule |
 | [Diagnostic bundle](docs/masterhub-diagnostic-bundle.md) | What the local diagnostic file collects, redaction and what is never collected |
 | [Building the desktop app](docs/building-the-desktop-app.md) | Sidecar bundling, environment override and signing caveat |

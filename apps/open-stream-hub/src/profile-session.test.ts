@@ -27,7 +27,7 @@ const flush = () => new Promise(resolve => setTimeout(resolve, 0));
 function stored(id: string, name: string, modified = 1000): StoredProfile {
   return { id, modified_at_ms: modified, profile: upgradeKeypadProfile({ schema_version: 1, name, bindings: [] }) };
 }
-const summary = (item: StoredProfile) => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms });
+const summary = (item: StoredProfile) => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: item.modified_at_ms, dry_run_only: false });
 const listing = (...items: StoredProfile[]): ProfileListing => ({ profiles: items.map(summary), unreadable: [] });
 const bootstrapValue = (item: StoredProfile | null, extra: Partial<AppBootstrap> = {}): AppBootstrap =>
   ({ profile: item, profiles: item ? [summary(item)] : [], unreadable: [], storage_path: '/store/profiles', desktop: true, ...extra });
@@ -267,7 +267,7 @@ describe('saving and deleting', () => {
     session.update(profile => ({ ...profile, name: 'Mine' }));
     const save = session.save();
     const call = take('save_profile');
-    expect(call.args).toMatchObject({ id: 'a', expectedModifiedAtMs: 1234 });
+    expect(call.args).toEqual({ request: expect.objectContaining({ id: 'a', expectedModifiedAtMs: 1234, sourceProfileId: 'a' }) });
     call.reject('this profile changed on disk after it was loaded, possibly in another OpenStreamHub window; reload the saved profile before saving again');
     await save;
     const state = session.getState();
@@ -282,7 +282,7 @@ describe('saving and deleting', () => {
     session.newProfile();
     const save = session.save();
     const call = take('save_profile');
-    expect(call.args).toMatchObject({ id: null, expectedModifiedAtMs: null });
+    expect(call.args).toEqual({ request: expect.objectContaining({ id: null, expectedModifiedAtMs: null, sourceProfileId: null }) });
     const created = stored('n', 'New profile', 2000);
     call.resolve(created);
     await flush();

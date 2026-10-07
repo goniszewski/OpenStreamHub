@@ -42,13 +42,34 @@ export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_
 export interface DialFunction { name: string; bindings: DialBinding[] }
 // dial_functions is edited in the Profiles page (DialFunctionsPanel) or imported; edit paths that do not touch it must carry it through untouched.
 export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[] }
-export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number }
-export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number }
+// content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
+// confirmation showed.
+export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }
+// dry_run_only: an imported .mhz profile that may run only as a dry run until the user allows it to execute actions
+// (allow_imported_profile_execution). Stored in <app data>/imported-profiles.json, never inside the profile.
+export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number; dry_run_only: boolean }
 export interface ValidationResult { valid: true }
+
+// Official MasterHUB .mhz import (import_mhz_profile; the raw file bytes are the request body). Each profile in the
+// file becomes a new saved, dry-run-only profile. The report never holds a file path or a device serial: detail is a
+// redacted value (a basename, scheme://host, or "<N chars>").
+export type ImportOutcome = 'imported' | 'imported_lossy' | 'unbound_unsupported' | 'unbound_dangerous';
+export type ImportSection = 'keypad' | 'knobs' | 'dial' | 'rollers' | 'faders';
+export interface ImportReportRow { section: ImportSection; path: string; official_action: string; outcome: ImportOutcome; reason: string; detail?: string; high_risk: boolean }
+export interface ImportCounts { imported: number; imported_lossy: number; unbound_unsupported: number; unbound_dangerous: number }
+export interface ImportCategoryCounts extends ImportCounts { category: string }
+export interface ImportReport {
+  profile_name: string; source_name: string; totals: ImportCounts; categories: ImportCategoryCounts[]; actions: ImportCategoryCounts[];
+  high_risk: number; warnings: string[]; rows: ImportReportRow[];
+}
+export interface ImportedProfile { stored: StoredProfile; report: ImportReport }
+export interface MhzImportResult { profiles: ImportedProfile[]; source_sha256: string }
 export interface UnreadableProfile { id: string; error: string }
-export interface ProfileListing { profiles: ProfileSummary[]; unreadable: UnreadableProfile[] }
+// import_flags_error: the imported profile list is missing or damaged. Every profile is then dry run only until the user
+// chooses "Mark all profiles as needing review" (mark_all_profiles_for_review).
+export interface ProfileListing { profiles: ProfileSummary[]; unreadable: UnreadableProfile[]; import_flags_error?: string | null }
 // profile is null when storage holds only unreadable profiles; they are kept for recovery.
-export interface AppBootstrap { profile: StoredProfile | null; profiles: ProfileSummary[]; unreadable: UnreadableProfile[]; storage_path: string; desktop: boolean }
+export interface AppBootstrap { profile: StoredProfile | null; profiles: ProfileSummary[]; unreadable: UnreadableProfile[]; import_flags_error?: string | null; storage_path: string; desktop: boolean }
 export interface BootstrapError { message: string; storage_path: string | null }
 export interface KeypadNavigation { from_page: string; to_page: string; path: string[]; depth: number }
 export interface DialFunctionSwitch { from_function: string; to_function: string; index: number; count: number }
@@ -77,7 +98,9 @@ export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; pa
 
 // Supervised masterhub-service child process (Tauri commands and events, snake_case on the wire).
 // profile_id: the saved profile the run starts from unchanged (omitted for an unsaved draft). A profile key's next/previous starts there.
-export interface StartServiceRequest { profile: Profile; path_hex: string; execute: boolean; software_mode: boolean; profile_id?: string }
+// source_profile_id: the saved profile the draft was opened from, also after edits; the backend refuses Execute when it is an
+// imported dry-run-only profile.
+export interface StartServiceRequest { profile: Profile; path_hex: string; execute: boolean; software_mode: boolean; profile_id?: string; source_profile_id?: string }
 export type ServiceState = 'starting' | 'running' | 'stopping' | 'exited' | 'failed';
 export interface ServiceStatusPayload { service_id: string; state: ServiceState; execute: boolean; exit_code?: number | null; error?: string; stderr_tail?: string }
 export interface ServiceRecordPayload { service_id: string; record: unknown }

@@ -28,6 +28,16 @@ base64 = "0.22"
 cooltek-sdk-service = { path = "../../../crates/cooltek-sdk-service" }
 cooltek-sdk-masterhub = { path = "../../../crates/cooltek-sdk-masterhub" }
 cooltek-sdk-cli = { path = "../../../crates/cooltek-sdk-cli" }
+# Official `.mhz` profile import (src/mhz). Already locked (flate2 and
+# crc32fast through png/image, sha2 through tauri-codegen): raw deflate,
+# entry CRC-32 and the provenance hash for a hand-written in-memory ZIP
+# reader, so no ZIP crate and no new package is added.
+flate2 = "1.1"
+crc32fast = "1.5"
+sha2 = "0.10"
+# NFKC folding for serial checks (src/mhz/mapping.rs); already locked
+# through url/idna, so no new package.
+icu_normalizer = { version = "2.3", default-features = false, features = ["compiled_data"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

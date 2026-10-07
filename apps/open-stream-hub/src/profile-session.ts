@@ -1,4 +1,4 @@
-import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, Profile, ProfileListing, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
+import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, MhzImportResult, Profile, ProfileListing, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
 import { closeDecision, stableStringify } from './draft-model';
 import { emptyHistory, recordEdit, redoStep, undoStep } from './edit-history';
 import type { History } from './edit-history';
@@ -26,6 +26,11 @@ export interface Draft {
   savedSnapshot: string;
   // Modification time the draft was loaded at, sent with saves for conflict detection.
   modifiedAtMs: number | null;
+  // The saved profile this draft was opened from. Unlike profileId it survives deleting that profile, so the backend can keep
+  // a derivative of an imported dry-run-only profile dry run only (sourceProfileId / source_profile_id).
+  sourceId?: string | null;
+  // StoredProfile.content_hash of the saved version, named when the user allows an imported profile.
+  contentHash?: string | null;
 }
 
 export interface SessionState {
@@ -48,6 +53,11 @@ export interface SessionState {
   // A crash-recovery copy of unsaved changes that the user has not yet decided on.
   restorePrompt: RestorePrompt | null;
   importError: string | null;
+  // The result of the last official .mhz import (kept for this session) and whether its report is open.
+  mhzImport: MhzImportResult | null;
+  mhzReportOpen: boolean;
+  // The imported profile list is missing or damaged: every profile runs only as a dry run until marked for review.
+  importFlagsError: string | null;
   exportResult: ExportResult | null;
   // Increments whenever a different stored or new profile replaces the draft,
   // so view state such as the open keypad folder can reset.
@@ -59,6 +69,25 @@ export interface SessionState {
 
 export const emptyProfile: Profile = { schema_version: 1, name: 'New profile', bindings: [] };
 
+// Whether the Run panel offers only a dry run for the open draft (convenience only; the backend decides).
+export function draftDryRunOnly(state: Pick<SessionState, 'importFlagsError' | 'profiles' | 'unreadable' | 'draft'>): boolean {
+  return draftRunBlock(state) !== null;
+}
+
+export type RunBlock = 'imported' | 'deleted' | 'unreadable';
+
+// Why Execute is unavailable for the open draft, or null: the imported-profile list is damaged, the draft comes from a
+// dry-run-only profile, or its saved profile was deleted (unknown here, so Execute stays off until it is saved; an
+// unreadable saved profile still counts as present).
+export function draftRunBlock(state: Pick<SessionState, 'importFlagsError' | 'profiles' | 'unreadable' | 'draft'>): RunBlock | null {
+  if (state.importFlagsError !== null) return 'unreadable';
+  const { profileId, sourceId } = state.draft;
+  if (state.profiles.some(item => (item.id === profileId || item.id === sourceId) && item.dry_run_only)) return 'imported';
+  const known = (id: string) => state.profiles.some(item => item.id === id) || state.unreadable.some(item => item.id === id);
+  if (typeof sourceId === 'string' && !known(sourceId)) return 'deleted';
+  return null;
+}
+
 export function isUnsaved(draft: Draft) {
   return stableStringify(draft.profile) !== draft.savedSnapshot;
 }
@@ -69,7 +98,7 @@ export function newDraft(profile: Profile): Draft {
 
 function storedDraft(stored: StoredProfile): Draft {
   const profile = upgradeKeypadProfile(stored.profile);
-  return { profile, profileId: stored.id, savedSnapshot: stableStringify(profile), modifiedAtMs: stored.modified_at_ms };
+  return { profile, profileId: stored.id, savedSnapshot: stableStringify(profile), modifiedAtMs: stored.modified_at_ms, sourceId: stored.id, contentHash: stored.content_hash ?? null };
 }
 
 function bootstrapFailure(reason: unknown): { message: string; storagePath: string | null } {
@@ -101,7 +130,7 @@ export class ProfileSession {
       profiles: [], unreadable: [], storagePath: '', ready: !desktop, bootstrapError: null,
       busy: desktop ? 'Opening profiles' : null, error: null, notice: null, validation: 'idle',
       replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, pendingIntent: null,
-      duplicatePrompt: false, restorePrompt: null, importError: null, exportResult: null, canUndo: false, canRedo: false,
+      duplicatePrompt: false, restorePrompt: null, importError: null, mhzImport: null, mhzReportOpen: false, importFlagsError: null, exportResult: null, canUndo: false, canRedo: false,
     };
   }
 
@@ -119,9 +148,9 @@ export class ProfileSession {
 
   // Mirrors the draft into crash-recovery storage.
   private observeDraft() {
-    const { profile, profileId, modifiedAtMs } = this.state.draft;
+    const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
     const worthKeeping = this.unsaved && (profileId !== null || stableStringify(profile) !== stableStringify(upgradeKeypadProfile(emptyProfile)));
-    this.drafts?.observe({ key: profileId ?? newDraftKey, profile, baseModifiedAtMs: modifiedAtMs, dirty: worthKeeping });
+    this.drafts?.observe({ key: profileId ?? newDraftKey, profile, baseModifiedAtMs: modifiedAtMs, dirty: worthKeeping, sourceId: sourceId ?? null });
   }
 
   flushDraft() { this.drafts?.flush(); }
@@ -146,7 +175,8 @@ export class ProfileSession {
     const history = this.resetHistory();
     if (!restore) { this.drafts?.store.clear(prompt.key); this.set({ restorePrompt: null, ...history }); return; }
     if (prompt.key === newDraftKey) {
-      this.set({ ...this.invalidateResults(), ...history, restorePrompt: null, draft: newDraft(prompt.draft.profile), draftGeneration: this.state.draftGeneration + 1, notice: 'Restored your unsaved new profile.' });
+      // A recovered never-saved draft keeps the source it came from (a deleted profile, for example).
+      this.set({ ...this.invalidateResults(), ...history, restorePrompt: null, draft: { ...newDraft(prompt.draft.profile), sourceId: prompt.draft.source_id ?? null }, draftGeneration: this.state.draftGeneration + 1, notice: 'Restored your unsaved new profile.' });
     } else if (draft.profileId === prompt.key) {
       // Keeping the stored base time makes a save conflict if the file changed since.
       this.set({
@@ -238,7 +268,7 @@ export class ProfileSession {
       // A never-saved draft is offered only when the opened profile has nothing to restore.
       if (!restorePrompt && value.profile) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
       this.set({
-        ...this.invalidateResults(), ...this.resetHistory(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable,
+        ...this.invalidateResults(), ...this.resetHistory(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable, importFlagsError: value.import_flags_error ?? null,
         storagePath: value.storage_path, ready: true, busy: null,
         notice: value.profile ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
       });
@@ -273,7 +303,7 @@ export class ProfileSession {
     try {
       const listing = await this.fetchListing();
       if (!listing) return;
-      this.set({ profiles: listing.profiles, unreadable: listing.unreadable, notice: 'Profile list refreshed. Your draft is unchanged.' });
+      this.set({ profiles: listing.profiles, unreadable: listing.unreadable, importFlagsError: listing.import_flags_error ?? null, notice: 'Profile list refreshed. Your draft is unchanged.' });
     } catch (reason) { if (sequence === this.sequence.list) this.set({ error: `Could not list profiles: ${errorMessage(reason)}` }); }
   }
 
@@ -281,7 +311,7 @@ export class ProfileSession {
     const sequence = this.sequence.list + 1;
     try {
       const listing = await this.fetchListing();
-      if (listing) this.set({ profiles: listing.profiles, unreadable: listing.unreadable });
+      if (listing) this.set({ profiles: listing.profiles, unreadable: listing.unreadable, importFlagsError: listing.import_flags_error ?? null });
     } catch (reason) {
       if (sequence === this.sequence.list) this.set({ error: `${prefix}, but the profile list could not refresh: ${errorMessage(reason)}` });
     }
@@ -289,12 +319,12 @@ export class ProfileSession {
 
   async save() {
     if (!this.state.ready || this.state.busy !== null) return;
-    const { profile, profileId, modifiedAtMs } = this.state.draft;
+    const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
     const snapshot = structuredClone(profile);
     this.sequence.list += 1;
     this.set({ busy: 'Saving profile', error: null, notice: null });
     try {
-      const stored = await this.invoke<StoredProfile>('save_profile', { id: profileId, profile: snapshot, expectedModifiedAtMs: profileId ? modifiedAtMs : null });
+      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: snapshot, expectedModifiedAtMs: profileId ? modifiedAtMs : null, sourceProfileId: sourceId ?? null } });
       // Saving keeps the open keypad folder, so the generation is unchanged.
       this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', notice: `Saved ${stored.profile.name}.` });
       await this.refreshAfterChange('Profile saved');
@@ -313,7 +343,8 @@ export class ProfileSession {
       const draft = this.state.draft;
       const deletedOpen = draft.profileId === summary.id;
       this.set({
-        draft: deletedOpen ? { ...draft, profileId: null, savedSnapshot: '', modifiedAtMs: null } : draft,
+        // The draft keeps sourceId: a later Start or Save still names the deleted source.
+        draft: deletedOpen ? { ...draft, profileId: null, savedSnapshot: '', modifiedAtMs: null, contentHash: null } : draft,
         profiles: this.state.profiles.filter(item => item.id !== summary.id),
         notice: deletedOpen ? `Deleted ${summary.name}. Its contents remain open as an unsaved draft.` : `Deleted ${summary.name}.`,
       });
@@ -344,6 +375,7 @@ export class ProfileSession {
   // and switches to it. Resolves to an error message, or null on success.
   private async createProfile(
     source: () => Promise<Profile> | Profile, busy: string, nameFor: (name: string, existing: string[]) => string, announce: (name: string) => string,
+    copyOf: string | null = null,
   ): Promise<string | null> {
     if (!this.state.ready || this.state.busy !== null) return 'Wait for the current profile operation to finish.';
     this.sequence.list += 1;
@@ -352,7 +384,8 @@ export class ProfileSession {
       const original = await source();
       const listing = await this.invoke<ProfileListing>('list_profiles');
       const profile = withName(upgradeKeypadProfile(structuredClone(original)), nameFor(original.name, listing.profiles.map(item => item.name)));
-      const stored = await this.invoke<StoredProfile>('save_profile', { id: null, profile, expectedModifiedAtMs: null });
+      // The source lets the backend keep a copy of an imported dry-run-only profile dry run only (it also matches by content).
+      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: null, profile, expectedModifiedAtMs: null, sourceProfileId: copyOf } });
       this.set({ ...this.adopt(stored), validation: 'valid', notice: announce(stored.profile.name) });
       await this.refreshAfterChange('Profile created');
       return null;
@@ -376,7 +409,7 @@ export class ProfileSession {
   private async duplicate(source: 'saved' | 'draft') {
     const { profile, profileId } = this.state.draft;
     const read = async () => source === 'saved' && profileId ? upgradeKeypadProfile((await this.invoke<StoredProfile>('load_profile', { id: profileId })).profile) : profile;
-    const failure = await this.createProfile(read, 'Duplicating profile', copyName, name => `Created ${name}. It is now the open profile.`);
+    const failure = await this.createProfile(read, 'Duplicating profile', copyName, name => `Created ${name}. It is now the open profile.`, this.state.draft.sourceId ?? profileId);
     if (failure) this.set({ error: `Could not duplicate profile: ${failure}` });
   }
 
@@ -399,12 +432,73 @@ export class ProfileSession {
     });
   }
 
+  // Imports an official MasterHUB .mhz file. The backend reads it in memory within strict limits and creates new
+  // profiles that may only run as a dry run until allowed; nothing in the file is executed. The first one opens.
+  importMhz(bytes: Uint8Array) {
+    this.set({ importError: null });
+    this.guard('import this profile', () => { void this.runMhzImport(bytes); });
+  }
+
+  private async runMhzImport(bytes: Uint8Array) {
+    if (!this.state.ready || this.state.busy !== null) { this.set({ importError: 'Wait for the current profile operation to finish.' }); return; }
+    this.sequence.list += 1;
+    this.set({ busy: 'Importing official profile', error: null, notice: null });
+    try {
+      // The raw bytes are the request body (Tauri passes a Uint8Array through unchanged).
+      const result = await this.invoke<MhzImportResult>('import_mhz_profile', bytes as unknown as Record<string, unknown>);
+      const first = result.profiles[0];
+      const names = result.profiles.map(item => item.stored.profile.name).join(', ');
+      this.set({ ...(first ? this.adopt(first.stored) : {}), mhzImport: result, mhzReportOpen: true, notice: `Imported ${names}. Imported profiles run only as a dry run until you allow actions.` });
+      await this.refreshAfterChange('Profile imported');
+    } catch (reason) {
+      this.set({ importError: `Could not import the official profile: ${errorMessage(reason)}` });
+      // A failed import may still have left a profile it could not remove (named in the error): show the real list.
+      await this.refreshAfterChange('The import failed');
+    }
+    finally { this.set({ busy: null }); }
+  }
+
+  // The report stays available for this session; the dry-run banner reopens it.
+  dismissMhzImport() { this.set({ mhzReportOpen: false }); }
+  showMhzImport() { if (this.state.mhzImport) this.set({ mhzReportOpen: true }); }
+
+  // The explicit "Allow this imported profile to execute actions" step, after the user confirmed the saved version whose
+  // capabilities the dialog listed (contentHash). The backend recomputes the hash of the saved file and refuses another
+  // version. It cannot prove that a person clicked; the confirmation dialog is that step.
+  async allowExecution(id: string, name: string, contentHash: string): Promise<boolean> {
+    if (!this.state.ready || this.state.busy !== null) return false;
+    this.sequence.list += 1;
+    this.set({ busy: 'Allowing actions', error: null, notice: null });
+    try {
+      const listing = await this.invoke<ProfileListing>('allow_imported_profile_execution', { request: { id, contentHash } });
+      this.set({ profiles: listing.profiles, unreadable: listing.unreadable, importFlagsError: listing.import_flags_error ?? null, notice: `${name} may now run with actions. Starting a run with actions still asks for confirmation.` });
+      return true;
+    } catch (reason) { this.set({ error: `Could not allow actions: ${errorMessage(reason)}` }); return false; }
+    finally { this.set({ busy: null }); }
+  }
+
+  // Recovery when the imported profile list is missing or damaged: every saved profile becomes dry run only until it is
+  // allowed again. Never deletes anything.
+  async markAllForReview(): Promise<boolean> {
+    if (!this.state.ready || this.state.busy !== null) return false;
+    this.sequence.list += 1;
+    this.set({ busy: 'Marking profiles for review', error: null, notice: null });
+    try {
+      const listing = await this.invoke<ProfileListing>('mark_all_profiles_for_review');
+      this.set({ profiles: listing.profiles, unreadable: listing.unreadable, importFlagsError: listing.import_flags_error ?? null, notice: 'Every profile now runs only as a dry run until you review it and allow actions.' });
+      return true;
+    } catch (reason) { this.set({ error: `Could not mark the profiles for review: ${errorMessage(reason)}` }); return false; }
+    finally { this.set({ busy: null }); }
+  }
+
   async exportProfile() {
     if (!this.state.ready || this.state.busy !== null) return;
     const snapshot = structuredClone(this.state.draft.profile);
     this.set({ busy: 'Exporting profile', error: null, notice: null, exportResult: null });
     try {
-      const exportResult = await this.invoke<ExportResult>('export_profile', { profile: snapshot });
+      // The source lets the backend keep an exported edit of an imported dry-run-only profile dry run only when that file is
+      // imported again.
+      const exportResult = await this.invoke<ExportResult>('export_profile', { request: { profile: snapshot, sourceProfileId: this.state.draft.sourceId ?? null } });
       this.set({ exportResult });
     } catch (reason) { this.set({ error: `Could not export profile: ${errorMessage(reason)}` }); }
     finally { this.set({ busy: null }); }

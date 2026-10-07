@@ -1,150 +1,153 @@
 {
-  "profile": {
-    "bindings": [
-      {
-        "action": {
-          "delta": 5,
-          "type": "volume"
-        },
-        "control": 0,
-        "gesture": "clockwise",
-        "module": "m003k"
-      }
-    ],
-    "keypad": {
-      "pages": [
+  "request": {
+    "profile": {
+      "bindings": [
         {
-          "id": "root",
-          "name": "Home",
-          "slots": [
-            {
-              "page_id": "tools",
-              "type": "folder"
-            },
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            {
-              "bindings": [
-                {
-                  "action": {
-                    "delta": 7,
-                    "type": "volume"
-                  },
-                  "gesture": "pressed"
-                },
-                {
-                  "action": {
-                    "type": "toggle_mute"
-                  },
-                  "gesture": "released"
-                }
-              ],
-              "label": "Root action",
-              "type": "action"
-            }
-          ]
-        },
-        {
-          "id": "tools",
-          "name": "Tools",
-          "slots": [
-            null,
-            {
-              "page_id": "deeper",
-              "type": "folder"
-            },
-            {
-              "bindings": [
-                {
-                  "action": {
-                    "bundle_id": "com.apple.calculator",
-                    "type": "launch_app"
-                  },
-                  "gesture": "pressed"
-                },
-                {
-                  "action": {
-                    "delta": 11,
-                    "type": "volume"
-                  },
-                  "gesture": "pressed",
-                  "serial_number": "unit-1"
-                },
-                {
-                  "action": {
-                    "delta": -2,
-                    "type": "volume"
-                  },
-                  "gesture": "released"
-                }
-              ],
-              "label": "Calculator",
-              "type": "action"
-            },
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null
-          ]
-        },
-        {
-          "id": "deeper",
-          "name": "Deeper",
-          "slots": [
-            null,
-            {
-              "bindings": [
-                {
-                  "action": {
-                    "key": "v",
-                    "modifiers": [
-                      "command"
-                    ],
-                    "type": "shortcut"
-                  },
-                  "gesture": "pressed"
-                }
-              ],
-              "label": "Paste",
-              "type": "action"
-            },
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null,
-            null
-          ]
+          "action": {
+            "delta": 5,
+            "type": "volume"
+          },
+          "control": 0,
+          "gesture": "clockwise",
+          "module": "m003k"
         }
-      ]
+      ],
+      "keypad": {
+        "pages": [
+          {
+            "id": "root",
+            "name": "Home",
+            "slots": [
+              {
+                "page_id": "tools",
+                "type": "folder"
+              },
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              {
+                "bindings": [
+                  {
+                    "action": {
+                      "delta": 7,
+                      "type": "volume"
+                    },
+                    "gesture": "pressed"
+                  },
+                  {
+                    "action": {
+                      "type": "toggle_mute"
+                    },
+                    "gesture": "released"
+                  }
+                ],
+                "label": "Root action",
+                "type": "action"
+              }
+            ]
+          },
+          {
+            "id": "tools",
+            "name": "Tools",
+            "slots": [
+              null,
+              {
+                "page_id": "deeper",
+                "type": "folder"
+              },
+              {
+                "bindings": [
+                  {
+                    "action": {
+                      "bundle_id": "com.apple.calculator",
+                      "type": "launch_app"
+                    },
+                    "gesture": "pressed"
+                  },
+                  {
+                    "action": {
+                      "delta": 11,
+                      "type": "volume"
+                    },
+                    "gesture": "pressed",
+                    "serial_number": "unit-1"
+                  },
+                  {
+                    "action": {
+                      "delta": -2,
+                      "type": "volume"
+                    },
+                    "gesture": "released"
+                  }
+                ],
+                "label": "Calculator",
+                "type": "action"
+              },
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          },
+          {
+            "id": "deeper",
+            "name": "Deeper",
+            "slots": [
+              null,
+              {
+                "bindings": [
+                  {
+                    "action": {
+                      "key": "v",
+                      "modifiers": [
+                        "command"
+                      ],
+                      "type": "shortcut"
+                    },
+                    "gesture": "pressed"
+                  }
+                ],
+                "label": "Paste",
+                "type": "action"
+              },
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null,
+              null
+            ]
+          }
+        ]
+      },
+      "name": "Folders",
+      "schema_version": 2
     },
-    "name": "Folders",
-    "schema_version": 2
+    "sourceProfileId": null
   }
 }

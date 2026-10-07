@@ -6,8 +6,8 @@ import type { FocusRulesState } from './focus-rules';
 import { FocusRulesPanel, ruleFormProfile } from './FocusRulesPanel';
 
 const profiles: ProfileSummary[] = [
-  { id: '00000000-0000-4000-8000-00000000000a', name: 'Everyday', binding_count: 2, modified_at_ms: 0 },
-  { id: '00000000-0000-4000-8000-00000000000b', name: 'Browser', binding_count: 1, modified_at_ms: 0 },
+  { id: '00000000-0000-4000-8000-00000000000a', name: 'Everyday', binding_count: 2, modified_at_ms: 0, dry_run_only: false },
+  { id: '00000000-0000-4000-8000-00000000000b', name: 'Browser', binding_count: 1, modified_at_ms: 0, dry_run_only: false },
 ];
 
 function storeWith(patch: Partial<FocusRulesState>) {

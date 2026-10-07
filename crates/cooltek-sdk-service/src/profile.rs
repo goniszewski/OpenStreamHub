@@ -265,8 +265,9 @@ pub enum Action {
 /// rule: Unicode `Cf` (format) characters such as zero-width spaces, bidi
 /// embeddings/overrides/isolates and the BOM, plus the `Zl`/`Zp` line and
 /// paragraph separators. They are invisible in an editor, so a profile could
-/// otherwise paste text that differs from what the user reviewed.
-fn is_invisible_text_character(c: char) -> bool {
+/// otherwise paste text that differs from what the user reviewed. Importers
+/// use the same rule to clean names and labels.
+pub fn is_invisible_text_character(c: char) -> bool {
     // U+2065 is unassigned but sits inside the reserved invisible-operator
     // block, so the whole U+2060..=U+206F range is rejected.
     crate::dial::is_format_character(c) || matches!(c, '\u{2028}' | '\u{2029}' | '\u{2065}')

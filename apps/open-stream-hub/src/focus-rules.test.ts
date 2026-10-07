@@ -49,7 +49,7 @@ describe('focused-app rule contract fixtures', () => {
   });
   it('a switch returns the saved profile and the new profile generation', () => {
     const switched: SwitchedProfile = switchResult.switch_session_profile as SwitchedProfile;
-    expect(Object.keys(switched).sort()).toEqual(['id', 'modified_at_ms', 'profile', 'profile_generation']);
+    expect(Object.keys(switched).sort()).toEqual(['content_hash', 'id', 'modified_at_ms', 'profile', 'profile_generation']);
     expect(switched.profile_generation).toBe(1);
   });
 });

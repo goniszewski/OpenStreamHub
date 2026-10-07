@@ -25,5 +25,5 @@ pub use keypad::{
 pub use macos::MacOsDispatcher;
 pub use profile::{
     Action, Binding, Gesture, MediaCommand, Modifier, Profile, ProfileDirection, ServiceModule,
-    SystemCommand,
+    SystemCommand, is_invisible_text_character,
 };

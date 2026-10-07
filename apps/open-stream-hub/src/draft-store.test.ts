@@ -25,6 +25,20 @@ describe('DraftStore', () => {
     expect(store.read('a')).toBeNull();
   });
 
+  it('keeps only a canonical UUID source id and drops anything else on read', () => {
+    const storage = new FakeStorage();
+    const store = new DraftStore(storage, () => 42);
+    const id = '00000000-0000-4000-8000-0000000000aa';
+    store.write('a', profile('A'), 7, id);
+    expect(store.read('a')?.source_id).toBe(id);
+    for (const poisoned of [5, '../escape', 'NOT-A-UUID', { id }, '00000000-0000-4000-8000-0000000000AA']) {
+      storage.setItem(`${draftKeyPrefix}b`, JSON.stringify({ profile: profile('B'), base_modified_at_ms: null, saved_at: 1, source_id: poisoned }));
+      const read = store.read('b');
+      expect(read?.profile.name).toBe('B');
+      expect(read && 'source_id' in read).toBe(false);
+    }
+  });
+
   it('refuses drafts over the size cap and removes the stale copy', () => {
     const storage = new FakeStorage();
     const store = new DraftStore(storage);

@@ -76,6 +76,11 @@ pub struct StartRequest {
     /// position for a profile key (next/previous).
     #[serde(default)]
     pub profile_id: Option<String>,
+    /// The saved profile the editor's draft was opened from, sent even when
+    /// the draft was edited since (then `profile_id` is null). Only used to
+    /// refuse an Execute run derived from a dry-run-only imported profile.
+    #[serde(default)]
+    pub source_profile_id: Option<String>,
     /// The experimental display settings a managed session started with, set
     /// by the session driver only. Never deserialized: a request naming it is
     /// refused as an unknown field.
@@ -856,7 +861,10 @@ fn keep_tail(mut stderr: impl Read, tail: &Mutex<Vec<u8>>) {
 /// same checks for a start while asleep, which spawns nothing yet.
 pub fn check_request(request: &StartRequest) -> Result<(), String> {
     replay::validate_profile(&request.profile)?;
-    if let Some(id) = &request.profile_id {
+    for id in [&request.profile_id, &request.source_profile_id]
+        .into_iter()
+        .flatten()
+    {
         crate::store::validate_id(id)?;
     }
     check_execute_supported(request.execute)
@@ -1405,6 +1413,7 @@ mod tests {
             execute: false,
             software_mode: false,
             profile_id: None,
+            source_profile_id: None,
             display: None,
         };
         let id = start_service(
@@ -1441,6 +1450,7 @@ mod tests {
             execute,
             software_mode: true,
             profile_id: None,
+            source_profile_id: None,
             display: None,
         };
 
@@ -1653,6 +1663,7 @@ mod tests {
             execute: false,
             software_mode: false,
             profile_id: None,
+            source_profile_id: None,
             display: None,
         };
         let error = start_service(

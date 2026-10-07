@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react';
 import type { DragEvent } from 'react';
-import { Check, Copy, FileDown, FileUp } from 'lucide-react';
+import { Check, Copy, FileArchive, FileDown, FileUp } from 'lucide-react';
 import { formatBytes } from './diagnostics';
-import { ImportError, readImportFile } from './profile-library';
+import { ImportError, isMhzFileName, readImportFile, readMhzFile } from './profile-library';
 import type { ProfileSession, SessionState } from './profile-session';
 import { errorMessage } from './ui-model';
 import { withHint } from './shortcuts';
@@ -14,6 +14,19 @@ export async function importFile(session: ProfileSession, file: Pick<File, 'size
   try { text = await readImportFile(file); }
   catch (reason) { session.setImportError(reason instanceof ImportError ? reason.message : `Could not read the file: ${errorMessage(reason)}`); return; }
   await session.importProfile(text);
+}
+
+// An official MasterHUB .mhz (or multi-profile .zip): the bytes go to the backend, which reads them in memory only.
+export async function importMhzFile(session: ProfileSession, file: Pick<File, 'size' | 'arrayBuffer'>) {
+  let bytes: Uint8Array;
+  try { bytes = await readMhzFile(file); }
+  catch (reason) { session.setImportError(reason instanceof ImportError ? reason.message : `Could not read the file: ${errorMessage(reason)}`); return; }
+  session.importMhz(bytes);
+}
+
+// A dropped file is routed by its name: .mhz and .zip are official files, anything else our JSON.
+export function importDropped(session: ProfileSession, file: Pick<File, 'name' | 'size' | 'text' | 'arrayBuffer'>) {
+  return isMhzFileName(file.name) ? importMhzFile(session, file) : importFile(session, file);
 }
 
 export function useImportDrop(session: ProfileSession, disabled: boolean) {
@@ -28,7 +41,7 @@ export function useImportDrop(session: ProfileSession, disabled: boolean) {
         if (!hasFile(event)) return;
         event.preventDefault(); setDragging(false);
         const file = event.dataTransfer.files[0];
-        if (file && !disabled) void importFile(session, file);
+        if (file && !disabled) void importDropped(session, file);
       },
     },
   };
@@ -43,6 +56,7 @@ export async function copyText(text: string, clipboard: Pick<Clipboard, 'writeTe
 
 export function ProfileTransfer({ session, state, disabled, mac }: { session: ProfileSession; state: SessionState; disabled: boolean; mac: boolean }) {
   const input = useRef<HTMLInputElement>(null);
+  const mhzInput = useRef<HTMLInputElement>(null);
   const [copy, setCopy] = useState<string | null>(null);
   const { exportResult, importError } = state;
   return <div className="profile-transfer">
@@ -52,6 +66,9 @@ export function ProfileTransfer({ session, state, disabled, mac }: { session: Pr
       <button className="button" disabled={disabled} title="Import a profile from a JSON file. You can also drop a file onto this page." onClick={() => input.current?.click()}><FileUp size={17} />Import</button>
       <input ref={input} type="file" accept=".json,application/json" className="sr-only" tabIndex={-1} aria-label="Import profile JSON file" disabled={disabled}
         onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importFile(session, file); }} />
+      <button className="button" disabled={disabled} title="Import an official MasterHUB .mhz profile file. It is read in memory, nothing in it runs, and the new profile runs only as a dry run until you allow actions. You can also drop the file onto this page." onClick={() => mhzInput.current?.click()}><FileArchive size={17} />Import official .mhz</button>
+      <input ref={mhzInput} type="file" accept=".mhz,.zip" className="sr-only" tabIndex={-1} aria-label="Import official MasterHUB .mhz file" disabled={disabled}
+        onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importMhzFile(session, file); }} />
     </div>
     {importError && <p className="field-error import-error" role="alert">{importError}</p>}
     {exportResult && <div className="diagnostics-result" role="status">

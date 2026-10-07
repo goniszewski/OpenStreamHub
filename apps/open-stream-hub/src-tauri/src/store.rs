@@ -21,6 +21,9 @@ pub struct StoredProfile {
     pub id: String,
     pub profile: Profile,
     pub modified_at_ms: u64,
+    /// `import_flags::content_hash` of `profile`: the version a confirmation
+    /// showed, sent back when the user allows an imported profile.
+    pub content_hash: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -29,6 +32,12 @@ pub struct ProfileSummary {
     pub name: String,
     pub binding_count: usize,
     pub modified_at_ms: u64,
+    /// An imported profile that may run only as a dry run until the user
+    /// allows it to execute actions (`import_flags`). Filled in by `lib.rs`.
+    pub dry_run_only: bool,
+    /// Used to mark copies of flagged content; not sent to the frontend.
+    #[serde(skip)]
+    pub content_hash: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -41,6 +50,12 @@ pub struct UnreadableProfile {
 pub struct ProfileListing {
     pub profiles: Vec<ProfileSummary>,
     pub unreadable: Vec<UnreadableProfile>,
+    /// Why the imported profile list cannot be read (every profile is then
+    /// shown as dry run only); filled in by `lib.rs`.
+    pub import_flags_error: Option<String>,
+    /// More profile files exist than `MAX_PROFILES`; some are not listed.
+    #[serde(skip)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -50,6 +65,8 @@ pub struct AppBootstrap {
     pub profile: Option<StoredProfile>,
     pub profiles: Vec<ProfileSummary>,
     pub unreadable: Vec<UnreadableProfile>,
+    /// As in `ProfileListing`.
+    pub import_flags_error: Option<String>,
     pub storage_path: String,
     pub desktop: bool,
 }
@@ -107,11 +124,37 @@ pub(crate) fn remove_stale_temporaries(directory: &Path, uuid_names_only: bool) 
     }
 }
 
+/// Test-only faults: a profile write that fails before anything is written,
+/// and one that fails after the rename (a failing folder flush).
+#[cfg(test)]
+pub(crate) mod fault {
+    use std::cell::Cell;
+    thread_local! {
+        pub static WRITE: Cell<bool> = const { Cell::new(false) };
+        pub static SYNC: Cell<bool> = const { Cell::new(false) };
+        /// Profile files parsed (an operation count for performance tests).
+        pub static PARSES: Cell<usize> = const { Cell::new(0) };
+    }
+}
+
 pub struct ProfileStore {
     directory: PathBuf,
     /// Legacy files that were left behind by migration on this launch; they
     /// are reported with the unreadable profiles.
     migration_skipped: Vec<UnreadableProfile>,
+    /// Summaries (with content hashes) of files already parsed, keyed by
+    /// id and stamped with the file's modification time (ns) and length. A
+    /// listing re-parses only files whose stamp changed, so frequent checks
+    /// (flag writes, profile keys, Start) do not re-read every profile.
+    summaries: std::sync::Mutex<std::collections::HashMap<String, (Stamp, ProfileSummary)>>,
+}
+
+/// A file's modification time (ns) and length.
+type Stamp = (u128, u64);
+
+fn stamp(metadata: &fs::Metadata) -> Option<Stamp> {
+    let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    Some((modified.as_nanos(), metadata.len()))
 }
 
 impl ProfileStore {
@@ -144,6 +187,7 @@ impl ProfileStore {
         Ok(Self {
             directory,
             migration_skipped: Vec::new(),
+            summaries: Default::default(),
         })
     }
 
@@ -177,6 +221,7 @@ impl ProfileStore {
             profile,
             profiles: listing.profiles,
             unreadable: listing.unreadable,
+            import_flags_error: None,
             storage_path: self.directory.to_string_lossy().into_owned(),
             desktop: true,
         })
@@ -210,7 +255,17 @@ impl ProfileStore {
             candidates.push((entry.file_name(), path));
         }
         candidates.sort();
+        let truncated = candidates.len() > MAX_PROFILES;
         candidates.truncate(MAX_PROFILES);
+        // The cache holds only what this listing can show (at most
+        // `MAX_PROFILES` entries).
+        if let Ok(mut summaries) = self.summaries.lock() {
+            let listed: std::collections::HashSet<String> = candidates
+                .iter()
+                .filter_map(|(_, path)| path.file_stem()?.to_str().map(str::to_owned))
+                .collect();
+            summaries.retain(|id, _| listed.contains(id));
+        }
         let mut profiles = Vec::new();
         let mut unreadable = Vec::new();
         for (name, path) in candidates {
@@ -221,6 +276,15 @@ impl ProfileStore {
                 });
                 continue;
             };
+            let cached = fs::symlink_metadata(&path)
+                .ok()
+                .filter(|metadata| metadata.file_type().is_file())
+                .and_then(|metadata| stamp(&metadata))
+                .and_then(|stamp| self.cached(id, stamp));
+            if let Some(summary) = cached {
+                profiles.push(summary);
+                continue;
+            }
             match self.load(id) {
                 Ok(stored) => {
                     let binding_count = stored.profile.binding_count();
@@ -229,6 +293,8 @@ impl ProfileStore {
                         name: stored.profile.name,
                         binding_count,
                         modified_at_ms: stored.modified_at_ms,
+                        dry_run_only: false,
+                        content_hash: stored.content_hash,
                     });
                 }
                 Err(error) => unreadable.push(UnreadableProfile {
@@ -247,7 +313,26 @@ impl ProfileStore {
         Ok(ProfileListing {
             profiles,
             unreadable,
+            import_flags_error: None,
+            truncated,
         })
+    }
+
+    /// Ids in the summary cache (tests).
+    #[cfg(test)]
+    pub fn cached_ids(&self) -> Vec<String> {
+        self.summaries
+            .lock()
+            .map(|summaries| summaries.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn cached(&self, id: &str, stamp: Stamp) -> Option<ProfileSummary> {
+        let summaries = self.summaries.lock().ok()?;
+        summaries
+            .get(id)
+            .filter(|(cached, _)| *cached == stamp)
+            .map(|(_, summary)| summary.clone())
     }
 
     pub fn load(&self, id: &str) -> Result<StoredProfile, String> {
@@ -256,6 +341,8 @@ impl ProfileStore {
             .ok_or("profile no longer exists in storage")?;
         // Legacy profiles are upgraded for the editor only. Reading must not
         // change file bytes, modification time, filename, or opaque identity.
+        #[cfg(test)]
+        fault::PARSES.with(|count| count.set(count.get() + 1));
         let profile = Profile::from_json(&bytes)?.into_v2()?;
         let modified_at_ms = metadata
             .modified()
@@ -265,8 +352,30 @@ impl ProfileStore {
             .as_millis()
             .try_into()
             .map_err(|_| "profile modification time is out of range".to_string())?;
+        // Always computed from what was just parsed: a loaded profile's
+        // hash is security relevant (allowing an import compares it), so it
+        // never comes from the listing cache, which trusts file stamps.
+        let file_stamp = stamp(&metadata);
+        let content_hash = crate::import_flags::content_hash(&profile);
+        if let (Some(file_stamp), Ok(mut summaries)) = (file_stamp, self.summaries.lock()) {
+            summaries.insert(
+                id.to_owned(),
+                (
+                    file_stamp,
+                    ProfileSummary {
+                        id: id.to_owned(),
+                        name: profile.name.clone(),
+                        binding_count: profile.binding_count(),
+                        modified_at_ms,
+                        dry_run_only: false,
+                        content_hash: content_hash.clone(),
+                    },
+                ),
+            );
+        }
         Ok(StoredProfile {
             id: id.to_owned(),
+            content_hash,
             profile,
             modified_at_ms,
         })
@@ -296,23 +405,54 @@ impl ProfileStore {
                 id.to_owned()
             }
             None => {
-                let listing = self.list_stored()?;
-                if listing.profiles.len() + listing.unreadable.len() >= MAX_PROFILES {
-                    return Err(format!(
-                        "profile storage permits at most {MAX_PROFILES} profiles; delete a profile before creating another"
-                    ));
-                }
+                self.check_capacity()?;
                 Uuid::new_v4().to_string()
             }
         };
-        let path = self.path(&id)?;
+        self.write(&id, profile)
+    }
+
+    /// Creates a profile under an id chosen by the caller (an import records
+    /// its dry-run flag for that id first). Never overwrites: an existing
+    /// file or link under that id is refused.
+    pub fn create(&self, id: &str, profile: Profile) -> Result<StoredProfile, String> {
+        let profile = profile.into_v2()?;
+        let path = self.path(id)?;
+        if fs::symlink_metadata(&path).is_ok() {
+            return Err("a profile with this id already exists".into());
+        }
+        self.check_capacity()?;
+        self.write(id, profile)
+    }
+
+    fn check_capacity(&self) -> Result<(), String> {
+        let listing = self.list_stored()?;
+        if listing.profiles.len() + listing.unreadable.len() >= MAX_PROFILES {
+            return Err(format!(
+                "profile storage permits at most {MAX_PROFILES} profiles; delete a profile before creating another"
+            ));
+        }
+        Ok(())
+    }
+
+    fn write(&self, id: &str, profile: Profile) -> Result<StoredProfile, String> {
+        let path = self.path(id)?;
         let bytes = serde_json::to_vec_pretty(&profile)
             .map_err(|error| format!("could not encode profile: {error}"))?;
         if bytes.len() > Profile::MAX_JSON_BYTES {
             return Err("encoded profile exceeds the size limit".into());
         }
+        #[cfg(test)]
+        if fault::WRITE.with(std::cell::Cell::get) {
+            return Err("could not write profile (test fault)".into());
+        }
         write_private_file(&self.directory, &path, &bytes, "profile")?;
-        self.load(&id)
+        // The rename happened; a failing folder flush still reports an error.
+        #[cfg(test)]
+        if fault::SYNC.with(std::cell::Cell::get) {
+            return Err("could not flush profile storage (test fault)".into());
+        }
+        self.load(id)
     }
 
     /// Deletes a readable profile. `expected_modified_at_ms` protects against
@@ -324,6 +464,9 @@ impl ProfileStore {
         }
         fs::remove_file(self.path(id)?)
             .map_err(|error| format!("could not delete profile: {error}"))?;
+        if let Ok(mut summaries) = self.summaries.lock() {
+            summaries.remove(id);
+        }
         self.sync_directory()
     }
 

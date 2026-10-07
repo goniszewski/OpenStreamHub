@@ -220,7 +220,9 @@ export function countRecord(counters: ServiceCounters, record: unknown): Service
 export const unknownSnapshot = '\u0000unknown';
 export const isStale = (run: ServiceRun | undefined, draft: Profile) => run !== undefined && isActiveRun(run) && run.snapshot !== unknownSnapshot && stableStringify(draft) !== run.snapshot;
 
-export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean; profileId?: string | null; device?: LiveDevice };
+// sourceProfileId: the saved profile the draft was opened from, even when edited or deleted since. The backend refuses Execute
+// for a derivative of an imported dry-run-only profile.
+export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean; profileId?: string | null; sourceProfileId?: string | null; device?: LiveDevice };
 export type ConfirmExecute = () => Promise<boolean>;
 
 interface QueuedSwitch { profileId: string; why: string; settle: (ok: boolean) => void }
@@ -454,7 +456,7 @@ export class ServiceRunner {
     const startedOn = options.device ? { module: options.device.module, serialNumber: options.device.serial_number } : undefined;
     const run = { ...this.blankRun(key, options.execute, options.profile.name, stableStringify(options.profile), options.draftUnsaved), processId: id, profileId, profileGeneration: 0, ...(startedOn ? { startedOn } : {}) };
     this.set({ runs: { ...this.runs(), [key]: run }, error: null });
-    const request: StartServiceRequest = { profile: options.profile, path_hex: options.pathHex, execute: options.execute, software_mode: options.softwareMode, ...(profileId ? { profile_id: profileId } : {}) };
+    const request: StartServiceRequest = { profile: options.profile, path_hex: options.pathHex, execute: options.execute, software_mode: options.softwareMode, ...(profileId ? { profile_id: profileId } : {}), ...(options.sourceProfileId ? { source_profile_id: options.sourceProfileId } : {}) };
     try {
       // The result is the session id (or the service id of an unmanaged run). A run still waiting under its own key
       // moves to it now, or, when the old run of that name has not reported 'stopped' yet, its new session's first

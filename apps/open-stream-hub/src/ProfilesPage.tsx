@@ -1,4 +1,5 @@
-import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, LoaderCircle, Play, Plus, RotateCcw, Trash2, TriangleAlert } from 'lucide-react';
+import { useState } from 'react';
+import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert } from 'lucide-react';
 import type { ProfileSummary, ReplayKind } from './contracts';
 import { LabelError, SelectField } from './controls';
 import { profileBindingCount } from './keypad-model';
@@ -12,6 +13,7 @@ import { BindingsPanel } from './BindingsPanel';
 import { DialFunctionsPanel } from './DialFunctionsPanel';
 import { FocusRulesPanel } from './FocusRulesPanel';
 import type { FocusRulesStore } from './focus-rules';
+import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 
 export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false, focusRules }: {
   session: ProfileSession; state: SessionState; editor: DeviceEditor; desktop: boolean; disabled: boolean;
@@ -20,6 +22,11 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
   const { profile, profileId } = state.draft;
   const unsaved = isUnsaved(state.draft);
   const drop = useImportDrop(session, disabled);
+  const [allowing, setAllowing] = useState(false);
+  const flagged = state.profiles.find(item => item.id === profileId && item.dry_run_only);
+  const { contentHash } = state.draft;
+  // The last import's report is kept for this session; the banner reopens it for a profile it created.
+  const reportFor = flagged && state.mhzImport?.profiles.some(item => item.stored.id === flagged.id);
   const deleteProfile = (item: ProfileSummary) => confirm({
     title: `Delete ${item.name}?`,
     description: item.id === profileId ? 'This permanently removes the saved profile file. Its contents stay open as an unsaved draft until you discard them.' : 'This permanently removes the saved profile file. This cannot be undone.',
@@ -29,7 +36,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
   return <section className={`page-content profiles-page${drop.dragging ? ' drop-target' : ''}`} {...drop.props}><div className="page-title"><div><h1>Profiles</h1><p>Saved bindings and device-free replay.</p></div><button className="button" disabled={disabled} onClick={() => session.guard('create a new profile', () => { session.newProfile(); setPage('profiles'); })}><Plus size={18} />New profile</button></div>
     <div className="profiles-grid"><section className="panel saved-profiles"><div className="section-heading"><h2>Saved profiles</h2><button className="icon-button" disabled={disabled} aria-label="Refresh profile list" onClick={() => { void session.refreshProfiles(); }}><RotateCcw size={18} /></button></div>
       {state.profiles.length ? state.profiles.map(item => <div key={item.id} className="saved-profile-row">
-        <button className={`saved-profile ${item.id === profileId ? 'active' : ''}`} disabled={disabled} aria-pressed={item.id === profileId} onClick={() => session.guard('switch profiles', () => { void session.load(item.id); })}><FileText size={20} /><span><strong>{item.name}</strong><small>{item.binding_count} bindings</small></span><ChevronRight size={16} /></button>
+        <button className={`saved-profile ${item.id === profileId ? 'active' : ''}`} disabled={disabled} aria-pressed={item.id === profileId} onClick={() => session.guard('switch profiles', () => { void session.load(item.id); })}><FileText size={20} /><span><strong>{item.name}</strong><small>{item.binding_count} bindings</small>{item.dry_run_only && <small className="dry-run-badge" title="Imported from a MasterHUB .mhz file. It runs only as a dry run until you allow actions.">Imported · dry run only</small>}</span><ChevronRight size={16} /></button>
         <button className="icon-button" disabled={disabled} aria-label={`Delete profile ${item.name}`} title="Delete profile" onClick={() => deleteProfile(item)}><Trash2 size={17} /></button>
       </div>) : <p className="fine-print">{desktop ? 'No saved profiles are available yet.' : 'Saved profiles are available in the desktop app.'}</p>}
       {state.unreadable.length > 0 && <div className="unreadable-profiles" role="status"><h3><TriangleAlert size={17} />Unreadable profiles <span className="small-label">{state.unreadable.length}</span></h3>
@@ -38,6 +45,18 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
     </section><section className="panel profile-editor"><div className="section-heading"><h2>Profile draft</h2><span className={`small-label ${unsaved ? 'draft-label' : ''}`}>{unsaved ? 'Unsaved changes' : 'Saved'}</span></div>
       <label htmlFor="profile-name">Name</label><input id="profile-name" disabled={disabled} value={profile.name} aria-describedby="profile-name-error" onChange={event => session.edit({ ...profile, name: event.target.value }, 'profile-name')} /><LabelError id="profile-name-error" value={profile.name} field="Profile name" />
       <div className="profile-actions"><button className="button" disabled={disabled || state.validation === 'running'} onClick={() => { void session.validate(); }}>{state.validation === 'running' ? <LoaderCircle size={16} className="spinning" /> : <Check size={17} />}Validate draft</button><button className="button" disabled={disabled || !profileId} onClick={() => { if (profileId) session.guard('reload the saved profile', () => { void session.load(profileId); }); }}><ArrowDownToLine size={17} />Reload saved</button></div>
+      {flagged && <div className="service-banner paused attention dry-run-notice" role="status"><ShieldAlert size={20} /><div>
+        <strong>Imported profile: dry run only</strong>
+        <span>This profile was imported from a MasterHUB .mhz file. It can run only as a dry run until you review its bindings and allow it to execute actions.</span>
+        <button type="button" className="button danger" disabled={disabled || unsaved || !contentHash} onClick={() => setAllowing(true)}>Allow this imported profile to execute actions…</button>
+        {reportFor && <button type="button" className="button" onClick={() => session.showMhzImport()}>Show import report</button>}
+        {unsaved && <small>Save or discard your changes first, so you review exactly what will run.</small>}
+      </div></div>}
+      {state.importFlagsError && <div className="service-banner paused attention dry-run-notice" role="alert"><ShieldAlert size={20} /><div>
+        <strong>Every profile runs only as a dry run</strong>
+        <span>The list of imported profiles cannot be read ({state.importFlagsError}). Until it is restored, no profile can run with actions. Mark all profiles as needing review to continue: each one then runs only as a dry run until you review it and allow actions.</span>
+        <button type="button" className="button danger" disabled={disabled} onClick={() => { void session.markAllForReview(); }}>Mark all profiles as needing review</button>
+      </div></div>}
       <ProfileTransfer session={session} state={state} disabled={disabled} mac={mac} />
       {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />Current draft is valid.</p>}
       <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
@@ -45,6 +64,9 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} />
       <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
     </section></div>
+    <MhzImportReport result={state.mhzReportOpen ? state.mhzImport : null} onClose={() => session.dismissMhzImport()} />
+    <AllowExecutionDialog target={allowing && flagged && !unsaved ? { name: flagged.name, profile } : null} onCancel={() => setAllowing(false)}
+      onConfirm={() => { setAllowing(false); if (flagged && contentHash) void session.allowExecution(flagged.id, flagged.name, contentHash); }} />
     <FocusRulesPanel store={focusRules} profiles={state.profiles} disabled={!desktop || !state.ready} />
     <section className="panel replay-panel"><div className="section-heading"><div><h2>Replay a capture</h2><p className="fine-print">Bundled synthetic input reports pass through the Rust decoder and binding engine using the current draft.</p></div><span className="small-label">No hardware required</span></div><div className="replay-controls"><label htmlFor="replay-capture">Capture</label><SelectField id="replay-capture" value={replayKind} onChange={event => { session.clearReplay(); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || state.replay.status === 'running'} onClick={() => { void session.replayCapture(replayKind); }}><Play size={17} />{state.replay.status === 'running' ? 'Running…' : 'Replay capture'}</button></div>
       <SessionView session={state.replay} />

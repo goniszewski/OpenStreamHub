@@ -70,3 +70,13 @@ export async function readImportFile(file: Pick<File, 'size' | 'text'>): Promise
   checkImportSize(file.size);
   return file.text();
 }
+
+// Official MasterHUB files: a .mhz, or the .zip of several .mhz files the official app exports. The Rust side enforces
+// the same limit and every archive rule again; nothing in the file is ever executed.
+export const maximumMhzBytes = 32 * 1024 * 1024;
+export const isMhzFileName = (name: string) => /\.(mhz|zip)$/i.test(name.trim());
+
+export async function readMhzFile(file: Pick<File, 'size' | 'arrayBuffer'>): Promise<Uint8Array> {
+  if (file.size > maximumMhzBytes) throw new ImportError(`This file is ${(file.size / 1024 / 1024).toFixed(1)} MiB. Official profile files must be at most 32 MiB.`);
+  return new Uint8Array(await file.arrayBuffer());
+}

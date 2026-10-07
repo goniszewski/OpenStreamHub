@@ -403,7 +403,10 @@ fn diagnostics_payloads_match_the_shared_fixtures() {
 
 #[test]
 fn profile_export_payloads_match_the_shared_fixtures() {
-    let request = json!({ "profile": test_profiles::folders_json() });
+    let request =
+        json!({ "request": { "profile": test_profiles::folders_json(), "sourceProfileId": null } });
+    // The arguments as the frontend sends them parse as the strict request.
+    let _: crate::ExportRequest = serde_json::from_value(request["request"].clone()).unwrap();
     check_or_update("profile-export-request.json", &request);
     let directory = tempfile::tempdir().unwrap();
     let result =
@@ -551,6 +554,7 @@ fn focus_rule_payloads_match_the_shared_fixtures() {
                     id: profile_id.into(),
                     profile: test_profiles::folders(),
                     modified_at_ms: 0,
+                    content_hash: crate::import_flags::content_hash(&test_profiles::folders()),
                 },
                 profile_generation,
             },
@@ -667,4 +671,78 @@ fn display_settings_payloads_match_the_shared_fixture() {
             ],
         }),
     );
+}
+
+#[test]
+fn mhz_import_payloads_match_the_shared_fixture() {
+    use crate::mhz::tests::{mhz, page, tile};
+    let directory = tempfile::tempdir().unwrap();
+    let state = crate::AppState::open(Ok(directory.path().join("app")));
+    state.bootstrap().unwrap();
+    let source = json!({
+        "serialNumber": "MHBSFAKE0001",
+        "profileName": "Desk",
+        "keypad": { "MHKDFAKE0002": [page(vec![
+            tile(0, "hot-key", json!({"title": "Copy", "hotkey": {"key": ["Control", "C"], "code": []}})),
+            tile(1, "web-url", json!({"url": "https://example.com/a?b=1"})),
+            tile(2, "app-files", json!({"appFilePath": "C:\\Tools\\tool.exe"})),
+            tile(3, "timer", json!({})),
+        ])] },
+        "sliders5List": { "MHFDFAKE0006": { "0": {"btnFunc": "volume-control"} } },
+    });
+    let imported = state.import_mhz(&mhz(&source), 1_791_201_600_000).unwrap();
+    let id = imported.profiles[0].stored.id.clone();
+    let hash = imported.profiles[0].stored.content_hash.clone();
+    // The arguments exactly as the frontend sends them parse as the strict
+    // request structs of the commands.
+    let allow_args = json!({ "request": { "id": id, "contentHash": hash } });
+    let save_args = json!({ "request": {
+        "id": null,
+        "profile": test_profiles::folders_json(),
+        "expectedModifiedAtMs": null,
+        "sourceProfileId": id,
+    } });
+    let allow: crate::AllowRequest = serde_json::from_value(allow_args["request"].clone()).unwrap();
+    let _: crate::SaveProfileRequest =
+        serde_json::from_value(save_args["request"].clone()).unwrap();
+    let listing = state.allow_execution(allow).unwrap();
+    std::fs::write(directory.path().join("app/imported-profiles.json"), b"{").unwrap();
+    let damaged = state.list().unwrap();
+    let text = serde_json::to_string(&json!({
+        "import_mhz_profile": imported,
+        "allow_imported_profile_execution_args": allow_args,
+        "allow_imported_profile_execution": listing,
+        "save_profile_args": save_args,
+        "damaged_listing": damaged,
+    }))
+    .unwrap()
+    .replace(&id, "00000000-0000-4000-8000-0000000000aa")
+    .replace(&hash, &"0".repeat(64));
+    let mut value: Value = serde_json::from_str(&text).unwrap();
+    // The hash depends on the deflate backend's exact output.
+    value["import_mhz_profile"]["source_sha256"] = json!("0".repeat(64));
+    for stored in value["import_mhz_profile"]["profiles"]
+        .as_array_mut()
+        .unwrap()
+    {
+        stored["stored"]["modified_at_ms"] = json!(0);
+    }
+    for key in ["allow_imported_profile_execution", "damaged_listing"] {
+        for summary in value[key]["profiles"].as_array_mut().unwrap() {
+            summary["modified_at_ms"] = json!(0);
+            if summary["id"] != "00000000-0000-4000-8000-0000000000aa" {
+                summary["id"] = json!("00000000-0000-4000-8000-000000000000");
+            }
+        }
+    }
+    let error = value["damaged_listing"]["import_flags_error"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        error.contains("Mark all profiles as needing review"),
+        "{error}"
+    );
+    value["damaged_listing"]["import_flags_error"] = json!("<error>");
+    check_or_update("mhz-import.json", &value);
 }

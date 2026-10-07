@@ -59,7 +59,7 @@ describe('profiles page', () => {
     const base = session.getState();
     const state = {
       ...base, storagePath: '/store/profiles',
-      profiles: [{ id: 'a', name: 'Alpha', binding_count: 2, modified_at_ms: 1 }],
+      profiles: [{ id: 'a', name: 'Alpha', binding_count: 2, modified_at_ms: 1, dry_run_only: false }],
       unreadable: [{ id: 'bad', error: 'invalid profile JSON' }],
     };
     const markup = renderToStaticMarkup(<ProfilesPage session={session} state={state} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);

@@ -1,0 +1,401 @@
+{
+  "allow_imported_profile_execution": {
+    "import_flags_error": null,
+    "profiles": [
+      {
+        "binding_count": 3,
+        "dry_run_only": false,
+        "id": "00000000-0000-4000-8000-0000000000aa",
+        "modified_at_ms": 0,
+        "name": "Desk (imported)"
+      },
+      {
+        "binding_count": 9,
+        "dry_run_only": false,
+        "id": "00000000-0000-4000-8000-000000000000",
+        "modified_at_ms": 0,
+        "name": "Everyday"
+      }
+    ],
+    "unreadable": []
+  },
+  "allow_imported_profile_execution_args": {
+    "request": {
+      "contentHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "id": "00000000-0000-4000-8000-0000000000aa"
+    }
+  },
+  "damaged_listing": {
+    "import_flags_error": "<error>",
+    "profiles": [
+      {
+        "binding_count": 3,
+        "dry_run_only": true,
+        "id": "00000000-0000-4000-8000-0000000000aa",
+        "modified_at_ms": 0,
+        "name": "Desk (imported)"
+      },
+      {
+        "binding_count": 9,
+        "dry_run_only": true,
+        "id": "00000000-0000-4000-8000-000000000000",
+        "modified_at_ms": 0,
+        "name": "Everyday"
+      }
+    ],
+    "unreadable": []
+  },
+  "import_mhz_profile": {
+    "profiles": [
+      {
+        "report": {
+          "actions": [
+            {
+              "category": "app-files",
+              "imported": 0,
+              "imported_lossy": 0,
+              "unbound_dangerous": 1,
+              "unbound_unsupported": 0
+            },
+            {
+              "category": "hot-key",
+              "imported": 0,
+              "imported_lossy": 1,
+              "unbound_dangerous": 0,
+              "unbound_unsupported": 0
+            },
+            {
+              "category": "timer",
+              "imported": 0,
+              "imported_lossy": 0,
+              "unbound_dangerous": 0,
+              "unbound_unsupported": 1
+            },
+            {
+              "category": "volume-control",
+              "imported": 0,
+              "imported_lossy": 1,
+              "unbound_dangerous": 0,
+              "unbound_unsupported": 0
+            },
+            {
+              "category": "web-url",
+              "imported": 0,
+              "imported_lossy": 1,
+              "unbound_dangerous": 0,
+              "unbound_unsupported": 0
+            }
+          ],
+          "categories": [
+            {
+              "category": "keypad",
+              "imported": 0,
+              "imported_lossy": 2,
+              "unbound_dangerous": 1,
+              "unbound_unsupported": 1
+            },
+            {
+              "category": "faders",
+              "imported": 0,
+              "imported_lossy": 1,
+              "unbound_dangerous": 0,
+              "unbound_unsupported": 0
+            }
+          ],
+          "high_risk": 1,
+          "profile_name": "Desk (imported)",
+          "rows": [
+            {
+              "high_risk": false,
+              "official_action": "hot-key",
+              "outcome": "imported_lossy",
+              "path": "Keypad · page 1 · key 1",
+              "reason": "Windows shortcut: Ctrl-based Windows shortcuts are usually Cmd-based on macOS; review it",
+              "section": "keypad"
+            },
+            {
+              "detail": "https://example.com",
+              "high_risk": true,
+              "official_action": "web-url",
+              "outcome": "imported_lossy",
+              "path": "Keypad · page 1 · key 2",
+              "reason": "opens a web page; the official https:// prefixing is not reproduced",
+              "section": "keypad"
+            },
+            {
+              "detail": "tool.exe",
+              "high_risk": false,
+              "official_action": "app-files",
+              "outcome": "unbound_dangerous",
+              "path": "Keypad · page 1 · key 3",
+              "reason": "launches a Windows program through a shell; never imported or converted",
+              "section": "keypad"
+            },
+            {
+              "high_risk": false,
+              "official_action": "timer",
+              "outcome": "unbound_unsupported",
+              "path": "Keypad · page 1 · key 4",
+              "reason": "timers are not supported",
+              "section": "keypad"
+            },
+            {
+              "high_risk": false,
+              "official_action": "volume-control",
+              "outcome": "imported_lossy",
+              "path": "Fader 1",
+              "reason": "sets the output volume from the fader position; the official volume range is ignored",
+              "section": "faders"
+            }
+          ],
+          "source_name": "Desk",
+          "totals": {
+            "imported": 0,
+            "imported_lossy": 3,
+            "unbound_dangerous": 1,
+            "unbound_unsupported": 1
+          },
+          "warnings": [
+            "Shortcuts recorded on Windows: 1. Ctrl-based shortcuts are usually Cmd-based on macOS; review them before allowing actions.",
+            "Device serial numbers, module identifiers and local file paths from the file were not stored."
+          ]
+        },
+        "stored": {
+          "content_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+          "id": "00000000-0000-4000-8000-0000000000aa",
+          "modified_at_ms": 0,
+          "profile": {
+            "bindings": [
+              {
+                "action": {
+                  "type": "volume_from_position"
+                },
+                "control": 0,
+                "gesture": "position_changed",
+                "module": "m005s"
+              }
+            ],
+            "keypad": {
+              "pages": [
+                {
+                  "id": "root",
+                  "name": "Root",
+                  "slots": [
+                    {
+                      "bindings": [
+                        {
+                          "action": {
+                            "key": "c",
+                            "modifiers": [
+                              "control"
+                            ],
+                            "type": "shortcut"
+                          },
+                          "gesture": "pressed"
+                        }
+                      ],
+                      "label": "Copy",
+                      "type": "action"
+                    },
+                    {
+                      "bindings": [
+                        {
+                          "action": {
+                            "type": "open_url",
+                            "url": "https://example.com/a?b=1"
+                          },
+                          "gesture": "pressed"
+                        }
+                      ],
+                      "label": "Key 2",
+                      "type": "action"
+                    },
+                    {
+                      "bindings": [],
+                      "label": "Key 3",
+                      "type": "action"
+                    },
+                    {
+                      "bindings": [],
+                      "label": "Key 4",
+                      "type": "action"
+                    },
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+                  ]
+                }
+              ]
+            },
+            "name": "Desk (imported)",
+            "schema_version": 2
+          }
+        }
+      }
+    ],
+    "source_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "save_profile_args": {
+    "request": {
+      "expectedModifiedAtMs": null,
+      "id": null,
+      "profile": {
+        "bindings": [
+          {
+            "action": {
+              "delta": 5,
+              "type": "volume"
+            },
+            "control": 0,
+            "gesture": "clockwise",
+            "module": "m003k"
+          }
+        ],
+        "keypad": {
+          "pages": [
+            {
+              "id": "root",
+              "name": "Home",
+              "slots": [
+                {
+                  "page_id": "tools",
+                  "type": "folder"
+                },
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                {
+                  "bindings": [
+                    {
+                      "action": {
+                        "delta": 7,
+                        "type": "volume"
+                      },
+                      "gesture": "pressed"
+                    },
+                    {
+                      "action": {
+                        "type": "toggle_mute"
+                      },
+                      "gesture": "released"
+                    }
+                  ],
+                  "label": "Root action",
+                  "type": "action"
+                }
+              ]
+            },
+            {
+              "id": "tools",
+              "name": "Tools",
+              "slots": [
+                null,
+                {
+                  "page_id": "deeper",
+                  "type": "folder"
+                },
+                {
+                  "bindings": [
+                    {
+                      "action": {
+                        "bundle_id": "com.apple.calculator",
+                        "type": "launch_app"
+                      },
+                      "gesture": "pressed"
+                    },
+                    {
+                      "action": {
+                        "delta": 11,
+                        "type": "volume"
+                      },
+                      "gesture": "pressed",
+                      "serial_number": "unit-1"
+                    },
+                    {
+                      "action": {
+                        "delta": -2,
+                        "type": "volume"
+                      },
+                      "gesture": "released"
+                    }
+                  ],
+                  "label": "Calculator",
+                  "type": "action"
+                },
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+              ]
+            },
+            {
+              "id": "deeper",
+              "name": "Deeper",
+              "slots": [
+                null,
+                {
+                  "bindings": [
+                    {
+                      "action": {
+                        "key": "v",
+                        "modifiers": [
+                          "command"
+                        ],
+                        "type": "shortcut"
+                      },
+                      "gesture": "pressed"
+                    }
+                  ],
+                  "label": "Paste",
+                  "type": "action"
+                },
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+              ]
+            }
+          ]
+        },
+        "name": "Folders",
+        "schema_version": 2
+      },
+      "sourceProfileId": "00000000-0000-4000-8000-0000000000aa"
+    }
+  }
+}

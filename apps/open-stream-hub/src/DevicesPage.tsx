@@ -7,7 +7,8 @@ import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { moduleArtwork } from './module-controls';
 import { RigPreview } from './RigPreview';
-import { ServicePanel } from './ServicePanel';
+import { runBlockNotes, ServicePanel } from './ServicePanel';
+import { draftRunBlock } from './profile-session';
 import type { ServiceRunner } from './service-runner';
 import type { DisplaySettingsStore } from './display-settings';
 import { idleFeedState } from './device-feed';
@@ -79,7 +80,9 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
         <p className="fine-print">No volume changes, shortcuts or application launches are executed.</p>
       </section>
     </> : <div className="planned-panel"><h2>Input support is planned</h2><p>{selected.name} is included in the module catalog. Its input decoder and binding support are not implemented in this app.</p><p>Display uploads and physical device behavior still require validation.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
-    <ServicePanel runner={runner} feed={feed} profile={profile} profileId={isUnsaved(state.draft) ? null : state.draft.profileId} desktop={desktop} unsaved={isUnsaved(state.draft)} displaySettings={displaySettings} />
+    <ServicePanel runner={runner} feed={feed} profile={profile} profileId={isUnsaved(state.draft) ? null : state.draft.profileId} desktop={desktop} unsaved={isUnsaved(state.draft)} displaySettings={displaySettings}
+      sourceProfileId={state.draft.sourceId ?? state.draft.profileId}
+      dryRunOnly={draftRunBlock(state) !== null} dryRunNote={runBlockNotes[draftRunBlock(state) ?? 'imported']} />
   </section>;
 }
 

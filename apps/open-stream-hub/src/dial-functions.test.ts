@@ -20,15 +20,15 @@ function harness() {
   const invoke: Invoke = <T,>(command: string, args?: Record<string, unknown>) => {
     calls.push({ command, args });
     let result: unknown = { valid: true };
-    if (command === 'list_profiles') result = { profiles: saved.map(item => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: 1 })), unreadable: [] } satisfies ProfileListing;
+    if (command === 'list_profiles') result = { profiles: saved.map(item => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: 1, dry_run_only: false })), unreadable: [] } satisfies ProfileListing;
     if (command === 'save_profile') {
-      const item = { id: `p${saved.length}`, modified_at_ms: 1, profile: structuredClone((args as { profile: Profile }).profile) };
+      const item = { id: `p${saved.length}`, modified_at_ms: 1, profile: structuredClone((args as { request: { profile: Profile } }).request.profile) };
       saved.push(item); result = item;
     }
     if (command === 'bootstrap') {
       const item = { id: 'a', modified_at_ms: 1, profile: upgradeKeypadProfile(structuredClone(fixture)) };
       saved.push(item);
-      result = { profile: item, profiles: [{ id: 'a', name: item.profile.name, binding_count: 1, modified_at_ms: 1 }], unreadable: [], storage_path: '/s', desktop: true } satisfies AppBootstrap;
+      result = { profile: item, profiles: [{ id: 'a', name: item.profile.name, binding_count: 1, modified_at_ms: 1, dry_run_only: false }], unreadable: [], storage_path: '/s', desktop: true } satisfies AppBootstrap;
     }
     if (command === 'export_profile') result = { path: '/x', file_name: 'x.json' };
     return Promise.resolve(result as T);
@@ -46,7 +46,7 @@ async function open() {
   return test;
 }
 const lastArg = (calls: { command: string; args?: Record<string, unknown> }[], command: string) =>
-  (calls.filter(call => call.command === command).at(-1)!.args as { profile: Profile }).profile;
+  ((args => (args.request ?? args) as { profile: Profile })(calls.filter(call => call.command === command).at(-1)!.args as { request?: unknown })).profile;
 
 describe('dial_functions survive every frontend profile path', () => {
   it('types accept the service fixture and keep it through edits, undo/redo, duplicate, export and import', async () => {

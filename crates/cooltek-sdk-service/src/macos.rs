@@ -1,6 +1,9 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
-use crate::{Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand};
+use crate::{
+    Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand,
+    obs::{OBS_UNAVAILABLE, ObsClient},
+};
 use std::{
     sync::{
         Arc,
@@ -62,6 +65,8 @@ impl AudioSnapshot {
 pub struct MacOsDispatcher {
     runner: Box<dyn ProcessRunner>,
     sleeper: Box<dyn Sleeper>,
+    /// The loopback OBS client for `obs_scene`, when this run has an endpoint.
+    obs: Option<ObsClient>,
 }
 
 impl MacOsDispatcher {
@@ -70,6 +75,7 @@ impl MacOsDispatcher {
         Self {
             runner: Box::new(SystemProcessRunner { cancellation: None }),
             sleeper: Box::new(SystemSleeper),
+            obs: None,
         }
     }
 
@@ -83,7 +89,17 @@ impl MacOsDispatcher {
                 cancellation: Some(cancellation),
             }),
             sleeper: Box::new(SystemSleeper),
+            obs: None,
         }
+    }
+
+    /// Runs `obs_scene` actions through `obs` (one loopback connection per
+    /// action, bounded by [`crate::obs::DEFAULT_TIMEOUT`]). Without a client
+    /// they are unavailable: [`ActionDispatcher::unavailable`] reports them and
+    /// a direct dispatch fails without any I/O.
+    pub fn with_obs(mut self, obs: Option<ObsClient>) -> Self {
+        self.obs = obs;
+        self
     }
 
     /// Queries current output volume and mute state through bounded subprocesses.
@@ -348,6 +364,7 @@ impl MacOsDispatcher {
                         .into(),
                 );
             }
+            Action::ObsScene { scene } => self.obs_scene(scene, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
@@ -368,7 +385,13 @@ impl MacOsDispatcher {
                             MULTI_ACTION_DEADLINE.as_secs()
                         ));
                     }
-                    self.execute(step).map_err(|error| {
+                    // An OBS step gets only what is left of the sequence's
+                    // deadline, so a slow OBS cannot push the sequence past it.
+                    let result = match step {
+                        Action::ObsScene { scene } => self.obs_scene(scene, Some(deadline)),
+                        _ => self.execute(step),
+                    };
+                    result.map_err(|error| {
                         format!(
                             "multi_action step {} of {count} ({}) failed: {error}",
                             index + 1,
@@ -379,6 +402,26 @@ impl MacOsDispatcher {
             }
         }
         Ok(())
+    }
+
+    /// Switches the OBS scene within `deadline` (on the sleeper's clock) when
+    /// given, and never beyond the client's own 3 s limit. A deadline that has
+    /// already passed fails without connecting.
+    fn obs_scene(&self, scene: &str, deadline: Option<std::time::Instant>) -> Result<(), String> {
+        let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
+        let Some(deadline) = deadline else {
+            return obs.set_current_program_scene(scene);
+        };
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "the multi_action's {} s overall deadline has passed; OBS was not contacted",
+                MULTI_ACTION_DEADLINE.as_secs()
+            ));
+        }
+        obs.clone()
+            .with_timeout(remaining)
+            .set_current_program_scene(scene)
     }
 
     fn query(&mut self, property: &str) -> Result<String, String> {
@@ -421,6 +464,10 @@ impl ActionDispatcher for MacOsDispatcher {
         // also validates every multi_action step before the first one runs.
         action.validate_executable()?;
         self.execute(action)
+    }
+
+    fn unavailable(&self, action: &Action) -> Option<&'static str> {
+        (self.obs.is_none() && action.uses_obs()).then_some(OBS_UNAVAILABLE)
     }
 }
 
@@ -860,6 +907,7 @@ mod tests {
         let dispatcher = MacOsDispatcher {
             runner: Box::new(FakeRunner(state.clone())),
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
+            obs: None,
         };
         (dispatcher, state)
     }
@@ -1233,6 +1281,7 @@ mod tests {
                 requests: requests.clone(),
             }),
             sleeper: Box::new(SystemSleeper),
+            obs: None,
         };
         assert!(
             dispatcher
@@ -1321,6 +1370,7 @@ mod tests {
         let mut dispatcher = MacOsDispatcher {
             runner: Box::new(CancelledRunner(AtomicBool::new(true))),
             sleeper: Box::new(SystemSleeper),
+            obs: None,
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -1468,6 +1518,149 @@ mod tests {
             assert!(error.contains("no action was taken"));
         }
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn obs_scene_without_an_endpoint_is_unavailable_and_starts_nothing() {
+        let (mut dispatcher, state) = fake(vec![]);
+        let scene = Action::ObsScene {
+            scene: "Live".into(),
+        };
+        let multi = Action::MultiAction {
+            actions: vec![Action::ToggleMute, scene.clone()],
+        };
+        assert_eq!(dispatcher.unavailable(&scene), Some(OBS_UNAVAILABLE));
+        assert_eq!(dispatcher.unavailable(&multi), Some(OBS_UNAVAILABLE));
+        assert_eq!(dispatcher.unavailable(&Action::ToggleMute), None);
+        assert_eq!(dispatcher.dispatch(&scene).unwrap_err(), OBS_UNAVAILABLE);
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn obs_scene_with_an_endpoint_switches_through_the_client() {
+        use std::io::{Read, Write};
+        // A fake OBS that accepts the upgrade and answers one request.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut seen = Vec::new();
+            let mut chunk = [0; 4096];
+            while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut chunk).unwrap();
+                seen.extend_from_slice(&chunk[..read]);
+            }
+            let request = String::from_utf8(seen).unwrap();
+            let key = request
+                .lines()
+                .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+                .unwrap()
+                .to_owned();
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                        crate::obs::tests_support::accept(&key)
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let send = |stream: &mut std::net::TcpStream, text: String| {
+                let mut frame = vec![0x81];
+                if text.len() < 126 {
+                    frame.push(text.len() as u8);
+                } else {
+                    frame.push(126);
+                    frame.extend_from_slice(&(text.len() as u16).to_be_bytes());
+                }
+                frame.extend_from_slice(text.as_bytes());
+                stream.write_all(&frame).unwrap();
+            };
+            send(&mut stream, r#"{"op":0,"d":{"rpcVersion":1}}"#.into());
+            let identify = crate::obs::tests_support::read_text(&mut stream);
+            assert!(identify.contains("\"eventSubscriptions\":0"));
+            send(
+                &mut stream,
+                r#"{"op":2,"d":{"negotiatedRpcVersion":1}}"#.into(),
+            );
+            let request = crate::obs::tests_support::read_text(&mut stream);
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            assert_eq!(request["d"]["requestData"]["sceneName"], "Live");
+            send(
+                &mut stream,
+                serde_json::json!({"op":7,"d":{"requestType":"SetCurrentProgramScene","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}})
+                    .to_string(),
+            );
+        });
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let scene = Action::ObsScene {
+            scene: "Live".into(),
+        };
+        assert_eq!(dispatcher.unavailable(&scene), None);
+        dispatcher.dispatch(&scene).unwrap();
+        server.join().unwrap();
+        // No subprocess: OBS is reached over the loopback socket only.
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn an_obs_step_never_runs_past_the_multi_action_deadline() {
+        use std::time::Instant;
+        // A fake OBS that accepts and then never answers.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(10));
+        });
+        let client = ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        );
+        let (dispatcher, state) = fake(vec![success("")]);
+        let mut dispatcher = dispatcher.with_obs(Some(client.clone()));
+        // The first step uses up all but 200 ms of the 15 s budget (virtual
+        // time: its cost plus the 280 ms spacing).
+        state.lock().unwrap().request_cost =
+            MULTI_ACTION_DEADLINE - STEP_SPACING - Duration::from_millis(200);
+        let started = Instant::now();
+        let error = dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::SetVolume { percent: 50 },
+                    Action::ObsScene {
+                        scene: "Live".into(),
+                    },
+                ],
+            })
+            .unwrap_err();
+        let elapsed = started.elapsed();
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert!(error.contains("step 2 of 2 (obs_scene) failed"), "{error}");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            elapsed >= Duration::from_millis(200) && elapsed < Duration::from_millis(1500),
+            "the OBS step used {elapsed:?} instead of the 200 ms left"
+        );
+
+        // A deadline that has passed fails without any connection attempt.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        closed.set_nonblocking(true).unwrap();
+        let (dispatcher, _) = fake(vec![]);
+        let dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", closed.local_addr().unwrap().port()).unwrap(),
+            None,
+        )));
+        let now = dispatcher.sleeper.now();
+        let error = dispatcher.obs_scene("Live", Some(now)).unwrap_err();
+        assert!(error.contains("deadline has passed"), "{error}");
+        assert!(closed.accept().is_err(), "OBS was contacted");
     }
 
     #[test]
@@ -1987,6 +2180,7 @@ mod tests {
                 requests: requests.clone(),
             }),
             sleeper: Box::new(CancellingSleeper(cancellation)),
+            obs: None,
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

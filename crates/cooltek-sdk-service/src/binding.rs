@@ -124,6 +124,15 @@ impl BindingEngine {
 pub trait ActionDispatcher {
     /// Executes one action or reports failure without an implicit retry.
     fn dispatch(&mut self, action: &Action) -> Result<(), String>;
+
+    /// Why this dispatcher can never run `action` in this run (for example an
+    /// `obs_scene` action without an OBS endpoint), or `None`. Callers check it
+    /// before dispatching and log an unavailable action instead of a failure;
+    /// a `multi_action` with an unavailable step is unavailable as a whole, so
+    /// none of its steps run.
+    fn unavailable(&self, _action: &Action) -> Option<&'static str> {
+        None
+    }
 }
 
 /// A dispatcher that validates and records actions without operating-system I/O.

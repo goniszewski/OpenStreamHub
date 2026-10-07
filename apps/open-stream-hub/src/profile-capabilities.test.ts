@@ -184,3 +184,25 @@ describe('capability copy', () => {
     expect(stepLabel({ type: 'media', command: 'play_pause' })).toBe('Play/pause media (logged only, not executed)');
   });
 });
+
+describe('obs_scene capabilities', () => {
+  it('lists every scene in the confirmation without raising the risk', () => {
+    const profile = flat(
+      { type: 'obs_scene', scene: 'Starting soon' },
+      { type: 'obs_scene', scene: 'Starting soon' },
+      { type: 'multi_action', actions: [{ type: 'obs_scene', scene: 'Be\u200Bright back' }, { type: 'toggle_mute' }] },
+    );
+    const capabilities = profileCapabilities(profile);
+    expect(capabilities.obsScenes).toEqual(['Starting soon', 'Be\u200Bright back']);
+    expect(capabilities.counts.obs_scene).toBe(3);
+    // The sequence itself is elevated like every multi_action; the scene adds no high-risk reason.
+    expect(capabilities.risk).toBe('elevated');
+    expect(capabilities.riskReasons).toEqual([]);
+    expect(profileCapabilities(flat({ type: 'obs_scene', scene: 'Live' })).risk).toBe('normal');
+    const line = capabilityLines(capabilities).find(text => text.startsWith('Switches OBS scenes'));
+    // Invisible characters are made visible, so the reviewer sees the exact name.
+    expect(line).toBe('Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): “Starting soon”, “Be\\u{200B}right back”.');
+    expect(stepLabel({ type: 'obs_scene', scene: 'Live' })).toBe('Switch OBS to the scene “Live”');
+    expect(capabilityLines(profileCapabilities(flat({ type: 'toggle_mute' }))).some(text => text.includes('OBS'))).toBe(false);
+  });
+});

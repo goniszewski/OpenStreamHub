@@ -259,6 +259,14 @@ pub enum Action {
         /// Next or previous saved profile.
         direction: ProfileDirection,
     },
+    /// Make a scene the current OBS Studio program scene over the local
+    /// obs-websocket v5 server. The endpoint and password are never part of a
+    /// profile; a run without them reports the action as unavailable.
+    ObsScene {
+        /// Exact OBS scene name: nonempty, at most 128 bytes, no control or
+        /// invisible format/separator characters.
+        scene: String,
+    },
 }
 
 /// Characters a `text` snippet must not contain beyond the control-character
@@ -416,6 +424,9 @@ impl<'de> Deserialize<'de> for Action {
             Profile {
                 direction: ProfileDirection,
             },
+            ObsScene {
+                scene: String,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -430,6 +441,7 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
             Shape::Profile { direction } => Self::Profile { direction },
+            Shape::ObsScene { scene } => Self::ObsScene { scene },
         })
     }
 }
@@ -443,6 +455,8 @@ impl Action {
     pub const MIN_MULTI_ACTION_STEPS: usize = 2;
     /// Maximum number of `multi_action` steps.
     pub const MAX_MULTI_ACTION_STEPS: usize = 8;
+    /// Maximum `obs_scene` scene name length in UTF-8 bytes.
+    pub const MAX_OBS_SCENE_BYTES: usize = 128;
 
     /// The JSON `type` tag of this action, for diagnostics.
     pub fn type_name(&self) -> &'static str {
@@ -459,6 +473,16 @@ impl Action {
             Self::Text { .. } => "text",
             Self::MultiAction { .. } => "multi_action",
             Self::Profile { .. } => "profile",
+            Self::ObsScene { .. } => "obs_scene",
+        }
+    }
+
+    /// True for an `obs_scene` action or a `multi_action` with an `obs_scene` step.
+    pub fn uses_obs(&self) -> bool {
+        match self {
+            Self::ObsScene { .. } => true,
+            Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
+            _ => false,
         }
     }
 
@@ -507,6 +531,26 @@ impl Action {
                 Ok(())
             }
             Self::OpenUrl { url } => validate_url(url),
+            Self::ObsScene { scene } => {
+                // The keypad label rules plus the invisible-character rule of
+                // text snippets: the name reaches OBS exactly as reviewed.
+                if scene.trim().is_empty()
+                    || scene.len() > Self::MAX_OBS_SCENE_BYTES
+                    || scene.chars().any(char::is_control)
+                {
+                    return Err(format!(
+                        "obs_scene scene must be nonempty, free of control characters, and at most {} bytes",
+                        Self::MAX_OBS_SCENE_BYTES
+                    ));
+                }
+                if scene.chars().any(is_invisible_text_character) {
+                    return Err(
+                        "obs_scene scene must not contain invisible format or line/paragraph separator characters"
+                            .into(),
+                    );
+                }
+                Ok(())
+            }
             Self::Text { text, .. } => {
                 if text.is_empty() || text.len() > Self::MAX_TEXT_BYTES {
                     return Err(format!(
@@ -1126,6 +1170,97 @@ mod tests {
         assert!(profile.validate().is_err());
     }
 
+    fn obs(scene: &str) -> Action {
+        Action::ObsScene {
+            scene: scene.into(),
+        }
+    }
+
+    #[test]
+    fn obs_scene_has_a_strict_additive_json_shape_and_label_rules() {
+        let json = r#"{"type":"obs_scene","scene":"Starting soon"}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        assert_eq!(action, obs("Starting soon"));
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert_eq!(action.type_name(), "obs_scene");
+        action.validate_executable().unwrap();
+        assert!(action.uses_obs());
+        assert!(!Action::ToggleMute.uses_obs());
+        for valid in [
+            "Live",
+            "  padded  ",
+            "Zażółć 🎥 \"quoted\" {json} ' & do shell script",
+            &"x".repeat(Action::MAX_OBS_SCENE_BYTES),
+        ] {
+            assert!(obs(valid).validate().is_ok(), "{valid:?}");
+        }
+        for invalid in [
+            String::new(),
+            "   ".into(),
+            "x".repeat(Action::MAX_OBS_SCENE_BYTES + 1),
+            "é".repeat(Action::MAX_OBS_SCENE_BYTES / 2 + 1),
+            "line\nbreak".into(),
+            "tab\t".into(),
+            "nul\0".into(),
+            "\u{1b}[31m".into(),
+            "zero\u{200B}width".into(),
+            "bidi\u{202E}".into(),
+            "sep\u{2028}".into(),
+            "bom\u{FEFF}".into(),
+            "tag\u{E0041}".into(),
+        ] {
+            assert!(obs(&invalid).validate().is_err(), "{invalid:?}");
+        }
+        for json in [
+            r#"{"type":"obs_scene"}"#,
+            r#"{"type":"obs_scene","scene":1}"#,
+            r#"{"type":"obs_scene","scene":null}"#,
+            r#"{"type":"obs_scene","scene":"Live","endpoint":"127.0.0.1:4455"}"#,
+            r#"{"type":"obs_scene","scene":"Live","password":"x"}"#,
+            r#"{"type":"obs_scene","name":"Live"}"#,
+            r#"{"type":"OBS_scene","scene":"Live"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn obs_scene_binds_to_discrete_controls_and_multi_action_steps_only() {
+        let mut profile = sample();
+        profile.bindings[0].action = obs("Live");
+        assert!(profile.validate().is_ok());
+        let encoded = serde_json::to_vec(&profile).unwrap();
+        assert_eq!(Profile::from_json(&encoded).unwrap(), profile);
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(
+            profile.validate().is_err(),
+            "faders accept only volume_from_position"
+        );
+        let multi = Action::MultiAction {
+            actions: vec![obs("Live"), Action::ToggleMute],
+        };
+        multi.validate_executable().unwrap();
+        assert!(multi.uses_obs());
+        let error = Action::MultiAction {
+            actions: vec![Action::ToggleMute, obs("")],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.starts_with("multi_action step 2: obs_scene"),
+            "{error}"
+        );
+        let mut profile = sample();
+        profile.bindings[0].action = obs("bad\u{200D}");
+        assert!(
+            profile
+                .validate()
+                .unwrap_err()
+                .starts_with("binding 0: obs_scene")
+        );
+    }
+
     #[test]
     fn open_url_accepts_only_bounded_http_urls_with_a_host() {
         for valid in [
@@ -1368,6 +1503,9 @@ mod tests {
         };
         dispatcher.dispatch(&plan_only).unwrap();
         dispatcher.dispatch(&multi).unwrap();
+        // Dry runs plan obs_scene without any network access.
+        dispatcher.dispatch(&obs("Live")).unwrap();
+        assert!(dispatcher.unavailable(&obs("Live")).is_none());
         for invalid in [
             url("file:///etc/passwd"),
             text(""),
@@ -1377,7 +1515,7 @@ mod tests {
         ] {
             assert!(dispatcher.dispatch(&invalid).is_err());
         }
-        assert_eq!(dispatcher.actions, [plan_only, multi]);
+        assert_eq!(dispatcher.actions, [plan_only, multi, obs("Live")]);
     }
 
     #[test]

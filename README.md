@@ -37,6 +37,7 @@ and sleep/wake recovery still require hardware validation.**
 | Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
 
 Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac.
+A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
 Sending images to a module display is off by default, because display behavior is not verified on hardware. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, clock or CPU usage on the encoder's screen); it has never run on real hardware.
 For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
 and [protocol evidence table](docs/masterhub-protocol-evidence.md).
@@ -112,6 +113,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 
 - [macOS profile](examples/profiles/macos.json): knob and dial captures.
 - [All-module profile](examples/profiles/all-modules.json): also covers keys, faders, and rollers.
+- [OBS scenes profile](examples/profiles/obs-scenes.json): knob presses that switch OBS scenes, alone and in a multi-action.
 
 ## Contributing
 

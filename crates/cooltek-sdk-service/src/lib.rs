@@ -14,6 +14,7 @@ mod profile;
 
 pub mod display_sync;
 pub mod macos;
+pub mod obs;
 
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher};
 pub use dial::{DialBinding, DialFunction, DialFunctionNavigation};

@@ -209,6 +209,7 @@ pub fn end_record(
         "dial_function_switch_count":summary.dial_function_switch_count,
         "dropped_dial_function_count":summary.dropped_dial_function_count,
         "profile_request_count":summary.profile_request_count,
+        "unavailable_action_count":summary.unavailable_action_count,
         "discarded_event_count":summary.decoded_event_count.saturating_sub(summary.event_count),
         "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
         "incomplete_action_count":summary.incomplete_action_count,
@@ -228,6 +229,11 @@ pub fn end_record(
 /// the supervising session manager, which owns the saved profiles; without it
 /// it is logged as `action_unavailable` and does nothing. Neither outcome is a
 /// failure, so it never ends the session.
+///
+/// An action the dispatcher reports as [`ActionDispatcher::unavailable`] (an
+/// `obs_scene` action, or a `multi_action` with one, in a run without an OBS
+/// endpoint) is also logged as `action_unavailable` with that reason and never
+/// dispatched: no step of such a `multi_action` runs.
 #[allow(clippy::too_many_arguments)]
 pub fn process_work<D: ActionDispatcher, W: Write>(
     work: Work,
@@ -301,6 +307,15 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             } else {
                 json!({"type":"action_unavailable", "schema_version":1, "event":planned.event, "action":loggable(action), "reason":PROFILE_SWITCH_UNAVAILABLE})
             };
+            emit(output, record)?;
+            continue;
+        }
+        if let Some(reason) = dispatcher.unavailable(action) {
+            summary.unavailable_action_count += planned.coalesced;
+            let mut record = json!({"type":"action_unavailable", "schema_version":1, "event":planned.event, "action":loggable(action), "reason":reason});
+            if let Some(function) = &planned.dial_function {
+                record["dial_function"] = json!(function);
+            }
             emit(output, record)?;
             continue;
         }
@@ -497,6 +512,81 @@ mod tests {
         assert_eq!(summary.failed_action_count, 0);
         let end = end_record("max_reports", None, &summary, true);
         assert_eq!(end["profile_request_count"], 1);
+    }
+
+    /// A dispatcher without OBS: `obs_scene` is unavailable; nothing may run.
+    struct NoObs;
+
+    impl ActionDispatcher for NoObs {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            panic!("{} reached the dispatcher", action.type_name())
+        }
+
+        fn unavailable(&self, action: &Action) -> Option<&'static str> {
+            action
+                .uses_obs()
+                .then_some(cooltek_sdk_service::obs::OBS_UNAVAILABLE)
+        }
+    }
+
+    fn action_work(action: Action) -> Work {
+        let mut work = profile_work(ProfileDirection::Next);
+        work.events[0].resolution = ProfileResolution::Action {
+            action,
+            page_id: None,
+            dial_function: None,
+        };
+        work
+    }
+
+    #[test]
+    fn obs_actions_without_an_endpoint_are_unavailable_never_failures() {
+        let scene = Action::ObsScene {
+            scene: "Live".into(),
+        };
+        let multi = Action::MultiAction {
+            actions: vec![Action::ToggleMute, scene.clone()],
+        };
+        for (action, logged) in [
+            (scene, json!({"type":"obs_scene","scene":"Live"})),
+            (
+                multi,
+                json!({"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":"Live"}]}),
+            ),
+        ] {
+            for execute in [false, true] {
+                let mut output = Vec::new();
+                let mut summary = LiveSummary::default();
+                // stop_on_action_error is set: unavailable never ends the session.
+                process_work(
+                    action_work(action.clone()),
+                    &mut NoObs,
+                    &mut output,
+                    &AtomicBool::new(false),
+                    execute,
+                    true,
+                    true,
+                    &mut summary,
+                )
+                .unwrap();
+                let records = records(&output);
+                assert_eq!(records.len(), 3, "{records:?}");
+                assert_eq!(records[1]["status"], "planned");
+                assert_eq!(
+                    records[2],
+                    json!({"type":"action_unavailable","schema_version":1,
+                        "event":{"timestamp_micros":7,"control":3,"gesture":"pressed"},
+                        "action":logged,
+                        "reason":cooltek_sdk_service::obs::OBS_UNAVAILABLE})
+                );
+                assert_eq!(summary.unavailable_action_count, 1);
+                assert_eq!(summary.action_count, 0);
+                assert_eq!(summary.failed_action_count, 0);
+                let end = end_record("max_reports", None, &summary, execute);
+                assert_eq!(end["unavailable_action_count"], 1);
+                assert_eq!(end["failed_action_count"], 0);
+            }
+        }
     }
 
     #[test]

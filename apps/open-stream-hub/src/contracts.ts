@@ -19,7 +19,10 @@ export type StepAction =
   | { type: 'media'; command: MediaCommand }
   | { type: 'system'; command: SystemCommand }
   // press_enter may be omitted in JSON (defaults to false); the service always writes it.
-  | { type: 'text'; text: string; press_enter?: boolean };
+  | { type: 'text'; text: string; press_enter?: boolean }
+  // Switches the OBS program scene over the local OBS WebSocket. The endpoint and password are app settings, never
+  // part of a profile.
+  | { type: 'obs_scene'; scene: string };
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
@@ -139,3 +142,9 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // next start. dial_content is what the M131E dial shows while enabled.
 export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu';
 export interface DisplaySettings { enabled: boolean; dial_content: DialContent }
+// OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.
+// The password is never stored or returned: set_obs_password({ password }) holds it in the app's memory only (null
+// forgets it) and every reply says only whether one is set.
+export type ObsHost = '127.0.0.1' | '::1' | 'localhost';
+export interface ObsSettings { enabled: boolean; host: ObsHost; port: number }
+export interface ObsSettingsView extends ObsSettings { password_set: boolean }

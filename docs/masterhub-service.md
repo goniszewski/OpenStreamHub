@@ -179,6 +179,7 @@ JSON parsing rejects unknown fields, unsupported schema versions, invalid module
 | `{"type":"text","text":"Hello","press_enter":false}` | Pastes a snippet of at most 2048 bytes (no control characters except newline and tab) through `pbcopy` stdin and Command-V, optionally followed by Return. Restores the previous clipboard only when it was small plain text. |
 | `{"type":"media","command":"play_pause"}` | Plan-only: validated and planned, but macOS execution reports it as unsupported and does nothing. |
 | `{"type":"multi_action","actions":[…]}` | Runs 2–8 non-nested executable steps in order, 280 ms apart, stopping at the first failure. |
+| `{"type":"obs_scene","scene":"Live"}` | Switches the OBS program scene over the loopback obs-websocket v5 server given by `--obs-endpoint` (one connection per action, 3 s limit, no subprocess). Without `--obs-endpoint` it is logged as `action_unavailable` and does nothing; a dry run plans it without connecting. Scene: nonempty, ≤ 128 bytes, no control or invisible characters. Allowed as a `multi_action` step. |
 | `{"type":"profile","direction":"next"}` | Never executed on the host. With `--profile-switch-requests` (passed by the desktop app for session-managed runs whose profile binds a `profile` action) it is logged as `profile_switch_requested` for the app's session manager, which switches to the next or previous saved profile; otherwise it is logged as `action_unavailable` and does nothing. Not allowed as a `multi_action` step. |
 
 Full rules, the clipboard clobber risk, and the list of untrusted inputs are in [the action catalogue](masterhub-actions.md). Recorded macros are not implemented.
@@ -194,6 +195,15 @@ The [controlled smoke examples](masterhub-macos-smoke.md) use the same dispatche
 ## Output, failures, and integration
 
 Output is JSON Lines: `service_start`, raw `report` diagnostics, normalized `event` records with planned/unbound bindings and resolved `action` values, optional `action_executed`/`action_failed` (each carrying `schema_version`), and `service_end` counts. The service emits the original binding and concrete resolved action before dispatch. Records never contain snippet text or URL paths and queries: a `text` action is logged as `{"type":"text","chars":N,"press_enter":bool}`, an `open_url` action as `{"type":"open_url","origin":"scheme://host[:port]"}`, and `multi_action` steps are redacted the same way, in `binding`, `action` and every `action_executed`/`action_failed` record. Other actions are logged unchanged. an output failure prevents the corresponding unlogged action. `action_count` counts successfully dispatched bindings, including dry-run plans. `action_executed` records system-tool completion rather than independent verification of the resulting application or system state.
+
+An `obs_scene` action, or a `multi_action` with an `obs_scene` step, in a run without `--obs-endpoint` is never dispatched either: after its `event` record the service writes `action_unavailable` (`event`, `action`, `reason`), it is not a failure, and `service_end` counts it in `unavailable_action_count` (not in `action_count`, `failed_action_count` or `incomplete_action_count`). With an endpoint, `service_start` details add `"obs":{"endpoint":"127.0.0.1:4455","password":true}` (whether a password was read, never the password).
+
+### OBS options
+
+- `--obs-endpoint 127.0.0.1:PORT` (or `[::1]:PORT`, `localhost:PORT`): the loopback obs-websocket endpoint for `obs_scene`. Anything else is rejected during argument parsing.
+- `--obs-password-stdin` (requires `--obs-endpoint`): read the OBS WebSocket password from the first line of stdin (at most 1 KiB, no control characters) before the device is opened. There is no option or environment variable that takes the password itself. Example: `printf '%s\n' "$OBS_PASSWORD" | masterhub-service run --profile p.json --path-hex HEX --execute --obs-endpoint 127.0.0.1:4455 --obs-password-stdin | tee run.jsonl`.
+
+Protocol, limits and the password channel are described in [the action catalogue](masterhub-actions.md#obs-scene-obs_scene).
 
 A `profile` action is never dispatched. After its `event` record the service writes `profile_switch_requested` (`event`, `direction`) when `--profile-switch-requests` is given, or `action_unavailable` (`event`, `action`, `reason`) otherwise. Neither is a failure or ends the session. `service_end` adds `profile_request_count`; these actions are not in `action_count` or `incomplete_action_count`. The fields are additive, so records keep `schema_version` 1. See [the action catalogue](masterhub-actions.md#profile-nextprevious-profile).
 

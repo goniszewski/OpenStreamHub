@@ -27,6 +27,7 @@ use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
 use cooltek_sdk_service::{
     ActionDispatcher, DeviceContext, InputSession, Profile, ProfileSession, ServiceModule,
     macos::MacOsDispatcher,
+    obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
 };
 use serde_json::json;
 
@@ -104,6 +105,18 @@ enum Command {
         /// action is logged as `action_unavailable` and does nothing.
         #[arg(long)]
         profile_switch_requests: bool,
+        /// Loopback OBS WebSocket (obs-websocket v5, OBS 28+) endpoint for
+        /// `obs_scene` actions: exactly 127.0.0.1:PORT, [::1]:PORT or
+        /// localhost:PORT. Without it an `obs_scene` action is logged as
+        /// `action_unavailable` and does nothing. Each action opens one
+        /// connection, bounded to 3 s, and closes it.
+        #[arg(long, value_parser = ObsEndpoint::parse)]
+        obs_endpoint: Option<ObsEndpoint>,
+        /// Read the OBS WebSocket password from the first line of stdin. The
+        /// password is never accepted as an argument or environment variable,
+        /// is kept only in memory, and is never logged. Requires --obs-endpoint.
+        #[arg(long, requires = "obs_endpoint")]
+        obs_password_stdin: bool,
     },
 }
 
@@ -145,8 +158,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             display_sync,
             dial_content,
             profile_switch_requests,
+            obs_endpoint,
+            obs_password_stdin,
         } => {
             let profile = load_profile(profile)?;
+            // Read before any HID access, so a missing password never leaves
+            // the device in software mode.
+            let obs = obs_client(obs_endpoint, obs_password_stdin, &mut io::stdin().lock())?;
             let profile_name = profile.name.clone();
             check_display_sync(display_sync, software_mode, dial_content, &profile)?;
             if execute && !cfg!(target_os = "macos") {
@@ -199,6 +217,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             if dial_content != DialContent::Off {
                 details["dial_content"] = json!(dial_content.as_str());
             }
+            if let Some(obs) = &obs {
+                details["obs"] = obs_details(obs);
+            }
             let options = LiveOptions {
                 software_mode,
                 duration: duration_secs.map(Duration::from_secs),
@@ -208,7 +229,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 profile_switch_requests,
                 ..LiveOptions::default()
             };
-            let factory = move |abort| Ok((Dispatcher::new(execute, abort), stdout));
+            let factory = move |abort| Ok((Dispatcher::new(execute, abort, obs), stdout));
             match artwork {
                 None => {
                     run_live(
@@ -250,6 +271,28 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         }
     }
     Ok(())
+}
+
+/// The OBS client for `--obs-endpoint`, with the password read from `stdin`
+/// when `--obs-password-stdin` is given. No I/O happens beyond that read.
+fn obs_client(
+    endpoint: Option<ObsEndpoint>,
+    password_stdin: bool,
+    stdin: &mut impl io::BufRead,
+) -> Result<Option<ObsClient>, String> {
+    let Some(endpoint) = endpoint else {
+        return Ok(None);
+    };
+    let password = password_stdin
+        .then(|| ObsPassword::read_line(stdin))
+        .transpose()?;
+    Ok(Some(ObsClient::new(endpoint, password)))
+}
+
+/// `service_start` details for OBS: the endpoint and whether a password is
+/// set, never the password.
+fn obs_details(obs: &ObsClient) -> serde_json::Value {
+    json!({"endpoint":obs.endpoint().to_string(), "password":obs.has_password()})
 }
 
 /// Prepared display artwork, chosen before any HID access.
@@ -348,16 +391,22 @@ fn device_context(
 }
 
 enum Dispatcher {
-    Preview,
+    /// Dry run and replay: validates only. `obs` records whether the run has
+    /// an OBS endpoint, so a dry run reports `obs_scene` exactly as an
+    /// executing run would (planned, or unavailable); it never connects.
+    Preview {
+        obs: bool,
+    },
     MacOs(MacOsDispatcher),
 }
 
 impl Dispatcher {
-    fn new(execute: bool, abort: Arc<AtomicBool>) -> Self {
+    fn new(execute: bool, abort: Arc<AtomicBool>, obs: Option<ObsClient>) -> Self {
         if execute {
-            Self::MacOs(MacOsDispatcher::with_cancellation(abort))
+            let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
+            Self::MacOs(MacOsDispatcher::with_cancellation(abort).with_obs(obs))
         } else {
-            Self::Preview
+            Self::Preview { obs: obs.is_some() }
         }
     }
 }
@@ -365,8 +414,15 @@ impl Dispatcher {
 impl ActionDispatcher for Dispatcher {
     fn dispatch(&mut self, action: &cooltek_sdk_service::Action) -> Result<(), String> {
         match self {
-            Self::Preview => action.validate_executable(),
+            Self::Preview { .. } => action.validate_executable(),
             Self::MacOs(dispatcher) => dispatcher.dispatch(action),
+        }
+    }
+
+    fn unavailable(&self, action: &cooltek_sdk_service::Action) -> Option<&'static str> {
+        match self {
+            Self::Preview { obs } => (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE),
+            Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
     }
 }
@@ -386,7 +442,8 @@ fn replay(
         session.identity.serial_number.clone(),
     )?;
     let mut input = InputSession::new(device.module);
-    let mut dispatcher = Dispatcher::Preview;
+    // Replay never has an OBS endpoint: obs_scene is reported as unavailable.
+    let mut dispatcher = Dispatcher::Preview { obs: false };
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
     let mut matched_actions = 0u64;
@@ -435,8 +492,9 @@ fn replay(
     })();
     input.reset();
     engine.reset();
-    summary.incomplete_action_count =
-        matched_actions.saturating_sub(summary.action_count + summary.profile_request_count);
+    summary.incomplete_action_count = matched_actions.saturating_sub(
+        summary.action_count + summary.profile_request_count + summary.unavailable_action_count,
+    );
     let footer = emit(
         output,
         end_record(
@@ -677,6 +735,139 @@ mod tests {
             ));
         }
         assert_eq!(engine.dial_function_index(), Some(1));
+    }
+
+    fn run_args(extra: &[&str]) -> Result<(Option<ObsEndpoint>, bool), clap::Error> {
+        let mut args = vec![
+            "masterhub-service",
+            "run",
+            "--profile",
+            "p.json",
+            "--path-hex",
+            "41",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args).map(|cli| match cli.command {
+            Command::Run {
+                obs_endpoint,
+                obs_password_stdin,
+                ..
+            } => (obs_endpoint, obs_password_stdin),
+            _ => unreachable!(),
+        })
+    }
+
+    #[test]
+    fn obs_flags_accept_only_loopback_endpoints_and_no_password_value() {
+        assert_eq!(run_args(&[]).unwrap(), (None, false));
+        for (value, shown) in [
+            ("127.0.0.1:4455", "127.0.0.1:4455"),
+            ("[::1]:4455", "[::1]:4455"),
+            ("localhost:4456", "localhost:4456"),
+        ] {
+            let (endpoint, stdin) = run_args(&["--obs-endpoint", value]).unwrap();
+            assert_eq!(endpoint.unwrap().to_string(), shown);
+            assert!(!stdin);
+        }
+        for bad in [
+            "192.168.1.5:4455",
+            "0.0.0.0:4455",
+            "obs.example.com:4455",
+            "ws://127.0.0.1:4455",
+            "127.0.0.1:0",
+            "127.0.0.1",
+            "",
+        ] {
+            assert!(run_args(&["--obs-endpoint", bad]).is_err(), "{bad:?}");
+        }
+        // The password channel is stdin only: it needs an endpoint and takes no value.
+        assert!(run_args(&["--obs-password-stdin"]).is_err());
+        assert!(
+            run_args(&["--obs-endpoint", "127.0.0.1:4455", "--obs-password-stdin"])
+                .unwrap()
+                .1
+        );
+        for smuggled in [
+            &["--obs-endpoint", "127.0.0.1:4455", "--obs-password", "x"][..],
+            &[
+                "--obs-endpoint",
+                "127.0.0.1:4455",
+                "--obs-password-stdin=hunter2",
+            ][..],
+        ] {
+            assert!(run_args(smuggled).is_err(), "{smuggled:?}");
+        }
+    }
+
+    #[test]
+    fn the_obs_password_is_read_from_stdin_only_and_never_logged() {
+        let endpoint = ObsEndpoint::parse("127.0.0.1:4455").unwrap();
+        // Without the flag stdin is never read.
+        let mut untouched = io::Cursor::new(b"hunter2-secret\n".to_vec());
+        let obs = obs_client(Some(endpoint), false, &mut untouched)
+            .unwrap()
+            .unwrap();
+        assert!(!obs.has_password());
+        assert_eq!(untouched.position(), 0);
+        assert!(
+            obs_client(None, false, &mut io::Cursor::new(Vec::new()))
+                .unwrap()
+                .is_none()
+        );
+        let mut stdin = io::Cursor::new(b"hunter2-secret\n".to_vec());
+        let obs = obs_client(Some(endpoint), true, &mut stdin)
+            .unwrap()
+            .unwrap();
+        assert!(obs.has_password());
+        let details = obs_details(&obs);
+        assert_eq!(
+            details,
+            json!({"endpoint":"127.0.0.1:4455","password":true})
+        );
+        for rendered in [details.to_string(), format!("{obs:?}")] {
+            assert!(!rendered.contains("hunter2"), "{rendered}");
+        }
+        let error =
+            obs_client(Some(endpoint), true, &mut io::Cursor::new(b"\n".to_vec())).unwrap_err();
+        assert!(error.contains("OBS password"), "{error}");
+        let error = obs_client(
+            Some(endpoint),
+            true,
+            &mut io::Cursor::new(b"hunter2\x07secret\n".to_vec()),
+        )
+        .unwrap_err();
+        assert!(!error.contains("hunter2"), "{error}");
+    }
+
+    #[test]
+    fn dry_runs_report_obs_scene_like_executing_runs_without_connecting() {
+        use cooltek_sdk_service::Action;
+        let scene = Action::ObsScene {
+            scene: "Live".into(),
+        };
+        let abort = Arc::new(AtomicBool::new(false));
+        let mut without = Dispatcher::new(false, Arc::clone(&abort), None);
+        assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
+        assert_eq!(without.unavailable(&Action::ToggleMute), None);
+        // A closed port: a dry run must plan without any connection attempt.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint =
+            ObsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
+        let mut with = Dispatcher::new(false, abort, Some(ObsClient::new(endpoint, None)));
+        assert_eq!(with.unavailable(&scene), None);
+        with.dispatch(&scene).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "a dry run never connects to OBS"
+        );
+        assert!(
+            without
+                .dispatch(&Action::ObsScene {
+                    scene: String::new()
+                })
+                .is_err()
+        );
     }
 
     #[test]

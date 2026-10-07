@@ -337,6 +337,27 @@ masterhub-service run --profile examples/profiles/all-modules.json \
 
 Execution (`--execute`) and volume-changing fader/knob actions need a separate acceptance (see the [service guide](masterhub-service.md) and [macOS smoke checks](masterhub-macos-smoke.md)); leave them out of this session.
 
+#### 7a. OBS scene switching (optional; needs OBS 28+ on this Mac, no module writes)
+
+Only if OBS Studio is installed. In OBS, open Tools > WebSocket Server Settings, enable the server, note the port (default 4455) and, if authentication is on, the password. Create scenes named `Starting soon`, `Live` and `Be right back`. This executes actions, but the only effect is an OBS scene change.
+
+```sh
+printf '%s\n' "$OBS_PASSWORD" | masterhub-service run --profile examples/profiles/obs-scenes.json \
+  --path-hex HEX_OF_THE_KNOBS --execute --duration-secs 60 \
+  --obs-endpoint 127.0.0.1:4455 --obs-password-stdin | tee captures/hardware/service-obs.jsonl
+```
+
+Leave out the `printf … |` and `--obs-password-stdin` when OBS authentication is off. In the desktop app, the same check is Settings > OBS Studio (turn it on, enter the password), then start the profile with Execute.
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Does a press switch the scene? | Knob 1 press: OBS shows `Starting soon`; knob 2: `Live`; `action_executed` records | `obs_scene` against real OBS (only fake servers so far) |
+| Is the password kept out of logs? | `grep -c "$OBS_PASSWORD" captures/hardware/service-obs.jsonl` prints 0; `ps -ww -o args= -p <pid>` during the run shows only `--obs-endpoint 127.0.0.1:4455 --obs-password-stdin` | Password channel |
+| Wrong password | Rerun with a wrong password: each press logs `action_failed` with "authentication failed" and the run continues | Close code 4009 handling |
+| Missing scene | Rename `Live` in OBS and press knob 2: `action_failed` with "no scene with that name" | Request status 600 handling |
+| OBS closed | Quit OBS and press: `action_failed` with "is OBS running" within 3 s; input keeps working | Connect errors, timeout |
+| No endpoint | Rerun without `--obs-endpoint`: each OBS press logs `action_unavailable`; knob 3 (a multi-action with an OBS step) does not toggle mute | Unavailable handling |
+
 ### Step 8. Lifecycle: replug, sleep/wake, permissions (READ)
 
 Use a finite recording so the shell is never stuck:

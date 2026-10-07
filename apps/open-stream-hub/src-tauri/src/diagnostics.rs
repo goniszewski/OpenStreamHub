@@ -292,20 +292,22 @@ fn url_origin(url: &str) -> String {
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets become `<N chars>` and `open_url` URLs keep
-/// only their origin. Long enough raw values are also queued for the text scrub.
+/// activity): `text` snippets and `obs_scene` scene names become `<N chars>`
+/// and `open_url` URLs keep only their origin. Long enough raw values are
+/// also queued for the text scrub.
 fn redact_action_payloads(value: &mut Value, replacements: &mut Vec<(String, String)>) {
     match value {
         Value::Object(map) => {
             let field = match map.get("type").and_then(Value::as_str) {
                 Some("text") => Some("text"),
                 Some("open_url") => Some("url"),
+                Some("obs_scene") => Some("scene"),
                 _ => None,
             };
             if let Some(field) = field
                 && let Some(Value::String(raw)) = map.get_mut(field)
             {
-                let redacted = if field == "text" {
+                let redacted = if field != "url" {
                     format!("<{} chars>", raw.chars().count())
                 } else {
                     url_origin(raw)
@@ -1389,7 +1391,9 @@ mod tests {
                 { "action": { "type": "multi_action", "actions": [
                     { "type": "open_url", "url": "http://user:pw@intranet.local/reset" },
                     { "type": "text", "text": "żółć 🎉", "press_enter": false },
+                    { "type": "obs_scene", "scene": "Interview guest cam" },
                 ] } },
+                { "action": { "type": "obs_scene", "scene": "Private call scene" } },
             ],
             "keypad": { "pages": [{ "slots": [
                 { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
@@ -1432,6 +1436,8 @@ mod tests {
             "activity snippet text",
             "secret-path",
             "not a url",
+            "Private call",
+            "Interview guest",
         ] {
             assert!(!text.contains(secret), "{secret} leaked: {text}");
         }
@@ -1445,6 +1451,8 @@ mod tests {
         let steps = &profile["bindings"][2]["action"]["actions"];
         assert_eq!(steps[0]["url"], "http://intranet.local");
         assert_eq!(steps[1]["text"], "<6 chars>");
+        assert_eq!(steps[2]["scene"], "<19 chars>");
+        assert_eq!(profile["bindings"][3]["action"]["scene"], "<18 chars>");
         assert_eq!(
             profile["keypad"]["pages"][0]["slots"][0]["action"]["text"],
             "<19 chars>"

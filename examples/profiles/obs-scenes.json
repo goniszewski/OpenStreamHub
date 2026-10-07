@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "OBS scenes",
+  "bindings": [
+    {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}},
+    {"module":"m003k","control":0,"gesture":"counter_clockwise","action":{"type":"volume","delta":-5}},
+    {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"obs_scene","scene":"Starting soon"}},
+    {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"obs_scene","scene":"Live"}},
+    {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"multi_action","actions":[{"type":"obs_scene","scene":"Be right back"},{"type":"toggle_mute"}]}}
+  ]
+}

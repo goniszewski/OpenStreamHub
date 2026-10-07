@@ -642,6 +642,12 @@ pub trait Runner {
     fn display_settings(&mut self) -> DisplaySettings {
         DisplaySettings::default()
     }
+    /// The OBS endpoint and in-memory password a session started now keeps
+    /// for its whole life. Read once per user Start; `None` when OBS is off
+    /// or its settings are unreadable.
+    fn obs_launch(&mut self) -> Option<crate::obs::ObsLaunch> {
+        None
+    }
     /// The dry-run-only flags, loaded once per check (`import_flags`). A
     /// list that cannot be read yields a guard that refuses every Execute run.
     fn execution_guard(&mut self) -> ExecutionGuard {
@@ -959,6 +965,9 @@ impl<R: Runner> Driver<R> {
                 &request.profile,
             )
         });
+        // The OBS setting is snapshotted the same way. It does not depend on
+        // the module, so an unidentified device's run gets it too.
+        request.obs = self.runner.obs_launch();
         let id = if deferred {
             if device.is_none() {
                 return Err(if woke { JUST_WOKE } else { ASLEEP }.into());
@@ -1414,7 +1423,8 @@ impl<R: Runner> Driver<R> {
 
 /// Messages for the driver thread.
 pub enum Input {
-    Start(StartRequest, Sender<Result<String, String>>),
+    /// Boxed like `SwitchProfile`'s profile, so queued inputs stay small.
+    Start(Box<StartRequest>, Sender<Result<String, String>>),
     Stop {
         id: String,
         sessions_only: bool,
@@ -1449,7 +1459,7 @@ impl<R: Runner> Driver<R> {
     pub fn handle(&mut self, input: Input, now_ms: u64) -> bool {
         match input {
             Input::Start(request, reply) => {
-                let _ = reply.send(self.start(request, now_ms));
+                let _ = reply.send(self.start(*request, now_ms));
             }
             Input::Stop {
                 id,
@@ -1664,7 +1674,7 @@ impl Manager {
         if self.is_closed() {
             return Some(Err(service::SHUTTING_DOWN.into()));
         }
-        self.request(|reply| Input::Start(request, reply))
+        self.request(|reply| Input::Start(Box::new(request), reply))
             .map(|answer| answer.and_then(|started| started))
     }
 
@@ -1760,6 +1770,10 @@ pub mod fake {
         pub saved_reads: usize,
         /// What `display_settings` returns.
         pub display: DisplaySettings,
+        /// What `obs_launch` returns.
+        pub obs: Option<crate::obs::ObsLaunch>,
+        /// Number of `obs_launch` reads.
+        pub obs_reads: usize,
         /// Saved profile ids `execution_guard` refuses.
         pub dry_run_only: BTreeSet<String>,
         /// Number of `execution_guard` reads.
@@ -1835,6 +1849,11 @@ pub mod fake {
             self.display
         }
 
+        fn obs_launch(&mut self) -> Option<crate::obs::ObsLaunch> {
+            self.obs_reads += 1;
+            self.obs.clone()
+        }
+
         fn execution_guard(&mut self) -> ExecutionGuard {
             self.guard_reads += 1;
             ExecutionGuard::with_ids(self.dry_run_only.clone(), self.dry_run_hashes.clone())
@@ -1858,6 +1877,7 @@ pub mod fake {
             profile_id: None,
             source_profile_id: None,
             display: None,
+            obs: None,
         }
     }
 
@@ -3201,7 +3221,7 @@ mod tests {
         let (done, finished) = mpsc::channel();
         // Queued in this order; the power event is handled first.
         inputs
-            .send(Input::Start(request(&dial("/a"), true), reply))
+            .send(Input::Start(Box::new(request(&dial("/a"), true)), reply))
             .unwrap();
         inputs
             .send(Input::Power(PowerEvent::Suspend, None))
@@ -3603,6 +3623,62 @@ mod tests {
         assert!(driver.runner().starts[1].profile.keypad.is_some());
         // No display flags: the service refuses the folders, as with the setting off.
         assert!(args(&mut driver, 1).is_empty());
+    }
+
+    fn obs_on(password: Option<&str>) -> Option<crate::obs::ObsLaunch> {
+        Some(crate::obs::ObsLaunch {
+            endpoint: cooltek_sdk_service::obs::ObsEndpoint::parse("127.0.0.1:4455").unwrap(),
+            password: password.map(|password| {
+                cooltek_sdk_service::obs::ObsPassword::new(password.into()).unwrap()
+            }),
+        })
+    }
+
+    #[test]
+    fn obs_settings_are_read_once_per_start_and_kept_through_restarts_and_switches() {
+        let mut driver = Driver::new(FakeRunner {
+            obs: obs_on(Some("hunter2-obs-secret")),
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        let id = driver.start(request(&dial("/a"), false), 0).unwrap();
+        let expected = obs_on(Some("hunter2-obs-secret"));
+        assert_eq!(driver.runner().starts[0].obs, expected);
+        assert_eq!(driver.runner().obs_reads, 1);
+        // Turning OBS off (or a new password) mid-run changes and restarts nothing.
+        driver.runner().obs = None;
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 1);
+        assert!(driver.runner().stops.is_empty());
+        // Wake, crash and profile-switch restarts reuse the snapshot.
+        driver.power(PowerEvent::Suspend, 10);
+        exit(&mut driver, &id, "", 11);
+        driver.power(PowerEvent::Resume, 20);
+        driver.tick(20 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.runner().starts[1].obs, expected);
+        let current = last(&mut driver).service_id.unwrap();
+        exit(&mut driver, &current, "boom", 3_000);
+        driver.tick(3_000 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(driver.runner().starts[2].obs, expected);
+        driver
+            .switch_profile(&id, "Browser".into(), renamed("Browser"), 5_000)
+            .unwrap();
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 5_001);
+        assert_eq!(starts(&mut driver), 4);
+        assert_eq!(driver.runner().starts[3].obs, expected);
+        assert_eq!(driver.runner().obs_reads, 1, "read only at the user Start");
+        // The next Start reads the setting again.
+        driver.stop(&id, true, 6_000);
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 6_001);
+        driver.start(request(&dial("/a"), false), 7_000).unwrap();
+        assert_eq!(driver.runner().starts[4].obs, None);
+        // Session state sent to the frontend never carries the password.
+        let emitted = format!("{:?}", driver.runner().emitted);
+        assert!(!emitted.contains("hunter2"), "{emitted}");
     }
 
     #[test]

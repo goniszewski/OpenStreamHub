@@ -56,6 +56,10 @@ Appearance reads the previous preference key when it is available in the webview
 
 Unsaved drafts prompt before profile changes, window closing, or Quit OpenStreamHub / Command-Q. Drafts are also saved to the webview's local storage as you edit, so after a crash, Dock Quit or system termination the app offers to restore them on the next launch. Saving to disk is still explicit; a draft restored over a file that changed meanwhile is protected by the save conflict check.
 
+## Privacy
+
+OpenStreamHub has no telemetry, analytics, crash reporting or update checks, and it does not contact any server on its own. The only network connection is the optional, off-by-default OBS scene switch, which talks to OBS on this same Mac. Diagnostic bundles, profiles and artwork stay in the app data folder until you share them yourself. The details, and how to verify them, are in [Privacy and telemetry](../../README.md#privacy-and-telemetry) in the main README.
+
 ## Verify
 
 ```sh

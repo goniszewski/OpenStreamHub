@@ -15,6 +15,7 @@ See [Origins and attribution](#origins-and-attribution) for project lineage.
 ## Contents
 
 - [Current status](#current-status)
+- [Privacy and telemetry](#privacy-and-telemetry)
 - [Components](#components)
 - [Getting started](#getting-started)
 - [Documentation and examples](#documentation-and-examples)
@@ -36,11 +37,23 @@ and sleep/wake recovery still require hardware validation.**
 | Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), focused-app profile rules, undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
 | Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
 
-Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac.
+Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac. See [Privacy and telemetry](#privacy-and-telemetry).
 A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
 Sending images to a module display is off by default, because display behavior is not verified on hardware. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, digital or analog clock, or CPU usage on the encoder's screen); it has never run on real hardware.
 For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
 and [protocol evidence table](docs/masterhub-protocol-evidence.md).
+
+## Privacy and telemetry
+
+OpenStreamHub has **no telemetry**. It does not collect usage data, analytics or crash reports, it does not check for updates, and it does not contact any server on its own. The desktop app, the `masterhub-service` sidecar and the command-line tools all behave this way, and there is no account, sign-in or cloud sync.
+
+- **Network use.** The only network code in the project is the optional OBS scene switch (`obs_scene`). It is off until you turn it on in Settings, and it only connects to OBS on this same Mac (`127.0.0.1`, `::1` or `localhost`; the code refuses any other address). The OBS password is kept in memory only and is never written to disk, logs, diagnostics or the command line. See [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
+- **Local files.** Profiles, settings, exports, prepared artwork and diagnostic bundles are written to the app's data folder on your Mac (owner-only permissions) and nothing sends them anywhere. A diagnostic bundle is a file you create and choose whether to share; serial numbers, text snippets, web addresses, timer labels and OBS scene names are redacted by default. See the [diagnostic bundle](docs/masterhub-diagnostic-bundle.md).
+- **Webview.** The app window can only load its own bundled files. Its content security policy allows connections to the app's internal IPC channel only (`connect-src ipc: http://ipc.localhost`, in `apps/open-stream-hub/src-tauri/tauri.conf.json`), and the Tauri configuration has no updater or HTTP plugin.
+- **Dependencies.** None of the Rust or npm dependencies is an analytics, crash-reporting or HTTP client library. The only Tauri plugin is `tauri-plugin-single-instance`.
+- **Scripts.** The hardware capture scripts in `scripts/hardware/` make no network calls.
+
+Building from source downloads dependencies from crates.io and npm, as any build does; that is not the app. These statements come from reading the code and configuration and are not a third-party audit. To check them yourself, search the sources for network code or watch the app with a tool such as Little Snitch or `lsof -i` while it runs. If you find a way the app contacts anything other than your local OBS, please open an issue. Any future feature that needs the network, such as an updater, would be opt-in and documented here first.
 
 ## Components
 

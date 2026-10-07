@@ -23,8 +23,9 @@ describe('action fields', () => {
     expect(fader).toContain('value="volume_from_position"');
     expect(fader).not.toContain('value="open_url"');
     const key = render(null);
-    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut']) expect(key).toContain(`value="${type}"`);
+    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile']) expect(key).toContain(`value="${type}"`);
     expect(key).not.toContain('value="volume_from_position"');
+    expect(fader).not.toContain('value="profile"');
   });
 
   it('keeps the historical top-level field ids', () => {
@@ -52,6 +53,18 @@ describe('action fields', () => {
     expectAccessible(text);
     expect(render({ type: 'media', command: 'stop' })).toContain('Preview only');
     expect(render({ type: 'system', command: 'screenshot' })).toContain('Screen Recording');
+  });
+
+  it('renders the profile direction select without offering it as a multi-action step', () => {
+    const markup = render({ type: 'profile', direction: 'previous' });
+    expect(markup).toMatch(/<option value="previous" selected="">Previous profile<\/option>/);
+    expect(markup).toContain('value="next"');
+    expect(markup).toContain('pause until you confirm the new profile');
+    expect(markup).toContain('standalone service');
+    expectAccessible(markup);
+    const steps = render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] });
+    expect(steps).not.toMatch(/id="step-1-action"[^]*value="profile"[^]*id="step-2-action"/);
+    expect(steps.match(/value="profile"/g)).toHaveLength(1);
   });
 
   it('renders ordered multi-action steps with unique ids and bounded add/remove', () => {

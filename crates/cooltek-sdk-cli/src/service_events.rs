@@ -20,6 +20,11 @@ use std::{
 /// Largest JSON record, including its newline, that a service log may contain.
 pub const MAX_RECORD_BYTES: usize = 65_536;
 
+/// `action_unavailable` reason for a `profile` action in a run without a
+/// session manager (no `--profile-switch-requests`).
+pub const PROFILE_SWITCH_UNAVAILABLE: &str =
+    "profile switching needs the OpenStreamHub session manager; no action was taken";
+
 /// The dial function that was current when an M131E event was routed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ActiveDialFunction {
@@ -203,6 +208,7 @@ pub fn end_record(
         "dropped_event_count":summary.dropped_event_count,
         "dial_function_switch_count":summary.dial_function_switch_count,
         "dropped_dial_function_count":summary.dropped_dial_function_count,
+        "profile_request_count":summary.profile_request_count,
         "discarded_event_count":summary.decoded_event_count.saturating_sub(summary.event_count),
         "action_count":summary.action_count, "failed_action_count":summary.failed_action_count,
         "incomplete_action_count":summary.incomplete_action_count,
@@ -216,6 +222,13 @@ pub fn end_record(
 /// causes an unrecorded action. A failed action is logged as `action_failed`;
 /// it ends processing only when `stop_on_action_error` is set. Output errors
 /// always end processing. A set `abort` flag drops remaining events.
+///
+/// A `profile` action never reaches the dispatcher. With
+/// `profile_switch_requests` it is reported as `profile_switch_requested` for
+/// the supervising session manager, which owns the saved profiles; without it
+/// it is logged as `action_unavailable` and does nothing. Neither outcome is a
+/// failure, so it never ends the session.
+#[allow(clippy::too_many_arguments)]
 pub fn process_work<D: ActionDispatcher, W: Write>(
     work: Work,
     dispatcher: &mut D,
@@ -223,6 +236,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
     abort: &AtomicBool,
     execute: bool,
     stop_on_action_error: bool,
+    profile_switch_requests: bool,
     summary: &mut LiveSummary,
 ) -> Result<(), String> {
     let mut report = json!({
@@ -279,6 +293,16 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         };
         if abort.load(Ordering::SeqCst) {
             break;
+        }
+        if let Action::Profile { direction } = action {
+            summary.profile_request_count += planned.coalesced;
+            let record = if profile_switch_requests {
+                json!({"type":"profile_switch_requested", "schema_version":1, "event":planned.event, "direction":direction})
+            } else {
+                json!({"type":"action_unavailable", "schema_version":1, "event":planned.event, "action":loggable(action), "reason":PROFILE_SWITCH_UNAVAILABLE})
+            };
+            emit(output, record)?;
+            continue;
         }
         if let Err(error) = dispatcher.dispatch(action) {
             summary.failed_action_count += planned.coalesced;
@@ -362,7 +386,118 @@ pub fn emit(output: &mut impl Write, value: Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cooltek_sdk_service::Modifier;
+    use cooltek_sdk_service::{Gesture, Modifier, ProfileDirection};
+
+    /// Fails the test if a `profile` action ever reaches the host boundary.
+    struct NoHost;
+
+    impl ActionDispatcher for NoHost {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            panic!("{} reached the dispatcher", action.type_name())
+        }
+    }
+
+    fn profile_work(direction: ProfileDirection) -> Work {
+        Work {
+            raw: vec![1],
+            timestamp_micros: 7,
+            status: "decoded",
+            error: None,
+            events: vec![PlannedEvent {
+                event: InputEvent {
+                    timestamp_micros: 7,
+                    control: 3,
+                    gesture: Gesture::Pressed,
+                    value: None,
+                },
+                binding: None,
+                resolution: ProfileResolution::Action {
+                    action: Action::Profile { direction },
+                    page_id: Some("root".into()),
+                    dial_function: None,
+                },
+                dial_function: None,
+                coalesced: 1,
+            }],
+            report_count: 1,
+            coalesced_parse_error_count: 0,
+            dropped_event_count: 0,
+            dropped_dial_function_count: 0,
+            merge_barrier: false,
+        }
+    }
+
+    fn records(output: &[u8]) -> Vec<Value> {
+        output
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn profile_actions_are_requests_or_unavailable_and_never_dispatched() {
+        for execute in [false, true] {
+            let mut output = Vec::new();
+            let mut summary = LiveSummary::default();
+            let never = AtomicBool::new(false);
+            process_work(
+                profile_work(ProfileDirection::Previous),
+                &mut NoHost,
+                &mut output,
+                &never,
+                execute,
+                true,
+                true,
+                &mut summary,
+            )
+            .unwrap();
+            let records = records(&output);
+            assert_eq!(records[1]["status"], "planned");
+            assert_eq!(
+                records[1]["action"],
+                json!({"type":"profile","direction":"previous"})
+            );
+            assert_eq!(
+                records[2],
+                json!({"type":"profile_switch_requested","schema_version":1,
+                    "event":{"timestamp_micros":7,"control":3,"gesture":"pressed"},
+                    "direction":"previous"})
+            );
+            assert_eq!(records.len(), 3, "no action_executed record");
+            assert_eq!(summary.profile_request_count, 1);
+            assert_eq!(summary.action_count, 0);
+            assert_eq!(summary.failed_action_count, 0);
+        }
+
+        // Standalone: a validated no-op, never an error, even with
+        // stop_on_action_error.
+        let mut output = Vec::new();
+        let mut summary = LiveSummary::default();
+        process_work(
+            profile_work(ProfileDirection::Next),
+            &mut NoHost,
+            &mut output,
+            &AtomicBool::new(false),
+            true,
+            true,
+            false,
+            &mut summary,
+        )
+        .unwrap();
+        let records = records(&output);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[2]["type"], "action_unavailable");
+        assert_eq!(
+            records[2]["action"],
+            json!({"type":"profile","direction":"next"})
+        );
+        assert_eq!(records[2]["reason"], PROFILE_SWITCH_UNAVAILABLE);
+        assert_eq!(summary.profile_request_count, 1);
+        assert_eq!(summary.failed_action_count, 0);
+        let end = end_record("max_reports", None, &summary, true);
+        assert_eq!(end["profile_request_count"], 1);
+    }
 
     #[test]
     fn loggable_redacts_text_and_url_but_keeps_other_actions_unchanged() {

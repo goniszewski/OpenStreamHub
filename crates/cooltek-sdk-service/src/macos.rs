@@ -340,6 +340,14 @@ impl MacOsDispatcher {
                 }
             },
             Action::Text { text, press_enter } => self.paste_text(text, *press_enter)?,
+            Action::Profile { .. } => {
+                // The service never owns the profile list; `process_work`
+                // reports the request to a session manager instead.
+                return Err(
+                    "profile switching is handled by the OpenStreamHub session manager, not the macOS backend; no action was taken"
+                        .into(),
+                );
+            }
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
@@ -787,6 +795,7 @@ fn drain_pipe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProfileDirection;
     use std::{collections::VecDeque, sync::Mutex};
 
     #[derive(Default)]
@@ -1446,6 +1455,19 @@ mod tests {
             assert_eq!(request.program, OSASCRIPT);
             assert_eq!(args(request), ["-e", script]);
         }
+    }
+
+    #[test]
+    fn profile_actions_never_reach_the_host() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for direction in [ProfileDirection::Next, ProfileDirection::Previous] {
+            let error = dispatcher
+                .dispatch(&Action::Profile { direction })
+                .unwrap_err();
+            assert!(error.contains("session manager"), "{error}");
+            assert!(error.contains("no action was taken"));
+        }
+        assert!(state.lock().unwrap().requests.is_empty());
     }
 
     #[test]

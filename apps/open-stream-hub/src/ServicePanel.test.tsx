@@ -207,16 +207,37 @@ describe('session banners', () => {
   });
   it('a run paused by a focused-app switch resumes with the switched profile', () => {
     const { feed, runner } = sessionFor('needs_confirmation', { reason: 'profile_switch' });
-    setRun(runner, { profileSwitched: true });
+    setRun(runner, { profileSwitched: true, profileSwitchedBy: 'rule' });
     const markup = render({ feed, runner });
     expect(markup).toContain('Paused because a focused-app rule switched the profile.');
     expect(markup).toContain('Resuming starts the saved profile &quot;Flat&quot; a focused-app rule switched to.');
     expect(markup).toContain('Resume actions…');
-    expect(confirmCopy('resume', 'Browser', 'X', true).message).toContain('the saved profile a focused-app rule switched to');
+    expect(confirmCopy('resume', 'Browser', 'X', true, null, 'rule').message).toContain('the saved profile a focused-app rule switched to');
+    // Who switched is unknown (e.g. after a reload that missed the switch event): no guess.
+    expect(confirmCopy('resume', 'Browser', 'X', true).message).toContain('the saved profile this run was switched to');
+  });
+  it('a run paused by a profile key names the key and treats the unseen profile as high risk', () => {
+    const { feed, runner } = sessionFor('needs_confirmation', { reason: 'profile_action' });
+    setRun(runner, { profileSwitched: true, profileSwitchedBy: 'key' });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Paused because a profile key switched the profile.');
+    expect(markup).toContain('Resuming starts the saved profile &quot;Flat&quot; a profile key switched to.');
+    const copy = confirmCopy('resume', 'Browser', 'X', true, null, 'key', '00000000-0000-4000-8000-0000000000a2');
+    expect(copy.message).toContain('the saved profile a profile key switched to');
+    expect(copy.message).toContain('Saved profile "Browser", id 00000000….');
+    expect(copy.message).not.toContain('0000000000a2');
+    expect(copy.message).toContain('later edits to the saved profile do not apply until the next switch');
+    // Not loaded: high risk, and no advice to review a saved profile that may differ from the run's copy.
+    expect(copy.risk).toBe('high');
+    expect(copy.lines.join(' ')).not.toContain('Profiles page');
+    // Loaded (session_profile): the real capabilities with the normal risk logic.
+    const loaded = confirmCopy('resume', 'Browser', 'X', true, { schema_version: 1, name: 'Browser', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } }] }, 'key', 'id-1');
+    expect(loaded.risk).toBe('normal');
+    expect(loaded.lines).toEqual(['Changes the output volume or mute.']);
   });
   it('a switched run paused later by sleep still says the switched profile resumes', () => {
     const { feed, runner } = sessionFor('needs_confirmation', { reason: 'sleep' });
-    setRun(runner, { profileSwitched: true });
+    setRun(runner, { profileSwitched: true, profileSwitchedBy: 'rule' });
     const markup = render({ feed, runner });
     expect(markup).toContain('Paused because the Mac went to sleep.');
     expect(markup).toContain('Resuming starts the saved profile &quot;Flat&quot; a focused-app rule switched to.');
@@ -233,7 +254,7 @@ describe('session banners', () => {
     const base = { state: 'running' as const, execute: true, entries: [], counters: emptyCounters(), startedAt: 0, snapshot: '{}', draftUnsaved: false };
     const runs = {
       'service:aa': { ...base, serviceId: 'service:aa', profileName: 'Gaming', session: session('m131e', 'DIAL-123456') },
-      'service:bb': { ...base, serviceId: 'service:bb', profileName: 'Browser', profileSwitched: true, session: session('m003k', 'KEYS-654321') },
+      'service:bb': { ...base, serviceId: 'service:bb', profileName: 'Browser', profileSwitched: true, profileSwitchedBy: 'rule' as const, session: session('m003k', 'KEYS-654321') },
     };
     // A device plugged in while the dialog is open would make findRun pick the other run.
     expect(resumeCopy(runs, 'service:aa')?.message).toContain('Profile "Gaming" (as it was when this run started)');

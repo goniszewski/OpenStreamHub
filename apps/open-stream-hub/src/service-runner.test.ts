@@ -5,7 +5,10 @@ import sessionArgs from '../fixtures/session-command-args.json';
 import sessionResults from '../fixtures/session-command-results.json';
 import sessionEvents from '../fixtures/session-state-events.json';
 import switchEvents from '../fixtures/session-switch-events.json';
+import profileActionEvents from '../fixtures/session-profile-action-events.json';
 import { findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord, unknownSnapshot } from './service-runner';
+import type { ServiceRun } from './service-runner';
+import { stableStringify } from './draft-model';
 
 const profile: Profile = { schema_version: 1, name: 'Everyday', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } }] };
 const event = { module: 'm003k', control: 0, gesture: 'pressed' };
@@ -29,6 +32,7 @@ function setup(desktop = true) {
   const listen = async (name: string, handler: (event: { payload: unknown }) => void) => { handlers[name] = handler; return () => { unlistened.push(name); }; };
   const schedule: Scheduler = callback => { queue.push(callback); };
   const runner = new ServiceRunner(invoke, listen, desktop, schedule, () => 1000);
+  runner.profileChangeWaitMs = 50;
   const flush = () => queue.splice(0).forEach(callback => callback());
   const id = serviceIdFor('AABB');
   const record = (value: unknown) => handlers['service://record']({ payload: { service_id: id, record: value } });
@@ -347,9 +351,12 @@ describe('session manager', () => {
     // The backend did switch: its state names the new profile and generation.
     session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' });
     expect(run(t)).toMatchObject({ profileName: 'Browser', profileGeneration: 1, profileId: 'p-browser', profileSwitched: true });
+    // The state carries no profile body, so the profile the backend holds is loaded for the dialog.
+    t.results.session_profile = () => ({ profile_id: 'p-browser', profile_generation: 1, profile: { ...profile, name: 'Browser' } });
     const shown: string[] = [];
     expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
     expect(shown).toEqual(['Browser']);
+    expect(t.calls.filter(call => call.command === 'session_profile')).toEqual([{ command: 'session_profile', args: { sessionId: t.id, profileGeneration: 1 } }]);
     expect(t.calls.filter(call => call.command === 'resume_session')).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 1 } }]);
   });
   it('resyncs the profile of a paused session after a webview reload', async () => {
@@ -360,9 +367,94 @@ describe('session manager', () => {
     session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' });
     expect(run(t)).toMatchObject({ profileName: 'Editor', profileGeneration: 2 });
     const shown: string[] = [];
+    // The run holds no profile body after the reload, so the held profile is asked for first.
+    t.results.session_profile = () => ({ profile_id: 'p-editor', profile_generation: 2, profile: { ...profile, name: 'Editor' } });
     expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
     expect(shown).toEqual(['Editor']);
-    expect(t.calls).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 2 } }]);
+    expect(run(t).snapshot).toBe(stableStringify({ ...profile, name: 'Editor' }));
+    expect(t.calls).toEqual([
+      { command: 'session_profile', args: { sessionId: t.id, profileGeneration: 2 } },
+      { command: 'resume_session', args: { sessionId: t.id, profileGeneration: 2 } },
+    ]);
+  });
+  it('a profile key switch resyncs the run and is remembered as a key switch', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    const { record, states } = profileActionEvents;
+    expect(summarizeRecord(record.record, 1)).toEqual({ kind: 'action', text: 'Profile key: next profile requested (control 1 long press).', at: 1 });
+    for (const state of states) t.handlers['session://state']({ payload: state });
+    const paused = states.at(-1)!;
+    expect(paused).toMatchObject({ phase: 'needs_confirmation', reason: 'profile_action' });
+    expect(t.runner.getState().runs[paused.session_id]).toMatchObject({
+      profileName: 'Streaming', profileGeneration: 1, profileId: paused.profile_id, profileSwitched: true, profileSwitchedBy: 'key', snapshot: unknownSnapshot,
+    });
+    expect(t.runner.getState().runs[paused.session_id].entries.map(entry => entry.text)).toContain('Paused for the new profile: confirm to resume actions');
+    // Before asking, the exact profile the backend holds for this generation is fetched for the dialog.
+    t.results.session_profile = () => profileActionEvents.session_profile;
+    let shown: ServiceRun | undefined;
+    expect(await t.runner.resumeSession(paused.session_id, async () => { shown = t.runner.getState().runs[paused.session_id]; return true; })).toBe(true);
+    expect(shown).toMatchObject({ profileName: 'Streaming', profileId: profileActionEvents.session_profile.profile_id, snapshot: stableStringify(profileActionEvents.session_profile.profile) });
+    expect(t.calls).toEqual([
+      { command: 'session_profile', args: profileActionEvents.session_profile_args },
+      { command: 'resume_session', args: { sessionId: paused.session_id, profileGeneration: 1 } },
+    ]);
+  });
+  it('opens no Resume dialog when the held profile cannot be loaded', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    const { states } = profileActionEvents;
+    for (const state of states) t.handlers['session://state']({ payload: state });
+    const paused = states.at(-1)!;
+    t.failures.session_profile = 'the session manager did not respond';
+    let prompted = false;
+    expect(await t.runner.resumeSession(paused.session_id, async () => { prompted = true; return true; })).toBe(false);
+    expect(prompted).toBe(false);
+    expect(t.calls.map(call => call.command)).toEqual(['session_profile']);
+    expect(t.runner.getState().error).toContain('Could not load the profile this run holds');
+  });
+  it('waits for the newer state after a refusal before asking again', async () => {
+    const t = await started(true);
+    session(t, 'needs_confirmation', { service_id: null, execute: true });
+    t.runner.profileChangeWaitMs = 1000;
+    let refused = false;
+    t.results.resume_session = () => {
+      if (refused) return null;
+      refused = true;
+      // The refusal's state event arrives after the command reply.
+      setTimeout(() => session(t, 'needs_confirmation', { service_id: null, execute: true, reason: 'profile_switch', profile_generation: 1, profile_id: 'p-browser', profile_name: 'Browser' }), 20);
+      throw new Error(profileChangedError);
+    };
+    t.results.session_profile = () => ({ profile_id: 'p-browser', profile_generation: 1, profile: { ...profile, name: 'Browser' } });
+    const shown: string[] = [];
+    expect(await t.runner.resumeSession(t.id, async () => { shown.push(run(t).profileName); return true; })).toBe(true);
+    expect(shown).toEqual(['Everyday', 'Browser']);
+    expect(t.calls.filter(call => call.command === 'resume_session').map(call => call.args)).toEqual([
+      { sessionId: t.id, profileGeneration: 0 }, { sessionId: t.id, profileGeneration: 1 },
+    ]);
+  });
+  it('a stale held profile asks again for the newer generation', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    const { states } = profileActionEvents;
+    for (const state of states) t.handlers['session://state']({ payload: state });
+    const paused = states.at(-1)!;
+    let fetched = 0;
+    t.results.session_profile = () => {
+      fetched += 1;
+      if (fetched === 1) {
+        // A newer switch landed: the backend refuses and resends its state.
+        t.handlers['session://state']({ payload: { ...paused, profile_generation: 2, profile_name: 'Browser', profile_id: 'p-browser' } });
+        throw new Error(profileChangedError);
+      }
+      return { profile_id: 'p-browser', profile_generation: 2, profile: { ...profile, name: 'Browser' } };
+    };
+    const prompts: string[] = [];
+    expect(await t.runner.resumeSession(paused.session_id, async () => { prompts.push(t.runner.getState().runs[paused.session_id].profileName); return true; })).toBe(true);
+    expect(prompts).toEqual(['Browser']);
+    expect(t.calls.map(call => call.command)).toEqual(['session_profile', 'session_profile', 'resume_session']);
+    expect(t.calls.at(-1)!.args).toEqual({ sessionId: paused.session_id, profileGeneration: 2 });
+  });
+  it('describes an unavailable profile key in a standalone-style log', () => {
+    expect(summarizeRecord({ type: 'action_unavailable', event, action: { type: 'profile', direction: 'previous' }, reason: 'profile switching needs the OpenStreamHub session manager; no action was taken' }, 1))
+      .toEqual({ kind: 'info', text: 'previous profile not available: profile switching needs the OpenStreamHub session manager; no action was taken', at: 1 });
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'profile', direction: 'next' } }, 1)?.text).toBe('m003k control 1 pressed: planned next profile');
   });
   it('session state fixtures carry the profile the runner resyncs from', async () => {
     for (const event of [...sessionEvents, ...switchEvents]) expect(Object.keys(event)).toEqual(expect.arrayContaining(['profile_generation', 'profile_id', 'profile_name']));
@@ -378,6 +470,9 @@ describe('session manager', () => {
     const saved = setup(); saved.runner.connect(); await tick();
     await saved.runner.start({ ...options, profileId: 'p-saved' });
     expect(saved.runner.getState().runs[saved.id]).toMatchObject({ profileId: 'p-saved', profileGeneration: 0 });
+    // The backend learns the saved profile a run starts from, so a profile key's next/previous starts there.
+    expect((saved.calls[0].args!.request as { profile_id?: string }).profile_id).toBe('p-saved');
+    expect(draft.calls[0].args!.request).not.toHaveProperty('profile_id');
   });
   it('surfaces a failing resume or stop_session', async () => {
     const t = await started(); session(t, 'needs_confirmation', { service_id: null });

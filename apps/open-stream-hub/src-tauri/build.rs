@@ -24,6 +24,7 @@ fn main() {
             "set_focus_rules_enabled",
             "focus_current_app",
             "switch_session_profile",
+            "session_profile",
             "create_diagnostics",
             "prepare_artwork",
             "save_artwork",

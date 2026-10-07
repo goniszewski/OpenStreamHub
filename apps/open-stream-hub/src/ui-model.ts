@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, mediaLabels, systemLabels } from './action-model';
+import { keyLabel, mediaLabels, profileDirectionLabels, systemLabels } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -83,6 +83,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
       return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
     }
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
+    case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
   }
 }
 

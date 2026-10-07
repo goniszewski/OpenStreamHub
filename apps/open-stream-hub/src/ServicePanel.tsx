@@ -41,7 +41,11 @@ const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' } as const;
+// The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
+const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
+// Who switched the run, as one phrase for the banner and the Resume dialog.
+const switchedTo = (by: ServiceRun['profileSwitchedBy']) => by === 'key' ? 'a profile key switched to' : by === 'rule' ? 'a focused-app rule switched to' : 'this run was switched to';
 
 export interface ConfirmCopy {
   title: string; confirm: string; message: string; risk: RiskLevel;
@@ -52,21 +56,27 @@ export interface ConfirmCopy {
 }
 
 const unknownContents = 'This app cannot read the contents of this profile here, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Review it on the Profiles page before you continue.';
+// After a profile key switch the run holds its own copy, which the saved profile on the Profiles page may no longer match.
+const unknownKeyContents = 'This app could not load the profile this run holds, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Cancel and choose Resume again to retry.';
 
 // Copy for the Execute confirmation, used when starting a run and when resuming a paused one. It discloses what the
 // profile will actually do (profileCapabilities over the whole profile). A null profile is one whose contents the
 // frontend does not hold (a run it did not start, or one a backend switch moved to another profile): that is treated
-// as high risk. A run a focused-app rule switched resumes with the saved profile it switched to, not the original snapshot.
-export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false, profile: Profile | null = null): ConfirmCopy {
+// as high risk. A run a focused-app rule or a profile key switched resumes with the saved profile it switched to, not the
+// original snapshot. A profile key switch carries no profile body, so its resume is treated as high risk too.
+export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false, profile: Profile | null = null, switchedBy?: ServiceRun['profileSwitchedBy'], profileId?: string | null): ConfirmCopy {
+  const key = kind === 'resume' && switched && switchedBy === 'key';
+  // A key switch names the saved profile by id (two profiles can share a name) and says the run holds its own copy.
+  const keyNote = key ? ` ${profileId ? `Saved profile "${profileName}", id ${shortId(profileId)}. ` : ''}This is the copy the run took when it switched; later edits to the saved profile do not apply until the next switch.` : '';
   const head = kind === 'start'
     ? { title: 'Run actions on this Mac?', confirm: 'Run actions', message: `Profile "${profileName}" will run on ${deviceLabel}. Everything listed here will really run on this Mac whenever you use the module, without asking again.` }
-    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? 'the saved profile a focused-app rule switched to' : 'as it was when this run started'}) will resume on ${deviceLabel}. Everything listed here will really run on this Mac again whenever you use the module, without asking again.` };
+    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? `the saved profile ${switchedTo(switchedBy)}` : 'as it was when this run started'}) will resume on ${deviceLabel}. Everything listed here will really run on this Mac again whenever you use the module, without asking again.${keyNote}` };
   const capabilities = profile ? profileCapabilities(profile) : null;
   const risk: RiskLevel = capabilities?.risk ?? 'high';
   const reasons = capabilities ? capabilities.riskReasons : ['The profile contents could not be checked.'];
   return {
     ...head, risk,
-    lines: capabilities ? capabilityLines(capabilities) : [unknownContents],
+    lines: capabilities ? capabilityLines(capabilities) : [key ? unknownKeyContents : unknownContents],
     snippets: capabilities?.texts.map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter })) ?? [],
     sequences: capabilities?.sequences.map(steps => steps.map(stepLabel)) ?? [],
     warning: risk === 'high' ? `High risk. ${reasons.join(' ')} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote this profile or reviewed every snippet and step below and trust where it came from.` : null,
@@ -79,7 +89,7 @@ export function confirmCopy(kind: 'start' | 'resume', profileName: string, devic
 export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string | null) {
   const run = sessionId === null ? undefined : runs[sessionId];
   // The run's own snapshot, never the draft: resuming restarts the profile the run holds.
-  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true, snapshotProfile(run.snapshot)) : null;
+  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true, snapshotProfile(run.snapshot), run.profileSwitchedBy, run.profileId) : null;
 }
 
 // The copy of the open confirmation. Null for a resume whose run disappeared while its dialog was open: the panel then
@@ -178,7 +188,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, desktop,
     {run && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{run.execute ? 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
     {run && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{run.execute ? 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
     {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? ' Actions are paused.' : ''}</span></div></div>}
-    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" a focused-app rule switched to.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
+    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" ${switchedTo(run.profileSwitchedBy)}.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
     {active && phase === 'running' && <p className="fine-print" role="status">Live preview paused while actions run.</p>}
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}

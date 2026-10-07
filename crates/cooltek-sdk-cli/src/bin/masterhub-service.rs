@@ -89,6 +89,12 @@ enum Command {
         /// end the session.
         #[arg(long)]
         display_sync: bool,
+        /// Report `profile` (next/previous) actions as `profile_switch_requested`
+        /// records for a supervising session manager, such as the OpenStreamHub
+        /// desktop app, which owns the saved profiles. Without it a `profile`
+        /// action is logged as `action_unavailable` and does nothing.
+        #[arg(long)]
+        profile_switch_requests: bool,
     },
 }
 
@@ -128,6 +134,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             timeout_ms,
             stop_on_action_error,
             display_sync,
+            profile_switch_requests,
         } => {
             let profile = load_profile(profile)?;
             let profile_name = profile.name.clone();
@@ -166,6 +173,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "drain_timeout_ms":10000, "cancellation_timeout_ms":2000,
                 "stop_on_action_error":stop_on_action_error,
                 "display_sync_requested":display_sync,
+                "profile_switch_requests":profile_switch_requests,
             });
             let options = LiveOptions {
                 software_mode,
@@ -173,6 +181,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 max_reports,
                 timeout_ms,
                 stop_on_action_error,
+                profile_switch_requests,
                 ..LiveOptions::default()
             };
             let factory = move |abort| Ok((Dispatcher::new(execute, abort), stdout));
@@ -353,6 +362,7 @@ fn replay(
                 &never,
                 false,
                 false,
+                false,
                 &mut summary,
             )?;
         }
@@ -371,7 +381,8 @@ fn replay(
     })();
     input.reset();
     engine.reset();
-    summary.incomplete_action_count = matched_actions.saturating_sub(summary.action_count);
+    summary.incomplete_action_count =
+        matched_actions.saturating_sub(summary.action_count + summary.profile_request_count);
     let footer = emit(
         output,
         end_record(

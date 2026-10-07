@@ -563,6 +563,51 @@ fn focus_rule_payloads_match_the_shared_fixtures() {
 }
 
 #[test]
+fn profile_action_payloads_match_the_shared_fixtures() {
+    use crate::session;
+    use cooltek_sdk_service::{ProfileDirection, ServiceModule};
+    use session::fake::{FakeRunner, device, exit, request};
+    // An executing session whose profile key asked for the next saved profile.
+    let dial = device(
+        ServiceModule::M131E,
+        Some("ABCDEF123456"),
+        "/dev/hidraw-0202",
+    );
+    let mut driver = session::Driver::new(FakeRunner::default());
+    driver.inventory(vec![dial.clone()], 0);
+    let id = driver.start(request(&dial, true), 0).unwrap();
+    let mut streaming = test_profiles::folders();
+    streaming.name = "Streaming".into();
+    driver.runner().saved = vec![
+        (
+            "00000000-0000-4000-8000-0000000000a1".into(),
+            test_profiles::folders(),
+        ),
+        ("00000000-0000-4000-8000-0000000000a2".into(), streaming),
+    ];
+    let line = br#"{"type":"profile_switch_requested","schema_version":1,"event":{"timestamp_micros":1200,"control":0,"gesture":"long_press"},"direction":"next"}"#;
+    let record = service::record_payload(&id, line, false).unwrap();
+    let direction = session::profile_switch_request(&record.record).unwrap();
+    assert_eq!(direction, ProfileDirection::Next);
+    driver.profile_step(&id, direction, 100).unwrap();
+    exit(&mut driver, &id, "", 200);
+    let held = driver.session_profile(&id, 1).unwrap();
+    let stale = driver.session_profile(&id, 0).unwrap_err();
+    let states: Vec<_> = driver.runner().emitted.clone();
+    check_or_update(
+        "session-profile-action-events.json",
+        &json!({
+            "record": record,
+            "states": states[..3],
+            // Tauri maps snake_case command arguments to camelCase.
+            "session_profile_args": { "sessionId": id, "profileGeneration": 1 },
+            "session_profile": held,
+            "session_profile_stale": stale,
+        }),
+    );
+}
+
+#[test]
 fn dial_function_preview_matches_the_shared_fixture() {
     let profile = Profile::from_json(include_bytes!(
         "../../../../examples/profiles/dial-functions.json"

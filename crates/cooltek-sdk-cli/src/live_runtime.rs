@@ -76,6 +76,9 @@ pub struct LiveOptions {
     pub startup_timeout: Duration,
     /// End the session on the first failed action instead of logging and continuing.
     pub stop_on_action_error: bool,
+    /// Report `profile` actions as `profile_switch_requested` for a supervising
+    /// session manager instead of logging them as unavailable.
+    pub profile_switch_requests: bool,
 }
 
 impl Default for LiveOptions {
@@ -90,6 +93,7 @@ impl Default for LiveOptions {
             cancellation_timeout: Duration::from_secs(2),
             startup_timeout: Duration::from_secs(5),
             stop_on_action_error: false,
+            profile_switch_requests: false,
         }
     }
 }
@@ -124,6 +128,9 @@ pub struct LiveSummary {
     pub failed_action_count: u64,
     /// Matched bindings that did not complete successfully.
     pub incomplete_action_count: u64,
+    /// `profile` actions reported as a switch request or as unavailable;
+    /// never dispatched, so not in `action_count`.
+    pub profile_request_count: u64,
     /// Display syncs attempted; always 0 without [`LiveDisplay`].
     pub display_sync_count: u64,
     /// Display syncs that failed to plan or apply, or left any key unwritten.
@@ -657,6 +664,7 @@ where
                     worker_device,
                     execute,
                     options.stop_on_action_error,
+                    options.profile_switch_requests,
                     details,
                     display_records,
                     factory,
@@ -847,7 +855,9 @@ where
     summary.coalesced_event_count = counts.coalesced_events;
     summary.dropped_event_count = counts.dropped_events;
     summary.dropped_dial_function_count = counts.dropped_dial_functions;
-    summary.incomplete_action_count = counts.matched_actions.saturating_sub(summary.action_count);
+    summary.incomplete_action_count = counts
+        .matched_actions
+        .saturating_sub(summary.action_count + summary.profile_request_count);
     if let Some(display) = &display_thread {
         summary.display_sync_count = display.counts.syncs.load(Ordering::SeqCst);
         summary.display_failure_count = display.counts.failures.load(Ordering::SeqCst);
@@ -1175,6 +1185,7 @@ fn worker<D, W, F>(
     device: DeviceContext,
     execute: bool,
     stop_on_action_error: bool,
+    profile_switch_requests: bool,
     details: Value,
     display_records: Option<Receiver<Value>>,
     factory: F,
@@ -1243,6 +1254,7 @@ where
                 &abort,
                 execute,
                 stop_on_action_error,
+                profile_switch_requests,
                 &mut outcome.summary,
             )
         }))

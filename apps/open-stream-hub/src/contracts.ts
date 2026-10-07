@@ -5,6 +5,8 @@ export interface PositionValue { type: 'position'; raw: number; maximum: number 
 export type Modifier = 'command' | 'control' | 'option' | 'shift';
 export type MediaCommand = 'play_pause' | 'next_track' | 'previous_track' | 'stop';
 export type SystemCommand = 'undo' | 'redo' | 'screenshot';
+// The neighbouring saved profile a 'profile' action asks for. The OpenStreamHub session manager resolves it.
+export type ProfileDirection = 'next' | 'previous';
 // One step of a multi_action: any executable action except another multi_action.
 export type StepAction =
   | { type: 'volume'; delta: number }
@@ -21,6 +23,8 @@ export type StepAction =
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
+  // Never a multi_action step: the switch stops the running service, so later steps could not run.
+  | { type: 'profile'; direction: ProfileDirection }
   | { type: 'volume_from_position' };
 export type Action = Exclude<BindingAction, { type: 'volume_from_position' }>;
 export interface Binding {
@@ -72,14 +76,16 @@ export interface DeviceInventoryPayload { devices: LiveDevice[] }
 export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };
 
 // Supervised masterhub-service child process (Tauri commands and events, snake_case on the wire).
-export interface StartServiceRequest { profile: Profile; path_hex: string; execute: boolean; software_mode: boolean }
+// profile_id: the saved profile the run starts from unchanged (omitted for an unsaved draft). A profile key's next/previous starts there.
+export interface StartServiceRequest { profile: Profile; path_hex: string; execute: boolean; software_mode: boolean; profile_id?: string }
 export type ServiceState = 'starting' | 'running' | 'stopping' | 'exited' | 'failed';
 export interface ServiceStatusPayload { service_id: string; state: ServiceState; execute: boolean; exit_code?: number | null; error?: string; stderr_tail?: string }
 export interface ServiceRecordPayload { service_id: string; record: unknown }
 
 // Session manager (sleep/wake and reconnect for service runs). session_id is the first service_id and stays stable.
 export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user' | 'profile_switch';
+// profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user' | 'profile_switch' | 'profile_action';
 export interface SessionStatePayload {
   session_id: string; service_id: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number; execute: boolean;
   module: ServiceModule; serial_number: string | null;
@@ -100,5 +106,7 @@ export interface FocusRuleInput { id: string | null; app_bundle_id: string; prof
 export interface FocusChangedPayload { bundle_id: string | null; rule_id: string | null; profile_id: string | null }
 // switch_session_profile result: the saved profile the session now uses and its new profile generation.
 export interface SwitchedProfile extends StoredProfile { profile_generation: number }
+// session_profile: the profile a paused session holds for profile_generation, exactly as resume_session restarts it.
+export interface HeldProfile { profile_id: string | null; profile_generation: number; profile: Profile }
 // The last app other than OpenStreamHub that was frontmost. supported is false off macOS.
 export interface FocusCurrentApp { supported: boolean; bundle_id: string | null }

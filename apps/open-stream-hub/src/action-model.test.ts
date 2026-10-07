@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
-import { defaultMultiAction, defaultStepAction, keyLabel, namedKeys, stepActionTypes, textIssue, urlIssue } from './action-model';
+import { defaultMultiAction, defaultProfileAction, defaultStepAction, keyLabel, namedKeys, profileDirectionLabels, stepActionTypes, textIssue, urlIssue } from './action-model';
 import { actionLabel } from './ui-model';
 
 // Shared with the Rust service tests (profile.rs), so both sides agree on action shapes.
@@ -22,6 +22,22 @@ describe('action contract', () => {
     expect(actionLabel({ type: 'open_url', url: 'https://example.com' })).toBe('Open https://example.com');
     expect(actionLabel({ type: 'text', text: 'Hello\nthere, this is a long snippet', press_enter: true })).toBe('Paste “Hello there, this is a l…” + Return');
     expect(actionLabel(defaultMultiAction())).toBe('2 actions: Toggle output mute, then Command + C');
+    expect(actionLabel({ type: 'profile', direction: 'previous' })).toBe('Previous profile');
+    expect(actionLabel(defaultProfileAction())).toBe('Next profile');
+  });
+
+  it('mirrors the closed set of profile directions in the fixture', () => {
+    const directions = fixture.valid.flatMap(action => action.type === 'profile' ? [action.direction] : []);
+    expect(directions).toEqual(Object.keys(profileDirectionLabels));
+    // Profile keys are never multi-action steps.
+    expect(stepActionTypes.map(([type]) => type)).not.toContain('profile');
+    const invalid = fixture.invalid as { type?: string; direction?: unknown; actions?: { type?: string }[] }[];
+    expect(invalid.some(action => action.type === 'multi_action' && action.actions?.some(step => step.type === 'profile'))).toBe(true);
+    // Each invalid profile action has a direction outside the set or a field the service refuses (no select by name).
+    for (const action of invalid.filter(action => action.type === 'profile')) {
+      const strict = Object.keys(action).every(key => key === 'type' || key === 'direction');
+      expect(strict && Object.keys(profileDirectionLabels).includes(String(action.direction)), JSON.stringify(action)).toBe(false);
+    }
   });
 
   it('builds default step actions that are themselves valid fixture shapes', () => {

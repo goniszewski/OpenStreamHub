@@ -74,7 +74,7 @@ export function noticesFromRuns(runs: Record<string, ServiceRun>, seen: Record<s
     nextSeen[key] = status;
     const before = seen[key];
     if (status === before) continue;
-    if (status === 'needs_confirmation') add.push({ kind: 'paused', text: run.session?.reason === 'profile_switch' ? 'Focused-app rule switched the profile — confirm to resume actions' : 'Actions paused — confirm to resume', ttl: null, action: 'review', key: confirmKey(key) });
+    if (status === 'needs_confirmation') add.push({ kind: 'paused', text: run.session?.reason === 'profile_switch' ? 'Focused-app rule switched the profile — confirm to resume actions' : run.session?.reason === 'profile_action' ? 'Profile key switched the profile — confirm to resume actions' : 'Actions paused — confirm to resume', ttl: null, action: 'review', key: confirmKey(key) });
     else if (before === 'needs_confirmation') resolved.push(confirmKey(key));
     if (before === undefined && status !== 'needs_confirmation') continue;
     const session = run.session;

@@ -1,14 +1,16 @@
 import { Plus, Trash2 } from 'lucide-react';
-import type { BindingAction, MediaCommand, Modifier, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes, obsOutputOpLabels, obsReplayBufferOpLabels,
   maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, obsSceneIssue, profileDirectionLabels,
   stepActionTypes, systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
 } from './action-model';
 import type { StepActionType } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
+
+const obsOutputNote = 'Toggle follows OBS\'s current state; Start and Stop do not, so they are safer inside a multi-action (OBS refuses Start on a running output and Stop on a stopped one). Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
 
 // The action select and its parameter fields. Top-level ids keep their
 // historical names; multi-action steps prefix theirs with `step-N-`.
@@ -127,6 +129,8 @@ function StepFields({ prefix, action, inputKey, onChange }: {
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'stop'
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
+    case 'obs_virtual_camera': return <div className="action-fields"><label htmlFor={id('obs-virtual-camera-op')}>Virtual camera</label><SelectField id={id('obs-virtual-camera-op')} value={action.op} onChange={event => onChange({ type: 'obs_virtual_camera', op: event.target.value as ObsOutputOp })}>{(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}</SelectField><p className="fine-print">{obsOutputNote}</p></div>;
+    case 'obs_replay_buffer': return <div className="action-fields"><label htmlFor={id('obs-replay-buffer-op')}>Replay buffer</label><SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp })}>{(Object.keys(obsReplayBufferOpLabels) as ObsReplayBufferOp[]).map(op => <option key={op} value={op}>{obsReplayBufferOpLabels[op]}</option>)}</SelectField><p className="fine-print">{obsOutputNote} Saving needs the buffer to be running in OBS.</p></div>;
     case 'obs_scene': {
       const issue = obsSceneIssue(action.scene);
       return <div className="action-fields"><label htmlFor={id('obs-scene')}>OBS scene name</label><input id={id('obs-scene')} spellCheck={false} value={action.scene} aria-invalid={!!issue} aria-describedby={issue ? id('obs-scene-error') : undefined} onChange={event => onChange({ type: 'obs_scene', scene: event.target.value }, 'obs-scene')} />{issue && <p id={id('obs-scene-error')} className="field-error" role="alert">{issue}</p>}

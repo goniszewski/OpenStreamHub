@@ -593,6 +593,36 @@ fn replay_reports_obs_scene_as_unavailable_without_an_endpoint() {
 }
 
 #[test]
+fn replay_reports_obs_outputs_as_unavailable_without_an_endpoint() {
+    let profile =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/profiles/obs-outputs.json");
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.to_str().unwrap(),
+        fixture("m003k-synthetic.jsonl").to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    let planned = planned_actions(&records);
+    for expected in [
+        json!({"type":"obs_virtual_camera","op":"toggle"}),
+        json!({"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"start"},{"type":"obs_virtual_camera","op":"start"}]}),
+    ] {
+        assert!(planned.contains(&expected), "{expected} not in {planned:?}");
+    }
+    // The capture presses controls 0 and 2 only.
+    let end = records.last().unwrap();
+    assert_eq!(end["unavailable_action_count"], 2);
+    assert_eq!(end["failed_action_count"], 0);
+    assert!(
+        !records
+            .iter()
+            .any(|record| record["type"] == "action_failed")
+    );
+}
+
+#[test]
 fn replay_plans_media_actions_without_executing_them() {
     let profile = TempFile::new(
         &json!({

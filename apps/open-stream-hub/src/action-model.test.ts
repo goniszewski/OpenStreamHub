@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
   defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
-  namedKeys, obsSceneIssue, profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds,
+  namedKeys, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
 import { actionLabel } from './ui-model';
@@ -140,6 +140,24 @@ describe('inline action hints', () => {
     const invalid = fixture.invalid.filter((action): action is { type: 'text'; text: string } => (action as { type?: string }).type === 'text');
     expect(invalid.length).toBeGreaterThan(0);
     for (const action of invalid) expect(textIssue(action.text), JSON.stringify(action.text)).not.toBeNull();
+  });
+});
+
+describe('obs outputs', () => {
+  it('offers the virtual camera and the replay buffer with closed operation sets, as steps and top-level actions', () => {
+    expect(stepActionTypes.map(([type]) => type)).toEqual(expect.arrayContaining(['obs_virtual_camera', 'obs_replay_buffer']));
+    expect(defaultStepAction('obs_virtual_camera')).toEqual({ type: 'obs_virtual_camera', op: 'toggle' });
+    expect(defaultStepAction('obs_replay_buffer')).toEqual({ type: 'obs_replay_buffer', op: 'save' });
+    expect(Object.keys(obsOutputOpLabels)).toEqual(['toggle', 'start', 'stop']);
+    expect(Object.keys(obsReplayBufferOpLabels)).toEqual(['toggle', 'start', 'stop', 'save']);
+    expect(actionLabel({ type: 'obs_virtual_camera', op: 'stop' })).toBe('OBS virtual camera: Stop');
+    expect(actionLabel({ type: 'obs_replay_buffer', op: 'save' })).toBe('OBS replay buffer: Save the last seconds');
+  });
+
+  it('keeps the fixture and the labels in step', () => {
+    const ops = (type: string) => fixture.valid.filter(action => action.type === type).flatMap(action => ('op' in action ? [String(action.op)] : []));
+    expect(ops('obs_virtual_camera').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
+    expect(ops('obs_replay_buffer').sort()).toEqual(Object.keys(obsReplayBufferOpLabels).sort());
   });
 });
 

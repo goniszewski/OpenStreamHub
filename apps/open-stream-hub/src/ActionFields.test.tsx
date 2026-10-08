@@ -137,3 +137,29 @@ describe('obs_scene fields', () => {
     expectAccessible(markup);
   });
 });
+
+describe('obs output fields', () => {
+  it('edits the virtual camera and replay buffer operation from closed lists', () => {
+    const camera = render({ type: 'obs_virtual_camera', op: 'start' });
+    expect(camera).toContain('<label for="obs-virtual-camera-op">Virtual camera</label>');
+    expect(camera).toMatch(/<option value="start" selected="">Start<\/option>/);
+    expect(camera).not.toContain('value="save"');
+    expect(camera).toContain('OBS turned on in Settings');
+    expectAccessible(camera);
+    const buffer = render({ type: 'obs_replay_buffer', op: 'save' });
+    expect(buffer).toContain('<label for="obs-replay-buffer-op">Replay buffer</label>');
+    expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
+    expect(buffer).toContain('Saving needs the buffer to be running');
+    expectAccessible(buffer);
+    for (const type of ['obs_virtual_camera', 'obs_replay_buffer']) {
+      expect(render(null)).toContain(`value="${type}"`);
+      expect(render(null, true)).not.toContain(`value="${type}"`);
+    }
+  });
+
+  it('is offered as a multi-action step with prefixed ids', () => {
+    const markup = render({ type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'obs_virtual_camera', op: 'stop' }] });
+    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-obs-replay-buffer-op', 'step-2-obs-virtual-camera-op']));
+    expectAccessible(markup);
+  });
+});

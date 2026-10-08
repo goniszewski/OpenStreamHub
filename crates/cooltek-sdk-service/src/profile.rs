@@ -191,6 +191,36 @@ pub enum ProfileDirection {
     Previous,
 }
 
+/// What an OBS output action does to an output that can be started and
+/// stopped. `toggle` is the only choice the official app offers; `start` and
+/// `stop` do not depend on the current state, which makes them safe inside a
+/// `multi_action`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsOutputOp {
+    /// Start the output when it is stopped and stop it when it runs.
+    Toggle,
+    /// Start the output (OBS refuses when it already runs).
+    Start,
+    /// Stop the output (OBS refuses when it is not running).
+    Stop,
+}
+
+/// What an `obs_replay_buffer` action does: the output operations plus saving
+/// the buffer to a file.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsReplayBufferOp {
+    /// Start the buffer when it is stopped and stop it when it runs.
+    Toggle,
+    /// Start the buffer.
+    Start,
+    /// Stop the buffer.
+    Stop,
+    /// Save the last seconds of the running buffer (OBS refuses when it is not running).
+    Save,
+}
+
 /// The end sound of a `timer`, from a closed set of macOS system sounds.
 ///
 /// Each name maps to one fixed file under `/System/Library/Sounds`; a profile
@@ -363,6 +393,18 @@ pub enum Action {
         /// Exact OBS scene name: nonempty, at most 128 bytes, no control or
         /// invisible format/separator characters.
         scene: String,
+    },
+    /// Start, stop or toggle the OBS virtual camera over the local
+    /// obs-websocket v5 server. Needs an OBS endpoint like `obs_scene`.
+    ObsVirtualCamera {
+        /// What to do with the virtual camera.
+        op: ObsOutputOp,
+    },
+    /// Start, stop, toggle or save the OBS replay buffer over the local
+    /// obs-websocket v5 server. Needs an OBS endpoint like `obs_scene`.
+    ObsReplayBuffer {
+        /// What to do with the replay buffer.
+        op: ObsReplayBufferOp,
     },
 }
 
@@ -560,6 +602,12 @@ impl<'de> Deserialize<'de> for Action {
             ObsScene {
                 scene: String,
             },
+            ObsVirtualCamera {
+                op: ObsOutputOp,
+            },
+            ObsReplayBuffer {
+                op: ObsReplayBufferOp,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -584,6 +632,8 @@ impl<'de> Deserialize<'de> for Action {
                 sound,
             },
             Shape::ObsScene { scene } => Self::ObsScene { scene },
+            Shape::ObsVirtualCamera { op } => Self::ObsVirtualCamera { op },
+            Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
         })
     }
 }
@@ -623,13 +673,18 @@ impl Action {
             Self::Profile { .. } => "profile",
             Self::Timer { .. } => "timer",
             Self::ObsScene { .. } => "obs_scene",
+            Self::ObsVirtualCamera { .. } => "obs_virtual_camera",
+            Self::ObsReplayBuffer { .. } => "obs_replay_buffer",
         }
     }
 
-    /// True for an `obs_scene` action or a `multi_action` with an `obs_scene` step.
+    /// True for an OBS action (`obs_scene`, `obs_virtual_camera`,
+    /// `obs_replay_buffer`) or a `multi_action` with an OBS step.
     pub fn uses_obs(&self) -> bool {
         match self {
-            Self::ObsScene { .. } => true,
+            Self::ObsScene { .. }
+            | Self::ObsVirtualCamera { .. }
+            | Self::ObsReplayBuffer { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -773,7 +828,9 @@ impl Action {
             | Self::ToggleMute
             | Self::Media { .. }
             | Self::System { .. }
-            | Self::Profile { .. } => Ok(()),
+            | Self::Profile { .. }
+            | Self::ObsVirtualCamera { .. }
+            | Self::ObsReplayBuffer { .. } => Ok(()),
         }
     }
 
@@ -1589,6 +1646,83 @@ mod tests {
                 .unwrap_err()
                 .starts_with("binding 0: obs_scene")
         );
+    }
+
+    #[test]
+    fn obs_output_actions_have_a_strict_closed_json_shape() {
+        for (json, type_name) in [
+            (
+                r#"{"type":"obs_virtual_camera","op":"toggle"}"#,
+                "obs_virtual_camera",
+            ),
+            (
+                r#"{"type":"obs_virtual_camera","op":"start"}"#,
+                "obs_virtual_camera",
+            ),
+            (
+                r#"{"type":"obs_virtual_camera","op":"stop"}"#,
+                "obs_virtual_camera",
+            ),
+            (
+                r#"{"type":"obs_replay_buffer","op":"toggle"}"#,
+                "obs_replay_buffer",
+            ),
+            (
+                r#"{"type":"obs_replay_buffer","op":"start"}"#,
+                "obs_replay_buffer",
+            ),
+            (
+                r#"{"type":"obs_replay_buffer","op":"stop"}"#,
+                "obs_replay_buffer",
+            ),
+            (
+                r#"{"type":"obs_replay_buffer","op":"save"}"#,
+                "obs_replay_buffer",
+            ),
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert_eq!(action.type_name(), type_name);
+            assert!(action.uses_obs());
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_virtual_camera"}"#,
+            r#"{"type":"obs_virtual_camera","op":null}"#,
+            r#"{"type":"obs_virtual_camera","op":"Toggle"}"#,
+            r#"{"type":"obs_virtual_camera","op":"save"}"#,
+            r#"{"type":"obs_virtual_camera","op":"toggle","endpoint":"127.0.0.1:4455"}"#,
+            r#"{"type":"obs_replay_buffer","op":"pause"}"#,
+            r#"{"type":"obs_replay_buffer","op":1}"#,
+            r#"{"type":"obs_replay_buffer","operation":"save"}"#,
+            r#"{"type":"obs_replay_buffer","op":"save","password":"x"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn obs_output_actions_bind_to_discrete_controls_and_multi_action_steps_only() {
+        let action = Action::ObsReplayBuffer {
+            op: ObsReplayBufferOp::Save,
+        };
+        let mut profile = sample();
+        profile.bindings[0].action = action.clone();
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(profile.validate().is_err());
+        let multi = Action::MultiAction {
+            actions: vec![
+                Action::ToggleMute,
+                action,
+                Action::ObsVirtualCamera {
+                    op: ObsOutputOp::Stop,
+                },
+            ],
+        };
+        multi.validate_executable().unwrap();
+        assert!(multi.uses_obs());
     }
 
     #[test]

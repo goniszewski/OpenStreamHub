@@ -88,7 +88,7 @@ pub struct StartRequest {
     pub display: Option<crate::display::DisplayLaunch>,
     /// The OBS endpoint and in-memory password a managed session started
     /// with, set by the session driver only. Never deserialized, so a profile
-    /// or a frontend request can never choose where `obs_scene` connects.
+    /// or a frontend request can never choose where OBS actions connect.
     #[serde(skip)]
     pub obs: Option<crate::obs::ObsLaunch>,
 }

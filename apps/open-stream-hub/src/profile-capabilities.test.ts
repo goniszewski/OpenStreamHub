@@ -214,6 +214,22 @@ describe('capability copy', () => {
   });
 });
 
+describe('obs output capabilities', () => {
+  it('discloses virtual camera and replay buffer operations in plain words without raising the risk', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'obs_virtual_camera', op: 'toggle' },
+      { type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'obs_virtual_camera', op: 'stop' }] },
+    ));
+    expect(capabilities.obsOutputs).toEqual(['virtual camera toggle', 'replay buffer save', 'virtual camera stop']);
+    expect(capabilities.counts.obs_virtual_camera).toBe(2);
+    expect(capabilities.counts.obs_replay_buffer).toBe(1);
+    expect(profileCapabilities(flat({ type: 'obs_replay_buffer', op: 'save' })).risk).toBe('normal');
+    expect(capabilityLines(capabilities)).toContain('Controls OBS outputs through the OBS WebSocket on this Mac (when OBS is turned on in Settings): virtual camera toggle, replay buffer save, virtual camera stop.');
+    expect(stepLabel({ type: 'obs_replay_buffer', op: 'save' })).toBe('OBS replay buffer: save');
+    expect(capabilityLines(profileCapabilities(flat({ type: 'toggle_mute' }))).some(text => text.includes('OBS'))).toBe(false);
+  });
+});
+
 describe('obs_scene capabilities', () => {
   it('lists every scene in the confirmation without raising the risk', () => {
     const profile = flat(

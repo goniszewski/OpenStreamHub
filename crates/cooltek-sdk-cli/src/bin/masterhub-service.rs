@@ -108,8 +108,9 @@ enum Command {
         #[arg(long)]
         profile_switch_requests: bool,
         /// Loopback OBS WebSocket (obs-websocket v5, OBS 28+) endpoint for
-        /// `obs_scene` actions: exactly 127.0.0.1:PORT, [::1]:PORT or
-        /// localhost:PORT. Without it an `obs_scene` action is logged as
+        /// OBS actions (`obs_scene`, `obs_virtual_camera`, `obs_replay_buffer`):
+        /// exactly 127.0.0.1:PORT, [::1]:PORT or localhost:PORT. Without it
+        /// such an action is logged as
         /// `action_unavailable` and does nothing. Each action opens one
         /// connection, bounded to 3 s, and closes it.
         #[arg(long, value_parser = ObsEndpoint::parse)]
@@ -394,7 +395,7 @@ fn device_context(
 
 enum Dispatcher {
     /// Dry run and replay: validates only. `obs` records whether the run has
-    /// an OBS endpoint, so a dry run reports `obs_scene` exactly as an
+    /// an OBS endpoint, so a dry run reports OBS actions exactly as an
     /// executing run would (planned, or unavailable); it never connects.
     Preview {
         obs: bool,
@@ -460,7 +461,7 @@ fn replay(
         session.identity.serial_number.clone(),
     )?;
     let mut input = InputSession::new(device.module);
-    // Replay never has an OBS endpoint: obs_scene is reported as unavailable.
+    // Replay never has an OBS endpoint: OBS actions are reported as unavailable.
     let mut dispatcher = Dispatcher::Preview { obs: false };
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();

@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand, TimerAlert, TimerAlerter,
-    obs::{OBS_UNAVAILABLE, ObsClient},
+    obs::{OBS_UNAVAILABLE, ObsClient, ObsRequest},
 };
 use std::{
     sync::{
@@ -537,7 +537,9 @@ impl MacOsDispatcher {
                         .into(),
                 );
             }
-            Action::ObsScene { scene } => self.obs_scene(scene, None)?,
+            Action::ObsScene { .. }
+            | Action::ObsVirtualCamera { .. }
+            | Action::ObsReplayBuffer { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
@@ -560,9 +562,10 @@ impl MacOsDispatcher {
                     }
                     // An OBS step gets only what is left of the sequence's
                     // deadline, so a slow OBS cannot push the sequence past it.
-                    let result = match step {
-                        Action::ObsScene { scene } => self.obs_scene(scene, Some(deadline)),
-                        _ => self.execute(step),
+                    let result = if step.uses_obs() {
+                        self.obs_action(step, Some(deadline))
+                    } else {
+                        self.execute(step)
                     };
                     result.map_err(|error| {
                         format!(
@@ -577,13 +580,19 @@ impl MacOsDispatcher {
         Ok(())
     }
 
-    /// Switches the OBS scene within `deadline` (on the sleeper's clock) when
+    /// Runs an OBS action within `deadline` (on the sleeper's clock) when
     /// given, and never beyond the client's own 3 s limit. A deadline that has
     /// already passed fails without connecting.
-    fn obs_scene(&self, scene: &str, deadline: Option<std::time::Instant>) -> Result<(), String> {
+    fn obs_action(
+        &self,
+        action: &Action,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
         let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
+        let request = ObsRequest::for_action(action)
+            .ok_or("this action does not talk to OBS; no action was taken")?;
         let Some(deadline) = deadline else {
-            return obs.set_current_program_scene(scene);
+            return obs.request(&request).map(drop);
         };
         let remaining = deadline.saturating_duration_since(self.sleeper.now());
         if remaining.is_zero() {
@@ -594,7 +603,8 @@ impl MacOsDispatcher {
         }
         obs.clone()
             .with_timeout(remaining)
-            .set_current_program_scene(scene)
+            .request(&request)
+            .map(drop)
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed
@@ -2219,6 +2229,19 @@ mod tests {
         scene: &'static str,
         on_request: impl FnOnce() + Send + 'static,
     ) -> (u16, std::thread::JoinHandle<()>) {
+        fake_obs_checked(
+            "SetCurrentProgramScene",
+            move |request| assert_eq!(request["d"]["requestData"]["sceneName"], scene),
+            on_request,
+        )
+    }
+
+    /// Like [`fake_obs`] for any request type: `check` sees the request.
+    fn fake_obs_checked(
+        request_type: &'static str,
+        check: impl FnOnce(&serde_json::Value) + Send + 'static,
+        on_request: impl FnOnce() + Send + 'static,
+    ) -> (u16, std::thread::JoinHandle<()>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
@@ -2265,11 +2288,12 @@ mod tests {
             );
             let request = crate::obs::tests_support::read_text(&mut stream);
             let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-            assert_eq!(request["d"]["requestData"]["sceneName"], scene);
+            assert_eq!(request["d"]["requestType"], request_type);
+            check(&request);
             on_request();
             send(
                 &mut stream,
-                serde_json::json!({"op":7,"d":{"requestType":"SetCurrentProgramScene","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}})
+                serde_json::json!({"op":7,"d":{"requestType":request_type,"requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}})
                     .to_string(),
             );
         });
@@ -2292,6 +2316,137 @@ mod tests {
         server.join().unwrap();
         // No subprocess: OBS is reached over the loopback socket only.
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn obs_output_actions_send_their_request_without_request_data() {
+        use crate::profile::{ObsOutputOp, ObsReplayBufferOp};
+        let cases = [
+            (
+                Action::ObsVirtualCamera {
+                    op: ObsOutputOp::Toggle,
+                },
+                "ToggleVirtualCam",
+            ),
+            (
+                Action::ObsVirtualCamera {
+                    op: ObsOutputOp::Start,
+                },
+                "StartVirtualCam",
+            ),
+            (
+                Action::ObsVirtualCamera {
+                    op: ObsOutputOp::Stop,
+                },
+                "StopVirtualCam",
+            ),
+            (
+                Action::ObsReplayBuffer {
+                    op: ObsReplayBufferOp::Toggle,
+                },
+                "ToggleReplayBuffer",
+            ),
+            (
+                Action::ObsReplayBuffer {
+                    op: ObsReplayBufferOp::Start,
+                },
+                "StartReplayBuffer",
+            ),
+            (
+                Action::ObsReplayBuffer {
+                    op: ObsReplayBufferOp::Stop,
+                },
+                "StopReplayBuffer",
+            ),
+            (
+                Action::ObsReplayBuffer {
+                    op: ObsReplayBufferOp::Save,
+                },
+                "SaveReplayBuffer",
+            ),
+        ];
+        for (action, request_type) in cases {
+            let (port, server) = fake_obs_checked(
+                request_type,
+                |request| assert!(request["d"].get("requestData").is_none(), "{request}"),
+                || {},
+            );
+            let (dispatcher, state) = fake(vec![]);
+            let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+                crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+                None,
+            )));
+            assert_eq!(dispatcher.unavailable(&action), None);
+            dispatcher.dispatch(&action).unwrap();
+            server.join().unwrap();
+            assert!(state.lock().unwrap().requests.is_empty(), "{request_type}");
+        }
+    }
+
+    #[test]
+    fn obs_output_actions_without_an_endpoint_are_unavailable_and_start_nothing() {
+        use crate::profile::{ObsOutputOp, ObsReplayBufferOp};
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher;
+        for action in [
+            Action::ObsVirtualCamera {
+                op: ObsOutputOp::Toggle,
+            },
+            Action::ObsReplayBuffer {
+                op: ObsReplayBufferOp::Save,
+            },
+            Action::MultiAction {
+                actions: vec![
+                    Action::ToggleMute,
+                    Action::ObsReplayBuffer {
+                        op: ObsReplayBufferOp::Save,
+                    },
+                ],
+            },
+        ] {
+            assert_eq!(dispatcher.unavailable(&action), Some(OBS_UNAVAILABLE));
+            // The caller (the service worker) refuses an unavailable
+            // multi_action before any step runs; only single actions are
+            // dispatched here.
+            if !matches!(action, Action::MultiAction { .. }) {
+                assert_eq!(dispatcher.dispatch(&action).unwrap_err(), OBS_UNAVAILABLE);
+            }
+        }
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn an_obs_output_step_runs_inside_a_multi_action_in_order() {
+        use crate::profile::ObsReplayBufferOp;
+        let (dispatcher, state) = fake(vec![success("")]);
+        let seen = Arc::new(Mutex::new(None));
+        let (shared, record) = (Arc::clone(&state), Arc::clone(&seen));
+        let (port, server) = fake_obs_checked(
+            "SaveReplayBuffer",
+            |_| {},
+            move || {
+                *record.lock().unwrap() = Some(shared.lock().unwrap().requests.len());
+            },
+        );
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::Shortcut {
+                        key: "a".into(),
+                        modifiers: vec![Modifier::Command],
+                    },
+                    Action::ObsReplayBuffer {
+                        op: ObsReplayBufferOp::Save,
+                    },
+                ],
+            })
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), Some(1), "the shortcut ran first");
     }
 
     #[test]
@@ -2395,7 +2550,14 @@ mod tests {
             None,
         )));
         let now = dispatcher.sleeper.now();
-        let error = dispatcher.obs_scene("Live", Some(now)).unwrap_err();
+        let error = dispatcher
+            .obs_action(
+                &Action::ObsScene {
+                    scene: "Live".into(),
+                },
+                Some(now),
+            )
+            .unwrap_err();
         assert!(error.contains("deadline has passed"), "{error}");
         assert!(closed.accept().is_err(), "OBS was contacted");
     }

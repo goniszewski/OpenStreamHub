@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, MediaCommand, ObsOutputOp, ObsReplayBufferOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -44,12 +44,17 @@ export const maxTimerLabelBytes = 64;
 export const maxRunningTimers = 8;
 export const maxObsSceneBytes = 128;
 
+// Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
+export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
+export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
+
 export type StepActionType = StepAction['type'];
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
+  ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -64,6 +69,8 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
     case 'obs_scene': return { type, scene: 'Scene' };
+    case 'obs_virtual_camera': return { type, op: 'toggle' };
+    case 'obs_replay_buffer': return { type, op: 'save' };
   }
 }
 

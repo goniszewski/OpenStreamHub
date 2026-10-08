@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, mediaLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { keyLabel, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -85,6 +85,8 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
+    case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
+    case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
     case 'obs_scene': return `OBS scene “${action.scene.length > 24 ? `${action.scene.slice(0, 24)}…` : action.scene}”`;
   }
 }

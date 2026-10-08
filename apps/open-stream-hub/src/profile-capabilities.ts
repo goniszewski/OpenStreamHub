@@ -1,5 +1,5 @@
 import type { BindingAction, Profile, StepAction } from './contracts';
-import { keyLabel, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import { keyLabel, mediaLabels, multiActionSteps, obsReplayBufferOpLabels, systemLabels, urlOrigin } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -40,6 +40,8 @@ export interface ProfileCapabilities {
   // Distinct OBS scene names of every obs_scene, in profile order. Each switches the OBS program scene over the
   // loopback OBS WebSocket configured in Settings.
   obsScenes: string[];
+  // Distinct virtual camera / replay buffer operations (for example "toggle"), in profile order. Closed words, no user text.
+  obsOutputs: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   risk: RiskLevel;
@@ -88,12 +90,16 @@ const followedBy = (steps: unknown[], first: (step: unknown) => boolean, then: (
 export const maxShownChars = 4096;
 export const tooLongReason = 'A snippet is too long to show in full.';
 
+// An OBS output op is a closed word; anything else (a hand-edited profile) is shown clipped and flagged by the service.
+const opWord = (op: unknown) => typeof op === 'string' && op in obsReplayBufferOpLabels ? op : `${clipped(String(op), 20)} (unrecognised)`;
+
 export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const counts: Partial<Record<ActionKind, number>> = {};
   const texts = new Map<string, TextSnippet>();
   const origins = new Set<string>();
   const apps = new Set<string>();
   const obsScenes = new Set<string>();
+  const obsOutputs = new Set<string>();
   const sequences = new Map<string, StepAction[]>();
   const reasons = new Set<string>();
   let screenshot = false;
@@ -133,6 +139,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         obsScenes.add(String(action.scene));
         if (codePoints(String(action.scene)) > maxShownChars) reasons.add(tooLongReason);
         break;
+      // Local OBS outputs: neither publishes to an audience by itself, so they are shown but low risk.
+      case 'obs_virtual_camera': obsOutputs.add(`virtual camera ${opWord(action.op)}`); break;
+      case 'obs_replay_buffer': obsOutputs.add(`replay buffer ${opWord(action.op)}`); break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
       case 'multi_action': {
         const steps = list(action.actions);
@@ -167,6 +176,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     timers: (counts.timer ?? 0) > 0,
     mediaKeys, mediaStop,
     obsScenes: [...obsScenes],
+    obsOutputs: [...obsOutputs],
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
@@ -229,6 +239,8 @@ export function stepLabel(step: StepAction): string {
       const preview = snippetPreview(String(step.scene));
       return `Switch OBS to the scene “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}`;
     }
+    case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op)}`;
+    case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op)}`;
     case 'text': {
       const preview = snippetPreview(typeof step.text === 'string' ? step.text : '');
       return `Paste “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}${step.press_enter ? ', then press Return' : ''}`;
@@ -255,6 +267,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.submitKey && capabilities.texts.length) lines.push('Has a key that submits a line (Return, Control+M, Control+J or Control+O). Pressed after pasted text, it runs commands in a terminal.');
   if (capabilities.undoRedo) lines.push('Sends Undo or Redo to the focused app.');
   if (capabilities.obsScenes.length) lines.push(`Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsScenes.map(scene => `“${snippetPreview(scene).text}”`).join(', ')}.`);
+  if (capabilities.obsOutputs.length) lines.push(`Controls OBS outputs through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsOutputs.join(', ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (capabilities.mediaKeys) lines.push('Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.');
   if (capabilities.mediaStop) lines.push('Stops Music or Spotify if running; it does not start a player that is not running (one that quits at that instant may be relaunched by macOS, without playing). macOS may ask for Automation permission to control them.');

@@ -19,6 +19,8 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"profile","direction":"next"}` (or `"previous"`) | **Never executed on the host.** The service reports a request; the OpenStreamHub session manager switches the run to another saved profile. Standalone runs log it as unavailable and do nothing | Nothing (no macOS permission) |
 | `{"type":"timer","seconds":300,"label":"Tea","sound":"glass"}` | The service counts down; a second press of the same control cancels. At the end: `/usr/bin/osascript` (fixed script, label as an argv item) posts a notification, then `/usr/bin/afplay /System/Library/Sounds/<Name>.aiff` plays the sound | Notification permission for the process macOS attributes `osascript` to (unverified; a refusal that prints to stderr is logged as `timer_alert_warning`) |
 | `{"type":"obs_scene","scene":"Live"}` | Executes when the run has an OBS endpoint: one loopback obs-websocket v5 connection, `SetCurrentProgramScene`, close. Without an endpoint it is logged as unavailable and does nothing | OBS 28+ with its WebSocket server on; OBS turned on in OpenStreamHub Settings (or `--obs-endpoint`) |
+| `{"type":"obs_virtual_camera","op":"toggle"}` (also `start`, `stop`) | Same transport as `obs_scene`: `ToggleVirtualCam`, `StartVirtualCam` or `StopVirtualCam`, no request data. See [OBS outputs](#obs-outputs-obs_virtual_camera-and-obs_replay_buffer) | Same as `obs_scene` |
+| `{"type":"obs_replay_buffer","op":"save"}` (also `toggle`, `start`, `stop`) | `ToggleReplayBuffer`, `StartReplayBuffer`, `StopReplayBuffer` or `SaveReplayBuffer`. `save` needs a running buffer | Same as `obs_scene` |
 
 Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution.
 
@@ -201,6 +203,18 @@ This matches the official app's `timer` key action, a countdown with an end soun
 - The Execute confirmation lists "Runs countdown timers" and does not raise the risk level: the effects are a notification and a fixed system sound.
 - The profile schema is unchanged (`schema_version` stays 1 or 2). The variant is additive, so a build without it rejects a profile that uses it with an `unknown variant` error. The `.mhz` importer still leaves official timers unbound.
 
+## OBS outputs (`obs_virtual_camera` and `obs_replay_buffer`)
+
+Two more OBS actions, from the [official list of 17](research/masterhub-obs-actions.md), on the transport described under `obs_scene` below (loopback only, endpoint and password from the app or `--obs-endpoint`, never from a profile). Unlike the official app, which only toggles, each has explicit `start` and `stop` too.
+
+- JSON: `{"type":"obs_virtual_camera","op":"toggle"}` with `op` one of `toggle`, `start`, `stop`; `{"type":"obs_replay_buffer","op":"save"}` with `op` one of `toggle`, `start`, `stop`, `save`. `op` is required, lowercase, and a closed set; extra fields (such as `endpoint` or `password`) are rejected. Additive variants: no schema bump, and a build without them rejects such a profile with `unknown variant`.
+- Requests: `ToggleVirtualCam`, `StartVirtualCam`, `StopVirtualCam`, `ToggleReplayBuffer`, `StartReplayBuffer`, `StopReplayBuffer`, `SaveReplayBuffer`. None carries request data, so no profile text reaches OBS.
+- **Prefer `start` and `stop` in a `multi_action`.** A toggle depends on what OBS is doing now, and OBS refuses `start` on a running output and `stop` on a stopped one. `save` fails when the buffer is not running (the failure names the cause, for example "the output is not running").
+- Both are allowed as `multi_action` steps and follow the same rules as `obs_scene` there: a run without an OBS endpoint reports the whole sequence as unavailable, and an OBS step gets only the time left before the 15 s deadline (at most 3 s).
+- Logging: records show `{"type":"obs_virtual_camera","op":"toggle"}`. The op is a closed word, so unlike a scene name there is nothing to redact, and diagnostics bundles keep it.
+- The Execute confirmation lists "Controls OBS outputs through the OBS WebSocket on this Mac" with each operation. It does not raise the risk level: neither output publishes to an audience by itself. (Recording and streaming will differ; they are not implemented.)
+- Tested against the scripted fake obs-websocket server only; no real OBS has been used.
+
 ## OBS scene (`obs_scene`)
 
 This is the first of the official app's OBS integrations ([app features](research/masterhub-1.0.0.113-app-features.md), "Integrations: OBS", about 18 actions over obs-websocket). Only switching the program scene is implemented; the rest are listed under [Not implemented](#not-implemented).
@@ -296,5 +310,5 @@ Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the ti
 - Selecting a profile by name with the `profile` action (see above). Profile next/previous itself works only under the OpenStreamHub session manager; the CLI loads one profile per process.
 - Showing a timer's remaining time on the key (see above), and importing official timers from `.mhz` files.
 - Recorded key macros, clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
-- Every OBS action except switching the program scene: recording and streaming start/stop/toggle, studio mode and preview scene, transitions, source and scene-item visibility, audio mute and volume, replay buffer, virtual camera, screenshots, filters and the rest of the official app's roughly 18 OBS actions. Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
+- Every OBS action except switching the program scene, the virtual camera and the replay buffer: recording (start/stop/pause) and streaming, studio mode and transitions, source and scene-item visibility, audio mute and volume, media sources, filters, scene collections and profiles, and screenshots (14 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
 - A media stop for players other than Apple Music and Spotify, fast-forward/rewind (`media-fast-back-forward`) and playing an audio file (`play-pause`).

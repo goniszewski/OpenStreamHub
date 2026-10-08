@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "name": "OBS outputs",
+  "bindings": [
+    {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"obs_virtual_camera","op":"toggle"}},
+    {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"obs_replay_buffer","op":"save"}},
+    {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"start"},{"type":"obs_virtual_camera","op":"start"}]}}
+  ]
+}

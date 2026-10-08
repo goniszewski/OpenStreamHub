@@ -25,7 +25,13 @@ export type StepAction =
   | { type: 'text'; text: string; press_enter?: boolean }
   // Switches the OBS program scene over the local OBS WebSocket. The endpoint and password are app settings, never
   // part of a profile.
-  | { type: 'obs_scene'; scene: string };
+  | { type: 'obs_scene'; scene: string }
+  // Start, stop or toggle the OBS virtual camera, or the replay buffer (also: save it), over the same local OBS
+  // WebSocket. No names are involved; the op is a closed set (ObsOutputOp, ObsReplayBufferOp in profile.rs).
+  | { type: 'obs_virtual_camera'; op: ObsOutputOp }
+  | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp };
+export type ObsOutputOp = 'toggle' | 'start' | 'stop';
+export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }

@@ -31,6 +31,7 @@
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
 
+use crate::profile::{Action, ObsOutputOp, ObsReplayBufferOp};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -391,6 +392,30 @@ impl ObsRequest {
     /// The request type, such as `ToggleRecord`.
     pub fn request_type(&self) -> &'static str {
         self.request_type
+    }
+}
+
+impl ObsRequest {
+    /// The request an OBS action sends, or `None` for an action that does not
+    /// talk to OBS (and for a `multi_action`, whose steps are asked one by one).
+    pub fn for_action(action: &Action) -> Option<Self> {
+        Some(match action {
+            Action::ObsScene { scene } => {
+                Self::with_data("SetCurrentProgramScene", json!({"sceneName":scene}))
+            }
+            Action::ObsVirtualCamera { op } => Self::new(match op {
+                ObsOutputOp::Toggle => "ToggleVirtualCam",
+                ObsOutputOp::Start => "StartVirtualCam",
+                ObsOutputOp::Stop => "StopVirtualCam",
+            }),
+            Action::ObsReplayBuffer { op } => Self::new(match op {
+                ObsReplayBufferOp::Toggle => "ToggleReplayBuffer",
+                ObsReplayBufferOp::Start => "StartReplayBuffer",
+                ObsReplayBufferOp::Stop => "StopReplayBuffer",
+                ObsReplayBufferOp::Save => "SaveReplayBuffer",
+            }),
+            _ => return None,
+        })
     }
 }
 

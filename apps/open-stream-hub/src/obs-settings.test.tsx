@@ -94,7 +94,7 @@ function storeWith(patch: Partial<ObsSettingsState>) {
 describe('ObsSettingsPanel markup', () => {
   it('is off by default, loopback only, with a masked password field that is never prefilled', () => {
     const markup = renderToStaticMarkup(<ObsSettingsPanel store={storeWith({})} />);
-    expect(markup).toMatch(/<input type="checkbox"(?![^>]*checked)[^>]*>Let “Switch OBS scene” actions connect to OBS on this Mac/);
+    expect(markup).toMatch(/<input type="checkbox"(?![^>]*checked)[^>]*>Let OBS actions \(scenes, virtual camera, replay buffer\) connect to OBS on this Mac/);
     expect(markup).toContain('<input id="obs-password" type="password" autoComplete="off"');
     expect(markup).toMatch(/id="obs-password"[^>]*value=""/);
     expect(markup).toContain('>localhost (this Mac)</option>');

@@ -114,6 +114,13 @@ describe('summarizeRecord', () => {
     expect(at({ type: 'multi_action', actions: [{ type: 'open_url', origin: 'https://a.test' }, { type: 'text', chars: 3, press_enter: false }] }))
       .toContain('multi-action [open URL https://a.test, paste text (3 characters)]');
   });
+  it('summarises OBS output actions by their closed operation word', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    expect(at({ type: 'obs_virtual_camera', op: 'toggle' })).toContain('OBS virtual camera toggle');
+    expect(at({ type: 'obs_replay_buffer', op: 'save' })).toContain('OBS replay buffer save');
+    expect(at({ type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'toggle_mute' }] }))
+      .toContain('multi-action [OBS replay buffer save, toggle mute]');
+  });
   it('logs only the length of an OBS scene name, from redacted (scene_chars) and old (scene) records alike', () => {
     const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
     const long = 'Interview guest cam with a very long name';

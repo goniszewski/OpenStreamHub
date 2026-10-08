@@ -131,6 +131,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 - [macOS profile](examples/profiles/macos.json): knob and dial captures.
 - [All-module profile](examples/profiles/all-modules.json): also covers keys, faders, and rollers.
 - [OBS scenes profile](examples/profiles/obs-scenes.json): knob presses that switch OBS scenes, alone and in a multi-action.
+- [OBS outputs profile](examples/profiles/obs-outputs.json): the virtual camera and replay buffer, alone and in a multi-action.
 
 ## Contributing
 

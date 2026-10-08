@@ -32,7 +32,15 @@
     {"type":"timer","seconds":86400,"label":"Stream break \" `id` $(id)","sound":"none"},
     {"type":"obs_scene","scene":"Starting soon"},
     {"type":"obs_scene","scene":"Zażółć 🎥 \"Live\""},
-    {"type":"multi_action","actions":[{"type":"obs_scene","scene":"Live"},{"type":"toggle_mute"}]}
+    {"type":"multi_action","actions":[{"type":"obs_scene","scene":"Live"},{"type":"toggle_mute"}]},
+    {"type":"obs_virtual_camera","op":"toggle"},
+    {"type":"obs_virtual_camera","op":"start"},
+    {"type":"obs_virtual_camera","op":"stop"},
+    {"type":"obs_replay_buffer","op":"toggle"},
+    {"type":"obs_replay_buffer","op":"start"},
+    {"type":"obs_replay_buffer","op":"stop"},
+    {"type":"obs_replay_buffer","op":"save"},
+    {"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"save"},{"type":"obs_virtual_camera","op":"stop"}]}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -76,6 +84,14 @@
     {"type":"obs_scene","scene":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
     {"type":"obs_scene","scene":"Live","endpoint":"127.0.0.1:4455"},
     {"type":"obs_scene","scene":"Live","password":"secret"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":""}]}
+    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":""}]},
+    {"type":"obs_virtual_camera"},
+    {"type":"obs_virtual_camera","op":"save"},
+    {"type":"obs_virtual_camera","op":"Toggle"},
+    {"type":"obs_virtual_camera","op":null},
+    {"type":"obs_virtual_camera","op":"toggle","endpoint":"127.0.0.1:4455"},
+    {"type":"obs_replay_buffer"},
+    {"type":"obs_replay_buffer","op":"pause"},
+    {"type":"obs_replay_buffer","op":"save","password":"secret"}
   ]
 }

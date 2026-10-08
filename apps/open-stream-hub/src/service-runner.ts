@@ -152,6 +152,8 @@ function describeAction(action: unknown): string {
     case 'timer': return `timer ${typeof action.seconds === 'number' ? timerDuration(action.seconds) : '?'}`;
     // Only the name's length: the service logs `scene_chars`, older records the name itself.
     case 'obs_scene': return `OBS scene (${typeof action.scene_chars === 'number' ? action.scene_chars : (typeof action.scene === 'string' ? [...action.scene].length : 0)} characters)`;
+    // The op is a closed word (toggle, start, stop, save), never user text.
+    case 'obs_virtual_camera': case 'obs_replay_buffer': return `${action.type === 'obs_virtual_camera' ? 'OBS virtual camera' : 'OBS replay buffer'} ${str(action.op) ?? '?'}`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

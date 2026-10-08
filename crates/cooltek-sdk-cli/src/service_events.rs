@@ -1080,6 +1080,18 @@ mod tests {
         for (action, logged) in [
             (scene, json!({"type":"obs_scene","scene_chars":4})),
             (
+                Action::ObsVirtualCamera {
+                    op: cooltek_sdk_service::ObsOutputOp::Toggle,
+                },
+                json!({"type":"obs_virtual_camera","op":"toggle"}),
+            ),
+            (
+                Action::ObsReplayBuffer {
+                    op: cooltek_sdk_service::ObsReplayBufferOp::Save,
+                },
+                json!({"type":"obs_replay_buffer","op":"save"}),
+            ),
+            (
                 multi,
                 json!({"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene_chars":4}]}),
             ),

@@ -14,7 +14,7 @@ const idleRunner = () => idleServiceState;
 
 export const obsPasswordNote = 'The password is kept only in memory while OpenStreamHub is open, so enter it again after you restart the app. It is never saved to disk, to a profile, to logs or diagnostics, and it is passed to the service privately, not as a command-line argument. Use a long random OBS password: while OBS is closed, another program on this Mac could pose as OBS and try to guess a weak one.';
 
-// Settings panel for obs_scene actions: a loopback OBS WebSocket endpoint and an in-memory password. Off by default.
+// Settings panel for the OBS actions (obs_scene, obs_virtual_camera, obs_replay_buffer): a loopback OBS WebSocket endpoint and an in-memory password. Off by default.
 export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; runner?: { subscribe(listener: () => void): () => void; getState(): ServiceStoreState } }) {
   const state = useSyncExternalStore(store?.subscribe ?? noopSubscribe, store?.getState ?? idle, store?.getState ?? idle);
   const runs = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner).runs;
@@ -32,8 +32,8 @@ export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; 
 
   return <section className="panel obs-settings-panel" aria-labelledby="obs-settings-title">
     <h2 id="obs-settings-title">OBS Studio</h2>
-    <label className="setting-toggle"><input type="checkbox" checked={enabled} disabled={off} aria-describedby="obs-settings-applies" onChange={event => { void store?.setEnabled(event.target.checked); }} />Let “Switch OBS scene” actions connect to OBS on this Mac</label>
-    <p className="fine-print">Uses the WebSocket server built into OBS 28 and later (Tools › WebSocket Server Settings). Each action opens one short connection to {obsEndpoint(state.settings)}, switches the program scene and closes it. Only this Mac is allowed; the address is a setting of this app and never part of a profile. Off by default.</p>
+    <label className="setting-toggle"><input type="checkbox" checked={enabled} disabled={off} aria-describedby="obs-settings-applies" onChange={event => { void store?.setEnabled(event.target.checked); }} />Let OBS actions (scenes, virtual camera, replay buffer) connect to OBS on this Mac</label>
+    <p className="fine-print">Uses the WebSocket server built into OBS 28 and later (Tools › WebSocket Server Settings). Each action opens one short connection to {obsEndpoint(state.settings)}, sends its request (switch the program scene, toggle the virtual camera, save the replay buffer) and closes it. Only this Mac is allowed; the address is a setting of this app and never part of a profile. Off by default.</p>
     <div className="obs-endpoint-fields">
       <label htmlFor="obs-host">Host</label>
       <SelectField id="obs-host" value={host} disabled={off} onChange={event => { void store?.setHost(event.target.value as ObsHost); }}>

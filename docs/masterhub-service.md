@@ -23,7 +23,7 @@ Validation checks the entire profile before printing `profile_valid`. Replay acc
 
 Schema-2 profiles add [nested keypad folders](masterhub-keypad-folders.md); see the [example profile](../examples/profiles/keypad-folders.json). Validation counts actions across all pages. Replay routes key events through a stateful `ProfileSession` and reports navigation separately from planned host actions. A folder's top-left Back key returns one level, with a generated `L1`–`L8` badge in the desktop editor. Key releases retain the page where the press began.
 
-Live M4315 runs reject schema-2 keypad profiles before opening the selected device unless the experimental `--display-sync` opt-in (run once on a real M4315; the dial path is hardware-unverified) is given (see [keypad display sync](#keypad-display-sync-experimental)). The same opt-in with `--dial-content` draws the M131E dial screen (see [dial display sync](#dial-display-sync-experimental)). Other modules can use their flat bindings from the same profile. Schema-1 live input retains its existing behavior.
+Live M4315 runs reject schema-2 keypad profiles before opening the selected device unless the experimental `--display-sync` opt-in (run once on a real M4315 and once on a real M131E) is given (see [keypad display sync](#keypad-display-sync-experimental)). The same opt-in with `--dial-content` draws the M131E dial screen (see [dial display sync](#dial-display-sync-experimental)). Other modules can use their flat bindings from the same profile. Schema-1 live input retains its existing behavior.
 
 Replay streams reports and planned bindings as they are read. An invalid or truncated capture, missing footer, or transport-error footer produces a failing exit status even when earlier output was emitted. Check the exit status and final `service_end` before treating the stream as a complete session.
 
@@ -124,7 +124,7 @@ Each sync writes one `display_sync` record (`schema_version` 1), logged by the a
 
 ### Dial display sync (experimental)
 
-`--display-sync --dial-content <off|function|clock|analog-clock|cpu>` draws the M131E dial screen. It is off by default and **hardware-unverified**, like the keypad path.
+`--display-sync --dial-content <off|function|clock|analog-clock|cpu>` draws the M131E dial screen. It is off by default. All four faces ran on a real M131E on 8 October 2026 and were legible and upright; function cycling and long-run behavior are unverified (see the [hardware results](masterhub-hardware-results.md#m131e-dial)).
 
 ```sh
 cargo run -p cooltek-sdk-cli --bin masterhub-service -- \

@@ -823,7 +823,7 @@ fn run_service(
     // session; the driver then ignores that process's requests.
     let profile_switch_requests =
         sessions.is_some() && service::uses_profile_action(&request.profile);
-    // Experimental display flags, only for a session-managed process and from
+    // Display flags, only for a session-managed process and from
     // the settings its session started with (never the current setting).
     let display_args = display::spawn_args(sessions.is_some(), request);
     // One forwarder per spawn: nothing of this process reaches the driver
@@ -1099,8 +1099,9 @@ fn set_focus_rules_enabled(
         .update(|rules| Ok(focus::FocusRules { enabled, ..rules }))
 }
 
-// Experimental display images (`display.rs`). Off by default. A change
-// applies at the next Start; running sessions keep the value they started with.
+// Module control and the dial content (`display.rs`). App by default. A
+// change applies at the next Start; running sessions keep the value they
+// started with.
 #[tauri::command]
 fn display_settings(state: State<'_, AppState>) -> Result<display::DisplaySettings, String> {
     state.display.get()

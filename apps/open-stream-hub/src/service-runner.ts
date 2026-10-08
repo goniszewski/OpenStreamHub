@@ -68,7 +68,7 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' };
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
 
 // The process a run has now. A session owns only its current process's path, never the path its name came from.

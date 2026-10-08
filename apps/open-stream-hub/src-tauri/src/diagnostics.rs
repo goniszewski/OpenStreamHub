@@ -1725,7 +1725,10 @@ mod tests {
         })
         .unwrap();
         let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
-        assert_eq!(bundle.value["profile"]["bindings"][0]["action"]["name"], "<4 chars>");
+        assert_eq!(
+            bundle.value["profile"]["bindings"][0]["action"]["name"],
+            "<4 chars>"
+        );
         assert_eq!(
             bundle.value["profile"]["bindings"][0]["label"],
             "OBS profile “<4 chars>”: Switch"

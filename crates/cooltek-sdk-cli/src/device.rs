@@ -30,6 +30,11 @@ pub fn parse_path(raw: &str) -> Result<DevicePath, String> {
     Ok(DevicePath(bytes))
 }
 
+/// The path is not (or not yet) in this process's device inventory, for
+/// example while a module is still enumerating after a replug or wake.
+pub const NOT_IN_INVENTORY: &str =
+    "device path is not in the current inventory; run `masterhub-diag list` again";
+
 /// Selects exactly one inventory entry by path; software mode requires an IPS module.
 pub fn select_device<'a>(
     devices: &'a [ModuleIdentity],
@@ -39,9 +44,7 @@ pub fn select_device<'a>(
     let mut matches = devices
         .iter()
         .filter(|device| device.path.as_bytes() == path);
-    let selected = matches
-        .next()
-        .ok_or("device path is not in the current inventory; run `masterhub-diag list` again")?;
+    let selected = matches.next().ok_or(NOT_IN_INVENTORY)?;
     if matches.next().is_some() {
         return Err(
             "device path identifies multiple interfaces; ambiguous selection is unsupported".into(),

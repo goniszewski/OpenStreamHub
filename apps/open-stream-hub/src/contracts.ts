@@ -132,7 +132,8 @@ export interface ServiceRecordPayload { service_id: string; record: unknown }
 // Session manager (sleep/wake and reconnect for service runs). session_id is the first service_id and stays stable.
 export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
 // profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'user' | 'profile_switch' | 'profile_action';
+// start_refused: the service exited with an error before it reported service_start; the session stops without retrying.
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action';
 export interface SessionStatePayload {
   session_id: string; service_id: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number; execute: boolean;
   module: ServiceModule; serial_number: string | null;
@@ -158,11 +159,13 @@ export interface HeldProfile { profile_id: string | null; profile_generation: nu
 // The last app other than OpenStreamHub that was frontmost. supported is false off macOS.
 export interface FocusCurrentApp { supported: boolean; bundle_id: string | null }
 
-// Experimental module display images (display_settings / set_display_settings; stored in
-// <app data>/display-settings.json). Off by default; read once when a profile is started, so a change applies at the
-// next start. dial_content is what the M131E dial shows while enabled.
+// Module control (display_settings / set_display_settings; stored in <app data>/display-settings.json). 'app' (the
+// default) runs the 15-key module and the dial in software mode with their displays in sync; 'built_in_animation'
+// leaves them in the module's own mode. Read once when a profile is started, so a change applies at the next start.
+// dial_content is what the M131E dial shows under 'app'.
 export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu';
-export interface DisplaySettings { enabled: boolean; dial_content: DialContent }
+export type ModuleControl = 'app' | 'built_in_animation';
+export interface DisplaySettings { module_control: ModuleControl; dial_content: DialContent }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.
 // The password is never stored or returned: set_obs_password({ password }) holds it in the app's memory only (null
 // forgets it) and every reply says only whether one is set.

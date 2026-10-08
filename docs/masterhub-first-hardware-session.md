@@ -318,7 +318,7 @@ In the function run, short-click the dial several times, slowly and then quickly
 | Clean exit | Ctrl-C ends the run; `service_end.display_stopped: true`; dial returns to hardware mode; no image is drawn after exit | Gate closed before the hardware-mode restore. |
 | Short writes | Any `failed.short_write: true`? The same face is not resent; the next minute or click redraws | No-retry policy on hardware. |
 
-The same flags can be tried from the desktop app: Settings → **Experimental: send images to module displays**, choose the dial content, then start a profile with **Request device software mode**. The setting applies at the next Start only.
+The desktop app passes the same flags by default: with Settings → **Module control** set to **App** (the default), choose the dial content and start a profile on the module; software mode is requested automatically. The setting applies at the next Start only.
 
 ### Step 7. Live service on real input (READ, plan-only)
 

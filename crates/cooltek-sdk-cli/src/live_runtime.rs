@@ -514,6 +514,10 @@ impl Drop for DisplayThread {
     }
 }
 
+/// Prefix of the error when the action worker never reported ready (it did
+/// not write `service_start` in time). OpenStreamHub treats it as transient.
+pub const WORKER_NOT_READY: &str = "action worker did not become ready";
+
 /// Record error for a sync that panicked.
 const DISPLAY_PANIC: &str = "display sync panicked; display disabled for this run";
 
@@ -1051,7 +1055,7 @@ where
         match ready_rx.recv_timeout(options.startup_timeout) {
             Ok(Ok(())) => {}
             Ok(Err(error)) => return Err(error),
-            Err(error) => return Err(format!("action worker did not become ready: {error}")),
+            Err(error) => return Err(format!("{WORKER_NOT_READY}: {error}")),
         }
         if interrupted.load(Ordering::SeqCst) {
             return Ok("interrupted");

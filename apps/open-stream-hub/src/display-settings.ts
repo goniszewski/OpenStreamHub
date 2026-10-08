@@ -1,12 +1,18 @@
-import type { DialContent, DisplaySettings, Profile, ServiceModule } from './contracts';
+import type { DialContent, DisplaySettings, ModuleControl, Profile, ServiceModule } from './contracts';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
-// The experimental "send images to module displays" setting. Rust stores it (src-tauri/src/display.rs, in
-// <app data>/display-settings.json) and the session manager reads it once when a profile is started. This store only
-// shows and edits it; changing it never touches a running profile.
+// The "Module control" setting and the dial content. Rust stores them (src-tauri/src/display.rs, in
+// <app data>/display-settings.json, which also migrates the earlier experimental toggle) and the session manager reads
+// them once when a profile is started. This store only shows and edits them; changing them never touches a running
+// profile.
 
-export const defaultDisplaySettings: DisplaySettings = { enabled: false, dial_content: 'function' };
+export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', dial_content: 'function' };
+
+export const moduleControlOptions: readonly { value: ModuleControl; label: string }[] = [
+  { value: 'app', label: 'App' },
+  { value: 'built_in_animation', label: 'Built-in animation' },
+];
 
 export const dialContentOptions: readonly { value: DialContent; label: string }[] = [
   { value: 'function', label: 'Active dial function name' },
@@ -18,11 +24,14 @@ export const dialContentOptions: readonly { value: DialContent; label: string }[
 
 const dialArgs: Record<DialContent, string> = { off: 'off', function: 'function', clock: 'clock', analog_clock: 'analog-clock', cpu: 'cpu' };
 
+// The modules "App" module control drives in software mode: the 15-key module and the dial. Mirrors display::app_controls.
+export const appControls = (module: ServiceModule) => module === 'm4315' || module === 'm131e';
+
 // Mirrors display::display_args in Rust: the masterhub-service flags a managed run started with `settings` gets.
-// Nothing unless the setting is on and the run requests software mode; the 15-key module only for a schema-2 keypad
+// Nothing unless module control is App and the run is in software mode; the 15-key module only for a schema-2 keypad
 // profile; the dial unless its content is off.
 export function displayFlags(settings: DisplaySettings, module: ServiceModule, softwareMode: boolean, profile: Profile): string[] {
-  if (!settings.enabled || !softwareMode) return [];
+  if (settings.module_control !== 'app' || !softwareMode) return [];
   if (module === 'm4315' && profile.schema_version === 2 && profile.keypad !== undefined) return ['--display-sync'];
   if (module === 'm131e' && settings.dial_content !== 'off') return ['--display-sync', '--dial-content', dialArgs[settings.dial_content]];
   return [];
@@ -31,7 +40,8 @@ export function displayFlags(settings: DisplaySettings, module: ServiceModule, s
 export function isDisplaySettings(value: unknown): value is DisplaySettings {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).length === 2 && typeof record.enabled === 'boolean'
+  return Object.keys(record).length === 2
+    && moduleControlOptions.some(option => option.value === record.module_control)
     && dialContentOptions.some(option => option.value === record.dial_content);
 }
 
@@ -54,7 +64,7 @@ export class DisplaySettingsStore {
     this.listeners.forEach(listener => listener());
   }
 
-  // Until a reply arrives (or when it is unreadable), the shown value stays off.
+  // Until a reply arrives (or when it is unreadable), the shown value stays the default; the backend decides at Start.
   private async run(command: string, args?: Record<string, unknown>): Promise<boolean> {
     if (!this.state.desktop) return false;
     this.set({ busy: true });
@@ -71,7 +81,7 @@ export class DisplaySettingsStore {
 
   load() { return this.run('display_settings'); }
   save(settings: DisplaySettings) { return this.run('set_display_settings', { settings }); }
-  setEnabled(enabled: boolean) { return this.save({ ...this.state.settings, enabled }); }
+  setModuleControl(moduleControl: ModuleControl) { return this.save({ ...this.state.settings, module_control: moduleControl }); }
   setDialContent(dialContent: DialContent) { return this.save({ ...this.state.settings, dial_content: dialContent }); }
   dismissError() { this.set({ error: null }); }
 }

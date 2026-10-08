@@ -648,9 +648,9 @@ fn dial_function_preview_matches_the_shared_fixture() {
 
 #[test]
 fn display_settings_payloads_match_the_shared_fixture() {
-    use crate::display::{DialContent, DisplaySettings};
+    use crate::display::{DialContent, DisplaySettings, ModuleControl};
     let chosen = DisplaySettings {
-        enabled: true,
+        module_control: ModuleControl::BuiltInAnimation,
         dial_content: DialContent::AnalogClock,
     };
     let args = json!({ "settings": chosen });
@@ -664,6 +664,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "set_display_settings_args": args,
             "set_display_settings_result": chosen,
             "dial_contents": DialContent::ALL,
+            "module_controls": [ModuleControl::App, ModuleControl::BuiltInAnimation],
         }),
     );
 }

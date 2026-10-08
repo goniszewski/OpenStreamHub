@@ -294,6 +294,20 @@ describe('session manager', () => {
       'Reconnecting (attempt 2/5)', 'Reconnected', 'Session stopped: the service exited (crashed)']);
     expect(run(t).entries.at(-1)!.kind).toBe('error');
   });
+  it('a refused start ends the run once, without reconnect attempts or the service sentence', async () => {
+    const t = await started();
+    const raw = 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings';
+    const friendly = 'This profile\'s 15-key pages run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App, then start the profile again.';
+    t.status('exited', { exit_code: 1, stderr_tail: `${raw}\n` });
+    session(t, 'stopped', { service_id: null, reason: 'start_refused', detail: friendly });
+    const entries = texts(t);
+    expect(entries.filter(text => text.startsWith('Session stopped'))).toEqual([`Session stopped: the profile could not start (${friendly})`]);
+    expect(entries.some(text => text.startsWith('Reconnecting'))).toBe(false);
+    expect(entries.join('\n')).not.toContain('--display-sync');
+    expect(run(t).entries.at(-1)!.kind).toBe('error');
+    expect(run(t).state).toBe('exited');
+    expect(run(t).session).toMatchObject({ phase: 'stopped', reason: 'start_refused', attempt: 0, detail: friendly });
+  });
   it('logs a user stop as info and unplug as stopped reason', async () => {
     const t = await started();
     session(t, 'stopped', { service_id: null, reason: 'user' });

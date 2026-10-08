@@ -39,7 +39,7 @@ and sleep/wake recovery still require hardware validation.**
 
 Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac. See [Privacy and telemetry](#privacy-and-telemetry).
 A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
-Sending images to a module display is off by default, because display behavior has only been checked on one M4315. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, digital or analog clock, or CPU usage on the encoder's screen); both parts have run once on real hardware: the keypad on an M4315 (folders and Back worked) and the dial faces on an M131E.
+By default the app controls the 15-key module and the encoder dial whenever a profile runs on them: it puts them in software mode (without it their keys and dial send no input) and draws placeholder key images and folder pages on the keypad (for profiles with 15-key pages; nothing is drawn for a flat profile) and a dial function name, digital or analog clock, or CPU usage on the encoder's screen. **Module control** in Settings switches this to **Built-in animation**, which leaves both modules in their own mode. Both parts have run on real hardware, the keypad on one M4315 (folders and Back worked) and the dial faces on one M131E; only keys 0 to 2 were confirmed to line up between input and display, and redraw latency has not been timed ([hardware results](docs/masterhub-hardware-results.md)).
 For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
 and [protocol evidence table](docs/masterhub-protocol-evidence.md).
 
@@ -112,7 +112,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | [Action catalogue](docs/masterhub-actions.md) | Every action, its limits and permissions, including `profile`, `timer` and `obs_scene` |
 | [Dial functions](docs/masterhub-dial-functions.md) | Short click cycles the dial's functions; long press and rotation run the current one |
 | [Hardware results](docs/masterhub-hardware-results.md) | What was observed on a real unit (8 October 2026), module by module, and what was not |
-| [Display sync](docs/masterhub-display-sync.md) | Experimental key images and dial faces (each run once on real hardware) |
+| [Display sync](docs/masterhub-display-sync.md) | Key images and dial faces, on by default in the app (each run on one real module) |
 | [macOS smoke checks](docs/masterhub-macos-smoke.md) | Device-free audio and scratch-keystroke checks |
 | [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |
 | [Windows parity tracker](docs/windows-parity-gaps.md) | Gaps against the official Windows application |

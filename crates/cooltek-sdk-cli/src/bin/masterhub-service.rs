@@ -395,7 +395,7 @@ fn check_display_sync(
 
 // Folder pages need display updates before their mappings can be used live, so
 // a schema-2 M4315 run is refused unless --display-sync opts in to the
-// experimental, hardware-unverified display path.
+// display path (OpenStreamHub passes it with Module control set to App).
 // Other modules can retain their existing flat bindings from the same profile.
 // Dial functions are accepted live; the dial screen shows the current function
 // only with the experimental --display-sync --dial-content function. A short
@@ -421,7 +421,7 @@ fn live_bindings(
     if profile.schema_version == 2 {
         if module == ServiceModule::M4315 {
             if !display_sync {
-                return Err("nested keypad profiles run live only with the experimental --display-sync opt-in; in OpenStreamHub, turn on module display images in Settings and start a session with this profile and software mode (a session started without display images cannot switch into one)".into());
+                return Err(cooltek_sdk_cli::service_events::NESTED_KEYPAD_REFUSAL.into());
             }
             return ProfileSession::new(profile);
         }
@@ -638,7 +638,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             error,
-            "nested keypad profiles run live only with the experimental --display-sync opt-in; in OpenStreamHub, turn on module display images in Settings and start a session with this profile and software mode (a session started without display images cannot switch into one)"
+            "nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings"
         );
     }
 

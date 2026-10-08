@@ -208,6 +208,9 @@ describe('3-knob module wording', () => {
     expect(moduleNote('m005s')).toBe('Control positions will be checked with the device.');
     const rows = renderToStaticMarkup(<CompatibilityPage />).match(/<tr>.*?<\/tr>/g) ?? [];
     expect(rows.find(row => row.includes('3x Knob'))).toContain('<td>Input verified</td>');
-    expect(rows.filter(row => row.includes('<td>Unverified</td>'))).toHaveLength(modules.length - 1);
+    // The 15-key module and the dial: what one module each showed on hardware, nothing more.
+    expect(rows.filter(row => row.includes('<td>Input and key images verified on one module (software mode)</td>'))).toHaveLength(1);
+    expect(rows.filter(row => row.includes('<td>Input and dial faces verified on one module (software mode)</td>'))).toHaveLength(1);
+    expect(rows.filter(row => row.includes('<td>Unverified</td>'))).toHaveLength(modules.length - 3);
   });
 });

@@ -59,7 +59,7 @@ The workflow exports these to the job environment only if **all six** are non-em
 - **Notifications and sounds.** A timer runs `/usr/bin/osascript` (`display notification`) and `/usr/bin/afplay`. Whether macOS shows the notification, and for which application it asks, is unverified on a real Mac; the service logs `timer_alert_warning` when it is refused.
 - **Accessibility and Automation.** Shortcut, text and undo/redo actions drive System Events through `osascript`. Whether a hardened-runtime build also needs `com.apple.security.automation.apple-events` and an `NSAppleEventsUsageDescription` string for the Automation prompt to appear has not been checked; do not claim it either way until a signed build has been tried.
 - **Input Monitoring.** Reading HID input may need it for the launching application (see the [first hardware session](masterhub-first-hardware-session.md), step 8).
-- **CPU usage.** The `cpu` dial face calls the Mach `host_processor_info` function in-process, which needs no permission or entitlement; it is only drawn behind the experimental display setting.
+- **CPU usage.** The `cpu` dial face calls the Mach `host_processor_info` function in-process, which needs no permission or entitlement; it is drawn only when the dial screen is set to CPU usage (Settings > Module control, App).
 
 Record the outcome of each in the first signed run and update this list.
 

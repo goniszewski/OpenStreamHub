@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { Profile } from './contracts';
+import type { DisplaySettings, LiveDevice, ModuleControl, Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, dialogCopy, displayRunNote, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
@@ -22,15 +22,20 @@ describe('platform and blockers', () => {
     expect(isMacPlatform({ platform: 'Win32', userAgent: 'Windows' })).toBe(false);
     expect(isMacPlatform(undefined)).toBe(false);
   });
-  it('refuses nested keypad profiles on the 15-key module only', () => {
-    expect(hasKeypadFolders(nested)).toBe(true);
-    expect(hasKeypadFolders(flat)).toBe(false);
-    expect(runBlocker({ desktop: true, device: keypad, profile: nested })).toContain('folders');
-    // The experimental display setting lifts the refusal only together with software mode.
-    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: true, softwareMode: true })).toBeNull();
-    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: true, softwareMode: false })).toContain('Request device software mode');
-    expect(runBlocker({ desktop: true, device: keypad, profile: nested, displayEnabled: false, softwareMode: true })).toContain('Settings');
-    expect(runBlocker({ desktop: true, device: dial, profile: nested })).toBeNull();
+  it('refuses paged keypad profiles on the 15-key module only with Built-in animation', () => {
+    // App module control (the default) runs them with display sync.
+    expect(runBlocker({ desktop: true, device: keypad, profile: nested })).toBeNull();
+    expect(runBlocker({ desktop: true, device: keypad, profile: nested, moduleControl: 'app' })).toBeNull();
+    // Built-in animation names the setting, never the service's flag. Any schema-2 profile, with or without folders,
+    // is refused, exactly as the service refuses it.
+    const blocker = runBlocker({ desktop: true, device: keypad, profile: nested, moduleControl: 'built_in_animation' });
+    expect(blocker).toBe(builtInKeypadBlocker);
+    expect(blocker).toContain('Module control');
+    expect(blocker).not.toContain('--display-sync');
+    const pagedWithoutFolders: Profile = { ...nested, keypad: { pages: [emptyKeypadPage()] } };
+    expect(runBlocker({ desktop: true, device: keypad, profile: pagedWithoutFolders, moduleControl: 'built_in_animation' })).toBe(builtInKeypadBlocker);
+    expect(runBlocker({ desktop: true, device: dial, profile: nested, moduleControl: 'built_in_animation' })).toBeNull();
+    expect(runBlocker({ desktop: true, device: keypad, profile: flat, moduleControl: 'built_in_animation' })).toBeNull();
     expect(runBlocker({ desktop: true, device: keypad, profile: flat })).toBeNull();
     expect(runBlocker({ desktop: true, device: undefined, profile: flat })).toContain('No module');
     expect(runBlocker({ desktop: false, device: dial, profile: flat })).toContain('desktop app');
@@ -59,6 +64,17 @@ const setRun = (runner: ServiceRunner, patch: Record<string, unknown>) => {
 };
 const render = (props: Partial<Parameters<typeof ServicePanel>[0]> & { feed?: DeviceFeed; runner?: ServiceRunner }) =>
   renderToStaticMarkup(<ServicePanel profile={flat} desktop unsaved={false} platform={mac} now={2000} {...props} />);
+// The idle Run panel for `device` with Module control `control` (loaded unless `state` says otherwise).
+function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, state: { loaded?: boolean; error?: string | null } = {}) {
+  const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
+  (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
+  const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
+  const settings: DisplaySettings = { module_control: control, dial_content: 'function' };
+  const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
+  (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
+  return render({ feed, runner, profile, displaySettings });
+}
+const runDisabled = /<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run</s;
 
 describe('ServicePanel markup', () => {
   it('shows an unmistakable banner while executing', () => {
@@ -138,24 +154,75 @@ describe('ServicePanel markup', () => {
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Execute actions</);
     expect(markup).toContain('only available on macOS');
   });
-  it('disables Run with the m4315 reason', () => {
-    const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
-    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [keypad] };
-    const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-    const markup = render({ feed, runner, profile: nested });
-    expect(markup).toContain('keypad folders');
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run</s);
+  it('disables Run with the Module control reason for a paged profile on the 15-key module', () => {
+    const markup = panelFor(keypad, 'built_in_animation', nested);
+    expect(markup).toContain(builtInKeypadBlocker);
+    expect(markup).toContain('Module control in Settings is set to Built-in animation');
+    expect(markup).not.toContain('--display-sync');
+    expect(markup).toMatch(runDisabled);
+    // App control runs it.
+    expect(panelFor(keypad, 'app', nested)).not.toContain(builtInKeypadBlocker);
   });
-  it('with the display setting on, asks for software mode instead of refusing keypad folders', () => {
+  it('locks software mode on for the 15-key module and the dial under App control only', () => {
+    const softwareBox = (markup: string) => markup.match(/<input type="checkbox"[^>]*>Request device software mode/)?.[0] ?? '';
+    for (const device of [keypad, dial]) {
+      // App: ticked, disabled and explained.
+      const app = panelFor(device, 'app', flat);
+      expect(softwareBox(app)).toMatch(/checked=""/);
+      expect(softwareBox(app)).toMatch(/disabled=""/);
+      expect(softwareBox(app)).toContain('aria-describedby="service-app-control"');
+      expect(app).toContain(appControlNote);
+      // Built-in animation: the user's own choice, off by default, as before.
+      const builtIn = panelFor(device, 'built_in_animation', flat);
+      expect(softwareBox(builtIn)).not.toMatch(/checked=""/);
+      expect(softwareBox(builtIn)).not.toMatch(/disabled=""/);
+      expect(builtIn).not.toContain(appControlNote);
+    }
+    // Knobs, faders and rollers have no software mode: the box is off and locked whatever the setting.
+    for (const module of ['m003k', 'm005s', 'm032le'] as const) {
+      for (const control of ['app', 'built_in_animation'] as const) {
+        const markup = panelFor({ ...dial, module }, control, flat);
+        expect(softwareBox(markup)).not.toMatch(/checked=""/);
+        expect(softwareBox(markup)).toMatch(/disabled=""/);
+        expect(markup).not.toContain(appControlNote);
+      }
+    }
+  });
+  it('sends what the user ticked, never the App value the panel shows', () => {
+    for (const module of ['m4315', 'm131e'] as const) {
+      for (const ticked of [false, true]) {
+        // App, loaded: shown ticked and locked, but the request carries the user's own choice.
+        expect(softwareModeBox({ module, loaded: true, moduleControl: 'app', ticked })).toEqual({ appDriven: true, requested: ticked, checked: true, locked: true });
+        expect(softwareModeBox({ module, loaded: true, moduleControl: 'built_in_animation', ticked })).toEqual({ appDriven: false, requested: ticked, checked: ticked, locked: false });
+        // Not loaded (or failed to load): the default App value is never shown or sent as App.
+        expect(softwareModeBox({ module, loaded: false, moduleControl: 'app', ticked })).toEqual({ appDriven: false, requested: ticked, checked: ticked, locked: true });
+      }
+    }
+    for (const module of ['m003k', 'm005s', 'm032le', undefined] as const) {
+      for (const moduleControl of ['app', 'built_in_animation'] as const) {
+        expect(softwareModeBox({ module, loaded: true, moduleControl, ticked: true })).toEqual({ appDriven: false, requested: false, checked: false, locked: true });
+      }
+    }
+  });
+  it('keeps Run disabled until the Module control setting is read, and names a setting that cannot be read', () => {
+    for (const device of [keypad, dial, { ...dial, module: 'm003k' as const }]) {
+      const loading = panelFor(device, 'app', flat, { loaded: false });
+      expect(loading).toContain(settingsLoadingBlocker);
+      expect(loading).toMatch(runDisabled);
+      expect(loading).not.toContain(appControlNote);
+      expect(loading.match(/<input type="checkbox"[^>]*>Request device software mode/)?.[0]).not.toMatch(/checked=""/);
+      const failed = panelFor(device, 'app', flat, { loaded: false, error: 'display settings in /x/display-settings.json are unreadable.' });
+      expect(failed).toContain(settingsErrorBlocker('display settings in /x/display-settings.json are unreadable.'));
+      expect(failed).toContain('could not be read');
+      expect(failed).toMatch(runDisabled);
+      expect(failed).not.toContain(appControlNote);
+    }
+    // No settings store at all (never loaded): Run stays off too.
     const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
-    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [keypad] };
-    const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-    const displaySettings = new DisplaySettingsStore(async <T,>() => ({ enabled: true, dial_content: 'function' }) as T, true);
-    (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings: { enabled: true, dial_content: 'function' } };
-    const markup = renderToStaticMarkup(<ServicePanel runner={runner} feed={feed} profile={nested} desktop unsaved={false} platform={mac} now={2000} displaySettings={displaySettings} />);
-    expect(markup).toContain('turn on &quot;Request device software mode&quot; below');
-    // Software mode is off by default, so nothing would be sent yet.
-    expect(markup).not.toContain(displayRunNote);
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
+    expect(render({ feed, runner: new ServiceRunner(async () => undefined as never, async () => () => {}, true) })).toMatch(runDisabled);
+    expect(runBlocker({ desktop: true, device: dial, profile: flat, settingsLoaded: false, settingsError: null })).toBe(settingsLoadingBlocker);
+    expect(runBlocker({ desktop: true, device: dial, profile: flat, settingsLoaded: true, moduleControl: 'app' })).toBeNull();
   });
   it('is disabled in the browser preview', () => {
     const markup = render({ desktop: false });
@@ -224,6 +291,17 @@ describe('session banners', () => {
     expect(markup).toContain('HID read failed');
     expect(markup).not.toContain(liveBanner);
     expect(markup).not.toContain('>Stop<');
+    expect(markup).toContain('>Run<');
+  });
+  it('a refused start shows its plain reason once, with no reconnect banner or raw service output', () => {
+    const detail = 'This profile\'s 15-key pages run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App, then start the profile again.';
+    const { feed, runner } = sessionFor('stopped', { reason: 'start_refused', detail });
+    setRun(runner, { state: 'exited', exitCode: 1, stderrTail: 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings' });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Session stopped: the profile could not start');
+    expect(markup.split('Module control in Settings is set to Built-in animation').length).toBe(2);
+    expect(markup).not.toContain('Reconnecting');
+    expect(markup).not.toContain('--display-sync');
     expect(markup).toContain('>Run<');
   });
   it('keeps showing the session when no device is connected', () => {

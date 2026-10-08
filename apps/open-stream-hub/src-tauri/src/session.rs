@@ -37,11 +37,18 @@
 //! refused; a profile key skips it). An executing session restarts its
 //! process only through `resume_session` (or its first Start), so every
 //! restart with actions is checked. Dry runs are unaffected.
+//! Crashes of a process that had started back off and retry (1, 2, 4, 8,
+//! 8 s, then stop). A setup refusal does not: a process that exits with a
+//! nonzero code before it wrote `service_start` (bad profile, refused flag
+//! combination, unusable stdout, ...) while its module is still in the
+//! inventory ends the session at once as `start_refused`, with the reason
+//! shown once. A module that is merely not available yet (the service could
+//! not find its path or HIDAPI could not open it) keeps the retry.
 //! See `docs/masterhub-session-manager.md`, `docs/masterhub-focus-rules.md`
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
-    display::{DisplayLaunch, DisplaySettings},
+    display::{self, DisplayLaunch, DisplaySettings},
     feed::LiveDevice,
     import_flags::ExecutionGuard,
     power::PowerEvent,
@@ -137,6 +144,9 @@ pub enum Reason {
     Sleep,
     DeviceRemoved,
     ServiceExited,
+    /// The service refused to start (it exited with an error before its
+    /// `service_start` record). Retrying cannot help, so the session stops.
+    StartRefused,
     User,
     /// A focused-app rule replaced the session's profile.
     ProfileSwitch,
@@ -174,6 +184,10 @@ pub struct SessionState {
 pub enum Event {
     /// The process requested by `StartService` was spawned.
     Started {
+        service_id: String,
+    },
+    /// The process wrote its `service_start` record: setup is done.
+    Ready {
         service_id: String,
     },
     Suspend,
@@ -219,6 +233,9 @@ struct Process {
     started_ms: u64,
     /// `Started` was seen; false while a requested start is in flight.
     running: bool,
+    /// `Ready` was seen: the service wrote `service_start`, so an exit is
+    /// no longer a setup refusal.
+    ready: bool,
     /// Stopped on purpose (sleep, user); its exit is not a crash.
     stopping: bool,
 }
@@ -257,18 +274,57 @@ fn blank_to_none(serial: Option<&str>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The last nonblank stderr line, bounded, or the exit status when empty.
-fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
+/// The last nonblank stderr line.
+fn last_line(stderr_tail: &str) -> Option<&str> {
     stderr_tail
         .lines()
         .rev()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .map(|line| line.chars().take(DETAIL_CHARS).collect())
-        .unwrap_or_else(|| match exit_code {
+}
+
+/// The service's refusal of a schema-2 keypad profile without display sync.
+const NESTED_KEYPAD_REFUSAL: &str = "nested keypad profiles run live only with";
+
+/// The last nonblank stderr line, bounded, or the exit status when empty. The
+/// service's nested keypad refusal is replaced by a sentence that names the
+/// Module control setting instead of its command-line flag.
+fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
+    match last_line(stderr_tail) {
+        Some(line) if line.contains(NESTED_KEYPAD_REFUSAL) => {
+            display::BUILT_IN_KEYPAD_REFUSAL.into()
+        }
+        Some(line) => line.chars().take(DETAIL_CHARS).collect(),
+        None => match exit_code {
             Some(code) => format!("exit code {code}"),
             None => "ended by a signal".into(),
-        })
+        },
+    }
+}
+
+/// Pre-start errors that mean the module, HIDAPI or the service's own
+/// startup is not (yet) available rather than that the run is refused. Each
+/// is pinned to the service's real text by
+/// `transient_errors_match_the_service_text`.
+const TRANSIENT_ERRORS: [&str; 5] = [
+    // The path is not in the service's own inventory: the module is still
+    // enumerating after a replug or wake.
+    "device path is not in the current inventory",
+    // HIDAPI could not open the device (`HidError::HidApiError`).
+    "hidapi error",
+    // HIDAPI itself could not start (`HidError::InitializationError`).
+    "Failed to initialize hidapi",
+    // The action worker did not report ready in time.
+    "action worker did not become ready",
+    // Writing a record, such as `service_start` itself, failed or timed out.
+    "service log write failed",
+];
+
+/// Whether a pre-start exit was transient (see `TRANSIENT_ERRORS`). Those keep
+/// the reconnect backoff.
+fn device_unavailable(stderr_tail: &str) -> bool {
+    last_line(stderr_tail)
+        .is_some_and(|line| TRANSIENT_ERRORS.iter().any(|error| line.contains(error)))
 }
 
 impl Session {
@@ -300,6 +356,7 @@ impl Session {
                 service_id,
                 started_ms: now_ms,
                 running: true,
+                ready: false,
                 stopping: false,
             }),
             inventory,
@@ -424,6 +481,14 @@ impl Session {
                     process.started_ms = now_ms;
                 }
             }
+            Event::Ready { service_id } => {
+                if let Some(process) = &mut self.service
+                    && process.service_id == service_id
+                    && process.running
+                {
+                    process.ready = true;
+                }
+            }
             Event::Suspend if !stopped => {
                 self.asleep = true;
                 self.settle_until = None;
@@ -446,6 +511,23 @@ impl Session {
                     return;
                 }
                 self.confirmed = false;
+                // A setup refusal: the process exited with an error before it
+                // wrote `service_start`, while its module is still present
+                // and was not merely unavailable. The same arguments would be
+                // refused again, so the session ends at once (an executing
+                // one too: nothing ran).
+                if process.running
+                    && !process.ready
+                    && exit_code.is_some_and(|code| code != 0)
+                    && self.find_device().is_ok()
+                    && !device_unavailable(&stderr_tail)
+                {
+                    self.phase = Phase::Stopped;
+                    self.reason = Some(Reason::StartRefused);
+                    self.detail = Some(exit_detail(exit_code, &stderr_tail));
+                    self.retry_at = None;
+                    return;
+                }
                 if process.running && now_ms.saturating_sub(process.started_ms) >= STABLE_RUN_MS {
                     self.attempt = 0;
                 }
@@ -572,6 +654,7 @@ impl Session {
                                 service_id: format!("service:{}", self.path_hex),
                                 started_ms: now_ms,
                                 running: false,
+                                ready: false,
                                 stopping: false,
                             });
                             actions.push(Action::StartService {
@@ -637,10 +720,11 @@ pub trait Runner {
     fn load_saved(&mut self, _id: &str) -> Result<Profile, String> {
         Err("no saved profiles".into())
     }
-    /// The experimental display settings a session started now keeps for its
-    /// whole life. Read once per user Start; off when unreadable.
+    /// The module control and display settings a session started now keeps
+    /// for its whole life. Read once per user Start; built-in animation when
+    /// unreadable.
     fn display_settings(&mut self) -> DisplaySettings {
-        DisplaySettings::default()
+        DisplaySettings::UNREADABLE
     }
     /// The OBS endpoint and in-memory password a session started now keeps
     /// for its whole life. Read once per user Start; `None` when OBS is off
@@ -780,6 +864,14 @@ impl SpawnForwarder {
                     service_id: status.service_id.clone(),
                     exit_code: status.exit_code.flatten(),
                     stderr_tail: status.stderr_tail.clone().unwrap_or_default(),
+                });
+            }
+            service::ServiceMessage::Record(payload)
+                if payload.record.get("type").and_then(|kind| kind.as_str())
+                    == Some("service_start") =>
+            {
+                let _ = self.sessions.send(Input::Ready {
+                    service_id: payload.service_id.clone(),
                 });
             }
             service::ServiceMessage::Record(payload) => {
@@ -956,15 +1048,29 @@ impl<R: Runner> Driver<R> {
         // Read once, here: every later process of this session (wake,
         // reconnect, crash or profile-switch restarts) keeps these display
         // settings, so changing them never alters or restarts a running
-        // session. An unidentified device runs without them.
-        request.display = device.as_ref().map(|device| {
-            DisplayLaunch::at_start(
-                self.runner.display_settings(),
-                device.module,
-                request.software_mode,
-                &request.profile,
-            )
-        });
+        // session. An unidentified device runs without them. With module
+        // control `App` the keypad and the dial always run in software mode;
+        // other modules keep exactly the request they were sent.
+        if let Some(device) = &device {
+            let settings = self.runner.display_settings();
+            // The service would refuse it with its flag's name; say which
+            // setting (or damaged settings file) to fix instead, before
+            // anything is spawned.
+            if let Some(refusal) =
+                display::keypad_refusal(settings, device.module, &request.profile)
+            {
+                return Err(refusal.into());
+            }
+            // Never the frontend's word alone: software mode always for the
+            // keypad and dial under App, the request under built-in
+            // animation, and never for other modules or unreadable settings.
+            request.software_mode =
+                display::software_mode(settings, device.module, request.software_mode);
+            request.display = Some(DisplayLaunch {
+                settings,
+                module: device.module,
+            });
+        }
         // The OBS setting is snapshotted the same way. It does not depend on
         // the module, so an unidentified device's run gets it too.
         request.obs = self.runner.obs_launch();
@@ -1104,6 +1210,14 @@ impl<R: Runner> Driver<R> {
             .ok_or_else(|| format!("unknown session {session_id}"))?;
         if self.sessions[index].session.phase == Phase::Stopped {
             return Err(format!("session {session_id} has stopped"));
+        }
+        // A profile the service would refuse under the session's module
+        // control (a schema-2 profile on the keypad without App control) is
+        // refused here and the session keeps running its profile.
+        if let Some(launch) = self.sessions[index].request.display
+            && let Some(refusal) = display::keypad_refusal(launch.settings, launch.module, &profile)
+        {
+            return Err(refusal.into());
         }
         // An executing session never switches into a dry-run-only profile;
         // the switch fails closed and the session keeps its profile.
@@ -1282,6 +1396,20 @@ impl<R: Runner> Driver<R> {
         }
     }
 
+    /// The process `service_id` wrote `service_start`.
+    pub fn ready(&mut self, service_id: &str, now_ms: u64) {
+        if let Some(index) = self
+            .sessions
+            .iter()
+            .position(|managed| managed.session.service_id() == Some(service_id))
+        {
+            let event = Event::Ready {
+                service_id: service_id.into(),
+            };
+            self.apply(index, event, now_ms);
+        }
+    }
+
     pub fn exited(
         &mut self,
         service_id: &str,
@@ -1446,6 +1574,10 @@ pub enum Input {
     /// `done` is answered once the event's actions ran (e.g. the stop before
     /// sleep).
     Power(PowerEvent, Option<Sender<()>>),
+    /// A service process wrote its `service_start` record.
+    Ready {
+        service_id: String,
+    },
     Exited {
         service_id: String,
         exit_code: Option<i32>,
@@ -1493,6 +1625,7 @@ impl<R: Runner> Driver<R> {
                     let _ = done.send(());
                 }
             }
+            Input::Ready { service_id } => self.ready(&service_id, now_ms),
             Input::Exited {
                 service_id,
                 exit_code,
@@ -1881,8 +2014,15 @@ pub mod fake {
         }
     }
 
-    /// Ends a fake process and reports it, like the supervisor's `exited`.
+    /// Ends a fake process that had started (it wrote `service_start`) with
+    /// exit code 1 and reports it, like the supervisor's `exited`.
     pub fn exit(driver: &mut Driver<FakeRunner>, service_id: &str, stderr: &str, now: u64) {
+        driver.ready(service_id, now);
+        refuse(driver, service_id, stderr, now);
+    }
+
+    /// Ends a fake process with exit code 1 before it wrote `service_start`.
+    pub fn refuse(driver: &mut Driver<FakeRunner>, service_id: &str, stderr: &str, now: u64) {
         assert!(
             driver.runner().alive.remove(service_id),
             "{service_id} not alive"
@@ -1895,6 +2035,7 @@ pub mod fake {
 mod tests {
     use super::fake::*;
     use super::*;
+    use crate::display::ModuleControl;
 
     const DIAL: ServiceModule = ServiceModule::M131E;
 
@@ -2357,6 +2498,9 @@ mod tests {
             0,
         );
         let events = [
+            Event::Ready {
+                service_id: sid("/a"),
+            },
             Event::ServiceExited {
                 exit_code: Some(1),
                 stderr_tail: String::new(),
@@ -2431,8 +2575,15 @@ mod tests {
         manager.spawn(Shared(Arc::clone(&fake))).unwrap();
         assert!(manager.spawn(Shared(Arc::clone(&fake))).is_err());
         let id = manager.start(request(&dial("/a"), false)).unwrap().unwrap();
-        // A crash schedules a 1 s restart that the thread fires on its own.
+        // A crash after `service_start` schedules a 1 s restart that the
+        // thread fires on its own.
         fake.lock().unwrap().alive.clear();
+        manager
+            .sender()
+            .send(Input::Ready {
+                service_id: id.clone(),
+            })
+            .unwrap();
         manager
             .sender()
             .send(Input::Exited {
@@ -3094,6 +3245,10 @@ mod tests {
                 record: json!({"type":"profile_switch_requested","schema_version":1,"direction":direction}),
             })
         };
+        forwarder.forward(&service::ServiceMessage::Record(service::RecordPayload {
+            service_id: "service:41".into(),
+            record: json!({"type":"service_start","schema_version":1}),
+        }));
         forwarder.forward(&record("next"));
         forwarder.forward(&service::ServiceMessage::Record(service::RecordPayload {
             service_id: "service:41".into(),
@@ -3105,13 +3260,17 @@ mod tests {
         // A late record of the stopped process: its successor shares the id.
         forwarder.forward(&record("previous"));
         let inputs: Vec<_> = receiver.try_iter().collect();
-        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs.len(), 3);
         assert!(matches!(
             &inputs[0],
-            Input::ProfileStep { service_id, direction: ProfileDirection::Next } if service_id == "service:41"
+            Input::Ready { service_id } if service_id == "service:41"
         ));
         assert!(matches!(
             &inputs[1],
+            Input::ProfileStep { service_id, direction: ProfileDirection::Next } if service_id == "service:41"
+        ));
+        assert!(matches!(
+            &inputs[2],
             Input::Exited {
                 exit_code: Some(0),
                 ..
@@ -3481,8 +3640,12 @@ mod tests {
         assert!(driver.session(&sid("/u")).is_none());
     }
 
-    const DISPLAY_ON: DisplaySettings = DisplaySettings {
-        enabled: true,
+    const APP_CONTROL: DisplaySettings = DisplaySettings {
+        module_control: ModuleControl::App,
+        dial_content: crate::display::DialContent::Clock,
+    };
+    const BUILT_IN: DisplaySettings = DisplaySettings {
+        module_control: ModuleControl::BuiltInAnimation,
         dial_content: crate::display::DialContent::Clock,
     };
 
@@ -3490,22 +3653,39 @@ mod tests {
         driver.runner().starts[index].display
     }
 
+    fn keypad(path: &str) -> LiveDevice {
+        device(ServiceModule::M4315, Some("KEY-1"), path)
+    }
+
+    fn flat_profile() -> Profile {
+        let mut flat = crate::test_profiles::folders();
+        flat.schema_version = 1;
+        flat.keypad = None;
+        flat.name = "Flat".into();
+        flat
+    }
+
+    /// The display arguments of the `index`th spawn.
+    fn spawned_args(driver: &mut Driver<FakeRunner>, index: usize) -> Vec<std::ffi::OsString> {
+        let started = driver.runner().starts[index].clone();
+        crate::display::spawn_args(true, &started)
+    }
+
     #[test]
     fn display_settings_are_read_once_per_start_and_kept_through_restarts() {
         let mut driver = Driver::new(FakeRunner {
-            display: DISPLAY_ON,
+            display: APP_CONTROL,
             ..FakeRunner::default()
         });
         driver.inventory(vec![dial("/a")], 0);
         let id = driver.start(request(&dial("/a"), false), 0).unwrap();
         let expected = Some(DisplayLaunch {
-            settings: DISPLAY_ON,
+            settings: APP_CONTROL,
             module: DIAL,
-            active_at_start: true,
         });
         assert_eq!(launched(&mut driver, 0), expected);
-        // Turning the setting off mid-run changes nothing and restarts nothing.
-        driver.runner().display = DisplaySettings::default();
+        // Changing the setting mid-run changes nothing and restarts nothing.
+        driver.runner().display = BUILT_IN;
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), 1);
         assert!(driver.runner().stops.is_empty());
@@ -3535,25 +3715,25 @@ mod tests {
         let current = driver.runner().stops.last().unwrap().clone();
         exit(&mut driver, &current, "", 6_001);
         driver.start(request(&dial("/a"), false), 7_000).unwrap();
-        let off = Some(DisplayLaunch {
-            settings: DisplaySettings::default(),
+        let built_in = Some(DisplayLaunch {
+            settings: BUILT_IN,
             module: DIAL,
-            active_at_start: false,
         });
-        assert_eq!(launched(&mut driver, 4), off);
+        assert_eq!(launched(&mut driver, 4), built_in);
+        assert!(spawned_args(&mut driver, 4).is_empty());
     }
 
     #[test]
     fn a_display_change_never_resumes_an_executing_session() {
         let mut driver = Driver::new(FakeRunner {
-            display: DISPLAY_ON,
+            display: APP_CONTROL,
             ..FakeRunner::default()
         });
         driver.inventory(vec![dial("/a")], 0);
         let id = driver.start(request(&dial("/a"), true), 0).unwrap();
         driver.power(PowerEvent::Suspend, 1);
         exit(&mut driver, &id, "", 2);
-        driver.runner().display = DisplaySettings::default();
+        driver.runner().display = BUILT_IN;
         driver.power(PowerEvent::Resume, 3);
         driver.tick(3 + SETTLE_DELAY_MS);
         assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
@@ -3563,66 +3743,382 @@ mod tests {
         assert_eq!(starts(&mut driver), 2);
         assert!(driver.runner().starts[1].execute);
         // Confirmation restarts with the value the session started with.
-        assert_eq!(launched(&mut driver, 1).unwrap().settings, DISPLAY_ON);
+        assert_eq!(launched(&mut driver, 1).unwrap().settings, APP_CONTROL);
     }
 
     #[test]
     fn a_start_while_asleep_snapshots_display_settings_and_spawns_only_after_wake() {
         let mut driver = Driver::new(FakeRunner {
-            display: DISPLAY_ON,
+            display: APP_CONTROL,
             ..FakeRunner::default()
         });
         driver.inventory(vec![dial("/a")], 0);
         driver.power(PowerEvent::Suspend, 1);
         driver.start(request(&dial("/a"), false), 2).unwrap();
-        driver.runner().display = DisplaySettings::default();
+        driver.runner().display = BUILT_IN;
         assert_eq!(starts(&mut driver), 0, "spawned across sleep");
         driver.power(PowerEvent::Resume, 10);
         driver.tick(10 + SETTLE_DELAY_MS);
         assert_eq!(starts(&mut driver), 1);
-        assert_eq!(launched(&mut driver, 0).unwrap().settings, DISPLAY_ON);
+        assert_eq!(launched(&mut driver, 0).unwrap().settings, APP_CONTROL);
     }
 
     #[test]
-    fn a_switch_into_keypad_folders_never_starts_display_writes_mid_session() {
-        let keypad = |path: &str| device(ServiceModule::M4315, Some("KEY-1"), path);
+    fn app_control_requests_software_mode_for_the_keypad_and_dial_only() {
+        let roller = device(ServiceModule::M032LE, Some("ROL-1"), "/r");
+        let knob = device(ServiceModule::M003K, Some("KNB-1"), "/n");
+        let fader = device(ServiceModule::M005S, Some("FAD-1"), "/f");
+        let others = [roller, knob, fader];
+        let unreadable = DisplaySettings::UNREADABLE;
+        for settings in [
+            APP_CONTROL,
+            DisplaySettings::default(),
+            BUILT_IN,
+            unreadable,
+        ] {
+            for requested in [false, true] {
+                let mut driver = Driver::new(FakeRunner {
+                    display: settings,
+                    ..FakeRunner::default()
+                });
+                let mut inventory = vec![dial("/a"), keypad("/k")];
+                inventory.extend(others.iter().cloned());
+                driver.inventory(inventory, 0);
+                let app = settings.module_control == ModuleControl::App;
+                // App forces software mode on; built-in animation keeps the
+                // Run panel's own choice; unreadable settings never enter
+                // it, whatever the frontend sent. Only App runs keypad
+                // pages, so the others run a flat profile on the keypad.
+                let expected = match settings.module_control {
+                    ModuleControl::App => true,
+                    ModuleControl::BuiltInAnimation => requested,
+                    ModuleControl::Unreadable => false,
+                };
+                for device in [dial("/a"), keypad("/k")] {
+                    let mut request = request(&device, false);
+                    request.software_mode = requested;
+                    if !app && device.module == ServiceModule::M4315 {
+                        request.profile = flat_profile();
+                    }
+                    driver.start(request, 0).unwrap();
+                }
+                assert_eq!(driver.runner().starts[0].software_mode, expected);
+                assert_eq!(driver.runner().starts[1].software_mode, expected);
+                let dial_args = spawned_args(&mut driver, 0);
+                let keypad_args = spawned_args(&mut driver, 1);
+                if app {
+                    assert_eq!(dial_args[..2], ["--display-sync", "--dial-content"]);
+                    assert_eq!(keypad_args, ["--display-sync"]);
+                } else {
+                    assert!(dial_args.is_empty() && keypad_args.is_empty());
+                }
+                // Other modules: never software mode, even when the
+                // frontend asked for it, and never display flags.
+                for (index, device) in others.iter().enumerate() {
+                    let mut request = request(device, false);
+                    request.software_mode = requested;
+                    request.profile = flat_profile();
+                    driver.start(request, 0).unwrap();
+                    assert!(!driver.runner().starts[2 + index].software_mode);
+                    assert!(spawned_args(&mut driver, 2 + index).is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unreadable_settings_refuse_keypad_pages_with_their_own_message() {
         let mut driver = Driver::new(FakeRunner {
-            display: DISPLAY_ON,
+            display: DisplaySettings::UNREADABLE,
             ..FakeRunner::default()
         });
         driver.inventory(vec![keypad("/k")], 0);
-        let mut flat = crate::test_profiles::folders();
-        flat.schema_version = 1;
-        flat.keypad = None;
-        flat.name = "Flat".into();
-        let id = driver
-            .start(
-                StartRequest {
-                    profile: flat,
-                    ..request(&keypad("/k"), false)
-                },
-                0,
-            )
-            .unwrap();
-        let args = |driver: &mut Driver<FakeRunner>, index: usize| {
-            let started = driver.runner().starts[index].clone();
-            crate::display::display_args(
-                started.display.as_ref(),
-                started.software_mode,
-                &started.profile,
-            )
+        let mut start = request(&keypad("/k"), false);
+        start.software_mode = false;
+        let error = driver.start(start.clone(), 0).unwrap_err();
+        assert_eq!(error, crate::display::UNREADABLE_KEYPAD_REFUSAL);
+        assert_ne!(error, crate::display::BUILT_IN_KEYPAD_REFUSAL);
+        assert_eq!(starts(&mut driver), 0);
+        // A flat profile runs, without software mode.
+        start.profile = flat_profile();
+        driver.start(start, 1).unwrap();
+        assert!(!driver.runner().starts[0].software_mode);
+        // The trait's own default is the unreadable value, never App.
+        struct Bare;
+        impl Runner for Bare {
+            fn start(&mut self, _: &StartRequest) -> Result<String, String> {
+                unreachable!()
+            }
+            fn stop(&mut self, _: &str) {}
+            fn emit(&mut self, _: &SessionState) {}
+            fn enumerate(&mut self) -> Option<Vec<LiveDevice>> {
+                None
+            }
+        }
+        assert_eq!(Bare.display_settings(), DisplaySettings::UNREADABLE);
+    }
+
+    #[test]
+    fn built_in_animation_refuses_keypad_pages_before_anything_spawns() {
+        let mut driver = Driver::new(FakeRunner {
+            display: BUILT_IN,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![keypad("/k"), dial("/a")], 0);
+        let error = driver.start(request(&keypad("/k"), false), 0).unwrap_err();
+        assert_eq!(error, crate::display::BUILT_IN_KEYPAD_REFUSAL);
+        assert!(error.contains("Module control"), "{error}");
+        assert!(!error.contains("--display-sync"), "{error}");
+        assert_eq!(starts(&mut driver), 0);
+        assert!(driver.runner().emitted.is_empty());
+        // A flat profile on the keypad and any profile on the dial still run.
+        let flat = StartRequest {
+            profile: flat_profile(),
+            ..request(&keypad("/k"), false)
         };
-        assert!(args(&mut driver, 0).is_empty());
-        // A focused-app rule switches the dry run to a keypad-folder profile.
+        driver.start(flat, 1).unwrap();
+        driver.start(request(&dial("/a"), false), 1).unwrap();
+        assert_eq!(starts(&mut driver), 2);
+    }
+
+    #[test]
+    fn a_switch_into_keypad_pages_follows_module_control() {
+        // App: the switched-to keypad profile gets display sync.
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![keypad("/k")], 0);
+        let mut flat = request(&keypad("/k"), false);
+        flat.profile = flat_profile();
+        flat.software_mode = false;
+        let id = driver.start(flat.clone(), 0).unwrap();
+        assert!(driver.runner().starts[0].software_mode);
+        assert!(spawned_args(&mut driver, 0).is_empty());
         driver
             .switch_profile(&id, "Folders".into(), crate::test_profiles::folders(), 10)
             .unwrap();
         let current = driver.runner().stops.last().unwrap().clone();
         exit(&mut driver, &current, "", 11);
         assert_eq!(starts(&mut driver), 2);
-        assert!(driver.runner().starts[1].profile.keypad.is_some());
-        // No display flags: the service refuses the folders, as with the setting off.
-        assert!(args(&mut driver, 1).is_empty());
+        assert_eq!(spawned_args(&mut driver, 1), ["--display-sync"]);
+
+        // Built-in animation (and unreadable settings): the switch is
+        // refused, and the working session keeps running its profile.
+        for (settings, message) in [
+            (BUILT_IN, crate::display::BUILT_IN_KEYPAD_REFUSAL),
+            (
+                DisplaySettings::UNREADABLE,
+                crate::display::UNREADABLE_KEYPAD_REFUSAL,
+            ),
+        ] {
+            let mut driver = Driver::new(FakeRunner {
+                display: settings,
+                ..FakeRunner::default()
+            });
+            driver.inventory(vec![keypad("/k")], 0);
+            let id = driver.start(flat.clone(), 0).unwrap();
+            let before = last(&mut driver);
+            let error = driver
+                .switch_profile(&id, "Folders".into(), crate::test_profiles::folders(), 10)
+                .unwrap_err();
+            assert_eq!(error, message);
+            assert!(driver.runner().stops.is_empty(), "the session was stopped");
+            assert_eq!(starts(&mut driver), 1);
+            let state = last(&mut driver);
+            assert_eq!(state, before);
+            assert_eq!(
+                (state.phase, state.profile_generation, state.service_id),
+                (Phase::Running, 0, Some(id.clone()))
+            );
+            let held = driver.session_profile(&id, 0).unwrap();
+            assert_eq!(held.profile.name, "Flat");
+            // A flat profile still switches.
+            let mut other = flat_profile();
+            other.name = "Other flat".into();
+            assert_eq!(driver.switch_profile(&id, "Other".into(), other, 20), Ok(1));
+        }
+    }
+
+    /// The service's stderr for a nested keypad profile without display sync.
+    fn nested_refusal_stderr() -> String {
+        format!(
+            "masterhub-service: {}\n",
+            cooltek_sdk_cli::service_events::NESTED_KEYPAD_REFUSAL
+        )
+    }
+
+    #[test]
+    fn transient_errors_match_the_service_text() {
+        use cooltek_sdk_masterhub::hidapi::HidError;
+        // Every substring the app matches is part of the service's real text,
+        // so rewording a message there breaks this test.
+        let service = [
+            cooltek_sdk_cli::device::NOT_IN_INVENTORY.to_string(),
+            HidError::HidApiError {
+                message: "Selected interface is absent or changed".into(),
+            }
+            .to_string(),
+            HidError::InitializationError.to_string(),
+            format!(
+                "{}: timed out",
+                cooltek_sdk_cli::live_runtime::WORKER_NOT_READY
+            ),
+            format!(
+                "{}: stdout record deadline expired",
+                cooltek_sdk_cli::service_events::LOG_WRITE_FAILED
+            ),
+        ];
+        for (substring, text) in TRANSIENT_ERRORS.iter().zip(&service) {
+            assert!(text.contains(substring), "{substring:?} not in {text:?}");
+            assert!(device_unavailable(&format!("masterhub-service: {text}\n")));
+        }
+        assert!(
+            cooltek_sdk_cli::service_events::NESTED_KEYPAD_REFUSAL
+                .starts_with(NESTED_KEYPAD_REFUSAL)
+        );
+        assert!(!device_unavailable(&nested_refusal_stderr()));
+        assert_eq!(
+            exit_detail(Some(1), &nested_refusal_stderr()),
+            crate::display::BUILT_IN_KEYPAD_REFUSAL
+        );
+    }
+
+    #[test]
+    fn a_setup_refusal_ends_the_session_at_once_without_reconnecting() {
+        for execute in [false, true] {
+            let mut driver = Driver::new(FakeRunner::default());
+            driver.inventory(vec![keypad("/k")], 0);
+            let id = driver.start(request(&keypad("/k"), execute), 0).unwrap();
+            refuse(&mut driver, &id, &nested_refusal_stderr(), 50);
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.attempt, state.service_id),
+                (Phase::Stopped, Some(Reason::StartRefused), 0, None)
+            );
+            // Shown once, in plain words, never the service's flag sentence.
+            let detail = state.detail.unwrap();
+            assert!(detail.contains("Module control"), "{detail}");
+            assert!(!detail.contains("--display-sync"), "{detail}");
+            let emitted = &driver.runner().emitted;
+            assert_eq!(emitted.len(), 2, "{emitted:?}");
+            assert!(emitted.iter().all(|state| !matches!(
+                state.phase,
+                Phase::Reconnecting | Phase::NeedsConfirmation
+            )));
+            // Nothing is retried, however long the app waits.
+            assert!(driver.session(&id).is_none());
+            assert_eq!(driver.next_due(), None);
+            driver.tick(1_000_000);
+            driver.inventory(vec![keypad("/k")], 1_000_001);
+            assert_eq!(starts(&mut driver), 1);
+            // The device is free for the next Start.
+            driver
+                .start(request(&keypad("/k"), false), 1_000_002)
+                .unwrap();
+        }
+        // Any other refusal keeps the service's own last line.
+        let (mut driver, id) = running(false);
+        refuse(
+            &mut driver,
+            &id,
+            "masterhub-service: --dial-content requires --display-sync\n",
+            5,
+        );
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.detail.as_deref()),
+            (
+                Phase::Stopped,
+                Some(Reason::StartRefused),
+                Some("masterhub-service: --dial-content requires --display-sync")
+            )
+        );
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_refused_restart_also_stops_instead_of_backing_off() {
+        let (mut driver, id) = running(false);
+        // A crash after start reconnects as before.
+        exit(&mut driver, &id, "masterhub-service: input read failed", 10);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.attempt),
+            (Phase::Reconnecting, Some(Reason::ServiceExited), 1)
+        );
+        driver.tick(10 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 2);
+        // The restarted process refuses before `service_start`: stop now.
+        refuse(
+            &mut driver,
+            &id,
+            "masterhub-service: cannot configure stdout",
+            2_000,
+        );
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.attempt),
+            (Phase::Stopped, Some(Reason::StartRefused), 1)
+        );
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 2);
+    }
+
+    #[test]
+    fn a_module_not_yet_available_at_start_still_reconnects() {
+        for stderr in [
+            "masterhub-service: device path is not in the current inventory; run `masterhub-diag list` again\n",
+            "masterhub-service: hidapi error: Selected interface is absent or changed; refresh discovery and select again\n",
+        ] {
+            let (mut driver, id) = running(false);
+            refuse(&mut driver, &id, stderr, 10);
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.attempt),
+                (Phase::Reconnecting, Some(Reason::ServiceExited), 1),
+                "{stderr}"
+            );
+            driver.tick(10 + backoff_ms(1));
+            assert_eq!(starts(&mut driver), 2);
+        }
+        // Gone from the app's inventory too: wait for it, as before.
+        let (mut driver, id) = running(false);
+        driver.inventory(vec![], 5);
+        refuse(&mut driver, &id, &nested_refusal_stderr(), 10);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason),
+            (Phase::WaitingForDevice, Some(Reason::DeviceRemoved))
+        );
+        // Ended by a signal before `service_start`: a crash, not a refusal.
+        let (mut driver, id) = running(false);
+        driver.runner().alive.remove(&id);
+        driver.exited(&id, None, String::new(), 10);
+        assert_eq!(last(&mut driver).phase, Phase::Reconnecting);
+    }
+
+    #[test]
+    fn ready_marks_only_the_current_running_process() {
+        let (mut driver, id) = running(false);
+        // A late `service_start` of another id changes nothing.
+        driver.ready("service:other", 1);
+        refuse(&mut driver, &id, "masterhub-service: boom", 2);
+        assert_eq!(last(&mut driver).reason, Some(Reason::StartRefused));
+        // Once ready, the same exit is a crash and reconnects.
+        let (mut driver, id) = running(false);
+        driver.ready(&id, 1);
+        refuse(&mut driver, &id, "masterhub-service: boom", 2);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.attempt),
+            (Phase::Reconnecting, Some(Reason::ServiceExited), 1)
+        );
+        // Each restart must report `service_start` again.
+        driver.tick(2 + backoff_ms(1));
+        let current = last(&mut driver).service_id.unwrap();
+        refuse(&mut driver, &current, "masterhub-service: boom", 2_000);
+        assert_eq!(last(&mut driver).reason, Some(Reason::StartRefused));
     }
 
     fn obs_on(password: Option<&str>) -> Option<crate::obs::ObsLaunch> {
@@ -3684,7 +4180,7 @@ mod tests {
     #[test]
     fn an_unidentified_device_runs_without_display_settings() {
         let mut driver = Driver::new(FakeRunner {
-            display: DISPLAY_ON,
+            display: APP_CONTROL,
             ..FakeRunner::default()
         });
         driver.start(request(&dial("/x"), false), 0).unwrap();

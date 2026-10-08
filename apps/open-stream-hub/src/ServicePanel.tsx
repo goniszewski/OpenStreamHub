@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { CircleHelp, LoaderCircle, MoonStar, Play, Square, TriangleAlert } from 'lucide-react';
-import type { LiveDevice, Profile, ServiceModule, ServiceState } from './contracts';
+import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } from './contracts';
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
@@ -9,7 +9,7 @@ import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
 import type { RiskLevel } from './profile-capabilities';
-import { displayFlags, idleDisplaySettingsState } from './display-settings';
+import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
 
 // The Resume actions button, focused after Review on a paused-run notice.
@@ -18,25 +18,38 @@ export const serviceResumeId = 'service-resume';
 export type PlatformInfo = { platform?: string; userAgent?: string };
 export const isMacPlatform = (info: PlatformInfo | undefined) => /mac/i.test(`${info?.platform ?? ''} ${info?.userAgent ?? ''}`);
 
-export const hasKeypadFolders = (profile: Profile) => profile.keypad?.pages.some(page => page.slots.some(slot => slot?.type === 'folder')) ?? false;
+export const builtInKeypadBlocker = 'This profile has 15-key pages, which run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App to run this profile.';
 
-// Why Run is unavailable for this selection, or null. The service refuses nested M4315 profiles itself, unless the
-// experimental display setting is on and software mode is requested (`displaySync`): the folders then run live with
-// the hardware-unverified key display. With the setting on but software mode off, the message says what is missing.
-export function runBlocker(input: { desktop: boolean; device: LiveDevice | undefined; profile: Profile; displayEnabled?: boolean; softwareMode?: boolean }): string | null {
+// Why Run is unavailable for this selection, or null. Until the Module control settings have loaded nothing runs, and
+// settings that cannot be read are named rather than shown as App. The service refuses schema-2 (paged) M4315 profiles
+// without display sync, which the app passes only when Module control is App (the default); the session manager refuses
+// them with the same reason before spawning anything.
+export function runBlocker(input: { desktop: boolean; device: LiveDevice | undefined; profile: Profile; moduleControl?: ModuleControl; settingsLoaded?: boolean; settingsError?: string | null }): string | null {
   if (!input.desktop) return 'Running a profile needs the desktop app. Launch it to run actions.';
   if (!input.device) return 'No module connected. Connect a module to run this profile on it.';
-  if (input.device.module === 'm4315' && hasKeypadFolders(input.profile)) {
-    if (input.displayEnabled && input.softwareMode) return null;
-    if (input.displayEnabled) return 'This profile uses keypad folders. To run them with the experimental key display, turn on "Request device software mode" below.';
-    return 'This profile uses keypad folders. The 15-key display only supports them offline, so the service will not run it live. Remove the folders to run it, or turn on the experimental module display setting in Settings.';
-  }
+  if (input.settingsLoaded === false) return input.settingsError ? settingsErrorBlocker(input.settingsError) : settingsLoadingBlocker;
+  if (input.device.module === 'm4315' && input.profile.schema_version === 2 && input.moduleControl === 'built_in_animation') return builtInKeypadBlocker;
   return null;
 }
 
+// The Run panel's software mode box. Software mode exists only on the 15-key module and the dial. Under App module
+// control (once loaded) the session manager always enables it there; the box only shows that. `requested` is what goes
+// into the start request: what the user ticked, never the displayed value, so the backend decides from the settings it
+// read itself (a damaged settings file there never enters software mode, whatever this panel believes).
+export function softwareModeBox(input: { module: ServiceModule | undefined; loaded: boolean; moduleControl: ModuleControl; ticked: boolean }) {
+  const capable = input.module !== undefined && appControls(input.module);
+  const appDriven = capable && input.loaded && input.moduleControl === 'app';
+  const requested = capable && input.ticked;
+  return { appDriven, requested, checked: appDriven || requested, locked: !input.loaded || !capable || appDriven };
+}
+
+export const settingsLoadingBlocker = 'Reading the Module control setting…';
+export const settingsErrorBlocker = (error: string) => `The Module control settings could not be read, so profiles cannot run yet: ${error} Open Settings for details.`;
+
 // The feed never reads a path a run owns; the live preview shows that module's input from the run's own records instead.
 export const runPreviewNote = 'The live preview shows the input this run reads from the module (read-only).';
-export const displayRunNote = 'Experimental: this run will send images to the module display. This has never been tested on hardware.';
+// Why the software mode box is ticked and locked for the 15-key module and the dial.
+export const appControlNote = 'Module control is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
 
 export const stateLabel = (state: ServiceState | undefined) => state === undefined ? 'Stopped' : state === 'exited' ? 'Stopped' : state[0].toUpperCase() + state.slice(1);
 
@@ -53,7 +66,7 @@ const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' } as const;
 // The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
 const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
 // Who switched the run, as one phrase for the banner and the Resume dialog.
@@ -170,9 +183,8 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   const session = run?.session;
   const phase = session?.phase ?? (isActiveRun(run) ? 'running' : undefined);
   const active = isActiveRun(run);
-  const blocker = runBlocker({ desktop: enabled, device, profile, displayEnabled: display.settings.enabled, softwareMode });
-  // What a start now would pass; the session keeps it for its whole life.
-  const displayActive = device !== undefined && displayFlags(display.settings, device.module, softwareMode, profile).length > 0;
+  const blocker = runBlocker({ desktop: enabled, device, profile, moduleControl: display.settings.module_control, settingsLoaded: display.loaded, settingsError: display.error });
+  const box = softwareModeBox({ module: device?.module, loaded: display.loaded, moduleControl: display.settings.module_control, ticked: softwareMode });
   const stale = isStale(run, profile);
   const now = fixedNow ?? clock;
   const executeSelected = execute && mac && !dryRunOnly;
@@ -192,7 +204,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   const begin = () => {
     if (!runner || !device) return;
     const confirmExecute = executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
-    void runner.start({ profile, profileId, sourceProfileId, pathHex: device.path_hex, execute: executeSelected, softwareMode, draftUnsaved: unsaved, device }, confirmExecute);
+    void runner.start({ profile, profileId, sourceProfileId, pathHex: device.path_hex, execute: executeSelected, softwareMode: box.requested, draftUnsaved: unsaved, device }, confirmExecute);
   };
   const resume = () => {
     if (!runner || !run) return;
@@ -231,9 +243,9 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
         ? <button type="button" className="button" disabled={run.state === 'stopping'} onClick={() => { void runner?.stop(run.serviceId); }}><Square size={16} />{run.state === 'stopping' ? 'Stopping…' : 'Stop'}</button>
         : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} onClick={begin}>{run?.state === 'starting' ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? 'Run with actions' : 'Run'}</button>}
     </div>
-    <label className="service-option"><input type="checkbox" checked={softwareMode} disabled={!enabled || active} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
+    <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
+    {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
-    {displayActive && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{displayRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
     {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved draft)' : ''} was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}

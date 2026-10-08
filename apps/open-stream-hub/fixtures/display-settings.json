@@ -8,16 +8,20 @@
   ],
   "display_settings_default": {
     "dial_content": "function",
-    "enabled": false
+    "module_control": "app"
   },
+  "module_controls": [
+    "app",
+    "built_in_animation"
+  ],
   "set_display_settings_args": {
     "settings": {
       "dial_content": "analog_clock",
-      "enabled": true
+      "module_control": "built_in_animation"
     }
   },
   "set_display_settings_result": {
     "dial_content": "analog_clock",
-    "enabled": true
+    "module_control": "built_in_animation"
   }
 }

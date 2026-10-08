@@ -75,6 +75,6 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 
 - The M005S faders (not connected).
 - Lighting writes of any kind.
-- The desktop app against a real device.
+- Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session was run through the app and the app was then killed with `kill -9` (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A keypad session through the app, the app's live preview against a device, and its Settings (Module control) have not been tested on hardware.
 - `shortcut`, `launch_app` and every `obs_*` action.
 - Reconnect, sleep and wake behavior.

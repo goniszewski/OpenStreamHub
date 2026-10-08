@@ -81,7 +81,7 @@ pub struct StartRequest {
     /// refuse an Execute run derived from a dry-run-only imported profile.
     #[serde(default)]
     pub source_profile_id: Option<String>,
-    /// The experimental display settings a managed session started with, set
+    /// The module control settings a managed session started with, set
     /// by the session driver only. Never deserialized: a request naming it is
     /// refused as an unknown field.
     #[serde(skip)]
@@ -924,7 +924,8 @@ pub fn check_request(request: &StartRequest) -> Result<(), String> {
 /// The `start_service` command without Tauri: validates, stops a read-only
 /// feed on the same interface, writes the snapshot, and spawns `program`.
 /// `display_args` (from `display::display_args`, empty unless a managed
-/// session started with display images on) are appended unchanged, then the
+/// session started with module control `App` on a keypad or dial) are
+/// appended unchanged, then the
 /// session's OBS arguments (`obs::obs_args`); its OBS password, if any, goes
 /// to the child's stdin only.
 /// Failures after the id is known (except a duplicate) emit `failed`.

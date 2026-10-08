@@ -597,6 +597,15 @@ fn loggable_binding(binding: &Option<Binding>) -> Value {
 }
 
 /// Writes one bounded JSON line and flushes it as a complete record.
+/// Prefix of a failed or timed-out record write (for example `service_start`
+/// to a reader that stopped reading). OpenStreamHub treats it as transient.
+pub const LOG_WRITE_FAILED: &str = "service log write failed";
+
+/// Why a live run refuses a schema-2 keypad profile on an M4315 without
+/// `--display-sync`. OpenStreamHub matches its start ("nested keypad profiles
+/// run live only with") and shows its own wording.
+pub const NESTED_KEYPAD_REFUSAL: &str = "nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings";
+
 pub fn emit(output: &mut impl Write, value: Value) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
@@ -607,7 +616,7 @@ pub fn emit(output: &mut impl Write, value: Value) -> Result<(), String> {
     }
     output
         .write_all(&bytes)
-        .map_err(|error| format!("service log write failed: {error}"))?;
+        .map_err(|error| format!("{LOG_WRITE_FAILED}: {error}"))?;
     output
         .flush()
         .map_err(|error| format!("service log flush failed: {error}"))

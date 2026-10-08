@@ -39,7 +39,7 @@ and sleep/wake recovery still require hardware validation.**
 
 Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac. See [Privacy and telemetry](#privacy-and-telemetry).
 A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
-Sending images to a module display is off by default, because display behavior is not verified on hardware. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, digital or analog clock, or CPU usage on the encoder's screen); it has never run on real hardware.
+Sending images to a module display is off by default, because display behavior has only been checked on one M4315. An experimental Settings toggle can turn it on for testing (placeholder key images and folder pages, and a dial function name, digital or analog clock, or CPU usage on the encoder's screen); the keypad part has run once on a real M4315 (folders and Back worked); the dial part has never run on hardware.
 For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
 and [protocol evidence table](docs/masterhub-protocol-evidence.md).
 
@@ -111,7 +111,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, explicit macOS actions, and the `masterhub-service` options |
 | [Action catalogue](docs/masterhub-actions.md) | Every action, its limits and permissions, including `profile`, `timer` and `obs_scene` |
 | [Dial functions](docs/masterhub-dial-functions.md) | Short click cycles the dial's functions; long press and rotation run the current one |
-| [Display sync](docs/masterhub-display-sync.md) | Experimental, hardware-unverified key images and dial faces |
+| [Display sync](docs/masterhub-display-sync.md) | Experimental key images (run once on an M4315) and dial faces (hardware-unverified) |
 | [macOS smoke checks](docs/masterhub-macos-smoke.md) | Device-free audio and scratch-keystroke checks |
 | [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |
 | [Windows parity tracker](docs/windows-parity-gaps.md) | Gaps against the official Windows application |

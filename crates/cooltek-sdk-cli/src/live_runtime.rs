@@ -514,6 +514,10 @@ impl Drop for DisplayThread {
     }
 }
 
+/// Prefix of the error when the action worker thread cannot be spawned
+/// (resource pressure). OpenStreamHub treats it as transient.
+pub const WORKER_START_FAILED: &str = "could not start action worker";
+
 /// Prefix of the error when the action worker never reported ready (it did
 /// not write `service_start` in time). OpenStreamHub treats it as transient.
 pub const WORKER_NOT_READY: &str = "action worker did not become ready";
@@ -1042,7 +1046,7 @@ where
             // Dispatcher resources are dropped; the output owner returns to the coordinator.
             let _ = done_tx.send(outcome);
         })
-        .map_err(|error| format!("could not start action worker: {error}"))?;
+        .map_err(|error| format!("{WORKER_START_FAILED}: {error}"))?;
 
     let started = Instant::now();
     let mut input = InputSession::new(device.module);

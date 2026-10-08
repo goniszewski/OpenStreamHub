@@ -74,7 +74,7 @@ export class DisplaySettingsStore {
       this.set({ busy: false, loaded: true, error: null, settings });
       return true;
     } catch (reason) {
-      this.set({ busy: false, error: errorMessage(reason) });
+      this.set({ busy: false, loaded: false, error: errorMessage(reason) });
       return false;
     }
   }

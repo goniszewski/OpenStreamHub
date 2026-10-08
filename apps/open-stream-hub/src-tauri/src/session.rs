@@ -306,7 +306,7 @@ fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
 /// startup is not (yet) available rather than that the run is refused. Each
 /// is pinned to the service's real text by
 /// `transient_errors_match_the_service_text`.
-const TRANSIENT_ERRORS: [&str; 5] = [
+const TRANSIENT_ERRORS: [&str; 7] = [
     // The path is not in the service's own inventory: the module is still
     // enumerating after a replug or wake.
     "device path is not in the current inventory",
@@ -318,6 +318,10 @@ const TRANSIENT_ERRORS: [&str; 5] = [
     "action worker did not become ready",
     // Writing a record, such as `service_start` itself, failed or timed out.
     "service log write failed",
+    // Flushing a record failed after it was written.
+    "service log flush failed",
+    // The action worker thread could not be spawned (resource pressure).
+    "could not start action worker",
 ];
 
 /// Whether a pre-start exit was transient (see `TRANSIENT_ERRORS`). Those keep
@@ -3973,6 +3977,14 @@ mod tests {
             format!(
                 "{}: stdout record deadline expired",
                 cooltek_sdk_cli::service_events::LOG_WRITE_FAILED
+            ),
+            format!(
+                "{}: broken pipe",
+                cooltek_sdk_cli::service_events::LOG_FLUSH_FAILED
+            ),
+            format!(
+                "{}: too many threads",
+                cooltek_sdk_cli::live_runtime::WORKER_START_FAILED
             ),
         ];
         for (substring, text) in TRANSIENT_ERRORS.iter().zip(&service) {

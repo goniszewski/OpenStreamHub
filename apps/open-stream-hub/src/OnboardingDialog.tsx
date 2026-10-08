@@ -29,7 +29,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
     title: 'Safety and privacy',
     body: <>
       <p id="onboarding-body">OpenStreamHub is an unofficial app, not affiliated with Cooler Master. Behaviour on real hardware is not yet verified.</p>
-      <ul><li>Nothing is uploaded. The app sends no data over the network.</li><li>The diagnostic bundle in Settings is built locally. You decide whether to share it.</li><li>While a profile runs, the app controls the 15-key module and the encoder dial and draws on their displays. To keep their built-in animation instead, set Module control to Built-in animation in Settings.</li></ul>
+      <ul><li>Nothing is uploaded. The app sends no data over the network.</li><li>The diagnostic bundle in Settings is built locally. You decide whether to share it.</li><li>While a profile runs, the app controls the 15-key module and the encoder dial and draws on their displays (for 15-key profiles with 15-key pages, and on the dial). To keep their built-in animation instead, set Module control to Built-in animation in Settings.</li></ul>
     </>,
   },
 });

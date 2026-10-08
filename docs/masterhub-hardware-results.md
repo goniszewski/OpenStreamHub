@@ -10,7 +10,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M003K knobs | 514 | Rotation and press verified in default mode. |
 | M0064 base | 502 | Sends a constant heartbeat only. No input. |
 | M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
-| M131E dial | 518 | Not tested. |
+| M131E dial | 518 | Input verified in software mode; display and lighting not tested. |
 | M005S faders | n/a | Not connected. |
 
 ## M4315 keys
@@ -43,10 +43,18 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 - The base does not carry roller events (see above).
 - Possible causes, none tested: the rollers need an init or mode write; the module is half-seated or faulty; they report only in a mode not found yet. Do not guess at writes to this module. Next step if it is revisited: reseat the module, capture again, then compare against the official software on Windows.
 
+## M131E dial
+
+- **Default mode.** A passive 45 s capture recorded 0 reports while the dial was turned and pressed. Like the keys, the dial reports only in software mode.
+- **Software mode.** A 45 s capture with `--software-mode` (the tool writes `03 49 01` and restores with `03 49 00`) recorded 20 reports and ended normally.
+- **Entering software mode** stopped the dial's built-in animation, and its screen went black. Nothing draws on it until the host does. After the capture ended, the animation came back, so the restore worked (the user's observation).
+- **Rotation.** Reports start `01 44 03 00 03 01`, with a final byte `00` or `01` per direction. In the order tried (clockwise first, then counter-clockwise), the decoder's `right` label matched clockwise and `left` matched counter-clockwise. This settles the physical mapping that the docs listed as unverified.
+- **Press and release.** Reports start `01 44 03 00 04 01` with a final byte `01` for press and `00` for release. A short press and a long press gave two ordinary press and release pairs. The dial itself reports no hold duration. Long-press detection is the service's 600 ms timing (`DialGestureTracker`) and was not exercised here.
+- **Not tested.** The dial display (240x240 JPEG writes), backlight and color writes, firmware queries, and the dial function cycling in the service.
+
 ## Not tested
 
-- The M131E dial (input needs software mode; display and backlight are writes).
-- The M005S faders.
+- The M005S faders (not connected).
 - Lighting writes of any kind.
 - The desktop app against a real device.
 - `shortcut`, `launch_app` and every `obs_*` action.

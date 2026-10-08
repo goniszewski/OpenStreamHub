@@ -1,10 +1,10 @@
-//! OBS Studio scene switching over obs-websocket v5 (built into OBS 28+).
+//! OBS Studio control over obs-websocket v5 (built into OBS 28+).
 //!
-//! One `obs_scene` action is one short connection: TCP connect to a loopback
-//! endpoint, WebSocket upgrade, `Hello`, `Identify` (with challenge
-//! authentication when OBS asks for it, and `eventSubscriptions` 0), one
-//! `SetCurrentProgramScene` request, its `RequestResponse`, then a close
-//! frame. Nothing is cached or retried.
+//! One action is one short connection: TCP connect to a loopback endpoint,
+//! WebSocket upgrade, `Hello`, `Identify` (with challenge authentication when
+//! OBS asks for it, and `eventSubscriptions` 0), one or more requests (a
+//! read-then-write toggle sends two on the same connection), each answered by
+//! its `RequestResponse`, then a close frame. Nothing is cached or retried.
 //!
 //! Security properties:
 //!
@@ -24,8 +24,9 @@
 //!   and carry only text, ping, pong or close. Text from OBS that ends up in an
 //!   error is cleaned of control and invisible characters and cut to
 //!   120 characters.
-//! - **The scene name is data.** It is sent only as a JSON string value built
-//!   by `serde_json`, never formatted into a string.
+//! - **Names are data.** A scene, input or source name is sent only as a JSON
+//!   string value built by `serde_json`, never formatted into a string. The
+//!   request type is a `&'static str` fixed in code.
 //!
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
@@ -47,7 +48,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Upper bound on one `obs_scene` action: connect, handshake, request and response.
+/// Upper bound on one OBS action: connect, handshake, every request and response.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Largest WebSocket frame payload accepted from OBS.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024;
@@ -260,7 +261,7 @@ impl fmt::Debug for ObsPassword {
     }
 }
 
-/// Switches the OBS program scene, one connection per call.
+/// Talks to OBS over loopback, one connection per call.
 #[derive(Clone, Debug)]
 pub struct ObsClient {
     endpoint: ObsEndpoint,
@@ -305,10 +306,38 @@ impl ObsClient {
     /// Makes `scene` the current program scene. No retry; on an error the
     /// switch may or may not have happened.
     pub fn set_current_program_scene(&self, scene: &str) -> Result<(), String> {
+        self.request(&ObsRequest::with_data(
+            "SetCurrentProgramScene",
+            json!({"sceneName":scene}),
+        ))
+        .map(drop)
+    }
+
+    /// Sends one request on a fresh connection and returns its
+    /// `responseData` (`Value::Null` when OBS sends none). No retry; on an
+    /// error the request may or may not have taken effect.
+    pub fn request(&self, request: &ObsRequest) -> Result<Value, String> {
+        self.session(|session| session.request(request))
+    }
+
+    /// Runs `script` on one connection: handshake once, then as many
+    /// [`ObsSession::request`] calls as it makes, then close. One deadline
+    /// covers the whole script, so a read-then-write toggle costs one
+    /// handshake, not two. The script sees OBS's earlier answers and decides
+    /// what to send next. No retry; after an error an earlier request may
+    /// already have taken effect.
+    pub fn session<T>(
+        &self,
+        script: impl FnOnce(&mut ObsSession<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
         let deadline = Instant::now() + self.timeout;
         let mut connection = Connection::open(self.endpoint, deadline, self.cancellation.clone())
             .map_err(|error| self.error(error))?;
-        let result = self.switch(&mut connection, scene);
+        let result = self.identify(&mut connection).and_then(|()| {
+            script(&mut ObsSession {
+                connection: &mut connection,
+            })
+        });
         connection.close();
         result.map_err(|error| self.error(error))
     }
@@ -317,7 +346,7 @@ impl ObsClient {
         format!("OBS at {}: {detail}", self.endpoint)
     }
 
-    fn switch(&self, connection: &mut Connection, scene: &str) -> Result<(), String> {
+    fn identify(&self, connection: &mut Connection) -> Result<(), String> {
         connection.handshake(&self.endpoint.to_string())?;
         let hello = connection.read_message()?;
         let authentication = identify_authentication(&hello, self.password.as_ref())?;
@@ -327,21 +356,67 @@ impl ObsClient {
         }
         connection.send_message(&json!({"op":OP_IDENTIFY, "d":identify}))?;
         let identified = connection.read_message()?;
-        check_identified(&identified)?;
+        check_identified(&identified)
+    }
+}
+
+/// One obs-websocket request: a fixed request type and optional data.
+///
+/// The type is a `&'static str` chosen in code, never profile text. Names
+/// (scenes, inputs, sources) belong in `data`, where `serde_json` builds the
+/// JSON string; nothing is formatted into a request.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObsRequest {
+    request_type: &'static str,
+    data: Option<Value>,
+}
+
+impl ObsRequest {
+    /// A request without `requestData`.
+    pub fn new(request_type: &'static str) -> Self {
+        Self {
+            request_type,
+            data: None,
+        }
+    }
+
+    /// A request with `requestData`.
+    pub fn with_data(request_type: &'static str, data: Value) -> Self {
+        Self {
+            request_type,
+            data: Some(data),
+        }
+    }
+
+    /// The request type, such as `ToggleRecord`.
+    pub fn request_type(&self) -> &'static str {
+        self.request_type
+    }
+}
+
+/// An identified connection inside [`ObsClient::session`].
+pub struct ObsSession<'a> {
+    connection: &'a mut Connection,
+}
+
+impl ObsSession<'_> {
+    /// Sends `request` and returns its `responseData` (`Value::Null` when OBS
+    /// sends none). Events and pings that arrive first are skipped.
+    pub fn request(&mut self, request: &ObsRequest) -> Result<Value, String> {
         let request_id = format!("osh-{}", hex(&random_bytes::<8>()));
-        connection.send_message(&json!({
-            "op":OP_REQUEST,
-            "d":{
-                "requestType":"SetCurrentProgramScene",
-                "requestId":request_id,
-                "requestData":{"sceneName":scene},
-            },
-        }))?;
+        let mut d = json!({"requestType":request.request_type, "requestId":request_id});
+        if let Some(data) = &request.data {
+            d["requestData"] = data.clone();
+        }
+        self.connection
+            .send_message(&json!({"op":OP_REQUEST, "d":d}))?;
         for _ in 0..=MAX_SKIPPED_MESSAGES {
-            let message = connection.read_message()?;
+            let message = self.connection.read_message()?;
             match message.op {
                 OP_EVENT => continue,
-                OP_REQUEST_RESPONSE => return check_response(&message.d, &request_id),
+                OP_REQUEST_RESPONSE => {
+                    return check_response(&message.d, &request_id, request.request_type);
+                }
                 op => {
                     return Err(format!(
                         "unexpected OBS message (op {op}) instead of the response"
@@ -435,9 +510,9 @@ fn check_identified(message: &Message) -> Result<(), String> {
     }
 }
 
-fn check_response(data: &Value, request_id: &str) -> Result<(), String> {
+fn check_response(data: &Value, request_id: &str, request_type: &str) -> Result<Value, String> {
     if data.get("requestId").and_then(Value::as_str) != Some(request_id)
-        || data.get("requestType").and_then(Value::as_str) != Some("SetCurrentProgramScene")
+        || data.get("requestType").and_then(Value::as_str) != Some(request_type)
     {
         return Err("OBS answered a different request".into());
     }
@@ -446,20 +521,49 @@ fn check_response(data: &Value, request_id: &str) -> Result<(), String> {
         .ok_or("OBS response has no request status")?;
     let code = status.get("code").and_then(Value::as_u64);
     match (status.get("result").and_then(Value::as_bool), code) {
-        (Some(true), Some(100)) => Ok(()),
+        (Some(true), Some(100)) => Ok(data.get("responseData").cloned().unwrap_or(Value::Null)),
         (Some(false), Some(code)) => {
-            let reason = match code {
-                600 => "no scene with that name".to_string(),
-                _ => format!("code {code}"),
-            };
             let comment = status
                 .get("comment")
                 .and_then(Value::as_str)
                 .map(|comment| format!(": {}", sanitize(comment)))
                 .unwrap_or_default();
-            Err(format!("OBS refused the scene switch ({reason}){comment}"))
+            Err(format!(
+                "OBS refused {} ({}){comment}",
+                refused_what(request_type),
+                refusal_reason(request_type, code)
+            ))
         }
         _ => Err("OBS response has a malformed request status".into()),
+    }
+}
+
+/// What the refused request was, for the error text. Scene switches keep the
+/// wording the app and the hardware checklist already show.
+fn refused_what(request_type: &str) -> String {
+    match request_type {
+        "SetCurrentProgramScene" => "the scene switch".into(),
+        other => other.into(),
+    }
+}
+
+/// A short reason for a failed request status code (obs-websocket v5
+/// `RequestStatus`). Unknown codes show as the number only.
+fn refusal_reason(request_type: &str, code: u64) -> String {
+    match (request_type, code) {
+        ("SetCurrentProgramScene", 600) => "no scene with that name".into(),
+        (_, 207) => "OBS is not ready yet".into(),
+        (_, 500) => "the output is already running".into(),
+        (_, 501) => "the output is not running".into(),
+        (_, 502) => "the output is paused".into(),
+        (_, 503) => "the output is not paused".into(),
+        (_, 504) => "the output is disabled".into(),
+        (_, 505) => "studio mode is active".into(),
+        (_, 506) => "studio mode is not active".into(),
+        (_, 600) => "not found".into(),
+        (_, 601) => "already exists".into(),
+        (_, 604) => "the resource is in the wrong state".into(),
+        _ => format!("code {code}"),
     }
 }
 
@@ -1449,6 +1553,237 @@ mod tests {
         let seen = server.join().unwrap();
         assert_eq!(seen.frames[0], (OPCODE_PONG, b"hb".to_vec()));
         assert_eq!(seen.messages[0]["op"], 1);
+    }
+
+    // ---- Generic requests and sessions ----
+
+    /// A well-behaved unauthenticated OBS that answers the next requests in
+    /// order with `(status, responseData)`, then waits for the client to
+    /// close. The requests it read are in `seen.messages` after the Identify.
+    fn scripted_obs(
+        answers: Vec<(Value, Option<Value>)>,
+    ) -> impl FnOnce(&mut Peer, &mut Seen) + Send + 'static {
+        move |peer, seen| {
+            peer.accept_upgrade();
+            peer.send_json(hello(None));
+            seen.messages.push(peer.read_json());
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            for (mut status, data) in answers {
+                let request = peer.read_json();
+                seen.messages.push(request.clone());
+                if status["result"] == json!(true) {
+                    status["code"] = json!(100);
+                }
+                let mut d = json!({
+                    "requestType":request["d"]["requestType"],
+                    "requestId":request["d"]["requestId"],
+                    "requestStatus":status,
+                });
+                if let Some(data) = data {
+                    d["responseData"] = data;
+                }
+                peer.send_json(json!({"op":7,"d":d}));
+            }
+        }
+    }
+
+    #[test]
+    fn a_request_returns_its_response_data_and_omits_absent_request_data() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":true}),
+            Some(json!({"outputActive":true,"outputPaused":false})),
+        )]));
+        let data = client(endpoint, None)
+            .request(&ObsRequest::new("GetRecordStatus"))
+            .unwrap();
+        assert_eq!(data, json!({"outputActive":true,"outputPaused":false}));
+        let seen = server.join().unwrap();
+        assert_eq!(seen.messages[1]["d"]["requestType"], "GetRecordStatus");
+        assert!(seen.messages[1]["d"].get("requestData").is_none());
+        assert_eq!(
+            seen.frames,
+            [(OPCODE_CLOSE, 1000u16.to_be_bytes().to_vec())]
+        );
+    }
+
+    #[test]
+    fn a_response_without_data_is_null() {
+        let (endpoint, server) = serve(scripted_obs(vec![(json!({"result":true}), None)]));
+        let data = client(endpoint, None)
+            .request(&ObsRequest::new("ToggleRecord"))
+            .unwrap();
+        assert_eq!(data, Value::Null);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_session_runs_read_then_write_on_one_connection() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            (
+                json!({"result":true}),
+                Some(json!({"studioModeEnabled":false})),
+            ),
+            (json!({"result":true}), None),
+        ]));
+        client(endpoint, None)
+            .session(|session| {
+                let current = session.request(&ObsRequest::new("GetStudioModeEnabled"))?;
+                let enabled = current["studioModeEnabled"].as_bool().ok_or("no flag")?;
+                session.request(&ObsRequest::with_data(
+                    "SetStudioModeEnabled",
+                    json!({"studioModeEnabled":!enabled}),
+                ))
+            })
+            .unwrap();
+        let seen = server.join().unwrap();
+        // One Identify, then both requests, on the one connection.
+        let ops: Vec<_> = seen.messages.iter().map(|m| m["op"].clone()).collect();
+        assert_eq!(ops, [json!(1), json!(6), json!(6)]);
+        assert_eq!(
+            seen.messages[2]["d"]["requestData"],
+            json!({"studioModeEnabled":true})
+        );
+        assert_ne!(
+            seen.messages[1]["d"]["requestId"],
+            seen.messages[2]["d"]["requestId"]
+        );
+        assert_eq!(seen.frames.len(), 1, "one close frame: {seen:?}");
+    }
+
+    #[test]
+    fn a_failed_request_ends_the_session_and_later_requests_are_not_sent() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":501,"comment":"Output is not running."}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .session(|session| {
+                session.request(&ObsRequest::new("StopRecord"))?;
+                session.request(&ObsRequest::new("ToggleRecord"))
+            })
+            .unwrap_err();
+        assert!(error.starts_with("OBS at 127.0.0.1:"), "{error}");
+        assert!(error.contains("refused StopRecord"), "{error}");
+        assert!(error.contains("the output is not running"), "{error}");
+        let seen = server.join().unwrap();
+        assert_eq!(seen.messages.len(), 2, "no second request: {seen:?}");
+    }
+
+    #[test]
+    fn refusal_text_for_other_requests_is_generic_and_scene_switches_keep_theirs() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .request(&ObsRequest::with_data(
+                "SetInputMute",
+                json!({"inputName":"Mic","inputMuted":true}),
+            ))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.contains("refused SetInputMute (not found)"),
+            "{error}"
+        );
+        assert!(!error.contains("scene"), "{error}");
+        assert!(!error.contains("Mic"), "{error}");
+        assert_eq!(
+            refusal_reason("SetCurrentProgramScene", 600),
+            "no scene with that name"
+        );
+        assert_eq!(refusal_reason("X", 9999), "code 9999");
+    }
+
+    #[test]
+    fn a_response_for_another_request_type_or_id_is_rejected() {
+        let wrong_type = |peer: &mut Peer, _: &mut Seen| {
+            peer.accept_upgrade();
+            peer.send_json(hello(None));
+            peer.read_json();
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            let request = peer.read_json();
+            peer.send_json(json!({"op":7,"d":{"requestType":"ToggleStream","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}}));
+        };
+        let (endpoint, server) = serve(wrong_type);
+        let error = client(endpoint, None)
+            .request(&ObsRequest::new("ToggleRecord"))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("answered a different request"), "{error}");
+
+        let wrong_id = |peer: &mut Peer, _: &mut Seen| {
+            peer.accept_upgrade();
+            peer.send_json(hello(None));
+            peer.read_json();
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            peer.read_json();
+            peer.send_json(json!({"op":7,"d":{"requestType":"ToggleRecord","requestId":"someone-else","requestStatus":{"result":true,"code":100}}}));
+        };
+        let (endpoint, server) = serve(wrong_id);
+        let error = client(endpoint, None)
+            .request(&ObsRequest::new("ToggleRecord"))
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("answered a different request"), "{error}");
+    }
+
+    #[test]
+    fn one_deadline_covers_every_request_in_a_session() {
+        // The first answer arrives; the second never does.
+        let (endpoint, server) = serve(|peer, _| {
+            peer.accept_upgrade();
+            peer.send_json(hello(None));
+            peer.read_json();
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            let request = peer.read_json();
+            peer.send_json(json!({"op":7,"d":{"requestType":"GetRecordStatus","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}}));
+            peer.read_json();
+            thread::sleep(Duration::from_millis(1500));
+        });
+        let started = Instant::now();
+        let error = client(endpoint, None)
+            .session(|session| {
+                session.request(&ObsRequest::new("GetRecordStatus"))?;
+                session.request(&ObsRequest::new("ToggleRecord"))
+            })
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(1400), "{error}");
+        assert!(
+            error.contains("timed out") || error.contains("deadline"),
+            "{error}"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn cancelling_between_requests_stops_the_session() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let (endpoint, server) = serve(|peer, _| {
+            peer.accept_upgrade();
+            peer.send_json(hello(None));
+            peer.read_json();
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            let request = peer.read_json();
+            peer.send_json(json!({"op":7,"d":{"requestType":"GetRecordStatus","requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100}}}));
+            let _ = peer.read_frame_lenient();
+            thread::sleep(Duration::from_millis(1500));
+        });
+        let started = Instant::now();
+        let error = ObsClient::new(endpoint, None)
+            .with_cancellation(flag.clone())
+            .session(|session| {
+                session.request(&ObsRequest::new("GetRecordStatus"))?;
+                flag.store(true, Ordering::SeqCst);
+                session.request(&ObsRequest::new("ToggleRecord"))
+            })
+            .unwrap_err();
+        assert!(started.elapsed() < Duration::from_millis(1000), "{error}");
+        assert!(
+            error.contains("cancel") || error.contains("stopp"),
+            "{error}"
+        );
+        server.join().unwrap();
     }
 
     fn expect_failure(script: impl FnOnce(&mut Peer, &mut Seen) + Send + 'static, expected: &str) {

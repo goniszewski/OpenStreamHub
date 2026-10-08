@@ -24,7 +24,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 ## M003K knobs
 
 - **Default mode works.** No software mode is needed. A passive capture recorded 32 reports in 40 s, and a separate counter-clockwise capture recorded 23 reports in 30 s. Both ended normally.
-- **Physical mapping** (as the user turned them): wire index **2 = top** knob, **0 = left**, **1 = right**.
+- **Physical mapping** (as the user turned them): wire index **2 = top** knob, **0 = bottom-left**, **1 = bottom-right**. Only this `single-top` mounting was observed on hardware; it is the app preview's default, and the preview's other three orientations (single knob right, bottom or left) are derived by rotation and not observed.
 - **Rotation.** Reports start `01 2a 05 00 00 03`, then one byte per knob at byte 6 plus the wire index: `01` clockwise, `00` counter-clockwise, `ff` idle for the others. This confirms the documented values.
 - **Press and release.** Each knob press and release decodes as its own event.
 - **Counts.** About 8 clicks per knob and direction gave 7 to 9 reports each. One report per click is plausible but not proven, because the clicks were counted by hand.

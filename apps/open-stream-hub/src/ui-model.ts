@@ -45,7 +45,8 @@ export const replayLabels: Record<ReplayKind, string> = {
 
 export function moduleNote(module: ServiceModule) {
   switch (module) {
-    case 'm003k': case 'm4315': case 'm005s': return 'Control positions will be checked with the device.';
+    case 'm003k': return 'Knob order verified on hardware: with the single knob on top, Knob 3 is on top, Knob 1 bottom-left and Knob 2 bottom-right.';
+    case 'm4315': case 'm005s': return 'Control positions will be checked with the device.';
     case 'm131e': return 'Physical Right/Left rotation will be checked with the device.';
     case 'm032le': return 'Roller order and physical Up/Down direction will be checked with the device.';
   }

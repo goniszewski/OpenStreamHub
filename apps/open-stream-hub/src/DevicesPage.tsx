@@ -5,8 +5,10 @@ import { IntegerField } from './controls';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
-import { moduleArtwork } from './module-controls';
-import { RigPreview } from './RigPreview';
+import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from './knob-orientation';
+import type { KnobOrientation } from './knob-orientation';
+import { knobControls, moduleArtwork, moduleImage } from './module-controls';
+import { livePointer, livePressed, livePulse, RigPreview } from './RigPreview';
 import { runBlockNotes, ServicePanel } from './ServicePanel';
 import { draftRunBlock } from './profile-session';
 import type { ServiceRunner } from './service-runner';
@@ -23,7 +25,7 @@ import { bindingPreviewText } from './DialFunctionsPanel';
 export function ModuleCatalog({ editor }: { editor: DeviceEditor }) {
   return <aside className="catalog" aria-label="Module catalog"><h2>Modules</h2>
     {modules.map(module => <button key={module.id} className={`module-card ${editor.selectedModule === module.id ? 'selected' : ''}`} aria-pressed={editor.selectedModule === module.id} onClick={() => editor.chooseModule(module.id)}>
-      <span className="module-photo"><img className={module.art === 'encoder' || module.art === 'knob' ? 'art-square' : 'art-wide'} src={`/modules/${module.art}.png`} alt="" /></span>
+      <span className="module-photo"><img className={module.art === 'encoder' || module.art === 'knob' ? 'art-square' : 'art-wide'} {...moduleImage(module)} alt="" /></span>
       <span className="module-copy"><span className="module-name">{module.shortName}</span><small>{module.supported ? 'Device test pending' : 'Planned'}</small></span>
     </button>)}
   </aside>;
@@ -44,23 +46,13 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   const profile = state.draft.profile;
   const serialMissing = serialScope === 'exact' && !selection.serial;
   const previewRunning = preview.status === 'running' || keypadPreview.status === 'running';
+  const knobOrientation = useKnobOrientation();
+  const isKnob = selected.id === 'm003k';
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
     <RigPreview editor={editor} state={state} feed={feed} />
-    <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
-      <div className={`module-image${selected.id === 'm003k' ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
-        <img src={`/modules/${selected.art}.png`} alt="" draggable={false} />
-        {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={binding?.action} /></div>}
-        {selected.supported && controlCounts[selected.id] > 1 && moduleArtwork[selected.id].controls.map(area => <button key={area.control} type="button"
-          className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}`}
-          style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
-          aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
-          aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
-          onClick={() => editor.changeSelection({ ...selection, control: area.control })}>
-          {isKeypad && <KeyDisplayContent slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
-        </button>)}
-      </div>
-    </div>
+    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} />
+    {isKnob && <KnobOrientationControl orientation={knobOrientation} onRotate={knobOrientationStore.rotate} />}
     {selected.supported ? <>
       {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad} />}
       {!isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
@@ -84,6 +76,42 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
       sourceProfileId={state.draft.sourceId ?? state.draft.profileId}
       dryRunOnly={draftRunBlock(state) !== null} dryRunNote={runBlockNotes[draftRunBlock(state) ?? 'imported']} />
   </section>;
+}
+
+// The module image with its hit areas. It alone subscribes to the feed, so live input re-renders
+// only this image, not the rest of the workspace. Live state is read-only and keyed by module type,
+// as in the rig: same-type devices share one live state.
+export function HeroImage({ editor, profile, feed, knobOrientation }: { editor: DeviceEditor; profile: SessionState['draft']['profile']; feed?: DeviceFeed; knobOrientation: KnobOrientation }) {
+  const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding } = editor;
+  const live = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).live[selected.id];
+  const isKnob = selected.id === 'm003k';
+  const controls = isKnob ? knobControls(knobOrientation) : moduleArtwork[selected.id].controls;
+  return <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
+      <div className={`module-image${isKnob ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
+        <img {...moduleImage(selected, knobOrientation)} alt="" draggable={false} />
+        {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={binding?.action} /></div>}
+        {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
+          style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control)}</span>)}
+        {selected.supported && controlCounts[selected.id] > 1 && controls.map(area => <button key={area.control} type="button"
+          className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}${selected.id === 'm005s' ? (live?.faders[area.control] !== undefined ? ' live' : '') : livePressed(live, area.control)}`}
+          style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
+          aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
+          aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
+          onClick={() => editor.changeSelection({ ...selection, control: area.control })}>
+          {isKeypad && <KeyDisplayContent slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
+          {selected.id === 'm005s' && live?.faders[area.control] !== undefined && <span className="fader-thumb" style={{ bottom: `${live.faders[area.control]}%` }} />}
+          {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}
+        </button>)}
+      </div>
+    </div>;
+}
+
+// The image turns with the module; hit areas are recomputed so their contents stay upright.
+export function KnobOrientationControl({ orientation, onRotate }: { orientation: KnobOrientation; onRotate(): void }) {
+  return <div className="orientation-control" role="group" aria-label="3-knob module orientation">
+    <button type="button" className="button compact" aria-label="Rotate module 90 degrees clockwise" onClick={onRotate}><RotateCw size={15} />Rotate module</button>
+    <span className="orientation-label" aria-live="polite">{knobOrientationLabels[orientation]}</span>
+  </div>;
 }
 
 function KeypadResult({ preview }: { preview: KeypadPreview }) {

@@ -90,6 +90,10 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:32px; letter-spacing:-.9px; line-hei
 .knob-image .image-control { border-width:2.5px; }
 .knob-image .image-control.selected { border-color:#ded2ff; background:transparent; box-shadow:0 0 0 1px #211630; }
 .knob-image .image-control:focus-visible { outline-width:2px; outline-offset:-4px; background:transparent; }
+/* The top-down knob art fills 8%..92% of its square, so 0.84 x 1.15 = 0.966 of the hero height fits; the photo's 1.28 would clip. */
+.hero.square .module-image.knob-image { transform:scale(1.15); }
+.orientation-control { display:flex; align-items:center; justify-content:center; flex-wrap:wrap; gap:8px 12px; margin:0 0 12px; }
+.orientation-label { color:var(--muted); font-size:12px; }
 .control-picker { display:flex; justify-content:center; flex-wrap:wrap; gap:8px; }
 .control-picker button { border:1px solid var(--line); border-radius:8px; padding:7px 12px; background:var(--control); font-size:12px; }
 .control-picker button.selected { border-color:var(--accent); background:var(--selected); color:var(--accent); font-weight:600; }
@@ -228,8 +232,9 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .live-controls .button { height:32px; min-height:32px; padding:0 14px; }
 .live-badge { padding:2px 8px; border-radius:999px; background:var(--soft-green); color:var(--green); font-size:11px; font-weight:700; }
 .live-status { color:var(--muted); }.live-status.failed { color:var(--red); }
-.rig-stage .image-control { overflow:visible; }
-.rig-stage .image-control.pressed { background:#a284ff55; box-shadow:0 0 0 2px #f5f1ff, 0 0 10px #a284ff; }
+.rig-stage .image-control,.module-image .image-control:not(.key-display) { overflow:visible; }
+.rig-stage .image-control.pressed,.module-image .image-control.pressed { background:#a284ff55; box-shadow:0 0 0 2px #f5f1ff, 0 0 10px #a284ff; }
+.module-image .live-overlay { pointer-events:none; }
 .live-pointer { position:absolute; left:50%; top:0; width:2px; height:50%; margin-left:-1px; border-radius:1px; background:#f5f1ff; box-shadow:0 0 4px #a284ff; transform-origin:50% 100%; transition:transform .12s ease-out; pointer-events:none; }
 .live-pulse { position:absolute; left:50%; top:50%; margin:-8px 0 0 -8px; color:#f5f1ff; filter:drop-shadow(0 0 3px #a284ff); opacity:0; animation:live-pulse .3s ease-out; pointer-events:none; }
 @keyframes live-pulse { from { opacity:1; } to { opacity:0; } }

@@ -6,7 +6,8 @@ import type { DeviceFeed } from './device-feed';
 import type { ModuleLive } from './live-state';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { keypadDepth, keypadIsBack } from './keypad-model';
-import { moduleArtwork } from './module-controls';
+import { useKnobOrientation } from './knob-orientation';
+import { knobControls, moduleArtwork, moduleImage } from './module-controls';
 import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, faderFromKey, faderFromPointer, isDeviceItem, moveRigModule, readRig, removeRigModule, syncDeviceRig, writeRig } from './rig-model';
 import type { RigItem } from './rig-model';
 import type { SessionState } from './profile-session';
@@ -48,6 +49,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
   const [faders, setFaders] = useState<Record<string, number>>({});
   const profile = state.draft.profile;
   const { selection } = editor;
+  const knobOrientation = useKnobOrientation();
   const active = rig.find(item => item.id === activeId && item.module === selection.module)?.id ?? rig.find(item => item.module === selection.module)?.id;
 
   function select(item: RigItem, control: number) {
@@ -80,14 +82,16 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
       {rig.map((item, index) => {
         const module = modules.find(entry => entry.id === item.module)!;
         const art = moduleArtwork[item.module];
+        const isKnob = item.module === 'm003k';
+        const controls = isKnob ? knobControls(knobOrientation) : art.controls;
         const isActive = item.id === active;
         const bound = boundControlCount(profile, item.module);
         const live = feedState.live[item.module];
         return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
           <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${module.name} in rig`}>
-            <img src={`/modules/${module.art}.png`} alt="" draggable={false} />
+            <img {...moduleImage(module, knobOrientation)} alt="" draggable={false} />
             {item.module === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={controlAction(profile, 'm131e', 0)} /></div>}
-            {art.controls.map(area => {
+            {controls.map(area => {
               const action = controlAction(profile, item.module, area.control);
               const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
               const picked = isActive && selection.control === area.control;
@@ -108,10 +112,9 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
                   <span className="fader-thumb" style={{ bottom: `${value}%` }} />
                 </div>;
               }
-              const pulse = live?.pulses[area.control];
               return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
                 {livePointer(live, area.control)}
-                {pulse && <span key={pulse.tick} className={`live-pulse ${pulse.direction}`} aria-hidden="true">{pulse.direction === 'up' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>}
+                {livePulse(live, area.control)}
               </button>;
             })}
           </div>
@@ -128,9 +131,14 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
   </section>;
 }
 
-const livePressed = (live: ModuleLive | undefined, control: number) => live?.keysDown.includes(control) ? ' pressed' : '';
-const livePointer = (live: ModuleLive | undefined, control: number) => live?.angles[control] === undefined ? null :
+// Read-only live overlays, shared by the rig tiles and the Devices hero image.
+export const livePressed = (live: ModuleLive | undefined, control: number) => live?.keysDown.includes(control) ? ' pressed' : '';
+export const livePointer = (live: ModuleLive | undefined, control: number) => live?.angles[control] === undefined ? null :
   <span className="live-pointer" style={{ transform: `rotate(${live.angles[control]}deg)` }} aria-hidden="true" />;
+export function livePulse(live: ModuleLive | undefined, control: number) {
+  const pulse = live?.pulses[control];
+  return pulse && <span key={pulse.tick} className={`live-pulse ${pulse.direction}`} aria-hidden="true">{pulse.direction === 'up' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>;
+}
 
 export function LiveControls({ feed, feedState, source, setSource }: { feed: DeviceFeed; feedState: ReturnType<DeviceFeed['getState']>; source: string; setSource(source: string): void }) {
   const running = isRunning(feedState);

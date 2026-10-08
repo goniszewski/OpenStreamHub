@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- M003K 3-knob module, top-down. Canonical orientation: single knob on top. Lighting is kept centred so the art reads the same in all four rotations. -->
+  <defs>
+    <linearGradient id="bezel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2b2b30"/>
+      <stop offset="0.5" stop-color="#121215"/>
+      <stop offset="1" stop-color="#26262b"/>
+    </linearGradient>
+    <radialGradient id="face" cx="0.5" cy="0.5" r="0.7">
+      <stop offset="0" stop-color="#1d1d21"/>
+      <stop offset="1" stop-color="#0f0f12"/>
+    </radialGradient>
+    <radialGradient id="cap" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#d9d9de"/>
+      <stop offset="0.45" stop-color="#8d8d95"/>
+      <stop offset="0.85" stop-color="#4f4f56"/>
+      <stop offset="1" stop-color="#2c2c31"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0.6" stop-color="#a77bff" stop-opacity="0"/>
+      <stop offset="0.75" stop-color="#a77bff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#a77bff" stop-opacity="0"/>
+    </radialGradient>
+    <g id="knob">
+      <circle r="16" fill="url(#glow)"/>
+      <circle r="12.4" fill="none" stroke="#c9a6ff" stroke-width="2.2"/>
+      <circle r="12.4" fill="none" stroke="#f1e6ff" stroke-width="0.7" stroke-opacity="0.85"/>
+      <circle r="10.8" fill="#0b0b0d"/>
+      <circle r="10.2" fill="none" stroke="#3a3a40" stroke-width="1.4" stroke-dasharray="0.9 0.7"/>
+      <circle r="8.6" fill="url(#cap)"/>
+      <circle r="6.6" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="0.35"/>
+      <circle r="4.4" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="0.35"/>
+      <circle r="2.2" fill="none" stroke="#ffffff" stroke-opacity="0.15" stroke-width="0.35"/>
+      <circle r="8.6" fill="none" stroke="#1a1a1e" stroke-width="0.5"/>
+    </g>
+  </defs>
+  <rect x="8" y="8" width="84" height="84" rx="13" fill="url(#bezel)"/>
+  <rect x="8.6" y="8.6" width="82.8" height="82.8" rx="12.5" fill="none" stroke="#45454c" stroke-width="0.8"/>
+  <rect x="13" y="13" width="74" height="74" rx="6" fill="url(#face)" stroke="#2e2e34" stroke-width="0.6"/>
+  <use href="#knob" x="50" y="33"/>
+  <use href="#knob" x="33" y="66"/>
+  <use href="#knob" x="67" y="66"/>
+</svg>

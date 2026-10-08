@@ -93,7 +93,7 @@ The display runs on its own thread instead of the action worker, so display fail
 
 ## Hardware results (M4315, 8 October 2026)
 
-One M4315 on Apple Silicon macOS, connected directly to the Mac (behind the hub chain inside the MasterHUB unit). Profile: `examples/profiles/keypad-folders.json`. Command: `masterhub-service run --software-mode --display-sync --duration-secs N`, without `--execute`, so no action ran. The logs stay on the test machine. This is what they showed:
+One M4315 on Apple Silicon macOS, connected directly to the Mac (behind the hub chain inside the MasterHUB unit). Profile: `examples/profiles/keypad-folders.json`. Command: `masterhub-service run --software-mode --display-sync --duration-secs N`, without `--execute`, so no action ran, except in the last row, which used `--execute`. The logs stay on the test machine. This is what they showed:
 
 | Check | Result |
 | --- | --- |
@@ -104,6 +104,7 @@ One M4315 on Apple Silicon macOS, connected directly to the Mac (behind the hub 
 | Folder navigation | Three runs, 17 redraws in the longest. Root to Development to Git tools and back, four times. Every redraw was `complete: true` with no failure, drop or coalescing. |
 | Diffing | Only changed keys were rewritten (for example `[0, 2]` from root to Development, because key 1 is a folder on both pages). |
 | Press and release | A navigation press's release was logged `unbound`, as designed. |
+| Real actions (`--execute`) | A scratch profile with `toggle_mute` on key 0 and `volume` +5 and -5 on keys 1 and 2: 9 of 9 presses logged `action_executed`, none failed. Four mute presses ended unmuted, and five volume presses (+5, -5, -5, +5, -5) changed 11% to 6%, as expected. Releases ran nothing. Shortcuts, app launch and the `obs_*` actions were not tested. |
 | Session end | Clean `duration_elapsed` end with no error. The service restores hardware mode on exit, and each later run re-entered software mode normally. |
 
 Still unknown after this session: the physical position of every key index (only keys 0 to 2 were seen to agree between input and display); how the Back tile and the `L1` and `L2` badges look (the user was not asked to confirm after navigating); redraw latency (logged, not timed); orientation and color accuracy beyond the first page; every other module; and the dial path.

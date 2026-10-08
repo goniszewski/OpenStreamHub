@@ -4,7 +4,9 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
     sync::atomic::{AtomicBool, Ordering},
+    thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -67,6 +69,23 @@ enum Command {
         /// Explicitly enter software mode (M131E dial or M4315 keys).
         #[arg(long)]
         software_mode: bool,
+    },
+    /// Record every currently enumerated HID interface into one directory.
+    ///
+    /// This is passive by default: it sends no mode, feature or output reports.
+    /// Each interface gets its own JSONL file so one busy device cannot hide
+    /// reports from another. The inventory is snapshotted when capture starts;
+    /// re-enumeration during the capture is not followed.
+    RecordAll {
+        /// Destination directory; it must not contain the generated files.
+        #[arg(long)]
+        output_dir: PathBuf,
+        /// Capture deadline for every interface (1 to 86400 seconds).
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(1..=86_400))]
+        duration_secs: u64,
+        /// Maximum wait for each read (1 to 1000 ms).
+        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(i32).range(TIMEOUT_MS_RANGE))]
+        timeout_ms: i32,
     },
     /// Read-only: GET FEATURE for the Feature report IDs one device declares.
     ///
@@ -260,6 +279,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             max_reports,
             software_mode,
         ),
+        Command::RecordAll {
+            output_dir,
+            duration_secs,
+            timeout_ms,
+        } => record_all(output_dir, duration_secs, timeout_ms),
         Command::Features {
             path_hex,
             report_id,
@@ -592,6 +616,26 @@ fn record(
     software_mode: bool,
 ) -> Result<(), Box<dyn Error>> {
     let interrupted = cooltek_sdk_cli::interrupt::install()?;
+    record_path(
+        path,
+        output,
+        duration_secs,
+        timeout_ms,
+        max_reports,
+        software_mode,
+        &interrupted,
+    )
+}
+
+fn record_path(
+    path: &[u8],
+    output: PathBuf,
+    duration_secs: u64,
+    timeout_ms: i32,
+    max_reports: Option<u64>,
+    software_mode: bool,
+    interrupted: &AtomicBool,
+) -> Result<(), Box<dyn Error>> {
     let registry = DeviceRegistry::new()?;
     let devices = registry.devices();
     let selected = select_device(&devices, path, software_mode)?;
@@ -637,8 +681,54 @@ fn record(
             timeout_ms,
             max_reports,
         },
-        &interrupted,
+        interrupted,
     )
+}
+
+fn record_all(
+    output_dir: PathBuf,
+    duration_secs: u64,
+    timeout_ms: i32,
+) -> Result<(), Box<dyn Error>> {
+    std::fs::create_dir_all(&output_dir)?;
+    let interrupted = cooltek_sdk_cli::interrupt::install()?;
+    let devices = DeviceRegistry::new()?.devices().to_vec();
+    if devices.is_empty() {
+        return Err("no HID interfaces were found".into());
+    }
+    let shared = Arc::clone(&interrupted);
+    let mut workers = Vec::with_capacity(devices.len());
+    for (index, device) in devices.iter().enumerate() {
+        let path = device.path.as_bytes().to_vec();
+        let path_hex = encode_hex(&path);
+        let output = output_dir.join(format!("{index:02}-{path_hex}.jsonl"));
+        let shared = Arc::clone(&shared);
+        workers.push(thread::spawn(move || {
+            record_path(
+                &path,
+                output,
+                duration_secs,
+                timeout_ms,
+                None,
+                false,
+                &shared,
+            )
+            .map_err(|error| format!("interface {index} ({path_hex}): {error}"))
+        }));
+    }
+    let mut failures = Vec::new();
+    for worker in workers {
+        match worker.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => failures.push(error),
+            Err(_) => failures.push("capture worker panicked".into()),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; ").into())
+    }
 }
 
 struct RecordSettings {

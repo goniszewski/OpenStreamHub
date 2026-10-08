@@ -17,6 +17,7 @@ use cooltek_sdk_cli::{
     dial_artwork::{DialArtwork, DialContent, SystemClock},
     display_artwork::PreparedKeyArtwork,
     display_sink::{SharedTransport, live_dial_display, live_display},
+    interrupt::WatchedStdin,
     live_output::TimedStdout,
     live_runtime::{LiveOptions, LiveSummary, run_live, run_live_with_display},
     service_events::{
@@ -38,7 +39,7 @@ use serde_json::json;
     name = "masterhub-service",
     version,
     about = "Bind MasterHUB gestures to macOS actions",
-    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables software mode for the IPS dial or keys. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM ends the session and attempts requested mode cleanup; a second Ctrl-C exits immediately."
+    long_about = "Bind MasterHUB gestures to macOS actions. Replay always plans actions without HID or macOS access. Live runs default to dry-run; --execute enables actions, while --software-mode independently enables software mode for the IPS dial or keys. Each process owns one explicitly selected interface. Ctrl-C or SIGTERM (or, with --exit-on-stdin-eof, end of stdin) ends the session and attempts requested mode cleanup; a second Ctrl-C exits immediately."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -120,6 +121,15 @@ enum Command {
         /// is kept only in memory, and is never logged. Requires --obs-endpoint.
         #[arg(long, requires = "obs_endpoint")]
         obs_password_stdin: bool,
+        /// End the session as Ctrl-C or SIGTERM would (hardware mode restored)
+        /// when stdin reaches end of file, so a supervising process that dies,
+        /// closing the stdin pipe it holds open, never leaves the device in
+        /// software mode. The footer reason is then `stdin_closed`. stdin must
+        /// be a pipe or socket that is still open when the run starts, checked
+        /// before the device is opened; the OBS password line, if requested,
+        /// is read first, and any later stdin data is ignored.
+        #[arg(long)]
+        exit_on_stdin_eof: bool,
     },
 }
 
@@ -163,11 +173,22 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             profile_switch_requests,
             obs_endpoint,
             obs_password_stdin,
+            exit_on_stdin_eof,
         } => {
             let profile = load_profile(profile)?;
+            // Before the password read: a terminal, file or /dev/null stdin is
+            // refused without prompting for (and echoing) a password.
+            if exit_on_stdin_eof {
+                cooltek_sdk_cli::interrupt::check_stdin_pipe(io::stdin())?;
+            }
             // Read before any HID access, so a missing password never leaves
             // the device in software mode.
             let obs = obs_client(obs_endpoint, obs_password_stdin, &mut io::stdin().lock())?;
+            // After the password line, before any HID access: a pipe whose
+            // writer is gone would stop the run as soon as it started.
+            if exit_on_stdin_eof {
+                cooltek_sdk_cli::interrupt::check_stdin_open(io::stdin())?;
+            }
             let profile_name = profile.name.clone();
             check_display_sync(display_sync, software_mode, dial_content, &profile)?;
             if execute && !cfg!(target_os = "macos") {
@@ -188,6 +209,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // Reject unsupported stdout (such as a regular file) before any HID access.
             let stdout = TimedStdout::new(Duration::from_millis(500))?;
             let stopped = cooltek_sdk_cli::interrupt::install()?;
+            // `io::stdin()` shares the buffer the password was read through,
+            // so bytes after the password line are neither lost nor reordered.
+            let options = live_options(
+                software_mode,
+                duration_secs,
+                max_reports,
+                timeout_ms,
+                stop_on_action_error,
+                profile_switch_requests,
+                exit_on_stdin_eof,
+                io::stdin(),
+                &stopped,
+                &cooltek_sdk_cli::interrupt::STDIN_CLOSED,
+            )?;
             let registry = DeviceRegistry::new()?;
             let devices = registry.devices();
             let selected = select_device(&devices, &path_hex, software_mode)?;
@@ -223,15 +258,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             if let Some(obs) = &obs {
                 details["obs"] = obs_details(obs);
             }
-            let options = LiveOptions {
-                software_mode,
-                duration: duration_secs.map(Duration::from_secs),
-                max_reports,
-                timeout_ms,
-                stop_on_action_error,
-                profile_switch_requests,
-                ..LiveOptions::default()
-            };
             let factory = move |abort| Ok((Dispatcher::new(execute, abort, obs), stdout));
             match artwork {
                 None => {
@@ -290,6 +316,41 @@ fn obs_client(
         .then(|| ObsPassword::read_line(stdin))
         .transpose()?;
     Ok(Some(ObsClient::new(endpoint, password)))
+}
+
+/// The live options for `run`. With `--exit-on-stdin-eof` it also starts the
+/// stdin watchdog on what is left of `stdin` after the OBS password line, and
+/// `stdin_closed` names the flag the watchdog sets before requesting a stop on
+/// `interrupted`. Without it nothing is started and stdin is not read again.
+#[allow(clippy::too_many_arguments)]
+fn live_options(
+    software_mode: bool,
+    duration_secs: Option<u64>,
+    max_reports: Option<u64>,
+    timeout_ms: i32,
+    stop_on_action_error: bool,
+    profile_switch_requests: bool,
+    exit_on_stdin_eof: bool,
+    stdin: impl WatchedStdin,
+    interrupted: &Arc<AtomicBool>,
+    closed: &'static AtomicBool,
+) -> Result<LiveOptions, String> {
+    let stdin_closed = if exit_on_stdin_eof {
+        cooltek_sdk_cli::interrupt::watch_stdin(stdin, Arc::clone(interrupted), closed)?;
+        Some(closed)
+    } else {
+        None
+    };
+    Ok(LiveOptions {
+        software_mode,
+        duration: duration_secs.map(Duration::from_secs),
+        max_reports,
+        timeout_ms,
+        stop_on_action_error,
+        profile_switch_requests,
+        stdin_closed,
+        ..LiveOptions::default()
+    })
 }
 
 /// `service_start` details for OBS: the endpoint and whether a password is
@@ -876,6 +937,156 @@ mod tests {
         )
         .unwrap_err();
         assert!(!error.contains("hunter2"), "{error}");
+    }
+
+    fn wait_for(flag: &AtomicBool) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        false
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_on_stdin_eof_is_off_by_default_and_then_never_reads_stdin() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "masterhub-service",
+                "run",
+                "--profile",
+                "p.json",
+                "--path-hex",
+                "41",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args).map(|cli| match cli.command {
+                Command::Run {
+                    exit_on_stdin_eof, ..
+                } => exit_on_stdin_eof,
+                _ => unreachable!(),
+            })
+        };
+        assert!(!parse(&[]).unwrap());
+        assert!(parse(&["--exit-on-stdin-eof"]).unwrap());
+        assert!(parse(&["--exit-on-stdin-eof=true"]).is_err());
+        // Off: no watchdog, so stdin (here at EOF at once) is never read and
+        // nothing is stopped; the other run flags still reach the options.
+        let read = Arc::new(AtomicBool::new(false));
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        let options = options_for(false, Untouched::new(&read), &interrupted, closed);
+        assert!(options.stdin_closed.is_none());
+        assert!(options.software_mode && options.stop_on_action_error);
+        assert!(options.profile_switch_requests);
+        assert_eq!(options.duration, Some(Duration::from_secs(30)));
+        assert_eq!((options.max_reports, options.timeout_ms), (Some(7), 250));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!read.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(!interrupted.load(std::sync::atomic::Ordering::SeqCst));
+        // On: the options carry the watchdog's flag (so the footer can say
+        // `stdin_closed`), the same stdin is read, and its EOF requests the stop.
+        let options = options_for(true, Untouched::new(&read), &interrupted, closed);
+        assert!(std::ptr::eq(options.stdin_closed.unwrap(), closed));
+        assert!(wait_for(&interrupted));
+        assert!(read.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    /// `run`'s options for fixed sample flags, with or without the watchdog.
+    fn options_for(
+        exit_on_stdin_eof: bool,
+        stdin: impl WatchedStdin,
+        interrupted: &Arc<AtomicBool>,
+        closed: &'static AtomicBool,
+    ) -> LiveOptions {
+        live_options(
+            true,
+            Some(30),
+            Some(7),
+            250,
+            true,
+            true,
+            exit_on_stdin_eof,
+            stdin,
+            interrupted,
+            closed,
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    /// Records any read and reads as EOF; its descriptor is an unused pipe.
+    struct Untouched(Arc<AtomicBool>, io::PipeReader);
+    #[cfg(unix)]
+    impl Untouched {
+        fn new(read: &Arc<AtomicBool>) -> Self {
+            let (reader, _) = io::pipe().unwrap();
+            Self(Arc::clone(read), reader)
+        }
+    }
+    #[cfg(unix)]
+    impl Read for Untouched {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(0)
+        }
+    }
+    #[cfg(unix)]
+    impl std::os::fd::AsFd for Untouched {
+        fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+            self.1.as_fd()
+        }
+    }
+
+    #[cfg(unix)]
+    /// A buffered pipe, like the process-wide stdin buffer `run` reads
+    /// the password through before the watchdog takes over.
+    struct Buffered(BufReader<io::PipeReader>);
+    #[cfg(unix)]
+    impl Read for Buffered {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buffer)
+        }
+    }
+    #[cfg(unix)]
+    impl std::os::fd::AsFd for Buffered {
+        fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+            self.0.get_ref().as_fd()
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_password_line_is_read_intact_before_the_watchdog_takes_the_rest() {
+        let (reader, mut writer) = io::pipe().unwrap();
+        // The password and later data arrive together, as one buffered read.
+        writer
+            .write_all(b"hunter2-secret\nlater bytes, ignored\n")
+            .unwrap();
+        let mut stdin = BufReader::new(reader);
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        // The order of `run`: the password line first (the read `obs_client`
+        // makes), then the watchdog on the same buffered stdin.
+        assert_eq!(
+            ObsPassword::read_line(&mut stdin).unwrap(),
+            ObsPassword::new("hunter2-secret".into()).unwrap()
+        );
+        assert!(!interrupted.load(std::sync::atomic::Ordering::SeqCst));
+        options_for(true, Buffered(stdin), &interrupted, closed);
+        // Data after the password, more of it, and time: no stop.
+        writer.write_all(b"more\n").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!interrupted.load(std::sync::atomic::Ordering::SeqCst));
+        // The parent goes away: the pipe closes and the stop is requested.
+        drop(writer);
+        assert!(wait_for(&interrupted));
+        assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     #[test]

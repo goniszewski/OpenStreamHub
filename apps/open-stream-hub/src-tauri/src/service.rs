@@ -26,7 +26,7 @@ use std::{
     fs,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
@@ -204,6 +204,9 @@ pub fn check_execute_supported(execute: bool) -> Result<(), String> {
 }
 
 /// Arguments for `masterhub-service`; passed directly, never through a shell.
+/// `--exit-on-stdin-eof` is always passed: [`Services::start_with_stdin`] keeps
+/// the child's stdin pipe open for the child's whole life, so the service stops
+/// cleanly (restoring hardware mode) when this app dies, even by SIGKILL.
 /// `profile_switch_requests` is set for session-managed runs: the service then
 /// reports `profile` key actions as `profile_switch_requested` records, which
 /// the session driver resolves against the saved profiles.
@@ -220,6 +223,7 @@ pub fn service_args(
         profile.into(),
         "--path-hex".into(),
         path_hex.into(),
+        "--exit-on-stdin-eof".into(),
     ];
     if execute {
         args.push("--execute".into());
@@ -576,9 +580,12 @@ impl Services {
     }
 
     /// [`Services::start`] that writes `stdin` (the OBS password line) to the
-    /// child's stdin pipe right after spawning and then closes it. Without
-    /// `stdin` the child's stdin is null, exactly as before. The bytes are
-    /// far below the pipe buffer, so the write never blocks. They never appear
+    /// child's stdin pipe right after spawning. The child's stdin is always a
+    /// pipe, with or without `stdin`, and this process keeps its end open
+    /// until the child is reaped: it closes only when the child exits or this
+    /// app dies, which a service started with `--exit-on-stdin-eof` treats as
+    /// a stop. The bytes are far below the pipe buffer, so the write never
+    /// blocks. They never appear
     /// in the arguments, the environment or any emitted message. They are not
     /// wiped from memory: other plaintext copies of the password stay in this
     /// process (the in-memory setting and each session's snapshot) and in the
@@ -615,11 +622,7 @@ impl Services {
         let mut command = Command::new(program);
         command
             .args(args)
-            .stdin(if stdin.is_some() {
-                Stdio::piped()
-            } else {
-                Stdio::null()
-            })
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(unix)]
@@ -636,10 +639,12 @@ impl Services {
                 return Err(error);
             }
         };
-        if let (Some(bytes), Some(mut pipe)) = (stdin.as_mut(), child.stdin.take()) {
+        // Never dropped here: the supervisor holds it until the child is reaped.
+        let mut stdin_pipe = child.stdin.take();
+        if let (Some(bytes), Some(pipe)) = (stdin.as_mut(), stdin_pipe.as_mut()) {
             // A child that exits at once fails its own password read; its
             // exit is reported like any other.
-            let _ = io::Write::write_all(&mut pipe, bytes);
+            let _ = io::Write::write_all(pipe, bytes);
             // Best effort only: the compiler may drop this store, and other
             // plaintext copies of the password remain in memory regardless.
             bytes.fill(0);
@@ -658,6 +663,7 @@ impl Services {
             child: Arc::clone(&child),
             done: Arc::clone(&done),
             emit: Arc::clone(&emit),
+            stdin: stdin_pipe,
         };
         let join = thread::Builder::new()
             .name(format!("supervise {service_id}"))
@@ -777,6 +783,9 @@ struct Supervisor {
     child: Arc<Mutex<Child>>,
     done: Arc<AtomicBool>,
     emit: Emit,
+    /// This app's end of the child's stdin pipe, kept open until the child is
+    /// reaped, so the pipe closes early only when this process dies.
+    stdin: Option<ChildStdin>,
 }
 
 impl Supervisor {
@@ -820,6 +829,7 @@ impl Supervisor {
 
         let pid = lock_child(&self.child).id();
         let status = self.reap();
+        drop(self.stdin);
         kill_group(pid);
         let deadline = Instant::now() + DRAIN_GRACE;
         for _ in 0..readers {
@@ -1107,6 +1117,7 @@ mod tests {
                 "/p.json",
                 "--path-hex",
                 "4a",
+                "--exit-on-stdin-eof",
                 "--execute"
             ]
             .map(OsString::from)
@@ -1569,10 +1580,11 @@ mod tests {
         assert_eq!(stopped_feed.as_deref(), Some("live:4a"));
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 6);
+        assert_eq!(record["argc"], 7);
         let args = record["args"].as_str().unwrap();
         assert!(
-            args.starts_with("run --profile ") && args.ends_with(" --path-hex 4a --software-mode")
+            args.starts_with("run --profile ")
+                && args.ends_with(" --path-hex 4a --exit-on-stdin-eof --software-mode")
         );
         assert_eq!(statuses(&messages).last().unwrap().exit_code, Some(Some(0)));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
@@ -1596,13 +1608,10 @@ mod tests {
         .unwrap();
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 9);
-        assert!(
-            record["args"]
-                .as_str()
-                .unwrap()
-                .ends_with(" --path-hex 4a --software-mode --display-sync --dial-content clock")
-        );
+        assert_eq!(record["argc"], 10);
+        assert!(record["args"].as_str().unwrap().ends_with(
+            " --path-hex 4a --exit-on-stdin-eof --software-mode --display-sync --dial-content clock"
+        ));
 
         // Execute off macOS and invalid profiles fail before spawning.
         if !cfg!(target_os = "macos") {
@@ -1648,16 +1657,23 @@ mod tests {
         const PASSWORD: &str = "hunter2-obs-secret";
         let services = Services::default();
         let root = tempfile::tempdir().unwrap();
-        // Reports its arguments, whether stdin held exactly the password, and
-        // whether the password appears in its environment; never the password.
+        // Reports its arguments, whether stdin held exactly the password (read
+        // only when the password flag is passed) or is an open pipe with
+        // nothing on it, and whether the password appears in its environment;
+        // never the password. Then `cat` runs until stdin closes, like
+        // `--exit-on-stdin-eof`: the fake still running later shows the pipe
+        // stayed open after the password write.
         let fake = root.path().join("fake-service");
         fs::write(
             &fake,
             format!(
-                "#!/bin/sh\nIFS= read -r line; status=$?\n\
-                 if [ \"$line\" = '{PASSWORD}' ]; then got=match; elif [ $status -ne 0 ] && [ -z \"$line\" ]; then got=eof; else got=other; fi\n\
+                "#!/bin/sh\ncase \" $* \" in\n\
+                 *' --obs-password-stdin '*) IFS= read -r line; if [ \"$line\" = '{PASSWORD}' ]; then got=match; else got=other; fi ;;\n\
+                 *) if [ -p /dev/stdin ]; then got=pipe; else got=other; fi ;;\n\
+                 esac\n\
                  env_hits=$(env | grep -c hunter2)\n\
-                 printf '{{\"args\":\"%s\",\"stdin\":\"%s\",\"env\":%d}}\\n' \"$*\" \"$got\" \"$env_hits\"\n"
+                 printf '{{\"args\":\"%s\",\"stdin\":\"%s\",\"env\":%d}}\\n' \"$*\" \"$got\" \"$env_hits\"\n\
+                 exec cat >/dev/null\n"
             ),
         )
         .unwrap();
@@ -1691,7 +1707,15 @@ mod tests {
                 emit,
             )
             .unwrap();
-            wait_done(&services, &id);
+            // The first record arrives, but the service keeps running: its
+            // stdin pipe stays open after the password write.
+            assert!(wait_until(Instant::now() + Duration::from_secs(5), || {
+                !records(&messages).is_empty()
+            }));
+            thread::sleep(Duration::from_millis(300));
+            assert!(services.is_running(&id), "stdin closed early");
+            assert_eq!(records(&messages).len(), 1);
+            services.stop(&id, STOP_GRACE).unwrap();
             let messages = messages.lock().unwrap().clone();
             let rendered = format!("{messages:?}");
             assert!(!rendered.contains("hunter2"), "{rendered}");
@@ -1704,23 +1728,28 @@ mod tests {
             record["args"]
                 .as_str()
                 .unwrap()
-                .ends_with(" --path-hex 4a --obs-endpoint 127.0.0.1:4455 --obs-password-stdin"),
+                .ends_with(" --path-hex 4a --exit-on-stdin-eof --obs-endpoint 127.0.0.1:4455 --obs-password-stdin"),
             "{record}"
         );
-        // No password: the endpoint only, and stdin stays null.
+        // No password: the endpoint only, and stdin is still an open pipe.
         let record = run(Some(launch(None)));
-        assert_eq!(record["stdin"], "eof");
+        assert_eq!(record["stdin"], "pipe");
         assert!(
             record["args"]
                 .as_str()
                 .unwrap()
-                .ends_with(" --path-hex 4a --obs-endpoint 127.0.0.1:4455"),
+                .ends_with(" --path-hex 4a --exit-on-stdin-eof --obs-endpoint 127.0.0.1:4455"),
             "{record}"
         );
-        // OBS off: exactly the arguments a run had before.
+        // OBS off: no OBS arguments, and the same open stdin pipe.
         let record = run(None);
-        assert_eq!(record["stdin"], "eof");
-        assert!(record["args"].as_str().unwrap().ends_with(" --path-hex 4a"));
+        assert_eq!(record["stdin"], "pipe");
+        assert!(
+            record["args"]
+                .as_str()
+                .unwrap()
+                .ends_with(" --path-hex 4a --exit-on-stdin-eof")
+        );
     }
 
     #[test]

@@ -88,6 +88,10 @@ pub struct LiveOptions {
     /// Report `profile` actions as `profile_switch_requested` for a supervising
     /// session manager instead of logging them as unavailable.
     pub profile_switch_requests: bool,
+    /// Set by the stdin watchdog (`--exit-on-stdin-eof`) before it sets the
+    /// interrupt flag: a stop it requested ends with reason `stdin_closed`
+    /// instead of `interrupted`. `None` (the default) keeps `interrupted`.
+    pub stdin_closed: Option<&'static AtomicBool>,
 }
 
 impl Default for LiveOptions {
@@ -103,6 +107,7 @@ impl Default for LiveOptions {
             startup_timeout: Duration::from_secs(5),
             stop_on_action_error: false,
             profile_switch_requests: false,
+            stdin_closed: None,
         }
     }
 }
@@ -1226,6 +1231,13 @@ where
     counts.error = combine_errors(counts.error.take(), cleanup.err());
     if normal && abort.load(Ordering::SeqCst) && counts.error.is_none() {
         counts.reason = "interrupted".into();
+    }
+    if counts.reason == "interrupted"
+        && options
+            .stdin_closed
+            .is_some_and(|closed| closed.load(Ordering::SeqCst))
+    {
+        counts.reason = "stdin_closed".into();
     }
     summary.report_count = counts.reports;
     summary.queued_report_count = counts.queued;
@@ -3894,6 +3906,55 @@ mod tests {
         .unwrap();
         let footer = output.rows().last().unwrap().clone();
         assert_eq!(footer["reason"], "interrupted");
+        assert!(footer["error"].is_null());
+        assert_eq!(*writes.lock().unwrap(), modes());
+    }
+
+    #[test]
+    fn closed_stdin_stops_like_a_signal_restores_mode_and_says_stdin_closed() {
+        let (stdin, writer) = io::pipe().unwrap();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let closed: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+        crate::interrupt::watch_stdin(stdin, Arc::clone(&interrupted), closed).unwrap();
+        // No report limit: only the closed pipe can end this run.
+        let transport = Transport::new([]);
+        let writes = Arc::clone(&transport.writes);
+        let output = Output::default();
+        let writer_output = output.clone();
+        let configuration = LiveOptions {
+            software_mode: true,
+            max_reports: None,
+            stdin_closed: Some(closed),
+            ..options()
+        };
+        let parent = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            let dropped = Instant::now();
+            drop(writer);
+            dropped
+        });
+        run_with_clock(
+            &mut InputReader::new(transport),
+            profile(),
+            device(),
+            false,
+            json!({}),
+            configuration,
+            interrupted,
+            move |stop| {
+                Ok((
+                    simple_actions(stop, Arc::new(Mutex::new(Vec::new()))),
+                    writer_output,
+                ))
+            },
+            || 0,
+        )
+        .unwrap();
+        let dropped = parent.join().unwrap();
+        assert!(dropped.elapsed() < Duration::from_secs(1));
+        let footer = output.rows().last().unwrap().clone();
+        assert_eq!(footer["type"], "service_end");
+        assert_eq!(footer["reason"], "stdin_closed");
         assert!(footer["error"].is_null());
         assert_eq!(*writes.lock().unwrap(), modes());
     }

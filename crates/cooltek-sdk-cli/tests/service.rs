@@ -720,6 +720,64 @@ fn obs_flags_are_checked_and_the_password_never_reaches_output_before_hid() {
     }
 }
 
+/// Runs with stdin as a pipe whose writer already closed after `stdin`.
+#[cfg(unix)]
+fn run_with_closed_stdin(arguments: &[&str], stdin: &[u8]) -> Output {
+    use std::io::Write;
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(stdin).unwrap();
+    drop(writer);
+    Command::new(env!("CARGO_BIN_EXE_masterhub-service"))
+        .args(arguments)
+        .stdin(reader)
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+#[test]
+fn exit_on_stdin_eof_refuses_a_closed_or_null_stdin_before_hid() {
+    let profile = example_profile();
+    let base = [
+        "run",
+        "--profile",
+        profile.to_str().unwrap(),
+        "--path-hex",
+        "ab",
+        "--software-mode",
+        "--exit-on-stdin-eof",
+    ];
+    // `Command::output` gives the child a null stdin.
+    let output = run(&base);
+    assert_failure(&output, "--exit-on-stdin-eof requires stdin to be a pipe");
+    assert!(output.stdout.is_empty());
+    let output = run_with_closed_stdin(&base, b"");
+    assert_failure(&output, "stdin is already closed");
+    assert!(output.stdout.is_empty());
+    // The password line is read first; the closed pipe is refused after it,
+    // still before HID, and the password never appears.
+    let with_password = [
+        &base[..],
+        &["--obs-endpoint", "127.0.0.1:4455", "--obs-password-stdin"],
+    ]
+    .concat();
+    // Not a pipe: refused before the password read, so a terminal would get
+    // no prompt. With a null stdin the read would otherwise fail first with
+    // "OBS password must be nonempty".
+    let output = run(&with_password);
+    assert_failure(&output, "--exit-on-stdin-eof requires stdin to be a pipe");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("OBS password"));
+    assert!(output.stdout.is_empty());
+    let output = run_with_closed_stdin(&with_password, b"hunter2-secret\n");
+    assert_failure(&output, "stdin is already closed");
+    assert!(output.stdout.is_empty());
+    for stream in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(stream);
+        assert!(!text.contains("hunter2"), "{text}");
+        assert!(!text.contains("selected path"), "{text}");
+    }
+}
+
 #[test]
 fn run_rejects_invalid_profile_before_accessing_the_selected_path() {
     let profile = TempFile::new("{\"schema_version\":999,\"name\":\"invalid\",\"bindings\":[]}");

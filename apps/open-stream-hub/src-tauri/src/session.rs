@@ -995,7 +995,7 @@ impl<R: Runner> Driver<R> {
     }
 
     /// Starts a run and, when its device is identified, a session for it.
-    /// An unidentified device runs unmanaged, exactly as before sessions.
+    /// An unidentified device runs unmanaged without software mode or display writes.
     /// While the Mac is asleep nothing is spawned: an identified device gets a
     /// suspended session that starts after wake (an executing one only after
     /// `resume_session`); an unidentified one is refused with `ASLEEP`. The
@@ -1048,9 +1048,9 @@ impl<R: Runner> Driver<R> {
         // Read once, here: every later process of this session (wake,
         // reconnect, crash or profile-switch restarts) keeps these display
         // settings, so changing them never alters or restarts a running
-        // session. An unidentified device runs without them. With module
-        // control `App` the keypad and the dial always run in software mode;
-        // other modules keep exactly the request they were sent.
+        // session. An unidentified device runs without them or software mode.
+        // With module control `App` the keypad and the dial always run in
+        // software mode; other modules never enter it.
         if let Some(device) = &device {
             let settings = self.runner.display_settings();
             // The service would refuse it with its flag's name; say which
@@ -1070,6 +1070,12 @@ impl<R: Runner> Driver<R> {
                 settings,
                 module: device.module,
             });
+        } else {
+            // Without a backend-known module we cannot authorize a mode
+            // write, even when the frontend requested one. In particular,
+            // failed enumeration must not bypass unreadable settings.
+            request.software_mode = false;
+            request.display = None;
         }
         // The OBS setting is snapshotted the same way. It does not depend on
         // the module, so an unidentified device's run gets it too.
@@ -4178,13 +4184,21 @@ mod tests {
     }
 
     #[test]
-    fn an_unidentified_device_runs_without_display_settings() {
-        let mut driver = Driver::new(FakeRunner {
-            display: APP_CONTROL,
-            ..FakeRunner::default()
-        });
-        driver.start(request(&dial("/x"), false), 0).unwrap();
-        assert_eq!(launched(&mut driver, 0), None);
+    fn an_unidentified_device_never_requests_software_mode_or_display_writes() {
+        for settings in [APP_CONTROL, BUILT_IN, DisplaySettings::UNREADABLE] {
+            let mut driver = Driver::new(FakeRunner {
+                display: settings,
+                ..FakeRunner::default()
+            });
+            let mut start = request(&dial("/x"), false);
+            start.software_mode = true;
+            let id = driver.start(start, 0).unwrap();
+            assert_eq!(starts(&mut driver), 1);
+            assert!(!driver.runner().starts[0].software_mode, "{settings:?}");
+            assert_eq!(launched(&mut driver, 0), None);
+            assert!(spawned_args(&mut driver, 0).is_empty());
+            assert!(driver.session(&id).is_none(), "the run stays unmanaged");
+        }
     }
 
     const IMPORTED: &str = "00000000-0000-4000-8000-0000000000aa";

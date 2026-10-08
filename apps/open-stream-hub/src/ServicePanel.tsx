@@ -4,7 +4,7 @@ import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } 
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { findRun, idleServiceState, isActiveRun, isStale, maxReconnectAttempts } from './service-runner';
+import { idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
@@ -144,6 +144,65 @@ const idleRunner = () => idleServiceState;
 const idleDisplay = () => idleDisplaySettingsState;
 const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
 
+// Retain the selected identity and stable run key while inventory paths disappear or change.
+export interface ServiceSelection { device: LiveDevice; sessionId?: string }
+export const disconnectedServiceValue = 'disconnected:selected-session';
+export function resolveServiceSelection(devices: LiveDevice[], runs: Record<string, ServiceRun>, chosen: ServiceSelection | null) {
+  const serial = (value: string | null | undefined) => value?.trim() || null;
+  const matches = (identity: { module: ServiceModule; serialNumber: string | null }, device: LiveDevice) =>
+    identity.module === device.module && serial(identity.serialNumber) !== null && serial(identity.serialNumber) === serial(device.serial_number);
+  const open = Object.values(runs).filter(item => isActiveRun(item) && item.session);
+  // A remounted panel can recover one unambiguous session, even with no connected device.
+  if (!chosen && open.length === 1) {
+    const session = open[0].session!;
+    chosen = { device: { module: session.module, serial_number: session.serialNumber,
+      path_hex: (session.serviceId ?? open[0].serviceId).replace(/^service:/, '') }, sessionId: open[0].serviceId };
+  }
+  const selected = chosen?.device ?? devices[0];
+  let run = chosen?.sessionId ? runs[chosen.sessionId] : undefined;
+  const ended = run && !isActiveRun(run) ? run : undefined;
+  if (ended) run = undefined;
+  let device: LiveDevice | undefined;
+  if (run?.session) {
+    const session = run.session;
+    // The current process path is authoritative; otherwise require exact serial or one module candidate.
+    device = devices.find(item => item.module === session.module && session.serviceId === serviceIdFor(item.path_hex));
+    if (!device) {
+      const candidates = devices.filter(item => item.module === session.module);
+      device = serial(session.serialNumber) === null
+        ? candidates.length === 1 ? candidates[0] : undefined
+        : candidates.find(item => matches(session, item));
+    }
+  } else if (selected) {
+    device = devices.find(item => item.path_hex === selected.path_hex && item.module === selected.module
+      && serial(item.serial_number) === serial(selected.serial_number));
+    if (!device && serial(selected.serial_number) !== null) device = devices.find(item => matches({ module: selected.module, serialNumber: selected.serial_number }, item));
+  }
+  const target = device ?? selected;
+  if (!run && target) {
+    const id = serviceIdFor(target.path_hex);
+    // The runner replaces a pending key when the first session event adopts it. A serial-less
+    // module may already be gone by then: follow the original stable key, or one unambiguous
+    // active serial-less session, rather than losing Stop or guessing among several sessions.
+    const adopted = chosen?.sessionId && !runs[chosen.sessionId] && serial(target.serial_number) === null
+      ? open.filter(item => item.session!.module === target.module && serial(item.session!.serialNumber) === null) : [];
+    const adoptedRun = adopted.find(item => item.serviceId === id) ?? (adopted.length === 1 ? adopted[0] : undefined);
+    run = Object.values(runs).find(item => isActiveRun(item) && item.session && item.session.module === target.module &&
+      (item.session.serviceId === id || matches(item.session, target)
+        || (serial(item.session.serialNumber) === null && device !== undefined
+          && devices.filter(candidate => candidate.module === target.module).length === 1)))
+      ?? Object.values(runs).find(item => isActiveRun(item) && !item.session &&
+        ((item.processId ?? item.serviceId) === id || (item.startedOn && matches(item.startedOn, target))))
+      ?? adoptedRun
+      ?? ended
+      ?? Object.values(runs).find(item => item.session?.phase === 'stopped' && matches(item.session, target))
+      ?? Object.values(runs).find(item => !item.session && (item.processId ?? item.serviceId) === id);
+  }
+  run ??= ended;
+  const selection: ServiceSelection | null = selected ? { device: device ?? selected, sessionId: run?.serviceId ?? chosen?.sessionId } : null;
+  return { device, run, selection };
+}
+
 // dryRunOnly: the open profile (saved, or a draft of it) was imported from a .mhz file and not yet allowed to execute
 // actions. Execute is unavailable; the session manager refuses it too.
 export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Review it on the Profiles page and allow it to execute actions first.';
@@ -160,7 +219,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
   const display = useSyncExternalStore(displaySettings?.subscribe ?? noopSubscribe, displaySettings?.getState ?? idleDisplay, displaySettings?.getState ?? idleDisplay);
   useEffect(() => { if (displaySettings && display.desktop && !display.loaded) void displaySettings.load(); }, [displaySettings, display.desktop, display.loaded]);
-  const [chosen, setChosen] = useState('');
+  const [chosen, setChosen] = useState<ServiceSelection | null>(null);
   const [execute, setExecute] = useState(false);
   const [softwareMode, setSoftwareMode] = useState(false);
   const [confirm, setConfirm] = useState<((ok: boolean) => void) | null>(null);
@@ -178,8 +237,10 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   const mac = isMacPlatform(platform);
   const enabled = desktop && runner !== undefined;
 
-  const device = devices.find(item => item.path_hex === chosen) ?? devices[0];
-  const run: ServiceRun | undefined = findRun(service.runs, device);
+  const { device, run, selection } = resolveServiceSelection(devices, service.runs, chosen);
+  useEffect(() => {
+    if (selection && (chosen?.device.path_hex !== selection.device.path_hex || chosen?.sessionId !== selection.sessionId)) setChosen(selection);
+  }, [chosen, selection]);
   const session = run?.session;
   const phase = session?.phase ?? (isActiveRun(run) ? 'running' : undefined);
   const active = isActiveRun(run);
@@ -232,8 +293,12 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}
     <div className="service-controls">
       <label className="sr-only" htmlFor="service-device">Device to run on</label>
-      <SelectField id="service-device" value={device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => setChosen(event.target.value)}>
-        {devices.length === 0 ? <option value="">No module connected</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
+      <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => {
+        const next = devices.find(item => item.path_hex === event.target.value);
+        if (next) setChosen({ device: next });
+      }}>
+        {selection && !device && <option value={disconnectedServiceValue}>{deviceName(selection.device)} (disconnected)</option>}
+        {devices.length === 0 && !selection ? <option value="">No module connected</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
       </SelectField>
       <div className="mode-toggle" role="group" aria-label="Run mode">
         <button type="button" aria-pressed={!executeSelected} disabled={!enabled || active} onClick={() => setExecute(false)}>Dry run (default)</button>

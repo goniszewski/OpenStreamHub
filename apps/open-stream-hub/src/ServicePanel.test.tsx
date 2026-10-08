@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { DisplaySettings, LiveDevice, ModuleControl, Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
-import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
+import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
 const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
@@ -406,4 +406,151 @@ describe('ServicePanel lifecycle helpers', () => {
     expect(await answer).toBe(false);
     expect(() => settlePendingConfirm(pending)).not.toThrow();
   });
+});
+
+
+describe('Run-panel selection across replug', () => {
+  const knobs: LiveDevice = { path_hex: 'bb', module: 'm003k', serial_number: 'K1' };
+  const activeDial = (): ServiceRun => ({ serviceId: 'session:dial', state: 'running', execute: false,
+    profileName: 'Everyday', snapshot: '{}', draftUnsaved: false, startedAt: 0, counters: emptyCounters(), entries: [],
+    session: { module: 'm131e', serialNumber: 'S1', serviceId: serviceIdFor(dial.path_hex), phase: 'running', reason: null, attempt: 0 } });
+  it('keeps Waiting and the original Stop target through removal and a new path', () => {
+    const run = activeDial();
+    let runs = { [run.serviceId]: run };
+    const started = resolveServiceSelection([knobs, dial], runs, { device: dial });
+    expect(started.run?.serviceId).toBe('session:dial');
+    runs = { [run.serviceId]: { ...run, session: { ...run.session!, serviceId: null, phase: 'waiting_for_device' } } };
+    const removed = resolveServiceSelection([knobs], runs, started.selection);
+    expect(removed.device).toBeUndefined();
+    expect(phaseLabel(removed.run)).toBe('Waiting');
+    expect(removed.run?.serviceId).toBe('session:dial'); // The component's Stop passes this stable key.
+    expect(removed.selection?.device).toEqual(dial);
+    const moved = { ...dial, path_hex: 'cc' };
+    const returned = resolveServiceSelection([knobs, moved], runs, removed.selection);
+    expect(returned.device).toEqual(moved);
+    expect(returned.selection?.sessionId).toBe('session:dial');
+    runs = { [run.serviceId]: { ...run, session: { ...run.session!, serviceId: serviceIdFor('cc') } } };
+    expect(resolveServiceSelection([knobs, moved], runs, returned.selection).run?.serviceId).toBe('session:dial');
+  });
+  it('does not adopt a different serial, even on the old path, or an unrelated session', () => {
+    const run = activeDial();
+    run.session = { ...run.session!, serviceId: null, phase: 'waiting_for_device' };
+    const other = { ...run, serviceId: 'session:knobs', session: { ...run.session!, module: 'm003k' as const, serialNumber: 'K1', serviceId: serviceIdFor('bb'), phase: 'running' as const } };
+    const runs = { [other.serviceId]: other, [run.serviceId]: run };
+    const retained = resolveServiceSelection([knobs, { ...dial, serial_number: 'S2' }], runs, { device: dial, sessionId: run.serviceId });
+    expect(retained.device).toBeUndefined();
+    expect(retained.run).toBe(run);
+    expect(resolveServiceSelection([knobs, dial], runs, { device: knobs }).run).toBe(other);
+    expect(resolveServiceSelection([], runs, null).run).toBeUndefined();
+  });
+  it('keeps ambiguous serial-less sessions detached until a current process identifies their path', () => {
+    const run = activeDial();
+    run.session = { ...run.session!, serialNumber: null, serviceId: null, phase: 'needs_confirmation' };
+    const selected = { device: { ...dial, serial_number: null }, sessionId: run.serviceId };
+    const devices = [{ ...dial, path_hex: 'cc', serial_number: null }, { ...dial, path_hex: 'dd', serial_number: null }];
+    const resolved = resolveServiceSelection(devices, { [run.serviceId]: run }, selected);
+    expect(resolved.device).toBeUndefined();
+    expect(resolved.run).toBe(run);
+    expect(phaseLabel(resolved.run)).toBe('Needs confirmation');
+    run.session.serviceId = serviceIdFor('dd');
+    expect(resolveServiceSelection(devices, { [run.serviceId]: run }, selected).device?.path_hex).toBe('dd');
+  });
+  it('normalizes nonempty serial whitespace and never changes an explicit idle choice', () => {
+    const run = activeDial();
+    run.session = { ...run.session!, serialNumber: ' S1 ', serviceId: null, phase: 'waiting_for_device' };
+    expect(resolveServiceSelection([{ ...dial, path_hex: 'cc' }], { [run.serviceId]: run }, { device: dial, sessionId: run.serviceId }).device?.path_hex).toBe('cc');
+    expect(resolveServiceSelection([dial, knobs], { [run.serviceId]: run }, { device: knobs }).run).toBeUndefined();
+  });
+  it('recovers a sole active session on remount even when knobs are listed first', () => {
+    const run = activeDial();
+    const resolved = resolveServiceSelection([knobs, dial], { [run.serviceId]: run }, null);
+    expect(resolved.device).toEqual(dial);
+    expect(resolved.selection?.sessionId).toBe(run.serviceId);
+    const { feed, runner } = fixtures(false);
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [knobs] };
+    run.session = { ...run.session!, serviceId: null, phase: 'waiting_for_device' };
+    (runner as unknown as { state: unknown }).state = { ...runner.getState(), runs: { [run.serviceId]: run } };
+    const markup = render({ feed, runner });
+    expect(markup).toContain('>Waiting<');
+    expect(markup).toContain('(disconnected)');
+    expect(markup).toContain('>Stop<');
+    expect(markup).toContain('Everyday');
+  });
+  it('adopts a new active session after the retained session stopped', () => {
+    const ended = activeDial();
+    ended.session = { ...ended.session!, phase: 'stopped', serviceId: null };
+    const next = { ...activeDial(), serviceId: 'session:new' };
+    const selected = { device: dial, sessionId: ended.serviceId };
+    expect(resolveServiceSelection([dial], { [ended.serviceId]: ended }, selected).run).toBe(ended);
+    const resolved = resolveServiceSelection([dial], { [ended.serviceId]: ended, [next.serviceId]: next }, selected);
+    expect(resolved.run).toBe(next);
+    expect(resolved.selection?.sessionId).toBe(next.serviceId);
+  });
+
+  it('prefers a new pending run over stopped history before its first session event, even after removal', () => {
+    const ended = activeDial();
+    ended.session = { ...ended.session!, phase: 'stopped', serviceId: null };
+    const pending: ServiceRun = { ...activeDial(), session: undefined, serviceId: 'pending:service:cc', processId: serviceIdFor('cc'),
+      state: 'starting', startedOn: { module: 'm131e', serialNumber: 'S1' } };
+    const selected = { device: dial, sessionId: ended.serviceId };
+    const runs = { [ended.serviceId]: ended, [pending.serviceId]: pending };
+    const resolved = resolveServiceSelection([{ ...dial, path_hex: 'cc' }], runs, selected);
+    expect(resolved.run).toBe(pending);
+    expect(phaseLabel(resolved.run)).toBe('Starting');
+    expect(resolved.selection?.sessionId).toBe(pending.serviceId);
+    expect(resolveServiceSelection([knobs], runs, selected).run).toBe(pending);
+    expect(resolveServiceSelection([knobs], runs, resolved.selection).run).toBe(pending);
+  });
+  it('retains explicitly selected stopped history over an older session on the same identity', () => {
+    const older = activeDial();
+    older.session = { ...older.session!, phase: 'stopped', serviceId: null };
+    const newer: ServiceRun = { ...older, serviceId: 'session:newer' };
+    const runs = { [older.serviceId]: older, [newer.serviceId]: newer };
+    const resolved = resolveServiceSelection([dial], runs, { device: dial, sessionId: newer.serviceId });
+    expect(resolved.run).toBe(newer);
+    expect(resolved.selection?.sessionId).toBe(newer.serviceId);
+  });
+  it('uses a distinct disconnected value when a replacement reuses the old path', () => {
+    const run = activeDial();
+    run.session = { ...run.session!, serviceId: null, phase: 'waiting_for_device' };
+    const replacement = { ...dial, serial_number: 'S2' };
+    const { feed, runner } = fixtures(false);
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [replacement] };
+    (runner as unknown as { state: unknown }).state = { ...runner.getState(), runs: { [run.serviceId]: run } };
+    const markup = render({ feed, runner });
+    expect(markup).toContain(`<option value="${disconnectedServiceValue}" selected="">`);
+    expect(markup).toContain(`<option value="${dial.path_hex}">`);
+    expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).device).toBe(replacement);
+    expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).run).toBeUndefined();
+  });
+
+  it('follows a serial-less pending run adopted after removal, including a renamed session', () => {
+    const selectedDevice = { ...dial, serial_number: null };
+    const pending: ServiceRun = { ...activeDial(), session: undefined, serviceId: 'pending:service:aabb',
+      processId: serviceIdFor(dial.path_hex), state: 'starting', startedOn: { module: 'm131e', serialNumber: null } };
+    const started = resolveServiceSelection([selectedDevice], { [pending.serviceId]: pending }, { device: selectedDevice });
+    const removed = resolveServiceSelection([knobs], { [pending.serviceId]: pending }, started.selection);
+    expect(removed.run).toBe(pending);
+    for (const id of [serviceIdFor(dial.path_hex), 'session:renamed']) {
+      const adopted: ServiceRun = { ...activeDial(), serviceId: id,
+        session: { ...activeDial().session!, serialNumber: null, serviceId: null, phase: 'waiting_for_device' } };
+      const resolved = resolveServiceSelection([knobs], { [adopted.serviceId]: adopted }, removed.selection);
+      expect(resolved.run).toBe(adopted);
+      expect(phaseLabel(resolved.run)).toBe('Waiting');
+      expect(resolved.selection?.sessionId).toBe(id);
+      expect(resolved.device).toBeUndefined();
+    }
+  });
+  it('does not guess a serial-less adoption among several sessions or adopt a nonempty serial', () => {
+    const first: ServiceRun = { ...activeDial(), serviceId: 'session:first',
+      session: { ...activeDial().session!, serialNumber: null, serviceId: null, phase: 'waiting_for_device' } };
+    const second: ServiceRun = { ...first, serviceId: 'session:second' };
+    const chosen = { device: { ...dial, serial_number: null }, sessionId: 'pending:service:aabb' };
+    expect(resolveServiceSelection([knobs], { [first.serviceId]: first, [second.serviceId]: second }, chosen).run).toBeUndefined();
+    const named: ServiceRun = { ...first, session: { ...first.session!, serialNumber: 'S2' } };
+    expect(resolveServiceSelection([knobs], { [named.serviceId]: named }, chosen).run).toBeUndefined();
+    const original: ServiceRun = { ...first, serviceId: serviceIdFor(dial.path_hex) };
+    expect(resolveServiceSelection([knobs], { [second.serviceId]: second, [original.serviceId]: original }, chosen).run).toBe(original);
+  });
+
 });

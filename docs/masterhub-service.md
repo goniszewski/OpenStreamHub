@@ -124,7 +124,7 @@ Each sync writes one `display_sync` record (`schema_version` 1), logged by the a
 
 ### Dial display sync (experimental)
 
-`--display-sync --dial-content <off|function|clock|analog-clock|cpu>` draws the M131E dial screen. It is off by default. All four faces ran on a real M131E on 8 October 2026 and were legible and upright; function cycling and long-run behavior are unverified (see the [hardware results](masterhub-hardware-results.md#m131e-dial)).
+`--display-sync --dial-content <off|function|clock|analog-clock|cpu>` draws the M131E dial screen. It is off by default. All four faces ran on a real M131E on 8 October 2026 and were legible and upright; long-run behavior is unverified (see the [hardware results](masterhub-hardware-results.md#m131e-dial)).
 
 ```sh
 cargo run -p cooltek-sdk-cli --bin masterhub-service -- \

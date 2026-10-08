@@ -62,6 +62,14 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 - **Restore.** After the lighting runs, `dial mode hardware` brought the animation back, and the user judged the dial's lighting normal.
 - **Not tested.** Whether lighting commands work in hardware mode (the doc asks for this); backlight values other than 10, 20 and 100; flicker during the uploads (only the final state was inspected); rotations other than 0; whether `volume:` was the whole function label or was clipped; minute rollover of the clocks; firmware queries; and the dial function cycling in the service.
 
+## Crash safety: stdin watchdog (M131E dial, 8 October 2026)
+
+`masterhub-service run --exit-on-stdin-eof` (the app always passes it) ends the run as a signal would when its stdin closes, which restores hardware mode.
+
+- **Standalone.** The service ran in software mode on the dial with the clock face, fed from a pipe that was closed after 18 s. The pipe closed at 14:59:21.037 and the service exited at 14:59:21.086 (49 ms later) with reason `stdin_closed` and no error. No service process was left. The user saw the clock face (14:59) during the run. A first attempt failed because the log was redirected to a file, which the service refuses (it needs a terminal or pipe): that was a test setup error, not a device result.
+- **Real crash.** With the desktop app running a dry-run, software-mode session on the dial (the sidecar was a child of the app, in its own process group, started with `--exit-on-stdin-eof --software-mode`), the app was killed with `kill -9`. The sidecar was gone about 120 ms later, and the user reported that the dial's built-in animation returned within milliseconds, well under a second.
+- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit and Stop in the app after this change; a crash while a session is still starting; replug while in software mode; sleep and wake.
+
 ## Not tested
 
 - The M005S faders (not connected).

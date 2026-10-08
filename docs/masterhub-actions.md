@@ -243,7 +243,7 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - One request each (`SetCurrentSceneCollection`, `SetCurrentProfile`) on one connection. OBS **reloads** its scenes or settings and applies the switch a moment after it answers; the service does not wait for or poll that. Switching can interrupt a live stream or recording, and the editor and the Execute confirmation say so. Both are allowed as `multi_action` steps, but later OBS steps in the same sequence may reach OBS while it is still reloading.
 - Failures: a missing name reports "no scene collection with that name" or "no profile with that name" (status 600). OBS's own comment text is never shown (the request carried a name).
 - **Logging and redaction.** Records show `{"type":"obs_profile","name_chars":4}`; the activity panel shows `OBS profile (4 characters)`. Diagnostics bundles with redaction replace `name` with `<N chars>`.
-- The Execute confirmation lists each switch with its name (invisible characters made visible) and a reload note. It stays at normal risk, like a scene switch.
+- The Execute confirmation lists each switch with its name (invisible characters made visible) and a reload note. It raises the profile to elevated risk, because a reload can interrupt a live output; the editor also says to put a reload last in a multi-action.
 - Tested against the scripted fake obs-websocket server only; no real OBS has been used. Whether OBS answers before or after the reload completes is unverified.
 
 ## OBS scene (`obs_scene`)

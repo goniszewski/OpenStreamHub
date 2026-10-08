@@ -471,7 +471,7 @@ where
     T::deserialize(deserializer).map(Some)
 }
 
-/// Checks an OBS name (scene, source or filter): the keypad label rules plus
+/// Checks an OBS name (scene, source, filter, scene collection or profile): the keypad label rules plus
 /// the invisible-character rule of text snippets, so the name OBS receives is
 /// exactly the one reviewed.
 fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
@@ -755,7 +755,7 @@ impl Action {
     pub const MAX_TIMER_SECONDS: u32 = 86_400;
     /// Maximum `timer` label length in UTF-8 bytes.
     pub const MAX_TIMER_LABEL_BYTES: usize = 64;
-    /// Maximum length in UTF-8 bytes of any OBS name (scene, source, filter).
+    /// Maximum length in UTF-8 bytes of any OBS name (scene, source, filter, scene collection, profile).
     pub const MAX_OBS_NAME_BYTES: usize = 128;
     /// Maximum `obs_scene` scene name length in UTF-8 bytes.
     pub const MAX_OBS_SCENE_BYTES: usize = Self::MAX_OBS_NAME_BYTES;

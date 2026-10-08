@@ -294,10 +294,14 @@ fn url_origin(url: &str) -> String {
 /// label (`clipLabel` in `ui-model.ts`).
 const OBS_LABEL_PREFIX_CHARS: usize = 24;
 
+/// Every field that carries an OBS name (scene, source, filter, scene collection
+/// or profile). These get the short-name and label-prefix scrubs.
+const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name"];
+
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels and OBS scene, source and
-/// filter names become `<N chars>`, and `open_url` URLs keep only their origin. Long
+/// activity): `text` snippets, `timer` labels and OBS scene, source, filter,
+/// scene collection and profile names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
 /// go to `short_scenes` for the whole-word scrub of profile and client text.
 fn redact_action_payloads(
@@ -326,12 +330,12 @@ fn redact_action_payloads(
                     };
                     if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
                         replacements.push((raw.clone(), redacted.clone()));
-                    } else if matches!(field, "scene" | "source" | "filter") && !raw.is_empty() {
+                    } else if OBS_NAME_FIELDS.contains(&field) && !raw.is_empty() {
                         short_scenes.push((raw.clone(), redacted.clone()));
                     }
                     // The app's default tile label shows the first 24 characters of
                     // an OBS name, so that prefix must not survive in a label.
-                    if matches!(field, "scene" | "source" | "filter")
+                    if OBS_NAME_FIELDS.contains(&field)
                         && raw.chars().count() > OBS_LABEL_PREFIX_CHARS
                     {
                         let prefix: String = raw.chars().take(OBS_LABEL_PREFIX_CHARS).collect();
@@ -1702,6 +1706,52 @@ mod tests {
         assert_eq!(
             bundle.value["profile"]["bindings"][0]["label"],
             "OBS source “<name…>…”: Toggle"
+        );
+    }
+
+    #[test]
+    fn short_collection_and_profile_names_are_scrubbed_from_labels_and_activity() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "label": "OBS profile “Work”: Switch",
+                  "action": { "type": "obs_profile", "name": "Work" } },
+            ] })),
+            client: ClientContext {
+                activity: vec![activity_text("Switched OBS profile Work.")],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        assert_eq!(bundle.value["profile"]["bindings"][0]["action"]["name"], "<4 chars>");
+        assert_eq!(
+            bundle.value["profile"]["bindings"][0]["label"],
+            "OBS profile “<4 chars>”: Switch"
+        );
+        assert_eq!(
+            bundle.value["runtime"]["client"]["activity"][0]["text"],
+            "Switched OBS profile <4 chars>."
+        );
+    }
+
+    #[test]
+    fn the_clipped_prefix_of_a_long_profile_name_does_not_survive_in_a_tile_label() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "label": "OBS profile “Client interview with gu…”",
+                  "action": { "type": "obs_profile", "name": "Client interview with guests and sponsors" } },
+            ] })),
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let text = bundle.value.to_string();
+        assert!(!text.contains("Client interview"), "{text}");
+        assert_eq!(
+            bundle.value["profile"]["bindings"][0]["label"],
+            "OBS profile “<name…>…”"
         );
     }
 

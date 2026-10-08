@@ -45,7 +45,7 @@ export interface ProfileCapabilities {
   // OBS filters and source visibility changes, one plain-language entry each (names shown clipped), in profile order.
   obsItems: string[];
   // OBS scene collection and profile switches, one plain-language entry each (names shown clipped). OBS reloads, which
-  // can interrupt a live output. Shown, but low risk like obs_scene.
+  // can interrupt a live output. Raises the risk to elevated.
   obsReloads: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
@@ -197,7 +197,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   for (const action of profileActions(profile)) visit(action, 0);
 
   const snippets = [...texts.values()];
-  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || (counts.multi_action ?? 0) > 0;
+  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || (counts.multi_action ?? 0) > 0;
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),

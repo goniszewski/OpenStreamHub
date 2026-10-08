@@ -130,7 +130,7 @@ export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
 
 // Mirrors the obs_scene rule in Action::validate (profile.rs): the keypad label rules plus the invisible-character rule
 // of text snippets, so the scene OBS receives is exactly the one reviewed.
-// The same rule applies to every OBS name (scene, source, filter): validate_obs_name in profile.rs.
+// The same rule applies to every OBS name (scene, source, filter, scene collection, profile): validate_obs_name in profile.rs.
 export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' | 'scene collection' | 'profile'): string | null {
   if (!name.trim()) return `Enter the OBS ${what} name exactly as it appears in OBS.`;
   if (utf8.encode(name).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;

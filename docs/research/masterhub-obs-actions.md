@@ -83,7 +83,7 @@ Everything above runs as request/response with no event subscription, so a one-c
 
 | Risk | Actions | Why |
 | --- | --- | --- |
-| Changes what a live audience sees or hears, or ends/starts a broadcast | `stream`, `record-start-stop`, `scene-collection`, `obs-profile` | Going live or ending a stream cannot be undone from the controller; collection or profile switches reload everything. |
+| Changes what a live audience sees or hears, or ends/starts a broadcast | `stream`, `record-start-stop`, `scene-collection`, `obs-profile` | Going live or ending a stream cannot be undone from the controller; collection or profile switches reload everything. The implementation marks the two switches **elevated**, not high: they are reversible and need no extra confirmation phrase, but the Execute confirmation names the reload. |
 | Changes the live program output | `scenes` (done), `source-visibility`, `scene-transition`, `transition`, `filter`, `audio-mixer`, `studio-mode` | Same class as `obs_scene` today: reversible, but visible or audible immediately. |
 | Local or auxiliary | `record-continue-pause`, `virtual-camera`, `replay-buffer`, `replay-buffer-save`, `media-source` | Output toggles that do not by themselves publish to an audience. |
 | Writes a file | `screenshot` | Only OBS action that writes to disk. |

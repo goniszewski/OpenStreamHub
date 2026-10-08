@@ -191,6 +191,7 @@ describe('obs source fields', () => {
     const markup = render({ type: 'obs_scene_collection', name: 'Show' });
     expect(markup).toContain('<label for="obs-reload-name">OBS scene collection name</label>');
     expect(markup).toContain('reloads');
+    expect(markup).toContain('put it last');
     expect(markup).not.toContain('role="alert"');
     expectAccessible(markup);
     const blank = render({ type: 'obs_profile', name: ' ' });

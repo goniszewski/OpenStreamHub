@@ -650,7 +650,7 @@ fn check_response(data: &Value, request_id: &str, request: &ObsRequest) -> Resul
         (Some(false), Some(code)) => {
             // OBS often repeats the name it was given ("No source was found by
             // the name of X"). A request that carried data may carry a scene,
-            // source or filter name, which must stay out of logs and
+            // source, filter, scene collection or profile name, which must stay out of logs and
             // diagnostics, so its comment is never shown; the reason above
             // already names the cause.
             let comment = if request.data.is_some() {

@@ -11,7 +11,7 @@ import type { StepActionType } from './action-model';
 type Change = (action: BindingAction | null, field?: string) => void;
 
 const obsNeedsNote = 'Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
-const obsReloadNote = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording. OBS applies the switch a moment after the press; nothing waits for it to finish.';
+const obsReloadNote = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording. OBS applies the switch a moment after the press; nothing waits for it to finish, so in a multi-action put it last (a later OBS step can reach OBS while it is still reloading and fail).';
 const obsSwitchNote = `Toggle follows OBS's current state; Turn on and Turn off do not, so they are safer inside a multi-action. ${obsNeedsNote}`;
 
 function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {

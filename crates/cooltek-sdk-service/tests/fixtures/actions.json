@@ -117,6 +117,9 @@
     {"type":"obs_scene_collection","name":"a","op":"on"},
     {"type":"obs_profile","name":"zero\u200bwidth"},
     {"type":"obs_profile","name":"line\nbreak"},
-    {"type":"obs_profile","scene":"Live"}
+    {"type":"obs_profile","scene":"Live"},
+    {"type":"obs_profile","name":null},
+    {"type":"obs_scene_collection","name":"   "},
+    {"type":"obs_profile","name":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
   ]
 }

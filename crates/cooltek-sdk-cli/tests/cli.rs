@@ -212,6 +212,33 @@ fn invalid_record_arguments_fail_in_clap_before_discovery() {
 }
 
 #[test]
+fn features_help_states_get_only_and_bad_arguments_fail_in_clap_before_discovery() {
+    let output = run(&["--help"]);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("`features` is read-only"));
+    let output = run(&["features", "--help"]);
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("Read-only: GET FEATURE"));
+    assert!(help.contains("never sends SET FEATURE"));
+    assert!(help.contains("--path-hex"));
+    assert!(help.contains("--report-id"));
+
+    for arguments in [
+        vec!["features"],
+        vec!["features", "--report-id", "3"],
+        vec!["features", "--path-hex", "00"],
+        vec!["features", "--path-hex", "61", "--report-id", "256"],
+        vec!["features", "--path-hex", "61", "--timeout-ms", "0"],
+        vec!["features", "--path-hex", "61", "--timeout-ms", "5001"],
+        vec!["features", "--path-hex", "61", "--duration-secs", "0"],
+        vec!["features", "--path-hex", "61", "--duration-secs", "61"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(output.status.code(), Some(2), "{arguments:?}: {output:?}");
+    }
+}
+
+#[test]
 fn rejects_missing_header_and_unknown_version() {
     assert_invalid(&TempCapture::new(""), "capture is empty");
     let mut data = records();

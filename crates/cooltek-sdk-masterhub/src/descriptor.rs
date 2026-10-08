@@ -61,12 +61,62 @@ fn absent(type_name: &str, report_id: u8) -> HidError {
 const OUTPUT: usize = 1;
 const FEATURE: usize = 2;
 
+/// A Feature report declared by a HID report descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeclaredFeatureReport {
+    /// Report ID, or 0 for an unnumbered descriptor.
+    pub report_id: u8,
+    /// Sum of all Feature field bits for this ID, excluding the report-ID byte.
+    pub bits: usize,
+    /// HIDAPI buffer length: payload bits rounded up to bytes, plus the ID byte.
+    pub length: usize,
+}
+
+/// Lists every Feature report the descriptor declares, in ascending ID order.
+///
+/// Uses the same validation and length rules as [`feature_report_length`]; an
+/// ID appears only when at least one Feature field contributes bits to it, so
+/// Input and Output report IDs are never listed. Performs no HID operations.
+///
+/// # Errors
+/// Returns [`HidError::HidApiError`] for a malformed or unsupported descriptor.
+pub fn declared_feature_reports(descriptor: &[u8]) -> HidResult<Vec<DeclaredFeatureReport>> {
+    let report_bits = report_bits(descriptor)?;
+    let mut reports = Vec::new();
+    for (report_id, bits) in (0..=u8::MAX).zip(report_bits[FEATURE]) {
+        if bits != 0 {
+            reports.push(DeclaredFeatureReport {
+                report_id,
+                bits,
+                length: byte_length(bits, "feature")?,
+            });
+        }
+    }
+    Ok(reports)
+}
+
 fn report_length(
     descriptor: &[u8],
     report_id: u8,
     report_type: usize,
     type_name: &str,
 ) -> HidResult<Option<usize>> {
+    let bits = report_bits(descriptor)?[report_type][usize::from(report_id)];
+    if bits == 0 {
+        return Ok(None);
+    }
+    byte_length(bits, type_name).map(Some)
+}
+
+fn byte_length(bits: usize, type_name: &str) -> HidResult<usize> {
+    bits.checked_add(7)
+        .and_then(|bits| (bits / 8).checked_add(1))
+        .filter(|length| *length <= usize::from(u16::MAX))
+        .ok_or_else(|| descriptor_error(&format!("{type_name} report exceeds 65535 bytes")))
+}
+
+/// Validates a whole descriptor and returns per-type, per-ID field bit totals.
+fn report_bits(descriptor: &[u8]) -> HidResult<Box<[[usize; 256]; 3]>> {
     if descriptor.len() > MAX_DESCRIPTOR_LENGTH {
         return Err(descriptor_error("descriptor exceeds 4096 bytes"));
     }
@@ -75,7 +125,7 @@ fn report_length(
     let mut global_stack = Vec::new();
     let mut collection_depth = 0usize;
     // Separate input, output, and feature totals: IDs can be shared across types.
-    let mut report_bits = [[0usize; 256]; 3];
+    let mut report_bits = Box::new([[0usize; 256]; 3]);
     let mut has_numbered_reports = false;
     let mut has_unnumbered_reports = false;
     let mut offset = 0usize;
@@ -194,15 +244,7 @@ fn report_length(
             "Collection has no matching End Collection",
         ));
     }
-    let bits = report_bits[report_type][usize::from(report_id)];
-    if bits == 0 {
-        return Ok(None);
-    }
-    bits.checked_add(7)
-        .and_then(|bits| (bits / 8).checked_add(1))
-        .filter(|length| *length <= usize::from(u16::MAX))
-        .map(Some)
-        .ok_or_else(|| descriptor_error(&format!("{type_name} report exceeds 65535 bytes")))
+    Ok(report_bits)
 }
 
 fn positive_global(data: &[u8], name: &str) -> HidResult<usize> {
@@ -267,6 +309,99 @@ mod tests {
                     .contains("feature Report ID")
             );
         }
+    }
+
+    // Report descriptors captured from hardware by `masterhub-diag record`.
+    const M032LE_DESCRIPTOR_HEX: &str = "050c0901a1010a00ff150026ff007508963f00850291020a00ff150026ff007508963f00850181020a00ff150026ff007508961f008503b1040a00ff150026ff007508961f00852db1040a00ff150026ff007508961f00852eb1040a00ff150026ff007508961f00852fb1040a00ff150026ff007508961f008530b1040a00ff150026ff007508961f008531b1040a00ff150026ff007508961f008536b104c0";
+    const M003K_DESCRIPTOR_HEX: &str = "050c0901a1010a00ff150026ff007508963f00850291020a00ff150026ff007508963f00850181020a00ff150026ff007508961f008503b1040a00ff150026ff007508961f00852db1040a00ff150026ff007508961f00852eb1040a00ff150026ff007508961f00852fb1040a00ff150026ff007508961f008530b1040a00ff150026ff007508961f008531b1040a00ff150026ff007508961f008532b1040a00ff150026ff007508961f008534b1040a00ff150026ff007508961f008536b104c0";
+    const M131E_DESCRIPTOR_HEX: &str = "050c0901a1010a00ff150026ff007508963f01850291020a00ff150026ff007508963f00850181020a00ff150026ff007508961f008503b1040a00ff150026ff007508961f008547b1040a00ff150026ff007508961f008548b1040a00ff150026ff007508961f008549b1040a00ff150026ff007508961f00854ab1040a00ff150026ff007508961f00854bb1040a00ff150026ff007508961f00854cb1040a00ff150026ff007508961f00854db1040a00ff150026ff007508961f00854eb104c0";
+
+    fn bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn feature_ids(descriptor: &[u8]) -> Vec<u8> {
+        declared_feature_reports(descriptor)
+            .unwrap()
+            .iter()
+            .map(|report| report.report_id)
+            .collect()
+    }
+
+    #[test]
+    fn lists_declared_feature_reports_of_captured_descriptors() {
+        let roller = bytes(M032LE_DESCRIPTOR_HEX);
+        let knobs = bytes(M003K_DESCRIPTOR_HEX);
+        let dial = bytes(M131E_DESCRIPTOR_HEX);
+        assert_eq!((roller.len(), knobs.len(), dial.len()), (160, 194, 194));
+
+        assert_eq!(
+            feature_ids(&roller),
+            [0x03, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x36]
+        );
+        assert_eq!(
+            feature_ids(&knobs),
+            [0x03, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x34, 0x36]
+        );
+        assert_eq!(
+            feature_ids(&dial),
+            [0x03, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e]
+        );
+        for descriptor in [&roller, &knobs, &dial] {
+            for report in declared_feature_reports(descriptor).unwrap() {
+                // Report Size 8 x Report Count 31, plus the report-ID byte.
+                assert_eq!((report.bits, report.length), (248, 32));
+                assert_eq!(
+                    feature_report_length(descriptor, report.report_id).unwrap(),
+                    32
+                );
+            }
+            // Input ID 1 and output ID 2 are not Feature reports.
+            assert!(!feature_ids(descriptor).contains(&1));
+            assert!(!feature_ids(descriptor).contains(&2));
+        }
+        assert_eq!(output_report_length(&roller, 2).unwrap(), 64);
+        assert_eq!(output_report_length(&dial, 2).unwrap(), 320);
+    }
+
+    #[test]
+    fn declared_feature_reports_keep_bit_sizes_and_reject_malformed_descriptors() {
+        let descriptor = [
+            0x85, 0x05, 0x75, 0x03, 0x95, 0x01, 0xb1, 0x02, // ID 5: 3 bits
+            0x85, 0x04, 0x75, 0x08, 0x95, 0x02, 0xb1, 0x02, // ID 4: 16 bits
+            0x85, 0x06, 0x81, 0x02, // ID 6: input only
+        ];
+        assert_eq!(
+            declared_feature_reports(&descriptor).unwrap(),
+            [
+                DeclaredFeatureReport {
+                    report_id: 4,
+                    bits: 16,
+                    length: 3
+                },
+                DeclaredFeatureReport {
+                    report_id: 5,
+                    bits: 3,
+                    length: 2
+                },
+            ]
+        );
+        assert_eq!(
+            declared_feature_reports(&[0x75, 8, 0x95, 2, 0xb1, 2]).unwrap(),
+            [DeclaredFeatureReport {
+                report_id: 0,
+                bits: 16,
+                length: 3
+            }]
+        );
+        assert!(declared_feature_reports(&[]).unwrap().is_empty());
+        let mut truncated = bytes(M032LE_DESCRIPTOR_HEX);
+        truncated.pop();
+        assert!(declared_feature_reports(&truncated).is_err());
+        assert!(declared_feature_reports(&[0xb1, 2]).is_err());
     }
 
     #[test]

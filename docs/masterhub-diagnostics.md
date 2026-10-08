@@ -61,6 +61,35 @@ cargo run -p cooltek-sdk-cli --locked -- record \
 
 Record one physical action at a time and keep a timestamped action log. macOS input recording captures the SDK's reads; it is not a sniffer of another application's USB traffic. Use the [Windows USBPcap procedure](masterhub-macos-plan.md#windows-capture-procedure) to investigate official-app commands.
 
+## Read-only Feature report probe
+
+`features` reads the Feature reports that one interface declares. It is meant for comparing modules whose input reports differ, for example an M032LE that sends no input reports next to an M003K with the same descriptor layout apart from Feature IDs 0x32 and 0x34 (the M003K declares them, the M032LE does not):
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- features --path-hex HEX_FROM_INVENTORY --report-id 0x2d
+cargo run -p cooltek-sdk-cli --locked -- features --path-hex HEX_FROM_INVENTORY
+```
+
+The guarantee is read-only at the HID protocol level: the host sends only GET_REPORT(Feature) requests. What the firmware does internally when it answers a GET is unknown. For a first run on an untested module, read one ID at a time with `--report-id`, and skip Feature ID `0x03`: it is the vendor command mailbox (this SDK sends commands with SET `0x03` elsewhere, for example software mode). macOS opens the interface exclusively, so stop `masterhub-service` and the vendor app first.
+
+Usage: `masterhub-diag features --path-hex <PATH_HEX> [--report-id <ID>] [--timeout-ms <1-5000, default 1000>] [--duration-secs <1-60, default 10>]`
+
+The command is read-only. `--path-hex` is required and selects exactly one inventory entry with the same lossless path format and checks as `record`; there is no automatic selection. The interface is opened the way `record` opens it, without software mode or any initialization. The tool reads the HID report descriptor, lists the Feature report IDs and sizes it declares, and sends one HID GET FEATURE per declared ID, with a buffer sized from the descriptor (payload bits rounded up to bytes, plus the report-ID byte). It never sends SET FEATURE, output reports, or mode commands. It never requests an ID the descriptor does not declare as a Feature report, so input and output report IDs are never requested. `--report-id` (decimal or `0x` hex) reads only that ID, and only if the descriptor declares it as a Feature report; otherwise nothing is requested and the command fails.
+
+This is enforced in the types, not just by convention. The probe is generic over `ReadOnlyFeatureTransport`, which has only a descriptor read and a GET FEATURE. The opened `HidDevice` is moved onto a worker thread that accepts only those two requests, and nothing else holds a handle to it. The worker body is generic over a private trait with only those two reads, so the compiler rejects any other device call there. Each request waits at most `--timeout-ms`, capped by the time left before the `--duration-secs` deadline. A request that times out is an `error`, and it leaves the worker busy: later reports are not sent and are reported as `"status":"not_sent"` with a `reason`, never as `error`. Requests not started before the deadline are reported as `skipped`. A failed GET is recorded and the remaining IDs are still read.
+
+Output is JSON lines on stdout. Shape (values abbreviated):
+
+```json
+{"type":"features_session","schema_version":1,"source":"hardware","read_only":true,"identity":{"path_hex":"…","vendor_id":9494,"product_id":516,"serial_number":"…","module":"M032LE","…":"same fields as list"},"timeout_ms":1000,"duration_ms":10000,"report_descriptor":{"status":"available","length":160,"raw_hex":"050c…"},"declared_feature_ids":[3,45,46,47,48,49,54],"declared_feature_reports":[{"report_id":3,"declared_bits":248,"declared_length":32},"…"],"requested_report_ids":[3,45,46,47,48,49,54]}
+{"type":"feature","report_id":3,"declared_length":32,"status":"ok","received_length":32,"raw_hex":"03…"}
+{"type":"feature","report_id":45,"declared_length":32,"status":"error","error":"…"}
+{"type":"feature","report_id":46,"declared_length":32,"status":"not_sent","reason":"an earlier request is still pending on the device"}
+{"type":"features_summary","requested":7,"ok":5,"error":1,"skipped":0,"not_sent":1,"elapsed_micros":12345,"status":"completed"}
+```
+
+`raw_hex` contains only the bytes the transport actually returned. `received_length` can be smaller than `declared_length`. The identity carries the same fields as `list`, including the USB serial number, so review it before sharing output. If the descriptor cannot be read or parsed, or `--report-id` is not declared, the session line carries the error, no GET FEATURE is sent, the summary has `"status":"aborted"`, and the exit status is non-zero. Per-report results do not change the exit status: it is 0 even when every GET failed, so scripts should read the `features_summary` line (`ok`, `error`, `skipped`, `not_sent`). The descriptor parser and the probe are covered offline by tests that use the M032LE, M003K and M131E descriptors captured with `record`. What the devices return to these requests has not been verified.
+
 ## Capture format and replay
 
 The diagnostic format is JSON Lines, schema version 1, and is separate from USBPcap PCAP/PCAPNG. Converting USB captures to these fixtures requires identifying the appropriate input-transfer payloads; this CLI does not parse PCAP files.
@@ -156,6 +185,7 @@ Physical upload, key order, orientation, image acceptance, software-mode require
 
 - `DeviceRegistry` shares enumeration context and opens exact identities without initialization.
 - `ModuleHandle::open_by_identity()` opens without configuration; `initialize()` and `connect_by_identity()` explicitly initialize. The legacy `connect()` still opens the first match and initializes for compatibility.
+- `descriptor::declared_feature_reports()` lists every Feature report ID with its bit size and HIDAPI buffer length, without I/O.
 - `ReportTransport` supports physical or fake input/feature/output operations and descriptor reads. `InputReader` owns a bounded reusable read buffer and distinguishes idle from failure.
 - `CanGetSerialNumber::parse_serial_number_report()` and `get_serial_number_with_transport()` validate serial responses and support offline tests.
 - `CanSetSoftwareMode::software_mode_report()` builds the known feature command without I/O; writing it is an explicit separate operation.

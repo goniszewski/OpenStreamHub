@@ -22,6 +22,7 @@ use cooltek_sdk_cli::capture::{
     SCHEMA_VERSION, Session, Source, decode_hex, encode_hex, write_record,
 };
 use cooltek_sdk_cli::device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device};
+use cooltek_sdk_cli::features::{HidFeatureReader, ProbeSettings, probe};
 use cooltek_sdk_cli::image_prep::{
     FitMode, MAX_ENCODED_BYTES, PrepareOptions, prepare_image, prepare_keypad_image,
 };
@@ -31,7 +32,7 @@ use cooltek_sdk_cli::image_prep::{
     name = "masterhub-diag",
     version,
     about = "Discover MasterHUB devices, record raw reports, and replay offline",
-    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. Dial setters preview reports unless --path-hex explicitly selects a device. Images can be converted offline; JPEG packet plans require a saved HID descriptor. Keypad image conversion and JPEG packet planning are offline only."
+    long_about = "Discover MasterHUB devices, record raw reports, and replay offline.\n\nDiscovery never opens devices. Recording does not initialize devices or send configuration reports unless --software-mode is explicitly requested. Replay does not initialize HID. `features` is read-only at the HID protocol level: the host sends only GET_REPORT(Feature), for the Feature report IDs that the selected device's descriptor declares, and never SET FEATURE, output reports, or mode commands; what firmware does internally on a GET is unknown. Dial setters preview reports unless --path-hex explicitly selects a device. Images can be converted offline; JPEG packet plans require a saved HID descriptor. Keypad image conversion and JPEG packet planning are offline only."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -66,6 +67,37 @@ enum Command {
         /// Explicitly enter software mode (M131E dial or M4315 keys).
         #[arg(long)]
         software_mode: bool,
+    },
+    /// Read-only: GET FEATURE for the Feature report IDs one device declares.
+    ///
+    /// Opens the single interface selected by --path-hex the same way `record`
+    /// does, without software mode or any initialization, reads its HID report
+    /// descriptor, and issues one GET FEATURE per Feature report ID that the
+    /// descriptor declares, sized from the descriptor. It never sends SET FEATURE,
+    /// an output report, or a mode command, and never requests an undeclared ID
+    /// or an input/output report. Prints JSON lines to stdout: a session line,
+    /// one line per report, and a summary.
+    ///
+    /// Read-only at the HID protocol level: the host sends only
+    /// GET_REPORT(Feature); what the firmware does internally on a GET is
+    /// unknown. On an untested module, first read one ID at a time with
+    /// --report-id, and skip 0x03: it is the vendor command mailbox (this SDK
+    /// sends commands with SET 0x03 elsewhere). macOS opens the interface
+    /// exclusively, so stop masterhub-service or the vendor app first. The exit
+    /// status is 0 even when every GET failed; scripts should read the summary.
+    Features {
+        /// Hexadecimal device path copied from `list` (no trailing NUL); required.
+        #[arg(long, value_parser = parse_path)]
+        path_hex: DevicePath,
+        /// Read only this declared Feature report ID (decimal or 0x-prefixed hex).
+        #[arg(long, value_parser = parse_report_id)]
+        report_id: Option<u8>,
+        /// Maximum wait for the descriptor and each GET FEATURE (1 to 5000 ms).
+        #[arg(long, default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..=5000))]
+        timeout_ms: u64,
+        /// Total deadline; reports not started before it are skipped (1 to 60 seconds).
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=60))]
+        duration_secs: u64,
     },
     /// Decode a completed JSONL capture without opening any hardware.
     Replay { file: PathBuf },
@@ -228,6 +260,19 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             max_reports,
             software_mode,
         ),
+        Command::Features {
+            path_hex,
+            report_id,
+            timeout_ms,
+            duration_secs,
+        } => features(
+            &path_hex,
+            ProbeSettings {
+                only_report_id: report_id,
+                timeout: Duration::from_millis(timeout_ms),
+                duration: Duration::from_secs(duration_secs),
+            },
+        ),
         Command::Replay { file } => replay(file),
         Command::Dial { command } => dial_command(command),
         Command::Keypad { command } => keypad_command(command),
@@ -238,6 +283,26 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
     decode_hex(raw, 3)?
         .try_into()
         .map_err(|_| "color must contain exactly six hexadecimal digits".into())
+}
+
+fn parse_report_id(raw: &str) -> Result<u8, String> {
+    match raw.strip_prefix("0x").or_else(|| raw.strip_prefix("0X")) {
+        Some(hex) => u8::from_str_radix(hex, 16),
+        None => raw.parse(),
+    }
+    .map_err(|_| "report ID must be 0 to 255, in decimal or 0x-prefixed hex".into())
+}
+
+/// Read-only Feature report probe; the opened device is only reachable through
+/// a reader that can GET the descriptor and Feature reports.
+fn features(path: &[u8], settings: ProbeSettings) -> Result<(), Box<dyn Error>> {
+    let registry = DeviceRegistry::new()?;
+    let devices = registry.devices();
+    let selected = select_device(&devices, path, false)?;
+    let reader = HidFeatureReader::spawn(registry.open(selected)?);
+    let mut output = io::stdout().lock();
+    probe(&reader, &identity(selected), settings, &mut output)?;
+    Ok(())
 }
 
 fn identity(device: &ModuleIdentity) -> Identity {
@@ -896,6 +961,38 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    #[test]
+    fn features_requires_an_exact_path_and_parses_report_ids_without_opening_hid() {
+        assert!(Cli::try_parse_from(["masterhub-diag", "features"]).is_err());
+        assert!(Cli::try_parse_from(["masterhub-diag", "features", "--report-id", "3"]).is_err());
+        for (raw, expected) in [("45", 45), ("0x2d", 0x2d), ("0X36", 0x36), ("0", 0)] {
+            let cli = Cli::try_parse_from([
+                "masterhub-diag",
+                "features",
+                "--path-hex",
+                "61ff",
+                "--report-id",
+                raw,
+            ])
+            .unwrap();
+            let Command::Features {
+                path_hex,
+                report_id,
+                timeout_ms,
+                duration_secs,
+            } = cli.command
+            else {
+                panic!("expected features")
+            };
+            assert_eq!(path_hex.0, vec![0x61, 0xff]);
+            assert_eq!(report_id, Some(expected));
+            assert_eq!((timeout_ms, duration_secs), (1000, 10));
+        }
+        for raw in ["256", "0x100", "-1", "x", "0x"] {
+            assert!(parse_report_id(raw).is_err(), "{raw}");
+        }
+    }
 
     #[test]
     fn exact_paths_parse_as_single_required_values_without_opening_hid() {

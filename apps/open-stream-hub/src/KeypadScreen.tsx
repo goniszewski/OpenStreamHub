@@ -26,10 +26,10 @@ export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavi
           aria-pressed={!back && slot?.type !== 'folder' ? selected === control : undefined}
           onClick={() => back ? onNavigate(path.slice(0, -1)) : slot?.type === 'folder' ? onNavigate([...path, slot.page_id]) : onSelect(control)}>
           {!back && <span className="keypad-key-number">{control + 1}</span>}
-          <KeyDisplayContent slot={slot} pages={allPages} depth={depth} back={back} />
+          <KeyDisplayContent key={page.id} slot={slot} pages={allPages} depth={depth} back={back} artwork={page.artwork?.[String(control)]} />
         </button>;
       })}
     </div>
-    <p className="fine-print">Screen concept · hardware display uploads remain unavailable.</p>
+    <p className="fine-print">Artwork follows the active page when the keypad runs with Module control set to App.</p>
   </section>;
 }

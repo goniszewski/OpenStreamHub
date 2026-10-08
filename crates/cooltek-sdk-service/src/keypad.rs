@@ -1,9 +1,9 @@
 use crate::{
     Action, Binding, BindingEngine, DeviceContext, DialFunction, DialFunctionNavigation, Gesture,
-    InputEvent, Profile, ServiceModule,
+    InputEvent, KeyArtwork, Profile, ServiceModule,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// A pressed or released action associated with one keypad tile.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -46,6 +46,9 @@ pub struct KeypadPage {
     pub name: String,
     /// Exactly fifteen slots in wire order; child slot 0 is reserved for Back.
     pub slots: Vec<Option<KeypadTile>>,
+    /// Portable prepared artwork keyed by canonical decimal wire index.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub artwork: BTreeMap<String, KeyArtwork>,
 }
 
 /// A bounded page tree rooted at the literal ID `root`.
@@ -94,6 +97,7 @@ impl KeypadLayout {
         if self.binding_count() > Profile::MAX_BINDINGS {
             return Err(format!("keypad exceeds {} bindings", Profile::MAX_BINDINGS));
         }
+        let mut artwork_bytes = 0usize;
         let mut pages = HashMap::new();
         for (index, page) in self.pages.iter().enumerate() {
             validate_id(&page.id)?;
@@ -113,6 +117,27 @@ impl KeypadLayout {
                     "page {:?} slot 0 is reserved for Back and must be null",
                     page.id
                 ));
+            }
+            for (key, artwork) in &page.artwork {
+                let index = key
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|index| *index < Self::KEY_COUNT && index.to_string() == *key)
+                    .ok_or_else(|| {
+                        format!(
+                            "page {:?}: artwork key must be canonical 0 through 14",
+                            page.id
+                        )
+                    })?;
+                if page.id != Self::ROOT_PAGE_ID && index == 0 {
+                    return Err(format!("page {:?}: Back key artwork is reserved", page.id));
+                }
+                artwork_bytes = artwork_bytes
+                    .checked_add(artwork.validate()?)
+                    .ok_or("artwork byte count overflow")?;
+                if artwork_bytes > KeyArtwork::MAX_PROFILE_BYTES {
+                    return Err("profile prepared artwork exceeds 700 KiB".into());
+                }
             }
             for (slot, tile) in page.slots.iter().enumerate() {
                 if let Some(KeypadTile::Action { label, bindings }) = tile {
@@ -815,6 +840,7 @@ mod tests {
                 id: next.clone(),
                 name: next.clone(),
                 slots: vec![None; 15],
+                artwork: Default::default(),
             });
             id = next;
         }
@@ -838,6 +864,7 @@ mod tests {
             id: "level-9".into(),
             name: "Deep".into(),
             slots: vec![None; 15],
+            artwork: Default::default(),
         });
         assert!(profile.validate().is_err());
     }
@@ -854,5 +881,84 @@ mod tests {
         };
         assert_eq!(bindings[0].serial_number.as_deref(), Some("Desk"));
         assert_eq!(bindings[0].gesture, Gesture::Released);
+    }
+
+    fn with_artwork(page: usize, keys: &[(&str, KeyArtwork)]) -> Profile {
+        let mut profile = fixture();
+        let artwork = &mut profile.keypad.as_mut().unwrap().pages[page].artwork;
+        for (key, value) in keys {
+            artwork.insert((*key).into(), value.clone());
+        }
+        profile
+    }
+    #[test]
+    fn artwork_keys_are_canonical_wire_indexes_and_child_back_is_reserved() {
+        use crate::key_artwork::tests::{artwork, frame, jpeg};
+        let key = artwork(vec![frame(&jpeg(72, 40), 100)]);
+        for accepted in ["0", "14"] {
+            with_artwork(0, &[(accepted, key.clone())])
+                .validate()
+                .unwrap();
+        }
+        for rejected in ["01", "+1", "15", "-1", " 1", "", "x"] {
+            let error = with_artwork(0, &[(rejected, key.clone())])
+                .validate()
+                .unwrap_err();
+            assert!(
+                error.contains("canonical 0 through 14"),
+                "{rejected:?}: {error}"
+            );
+        }
+        // Wire 0 of a child page is its generated Back key; other child keys are open.
+        let error = with_artwork(1, &[("0", key.clone())])
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("Back key artwork is reserved"), "{error}");
+        with_artwork(1, &[("1", key.clone())]).validate().unwrap();
+        let invalid = artwork(vec![frame(&jpeg(72, 40), 99)]);
+        assert!(with_artwork(0, &[("3", invalid)]).validate().is_err());
+    }
+    #[test]
+    fn profile_artwork_bytes_are_bounded_across_pages() {
+        use crate::key_artwork::tests::{artwork, frame, padded};
+        let largest = frame(&padded(40, KeyArtwork::MAX_FRAME_BYTES), 100);
+        // 21 full frames fit the 700 KiB budget; a 22nd does not.
+        let ten = artwork(vec![largest.clone(); 10]);
+        let eleven = artwork(vec![largest; 11]);
+        let mut profile = with_artwork(0, &[("1", ten), ("2", eleven.clone())]);
+        profile.validate().unwrap();
+        profile.keypad.as_mut().unwrap().pages[1]
+            .artwork
+            .insert("1".into(), eleven.clone());
+        let error = profile.validate().unwrap_err();
+        assert!(error.contains("700 KiB"), "{error}");
+        let error = with_artwork(0, &[("1", eleven.clone()), ("2", eleven)])
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("700 KiB"), "{error}");
+        // Base64 of a full budget still leaves room inside the 1 MiB JSON
+        // limit, so the byte budget is the limit a profile reaches first.
+        const {
+            assert!(
+                KeyArtwork::MAX_PROFILE_BYTES.div_ceil(3) * 4 < Profile::MAX_JSON_BYTES - 64 * 1024
+            )
+        };
+    }
+    #[test]
+    fn artwork_round_trips_and_is_omitted_when_absent() {
+        use crate::key_artwork::tests::{artwork, frame, jpeg};
+        let plain = fixture();
+        let value = serde_json::to_value(&plain).unwrap();
+        for page in value["keypad"]["pages"].as_array().unwrap() {
+            assert!(page.get("artwork").is_none());
+        }
+        let json = serde_json::to_vec(&plain).unwrap();
+        assert_eq!(Profile::from_json(&json).unwrap(), plain);
+
+        let mut animated = artwork(vec![frame(&jpeg(72, 40), 100), frame(&jpeg(72, 200), 250)]);
+        animated.loop_count = 3;
+        let profile = with_artwork(1, &[("4", animated)]);
+        let json = serde_json::to_vec(&profile).unwrap();
+        assert_eq!(Profile::from_json(&json).unwrap(), profile);
     }
 }

@@ -199,7 +199,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // sampled at most once a second, on the display thread).
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
-                (true, DialContent::Off) => Some(Artwork::Keys(PreparedKeyArtwork::prepare()?)),
+                (true, DialContent::Off) => Some(Artwork::Keys(
+                    PreparedKeyArtwork::prepare_profile(&profile)?,
+                )),
                 (true, content) => Some(Artwork::Dial(DialArtwork::prepare(
                     content,
                     &profile,

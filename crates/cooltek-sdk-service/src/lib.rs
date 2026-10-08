@@ -9,6 +9,7 @@
 mod binding;
 mod dial;
 mod input;
+mod key_artwork;
 mod keypad;
 mod profile;
 mod timer;
@@ -20,6 +21,7 @@ pub mod obs;
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
 pub use dial::{DialBinding, DialFunction, DialFunctionNavigation};
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
+pub use key_artwork::{KeyArtwork, KeyArtworkFrame};
 pub use keypad::{
     KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution, KeypadTile,
     ProfileResolution, ProfileSession,

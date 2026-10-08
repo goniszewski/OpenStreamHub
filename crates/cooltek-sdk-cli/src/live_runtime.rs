@@ -31,8 +31,8 @@ use crate::service_events::{
 };
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, DeviceContext, Gesture, InputSession, ProfileResolution,
-    ProfileSession, ServiceModule, TimerTable,
+    Action, ActionDispatcher, DeviceContext, Gesture, InputSession, KeypadLayout,
+    ProfileResolution, ProfileSession, ServiceModule, TimerTable,
     display_sync::{
         ApplyReport, DialImageRequest, DisplayCapabilities, DisplaySink, DisplaySync,
         DisplayTarget, KeyImageProvider, SinkError,
@@ -372,21 +372,111 @@ impl DisplayThread {
                     panicked
                 };
                 match content {
-                    DisplayContent::Keys(artwork) => {
-                        while let Wake::Request(request) =
-                            next_display_request(&thread_slot, &abort, None)
-                        {
+                    DisplayContent::Keys(mut artwork) => {
+                        let mut current: Option<DisplayRequest> = None;
+                        let started = Instant::now();
+                        let mut animate = true;
+                        let mut last_sync: Option<Instant> = None;
+                        loop {
+                            // Frames are chosen from the run clock as of now, so a slow
+                            // write never pushes later frames back; the gap is measured
+                            // from the end of the previous sync, so the thread always
+                            // idles between animation syncs.
+                            let delay = match current.as_ref() {
+                                Some(request) if animate => {
+                                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                                        || {
+                                            artwork.advance(page_of(request), started.elapsed());
+                                            animation_wait(
+                                                artwork.next_frame_in(),
+                                                last_sync.map(|last| last.elapsed()),
+                                                ANIMATION_MIN_INTERVAL,
+                                            )
+                                        },
+                                    )) {
+                                        Ok(delay) => delay,
+                                        // Logged and handled like a panicking sync.
+                                        Err(payload) => {
+                                            let failed = display_record(
+                                                request,
+                                                None,
+                                                &[],
+                                                Some(DISPLAY_PANIC),
+                                            );
+                                            finish(Err(payload), failed);
+                                            return;
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            };
+                            match next_display_request(&thread_slot, &abort, delay) {
+                                Wake::Stopped => return,
+                                Wake::Request(request) => current = Some(request),
+                                Wake::Tick => {
+                                    if let Some(request) = current.as_mut() {
+                                        request.trigger = ANIMATION_TRIGGER;
+                                    }
+                                }
+                            }
+                            if gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst) {
+                                return;
+                            }
+                            let Some(request) = current.as_ref() else {
+                                continue;
+                            };
+                            let timed = request.trigger == ANIMATION_TRIGGER;
+                            let closed = || {
+                                gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst)
+                            };
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    artwork.advance(page_of(request), started.elapsed());
                                     sync_page(
                                         &mut sync,
                                         &mut session,
                                         &*artwork,
-                                        &request,
+                                        request,
                                         &thread_counts,
+                                        &|| timed && closed(),
                                     )
                                 }));
-                            let failed = display_record(&request, None, &[], Some(DISPLAY_PANIC));
+                            last_sync = Some(Instant::now());
+                            let record = match record {
+                                // A Stop interrupted an animation frame and every failure was
+                                // its refusal: nothing is logged; no further sync may start.
+                                Ok(None) => return,
+                                Ok(Some(record)) => Ok(record),
+                                Err(payload) => Err(payload),
+                            };
+                            let clean = record.as_ref().is_ok_and(|record| {
+                                record["complete"] == true
+                                    && record["missing"]
+                                        .as_array()
+                                        .is_none_or(|missing| missing.is_empty())
+                            });
+                            // A failed frame pauses timed animation, and an incomplete
+                            // animation frame does too, so a failure is logged once rather
+                            // than per tick; no timer retries a short write. Input and
+                            // explicit page requests still draw, and the next one that
+                            // completes cleanly resumes animation.
+                            let failed_write = record.as_ref().is_ok_and(|record| {
+                                record["error"].is_string()
+                                    || record["failed"]
+                                        .as_array()
+                                        .is_some_and(|failed| !failed.is_empty())
+                            });
+                            if failed_write || (timed && !clean) {
+                                animate = false;
+                            } else if !timed && clean {
+                                animate = true;
+                            }
+                            // Clean animation frames are counted in `syncs` but not logged:
+                            // at up to ten a second they would flood the run log.
+                            if timed && clean {
+                                continue;
+                            }
+                            let failed = display_record(request, None, &[], Some(DISPLAY_PANIC));
                             if finish(record, failed) {
                                 return;
                             }
@@ -521,6 +611,34 @@ pub const WORKER_START_FAILED: &str = "could not start action worker";
 /// Prefix of the error when the action worker never reported ready (it did
 /// not write `service_start` in time). OpenStreamHub treats it as transient.
 pub const WORKER_NOT_READY: &str = "action worker did not become ready";
+
+/// Trigger of a key sync started by an animation frame deadline, not a request.
+const ANIMATION_TRIGGER: &str = "animation";
+
+/// Least time from one key sync to the next animation-timed one, however many
+/// keys' frame deadlines fall in between. Frames are still chosen from the run
+/// clock, so a key whose deadline was deferred skips ahead rather than drifting.
+const ANIMATION_MIN_INTERVAL: Duration = Duration::from_millis(100);
+
+/// The page a key request draws.
+fn page_of(request: &DisplayRequest) -> &str {
+    request
+        .path
+        .last()
+        .map(String::as_str)
+        .unwrap_or(KeypadLayout::ROOT_PAGE_ID)
+}
+
+/// Wait before the next animation sync: the earliest frame deadline, but no
+/// sooner than `min_interval` after the previous sync. `None` never wakes.
+fn animation_wait(
+    next_frame: Option<Duration>,
+    since_last_sync: Option<Duration>,
+    min_interval: Duration,
+) -> Option<Duration> {
+    let gap = since_last_sync.map_or(Duration::ZERO, |since| min_interval.saturating_sub(since));
+    next_frame.map(|next| next.max(gap))
+}
 
 /// Record error for a sync that panicked.
 const DISPLAY_PANIC: &str = "display sync panicked; display disabled for this run";
@@ -742,13 +860,19 @@ fn dial_record(
 }
 
 /// Plans and applies one page; every failure is reported in the record only.
+/// Returns `None`, counting no failure, when `interrupted` holds once the
+/// writes end and the closed write gate refused every key that failed: the run
+/// stopped, so the refusals are not faults. Any other failure in the same frame
+/// is still logged and counted. `syncs` counts every sync started, including
+/// an interrupted one, since it may already have written keys.
 fn sync_page<S: DisplaySink>(
     sync: &mut DisplaySync<S>,
     session: &mut ProfileSession,
     artwork: &dyn KeyImageProvider,
     request: &DisplayRequest,
     counts: &DisplayCounts,
-) -> Value {
+    interrupted: &dyn Fn() -> bool,
+) -> Option<Value> {
     counts.syncs.fetch_add(1, Ordering::SeqCst);
     let planned = session
         .set_path(&request.path)
@@ -763,10 +887,28 @@ fn sync_page<S: DisplaySink>(
         }
         Err(error) => (None, Vec::new(), Some(error)),
     };
+    let only_refused = error.is_none()
+        && missing.is_empty()
+        && report.as_ref().is_some_and(|report| {
+            report.not_attempted.is_empty()
+                && report.failures.iter().all(|failure| {
+                    matches!(&failure.error, SinkError::Transport(message)
+                        if message.contains(DISPLAY_WRITES_CLOSED)
+                            || message.contains(crate::display_sink::SHARED_WRITES_CLOSED))
+                })
+        });
+    if only_refused && interrupted() {
+        return None;
+    }
     if error.is_some() || report.as_ref().is_some_and(|report| !report.is_complete()) {
         counts.failures.fetch_add(1, Ordering::SeqCst);
     }
-    display_record(request, report.as_ref(), &missing, error.as_deref())
+    Some(display_record(
+        request,
+        report.as_ref(),
+        &missing,
+        error.as_deref(),
+    ))
 }
 
 fn key_index(target: &DisplayTarget) -> Option<u8> {
@@ -4595,6 +4737,382 @@ mod tests {
         assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 2);
         assert!(records_rx.try_recv().is_err());
         assert_eq!(written(&fake), 15);
+    }
+
+    #[test]
+    fn animation_waits_for_the_earliest_frame_but_never_sooner_than_the_gap() {
+        let ms = Duration::from_millis;
+        let gap = ANIMATION_MIN_INTERVAL;
+        assert_eq!(animation_wait(None, None, gap), None);
+        assert_eq!(animation_wait(None, Some(ms(0)), gap), None);
+        assert_eq!(animation_wait(Some(ms(30)), None, gap), Some(ms(30)));
+        // Two keys 30 ms apart: the second waits out the gap after the first.
+        assert_eq!(animation_wait(Some(ms(30)), Some(ms(0)), gap), Some(gap));
+        assert_eq!(
+            animation_wait(Some(ms(30)), Some(ms(80)), gap),
+            Some(ms(30))
+        );
+        assert_eq!(animation_wait(Some(ms(5)), Some(ms(80)), gap), Some(ms(20)));
+        assert_eq!(
+            animation_wait(Some(ms(250)), Some(ms(10)), gap),
+            Some(ms(250))
+        );
+        assert_eq!(animation_wait(Some(ms(1)), Some(ms(500)), gap), Some(ms(1)));
+    }
+
+    /// A key display thread drawing `profile`'s artwork into `fake`.
+    fn animated_display(
+        fake: &Arc<Mutex<FakeDisplaySink>>,
+        profile: Profile,
+        abort: &Arc<AtomicBool>,
+        hook: Option<WriteHook>,
+    ) -> (DisplayThread, ProfileSession, Receiver<Value>) {
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(fake),
+                before_write: hook,
+            },
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let display =
+            DisplayThread::spawn(display, session.clone(), Arc::clone(abort), records_tx).unwrap();
+        display.request(&session, "software_mode");
+        (display, session, records_rx)
+    }
+    fn blinking_root_key_3() -> Profile {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (200, 100)], 0)),
+            (0, "5", key_artwork(&[(60, 100)], 1)),
+        ])
+    }
+    fn successful_after(fake: &Arc<Mutex<FakeDisplaySink>>, skip: usize) -> Vec<DisplayTarget> {
+        fake.lock().unwrap().successful()[skip..].to_vec()
+    }
+
+    #[test]
+    fn animation_ticks_redraw_only_changed_keys_and_log_nothing_when_clean() {
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let abort = Arc::new(AtomicBool::new(false));
+        let started = Instant::now();
+        let (mut display, _, records) =
+            animated_display(&fake, blinking_root_key_3(), &abort, None);
+        assert!(wait_until(|| written(&fake) >= 15 + 3), "animation writes");
+        assert!(display.finish(Duration::from_secs(2)));
+        // Three 100 ms frames after the page draw take at least 300 ms.
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        let after_page = successful_after(&fake, 15);
+        assert!(after_page.len() >= 3);
+        assert!(
+            after_page
+                .iter()
+                .all(|target| *target == DisplayTarget::Key(3))
+        );
+        let first = records.try_recv().unwrap();
+        assert_eq!(first["trigger"], "software_mode");
+        assert_eq!(first["written"], json!((0..15).collect::<Vec<u8>>()));
+        assert!(records.try_recv().is_err(), "clean frames are not logged");
+        let syncs = display.counts.syncs.load(Ordering::SeqCst);
+        assert!(syncs as usize > after_page.len(), "{syncs}");
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_failed_animation_frame_is_logged_once_and_a_clean_request_resumes_animation() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        // The page draw and the first frame succeed; the second frame is short.
+        fake.lock().unwrap().fail_after(
+            DisplayTarget::Key(3),
+            2,
+            SinkError::ShortWrite {
+                written: 10,
+                expected: 65,
+            },
+        );
+        let profile = profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (200, 100)], 0)),
+            (1, "4", key_artwork(&[(30, 100), (90, 100)], 0)),
+        ]);
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, mut session, records) = animated_display(&fake, profile, &abort, None);
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap()["trigger"],
+            "software_mode"
+        );
+        let failed = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(failed["trigger"], "animation");
+        assert_eq!(failed["page_id"], "root");
+        assert_eq!(failed["failed"][0]["key_index"], 3);
+        assert_eq!(failed["failed"][0]["short_write"], true);
+        assert_eq!(failed["complete"], false);
+        let attempts = written(&fake);
+        assert_eq!(attempts, 15 + 2);
+        // Well past several frame deadlines, nothing else was attempted.
+        thread::sleep(Duration::from_millis(350));
+        assert_eq!(written(&fake), attempts);
+        assert!(records.try_recv().is_err());
+        // A clean explicit page request draws and resumes animation there.
+        session
+            .set_path(&["root".into(), "development".into()])
+            .unwrap();
+        display.request(&session, "navigation");
+        let navigation = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(navigation["trigger"], "navigation");
+        assert_eq!(navigation["complete"], true);
+        let drawn = written(&fake);
+        assert!(drawn > attempts);
+        assert!(
+            wait_until(|| written(&fake) >= drawn + 3),
+            "animation resumed"
+        );
+        assert!(display.finish(Duration::from_secs(2)));
+        let resumed = successful_after(&fake, drawn - 1);
+        assert!(
+            resumed
+                .iter()
+                .all(|target| *target == DisplayTarget::Key(4))
+        );
+        // The resumed frames were clean: no further lines and no further failures.
+        assert!(records.try_recv().is_err());
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn stopping_during_an_animation_frame_logs_and_counts_no_failure() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (began_tx, began_rx) = mpsc::sync_channel(1);
+        let sink_gate = Arc::clone(&gate);
+        // Holds the first animation write (key 3) until the test has stopped
+        // the display, so key 4 of the same frame is refused by the closed gate.
+        let hook: WriteHook = Box::new(move |attempts| {
+            if attempts == 15 {
+                began_tx.send(()).unwrap();
+                let (lock, changed) = &*sink_gate;
+                let released = lock.lock().unwrap();
+                let _unused = changed
+                    .wait_timeout_while(released, Duration::from_secs(5), |open| !*open)
+                    .unwrap();
+            }
+        });
+        let profile = profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (200, 100)], 0)),
+            (0, "4", key_artwork(&[(30, 100), (90, 100)], 0)),
+        ]);
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, _, records) = animated_display(&fake, profile, &abort, Some(hook));
+        began_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        display.stop();
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(display.finish(Duration::from_secs(2)));
+        // Key 3 was in flight and completed; key 4 never reached the sink.
+        assert_eq!(written(&fake), 16);
+        assert_eq!(records.try_recv().unwrap()["trigger"], "software_mode");
+        assert!(records.try_recv().is_err(), "a Stop is not a failed frame");
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn animation_syncs_leave_the_minimum_gap_between_them() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        use std::sync::OnceLock;
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        // Each write is tagged with the number of syncs started so far, so the
+        // writes of one sync share a tag regardless of timing.
+        let counts: Arc<OnceLock<Arc<DisplayCounts>>> = Arc::default();
+        let writes = Arc::new(Mutex::new(Vec::new()));
+        let (hook_counts, log) = (Arc::clone(&counts), Arc::clone(&writes));
+        // Slow writes: the gap must follow the end of a sync, not its start.
+        let hook: WriteHook = Box::new(move |attempts| {
+            if attempts >= 15 {
+                thread::sleep(Duration::from_millis(30));
+            }
+            let sync = hook_counts.get().unwrap().syncs.load(Ordering::SeqCst);
+            log.lock().unwrap().push((sync, Instant::now()));
+        });
+        // Deadlines 50 ms apart (100, 150, 200, 300 ms...) are never drawn 50 ms apart.
+        let profile = profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (200, 100)], 0)),
+            (0, "4", key_artwork(&[(30, 150), (90, 150)], 0)),
+        ]);
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: Some(hook),
+            },
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, _records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut display = DisplayThread::spawn(
+            display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        counts.set(Arc::clone(&display.counts)).ok().unwrap();
+        display.request(&session, "software_mode");
+        assert!(
+            wait_until(|| display.counts.syncs.load(Ordering::SeqCst) >= 7),
+            "animation syncs"
+        );
+        assert!(display.finish(Duration::from_secs(2)));
+        let writes = writes.lock().unwrap().clone();
+        // (first, last) write time of each animation sync; tag 1 is the page draw.
+        let mut syncs: Vec<(u64, Instant, Instant)> = Vec::new();
+        for (sync, time) in writes.into_iter().filter(|(sync, _)| *sync > 1) {
+            match syncs.last_mut() {
+                Some(last) if last.0 == sync => last.2 = time,
+                _ => syncs.push((sync, time, time)),
+            }
+        }
+        assert!(syncs.len() >= 4, "{}", syncs.len());
+        for pair in syncs.windows(2) {
+            let gap = pair[1].1 - pair[0].2;
+            assert!(gap >= ANIMATION_MIN_INTERVAL, "sync {}: {gap:?}", pair[1].0);
+        }
+    }
+
+    #[test]
+    fn a_real_failure_in_a_frame_interrupted_by_stop_is_still_logged() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        fake.lock().unwrap().fail_after(
+            DisplayTarget::Key(3),
+            1,
+            SinkError::Transport("device busy".into()),
+        );
+        let gate: Gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let (began_tx, began_rx) = mpsc::sync_channel(1);
+        let sink_gate = Arc::clone(&gate);
+        // In the first animation frame key 3 fails (attempt 15), then key 4 is
+        // held until the test has stopped the display, so key 5 is refused.
+        let hook: WriteHook = Box::new(move |attempts| {
+            if attempts == 16 {
+                began_tx.send(()).unwrap();
+                let (lock, changed) = &*sink_gate;
+                let released = lock.lock().unwrap();
+                let _unused = changed
+                    .wait_timeout_while(released, Duration::from_secs(5), |open| !*open)
+                    .unwrap();
+            }
+        });
+        let frames = || key_artwork(&[(10, 100), (200, 100)], 0);
+        let profile = profile_with(vec![
+            (0, "3", frames()),
+            (0, "4", frames()),
+            (0, "5", frames()),
+        ]);
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, _, records) = animated_display(&fake, profile, &abort, Some(hook));
+        began_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        display.stop();
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        assert!(display.finish(Duration::from_secs(2)));
+        assert_eq!(records.try_recv().unwrap()["trigger"], "software_mode");
+        let failed = records.try_recv().unwrap();
+        assert_eq!(failed["trigger"], "animation");
+        assert_eq!(failed["written"], json!([4]));
+        assert_eq!(failed["failed"][0]["key_index"], 3);
+        assert!(
+            failed["failed"][0]["error"]
+                .as_str()
+                .unwrap()
+                .contains("device busy")
+        );
+        assert_eq!(failed["failed"][1]["key_index"], 5);
+        assert!(records.try_recv().is_err());
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_unclean_explicit_sync_leaves_animation_paused() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let short = || SinkError::ShortWrite {
+            written: 10,
+            expected: 65,
+        };
+        // The second animation frame fails, then so does the navigation draw.
+        fake.lock()
+            .unwrap()
+            .fail_after(DisplayTarget::Key(3), 2, short());
+        fake.lock()
+            .unwrap()
+            .fail_after(DisplayTarget::Key(4), 1, short());
+        let profile = profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (200, 100)], 0)),
+            (1, "4", key_artwork(&[(30, 100), (90, 100)], 0)),
+        ]);
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, mut session, records) = animated_display(&fake, profile, &abort, None);
+        for trigger in ["software_mode", "animation"] {
+            let record = records.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert_eq!(record["trigger"], trigger);
+        }
+        session
+            .set_path(&["root".into(), "development".into()])
+            .unwrap();
+        display.request(&session, "navigation");
+        let navigation = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(navigation["trigger"], "navigation");
+        assert_eq!(navigation["complete"], false);
+        let attempts = written(&fake);
+        thread::sleep(Duration::from_millis(350));
+        assert_eq!(written(&fake), attempts, "animation stays paused");
+        assert!(display.finish(Duration::from_secs(2)));
+        assert!(records.try_recv().is_err());
+        assert_eq!(display.counts.failures.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn closing_the_gate_or_aborting_ends_animation_ticks() {
+        for abort_run in [false, true] {
+            let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+            let abort = Arc::new(AtomicBool::new(false));
+            let (mut display, _, _records) =
+                animated_display(&fake, blinking_root_key_3(), &abort, None);
+            assert!(wait_until(|| written(&fake) > 15), "first frame");
+            if abort_run {
+                abort.store(true, Ordering::SeqCst);
+                let handle = display.handle.as_ref().unwrap();
+                assert!(wait_until(|| handle.is_finished()), "thread exits on abort");
+            } else {
+                assert!(display.finish(Duration::from_secs(2)));
+            }
+            let attempts = written(&fake);
+            thread::sleep(Duration::from_millis(250));
+            assert_eq!(written(&fake), attempts, "abort: {abort_run}");
+            assert!(display.finish(Duration::from_secs(2)));
+        }
+    }
+
+    #[test]
+    fn static_profiles_never_tick() {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        for profile in [
+            profile_with(Vec::new()),
+            profile_with(vec![(0, "3", key_artwork(&[(10, 100)], 0))]),
+        ] {
+            let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+            let abort = Arc::new(AtomicBool::new(false));
+            let (mut display, _, records) = animated_display(&fake, profile, &abort, None);
+            assert!(records.recv_timeout(Duration::from_secs(2)).is_ok());
+            thread::sleep(Duration::from_millis(250));
+            assert!(display.finish(Duration::from_secs(2)));
+            assert_eq!(written(&fake), 15);
+            assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 1);
+            assert!(records.try_recv().is_err());
+        }
     }
 
     use crate::dial_artwork::{Clock, DialContent, ManualClock, WallTime};

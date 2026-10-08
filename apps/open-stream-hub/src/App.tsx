@@ -188,7 +188,7 @@ export default function App() {
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} />
           <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} displaySettings={displaySettings} />
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} invoke={desktop ? invokeCommand : undefined} />
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}

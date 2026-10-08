@@ -26,6 +26,7 @@ use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 /// Source of per-[`DisplaySync`] owner IDs; 0 is never handed out.
 static NEXT_OWNER: AtomicU64 = AtomicU64::new(1);
@@ -168,6 +169,12 @@ pub trait KeyImageProvider {
     /// A `None` key is reported in [`DisplayPlan::missing`] and is not written,
     /// so it may keep showing a previous page's image.
     fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>>;
+    /// Advance a visible page's animation using monotonic run time. No I/O.
+    fn advance(&mut self, _page_id: &str, _elapsed: Duration) {}
+    /// Time until the next visible frame; static or completed providers do not wake.
+    fn next_frame_in(&self) -> Option<Duration> {
+        None
+    }
 }
 
 /// A request for the dial's prepared image.

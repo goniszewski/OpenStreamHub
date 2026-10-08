@@ -1024,6 +1024,17 @@ impl Profile {
                 ));
             }
         }
+        if self
+            .keypad
+            .as_ref()
+            .is_some_and(|layout| layout.pages.iter().any(|page| !page.artwork.is_empty()))
+            && serde_json::to_vec(self)
+                .map_err(|error| error.to_string())?
+                .len()
+                > Self::MAX_JSON_BYTES
+        {
+            return Err(format!("profile exceeds {} bytes", Self::MAX_JSON_BYTES));
+        }
         if self.name.trim().is_empty()
             || self.name.len() > 128
             || self.name.chars().any(char::is_control)
@@ -1125,6 +1136,7 @@ impl Profile {
                 id: KeypadLayout::ROOT_PAGE_ID.into(),
                 name: "Root".into(),
                 slots,
+                artwork: Default::default(),
             }],
         });
         self.validate()?;

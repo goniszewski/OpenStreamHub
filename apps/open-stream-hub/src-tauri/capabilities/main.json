@@ -41,6 +41,7 @@
     "allow-session-profile",
     "allow-create-diagnostics",
     "allow-prepare-artwork",
+    "allow-prepare-key-artwork",
     "allow-save-artwork"
   ]
 }

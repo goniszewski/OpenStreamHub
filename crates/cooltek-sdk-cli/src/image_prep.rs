@@ -8,10 +8,12 @@
 use std::io::Cursor;
 
 use cooltek_sdk_masterhub::{dial, keypad};
+use cooltek_sdk_service::KeyArtwork;
 use image::{
-    DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat, Limits, Rgb,
-    RgbImage,
+    AnimationDecoder, DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat,
+    Limits, Rgb, RgbImage,
     codecs::{
+        gif::GifDecoder,
         jpeg::{JpegDecoder, JpegEncoder},
         png::PngDecoder,
     },
@@ -86,6 +88,217 @@ pub fn prepare_keypad_image(input: &[u8], options: PrepareOptions) -> Result<Vec
     prepare_for_target(input, options, ImageTarget::Keypad)
 }
 
+/// A prepared, bounded keypad animation. Zero loops means infinite playback.
+#[derive(Debug)]
+pub struct PreparedKeyArtwork {
+    /// Complete 72×72 baseline JPEG frames.
+    pub frames: Vec<PreparedKeyArtworkFrame>,
+    /// Total plays, or zero for infinite playback.
+    pub loop_count: u32,
+}
+
+/// One composited and fitted animation frame.
+#[derive(Debug)]
+pub struct PreparedKeyArtworkFrame {
+    /// Complete 72×72 baseline JPEG.
+    pub jpeg: Vec<u8>,
+    /// Playback delay, between 100 and 60,000 milliseconds.
+    pub delay_ms: u32,
+}
+
+/// Prepares PNG/JPEG or GIF artwork offline, enforcing bounds before decoding.
+pub fn prepare_keypad_artwork(
+    input: &[u8],
+    options: PrepareOptions,
+) -> Result<PreparedKeyArtwork, String> {
+    if input.is_empty() || input.len() > 8 * 1024 * 1024 {
+        return Err("Key artwork source must contain 1 byte through 8 MiB".into());
+    }
+    if !(1..=100).contains(&options.quality) || options.quarter_turns > 3 {
+        return Err("Invalid JPEG quality or clockwise rotation".into());
+    }
+    if image::guess_format(input).ok() != Some(ImageFormat::Gif) {
+        return Ok(PreparedKeyArtwork {
+            frames: vec![PreparedKeyArtworkFrame {
+                jpeg: within_frame_budget(options, |options| prepare_keypad_image(input, options))?,
+                delay_ms: 100,
+            }],
+            loop_count: 1,
+        });
+    }
+    let (count, loop_count) = gif_preflight(input)?;
+    let mut decoder =
+        GifDecoder::new(Cursor::new(input)).map_err(|e| format!("Could not read GIF: {e}"))?;
+    let mut limits = Limits::default();
+    limits.max_image_width = Some(512);
+    limits.max_image_height = Some(512);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    decoder
+        .set_limits(limits)
+        .map_err(|e| format!("GIF exceeds decoder limits: {e}"))?;
+    let mut frames = Vec::with_capacity(count);
+    let mut output_bytes = 0usize;
+    for frame in decoder.into_frames() {
+        if frames.len() >= count {
+            return Err("GIF frame count changed during decoding".into());
+        }
+        let frame = frame.map_err(|e| format!("Could not decode GIF frame: {e}"))?;
+        let (numerator, denominator) = frame.delay().numer_denom_ms();
+        let delay_ms = numerator.div_ceil(denominator).max(100);
+        if delay_ms > 60_000 {
+            return Err("GIF frame delay exceeds 60 seconds".into());
+        }
+        let source = DynamicImage::ImageRgba8(frame.into_buffer());
+        let jpeg = within_frame_budget(options, |options| {
+            encode_source(source.clone(), options, ImageTarget::Keypad)
+        })?;
+        output_bytes += jpeg.len();
+        if output_bytes > 512 * 1024 {
+            return Err("Prepared key artwork exceeds 512 KiB".into());
+        }
+        frames.push(PreparedKeyArtworkFrame { jpeg, delay_ms });
+    }
+    if frames.len() != count {
+        return Err("GIF did not decode all declared frames".into());
+    }
+    Ok(PreparedKeyArtwork { frames, loop_count })
+}
+
+/// Encodes at the requested quality, then steps the quality down until the
+/// frame fits [`KeyArtwork::MAX_FRAME_BYTES`], so a prepared frame always
+/// passes profile validation.
+fn within_frame_budget(
+    mut options: PrepareOptions,
+    mut encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    loop {
+        let jpeg = encode(options)?;
+        if jpeg.len() <= KeyArtwork::MAX_FRAME_BYTES {
+            return Ok(jpeg);
+        }
+        if options.quality <= 10 {
+            return Err(format!(
+                "Prepared key artwork frame exceeds {} KiB even at JPEG quality {}",
+                KeyArtwork::MAX_FRAME_BYTES / 1024,
+                options.quality
+            ));
+        }
+        options.quality = options.quality.saturating_sub(10).max(10);
+    }
+}
+
+// Inspect GIF block structure before the decoder allocates frame buffers. This
+// also distinguishes absent looping metadata (one play) from infinite repeat.
+fn gif_preflight(input: &[u8]) -> Result<(usize, u32), String> {
+    fn take<'a>(input: &'a [u8], position: &mut usize, length: usize) -> Result<&'a [u8], String> {
+        let end = position.checked_add(length).ok_or("Invalid GIF length")?;
+        let bytes = input.get(*position..end).ok_or("Truncated GIF")?;
+        *position = end;
+        Ok(bytes)
+    }
+    fn blocks(input: &[u8], position: &mut usize) -> Result<(), String> {
+        loop {
+            let length = take(input, position, 1)?[0] as usize;
+            if length == 0 {
+                return Ok(());
+            }
+            take(input, position, length)?;
+        }
+    }
+    let mut position = 0;
+    let header = take(input, &mut position, 13)?;
+    if &header[..6] != b"GIF87a" && &header[..6] != b"GIF89a" {
+        return Err("Invalid GIF signature".into());
+    }
+    let width = u32::from(u16::from_le_bytes([header[6], header[7]]));
+    let height = u32::from(u16::from_le_bytes([header[8], header[9]]));
+    if width == 0 || height == 0 || width > 512 || height > 512 {
+        return Err("GIF canvas must be 1 through 512 pixels on each axis".into());
+    }
+    if header[10] & 0x80 != 0 {
+        take(input, &mut position, 3usize << ((header[10] & 7) + 1))?;
+    }
+    let mut count = 0usize;
+    let mut loop_count = 1;
+    loop {
+        match take(input, &mut position, 1)?[0] {
+            0x3b => {
+                if count == 0 {
+                    return Err("GIF contains no frames".into());
+                }
+                // Bytes after the trailer are common padding; nothing reads them.
+                return Ok((count, loop_count));
+            }
+            0x2c => {
+                let frame = take(input, &mut position, 9)?;
+                let left = u32::from(u16::from_le_bytes([frame[0], frame[1]]));
+                let top = u32::from(u16::from_le_bytes([frame[2], frame[3]]));
+                let fw = u32::from(u16::from_le_bytes([frame[4], frame[5]]));
+                let fh = u32::from(u16::from_le_bytes([frame[6], frame[7]]));
+                if fw == 0 || fh == 0 || left + fw > width || top + fh > height {
+                    return Err("GIF frame extends outside its canvas".into());
+                }
+                count += 1;
+                if count > 120 {
+                    return Err("GIF exceeds 120 frames".into());
+                }
+                if u64::from(width) * u64::from(height) * 4 * count as u64 > 32 * 1024 * 1024 {
+                    return Err("GIF exceeds 32 MiB cumulative RGBA work".into());
+                }
+                if frame[8] & 0x80 != 0 {
+                    take(input, &mut position, 3usize << ((frame[8] & 7) + 1))?;
+                }
+                take(input, &mut position, 1)?; // LZW minimum code size
+                blocks(input, &mut position)?;
+            }
+            0x21 => match take(input, &mut position, 1)?[0] {
+                0xf9 => {
+                    if take(input, &mut position, 1)?[0] != 4 {
+                        return Err("Invalid GIF graphic control".into());
+                    }
+                    let control = take(input, &mut position, 4)?;
+                    if u16::from_le_bytes([control[1], control[2]]) > 6000 {
+                        return Err("GIF frame delay exceeds 60 seconds".into());
+                    }
+                    if take(input, &mut position, 1)?[0] != 0 {
+                        return Err("Invalid GIF graphic control terminator".into());
+                    }
+                }
+                0xff => {
+                    let length = take(input, &mut position, 1)?[0] as usize;
+                    let identifier = take(input, &mut position, length)?;
+                    let looping = identifier == b"NETSCAPE2.0" || identifier == b"ANIMEXTS1.0";
+                    loop {
+                        let length = take(input, &mut position, 1)?[0] as usize;
+                        if length == 0 {
+                            break;
+                        }
+                        let data = take(input, &mut position, length)?;
+                        if looping {
+                            match data {
+                                [1, low, high] => {
+                                    let repeats = u16::from_le_bytes([*low, *high]);
+                                    loop_count = if repeats == 0 {
+                                        0
+                                    } else {
+                                        u32::from(repeats) + 1
+                                    };
+                                }
+                                // The buffering sub-block carries a size hint only.
+                                [2, _, _, _, _] => {}
+                                _ => return Err("Invalid GIF loop metadata".into()),
+                            }
+                        }
+                    }
+                }
+                0x01 => return Err("GIF plain-text rendering is unsupported".into()),
+                _ => blocks(input, &mut position)?,
+            },
+            _ => return Err("Invalid GIF block".into()),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ImageTarget {
     Dial,
@@ -152,6 +365,14 @@ fn prepare_for_target(
         }
         _ => return Err("Only static PNG and JPEG source images are supported".into()),
     };
+    encode_source(source, options, target)
+}
+
+fn encode_source(
+    source: DynamicImage,
+    options: PrepareOptions,
+    target: ImageTarget,
+) -> Result<Vec<u8>, String> {
     let (output_width, output_height) = target.dimensions();
     let fitted = fit_and_matte(&source, options, output_width);
     drop(source);
@@ -693,5 +914,265 @@ mod tests {
         );
         color_near(&output, 20, 120, [0; 3]);
         color_near(&output, 120, 20, [240, 20, 20]);
+    }
+}
+
+#[cfg(test)]
+mod keypad_animation_tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    fn gif_source(
+        width: u16,
+        height: u16,
+        count: usize,
+        delay: u16,
+        repeat: Option<gif::Repeat>,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder =
+                gif::Encoder::new(&mut bytes, width, height, &[0, 0, 0, 255, 0, 0, 0, 0, 255])
+                    .unwrap();
+            if let Some(repeat) = repeat {
+                encoder.set_repeat(repeat).unwrap();
+            }
+            for _ in 0..count {
+                let frame = gif::Frame {
+                    width,
+                    height,
+                    delay,
+                    buffer: Cow::Owned(vec![1; width as usize * height as usize]),
+                    ..Default::default()
+                };
+                encoder.write_frame(&frame).unwrap();
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn gif_timing_loop_metadata_and_source_bounds() {
+        let source = gif_source(2, 2, 2, 1, Some(gif::Repeat::Finite(2)));
+        let result = prepare_keypad_artwork(&source, PrepareOptions::default()).unwrap();
+        assert_eq!(result.loop_count, 3);
+        assert_eq!(result.frames.len(), 2);
+        assert!(
+            result
+                .frames
+                .iter()
+                .all(|frame| frame.delay_ms == 100 && keypad::validate_jpeg(&frame.jpeg).is_ok())
+        );
+        let infinite = gif_source(1, 1, 1, 15, Some(gif::Repeat::Infinite));
+        let result = prepare_keypad_artwork(&infinite, PrepareOptions::default()).unwrap();
+        assert_eq!(result.loop_count, 0);
+        assert_eq!(result.frames[0].delay_ms, 150);
+        assert_eq!(
+            prepare_keypad_artwork(&gif_source(1, 1, 1, 10, None), PrepareOptions::default())
+                .unwrap()
+                .loop_count,
+            1
+        );
+        assert!(
+            prepare_keypad_artwork(&vec![0; 8 * 1024 * 1024 + 1], PrepareOptions::default())
+                .is_err()
+        );
+        assert!(
+            prepare_keypad_artwork(&source[..source.len() - 1], PrepareOptions::default()).is_err()
+        );
+    }
+
+    #[test]
+    fn gif_buffering_metadata_and_trailing_bytes_are_ignored_but_bad_loops_rejected() {
+        let source = gif_source(2, 2, 2, 10, Some(gif::Repeat::Finite(2)));
+        let at = source
+            .windows(11)
+            .position(|window| window == b"NETSCAPE2.0")
+            .unwrap()
+            + 11;
+        assert_eq!(source[at..at + 5], [3, 1, 2, 0, 0]);
+        // A NETSCAPE buffering sub-block after the loop sub-block, then padding.
+        let mut buffered = source.clone();
+        buffered.splice(at + 4..at + 4, [5, 2, 0, 16, 0, 0]);
+        buffered.extend([0; 7]);
+        let result = prepare_keypad_artwork(&buffered, PrepareOptions::default()).unwrap();
+        assert_eq!((result.frames.len(), result.loop_count), (2, 3));
+        for (offset, byte) in [(1, 3), (0, 2)] {
+            let mut malformed = source.clone();
+            malformed[at + offset] = byte;
+            assert!(
+                prepare_keypad_artwork(&malformed, PrepareOptions::default())
+                    .unwrap_err()
+                    .contains("loop metadata")
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_frames_step_jpeg_quality_down_or_fail_clearly() {
+        let mut tried = Vec::new();
+        let jpeg = within_frame_budget(PrepareOptions::default(), |options| {
+            tried.push(options.quality);
+            Ok(vec![
+                0;
+                if options.quality > 70 {
+                    KeyArtwork::MAX_FRAME_BYTES + 1
+                } else {
+                    10
+                }
+            ])
+        })
+        .unwrap();
+        assert_eq!(jpeg.len(), 10);
+        assert_eq!(tried.first(), Some(&PrepareOptions::default().quality));
+        assert!(tried.windows(2).all(|pair| pair[1] < pair[0]));
+        assert!(*tried.last().unwrap() <= 70);
+
+        let mut tried = Vec::new();
+        let error = within_frame_budget(PrepareOptions::default(), |options| {
+            tried.push(options.quality);
+            Ok(vec![0; KeyArtwork::MAX_FRAME_BYTES + 1])
+        })
+        .unwrap_err();
+        assert!(error.contains("32 KiB"), "{error}");
+        assert_eq!(tried.last(), Some(&10));
+        // Seeded 72×72 RGB noise at quality 100 is close to the worst case this
+        // encoder produces for a key; it fits the budget unchanged, so the
+        // step-down above is a guard rather than a routine path.
+        let mut state = 0x9e37_79b9u32;
+        let noise = RgbImage::from_fn(72, 72, |_, _| {
+            let mut channel = || {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                state as u8
+            };
+            Rgb([channel(), channel(), channel()])
+        });
+        let mut source = Vec::new();
+        noise
+            .write_to(&mut Cursor::new(&mut source), ImageFormat::Png)
+            .unwrap();
+        let options = PrepareOptions {
+            quality: 100,
+            ..PrepareOptions::default()
+        };
+        let result = prepare_keypad_artwork(&source, options).unwrap();
+        let jpeg = &result.frames[0].jpeg;
+        assert!(jpeg.len() <= KeyArtwork::MAX_FRAME_BYTES, "{}", jpeg.len());
+        assert!(jpeg.len() > 16 * 1024, "noise is not near the worst case");
+        assert_eq!(*jpeg, prepare_keypad_image(&source, options).unwrap());
+        keypad::validate_jpeg(jpeg).unwrap();
+    }
+
+    #[test]
+    fn gif_limits_are_checked_before_pixel_decoding() {
+        for (source, expected) in [
+            (gif_source(513, 1, 1, 10, None), "canvas"),
+            (gif_source(1, 1, 121, 10, None), "120 frames"),
+            (gif_source(512, 512, 33, 10, None), "cumulative"),
+            (gif_source(1, 1, 1, 6001, None), "60 seconds"),
+        ] {
+            assert!(
+                prepare_keypad_artwork(&source, PrepareOptions::default())
+                    .unwrap_err()
+                    .contains(expected)
+            );
+        }
+        let source = gif_source(1, 1, 1, 6000, None);
+        assert_eq!(
+            prepare_keypad_artwork(&source, PrepareOptions::default())
+                .unwrap()
+                .frames[0]
+                .delay_ms,
+            60_000
+        );
+    }
+
+    #[test]
+    fn gif_composites_transparency_and_restores_previous_and_background() {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder =
+                gif::Encoder::new(&mut bytes, 2, 1, &[0, 0, 0, 255, 0, 0, 0, 0, 255]).unwrap();
+            for (pixels, disposal) in [
+                (vec![1, 1], gif::DisposalMethod::Keep),
+                (vec![2, 0], gif::DisposalMethod::Previous),
+                (vec![0, 2], gif::DisposalMethod::Background),
+                (vec![0, 0], gif::DisposalMethod::Keep),
+            ] {
+                encoder
+                    .write_frame(&gif::Frame {
+                        width: 2,
+                        height: 1,
+                        delay: 10,
+                        transparent: Some(0),
+                        dispose: disposal,
+                        buffer: Cow::Owned(pixels),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }
+        }
+        let options = PrepareOptions {
+            fit: FitMode::Stretch,
+            background: [0, 255, 0],
+            ..Default::default()
+        };
+        let result = prepare_keypad_artwork(&bytes, options).unwrap();
+        let rgb = |index: usize| {
+            image::load_from_memory(&result.frames[index].jpeg)
+                .unwrap()
+                .to_rgb8()
+        };
+        let near = |pixel: Rgb<u8>, expected: [u8; 3]| {
+            pixel
+                .0
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.abs_diff(expected) < 30)
+        };
+        assert!(near(*rgb(1).get_pixel(5, 36), [0, 0, 255]));
+        assert!(near(*rgb(1).get_pixel(66, 36), [255, 0, 0]));
+        assert!(near(*rgb(2).get_pixel(5, 36), [255, 0, 0]));
+        assert!(near(*rgb(2).get_pixel(66, 36), [0, 0, 255]));
+        assert!(near(*rgb(3).get_pixel(5, 36), [0, 255, 0]));
+        assert!(near(*rgb(3).get_pixel(66, 36), [0, 255, 0]));
+    }
+
+    #[test]
+    fn output_budget_rejects_large_prepared_animation() {
+        let mut bytes = Vec::new();
+        let palette: Vec<u8> = (0..=255u8)
+            .flat_map(|value| [value, value.wrapping_mul(73), value.wrapping_mul(137)])
+            .collect();
+        {
+            let mut encoder = gif::Encoder::new(&mut bytes, 72, 72, &palette).unwrap();
+            let mut state = 12345u32;
+            for _ in 0..120 {
+                let pixels = (0..72 * 72)
+                    .map(|_| {
+                        state ^= state << 13;
+                        state ^= state >> 17;
+                        state ^= state << 5;
+                        state as u8
+                    })
+                    .collect();
+                encoder
+                    .write_frame(&gif::Frame {
+                        width: 72,
+                        height: 72,
+                        delay: 10,
+                        buffer: Cow::Owned(pixels),
+                        ..Default::default()
+                    })
+                    .unwrap();
+            }
+        }
+        assert!(
+            prepare_keypad_artwork(&bytes, PrepareOptions::default())
+                .unwrap_err()
+                .contains("512 KiB")
+        );
     }
 }

@@ -100,7 +100,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
               if (item.module === 'm4315') {
                 const page = editor.currentKeypadPage;
                 return <button key={area.control} type="button" className={`image-control key-display${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
-                  <KeyDisplayContent slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
+                  <KeyDisplayContent key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
                 </button>;
               }
               if (item.module === 'm005s') {

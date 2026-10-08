@@ -60,7 +60,10 @@ export interface Binding {
 }
 export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
 export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
-export interface KeypadPage { id: string; name: string; slots: KeypadSlot[] }
+export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
+/** loop_count: zero is infinite; positive values are total plays. */
+export interface KeyArtwork { frames: KeyArtworkFrame[]; loop_count: number }
+export interface KeypadPage { id: string; name: string; slots: KeypadSlot[]; artwork?: Record<string, KeyArtwork> }
 // Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
 export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }
 export interface DialFunction { name: string; bindings: DialBinding[] }

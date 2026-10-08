@@ -1,5 +1,6 @@
 import { ArrowLeft, ArrowLeftRight, Camera, Clapperboard, Folder, Globe, Keyboard, ListOrdered, Monitor, Play, Timer, Type, Undo2, Volume2, VolumeX } from 'lucide-react';
-import type { BindingAction, KeypadPage, KeypadSlot } from './contracts';
+import type { BindingAction, KeyArtwork, KeypadPage, KeypadSlot } from './contracts';
+import { KeyArtworkPreview } from './KeyArtworkEditor';
 import { actionLabel } from './ui-model';
 
 export function ActionIcon({ action }: { action?: BindingAction }) {
@@ -11,8 +12,9 @@ export function ActionIcon({ action }: { action?: BindingAction }) {
 }
 
 // The same content is used in the editor and the physical module illustration.
-export function KeyDisplayContent({ slot, pages, depth, back }: { slot: KeypadSlot; pages: KeypadPage[]; depth: number; back: boolean }) {
+export function KeyDisplayContent({ slot, pages, depth, back, artwork }: { slot: KeypadSlot; pages: KeypadPage[]; depth: number; back: boolean; artwork?: KeyArtwork }) {
   if (back) return <><ArrowLeft aria-hidden="true" /><span className="display-depth">L{depth}</span><span className="display-label">Back</span></>;
+  if (artwork) return <KeyArtworkPreview artwork={artwork} />;
   if (!slot) return <span className="display-empty" aria-hidden="true">·</span>;
   if (slot.type === 'folder') return <><Folder aria-hidden="true" /><span className="display-label">{pages.find(page => page.id === slot.page_id)?.name ?? slot.page_id}</span></>;
   return <><ActionIcon action={slot.bindings[0]?.action} /><span className="display-label">{slot.label}</span></>;

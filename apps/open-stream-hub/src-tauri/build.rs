@@ -35,6 +35,7 @@ fn main() {
             "session_profile",
             "create_diagnostics",
             "prepare_artwork",
+            "prepare_key_artwork",
             "save_artwork",
         ]),
     ))

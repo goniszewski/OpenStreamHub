@@ -9,7 +9,9 @@ use crate::{
     export::{prune_per_slug, slug, write_new},
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use cooltek_sdk_cli::image_prep::{FitMode, PrepareOptions, prepare_image, prepare_keypad_image};
+use cooltek_sdk_cli::image_prep::{
+    FitMode, PrepareOptions, prepare_image, prepare_keypad_artwork, prepare_keypad_image,
+};
 use cooltek_sdk_masterhub::{dial, keypad};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -115,7 +117,7 @@ impl SaveRequest {
 
 fn decode_input(text: &str) -> Result<Vec<u8>, String> {
     if text.is_empty() {
-        return Err("Choose a PNG or JPEG image first".into());
+        return Err("Choose an image first".into());
     }
     if text.len() > MAX_BASE64_LEN {
         return Err("The image is larger than 8 MiB".into());
@@ -129,7 +131,7 @@ fn decode_input(text: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
+fn options(request: &PrepareRequest) -> Result<PrepareOptions, String> {
     let quality = u8::try_from(request.quality)
         .ok()
         .filter(|quality| (1..=100).contains(quality))
@@ -138,8 +140,7 @@ fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
         .ok()
         .filter(|turns| *turns <= 3)
         .ok_or("Rotation must be 0, 90, 180 or 270 degrees")?;
-    let input = decode_input(&request.image_base64)?;
-    let options = PrepareOptions {
+    Ok(PrepareOptions {
         quality,
         fit: match request.fit {
             Fit::Contain => FitMode::Contain,
@@ -148,7 +149,12 @@ fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
         },
         quarter_turns,
         background: request.background,
-    };
+    })
+}
+
+fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
+    let options = options(request)?;
+    let input = decode_input(&request.image_base64)?;
     let jpeg = match request.target {
         Target::Dial => prepare_image(&input, options),
         Target::Keypad => prepare_keypad_image(&input, options),
@@ -159,6 +165,33 @@ fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
         width,
         height,
     })
+}
+
+/// Prepares portable static/GIF key frames without opening hardware.
+pub fn prepare_key_artwork(
+    request: &PrepareRequest,
+) -> Result<cooltek_sdk_service::KeyArtwork, String> {
+    if request.target != Target::Keypad {
+        return Err("Per-key artwork requires the keypad target".into());
+    }
+    let options = options(request)?;
+    let input = decode_input(&request.image_base64)?;
+    let prepared = prepare_keypad_artwork(&input, options)?;
+    let artwork = cooltek_sdk_service::KeyArtwork {
+        frames: prepared
+            .frames
+            .into_iter()
+            .map(|frame| cooltek_sdk_service::KeyArtworkFrame {
+                jpeg_base64: STANDARD.encode(frame.jpeg),
+                delay_ms: frame.delay_ms,
+            })
+            .collect(),
+        loop_count: prepared.loop_count,
+    };
+    // The same check a saved profile gets, so the editor never holds artwork
+    // that the profile would then refuse.
+    artwork.validate()?;
+    Ok(artwork)
 }
 
 pub fn prepare_artwork(request: &PrepareRequest) -> Result<PrepareResult, String> {
@@ -304,6 +337,25 @@ mod tests {
             .iter()
             .zip(expected)
             .all(|(a, b)| a.abs_diff(b) < 40)
+    }
+
+    #[test]
+    fn key_artwork_static_output_is_portable_and_rejects_dial_target() {
+        let input = png(&wide());
+        let request = request(&input, Target::Keypad, Fit::Contain, 0);
+        let result = prepare_key_artwork(&request).unwrap();
+        assert!(result.validate().is_ok());
+        assert_eq!(result.loop_count, 1);
+        assert_eq!(result.frames.len(), 1);
+        assert_eq!(result.frames[0].delay_ms, 100);
+        keypad::validate_jpeg(&STANDARD.decode(&result.frames[0].jpeg_base64).unwrap()).unwrap();
+        let mut wrong_target = request;
+        wrong_target.target = Target::Dial;
+        assert!(
+            prepare_key_artwork(&wrong_target)
+                .unwrap_err()
+                .contains("keypad target")
+        );
     }
 
     #[test]

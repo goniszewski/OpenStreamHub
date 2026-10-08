@@ -3,13 +3,14 @@ import type { Gesture } from './contracts';
 import { ActionFields } from './ActionFields';
 import { LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
-import type { ProfileSession, SessionState } from './profile-session';
+import type { Invoke, ProfileSession, SessionState } from './profile-session';
+import { KeyArtworkEditor } from './KeyArtworkEditor';
 import { controlLabel, gestureLabels, gestures } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
 
-export function Inspector({ editor, session, state, disabled }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean }) {
+export function Inspector({ editor, session, state, disabled, invoke }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; invoke?: Invoke }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const previewRunning = state.preview.status === 'running' || state.keypadPreview.status === 'running';
@@ -21,6 +22,7 @@ export function Inspector({ editor, session, state, disabled }: { editor: Device
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? `Folder · L${keypadDepth(keypadPath)}` : 'Root page'}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />Delete folder</button>}<div className="inspector-divider" /></>}
       <h2>{isBack ? `Back · L${keypadDepth(keypadPath)}` : controlLabel(selection.module, selection.control)}</h2>
       <ControlWarnings profile={profile} editor={editor} selected={{ module: selection.module, control: selection.control, keypadPageId: isKeypad ? currentKeypadPage.id : undefined }} />
+      {isKeypad && !isBack && <KeyArtworkEditor key={`${state.draftGeneration}:${currentKeypadPage.id}:${selection.control}`} session={session} path={keypadPath} control={selection.control} artwork={currentKeypadPage.artwork?.[String(selection.control)]} disabled={disabled} invoke={invoke} />}
       {isKeypad && <>{isBack ? <p className="fine-print">The reserved Back key returns one level. Its badge shows the current nesting level.</p> : folderPage ? <><button className="button" onClick={() => editor.navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />Open {folderPage.name}</button><button className="button" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={17} />Delete folder</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">Key label</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} aria-describedby="keypad-label-error" onChange={event => session.edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value), `key-label:${keypadPath.join('/')}:${selection.control}`)} /><LabelError id="keypad-label-error" value={keypadSlot.label} field="Key label" /><button className="button compact" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={16} />Clear key</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={editor.createFolder}><Folder size={17} />Create folder</button>}</>}</>}
       {!(isKeypad && (isBack || folderPage)) && <>
       {!editorGestures(profile, selection.module).length && <p className="fine-print" role="note">This profile uses dial functions, so every encoder binding belongs to a function and a short press switches functions. Edit them under Profiles · Dial functions.</p>}

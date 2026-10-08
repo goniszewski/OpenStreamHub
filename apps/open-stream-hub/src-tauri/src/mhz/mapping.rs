@@ -1780,6 +1780,7 @@ impl Mapper {
                 id: id.to_owned(),
                 name,
                 slots,
+                artwork: Default::default(),
             },
             linked,
         )
@@ -1825,6 +1826,7 @@ impl Mapper {
                     id: KeypadLayout::ROOT_PAGE_ID.into(),
                     name: "Root".into(),
                     slots: vec![None; KeypadLayout::KEY_COUNT],
+                    artwork: Default::default(),
                 }],
             };
         }
@@ -1889,6 +1891,7 @@ impl Mapper {
                 id: KeypadLayout::ROOT_PAGE_ID.into(),
                 name: "Root".into(),
                 slots: vec![None; KeypadLayout::KEY_COUNT],
+                artwork: Default::default(),
             });
         }
         KeypadLayout { pages }

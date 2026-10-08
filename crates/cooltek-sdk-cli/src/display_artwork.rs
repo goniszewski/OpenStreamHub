@@ -1,14 +1,14 @@
 //! Prepared, cached M4315 key artwork for `DisplaySync`.
 //!
-//! Schema-2 keypad tiles carry no image field, so tiles get deterministic
-//! generated placeholders per tile kind. Every image is drawn into a 72×72 RGB
+//! Optional page artwork overrides each key independently; keys without it
+//! get deterministic generated placeholders per tile kind. Every image is drawn into a 72×72 RGB
 //! buffer, passed through [`crate::image_prep::prepare_keypad_image`] (the same
 //! encoder and validation as `keypad prepare-image`), checked again with
 //! `keypad::validate_jpeg`, and cached before a run starts. Serving an image
 //! clones cached bytes; nothing is drawn or encoded per input event. Digits
 //! come from a built-in 5×7 bitmap font, so no font files are read.
 
-use std::io::Cursor;
+use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use cooltek_sdk_masterhub::keypad;
 use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest};
@@ -71,6 +71,37 @@ pub struct PreparedKeyArtwork {
     action: Vec<u8>,
     folder: Vec<u8>,
     back: Vec<Vec<u8>>,
+    custom: BTreeMap<(String, u8), KeySequence>,
+    page: Option<String>,
+    page_started_ms: u64,
+    elapsed_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KeySequence {
+    frames: Vec<Vec<u8>>,
+    delays: Vec<u64>,
+    cycle_ms: u64,
+    loop_count: u32,
+}
+
+impl KeySequence {
+    fn frame(&self, elapsed_ms: u64) -> (usize, Option<Duration>) {
+        if self.frames.len() == 1 {
+            return (0, None);
+        }
+        if self.loop_count > 0 && elapsed_ms >= self.cycle_ms * u64::from(self.loop_count) {
+            return (self.frames.len() - 1, None);
+        }
+        let mut within = elapsed_ms % self.cycle_ms;
+        for (index, delay) in self.delays.iter().enumerate() {
+            if within < *delay {
+                return (index, Some(Duration::from_millis(delay - within)));
+            }
+            within -= delay;
+        }
+        unreachable!("validated delays sum to the cycle duration")
+    }
 }
 
 impl PreparedKeyArtwork {
@@ -86,7 +117,45 @@ impl PreparedKeyArtwork {
             back: (1..=MAX_BACK_DEPTH)
                 .map(|depth| encode(&draw_back(depth)))
                 .collect::<Result<_, _>>()?,
+            custom: BTreeMap::new(),
+            page: None,
+            page_started_ms: 0,
+            elapsed_ms: 0,
         })
+    }
+
+    /// Validate/cache portable profile artwork before any device is opened.
+    pub fn prepare_profile(profile: &cooltek_sdk_service::Profile) -> Result<Self, String> {
+        profile.validate()?;
+        let mut prepared = Self::prepare()?;
+        if let Some(layout) = &profile.keypad {
+            for page in &layout.pages {
+                for (key, artwork) in &page.artwork {
+                    let delays: Vec<u64> = artwork
+                        .frames
+                        .iter()
+                        .map(|frame| u64::from(frame.delay_ms))
+                        .collect();
+                    prepared.custom.insert(
+                        (
+                            page.id.clone(),
+                            key.parse().map_err(|_| "invalid artwork key")?,
+                        ),
+                        KeySequence {
+                            frames: artwork
+                                .frames
+                                .iter()
+                                .map(|frame| frame.jpeg())
+                                .collect::<Result<_, _>>()?,
+                            cycle_ms: delays.iter().sum(),
+                            delays,
+                            loop_count: artwork.loop_count,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(prepared)
     }
 
     /// The blank image shown on empty slots.
@@ -113,6 +182,17 @@ impl PreparedKeyArtwork {
 
 impl KeyImageProvider for PreparedKeyArtwork {
     fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        let page = match &request.content {
+            KeyContent::Empty { page_id }
+            | KeyContent::Action { page_id, .. }
+            | KeyContent::Folder { page_id, .. } => Some(page_id),
+            KeyContent::Back { .. } => None,
+        };
+        if let Some(sequence) =
+            page.and_then(|page| self.custom.get(&(page.clone(), request.key_index)))
+        {
+            return Some(sequence.frames[sequence.frame(self.elapsed_ms).0].clone());
+        }
         let image = match &request.content {
             KeyContent::Empty { .. } => self.blank(),
             KeyContent::Action { .. } => self.action(),
@@ -120,6 +200,23 @@ impl KeyImageProvider for PreparedKeyArtwork {
             KeyContent::Back { depth, .. } => self.back(*depth)?,
         };
         Some(image.to_vec())
+    }
+
+    fn advance(&mut self, page_id: &str, elapsed: Duration) {
+        let now = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
+        if self.page.as_deref() != Some(page_id) {
+            self.page = Some(page_id.into());
+            self.page_started_ms = now;
+        }
+        self.elapsed_ms = now.saturating_sub(self.page_started_ms);
+    }
+
+    fn next_frame_in(&self) -> Option<Duration> {
+        self.custom
+            .iter()
+            .filter(|((page, _), _)| self.page.as_ref() == Some(page))
+            .filter_map(|(_, sequence)| sequence.frame(self.elapsed_ms).1)
+            .min()
     }
 }
 
@@ -186,7 +283,7 @@ fn draw_back(depth: u8) -> RgbImage {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashSet;
 
     use cooltek_sdk_service::{
@@ -195,6 +292,8 @@ mod tests {
     };
 
     use super::*;
+    use base64::Engine;
+    use cooltek_sdk_service::{KeyArtwork, KeyArtworkFrame};
 
     fn decoded_side(jpeg: &[u8]) -> (u32, u32) {
         let image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg).unwrap();
@@ -325,5 +424,170 @@ mod tests {
         assert_eq!(sync.drawn().key(0), art.back(1));
         // Unchanged blank keys are not rewritten.
         assert!(!report.written.contains(&DisplayTarget::Key(14)));
+    }
+
+    pub(crate) fn solid(shade: u8) -> Vec<u8> {
+        encode(&RgbImage::from_pixel(
+            SIDE,
+            SIDE,
+            Rgb([shade, 0, 255 - shade]),
+        ))
+        .unwrap()
+    }
+
+    pub(crate) fn key_artwork(shades_and_delays: &[(u8, u32)], loop_count: u32) -> KeyArtwork {
+        KeyArtwork {
+            frames: shades_and_delays
+                .iter()
+                .map(|&(shade, delay_ms)| KeyArtworkFrame {
+                    jpeg_base64: base64::engine::general_purpose::STANDARD.encode(solid(shade)),
+                    delay_ms,
+                })
+                .collect(),
+            loop_count,
+        }
+    }
+
+    /// The folders fixture with `artwork` added as (page index, key, artwork).
+    pub(crate) fn profile_with(artwork: Vec<(usize, &str, KeyArtwork)>) -> Profile {
+        let mut profile = Profile::from_json(include_bytes!(
+            "../../../examples/profiles/keypad-folders.json"
+        ))
+        .unwrap();
+        let pages = &mut profile.keypad.as_mut().unwrap().pages;
+        for (page, key, value) in artwork {
+            pages[page].artwork.insert(key.into(), value);
+        }
+        profile
+    }
+
+    fn image_on(art: &PreparedKeyArtwork, page: &str, key_index: u8) -> Vec<u8> {
+        art.key_image(&KeyImageRequest {
+            key_index,
+            content: KeyContent::Empty {
+                page_id: page.into(),
+            },
+        })
+        .unwrap()
+    }
+
+    fn at(art: &mut PreparedKeyArtwork, page: &str, ms: u64) {
+        art.advance(page, Duration::from_millis(ms));
+    }
+
+    #[test]
+    fn key_sequences_pick_frames_by_elapsed_time_and_hold_after_finite_loops() {
+        let sequence = |loop_count| KeySequence {
+            frames: vec![vec![0], vec![1], vec![2]],
+            delays: vec![100, 200, 300],
+            cycle_ms: 600,
+            loop_count,
+        };
+        let ms = Duration::from_millis;
+        let forever = sequence(0);
+        assert_eq!(forever.frame(0), (0, Some(ms(100))));
+        assert_eq!(forever.frame(99), (0, Some(ms(1))));
+        assert_eq!(forever.frame(100), (1, Some(ms(200))));
+        // A late wake skips straight to the frame the clock selects.
+        assert_eq!(forever.frame(350), (2, Some(ms(250))));
+        assert_eq!(forever.frame(600), (0, Some(ms(100))));
+        assert_eq!(forever.frame(600 * 1000 + 450), (2, Some(ms(150))));
+        let twice = sequence(2);
+        assert_eq!(twice.frame(1199), (2, Some(ms(1))));
+        assert_eq!(twice.frame(1200), (2, None));
+        assert_eq!(twice.frame(u64::MAX), (2, None));
+        let still = KeySequence {
+            frames: vec![vec![7]],
+            delays: vec![100],
+            cycle_ms: 100,
+            loop_count: 0,
+        };
+        assert_eq!(still.frame(0), (0, None));
+        assert_eq!(still.frame(12_345), (0, None));
+    }
+
+    #[test]
+    fn profile_artwork_overrides_keys_and_restarts_on_page_entry() {
+        let mut art = PreparedKeyArtwork::prepare_profile(&profile_with(vec![
+            (0, "3", key_artwork(&[(10, 100), (120, 200)], 0)),
+            (0, "5", key_artwork(&[(60, 100)], 1)),
+            (1, "2", key_artwork(&[(200, 100), (250, 100)], 1)),
+        ]))
+        .unwrap();
+        let ms = Duration::from_millis;
+        at(&mut art, "root", 1_000);
+        assert_eq!(image_on(&art, "root", 3), solid(10));
+        assert_eq!(image_on(&art, "root", 5), solid(60));
+        // Keys without artwork keep their generated tiles; artwork is per page.
+        assert_eq!(image_on(&art, "root", 4), art.blank());
+        assert_eq!(image_on(&art, "development", 3), art.blank());
+        assert_eq!(art.next_frame_in(), Some(ms(100)));
+        at(&mut art, "root", 1_250);
+        assert_eq!(image_on(&art, "root", 3), solid(120));
+        assert_eq!(art.next_frame_in(), Some(ms(50)));
+
+        // Entering a page starts its timelines at its first frame.
+        at(&mut art, "development", 1_260);
+        assert_eq!(image_on(&art, "development", 2), solid(200));
+        assert_eq!(art.next_frame_in(), Some(ms(100)));
+        at(&mut art, "development", 1_360);
+        assert_eq!(image_on(&art, "development", 2), solid(250));
+        // One play, then the last frame holds and nothing wakes.
+        at(&mut art, "development", 1_460);
+        assert_eq!(image_on(&art, "development", 2), solid(250));
+        assert_eq!(art.next_frame_in(), None);
+        at(&mut art, "root", 1_470);
+        assert_eq!(image_on(&art, "root", 3), solid(10));
+        assert_eq!(art.next_frame_in(), Some(ms(100)));
+        // The Back key of a child page is always generated.
+        assert_eq!(
+            art.key_image(&KeyImageRequest {
+                key_index: 0,
+                content: KeyContent::Back {
+                    depth: 1,
+                    parent_page_id: "root".into()
+                },
+            }),
+            art.back(1).map(<[u8]>::to_vec)
+        );
+    }
+
+    #[test]
+    fn the_earliest_deadline_across_keys_wakes_and_static_artwork_never_does() {
+        let mut art = PreparedKeyArtwork::prepare_profile(&profile_with(vec![
+            (0, "1", key_artwork(&[(10, 100), (20, 100)], 0)),
+            (0, "2", key_artwork(&[(30, 150), (40, 150)], 0)),
+        ]))
+        .unwrap();
+        let ms = Duration::from_millis;
+        at(&mut art, "root", 0);
+        assert_eq!(art.next_frame_in(), Some(ms(100)));
+        at(&mut art, "root", 100);
+        assert_eq!(art.next_frame_in(), Some(ms(50)));
+        // Deadlines closer than the display's minimum gap are drawn together on
+        // the next wake, from the clock: both keys are on their second frame.
+        at(&mut art, "root", 180);
+        assert_eq!(image_on(&art, "root", 1), solid(20));
+        assert_eq!(image_on(&art, "root", 2), solid(40));
+        assert_eq!(art.next_frame_in(), Some(ms(20)));
+
+        for profile in [
+            profile_with(Vec::new()),
+            profile_with(vec![
+                (0, "1", key_artwork(&[(10, 100)], 0)),
+                (1, "3", key_artwork(&[(20, 60_000)], 1)),
+            ]),
+        ] {
+            let mut art = PreparedKeyArtwork::prepare_profile(&profile).unwrap();
+            assert_eq!(art.next_frame_in(), None);
+            for page in ["root", "development"] {
+                at(&mut art, page, 5);
+                assert_eq!(art.next_frame_in(), None);
+            }
+        }
+        // Without a profile the provider is static too.
+        let mut art = PreparedKeyArtwork::prepare().unwrap();
+        at(&mut art, "root", 0);
+        assert_eq!(art.next_frame_in(), None);
     }
 }

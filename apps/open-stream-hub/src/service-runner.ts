@@ -231,6 +231,15 @@ export function summarizeRecord(record: unknown, at: number): ActivityEntry | nu
     }
     case 'profile_valid': return entry('info', 'Profile validated.');
     case 'capture_end': return entry(str(record.error) ? 'error' : 'info', `Input ended${str(record.error) ? `: ${clip(str(record.error)!)}` : '.'}`);
+    // Key animation frames redraw up to ten times a second: only an incomplete frame is worth a line. The service
+    // already omits clean ones; this also drops any that arrive.
+    case 'display_sync': {
+      if (record.trigger !== 'animation') return entry('info', 'display sync');
+      const missing = Array.isArray(record.missing) && record.missing.length > 0;
+      if (record.complete === true && !missing) return null;
+      const error = str(record.error);
+      return entry('error', `Key animation frame not fully written${error ? `: ${clip(error)}` : '.'}`);
+    }
     default: return str(record.type) ? entry('info', `${String(record.type).replace(/_/g, ' ')}`) : entry('raw', clip(JSON.stringify(record)));
   }
 }

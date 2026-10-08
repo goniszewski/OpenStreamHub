@@ -98,7 +98,7 @@ export function HeroImage({ editor, profile, feed, knobOrientation }: { editor: 
           aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
           aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
           onClick={() => editor.changeSelection({ ...selection, control: area.control })}>
-          {isKeypad && <KeyDisplayContent slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
+          {isKeypad && <KeyDisplayContent key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
           {selected.id === 'm005s' && live?.faders[area.control] !== undefined && <span className="fader-thumb" style={{ bottom: `${live.faders[area.control]}%` }} />}
           {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}
         </button>)}

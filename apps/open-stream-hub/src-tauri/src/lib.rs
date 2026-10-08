@@ -1023,6 +1023,17 @@ async fn prepare_artwork(
         .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
 
+#[tauri::command]
+async fn prepare_key_artwork(
+    state: State<'_, AppState>,
+    request: artwork::PrepareRequest,
+) -> Result<cooltek_sdk_service::KeyArtwork, String> {
+    let _permit = state.artwork.lock().await;
+    tauri::async_runtime::spawn_blocking(move || artwork::prepare_key_artwork(&request))
+        .await
+        .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
 // Writes the prepared JPEG under `<app data>/artwork/`; nothing is uploaded.
 #[tauri::command]
 async fn save_artwork(
@@ -1317,6 +1328,7 @@ pub fn run() {
             session_profile,
             create_diagnostics,
             prepare_artwork,
+            prepare_key_artwork,
             save_artwork
         ])
         .build(tauri::generate_context!())

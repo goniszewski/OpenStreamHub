@@ -60,7 +60,9 @@ export function setKeypadSlot(profile: Profile, path: readonly string[], control
   const current = editablePage(profile, path, control);
   const slots = [...current.page.slots];
   slots[control] = slot;
-  return replacePage(current.profile, { ...current.page, slots });
+  const artwork = { ...current.page.artwork };
+  if (slot === null) delete artwork[String(control)];
+  return replacePage(current.profile, { ...current.page, slots, ...(current.page.artwork ? { artwork: Object.keys(artwork).length ? artwork : undefined } : {}) });
 }
 
 export function createKeypadFolder(profile: Profile, path: readonly string[], control: number, id: string, name = 'New folder'): Profile {

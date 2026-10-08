@@ -51,6 +51,24 @@ describe('summarizeRecord dial functions', () => {
   });
 });
 
+describe('summarizeRecord display syncs', () => {
+  const sync = { type: 'display_sync', schema_version: 1, page_id: 'root', depth: 0, written: [3], failed: [], not_attempted: [], missing: [], error: null, complete: true };
+  it('drops clean animation frames and still shows incomplete ones', () => {
+    expect(summarizeRecord({ ...sync, trigger: 'animation' }, 1)).toBeNull();
+    expect(summarizeRecord({ ...sync, trigger: 'animation', missing: [4] }, 1)).toMatchObject({ kind: 'error', text: 'Key animation frame not fully written.' });
+    const failed = { ...sync, trigger: 'animation', written: [], failed: [{ key_index: 3, short_write: true, attempts: 1, error: 'short write' }], complete: false };
+    expect(summarizeRecord(failed, 1)).toMatchObject({ kind: 'error' });
+    expect(summarizeRecord({ ...sync, trigger: 'animation', complete: false, error: 'gate closed' }, 1)?.text).toBe('Key animation frame not fully written: gate closed');
+  });
+
+  it('keeps every other display sync line unchanged', () => {
+    for (const trigger of ['software_mode', 'navigation', 'dial_function']) {
+      expect(summarizeRecord({ ...sync, trigger }, 1)).toEqual({ kind: 'info', text: 'display sync', at: 1 });
+      expect(summarizeRecord({ ...sync, trigger, complete: false }, 1)).toEqual({ kind: 'info', text: 'display sync', at: 1 });
+    }
+  });
+});
+
 describe('summarizeRecord timers', () => {
   const event = { control: 2, gesture: 'pressed' };
   const action = { type: 'timer', seconds: 300, label_chars: 3, sound: 'ping' };

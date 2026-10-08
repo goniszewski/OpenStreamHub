@@ -90,13 +90,21 @@ Tested with rebuilt app/sidecar code `3689c3a` (documentation HEAD `9e95826`), u
 - **Backend recovery.** Logs showed an input-read failure (`hidapi/hid_read_timeout`, waiting for more data), a hardware-mode restore failure (`Device disconnected`), Waiting for M131E reconnect, then a dry-run service start on M131E and display sync. The counters were zero, so recovered input was not verified. This is one observed dry-run process recovery with a changed path, not acceptance of the full reconnect experience.
 - **Stop and pending observation.** Stop then showed Stopped, and a process check found no remaining sidecar. Physical display and animation acceptance after this replug/Stop were still pending when this evidence was recorded. Sleep/wake and executing-session confirmation were not exercised.
 
+### Repeat after the Run-panel selection fix (`0a4162c`)
+
+The user explicitly authorized a repeat dry-run replug on the same dial and then reported Done. Initial sidecar PID `79026` used path hex `4465765372767349443a34323936323632313034`; after replug PID `79354` used new path hex `4465765372767349443a34323936323632373836`, with the same M131E serial `MHDD01FAKE0843` and the same software-mode/display-sync flags above, without `--execute`.
+
+- **Recovery and selected session.** The post-Done Run panel showed **Running** with the dial still selected. Logs showed the disconnect read timeout and restore failure (`DeviceDisconnected`), Reconnecting attempt 1/5, Waiting, Reconnected, a dry-run `service_start` and `display_sync`. The intermediate disconnected UI was not inspected live; this verifies the recovered selection, rather than every intermediate state.
+- **Recovered input.** The panel recorded **11 events, 11 planned actions, 0 executed, 0 failed**: five right turns planning volume +5 and six left turns planning volume -5. No press was observed.
+- **Stop and remaining acceptance.** Stop showed **Stopped** and service end reason `interrupted`; a process check found no remaining sidecar. The user's physical display and restored-animation confirmation is pending. Sleep/wake and executing-session confirmation remain untested.
+
 ## Crash safety: stdin watchdog (M131E dial, 8 October 2026)
 
 `masterhub-service run --exit-on-stdin-eof` (the app always passes it) ends the run as a signal would when its stdin closes, which restores hardware mode.
 
 - **Standalone.** The service ran in software mode on the dial with the clock face, fed from a pipe that was closed after 18 s. The pipe closed at 14:59:21.037 and the service exited at 14:59:21.086 (49 ms later) with reason `stdin_closed` and no error. No service process was left. The user saw the clock face (14:59) during the run. A first attempt failed because the log was redirected to a file, which the service refuses (it needs a terminal or pipe): that was a test setup error, not a device result.
 - **Real crash.** With the desktop app running a dry-run, software-mode session on the dial (the sidecar was a child of the app, in its own process group, started with `--exit-on-stdin-eof --software-mode`), the app was killed with `kill -9`. The sidecar was gone about 120 ms later, and the user reported that the dial's built-in animation returned within milliseconds, well under a second.
-- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit in the app after this change; a crash while a session is still starting; replug while in software mode; sleep and wake. Normal app Stop on the dial was verified in the [app dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026).
+- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit in the app after this change; a crash while a session is still starting; sleep and wake. Dry-run dial replug and recovered input were observed in the [replug record](#desktop-app-dial-replug-m131e-8-october-2026). Normal app Stop on the dial was verified in the [app dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026).
 
 ## Not tested
 
@@ -104,4 +112,4 @@ Tested with rebuilt app/sidecar code `3689c3a` (documentation HEAD `9e95826`), u
 - Lighting writes of any kind.
 - Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session exercised an app crash (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A later [app dial dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026) verified the App-controlled display path, live dial preview and normal Stop. The later [app keypad dry-run](#desktop-app-keypad-dry-run-m4315-8-october-2026) verified two-level folder redraws, L1/L2 badges, live keypad preview and normal Stop. App-driven dial function cycling, other modules' live previews and switching the Module control setting remain untested.
 - `shortcut`, `launch_app` and every `obs_*` action.
-- Full reconnect acceptance, recovered input after replug, and sleep/wake behavior. One dry-run dial process recovery exposed a UI selection defect; see the [replug record](#desktop-app-dial-replug-m131e-8-october-2026).
+- Full reconnect acceptance and sleep/wake behavior. A repeated dry-run dial replug recovered the selected session and input after the initial UI selection defect was fixed; physical display and restored-animation acceptance remain pending. See the [replug record](#desktop-app-dial-replug-m131e-8-october-2026).

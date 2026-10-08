@@ -21,6 +21,10 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"obs_scene","scene":"Live"}` | Executes when the run has an OBS endpoint: one loopback obs-websocket v5 connection, `SetCurrentProgramScene`, close. Without an endpoint it is logged as unavailable and does nothing | OBS 28+ with its WebSocket server on; OBS turned on in OpenStreamHub Settings (or `--obs-endpoint`) |
 | `{"type":"obs_virtual_camera","op":"toggle"}` (also `start`, `stop`) | Same transport as `obs_scene`: `ToggleVirtualCam`, `StartVirtualCam` or `StopVirtualCam`, no request data. See [OBS outputs](#obs-outputs-obs_virtual_camera-and-obs_replay_buffer) | Same as `obs_scene` |
 | `{"type":"obs_replay_buffer","op":"save"}` (also `toggle`, `start`, `stop`) | `ToggleReplayBuffer`, `StartReplayBuffer`, `StopReplayBuffer` or `SaveReplayBuffer`. `save` needs a running buffer | Same as `obs_scene` |
+| `{"type":"obs_studio_mode","op":"toggle"}` (also `on`, `off`) | `GetStudioModeEnabled` then `SetStudioModeEnabled` for `toggle`; `SetStudioModeEnabled` alone for `on` and `off`. See [OBS source actions](#obs-source-actions-obs_studio_mode-obs_transition-obs_filter-obs_source_visibility) | Same as `obs_scene` |
+| `{"type":"obs_transition"}` | `TriggerStudioModeTransition`. OBS refuses it while studio mode is off | Same as `obs_scene` |
+| `{"type":"obs_filter","source":"Webcam","filter":"Blur","op":"toggle"}` (`on`, `off`) | `GetSourceFilter` then `SetSourceFilterEnabled` (`toggle`), or the set alone | Same as `obs_scene` |
+| `{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"off"}` (`toggle`, `on`) | `GetSceneItemId`, then `GetSceneItemEnabled` (`toggle` only), then `SetSceneItemEnabled` | Same as `obs_scene` |
 
 Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution.
 
@@ -215,6 +219,20 @@ Two more OBS actions, from the [official list of 17](research/masterhub-obs-acti
 - The Execute confirmation lists "Controls OBS outputs through the OBS WebSocket on this Mac" with each operation. It does not raise the risk level: neither output publishes to an audience by itself. (Recording and streaming will differ; they are not implemented.)
 - Tested against the scripted fake obs-websocket server only; no real OBS has been used.
 
+## OBS source actions (`obs_studio_mode`, `obs_transition`, `obs_filter`, `obs_source_visibility`)
+
+The next four of the [official 17](research/masterhub-obs-actions.md), on the same transport. These are the first actions that need OBS's answer before they know what to send, so each runs as one session: one connection, one handshake, one 3 s deadline for all of its requests (`ObsClient::run`).
+
+- JSON: `{"type":"obs_studio_mode","op":"toggle"}`; `{"type":"obs_transition"}`; `{"type":"obs_filter","source":"Webcam","filter":"Blur","op":"off"}`; `{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on"}`. `op` is `toggle`, `on` or `off` (a closed set); extra fields are rejected. `obs_transition` takes no fields. Additive variants, no schema bump.
+- Names (`source`, `filter`, `scene`) follow the `obs_scene` rules (nonempty, at most 128 bytes, no control or invisible characters) and are sent only as JSON string values, never formatted into text. OBS matches them exactly, case and spaces included. A group can be named as the `scene`; a source inside a nested group needs the group's name instead.
+- `toggle` reads the current state and writes the opposite, so a second controller changing the same thing between the two requests can make it end up unchanged. `on` and `off` do not read (the visibility action still looks up the item id first). **Prefer `on` and `off` in a `multi_action`.**
+- `obs_source_visibility` first asks OBS for the numeric scene item id (`GetSceneItemId`), so it acts on the first item with that source in that scene. The official app stores the id from its picker; we address by name.
+- `obs_transition` is the official `transition` action done as intended. The official code always sends the trigger even outside studio mode, because of a comparison bug; ours sends the same request and OBS's refusal is reported.
+- Failures: a missing scene, source or filter reports "no such scene, or no such source in it" or "no such source, or no such filter on it" (status 600); a transition outside studio mode reports "studio mode is not active" (506). A failed lookup ends the action before any write.
+- **Logging and redaction.** Records and the activity panel show lengths only: `{"type":"obs_filter","source_chars":11,"filter_chars":4,"op":"off"}`. Diagnostics bundles with redaction on replace `source`, `filter` and `scene` of these actions with `<N chars>`, and scrub short names from free text like scene names. **OBS's own comment text is never shown for any request that carried a name** (OBS repeats the name it was given); only the reason above is. This also applies to `obs_scene`, whose error text no longer includes OBS's comment.
+- The Execute confirmation lists studio mode and transition as OBS outputs, and each filter and source change with its names (invisible characters made visible). It stays at normal risk: these change what OBS shows, like a scene switch.
+- Tested against the scripted fake obs-websocket server only; no real OBS has been used.
+
 ## OBS scene (`obs_scene`)
 
 This is the first of the official app's OBS integrations ([app features](research/masterhub-1.0.0.113-app-features.md), "Integrations: OBS", about 18 actions over obs-websocket). Only switching the program scene is implemented; the rest are listed under [Not implemented](#not-implemented).
@@ -231,7 +249,7 @@ This is the first of the official app's OBS integrations ([app features](researc
 - A dry run with an endpoint plans the action (`planned`) and never connects. Only `--execute` connects.
 - With `--execute`, the action runs on the service's action worker, like every other action, so it never blocks input reading. Each action is one connection: TCP connect, WebSocket upgrade (`Sec-WebSocket-Protocol: obswebsocket.json`), `Hello`, `Identify` with `rpcVersion` 1 and `eventSubscriptions` 0 (no events are ever requested), the challenge answer when OBS asks for authentication, `Identified`, one `SetCurrentProgramScene` request whose `requestData` is `{"sceneName":…}` built by `serde_json` (the name is never formatted into a string), its `RequestResponse` with the matching `requestId`, then a close frame. Nothing is cached, retried or kept open.
 - One deadline of 3 s (`obs::DEFAULT_TIMEOUT`) covers connect, upgrade, handshake and response. Cancellation (Ctrl-C, SIGTERM, stop) is checked before connecting and every 50 ms while waiting for OBS.
-- Errors come back as `action_failed` with the endpoint and a reason: OBS not running (connection refused), timed out, wrong password (OBS closes with code 4009), no such scene (request status 600), protocol violations. Text from OBS (a request comment) is cleaned of control and invisible characters and cut to 120 characters; close reasons are never shown, only their codes.
+- Errors come back as `action_failed` with the endpoint and a reason: OBS not running (connection refused), timed out, wrong password (OBS closes with code 4009), no such scene (request status 600), protocol violations. A request comment from OBS is shown only for requests that carry no data (it is cleaned of control and invisible characters and cut to 120 characters); for any request that carried a name it is dropped, because OBS repeats the name. Close reasons are never shown, only their codes.
 
 ### Protocol limits (`crates/cooltek-sdk-service/src/obs.rs`)
 
@@ -310,5 +328,5 @@ Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the ti
 - Selecting a profile by name with the `profile` action (see above). Profile next/previous itself works only under the OpenStreamHub session manager; the CLI loads one profile per process.
 - Showing a timer's remaining time on the key (see above), and importing official timers from `.mhz` files.
 - Recorded key macros, clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
-- Every OBS action except switching the program scene, the virtual camera and the replay buffer: recording (start/stop/pause) and streaming, studio mode and transitions, source and scene-item visibility, audio mute and volume, media sources, filters, scene collections and profiles, and screenshots (14 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
+- Every OBS action except scene switching, the virtual camera, the replay buffer, studio mode, the studio transition, filters and source visibility: recording (start/stop/pause) and streaming, audio mute and volume, media sources, scene collections and profiles, and screenshots (8 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
 - A media stop for players other than Apple Music and Spotify, fast-forward/rewind (`media-fast-back-forward`) and playing an audio file (`play-pause`).

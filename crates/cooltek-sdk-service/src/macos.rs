@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand, TimerAlert, TimerAlerter,
-    obs::{OBS_UNAVAILABLE, ObsClient, ObsRequest},
+    obs::{OBS_UNAVAILABLE, ObsClient},
 };
 use std::{
     sync::{
@@ -539,7 +539,11 @@ impl MacOsDispatcher {
             }
             Action::ObsScene { .. }
             | Action::ObsVirtualCamera { .. }
-            | Action::ObsReplayBuffer { .. } => self.obs_action(action, None)?,
+            | Action::ObsReplayBuffer { .. }
+            | Action::ObsStudioMode { .. }
+            | Action::ObsTransition
+            | Action::ObsFilter { .. }
+            | Action::ObsSourceVisibility { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
@@ -589,10 +593,8 @@ impl MacOsDispatcher {
         deadline: Option<std::time::Instant>,
     ) -> Result<(), String> {
         let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
-        let request = ObsRequest::for_action(action)
-            .ok_or("this action does not talk to OBS; no action was taken")?;
         let Some(deadline) = deadline else {
-            return obs.request(&request).map(drop);
+            return obs.run(action);
         };
         let remaining = deadline.saturating_duration_since(self.sleeper.now());
         if remaining.is_zero() {
@@ -601,10 +603,7 @@ impl MacOsDispatcher {
                 MULTI_ACTION_DEADLINE.as_secs()
             ));
         }
-        obs.clone()
-            .with_timeout(remaining)
-            .request(&request)
-            .map(drop)
+        obs.clone().with_timeout(remaining).run(action)
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed

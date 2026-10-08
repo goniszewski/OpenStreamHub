@@ -121,6 +121,21 @@ describe('summarizeRecord', () => {
     expect(at({ type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'toggle_mute' }] }))
       .toContain('multi-action [OBS replay buffer save, toggle mute]');
   });
+  it('logs only the lengths of OBS source, filter and scene names, from new (_chars) and old records alike', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    const lines = [
+      at({ type: 'obs_filter', source: 'Private cam', filter: 'Blur', op: 'off' }),
+      at({ type: 'obs_filter', source_chars: 11, filter_chars: 4, op: 'off' }),
+      at({ type: 'obs_source_visibility', scene: 'Secret scene', source: 'Private cam', op: 'on' }),
+      at({ type: 'multi_action', actions: [{ type: 'obs_filter', source: 'Private cam', filter: 'Blur', op: 'on' }, { type: 'obs_transition' }] }),
+    ];
+    for (const line of lines) for (const name of ['Private cam', 'Secret scene', 'Blur']) expect(line).not.toContain(name);
+    expect(lines[0]).toContain('OBS filter off (11 + 4 characters)');
+    expect(lines[1]).toContain('OBS filter off (11 + 4 characters)');
+    expect(lines[2]).toContain('OBS source on (12 + 11 characters)');
+    expect(lines[3]).toContain('multi-action [OBS filter on (11 + 4 characters), OBS studio transition]');
+    expect(at({ type: 'obs_studio_mode', op: 'toggle' })).toContain('OBS studio mode toggle');
+  });
   it('logs only the length of an OBS scene name, from redacted (scene_chars) and old (scene) records alike', () => {
     const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
     const long = 'Interview guest cam with a very long name';

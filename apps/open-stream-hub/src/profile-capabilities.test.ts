@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action, Profile, StepAction } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
 import { stableStringify } from './draft-model';
-import { capabilityLines, maxShownChars, profileCapabilities, snapshotProfile, snippetPreview, stepLabel, submitKey, visibleText } from './profile-capabilities';
+import { capabilityLines, maxShownChars, profileCapabilities, snapshotProfile, snippetPreview, stepLabel, submitKey, tooLongReason, visibleText } from './profile-capabilities';
 
 const flat = (...actions: Action[]): Profile => ({ schema_version: 1, name: 'P', bindings: actions.map((action, control) => ({ module: 'm003k', control, gesture: 'pressed', action })) });
 
@@ -211,6 +211,47 @@ describe('capability copy', () => {
     expect(stepLabel({ type: 'media', command: 'play_pause' })).toBe('Press the Play/pause media key');
     expect(stepLabel({ type: 'media', command: 'previous_track' })).toBe('Press the Previous track media key');
     expect(stepLabel({ type: 'media', command: 'stop' })).toBe('Stop Music or Spotify if running');
+  });
+});
+
+describe('obs source capabilities', () => {
+  it('discloses studio mode, filters and source visibility, with names clipped, without raising the risk', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'obs_studio_mode', op: 'on' },
+      { type: 'obs_transition' },
+      { type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' },
+      { type: 'multi_action', actions: [{ type: 'obs_source_visibility', scene: 'Live', source: 'Face cam', op: 'off' }, { type: 'obs_transition' }] },
+    ));
+    expect(capabilities.obsOutputs).toEqual(['studio mode on', 'studio transition']);
+    expect(capabilities.obsItems).toEqual(['OBS filter “Blur” on “Webcam”: toggle', 'OBS source “Face cam” in scene “Live”: off']);
+    expect(capabilities.counts.obs_transition).toBe(2);
+    expect(capabilities.risk).toBe('elevated');
+    expect(profileCapabilities(flat({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'on' })).risk).toBe('normal');
+    expect(capabilityLines(capabilities)).toContain('Changes OBS filters or source visibility through the OBS WebSocket on this Mac (when OBS is turned on in Settings): OBS filter “Blur” on “Webcam”: toggle; OBS source “Face cam” in scene “Live”: off.');
+    expect(stepLabel({ type: 'obs_filter', source: 'Cam', filter: 'Blur', op: 'off' })).toBe('OBS filter “Blur” on “Cam”: off');
+    expect(stepLabel({ type: 'obs_transition' })).toBe('OBS studio transition');
+  });
+
+  it('shows invisible characters in names and flags very long ones', () => {
+    const capabilities = profileCapabilities(flat({ type: 'obs_filter', source: 'Cam\u200Bera', filter: 'x'.repeat(5000), op: 'on' }));
+    expect(capabilities.obsItems[0]).toContain('\\u{200B}');
+    expect(capabilities.risk).toBe('high');
+    expect(capabilities.riskReasons).toContain(tooLongReason);
+  });
+
+  it('accepts only the ops of each action type', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'obs_replay_buffer', op: 'on' } as unknown as Action,
+      { type: 'obs_studio_mode', op: 'save' } as unknown as Action,
+      { type: 'obs_virtual_camera', op: 'stop' },
+    ));
+    expect(capabilities.obsOutputs).toEqual(['replay buffer on (unrecognised)', 'studio mode save (unrecognised)', 'virtual camera stop']);
+  });
+
+  it('does not print an unknown op in full', () => {
+    const capabilities = profileCapabilities(flat({ type: 'obs_studio_mode', op: 'x'.repeat(300) } as unknown as Action));
+    expect(capabilities.obsOutputs[0].length).toBeLessThan(60);
+    expect(capabilities.obsOutputs[0]).toContain('(unrecognised)');
   });
 });
 

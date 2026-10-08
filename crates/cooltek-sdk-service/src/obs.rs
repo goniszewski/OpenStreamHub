@@ -31,7 +31,7 @@
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
 
-use crate::profile::{Action, ObsOutputOp, ObsReplayBufferOp};
+use crate::profile::{Action, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -321,6 +321,17 @@ impl ObsClient {
         self.session(|session| session.request(request))
     }
 
+    /// Runs an OBS action on one connection. Actions that need OBS's answer
+    /// first (a toggle of studio mode, a filter or a source's visibility) read
+    /// it and write the opposite on the same connection and deadline. An
+    /// action that does not talk to OBS fails without connecting.
+    pub fn run(&self, action: &Action) -> Result<(), String> {
+        if !action.uses_obs() || matches!(action, Action::MultiAction { .. }) {
+            return Err("this action does not talk to OBS; no action was taken".into());
+        }
+        self.session(|session| run_action(session, action))
+    }
+
     /// Runs `script` on one connection: handshake once, then as many
     /// [`ObsSession::request`] calls as it makes, then close. One deadline
     /// covers the whole script, so a read-then-write toggle costs one
@@ -395,9 +406,89 @@ impl ObsRequest {
     }
 }
 
+/// The state an on/off action should set: `on` and `off` are fixed, `toggle`
+/// is the opposite of what `read` says OBS has now.
+fn target_state(
+    op: ObsSwitchOp,
+    read: impl FnOnce() -> Result<bool, String>,
+) -> Result<bool, String> {
+    Ok(match op {
+        ObsSwitchOp::On => true,
+        ObsSwitchOp::Off => false,
+        ObsSwitchOp::Toggle => !read()?,
+    })
+}
+
+fn response_flag(data: &Value, field: &str) -> Result<bool, String> {
+    data.get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| format!("OBS response has no {field}"))
+}
+
+fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), String> {
+    match action {
+        Action::ObsStudioMode { op } => {
+            let enabled = target_state(*op, || {
+                let current = session.request(&ObsRequest::new("GetStudioModeEnabled"))?;
+                response_flag(&current, "studioModeEnabled")
+            })?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SetStudioModeEnabled",
+                    json!({"studioModeEnabled":enabled}),
+                ))
+                .map(drop)
+        }
+        Action::ObsFilter { source, filter, op } => {
+            let enabled = target_state(*op, || {
+                let current = session.request(&ObsRequest::with_data(
+                    "GetSourceFilter",
+                    json!({"sourceName":source, "filterName":filter}),
+                ))?;
+                response_flag(&current, "filterEnabled")
+            })?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SetSourceFilterEnabled",
+                    json!({"sourceName":source, "filterName":filter, "filterEnabled":enabled}),
+                ))
+                .map(drop)
+        }
+        Action::ObsSourceVisibility { scene, source, op } => {
+            let found = session.request(&ObsRequest::with_data(
+                "GetSceneItemId",
+                json!({"sceneName":scene, "sourceName":source}),
+            ))?;
+            let item = found
+                .get("sceneItemId")
+                .and_then(Value::as_u64)
+                .ok_or("OBS response has no sceneItemId")?;
+            let enabled = target_state(*op, || {
+                let current = session.request(&ObsRequest::with_data(
+                    "GetSceneItemEnabled",
+                    json!({"sceneName":scene, "sceneItemId":item}),
+                ))?;
+                response_flag(&current, "sceneItemEnabled")
+            })?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SetSceneItemEnabled",
+                    json!({"sceneName":scene, "sceneItemId":item, "sceneItemEnabled":enabled}),
+                ))
+                .map(drop)
+        }
+        other => {
+            let request = ObsRequest::for_action(other)
+                .ok_or("this action does not talk to OBS; no action was taken")?;
+            session.request(&request).map(drop)
+        }
+    }
+}
+
 impl ObsRequest {
-    /// The request an OBS action sends, or `None` for an action that does not
-    /// talk to OBS (and for a `multi_action`, whose steps are asked one by one).
+    /// The request a single-request OBS action sends, or `None` for an action
+    /// that needs several requests ([`ObsClient::run`] handles those), does not
+    /// talk to OBS, or is a `multi_action`.
     pub fn for_action(action: &Action) -> Option<Self> {
         Some(match action {
             Action::ObsScene { scene } => {
@@ -408,6 +499,7 @@ impl ObsRequest {
                 ObsOutputOp::Start => "StartVirtualCam",
                 ObsOutputOp::Stop => "StopVirtualCam",
             }),
+            Action::ObsTransition => Self::new("TriggerStudioModeTransition"),
             Action::ObsReplayBuffer { op } => Self::new(match op {
                 ObsReplayBufferOp::Toggle => "ToggleReplayBuffer",
                 ObsReplayBufferOp::Start => "StartReplayBuffer",
@@ -440,7 +532,7 @@ impl ObsSession<'_> {
             match message.op {
                 OP_EVENT => continue,
                 OP_REQUEST_RESPONSE => {
-                    return check_response(&message.d, &request_id, request.request_type);
+                    return check_response(&message.d, &request_id, request);
                 }
                 op => {
                     return Err(format!(
@@ -535,7 +627,8 @@ fn check_identified(message: &Message) -> Result<(), String> {
     }
 }
 
-fn check_response(data: &Value, request_id: &str, request_type: &str) -> Result<Value, String> {
+fn check_response(data: &Value, request_id: &str, request: &ObsRequest) -> Result<Value, String> {
+    let request_type = request.request_type;
     if data.get("requestId").and_then(Value::as_str) != Some(request_id)
         || data.get("requestType").and_then(Value::as_str) != Some(request_type)
     {
@@ -548,11 +641,20 @@ fn check_response(data: &Value, request_id: &str, request_type: &str) -> Result<
     match (status.get("result").and_then(Value::as_bool), code) {
         (Some(true), Some(100)) => Ok(data.get("responseData").cloned().unwrap_or(Value::Null)),
         (Some(false), Some(code)) => {
-            let comment = status
-                .get("comment")
-                .and_then(Value::as_str)
-                .map(|comment| format!(": {}", sanitize(comment)))
-                .unwrap_or_default();
+            // OBS often repeats the name it was given ("No source was found by
+            // the name of X"). A request that carried data may carry a scene,
+            // source or filter name, which must stay out of logs and
+            // diagnostics, so its comment is never shown; the reason above
+            // already names the cause.
+            let comment = if request.data.is_some() {
+                String::new()
+            } else {
+                status
+                    .get("comment")
+                    .and_then(Value::as_str)
+                    .map(|comment| format!(": {}", sanitize(comment)))
+                    .unwrap_or_default()
+            };
             Err(format!(
                 "OBS refused {} ({}){comment}",
                 refused_what(request_type),
@@ -585,6 +687,14 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
         (_, 504) => "the output is disabled".into(),
         (_, 505) => "studio mode is active".into(),
         (_, 506) => "studio mode is not active".into(),
+        ("GetSceneItemId", 600) => "no such scene, or no such source in it".into(),
+        ("GetSourceFilter" | "SetSourceFilterEnabled", 600) => {
+            "no such source, or no such filter on it".into()
+        }
+        ("GetSceneItemEnabled" | "SetSceneItemEnabled", 600) => {
+            "the source is no longer in that scene".into()
+        }
+        (_, 602) => "that name belongs to a different kind of item".into(),
         (_, 600) => "not found".into(),
         (_, 601) => "already exists".into(),
         (_, 604) => "the resource is in the wrong state".into(),
@@ -1540,21 +1650,43 @@ mod tests {
 
     #[test]
     fn a_refused_request_reports_a_sanitized_bounded_reason() {
-        let comment = format!("No source was found\u{1b}[31m\u{202E}\n{}", "x".repeat(500));
-        let (endpoint, server) = serve(obs_server(
+        // A request without data cannot echo a name, so OBS's comment is
+        // shown, cleaned of control and invisible characters and cut short.
+        let comment = format!(
+            "Output is not running\u{1b}[31m\u{202E}\n{}",
+            "x".repeat(500)
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":501,"comment":comment}),
             None,
-            json!({"result":false,"code":600,"comment":comment}),
-        ));
+        )]));
         let error = client(endpoint, None)
-            .set_current_program_scene("Missing")
+            .request(&ObsRequest::new("StopRecord"))
             .unwrap_err();
         server.join().unwrap();
-        assert!(error.contains("no scene with that name"), "{error}");
-        assert!(error.contains("No source was found"), "{error}");
+        assert!(error.contains("the output is not running"), "{error}");
+        assert!(error.contains("Output is not running"), "{error}");
         assert!(!error.chars().any(|c| c.is_control()), "{error:?}");
         assert!(!error.contains('\u{202E}'), "{error:?}");
         assert!(error.chars().count() < 250, "{error}");
         assert!(error.ends_with('…'));
+    }
+
+    #[test]
+    fn a_refused_request_that_carried_names_never_shows_obs_comment_text() {
+        // OBS repeats the name it was given; the comment is dropped for any
+        // request that carried data, so a name cannot reach logs through it.
+        let (endpoint, server) = serve(obs_server(
+            None,
+            json!({"result":false,"code":600,"comment":"No scene was found by the name of Private call"}),
+        ));
+        let error = client(endpoint, None)
+            .set_current_program_scene("Private call")
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("no scene with that name"), "{error}");
+        assert!(!error.contains("Private call"), "{error}");
+        assert!(!error.contains("No scene was found"), "{error}");
     }
 
     #[test]
@@ -1809,6 +1941,231 @@ mod tests {
             "{error}"
         );
         server.join().unwrap();
+    }
+
+    // ---- Multi-request actions (`ObsClient::run`) ----
+
+    use crate::profile::ObsSwitchOp;
+
+    fn ok(data: Value) -> (Value, Option<Value>) {
+        (json!({"result":true}), Some(data))
+    }
+
+    fn done() -> (Value, Option<Value>) {
+        (json!({"result":true}), None)
+    }
+
+    /// The `(requestType, requestData)` pairs OBS saw after the Identify.
+    fn requests(seen: &Seen) -> Vec<(String, Value)> {
+        seen.messages[1..]
+            .iter()
+            .map(|message| {
+                (
+                    message["d"]["requestType"].as_str().unwrap().to_string(),
+                    message["d"]["requestData"].clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn studio_mode_toggle_reads_then_writes_the_opposite_and_on_off_write_directly() {
+        for (op, answers, expected) in [
+            (
+                ObsSwitchOp::Toggle,
+                vec![ok(json!({"studioModeEnabled":false})), done()],
+                vec![
+                    ("GetStudioModeEnabled", Value::Null),
+                    ("SetStudioModeEnabled", json!({"studioModeEnabled":true})),
+                ],
+            ),
+            (
+                ObsSwitchOp::Toggle,
+                vec![ok(json!({"studioModeEnabled":true})), done()],
+                vec![
+                    ("GetStudioModeEnabled", Value::Null),
+                    ("SetStudioModeEnabled", json!({"studioModeEnabled":false})),
+                ],
+            ),
+            (
+                ObsSwitchOp::On,
+                vec![done()],
+                vec![("SetStudioModeEnabled", json!({"studioModeEnabled":true}))],
+            ),
+            (
+                ObsSwitchOp::Off,
+                vec![done()],
+                vec![("SetStudioModeEnabled", json!({"studioModeEnabled":false}))],
+            ),
+        ] {
+            let (endpoint, server) = serve(scripted_obs(answers));
+            client(endpoint, None)
+                .run(&Action::ObsStudioMode { op })
+                .unwrap();
+            let seen = server.join().unwrap();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(kind, data)| (kind.to_string(), data))
+                .collect();
+            assert_eq!(requests(&seen), expected, "{op:?}");
+        }
+    }
+
+    #[test]
+    fn the_transition_is_one_request_and_is_refused_outside_studio_mode() {
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None).run(&Action::ObsTransition).unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            requests(&seen),
+            [("TriggerStudioModeTransition".to_string(), Value::Null)]
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":506}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsTransition)
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("studio mode is not active"), "{error}");
+    }
+
+    #[test]
+    fn a_filter_toggle_reads_the_filter_and_sets_the_opposite() {
+        let action = |op| Action::ObsFilter {
+            source: "Webcam \"HD\"".into(),
+            filter: "Color {x}".into(),
+            op,
+        };
+        let names = json!({"sourceName":"Webcam \"HD\"", "filterName":"Color {x}"});
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"filterEnabled":true})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&action(ObsSwitchOp::Toggle))
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            requests(&seen),
+            [
+                ("GetSourceFilter".to_string(), names.clone()),
+                (
+                    "SetSourceFilterEnabled".to_string(),
+                    json!({"sourceName":"Webcam \"HD\"", "filterName":"Color {x}", "filterEnabled":false})
+                ),
+            ]
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None)
+            .run(&action(ObsSwitchOp::On))
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(requests(&seen).len(), 1);
+        assert_eq!(requests(&seen)[0].0, "SetSourceFilterEnabled");
+    }
+
+    #[test]
+    fn source_visibility_looks_up_the_item_id_then_reads_and_writes_it() {
+        let action = |op| Action::ObsSourceVisibility {
+            scene: "Live".into(),
+            source: "Camera".into(),
+            op,
+        };
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"sceneItemId":7})),
+            ok(json!({"sceneItemEnabled":true})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&action(ObsSwitchOp::Toggle))
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            requests(&seen),
+            [
+                (
+                    "GetSceneItemId".to_string(),
+                    json!({"sceneName":"Live", "sourceName":"Camera"})
+                ),
+                (
+                    "GetSceneItemEnabled".to_string(),
+                    json!({"sceneName":"Live", "sceneItemId":7})
+                ),
+                (
+                    "SetSceneItemEnabled".to_string(),
+                    json!({"sceneName":"Live", "sceneItemId":7, "sceneItemEnabled":false})
+                ),
+            ]
+        );
+        // `on` needs the id but not the current state.
+        let (endpoint, server) = serve(scripted_obs(vec![ok(json!({"sceneItemId":7})), done()]));
+        client(endpoint, None)
+            .run(&action(ObsSwitchOp::On))
+            .unwrap();
+        let seen = server.join().unwrap();
+        let kinds: Vec<_> = requests(&seen).into_iter().map(|(kind, _)| kind).collect();
+        assert_eq!(kinds, ["GetSceneItemId", "SetSceneItemEnabled"]);
+    }
+
+    #[test]
+    fn a_missing_source_stops_before_any_write_and_names_the_cause_without_the_name() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600,"comment":"No scene item was found by Secret cam"}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsSourceVisibility {
+                scene: "Live".into(),
+                source: "Secret cam".into(),
+                op: ObsSwitchOp::Off,
+            })
+            .unwrap_err();
+        let seen = server.join().unwrap();
+        assert_eq!(requests(&seen).len(), 1, "no write after a failed lookup");
+        assert!(
+            error.contains("no such scene, or no such source in it"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("Secret cam") && !error.contains("Live"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_response_without_the_expected_field_fails_instead_of_guessing() {
+        let (endpoint, server) = serve(scripted_obs(vec![ok(json!({"somethingElse":true}))]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsStudioMode {
+                op: ObsSwitchOp::Toggle,
+            })
+            .unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(error.contains("no studioModeEnabled"), "{error}");
+        assert_eq!(
+            requests(&seen).len(),
+            1,
+            "no write without knowing the state"
+        );
+    }
+
+    #[test]
+    fn run_rejects_actions_that_do_not_talk_to_obs_without_connecting() {
+        let closed = TcpListener::bind("127.0.0.1:0").unwrap();
+        closed.set_nonblocking(true).unwrap();
+        let endpoint = ObsEndpoint::new("127.0.0.1", closed.local_addr().unwrap().port()).unwrap();
+        for action in [
+            Action::ToggleMute,
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, Action::ObsTransition],
+            },
+        ] {
+            let error = client(endpoint, None).run(&action).unwrap_err();
+            assert!(error.contains("does not talk to OBS"), "{error}");
+        }
+        assert!(closed.accept().is_err(), "OBS was contacted");
     }
 
     fn expect_failure(script: impl FnOnce(&mut Peer, &mut Seen) + Send + 'static, expected: &str) {

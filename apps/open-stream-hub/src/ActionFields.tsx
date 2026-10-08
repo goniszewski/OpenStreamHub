@@ -1,14 +1,21 @@
 import { Plus, Trash2 } from 'lucide-react';
-import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes, obsOutputOpLabels, obsReplayBufferOpLabels,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels,
   maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, obsSceneIssue, profileDirectionLabels,
   stepActionTypes, systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
 } from './action-model';
 import type { StepActionType } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
+
+const obsNeedsNote = 'Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
+const obsSwitchNote = `Toggle follows OBS's current state; Turn on and Turn off do not, so they are safer inside a multi-action. ${obsNeedsNote}`;
+
+function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {
+  return <SelectField id={id} value={value} onChange={event => onChange(event.target.value as ObsSwitchOp)}>{(Object.keys(obsSwitchOpLabels) as ObsSwitchOp[]).map(op => <option key={op} value={op}>{obsSwitchOpLabels[op]}</option>)}</SelectField>;
+}
 
 const obsOutputNote = 'Toggle follows OBS\'s current state; Start and Stop do not, so they are safer inside a multi-action (OBS refuses Start on a running output and Stop on a stopped one). Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
 
@@ -131,6 +138,26 @@ function StepFields({ prefix, action, inputKey, onChange }: {
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
     case 'obs_virtual_camera': return <div className="action-fields"><label htmlFor={id('obs-virtual-camera-op')}>Virtual camera</label><SelectField id={id('obs-virtual-camera-op')} value={action.op} onChange={event => onChange({ type: 'obs_virtual_camera', op: event.target.value as ObsOutputOp })}>{(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}</SelectField><p className="fine-print">{obsOutputNote}</p></div>;
     case 'obs_replay_buffer': return <div className="action-fields"><label htmlFor={id('obs-replay-buffer-op')}>Replay buffer</label><SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp })}>{(Object.keys(obsReplayBufferOpLabels) as ObsReplayBufferOp[]).map(op => <option key={op} value={op}>{obsReplayBufferOpLabels[op]}</option>)}</SelectField><p className="fine-print">{obsOutputNote} Saving needs the buffer to be running in OBS.</p></div>;
+    case 'obs_studio_mode': return <div className="action-fields"><label htmlFor={id('obs-studio-mode-op')}>Studio mode</label><ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op })} /><p className="fine-print">{obsSwitchNote}</p></div>;
+    case 'obs_transition': return <div className="action-fields"><p className="fine-print">Triggers the studio-mode transition from the preview to the program scene. OBS refuses it while studio mode is off, and the press is logged as failed. {obsNeedsNote}</p></div>;
+    case 'obs_filter': {
+      const sourceIssue = obsNameIssue(action.source, 'source');
+      const filterIssue = obsNameIssue(action.filter, 'filter');
+      return <div className="action-fields">
+        <label htmlFor={id('obs-filter-source')}>Source name</label><input id={id('obs-filter-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-filter-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-filter-source')} />{sourceIssue && <p id={id('obs-filter-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
+        <label className="spaced-label" htmlFor={id('obs-filter-name')}>Filter name</label><input id={id('obs-filter-name')} spellCheck={false} value={action.filter} aria-invalid={!!filterIssue} aria-describedby={filterIssue ? id('obs-filter-name-error') : undefined} onChange={event => onChange({ ...action, filter: event.target.value }, 'obs-filter-name')} />{filterIssue && <p id={id('obs-filter-name-error')} className="field-error" role="alert">{filterIssue}</p>}
+        <label className="spaced-label" htmlFor={id('obs-filter-op')}>Filter</label><ObsSwitchSelect id={id('obs-filter-op')} value={action.op} onChange={op => onChange({ ...action, op })} />
+        <p className="fine-print">Both names are matched exactly (up to {maxObsSceneBytes} bytes each). {obsSwitchNote}</p></div>;
+    }
+    case 'obs_source_visibility': {
+      const sceneIssue = obsNameIssue(action.scene, 'scene');
+      const sourceIssue = obsNameIssue(action.source, 'source');
+      return <div className="action-fields">
+        <label htmlFor={id('obs-visibility-scene')}>Scene name</label><input id={id('obs-visibility-scene')} spellCheck={false} value={action.scene} aria-invalid={!!sceneIssue} aria-describedby={sceneIssue ? id('obs-visibility-scene-error') : undefined} onChange={event => onChange({ ...action, scene: event.target.value }, 'obs-visibility-scene')} />{sceneIssue && <p id={id('obs-visibility-scene-error')} className="field-error" role="alert">{sceneIssue}</p>}
+        <label className="spaced-label" htmlFor={id('obs-visibility-source')}>Source name</label><input id={id('obs-visibility-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-visibility-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-visibility-source')} />{sourceIssue && <p id={id('obs-visibility-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
+        <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Visibility</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op })} />
+        <p className="fine-print">Shows or hides the source in that scene (a group name works as the scene). Both names are matched exactly (up to {maxObsSceneBytes} bytes each). {obsSwitchNote}</p></div>;
+    }
     case 'obs_scene': {
       const issue = obsSceneIssue(action.scene);
       return <div className="action-fields"><label htmlFor={id('obs-scene')}>OBS scene name</label><input id={id('obs-scene')} spellCheck={false} value={action.scene} aria-invalid={!!issue} aria-describedby={issue ? id('obs-scene-error') : undefined} onChange={event => onChange({ type: 'obs_scene', scene: event.target.value }, 'obs-scene')} />{issue && <p id={id('obs-scene-error')} className="field-error" role="alert">{issue}</p>}

@@ -29,7 +29,14 @@ export type StepAction =
   // Start, stop or toggle the OBS virtual camera, or the replay buffer (also: save it), over the same local OBS
   // WebSocket. No names are involved; the op is a closed set (ObsOutputOp, ObsReplayBufferOp in profile.rs).
   | { type: 'obs_virtual_camera'; op: ObsOutputOp }
-  | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp };
+  | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp }
+  // Studio mode, its transition, a source filter and a source's visibility in a scene. The names are exact OBS names
+  // (the same rules as obs_scene.scene).
+  | { type: 'obs_studio_mode'; op: ObsSwitchOp }
+  | { type: 'obs_transition' }
+  | { type: 'obs_filter'; source: string; filter: string; op: ObsSwitchOp }
+  | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp };
+export type ObsSwitchOp = 'toggle' | 'on' | 'off';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type BindingAction =

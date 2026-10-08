@@ -108,7 +108,7 @@ enum Command {
         #[arg(long)]
         profile_switch_requests: bool,
         /// Loopback OBS WebSocket (obs-websocket v5, OBS 28+) endpoint for
-        /// OBS actions (`obs_scene`, `obs_virtual_camera`, `obs_replay_buffer`):
+        /// OBS actions (every `obs_*` action type):
         /// exactly 127.0.0.1:PORT, [::1]:PORT or localhost:PORT. Without it
         /// such an action is logged as
         /// `action_unavailable` and does nothing. Each action opens one

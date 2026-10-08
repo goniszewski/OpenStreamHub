@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, ObsOutputOp, ObsReplayBufferOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, MediaCommand, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -46,6 +46,7 @@ export const maxObsSceneBytes = 128;
 
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
 export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
+export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: 'Toggle', on: 'Turn on', off: 'Turn off' };
 export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
 
 export type StepActionType = StepAction['type'];
@@ -55,6 +56,8 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
+  ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
+  ['obs_source_visibility', 'OBS source visibility'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -71,6 +74,10 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_scene': return { type, scene: 'Scene' };
     case 'obs_virtual_camera': return { type, op: 'toggle' };
     case 'obs_replay_buffer': return { type, op: 'save' };
+    case 'obs_studio_mode': return { type, op: 'toggle' };
+    case 'obs_transition': return { type };
+    case 'obs_filter': return { type, source: 'Source', filter: 'Filter', op: 'toggle' };
+    case 'obs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
   }
 }
 
@@ -120,12 +127,17 @@ export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
 
 // Mirrors the obs_scene rule in Action::validate (profile.rs): the keypad label rules plus the invisible-character rule
 // of text snippets, so the scene OBS receives is exactly the one reviewed.
-export function obsSceneIssue(scene: string): string | null {
-  if (!scene.trim()) return 'Enter the OBS scene name exactly as it appears in OBS.';
-  if (utf8.encode(scene).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
-  if (/[\u0000-\u001f\u007f-\u009f]/.test(scene)) return 'Remove line breaks, tabs and other control characters.';
-  if (invisibleTextCharacter.test(scene)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
+// The same rule applies to every OBS name (scene, source, filter): validate_obs_name in profile.rs.
+export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter'): string | null {
+  if (!name.trim()) return `Enter the OBS ${what} name exactly as it appears in OBS.`;
+  if (utf8.encode(name).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return 'Remove line breaks, tabs and other control characters.';
+  if (invisibleTextCharacter.test(name)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
   return null;
+}
+
+export function obsSceneIssue(scene: string): string | null {
+  return obsNameIssue(scene, 'scene');
 }
 
 export function textIssue(text: string): string | null {

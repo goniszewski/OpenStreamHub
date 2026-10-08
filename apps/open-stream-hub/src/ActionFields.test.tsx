@@ -163,3 +163,39 @@ describe('obs output fields', () => {
     expectAccessible(markup);
   });
 });
+
+describe('obs source fields', () => {
+  it('edits studio mode and the transition', () => {
+    const studio = render({ type: 'obs_studio_mode', op: 'on' });
+    expect(studio).toContain('<label for="obs-studio-mode-op">Studio mode</label>');
+    expect(studio).toMatch(/<option value="on" selected="">Turn on<\/option>/);
+    expectAccessible(studio);
+    const transition = render({ type: 'obs_transition' });
+    expect(transition).toContain('studio-mode transition');
+    expect(transition).toContain('OBS turned on in Settings');
+    expectAccessible(transition);
+  });
+
+  it('edits both names of a filter with inline problems', () => {
+    const markup = render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' });
+    expect(markup).toContain('<label for="obs-filter-source">Source name</label>');
+    expect(markup).toContain('for="obs-filter-name">Filter name</label>');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const blank = render({ type: 'obs_filter', source: 'Webcam', filter: ' ', op: 'toggle' });
+    expect(blank).toContain('OBS filter name');
+    expect(blank).toContain('role="alert"');
+  });
+
+  it('edits scene and source for visibility, also as a multi-action step', () => {
+    const markup = render({ type: 'obs_source_visibility', scene: 'Live', source: '', op: 'off' });
+    expect(markup).toContain('for="obs-visibility-scene">Scene name</label>');
+    expect(markup).toContain('for="obs-visibility-source">Source name</label>');
+    expect(markup).toContain('OBS source name');
+    expectAccessible(markup);
+    const multi = render({ type: 'multi_action', actions: [{ type: 'obs_studio_mode', op: 'on' }, { type: 'obs_filter', source: 'A', filter: 'B', op: 'off' }] });
+    expect(ids(multi)).toEqual(expect.arrayContaining(['step-1-obs-studio-mode-op', 'step-2-obs-filter-source', 'step-2-obs-filter-name', 'step-2-obs-filter-op']));
+    expectAccessible(multi);
+    for (const type of ['obs_studio_mode', 'obs_transition', 'obs_filter', 'obs_source_visibility']) expect(render(null)).toContain(`value="${type}"`);
+  });
+});

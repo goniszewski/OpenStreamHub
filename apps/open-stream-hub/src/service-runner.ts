@@ -128,6 +128,7 @@ export const emptyCounters = (): ServiceCounters => ({ events: 0, planned: 0, ex
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
 const str = (value: unknown) => typeof value === 'string' ? value : undefined;
+const nameChars = (action: Record<string, unknown>, field: string) => typeof action[`${field}_chars`] === 'number' ? action[`${field}_chars`] : (typeof action[field] === 'string' ? [...(action[field] as string)].length : 0);
 const clip = (text: string, max = 300) => text.length > max ? `${text.slice(0, max)}…` : text;
 
 function describeAction(action: unknown): string {
@@ -154,6 +155,11 @@ function describeAction(action: unknown): string {
     case 'obs_scene': return `OBS scene (${typeof action.scene_chars === 'number' ? action.scene_chars : (typeof action.scene === 'string' ? [...action.scene].length : 0)} characters)`;
     // The op is a closed word (toggle, start, stop, save), never user text.
     case 'obs_virtual_camera': case 'obs_replay_buffer': return `${action.type === 'obs_virtual_camera' ? 'OBS virtual camera' : 'OBS replay buffer'} ${str(action.op) ?? '?'}`;
+    // Names are user text: only their lengths are shown (the service logs *_chars; older records carry the names).
+    case 'obs_studio_mode': return `OBS studio mode ${str(action.op) ?? '?'}`;
+    case 'obs_transition': return 'OBS studio transition';
+    case 'obs_filter': return `OBS filter ${str(action.op) ?? '?'} (${nameChars(action, 'source')} + ${nameChars(action, 'filter')} characters)`;
+    case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

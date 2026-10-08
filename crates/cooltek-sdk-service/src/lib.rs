@@ -26,7 +26,8 @@ pub use keypad::{
 };
 pub use macos::MacOsDispatcher;
 pub use profile::{
-    Action, Binding, Gesture, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, Profile,
-    ProfileDirection, ServiceModule, SystemCommand, TimerSound, is_invisible_text_character,
+    Action, Binding, Gesture, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp,
+    Profile, ProfileDirection, ServiceModule, SystemCommand, TimerSound,
+    is_invisible_text_character,
 };
 pub use timer::{RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration};

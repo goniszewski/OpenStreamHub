@@ -442,6 +442,19 @@ pub fn loggable(action: &Action) -> Value {
         Action::ObsScene { scene } => {
             json!({"type":"obs_scene", "scene_chars":scene.chars().count()})
         }
+        // Source, filter and scene names are user text as well: only lengths are logged.
+        Action::ObsFilter { source, filter, op } => json!({
+            "type":"obs_filter",
+            "source_chars":source.chars().count(),
+            "filter_chars":filter.chars().count(),
+            "op":op,
+        }),
+        Action::ObsSourceVisibility { scene, source, op } => json!({
+            "type":"obs_source_visibility",
+            "scene_chars":scene.chars().count(),
+            "source_chars":source.chars().count(),
+            "op":op,
+        }),
         other => json!(other),
     }
 }
@@ -1090,6 +1103,29 @@ mod tests {
                     op: cooltek_sdk_service::ObsReplayBufferOp::Save,
                 },
                 json!({"type":"obs_replay_buffer","op":"save"}),
+            ),
+            (
+                Action::ObsStudioMode {
+                    op: cooltek_sdk_service::ObsSwitchOp::Toggle,
+                },
+                json!({"type":"obs_studio_mode","op":"toggle"}),
+            ),
+            (Action::ObsTransition, json!({"type":"obs_transition"})),
+            (
+                Action::ObsFilter {
+                    source: "Private cam".into(),
+                    filter: "Blur".into(),
+                    op: cooltek_sdk_service::ObsSwitchOp::Off,
+                },
+                json!({"type":"obs_filter","source_chars":11,"filter_chars":4,"op":"off"}),
+            ),
+            (
+                Action::ObsSourceVisibility {
+                    scene: "Live".into(),
+                    source: "Private cam".into(),
+                    op: cooltek_sdk_service::ObsSwitchOp::On,
+                },
+                json!({"type":"obs_source_visibility","scene_chars":4,"source_chars":11,"op":"on"}),
             ),
             (
                 multi,

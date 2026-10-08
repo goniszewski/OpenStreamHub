@@ -40,7 +40,15 @@
     {"type":"obs_replay_buffer","op":"start"},
     {"type":"obs_replay_buffer","op":"stop"},
     {"type":"obs_replay_buffer","op":"save"},
-    {"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"save"},{"type":"obs_virtual_camera","op":"stop"}]}
+    {"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"save"},{"type":"obs_virtual_camera","op":"stop"}]},
+    {"type":"obs_studio_mode","op":"toggle"},
+    {"type":"obs_studio_mode","op":"on"},
+    {"type":"obs_studio_mode","op":"off"},
+    {"type":"obs_transition"},
+    {"type":"obs_filter","source":"Webcam","filter":"Color Correction","op":"toggle"},
+    {"type":"obs_filter","source":"Zażółć 🎥","filter":"Blur \"hard\" {x}","op":"off"},
+    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on"},
+    {"type":"multi_action","actions":[{"type":"obs_studio_mode","op":"on"},{"type":"obs_transition"}]}
   ],
   "invalid": [
     {"type":"open_url","url":"file:///etc/passwd"},
@@ -92,6 +100,15 @@
     {"type":"obs_virtual_camera","op":"toggle","endpoint":"127.0.0.1:4455"},
     {"type":"obs_replay_buffer"},
     {"type":"obs_replay_buffer","op":"pause"},
-    {"type":"obs_replay_buffer","op":"save","password":"secret"}
+    {"type":"obs_replay_buffer","op":"save","password":"secret"},
+    {"type":"obs_studio_mode"},
+    {"type":"obs_studio_mode","op":"start"},
+    {"type":"obs_transition","op":"toggle"},
+    {"type":"obs_filter","source":"Webcam","op":"on"},
+    {"type":"obs_filter","source":"","filter":"Blur","op":"on"},
+    {"type":"obs_filter","source":"Webcam","filter":"zero\u200bwidth","op":"on"},
+    {"type":"obs_source_visibility","scene":"Live","source":"Camera"},
+    {"type":"obs_source_visibility","scene":"line\nbreak","source":"Camera","op":"on"},
+    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on","endpoint":"127.0.0.1:4455"}
   ]
 }

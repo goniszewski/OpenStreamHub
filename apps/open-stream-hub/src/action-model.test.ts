@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
   defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
-  namedKeys, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds,
+  namedKeys, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels, profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
 import { actionLabel } from './ui-model';
@@ -140,6 +140,51 @@ describe('inline action hints', () => {
     const invalid = fixture.invalid.filter((action): action is { type: 'text'; text: string } => (action as { type?: string }).type === 'text');
     expect(invalid.length).toBeGreaterThan(0);
     for (const action of invalid) expect(textIssue(action.text), JSON.stringify(action.text)).not.toBeNull();
+  });
+});
+
+describe('obs source actions', () => {
+  it('offers studio mode, the transition, filters and source visibility with safe defaults', () => {
+    expect(stepActionTypes.map(([type]) => type)).toEqual(expect.arrayContaining(['obs_studio_mode', 'obs_transition', 'obs_filter', 'obs_source_visibility']));
+    expect(defaultStepAction('obs_studio_mode')).toEqual({ type: 'obs_studio_mode', op: 'toggle' });
+    expect(defaultStepAction('obs_transition')).toEqual({ type: 'obs_transition' });
+    const filter = defaultStepAction('obs_filter') as { source: string; filter: string };
+    const visibility = defaultStepAction('obs_source_visibility') as { scene: string; source: string };
+    for (const [name, what] of [[filter.source, 'source'], [filter.filter, 'filter'], [visibility.scene, 'scene'], [visibility.source, 'source']] as const) expect(obsNameIssue(name, what)).toBeNull();
+    expect(Object.keys(obsSwitchOpLabels)).toEqual(['toggle', 'on', 'off']);
+    expect(actionLabel({ type: 'obs_studio_mode', op: 'on' })).toBe('OBS studio mode: Turn on');
+    expect(actionLabel({ type: 'obs_transition' })).toBe('OBS studio transition');
+    expect(actionLabel({ type: 'obs_filter', source: 'Cam', filter: 'Blur', op: 'off' })).toBe('OBS filter “Blur”: Turn off');
+    expect(actionLabel({ type: 'obs_source_visibility', scene: 'Live', source: 'x'.repeat(40), op: 'toggle' })).toBe(`OBS source “${'x'.repeat(24)}…”: Toggle`);
+    // Clipped by code points: an emoji at the cut is kept whole.
+    expect(actionLabel({ type: 'obs_filter', source: 'Cam', filter: `${'x'.repeat(23)}🎥tail`, op: 'on' })).toBe(`OBS filter “${'x'.repeat(23)}🎥…”: Turn on`);
+  });
+
+  it('applies the scene-name rules to every name and says which kind it wants', () => {
+    for (const what of ['scene', 'source', 'filter'] as const) {
+      expect(obsNameIssue('Camera', what)).toBeNull();
+      expect(obsNameIssue('x'.repeat(maxObsSceneBytes), what)).toBeNull();
+      expect(obsNameIssue('', what)).toContain(`OBS ${what} name`);
+      for (const bad of ['   ', 'x'.repeat(maxObsSceneBytes + 1), 'line\nbreak', 'zero\u200Bwidth', 'bidi\u202E']) expect(obsNameIssue(bad, what), JSON.stringify(bad)).not.toBeNull();
+    }
+    expect(obsSceneIssue('')).toBe(obsNameIssue('', 'scene'));
+  });
+
+  it('agrees with the shared fixture on which source actions are valid', () => {
+    const names = (action: Record<string, unknown>) => (['scene', 'source', 'filter'] as const).filter(key => key in action);
+    const strictlyValid = (action: Record<string, unknown>) => {
+      const type = String(action.type);
+      const allowed: Record<string, string[]> = { obs_studio_mode: ['type', 'op'], obs_transition: ['type'], obs_filter: ['type', 'source', 'filter', 'op'], obs_source_visibility: ['type', 'scene', 'source', 'op'] };
+      if (!(type in allowed)) return null;
+      const required = allowed[type];
+      if (Object.keys(action).some(key => !required.includes(key)) || required.some(key => !(key in action))) return false;
+      if ('op' in action && !['toggle', 'on', 'off'].includes(String(action.op))) return false;
+      return names(action).every(key => typeof action[key] === 'string' && obsNameIssue(action[key] as string, key) === null);
+    };
+    for (const action of fixture.valid as Record<string, unknown>[]) if (strictlyValid(action) !== null) expect(strictlyValid(action), JSON.stringify(action)).toBe(true);
+    const invalid = (fixture.invalid as Record<string, unknown>[]).filter(action => strictlyValid(action) !== null);
+    expect(invalid.length).toBeGreaterThan(8);
+    for (const action of invalid) expect(strictlyValid(action), JSON.stringify(action)).toBe(false);
   });
 });
 

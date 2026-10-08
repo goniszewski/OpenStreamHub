@@ -32,8 +32,8 @@ export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; 
 
   return <section className="panel obs-settings-panel" aria-labelledby="obs-settings-title">
     <h2 id="obs-settings-title">OBS Studio</h2>
-    <label className="setting-toggle"><input type="checkbox" checked={enabled} disabled={off} aria-describedby="obs-settings-applies" onChange={event => { void store?.setEnabled(event.target.checked); }} />Let OBS actions (scenes, virtual camera, replay buffer) connect to OBS on this Mac</label>
-    <p className="fine-print">Uses the WebSocket server built into OBS 28 and later (Tools › WebSocket Server Settings). Each action opens one short connection to {obsEndpoint(state.settings)}, sends its request (switch the program scene, toggle the virtual camera, save the replay buffer) and closes it. Only this Mac is allowed; the address is a setting of this app and never part of a profile. Off by default.</p>
+    <label className="setting-toggle"><input type="checkbox" checked={enabled} disabled={off} aria-describedby="obs-settings-applies" onChange={event => { void store?.setEnabled(event.target.checked); }} />Let OBS actions connect to OBS on this Mac</label>
+    <p className="fine-print">Uses the WebSocket server built into OBS 28 and later (Tools › WebSocket Server Settings). Each action opens one short connection to {obsEndpoint(state.settings)}, sends its requests (for example switch the scene, toggle the virtual camera, hide a source) and closes it. Only this Mac is allowed; the address is a setting of this app and never part of a profile. Off by default.</p>
     <div className="obs-endpoint-fields">
       <label htmlFor="obs-host">Host</label>
       <SelectField id="obs-host" value={host} disabled={off} onChange={event => { void store?.setHost(event.target.value as ObsHost); }}>

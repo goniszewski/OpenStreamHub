@@ -290,11 +290,15 @@ fn url_origin(url: &str) -> String {
     format!("{scheme}://{host}")
 }
 
+/// How many characters of an OBS name the app puts in a default keypad tile
+/// label (`clipLabel` in `ui-model.ts`).
+const OBS_LABEL_PREFIX_CHARS: usize = 24;
+
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels and `obs_scene` scene names
-/// become `<N chars>`, and `open_url` URLs keep only their origin. Long
-/// enough raw values are also queued for the text scrub; shorter scene names
+/// activity): `text` snippets, `timer` labels and OBS scene, source and
+/// filter names become `<N chars>`, and `open_url` URLs keep only their origin. Long
+/// enough raw values are also queued for the text scrub; shorter OBS names
 /// go to `short_scenes` for the whole-word scrub of profile and client text.
 fn redact_action_payloads(
     value: &mut Value,
@@ -303,27 +307,37 @@ fn redact_action_payloads(
 ) {
     match value {
         Value::Object(map) => {
-            let field = match map.get("type").and_then(Value::as_str) {
-                Some("text") => Some("text"),
-                Some("open_url") => Some("url"),
-                Some("timer") => Some("label"),
-                Some("obs_scene") => Some("scene"),
-                _ => None,
+            let fields: &[&str] = match map.get("type").and_then(Value::as_str) {
+                Some("text") => &["text"],
+                Some("open_url") => &["url"],
+                Some("timer") => &["label"],
+                Some("obs_scene") => &["scene"],
+                Some("obs_filter") => &["source", "filter"],
+                Some("obs_source_visibility") => &["scene", "source"],
+                _ => &[],
             };
-            if let Some(field) = field
-                && let Some(Value::String(raw)) = map.get_mut(field)
-            {
-                let redacted = if field == "url" {
-                    url_origin(raw)
-                } else {
-                    format!("<{} chars>", raw.chars().count())
-                };
-                if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
-                    replacements.push((raw.clone(), redacted.clone()));
-                } else if field == "scene" && !raw.is_empty() {
-                    short_scenes.push((raw.clone(), redacted.clone()));
+            for &field in fields {
+                if let Some(Value::String(raw)) = map.get_mut(field) {
+                    let redacted = if field == "url" {
+                        url_origin(raw)
+                    } else {
+                        format!("<{} chars>", raw.chars().count())
+                    };
+                    if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS && *raw != redacted {
+                        replacements.push((raw.clone(), redacted.clone()));
+                    } else if matches!(field, "scene" | "source" | "filter") && !raw.is_empty() {
+                        short_scenes.push((raw.clone(), redacted.clone()));
+                    }
+                    // The app's default tile label shows the first 24 characters of
+                    // an OBS name, so that prefix must not survive in a label.
+                    if matches!(field, "scene" | "source" | "filter")
+                        && raw.chars().count() > OBS_LABEL_PREFIX_CHARS
+                    {
+                        let prefix: String = raw.chars().take(OBS_LABEL_PREFIX_CHARS).collect();
+                        replacements.push((prefix, "<name…>".into()));
+                    }
+                    *raw = redacted;
                 }
-                *raw = redacted;
             }
             for (key, item) in map.iter_mut() {
                 if !is_data_key(key) {
@@ -1591,6 +1605,83 @@ mod tests {
         assert_eq!(profile[1]["action"]["scene"], "<3 chars>");
         assert_eq!(profile[2]["action"]["actions"][1]["scene"], "<19 chars>");
         assert!(!bundle.value.to_string().contains("Interview guest"));
+    }
+
+    #[test]
+    fn obs_source_and_filter_names_are_redacted_and_scrubbed_like_scene_names() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "obs_filter", "source": "Cam", "filter": "Blur", "op": "toggle" } },
+                { "action": { "type": "obs_source_visibility", "scene": "Live", "source": "Face cam in the corner", "op": "off" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "obs_studio_mode", "op": "on" },
+                    { "type": "obs_filter", "source": "Interview guest cam", "filter": "Chroma key", "op": "on" },
+                ] } },
+            ] })),
+            client: ClientContext {
+                activity: vec![
+                    activity_text("OBS filter Blur on Cam failed: OBS at 127.0.0.1:4455: code 600"),
+                    activity_text("Hid Face cam in the corner in scene Live."),
+                    activity_text("Lively Blurry Camera."),
+                    activity_text("OBS studio mode on (op on)."),
+                ],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let texts: Vec<&str> = bundle.value["runtime"]["client"]["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                "OBS filter <4 chars> on <3 chars> failed: OBS at 127.0.0.1:4455: code 600",
+                "Hid <22 chars> in scene <4 chars>.",
+                // Short names inside longer words are left alone.
+                "Lively Blurry Camera.",
+                "OBS studio mode on (op on).",
+            ]
+        );
+        let profile = &bundle.value["profile"]["bindings"];
+        assert_eq!(profile[0]["action"]["source"], "<3 chars>");
+        assert_eq!(profile[0]["action"]["filter"], "<4 chars>");
+        assert_eq!(profile[0]["action"]["op"], "toggle");
+        assert_eq!(profile[1]["action"]["scene"], "<4 chars>");
+        assert_eq!(profile[1]["action"]["source"], "<22 chars>");
+        let steps = &profile[2]["action"]["actions"];
+        assert_eq!(steps[0], json!({"type":"obs_studio_mode","op":"on"}));
+        assert_eq!(steps[1]["source"], "<19 chars>");
+        assert_eq!(steps[1]["filter"], "<10 chars>");
+        let text = bundle.value.to_string();
+        for name in ["Face cam", "Interview guest", "Chroma key"] {
+            assert!(!text.contains(name), "{name} survived: {text}");
+        }
+    }
+
+    #[test]
+    fn the_clipped_prefix_of_a_long_obs_name_does_not_survive_in_a_tile_label() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "label": "OBS source “Interview guest camera l…”: Toggle",
+                  "action": { "type": "obs_source_visibility", "scene": "Live",
+                              "source": "Interview guest camera left", "op": "toggle" } },
+            ] })),
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let text = bundle.value.to_string();
+        assert!(!text.contains("Interview guest"), "{text}");
+        assert_eq!(
+            bundle.value["profile"]["bindings"][0]["label"],
+            "OBS source “<name…>…”: Toggle"
+        );
     }
 
     #[test]

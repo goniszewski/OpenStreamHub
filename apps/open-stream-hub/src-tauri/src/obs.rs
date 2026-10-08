@@ -1,4 +1,4 @@
-//! The OBS WebSocket setting for the OBS actions (`obs_scene`, `obs_virtual_camera`, `obs_replay_buffer`).
+//! The OBS WebSocket setting for the OBS actions (every `obs_*` action type).
 //!
 //! The endpoint (host and port, loopback only) and an on/off switch live in
 //! `<app data>/obs-settings.json`, beside the profiles and never inside one,

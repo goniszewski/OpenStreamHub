@@ -206,6 +206,21 @@ pub enum ObsOutputOp {
     Stop,
 }
 
+/// What an OBS action does to something that is either on or off (studio
+/// mode, a filter, a source's visibility). `toggle` reads the current state
+/// from OBS first; `on` and `off` do not depend on it, which makes them safe
+/// inside a `multi_action`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsSwitchOp {
+    /// Turn it on when it is off and off when it is on.
+    Toggle,
+    /// Turn it on.
+    On,
+    /// Turn it off.
+    Off,
+}
+
 /// What an `obs_replay_buffer` action does: the output operations plus saving
 /// the buffer to a file.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -406,6 +421,32 @@ pub enum Action {
         /// What to do with the replay buffer.
         op: ObsReplayBufferOp,
     },
+    /// Turn OBS studio mode on or off. Needs an OBS endpoint like `obs_scene`.
+    ObsStudioMode {
+        /// What to do with studio mode.
+        op: ObsSwitchOp,
+    },
+    /// Trigger the studio-mode transition (preview to program). OBS refuses
+    /// it when studio mode is off. Needs an OBS endpoint like `obs_scene`.
+    ObsTransition,
+    /// Turn a source filter on or off. Both names are matched exactly by OBS.
+    ObsFilter {
+        /// Exact name of the source (or scene) that owns the filter.
+        source: String,
+        /// Exact name of the filter on that source.
+        filter: String,
+        /// What to do with the filter.
+        op: ObsSwitchOp,
+    },
+    /// Show or hide a source inside a scene (a group name works as a scene).
+    ObsSourceVisibility {
+        /// Exact name of the scene (or group) that holds the source.
+        scene: String,
+        /// Exact name of the source in that scene.
+        source: String,
+        /// What to do with the source's visibility.
+        op: ObsSwitchOp,
+    },
 }
 
 /// Deserializes a present field as `Some`, so an explicit `null` is rejected
@@ -416,6 +457,27 @@ where
     T: Deserialize<'de>,
 {
     T::deserialize(deserializer).map(Some)
+}
+
+/// Checks an OBS name (scene, source or filter): the keypad label rules plus
+/// the invisible-character rule of text snippets, so the name OBS receives is
+/// exactly the one reviewed.
+fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
+    if name.trim().is_empty()
+        || name.len() > Action::MAX_OBS_NAME_BYTES
+        || name.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "{action} {field} must be nonempty, free of control characters, and at most {} bytes",
+            Action::MAX_OBS_NAME_BYTES
+        ));
+    }
+    if name.chars().any(is_invisible_text_character) {
+        return Err(format!(
+            "{action} {field} must not contain invisible format or line/paragraph separator characters"
+        ));
+    }
+    Ok(())
 }
 
 /// Checks a `timer` label: nonempty, no leading or trailing whitespace, at
@@ -608,6 +670,20 @@ impl<'de> Deserialize<'de> for Action {
             ObsReplayBuffer {
                 op: ObsReplayBufferOp,
             },
+            ObsStudioMode {
+                op: ObsSwitchOp,
+            },
+            ObsTransition {},
+            ObsFilter {
+                source: String,
+                filter: String,
+                op: ObsSwitchOp,
+            },
+            ObsSourceVisibility {
+                scene: String,
+                source: String,
+                op: ObsSwitchOp,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -634,6 +710,12 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsScene { scene } => Self::ObsScene { scene },
             Shape::ObsVirtualCamera { op } => Self::ObsVirtualCamera { op },
             Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
+            Shape::ObsStudioMode { op } => Self::ObsStudioMode { op },
+            Shape::ObsTransition {} => Self::ObsTransition,
+            Shape::ObsFilter { source, filter, op } => Self::ObsFilter { source, filter, op },
+            Shape::ObsSourceVisibility { scene, source, op } => {
+                Self::ObsSourceVisibility { scene, source, op }
+            }
         })
     }
 }
@@ -653,8 +735,10 @@ impl Action {
     pub const MAX_TIMER_SECONDS: u32 = 86_400;
     /// Maximum `timer` label length in UTF-8 bytes.
     pub const MAX_TIMER_LABEL_BYTES: usize = 64;
+    /// Maximum length in UTF-8 bytes of any OBS name (scene, source, filter).
+    pub const MAX_OBS_NAME_BYTES: usize = 128;
     /// Maximum `obs_scene` scene name length in UTF-8 bytes.
-    pub const MAX_OBS_SCENE_BYTES: usize = 128;
+    pub const MAX_OBS_SCENE_BYTES: usize = Self::MAX_OBS_NAME_BYTES;
 
     /// The JSON `type` tag of this action, for diagnostics.
     pub fn type_name(&self) -> &'static str {
@@ -675,16 +759,23 @@ impl Action {
             Self::ObsScene { .. } => "obs_scene",
             Self::ObsVirtualCamera { .. } => "obs_virtual_camera",
             Self::ObsReplayBuffer { .. } => "obs_replay_buffer",
+            Self::ObsStudioMode { .. } => "obs_studio_mode",
+            Self::ObsTransition => "obs_transition",
+            Self::ObsFilter { .. } => "obs_filter",
+            Self::ObsSourceVisibility { .. } => "obs_source_visibility",
         }
     }
 
-    /// True for an OBS action (`obs_scene`, `obs_virtual_camera`,
-    /// `obs_replay_buffer`) or a `multi_action` with an OBS step.
+    /// True for an OBS action (`obs_*`) or a `multi_action` with an OBS step.
     pub fn uses_obs(&self) -> bool {
         match self {
             Self::ObsScene { .. }
             | Self::ObsVirtualCamera { .. }
-            | Self::ObsReplayBuffer { .. } => true,
+            | Self::ObsReplayBuffer { .. }
+            | Self::ObsStudioMode { .. }
+            | Self::ObsTransition
+            | Self::ObsFilter { .. }
+            | Self::ObsSourceVisibility { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -735,25 +826,14 @@ impl Action {
                 Ok(())
             }
             Self::OpenUrl { url } => validate_url(url),
-            Self::ObsScene { scene } => {
-                // The keypad label rules plus the invisible-character rule of
-                // text snippets: the name reaches OBS exactly as reviewed.
-                if scene.trim().is_empty()
-                    || scene.len() > Self::MAX_OBS_SCENE_BYTES
-                    || scene.chars().any(char::is_control)
-                {
-                    return Err(format!(
-                        "obs_scene scene must be nonempty, free of control characters, and at most {} bytes",
-                        Self::MAX_OBS_SCENE_BYTES
-                    ));
-                }
-                if scene.chars().any(is_invisible_text_character) {
-                    return Err(
-                        "obs_scene scene must not contain invisible format or line/paragraph separator characters"
-                            .into(),
-                    );
-                }
-                Ok(())
+            Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
+            Self::ObsFilter { source, filter, .. } => {
+                validate_obs_name("obs_filter", "source", source)?;
+                validate_obs_name("obs_filter", "filter", filter)
+            }
+            Self::ObsSourceVisibility { scene, source, .. } => {
+                validate_obs_name("obs_source_visibility", "scene", scene)?;
+                validate_obs_name("obs_source_visibility", "source", source)
             }
             Self::Text { text, .. } => {
                 if text.is_empty() || text.len() > Self::MAX_TEXT_BYTES {
@@ -830,7 +910,9 @@ impl Action {
             | Self::System { .. }
             | Self::Profile { .. }
             | Self::ObsVirtualCamera { .. }
-            | Self::ObsReplayBuffer { .. } => Ok(()),
+            | Self::ObsReplayBuffer { .. }
+            | Self::ObsStudioMode { .. }
+            | Self::ObsTransition => Ok(()),
         }
     }
 
@@ -1723,6 +1805,94 @@ mod tests {
         };
         multi.validate_executable().unwrap();
         assert!(multi.uses_obs());
+    }
+
+    #[test]
+    fn obs_source_actions_have_a_strict_json_shape_and_name_rules() {
+        for json in [
+            r#"{"type":"obs_studio_mode","op":"toggle"}"#,
+            r#"{"type":"obs_studio_mode","op":"on"}"#,
+            r#"{"type":"obs_studio_mode","op":"off"}"#,
+            r#"{"type":"obs_transition"}"#,
+            r#"{"type":"obs_filter","source":"Webcam","filter":"Color Correction","op":"toggle"}"#,
+            r#"{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"off"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs(), "{json}");
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        assert_eq!(Action::ObsTransition.type_name(), "obs_transition");
+        for json in [
+            r#"{"type":"obs_studio_mode"}"#,
+            r#"{"type":"obs_studio_mode","op":"start"}"#,
+            r#"{"type":"obs_studio_mode","op":"Toggle"}"#,
+            r#"{"type":"obs_transition","op":"toggle"}"#,
+            r#"{"type":"obs_filter","source":"Webcam","op":"on"}"#,
+            r#"{"type":"obs_filter","filter":"Color","op":"on"}"#,
+            r#"{"type":"obs_filter","source":"Webcam","filter":"Color","op":"on","endpoint":"127.0.0.1:4455"}"#,
+            r#"{"type":"obs_source_visibility","scene":"Live","op":"on"}"#,
+            r#"{"type":"obs_source_visibility","scene":"Live","source":null,"op":"on"}"#,
+            r#"{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"save"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        // Every name follows the scene-name rules, and the error says which field.
+        let long = "x".repeat(Action::MAX_OBS_NAME_BYTES + 1);
+        for bad in ["", "   ", "line\nbreak", "zero\u{200B}width", long.as_str()] {
+            for action in [
+                Action::ObsFilter {
+                    source: bad.into(),
+                    filter: "Color".into(),
+                    op: ObsSwitchOp::On,
+                },
+                Action::ObsFilter {
+                    source: "Webcam".into(),
+                    filter: bad.into(),
+                    op: ObsSwitchOp::On,
+                },
+                Action::ObsSourceVisibility {
+                    scene: bad.into(),
+                    source: "Camera".into(),
+                    op: ObsSwitchOp::On,
+                },
+                Action::ObsSourceVisibility {
+                    scene: "Live".into(),
+                    source: bad.into(),
+                    op: ObsSwitchOp::On,
+                },
+            ] {
+                assert!(action.validate().is_err(), "{action:?}");
+            }
+        }
+        let error = Action::ObsFilter {
+            source: "Webcam".into(),
+            filter: String::new(),
+            op: ObsSwitchOp::On,
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.starts_with("obs_filter filter must be nonempty"),
+            "{error}"
+        );
+        // They bind to discrete controls and as multi_action steps, like obs_scene.
+        let multi = Action::MultiAction {
+            actions: vec![
+                Action::ObsStudioMode {
+                    op: ObsSwitchOp::On,
+                },
+                Action::ObsTransition,
+            ],
+        };
+        multi.validate_executable().unwrap();
+        assert!(multi.uses_obs());
+        let mut profile = sample();
+        profile.bindings[0].action = Action::ObsTransition;
+        profile.validate().unwrap();
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        assert!(profile.validate().is_err());
     }
 
     #[test]

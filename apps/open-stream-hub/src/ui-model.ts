@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { keyLabel, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -66,6 +66,9 @@ export function dialSwitchLabel(change: DialFunctionSwitch): string {
   return `${change.from_function} → ${change.to_function} (${change.index + 1}/${change.count})`;
 }
 
+// By code points (never splits an emoji). The diagnostics scrub removes this same 24-character prefix (OBS_LABEL_PREFIX_CHARS).
+const clipLabel = (name: string) => { const characters = Array.from(name); return characters.length > 24 ? `${characters.slice(0, 24).join('')}…` : name; };
+
 export function actionLabel(action: Action | BindingAction | null): string {
   if (!action) return 'Unbound';
   switch (action.type) {
@@ -87,7 +90,11 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
-    case 'obs_scene': return `OBS scene “${action.scene.length > 24 ? `${action.scene.slice(0, 24)}…` : action.scene}”`;
+    case 'obs_studio_mode': return `OBS studio mode: ${obsSwitchOpLabels[action.op] ?? action.op}`;
+    case 'obs_transition': return 'OBS studio transition';
+    case 'obs_filter': return `OBS filter “${clipLabel(action.filter)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
+    case 'obs_source_visibility': return `OBS source “${clipLabel(action.source)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
+    case 'obs_scene': return `OBS scene “${clipLabel(action.scene)}”`;
   }
 }
 

@@ -199,7 +199,17 @@ export class DeviceFeed {
       if (source.kind === 'live') this.feedByPath.set(source.path_hex, feedId);
       // A status event may already have arrived; never overwrite it.
       if (!this.state.feeds[feedId]) this.set({ feeds: { ...this.state.feeds, [feedId]: { feedId, state: 'running', source: source.kind, module: null } } });
-    } catch (reason) { if (!auto || present()) this.set({ error: errorMessage(reason) }); }
+    } catch (reason) {
+      // A reloaded window does not know the backend's feed survived it. Adopt it: its events keep arriving.
+      const feedId = source.kind === 'live' ? /^feed (live:\S+) is already running$/.exec(errorMessage(reason))?.[1] : undefined;
+      if (source.kind === 'live' && feedId === `live:${source.path_hex}` && present()) {
+        this.droppedFeeds.delete(feedId);
+        this.feedByPath.set(source.path_hex, feedId);
+        if (!this.state.feeds[feedId]) this.set({ feeds: { ...this.state.feeds, [feedId]: { feedId, state: 'running', source: 'live', module: null } } });
+        return;
+      }
+      if (!auto || present()) this.set({ error: errorMessage(reason) });
+    }
   }
 
   async stop(feedId: string) {

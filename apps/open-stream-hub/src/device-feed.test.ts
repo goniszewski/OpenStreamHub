@@ -67,6 +67,16 @@ describe('DeviceFeed', () => {
     expect(t.feed.getState().error).toBe('already running');
     expect(Object.keys(t.feed.getState().feeds)).toEqual([]);
   });
+  it('adopts a live feed that survived a window reload instead of reporting an error', async () => {
+    const t = setup(); t.failures.start_feed = 'feed live:aabbccdd is already running';
+    t.feed.connect(); await tick(); await tick();
+    expect(t.feed.getState().error).toBeNull();
+    expect(t.feed.getState().feeds['live:aabbccdd']).toMatchObject({ state: 'running', source: 'live' });
+    const other = setup(); other.failures.start_feed = 'feed live:ffff is already running';
+    other.feed.connect(); await tick(); await tick();
+    expect(other.feed.getState().error).toBe('feed live:ffff is already running');
+    expect(other.feed.getState().feeds['live:ffff']).toBeUndefined();
+  });
   it('unlistens on dispose, even before listen resolves', async () => {
     const t = setup(); t.feed.connect(); await tick();
     t.feed.dispose();

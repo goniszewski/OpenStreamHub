@@ -22,9 +22,13 @@ export const resetLive = (): LiveState => emptyLive;
 const rotationSign: Partial<Record<Gesture, 1 | -1>> = { clockwise: 1, right: 1, counter_clockwise: -1, left: -1 };
 const emptyModule: ModuleLive = { faders: {}, keysDown: [], angles: {}, pulses: {}, lastEventAt: 0 };
 
+// A feed payload, or a session's input record that stands for `steps` merged turns or roller steps (absent means one).
+export type LiveInputPayload = DeviceInputPayload & { steps?: number };
+const stepsOf = (payload: LiveInputPayload) => Number.isInteger(payload.steps) && payload.steps! > 0 ? payload.steps! : 1;
+
 export const livePercent = (raw: number, maximum: number) => Math.min(faderMaximum, Math.max(0, Math.round(raw / maximum * faderMaximum)));
 
-function wellFormed(payload: unknown): payload is DeviceInputPayload {
+export function wellFormed(payload: unknown): payload is DeviceInputPayload {
   const p = payload as DeviceInputPayload | null;
   const event = p?.event;
   return typeof p?.module === 'string' && p.module in controlCounts && typeof event === 'object' && event !== null &&
@@ -33,6 +37,7 @@ function wellFormed(payload: unknown): payload is DeviceInputPayload {
 
 export function reduceLive(state: LiveState, payload: unknown): LiveState {
   if (!wellFormed(payload)) return state;
+  const steps = stepsOf(payload);
   const { module, event } = payload;
   const { control, gesture } = event;
   if (control < 0 || control >= controlCounts[module]) return state;
@@ -47,9 +52,25 @@ export function reduceLive(state: LiveState, payload: unknown): LiveState {
   } else if (gesture === 'released') {
     next.keysDown = current.keysDown.filter(key => key !== control);
   } else if (gesture === 'up' || gesture === 'down') {
-    next.pulses = { ...current.pulses, [control]: { direction: gesture, tick: (current.pulses[control]?.tick ?? 0) + 1 } };
+    next.pulses = { ...current.pulses, [control]: { direction: gesture, tick: (current.pulses[control]?.tick ?? 0) + steps } };
   } else if (rotationSign[gesture]) {
-    next.angles = { ...current.angles, [control]: (current.angles[control] ?? 0) + rotationSign[gesture]! * rotationStep };
+    next.angles = { ...current.angles, [control]: (current.angles[control] ?? 0) + rotationSign[gesture]! * rotationStep * steps };
   } else if (gesture !== 'short_press' && gesture !== 'long_press') return state;
   return { ...state, [module]: next };
+}
+
+// The feed payload one service `event` record stands for, on the module the session runs on (the record names no module), or
+// null. Only well-formed `event` records count. short_press and long_press are host gestures the service derives from a press
+// and release it already reported, so they add nothing to the preview and are skipped. Live coalescing in the service merges
+// consecutive turns and roller steps of one control into one record (`coalesced_event_count`, unbounded while its action queue
+// is full); the record keeps that count as `steps`, so the reducer moves the needle or pulse by all of them in one update.
+export function sessionInput(record: unknown, module: ModuleId, serialNumber: string | null, feedId: string): LiveInputPayload | null {
+  const r = record as { type?: unknown; event?: Partial<DeviceInputPayload['event']> | null; coalesced_event_count?: unknown } | null;
+  if (typeof r !== 'object' || r === null || r.type !== 'event' || typeof r.event !== 'object' || r.event === null) return null;
+  const { control, gesture, timestamp_micros, value } = r.event;
+  const payload: LiveInputPayload = { feed_id: feedId, module, serial_number: serialNumber, event: { control, gesture, timestamp_micros, ...(value !== undefined ? { value } : {}) } as DeviceInputPayload['event'] };
+  if (!wellFormed(payload) || payload.event.gesture === 'short_press' || payload.event.gesture === 'long_press') return null;
+  const merged = r.coalesced_event_count;
+  const stepped = rotationSign[payload.event.gesture] || payload.event.gesture === 'up' || payload.event.gesture === 'down';
+  return stepped && typeof merged === 'number' && Number.isInteger(merged) && merged > 1 ? { ...payload, steps: merged } : payload;
 }

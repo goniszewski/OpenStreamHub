@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { confirmCopy, countdownSeconds, dialogCopy, displayRunNote, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { confirmCopy, countdownSeconds, dialogCopy, displayRunNote, hasKeypadFolders, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, ServicePanel, settlePendingConfirm } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
 import { emptyCounters, ServiceRunner, serviceIdFor } from './service-runner';
 import { DeviceFeed } from './device-feed';
@@ -66,7 +66,11 @@ describe('ServicePanel markup', () => {
     const markup = render({ feed, runner });
     expect(markup).toContain('Actions are running on this Mac');
     expect(markup).toContain('service-banner execute');
-    expect(markup).toContain('Live preview paused while actions run.');
+    expect(markup).toContain(runPreviewNote);
+    expect(markup).not.toContain('paused while actions run');
+    // A run being stopped reads nothing more, so the note goes away.
+    setRun(runner, { state: 'stopping' });
+    expect(render({ feed, runner })).not.toContain(runPreviewNote);
     expect(markup).toContain('Profile changed since start. Restart to apply.');
     expect(markup).toContain('(unsaved draft)');
     expect(markup).toContain('>Stop<');

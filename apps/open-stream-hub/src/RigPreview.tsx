@@ -149,7 +149,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
     else if (source.startsWith('live:')) void feed.startLive(source.slice(5));
   };
   const stop = () => Object.values(feedState.feeds).filter(entry => entry.state === 'running').forEach(entry => void feed.stop(entry.feedId));
-  const status = running ? 'Receiving live input (read-only).' : feedState.error ?? (enabled ? 'Live input is off.' : 'Live input needs the desktop app. Launch it to read hardware.');
+  const status = running ? 'Receiving live input (read-only).' : feedState.error ?? (feedState.sessionModules.length ? 'Showing input from the running profile (read-only).' : enabled ? 'Live input is off.' : 'Live input needs the desktop app. Launch it to read hardware.');
   return <div className="live-controls">
     <label className="sr-only" htmlFor="rig-live-source">Live input source</label>
     <select id="rig-live-source" value={source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>

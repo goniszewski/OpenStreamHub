@@ -1,7 +1,8 @@
 import type { DeviceInputPayload, DeviceInventoryPayload, DeviceStatusPayload, FeedSource, LiveDevice, ReplayKind } from './contracts';
 import { emptyLive, reduceLive, resetLive } from './live-state';
-import type { LiveState } from './live-state';
+import type { LiveInputPayload, LiveState } from './live-state';
 import { errorMessage } from './ui-model';
+import type { ModuleId } from './ui-model';
 import type { Invoke } from './profile-session';
 
 export type Listen = (event: string, handler: (event: { payload: unknown }) => void) => Promise<() => void>;
@@ -16,11 +17,13 @@ export interface FeedStoreState {
   autoDetect: boolean;
   feeds: Record<string, FeedStatus>;
   live: LiveState;
+  // Modules whose live state comes from a running service session's own input records, not from a feed.
+  sessionModules: ModuleId[];
   error: string | null;
 }
 
 export const isRunning = (state: FeedStoreState) => Object.values(state.feeds).some(feed => feed.state === 'running');
-export const idleFeedState: FeedStoreState = { desktop: false, devices: [], inventoryLoaded: false, autoDetect: true, feeds: {}, live: emptyLive, error: null };
+export const idleFeedState: FeedStoreState = { desktop: false, devices: [], inventoryLoaded: false, autoDetect: true, feeds: {}, live: emptyLive, sessionModules: [], error: null };
 
 export const autoDetectStorageKey = 'open-stream-hub.auto-detect';
 export const readAutoDetect = (storage: Pick<Storage, 'getItem'>): boolean => {
@@ -103,13 +106,32 @@ export class DeviceFeed {
     });
   }
 
+  // A reset of the feeds' live state, keeping what running sessions report for their modules.
+  private clearedLive(): LiveState {
+    const live = this.pendingLive ?? this.state.live;
+    const kept = this.state.sessionModules.filter(module => live[module]);
+    return kept.length ? Object.fromEntries(kept.map(module => [module, live[module]])) : resetLive();
+  }
+
+  // Input from a running service session's `event` records, reduced exactly like feed input. Read-only like the feed.
+  sessionInput(payload: LiveInputPayload) { this.onInput(payload); }
+
+  // The modules running sessions now drive. Every module in `reset` starts over, so a session that starts or ends never
+  // leaves a key shown as pressed.
+  setSessionModules(modules: ModuleId[], reset: ModuleId[]) {
+    const live = { ...(this.pendingLive ?? this.state.live) };
+    reset.forEach(module => { delete live[module]; });
+    this.pendingLive = live;
+    this.set({ sessionModules: modules });
+  }
+
   private onStatus(payload: DeviceStatusPayload) {
     if (!payload || typeof payload.feed_id !== 'string') return;
     if (payload.state === 'failed' && this.droppedFeeds.has(payload.feed_id)) return;
     const status: FeedStatus = { feedId: payload.feed_id, state: payload.state, source: payload.source, module: payload.module ?? null, ...(payload.state === 'failed' ? { error: payload.error ?? 'The feed failed.' } : {}) };
     const feeds = { ...this.state.feeds, [payload.feed_id]: status };
     const anyRunning = Object.values(feeds).some(feed => feed.state === 'running');
-    if (!anyRunning) this.pendingLive = resetLive();
+    if (!anyRunning) this.pendingLive = this.clearedLive();
     this.set({ feeds, error: payload.state === 'failed' ? status.error! : this.state.error });
   }
 
@@ -142,7 +164,7 @@ export class DeviceFeed {
       if (error !== null && error === feeds[feedId]?.error) error = null;
       delete feeds[feedId];
     }
-    if (removed.length && !Object.values(feeds).some(feed => feed.state === 'running')) this.pendingLive = resetLive();
+    if (removed.length && !Object.values(feeds).some(feed => feed.state === 'running')) this.pendingLive = this.clearedLive();
     this.set({ devices, inventoryLoaded: true, feeds, error });
     if (this.state.autoDetect) added.forEach(device => void this.startAuto(device.path_hex));
   }
@@ -168,7 +190,7 @@ export class DeviceFeed {
     if (!this.state.desktop) return;
     if (source.kind === 'live' && this.isBlocked(source.path_hex, this.state.devices.find(device => device.path_hex === source.path_hex))) { if (!auto) this.set({ error: 'Stop the running profile on this device before reading live input.' }); return; }
     const present = () => source.kind !== 'live' || this.state.devices.some(device => device.path_hex === source.path_hex);
-    if (!auto || !isRunning(this.state)) this.pendingLive = resetLive();
+    if (!auto || !isRunning(this.state)) this.pendingLive = this.clearedLive();
     this.set(auto ? {} : { error: null });
     try {
       const feedId = await this.invoke<string>('start_feed', { source });

@@ -1,9 +1,11 @@
 import type { HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
 import { timerDuration, urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
-import type { Listen, Scheduler } from './device-feed';
+import type { DeviceFeed, Listen, Scheduler } from './device-feed';
+import { sessionInput } from './live-state';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
+import type { ModuleId } from './ui-model';
 
 export type ActivityKind = 'event' | 'action' | 'action_failed' | 'info' | 'error' | 'raw';
 // `seq` is assigned when the runner appends the entry: it increases by one per entry
@@ -71,6 +73,14 @@ const isProfileReason = (reason: SessionReason | null) => reason === 'profile_sw
 
 // The process a run has now. A session owns only its current process's path, never the path its name came from.
 const processOf = (key: string, run: ServiceRun) => run.session ? run.session.serviceId : run.processId ?? key;
+// The module a run reads input from while its process is starting or running, else undefined. A run that is paused,
+// waiting, reconnecting or stopping, or whose process ended before its session said so, reads nothing, so its keys must not
+// stay shown as pressed.
+const inputModule = (run: ServiceRun | undefined): ModuleId | undefined => {
+  if (!run || !isActiveRun(run) || (run.state !== 'starting' && run.state !== 'running')) return undefined;
+  if (run.session && run.session.phase !== 'running') return undefined;
+  return run.session?.module ?? run.startedOn?.module;
+};
 const ownsProcess = (runs: Record<string, ServiceRun>, id: string) => Object.entries(runs).some(([key, run]) => isActiveRun(run) && processOf(key, run) === id);
 
 // The run a device belongs to: a live session (matched by current process or module and serial) first, then a run
@@ -281,6 +291,9 @@ export class ServiceRunner {
   // Session ids whose pending run replaced a run that had not reported 'stopped' yet: that late 'stopped' belongs to the
   // replaced session and must not end the adopted one.
   private readonly staleStop = new Set<string>();
+  // Where the input of running sessions goes (the live preview), and how many reading processes drive each module now.
+  private liveSink: Pick<DeviceFeed, 'sessionInput' | 'setSessionModules'> | null = null;
+  private liveModules = new Map<ModuleId, number>();
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean,
     private readonly schedule: Scheduler = frame, private readonly now: () => number = Date.now) {
@@ -300,10 +313,33 @@ export class ServiceRunner {
     return device !== undefined && Object.values(runs).some(run => run.session && run.session.phase !== 'stopped' && sessionMatches(run.session, device));
   };
 
+  // The live preview shows the input each running session reads on its own module. The feed never opens a session's
+  // path, so without this the 15-key and dial modules (which report only to a session) would never show input.
+  setLiveSink(sink: Pick<DeviceFeed, 'sessionInput' | 'setSessionModules'> | null) {
+    this.liveSink = sink;
+    this.liveModules = new Map();
+    this.syncLive();
+  }
+
   private set(patch: Partial<ServiceStoreState>) {
     this.state = { ...this.state, ...(this.pending ? { runs: this.pending } : {}), ...patch };
     this.pending = null;
+    this.syncLive();
     this.listeners.forEach(listener => listener());
+  }
+
+  // Tells the sink which modules running sessions drive. Runs are counted by their process, which survives the run moving to
+  // its session's key. Modules of one type share their live state, so a module starts over only when the first run on it
+  // starts reading or the last one stops, never when one of several stops.
+  private syncLive() {
+    if (!this.liveSink) return;
+    const processes = new Map<string, ModuleId>();
+    Object.entries(this.state.runs).forEach(([key, run]) => { const module = inputModule(run); if (module) processes.set(processOf(key, run) ?? key, module); });
+    const next = new Map<ModuleId, number>();
+    processes.forEach(module => next.set(module, (next.get(module) ?? 0) + 1));
+    const changed = [...new Set([...next.keys(), ...this.liveModules.keys()])].filter(module => next.has(module) !== this.liveModules.has(module));
+    this.liveModules = next;
+    if (changed.length) this.liveSink.setSessionModules([...next.keys()], changed);
   }
 
   private runs() { return this.pending ?? this.state.runs; }
@@ -335,6 +371,13 @@ export class ServiceRunner {
     if (!payload || typeof payload.service_id !== 'string') return;
     const id = this.sessionOf.get(payload.service_id) ?? payload.service_id;
     if (!this.runs()[id]) return;
+    const run = this.runs()[id];
+    const module = inputModule(run);
+    // Only input the run's current process read, never a late record of a process it moved on from.
+    if (this.liveSink && module && processOf(id, run) === payload.service_id) {
+      const input = sessionInput(payload.record, module, run.session?.serialNumber ?? run.startedOn?.serialNumber ?? null, payload.service_id);
+      if (input) this.liveSink.sessionInput(input);
+    }
     const at = this.now();
     this.update(id, run => {
       const entry = summarizeRecord(payload.record, at);

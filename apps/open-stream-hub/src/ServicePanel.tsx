@@ -34,6 +34,8 @@ export function runBlocker(input: { desktop: boolean; device: LiveDevice | undef
   return null;
 }
 
+// The feed never reads a path a run owns; the live preview shows that module's input from the run's own records instead.
+export const runPreviewNote = 'The live preview shows the input this run reads from the module (read-only).';
 export const displayRunNote = 'Experimental: this run will send images to the module display. This has never been tested on hardware.';
 
 export const stateLabel = (state: ServiceState | undefined) => state === undefined ? 'Stopped' : state === 'exited' ? 'Stopped' : state[0].toUpperCase() + state.slice(1);
@@ -214,7 +216,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
     {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? ' Actions are paused.' : ''}</span></div></div>}
     {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" ${switchedTo(run.profileSwitchedBy)}.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
-    {active && phase === 'running' && <p className="fine-print" role="status">Live preview paused while actions run.</p>}
+    {active && phase === 'running' && run?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}
     <div className="service-controls">
       <label className="sr-only" htmlFor="service-device">Device to run on</label>

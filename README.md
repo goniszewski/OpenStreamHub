@@ -111,6 +111,7 @@ cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 | [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, explicit macOS actions, and the `masterhub-service` options |
 | [Action catalogue](docs/masterhub-actions.md) | Every action, its limits and permissions, including `profile`, `timer` and `obs_scene` |
 | [Dial functions](docs/masterhub-dial-functions.md) | Short click cycles the dial's functions; long press and rotation run the current one |
+| [Hardware results](docs/masterhub-hardware-results.md) | What was observed on a real unit (8 October 2026), module by module, and what was not |
 | [Display sync](docs/masterhub-display-sync.md) | Experimental key images (run once on an M4315) and dial faces (hardware-unverified) |
 | [macOS smoke checks](docs/masterhub-macos-smoke.md) | Device-free audio and scratch-keystroke checks |
 | [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |

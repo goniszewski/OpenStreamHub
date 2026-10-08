@@ -1,0 +1,53 @@
+# Hardware results
+
+What has actually been observed on real MasterHUB hardware, and what has not. Everything else in these docs is derived from the Windows software and tested against fakes. Only the results below come from a device.
+
+**Rig and date.** 8 October 2026. Apple Silicon Mac running macOS, with the MasterHUB unit connected directly to a Mac port. The unit's modules appear behind an internal USB hub chain. Five modules were present: M0064 base, M003K knobs, M4315 keys, M032LE rollers and M131E dial. The M005S faders were not connected. All captures used `masterhub-diag record` and `replay` (read-only unless noted). The raw logs stay on the test machine.
+
+| Module | Product ID | Result |
+| --- | --- | --- |
+| M4315 keys | 510 | Input and display verified; see below and [display sync](masterhub-display-sync.md#hardware-results-m4315-8-october-2026). |
+| M003K knobs | 514 | Rotation and press verified in default mode. |
+| M0064 base | 502 | Sends a constant heartbeat only. No input. |
+| M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
+| M131E dial | 518 | Not tested. |
+| M005S faders | n/a | Not connected. |
+
+## M4315 keys
+
+- **Default mode.** A passive 30 s capture recorded 0 reports. The keys report only after software mode (`--software-mode`, which writes `03 3a 01` and restores hardware mode on exit).
+- **Software mode.** A 30 s capture recorded 50 reports. All 15 key indices (0 to 14) decode as press and release with the existing decoder. Each report starts `01 34 11 00 02 0f`, followed by one state byte per key.
+- **HID output report.** ID 2 is 320 bytes long (from the real descriptor). Offline tests had used a 65-byte stand-in.
+- **Display and actions.** Key images, folder navigation and `--execute` actions are in the [display sync results](masterhub-display-sync.md#hardware-results-m4315-8-october-2026).
+- **Not established.** The physical position of every key index. Only keys 0 to 2 were seen to agree between input and display.
+
+## M003K knobs
+
+- **Default mode works.** No software mode is needed. A passive capture recorded 32 reports in 40 s, and a separate counter-clockwise capture recorded 23 reports in 30 s. Both ended normally.
+- **Physical mapping** (as the user turned them): wire index **2 = top** knob, **0 = left**, **1 = right**.
+- **Rotation.** Reports start `01 2a 05 00 00 03`, then one byte per knob at byte 6 plus the wire index: `01` clockwise, `00` counter-clockwise, `ff` idle for the others. This confirms the documented values.
+- **Press and release.** Each knob press and release decodes as its own event.
+- **Counts.** About 8 clicks per knob and direction gave 7 to 9 reports each. One report per click is plausible but not proven, because the clicks were counted by hand.
+- **Re-enumeration.** Disconnecting and reconnecting the module gave it a new HID path (the user reseated it). A capture that was open on the old path failed with `hid_read_timeout: error waiting for more data` and recorded nothing. A service run that outlives a replug therefore needs a fresh path. This matches the session manager's reconnect design but was not run against it.
+
+## M0064 base
+
+- A passive 60 s capture recorded 117 reports, all byte-identical: `01 2b 01 00 01` followed by zeros, one every 512 ms. The payload did not change while both rollers and all three knobs were used, so it is a heartbeat or status report and not an input stream. Its meaning is unknown.
+- The base does not relay roller or knob events.
+- The unit's lighting (the base and the knobs module) changed colors on its own in hardware mode. The host sent no lighting commands.
+
+## M032LE rollers (unresolved)
+
+- Four passive captures (45 s, 40 s, 40 s and 60 s) recorded 0 reports each, while the user scrolled both rollers up and down (about 5 to 10 clicks each way). Every capture ended normally with no transport error, and the module's path never changed.
+- The roller module has the same descriptor shape and report IDs as the working knobs module, and the docs expect no software mode. The expected `00` Up, `01` Down and `ff` idle values were therefore **not observed**.
+- The base does not carry roller events (see above).
+- Possible causes, none tested: the rollers need an init or mode write; the module is half-seated or faulty; they report only in a mode not found yet. Do not guess at writes to this module. Next step if it is revisited: reseat the module, capture again, then compare against the official software on Windows.
+
+## Not tested
+
+- The M131E dial (input needs software mode; display and backlight are writes).
+- The M005S faders.
+- Lighting writes of any kind.
+- The desktop app against a real device.
+- `shortcut`, `launch_app` and every `obs_*` action.
+- Reconnect, sleep and wake behavior.

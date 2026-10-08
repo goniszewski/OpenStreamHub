@@ -10,7 +10,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M003K knobs | 514 | Rotation and press verified in default mode. |
 | M0064 base | 502 | Sends a constant heartbeat only. No input. |
 | M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
-| M131E dial | 518 | Input, a raw 240x240 image upload, the four generated faces, backlight and color writes verified in software mode. |
+| M131E dial | 518 | Input, a raw 240x240 image upload, the four generated faces, backlight and color writes verified in software mode. App-controlled dry-run display, live preview and normal Stop verified below. |
 | M005S faders | n/a | Not connected. |
 
 ## M4315 keys
@@ -61,7 +61,17 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 - **Backlight.** `dial backlight N` (report `03 44` plus one byte, 0 to 100) takes effect in software mode. Alternating 100 and 10 twice, 10 was visibly dimmer both times, a darker gray that was still easy to see. A read-back with `dial info` after setting 10 returned `backlight: 10`, and after the earlier run it returned `100`, so the setting reads back correctly. Values between and below 10 were not tried.
 - **Firmware query.** `dial info` returned firmware raw `26a0d80a`, text `01.00.04.00` (in software mode). The first `dial info` of the earlier run, made in hardware mode, failed with `Dial feature reply must contain a header and fit 32 bytes`. That was seen once, so whether the query only works in software mode is unconfirmed. It also means the dial's own backlight level before the test was never read.
 - **Restore.** After the lighting runs, `dial mode hardware` brought the animation back, and the user judged the dial's lighting normal.
-- **Not tested.** Whether lighting commands work in hardware mode (the doc asks for this); backlight values other than 10, 20 and 100; flicker during the uploads (only the final state was inspected); rotations other than 0; whether `volume:` was the whole function label or was clipped; minute rollover of the clocks; firmware queries; and the dial function cycling in the service.
+- **Not tested.** Whether lighting commands work in hardware mode (the doc asks for this); backlight values other than 10, 20 and 100; flicker during the uploads (only the final state was inspected); rotations other than 0; whether `volume:` was the whole function label or was clipped; minute rollover of the clocks; and firmware query behavior in hardware mode.
+
+## Desktop app dial dry-run (M131E, 8 October 2026)
+
+Tested on `feat/app-owned-modules` at `3689c3a`, with a refreshed release sidecar and a local debug app rebuilt using `npx tauri build --debug --bundles app`.
+
+- **Setup.** The Run panel used the **Everyday** profile and M131E serial `MHDD01FAKE0843`, with **Dry run** selected and Settings > Module control set to **App**. The software-mode checkbox was automatically checked and locked; no toggle was changed. The observed sidecar flags included `--exit-on-stdin-eof --software-mode --display-sync --dial-content function`, with no `--execute`.
+- **Start and input.** The panel showed **Running**, a `Service started on m131e` dry-run message and an initial display-sync record. After interaction it showed **16 events, 12 planned actions, 0 executed, 0 failed**: five right turns planned volume +5 each, five left turns planned volume -5 each, and two press/release pairs produced a short press planning mute toggle and a long press planning Open Finder. These were plans only; neither action execution nor the long-press timing threshold was measured.
+- **Visual acceptance.** The user confirmed the physical display looked correct and the live preview needle reacted and stayed inside the screen. This accepts the display and needle behavior for this run on this unit; no timing measurement or raw display-failure count was obtained.
+- **Normal Stop.** Stop changed the panel to **Stopped**, with service end reason `interrupted` and a session-stopped-by-user message. A process check found no remaining `masterhub-service`. The user confirmed the built-in animation returned.
+- **Remaining app gates.** Everyday has no `dial_functions`, so this run did not test app-driven function cycling. Keypad sessions and folder redraws, other Module control settings, normal Quit, reconnect, sleep/wake and a crash during startup remain untested by this run.
 
 ## Crash safety: stdin watchdog (M131E dial, 8 October 2026)
 
@@ -69,12 +79,12 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 
 - **Standalone.** The service ran in software mode on the dial with the clock face, fed from a pipe that was closed after 18 s. The pipe closed at 14:59:21.037 and the service exited at 14:59:21.086 (49 ms later) with reason `stdin_closed` and no error. No service process was left. The user saw the clock face (14:59) during the run. A first attempt failed because the log was redirected to a file, which the service refuses (it needs a terminal or pipe): that was a test setup error, not a device result.
 - **Real crash.** With the desktop app running a dry-run, software-mode session on the dial (the sidecar was a child of the app, in its own process group, started with `--exit-on-stdin-eof --software-mode`), the app was killed with `kill -9`. The sidecar was gone about 120 ms later, and the user reported that the dial's built-in animation returned within milliseconds, well under a second.
-- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit and Stop in the app after this change; a crash while a session is still starting; replug while in software mode; sleep and wake.
+- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit in the app after this change; a crash while a session is still starting; replug while in software mode; sleep and wake. Normal app Stop on the dial was verified in the [app dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026).
 
 ## Not tested
 
 - The M005S faders (not connected).
 - Lighting writes of any kind.
-- Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session was run through the app and the app was then killed with `kill -9` (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A keypad session through the app, the app's live preview against a device, and its Settings (Module control) have not been tested on hardware.
+- Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session exercised an app crash (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A later [app dial dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026) verified the App-controlled display path, live dial preview and normal Stop. A keypad session through the app, app-driven dial function cycling, other modules' live previews and switching the Module control setting remain untested.
 - `shortcut`, `launch_app` and every `obs_*` action.
 - Reconnect, sleep and wake behavior.

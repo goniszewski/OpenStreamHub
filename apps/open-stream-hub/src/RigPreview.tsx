@@ -96,7 +96,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
               const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
               const picked = isActive && selection.control === area.control;
               const label = `Select ${controlLabel(item.module, area.control)} in rig`;
-              if (item.module === 'm131e') return <button key={area.control} type="button" className={`image-control round${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>{livePointer(live, area.control)}</button>;
+              if (item.module === 'm131e') return <button key={area.control} type="button" className={`image-control round${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>{livePointer(live, area.control, true)}</button>;
               if (item.module === 'm4315') {
                 const page = editor.currentKeypadPage;
                 return <button key={area.control} type="button" className={`image-control key-display${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
@@ -133,8 +133,10 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
 
 // Read-only live overlays, shared by the rig tiles and the Devices hero image.
 export const livePressed = (live: ModuleLive | undefined, control: number) => live?.keysDown.includes(control) ? ' pressed' : '';
-export const livePointer = (live: ModuleLive | undefined, control: number) => live?.angles[control] === undefined ? null :
-  <span className="live-pointer" style={{ transform: `rotate(${live.angles[control]}deg)` }} aria-hidden="true" />;
+// `screen` fits the needle inside the encoder's glass: the dial's control area also covers the black ring around the screen,
+// so a full-radius needle would stick out over it.
+export const livePointer = (live: ModuleLive | undefined, control: number, screen = false) => live?.angles[control] === undefined ? null :
+  <span className={screen ? 'live-pointer screen' : 'live-pointer'} style={{ transform: `rotate(${live.angles[control]}deg)` }} aria-hidden="true" />;
 export function livePulse(live: ModuleLive | undefined, control: number) {
   const pulse = live?.pulses[control];
   return pulse && <span key={pulse.tick} className={`live-pulse ${pulse.direction}`} aria-hidden="true">{pulse.direction === 'up' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>;

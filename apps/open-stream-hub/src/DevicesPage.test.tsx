@@ -124,6 +124,8 @@ describe('hero live input', () => {
     const knob3 = heroButton(markup, 'Select Knob 3 on module image');
     expect(knob3).toContain('live-pointer');
     expect(knob3).toContain('rotate(30deg)');
+    // The knobs' needle keeps its full length; only the dial's is fitted inside its glass.
+    expect(knob3).not.toContain('live-pointer screen');
     expect(knob3).not.toMatch(/class="[^"]*pressed/);
     expect(heroButton(markup, 'Select Knob 1 on module image')).toMatch(/class="image-control round selected pressed"/);
     // The needle sits inside an unrotated hit area, positioned by the computed percentages.
@@ -134,7 +136,7 @@ describe('hero live input', () => {
     const { feed, send } = await liveFeed();
     send('m131e', 0, 'right'); send('m131e', 0, 'pressed');
     const markup = hero(renderToStaticMarkup(<DeviceWorkspace editor={forModule('m131e')} state={state} feed={feed} desktop disabled={false} setPage={() => {}} />), 'Encoder with IPS Display');
-    expect(markup).toMatch(/<span class="image-control round live-overlay pressed" aria-hidden="true"[^>]*><span class="live-pointer" style="transform:rotate\(15deg\)"/);
+    expect(markup).toMatch(/<span class="image-control round live-overlay pressed" aria-hidden="true"[^>]*><span class="live-pointer screen" style="transform:rotate\(15deg\)"/);
     expect(markup).not.toContain('<button');
   });
 

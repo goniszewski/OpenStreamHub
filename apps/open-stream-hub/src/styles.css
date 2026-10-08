@@ -236,6 +236,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage .image-control.pressed,.module-image .image-control.pressed { background:#a284ff55; box-shadow:0 0 0 2px #f5f1ff, 0 0 10px #a284ff; }
 .module-image .live-overlay { pointer-events:none; }
 .live-pointer { position:absolute; left:50%; top:0; width:2px; height:50%; margin-left:-1px; border-radius:1px; background:#f5f1ff; box-shadow:0 0 4px #a284ff; transform-origin:50% 100%; transition:transform .12s ease-out; pointer-events:none; }
+.live-pointer.screen { top:24%; height:26%; }
 .live-pulse { position:absolute; left:50%; top:50%; margin:-8px 0 0 -8px; color:#f5f1ff; filter:drop-shadow(0 0 3px #a284ff); opacity:0; animation:live-pulse .3s ease-out; pointer-events:none; }
 @keyframes live-pulse { from { opacity:1; } to { opacity:0; } }
 @media(prefers-reduced-motion:reduce) { .live-pointer { transition:none; }.live-pulse { animation-duration:.01s; } }

@@ -32,10 +32,13 @@ describe('RigPreview', () => {
     feed.connect(); await new Promise(resolve => setTimeout(resolve, 0));
     const send = (module: string, control: number, gesture: string) => handlers['device://input']({ payload: { feed_id: 'f', module, serial_number: null, event: { timestamp_micros: 1, control, gesture } } });
     handlers['device://status']({ payload: { feed_id: 'f', state: 'running', source: 'demo', module: null } });
-    send('m4315', 4, 'pressed'); send('m003k', 0, 'clockwise'); send('m003k', 0, 'clockwise');
+    send('m4315', 4, 'pressed'); send('m003k', 0, 'clockwise'); send('m003k', 0, 'clockwise'); send('m131e', 0, 'right');
     const markup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={feed} />);
     expect(markup).toMatch(/image-control key-display pressed/);
     expect(markup).toContain('rotate(30deg)');
+    // The dial's needle is fitted inside its glass; the knobs' keeps the full length.
+    expect(markup).toContain('live-pointer screen');
+    expect(markup).toContain('<span class="live-pointer" style="transform:rotate(30deg)"');
     expect(markup).toContain('live-badge');
     expect(markup).toContain('Stop');
     expect(markup).toContain('no actions run');

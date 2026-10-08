@@ -10,7 +10,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M003K knobs | 514 | Rotation and press verified in default mode. |
 | M0064 base | 502 | Sends a constant heartbeat only. No input. |
 | M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
-| M131E dial | 518 | Input verified in software mode; display and lighting not tested. |
+| M131E dial | 518 | Input and a raw 240x240 image upload verified in software mode; generated faces, backlight and color not tested. |
 | M005S faders | n/a | Not connected. |
 
 ## M4315 keys
@@ -50,7 +50,11 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 - **Entering software mode** stopped the dial's built-in animation, and its screen went black. Nothing draws on it until the host does. After the capture ended, the animation came back, so the restore worked (the user's observation).
 - **Rotation.** Reports start `01 44 03 00 03 01`, with a final byte `00` or `01` per direction. In the order tried (clockwise first, then counter-clockwise), the decoder's `right` label matched clockwise and `left` matched counter-clockwise. This settles the physical mapping that the docs listed as unverified.
 - **Press and release.** Reports start `01 44 03 00 04 01` with a final byte `01` for press and `00` for release. A short press and a long press gave two ordinary press and release pairs. The dial itself reports no hold duration. Long-press detection is the service's 600 ms timing (`DialGestureTracker`) and was not exercised here.
-- **Not tested.** The dial display (240x240 JPEG writes), backlight and color writes, firmware queries, and the dial function cycling in the service.
+- **Display upload (writes).** With the dial in software mode (`dial mode software --path-hex`), `dial jpeg --path-hex` sent a 240x240 baseline JFIF JPEG (6195 bytes) as 20 output reports of 320 bytes (header `02 45`, byte 6 zero, final flag on the last). The report length comes from the real descriptor. The tool exited cleanly and the image was displayed.
+- **Orientation and color.** The test image had a red square top-left, a green one top-right, a blue one bottom-left, and a white gamma shape lower right. The user saw exactly that on the dial, so `--rotate 0` is upright for the installed orientation, nothing is mirrored, and the RGB order is correct.
+- **Pacing.** Two stress runs alternated between two different images (upright and rotated 90 degrees) and ended on the upright one: 21 uploads back to back in 0.3 s, then 21 with a 50 ms gap in 1.9 s. No upload returned an error, and the dial was clean and upright after each run. The firmware needed no acknowledgement or delay in this test.
+- **Mode switching.** `dial mode software` and `dial mode hardware` were run by hand. The tool does not restore hardware mode on its own (unlike `record`), so the last step has to be run explicitly. After it, the built-in animation came back.
+- **Not tested.** Flicker during the uploads (only the final state was inspected); rotations other than 0; the generated dial faces (`--display-sync --dial-content`); backlight and color writes (so the color channel order for lighting is still unknown); firmware queries; and the dial function cycling in the service.
 
 ## Not tested
 

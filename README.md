@@ -1,172 +1,159 @@
-# OpenStreamHub
+<div align="center">
+  <h1>OpenStreamHub</h1>
+  <p>Unofficial macOS support for Cooler Master MasterHUB.</p>
+  <p>
+    <a href="#quick-start">Quick start</a> ·
+    <a href="#hardware-support">Hardware support</a> ·
+    <a href="#documentation">Documentation</a> ·
+    <a href="#development">Development</a>
+  </p>
+</div>
 
-[![License](https://img.shields.io/badge/license-MIT%2FApache-blue.svg)](#license)
-[![Conventional Commits](https://img.shields.io/badge/Conventional%20Commits-1.0.0-%23FE5196?logo=conventionalcommits&logoColor=white)](https://conventionalcommits.org)
+[![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue.svg)](#license)
+![Status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 
-An independently maintained, unofficial SDK and desktop app for [Cooler Master MasterHUB](https://www.coolermaster.com/products/masterhub.html), focused on macOS support.
+OpenStreamHub is a macOS desktop app, Rust SDK and set of diagnostic tools for **Cooler Master MasterHUB**. The goal is to provide the device controls, profiles, displays and actions available in the official Windows application, and extend them with more capabilities, supported apps and integrations.
 
-**Current scope: MasterHUB only.** OpenStreamHub brings together a Rust SDK,
-diagnostic tools, a profile and binding service, and a desktop editor.
-The Rust crates retain their `cooltek-sdk` names.
+Feature parity is incomplete. The comparison below uses the official **MasterHUB 1.0.0.113** software as its reference, based on analysis recorded in this repository. Implementation and physical hardware validation are tracked separately.
 
-Based on [CoolTEK SDK by projectzero7](https://github.com/projectzero7/cooltek-sdk).
-See [Origins and attribution](#origins-and-attribution) for project lineage.
+> [!NOTE]
+> Supports **MasterHUB only**. This is an independent project, not affiliated with or endorsed by Cooler Master. Hardware results currently cover one rig; this is not yet a fully validated replacement for the Windows app.
 
-## Contents
+## Feature parity
 
-- [Current status](#current-status)
-- [Privacy and telemetry](#privacy-and-telemetry)
-- [Components](#components)
-- [Getting started](#getting-started)
-- [Documentation and examples](#documentation-and-examples)
-- [Contributing](#contributing)
-- [Origins and attribution](#origins-and-attribution)
-- [License](#license)
-
-## Current status
-
-MasterHUB support is in development. The SDK builds on macOS, and tests use
-synthetic reports and fake transports. **Physical input, display acceptance,
-and sleep/wake recovery still require hardware validation.**
-
-| Area | Implemented capabilities |
+| Feature in the official Windows app | OpenStreamHub on macOS |
 | --- | --- |
-| Device support | Recognition of both USB ID generations and input decoding for all five control modules |
-| Displays and sessions | Explicit IPS mode controls, firmware queries, descriptor-sized JPEG packets for both IPS modules, and session lifecycle hooks |
-| Profiles and bindings | JSON profiles, offline action plans, and explicit macOS volume, mute, shortcut, media key, text, URL and app actions, profile next/previous, an OBS scene switch, plus [countdown timers](docs/masterhub-actions.md#countdown-timer-timer) that end with a notification and a system sound (not shown on the key) |
-| Desktop editor | All-module catalog and binding editor, nested folders for the 15-key module, a live module rig preview, hot-plug module detection, profile import/export/duplicate, import of official `.mhz` profiles (dry run only until allowed), focused-app profile rules, undo/redo, search and conflict warnings, offline display artwork preparation, and a local diagnostic bundle |
-| Running actions | The desktop app can run a profile through a supervised `masterhub-service` process: dry run by default, explicit confirmation before Execute, clean stop on sleep, and reconnect after wake or unplug (Execute runs never resume without confirmation) |
+| Keypad, knob and dial input | Implemented and tested on hardware. See [module support](#hardware-support) for limits. |
+| Two-roller input | Decoder implemented. Windows input confirmed by capture; macOS receives no reports. Unresolved. |
+| Five-fader input | Decoder and binding editor implemented; physical hardware not tested. |
+| Profiles, bindings and keypad folders | Implemented, including nested folders, Back navigation and profile switching. Folder redraws tested on hardware. |
+| Key images and animations | Per-key static artwork and animation sequences implemented. Static artwork tested on hardware; animation playback still needs hardware acceptance. |
+| Dial display and function switching | Image uploads, function labels, clocks and CPU display implemented and tested on hardware. Full display parity is incomplete. |
+| Volume, mute, shortcuts, text, apps, URLs and media controls | Implemented; execution and macOS permission validation vary by action. See the [action catalogue](docs/masterhub-actions.md). |
+| Multi-action and recorded key macros | Multi-action sequences implemented; macro recording missing. |
+| Countdown timers | Implemented with notification and sound; remaining time is not displayed on the key. |
+| OBS Studio actions | Partial implementation, tested against a fake server. Real OBS validation and remaining actions are pending. |
+| Twitch, Discord, Streamlabs and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually. |
+| Official `.mhz` profile import/export | Import implemented with a compatibility report and review before execution; real export compatibility remains to be validated. `.mhz` export missing. Own-format JSON import/export implemented. |
+| Lighting and brightness | Dial backlight and solid color tested through the CLI; app controls and base/knob lighting remain gaps. |
+| Firmware updates | Not supported. |
+| Suspend/resume and reconnect | Session handling implemented; dial dry-run reconnect tested. Sleep/wake and other lifecycle paths still need hardware validation. |
 
-Nothing is uploaded anywhere: profiles, diagnostic bundles and prepared images stay on your Mac. See [Privacy and telemetry](#privacy-and-telemetry).
-A profile key can switch the OBS Studio program scene (`obs_scene`). It talks only to OBS on the same Mac (obs-websocket, OBS 28+), is off until you turn OBS on in Settings, and the OBS password is kept in memory only, so you enter it again after each app launch. The other OBS actions of the official app are not implemented yet; see [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
-By default the app controls the 15-key module and the encoder dial whenever a profile runs on them: it puts them in software mode (without it their keys and dial send no input) and draws placeholder key images and folder pages on the keypad (for profiles with 15-key pages; nothing is drawn for a flat profile) and a dial function name, digital or analog clock, or CPU usage on the encoder's screen. **Module control** in Settings switches this to **Built-in animation**, which leaves both modules in their own mode. Both parts have run on real hardware, the keypad on one M4315 (folders and Back worked) and the dial faces on one M131E; only keys 0 to 2 were confirmed to line up between input and display, and redraw latency has not been timed ([hardware results](docs/masterhub-hardware-results.md)).
-For detailed capability status, see the [implementation status](docs/masterhub-implementation-status.md)
-and [protocol evidence table](docs/masterhub-protocol-evidence.md).
+OpenStreamHub also includes dry-run action previews, raw capture and offline replay, local diagnostic bundles, and optional focused-app profile rules. These are additional tools rather than Windows parity requirements.
 
-## Privacy and telemetry
+See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol references and outstanding work. Some entries there describe earlier implementation stages; the [hardware results](docs/masterhub-hardware-results.md) record subsequent device tests.
 
-OpenStreamHub has **no telemetry**. It does not collect usage data, analytics or crash reports, it does not check for updates, and it does not contact any server on its own. The desktop app, the `masterhub-service` sidecar and the command-line tools all behave this way, and there is no account, sign-in or cloud sync.
+## Quick start
 
-- **Network use.** The only network code in the project is the optional OBS scene switch (`obs_scene`). It is off until you turn it on in Settings, and it only connects to OBS on this same Mac (`127.0.0.1`, `::1` or `localhost`; the code refuses any other address). The OBS password is kept in memory only and is never written to disk, logs, diagnostics or the command line. See [actions](docs/masterhub-actions.md#obs-scene-obs_scene).
-- **Local files.** Profiles, settings, exports, prepared artwork and diagnostic bundles are written to the app's data folder on your Mac (owner-only permissions) and nothing sends them anywhere. A diagnostic bundle is a file you create and choose whether to share; serial numbers, text snippets, web addresses, timer labels and OBS scene names are redacted by default. See the [diagnostic bundle](docs/masterhub-diagnostic-bundle.md).
-- **Webview.** The app window can only load its own bundled files. Its content security policy allows connections to the app's internal IPC channel only (`connect-src ipc: http://ipc.localhost`, in `apps/open-stream-hub/src-tauri/tauri.conf.json`), and the Tauri configuration has no updater or HTTP plugin.
-- **Dependencies.** None of the Rust or npm dependencies is an analytics, crash-reporting or HTTP client library. The only Tauri plugin is `tauri-plugin-single-instance`.
-- **Scripts.** The hardware capture scripts in `scripts/hardware/` make no network calls.
+Build from source on **macOS 12.3 or later**, with **Node.js 22.12+**, **Rust 1.97+** and the **Xcode command-line tools** installed. Repository access is required while the project is private.
 
-Building from source downloads dependencies from crates.io and npm, as any build does; that is not the app. These statements come from reading the code and configuration and are not a third-party audit. To check them yourself, search the sources for network code or watch the app with a tool such as Little Snitch or `lsof -i` while it runs. If you find a way the app contacts anything other than your local OBS, please open an issue. Any future feature that needs the network, such as an updater, would be opt-in and documented here first.
-
-## Components
-
-| Component | Purpose |
-| --- | --- |
-| Rust SDK | MasterHUB device communication, input decoding, display packet preparation, and session handling |
-| Diagnostic tools | Device inventory, bounded raw recording, command previews, image preparation, and offline replay |
-| Profile and binding service | JSON profiles, action planning, and explicit macOS actions |
-| [Desktop app](apps/open-stream-hub/README.md) | Profile editing, live module preview, supervised action runs, offline artwork preparation and diagnostics |
-
-## Getting started
-
-The repository is currently private; Git access requires an authorized GitHub account.
-
-### Clone and build
-
-```bash
+```sh
 git clone git@github.com:goniszewski/OpenStreamHub.git
-cd OpenStreamHub
-cargo build
-```
-
-### Run the desktop app
-
-From the repository root:
-
-```bash
-cd apps/open-stream-hub
+cd OpenStreamHub/apps/open-stream-hub
 npm ci
 npm run desktop
 ```
 
-`npm run desktop` builds the `masterhub-service` sidecar first. See the
-[desktop app guide](apps/open-stream-hub/README.md) for prerequisites and
-app development details, and [building the desktop app](docs/building-the-desktop-app.md)
-for sidecar bundling and signing notes.
+The desktop command builds the Rust service sidecar before starting the app.
 
-### Use the Rust SDK
+1. Connect your MasterHUB and select a module.
+2. Create or edit a profile and assign its controls.
+3. Start a **Dry run** to inspect input and planned actions.
+4. Select **Execute** and confirm when you are ready to run those actions.
 
-Add the following to your `Cargo.toml` file:
+With **Settings → Module control → App**, running a keypad or dial profile enables software mode and drives its display. Stopping the session restores the built-in animation. Choose **Built-in animation** to leave those modules in their own mode; their input requires software mode.
+
+To build a local debug app bundle:
+
+```sh
+npm run desktop:build
+```
+
+See the [desktop guide](apps/open-stream-hub/README.md) for development details and the [build guide](docs/building-the-desktop-app.md) for bundling and signing. Signing and notarization remain release work.
+
+## Hardware support
+
+Support below describes the current macOS work. A decoder or editor alone does not establish hardware compatibility.
+
+| Module | Current evidence |
+| --- | --- |
+| 15-key IPS keypad · M4315 | Press/release input, key artwork, nested folder redraws and Back navigation tested on hardware. Physical key mapping checked at selected positions. |
+| 3-knob module · M003K | Rotation and press tested in default mode; physical mapping verified with the single knob on top. |
+| IPS dial · M131E | Rotation, press, display faces, image upload, backlight and color tested. App dry-run reconnect tested. |
+| 2-roller scroll module · M032LE | Windows capture confirms both rollers send input. macOS readers still receive no reports; investigation continues. |
+| 5-fader module · M005S | Decoder and editor implemented; no physical module available for validation. |
+| Base · M0064 | Discovered and recorded; observed reports are a constant heartbeat. |
+
+These results come from one rig. Sleep/wake recovery, some lifecycle paths and real OBS behavior still need validation. See [hardware results](docs/masterhub-hardware-results.md) for the exact tests and limits, and the [parity tracker](docs/windows-parity-gaps.md) for gaps against the official Windows app.
+
+## Privacy and telemetry
+
+OpenStreamHub has no telemetry, analytics, automatic crash reporting, account or cloud sync. Profiles, settings, artwork and diagnostic bundles are stored locally. Diagnostic bundles are created on demand and are yours to share; sensitive fields are redacted by default.
+
+The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password stays in memory and must be entered again after launching the app. Configured actions can open apps or web addresses when executed.
+
+The app does not check for updates or contact a remote service on its own. Building from source downloads dependencies from npm and crates.io. See the [diagnostic bundle guide](docs/masterhub-diagnostic-bundle.md) for what local diagnostics contain.
+
+## Documentation
+
+| Start here | Reference |
+| --- | --- |
+| [Desktop app](apps/open-stream-hub/README.md) | [Action catalogue](docs/masterhub-actions.md) |
+| [Profiles and binding service](docs/masterhub-service.md) | [Implementation status](docs/masterhub-implementation-status.md) |
+| [Keypad folders](docs/masterhub-keypad-folders.md) | [Hardware results](docs/masterhub-hardware-results.md) |
+| [Dial functions](docs/masterhub-dial-functions.md) | [Protocol evidence](docs/masterhub-protocol-evidence.md) |
+| [Import official profiles](docs/importing-masterhub-profiles.md) | [Windows parity tracker](docs/windows-parity-gaps.md) |
+| [Focused-app rules](docs/masterhub-focus-rules.md) | [macOS roadmap](docs/masterhub-macos-plan.md) |
+| [Diagnostics and replay](docs/masterhub-diagnostics.md) | [Session lifecycle](docs/masterhub-session-manager.md) |
+| [Display sync](docs/masterhub-display-sync.md) | [Release process](docs/release-process.md) |
+
+Try the [example profiles](examples/profiles/), including [macOS controls](examples/profiles/macos.json), [all modules](examples/profiles/all-modules.json), [keypad folders](examples/profiles/keypad-folders.json) and [dial functions](examples/profiles/dial-functions.json).
+
+## Development
+
+The repository keeps the app, service and SDK together so protocol and profile changes can be developed together. The Rust crates retain their original `cooltek-sdk` names.
+
+| Directory | Contents |
+| --- | --- |
+| `apps/open-stream-hub/` | Tauri desktop app and React interface |
+| `crates/` | Rust SDK, binding service and command-line tools |
+| `examples/` | Example programs and profiles |
+| `docs/` | User guides, protocol research and validation records |
+
+Build and check the Rust workspace from the repository root:
+
+```sh
+cargo build --workspace
+cargo fmt --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+Check the desktop frontend:
+
+```sh
+cd apps/open-stream-hub
+npm run check
+npm test
+npm run build
+```
+
+The app's Rust backend is a separate workspace; see the [desktop verification commands](apps/open-stream-hub/README.md#verify). Rebuild the sidecar with `npm run sidecar` after changing the SDK or service.
+
+To use the SDK in another Rust project:
 
 ```toml
 [dependencies]
 cooltek-sdk = { git = "https://github.com/goniszewski/OpenStreamHub" }
 ```
 
-## Documentation and examples
+Contributions are welcome. Keep changes focused, add relevant tests and documentation, and use Conventional Commits. For hardware changes, distinguish synthetic tests from observations on a real device.
 
-### Guides
+## Acknowledgements
 
-| Guide | Covers |
-| --- | --- |
-| [macOS roadmap](docs/masterhub-macos-plan.md) | Target modules, Windows capture procedure, and Raspberry Pi USB limitations |
-| [Diagnostics](docs/masterhub-diagnostics.md) | Device inventory, raw recording, dial command previews, static images, JPEG packet plans, and offline replay |
-| [Binding service](docs/masterhub-service.md) | JSON profiles, offline action plans, explicit macOS actions, and the `masterhub-service` options |
-| [Action catalogue](docs/masterhub-actions.md) | Every action, its limits and permissions, including `profile`, `timer` and `obs_scene` |
-| [Dial functions](docs/masterhub-dial-functions.md) | Short click cycles the dial's functions; long press and rotation run the current one |
-| [Hardware results](docs/masterhub-hardware-results.md) | What was observed on a real unit (8 October 2026), module by module, and what was not |
-| [Display sync](docs/masterhub-display-sync.md) | Key images and dial faces, on by default in the app (each run on one real module) |
-| [macOS smoke checks](docs/masterhub-macos-smoke.md) | Device-free audio and scratch-keystroke checks |
-| [Keypad folders](docs/masterhub-keypad-folders.md) | Nested folders within one profile, with a Back key and level badge |
-| [Windows parity tracker](docs/windows-parity-gaps.md) | Gaps against the official Windows application |
-| [First hardware session](docs/masterhub-first-hardware-session.md) | Checklist for the first session with physical modules |
-| [Release process](docs/release-process.md) | Signing, notarization and release packaging |
-| [Focused-app rules](docs/masterhub-focus-rules.md) | Rules for choosing a profile by the focused application |
-| [Importing MasterHUB profiles](docs/importing-masterhub-profiles.md) | Importing official `.mhz` files, the report, and the dry-run-only rule |
-| [Session manager](docs/masterhub-session-manager.md) | Sleep/wake handling, reconnect rules and the Execute safety rule |
-| [Diagnostic bundle](docs/masterhub-diagnostic-bundle.md) | What the local diagnostic file collects, redaction and what is never collected |
-| [Building the desktop app](docs/building-the-desktop-app.md) | Sidecar bundling, environment override and signing caveat |
-| [Desktop app](apps/open-stream-hub/README.md) | App setup and development |
-| [Implementation status](docs/masterhub-implementation-status.md) | Capability status and remaining validation |
-| [Protocol evidence](docs/masterhub-protocol-evidence.md) | Evidence supporting protocol behavior |
-
-### Example profiles
-
-- [macOS profile](examples/profiles/macos.json): knob and dial captures.
-- [All-module profile](examples/profiles/all-modules.json): also covers keys, faders, and rollers.
-- [OBS scenes profile](examples/profiles/obs-scenes.json): knob presses that switch OBS scenes, alone and in a multi-action.
-- [OBS outputs profile](examples/profiles/obs-outputs.json): the virtual camera and replay buffer, alone and in a multi-action.
-
-## Contributing
-
-Contributions are welcome through pull requests.
-
-- Follow Rust conventions and idioms, using [Rust Patterns & Engineering How-Tos](https://microsoft.github.io/RustTraining/rust-patterns-book/ch00-introduction.html) where appropriate.
-- Add tests for new features and update relevant documentation and examples.
-- Use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages.
-- Run formatting, linting, and tests before submitting.
-
-### Rust checks
-
-Run from the repository root:
-
-```bash
-cargo fmt --check
-cargo clippy
-cargo test
-cargo test --doc
-```
-
-See the [desktop app guide](apps/open-stream-hub/README.md) for app-specific development instructions.
-
-## Origins and attribution
-
-OpenStreamHub is based on [CoolTEK SDK by projectzero7](https://github.com/projectzero7/cooltek-sdk).
-Thank you to the original author and contributors for the foundation this project builds on.
-
-This repository preserves the original Git history and MIT/Apache-2.0 licensing,
-and develops its own roadmap for MasterHUB macOS support, diagnostics, bindings,
-and the desktop app.
+OpenStreamHub builds on [CoolTEK SDK by projectzero7](https://github.com/projectzero7/cooltek-sdk). Thanks to the original author and contributors for the foundation. This independently maintained project preserves that history and licensing while developing its own MasterHUB app and macOS support.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](./LICENSE-APACHE) or [MIT License](./LICENSE-MIT) at your option.
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 License, shall be dual licensed as above, without any additional terms or conditions.
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Unless explicitly stated otherwise, contributions are provided under the same terms.

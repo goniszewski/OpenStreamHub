@@ -17,11 +17,12 @@ export const rotationStep = 15;
 export const emptyLive: LiveState = {};
 export const resetLive = (): LiveState => emptyLive;
 
+// The needle angle is cumulative and never folded back into 0..360: the pointer animates with a CSS transition, and a jump from
+// 345 to 0 would sweep the needle backwards through every angle in between.
 const rotationSign: Partial<Record<Gesture, 1 | -1>> = { clockwise: 1, right: 1, counter_clockwise: -1, left: -1 };
 const emptyModule: ModuleLive = { faders: {}, keysDown: [], angles: {}, pulses: {}, lastEventAt: 0 };
 
 export const livePercent = (raw: number, maximum: number) => Math.min(faderMaximum, Math.max(0, Math.round(raw / maximum * faderMaximum)));
-export const wrapAngle = (angle: number) => angle % 360;
 
 function wellFormed(payload: unknown): payload is DeviceInputPayload {
   const p = payload as DeviceInputPayload | null;
@@ -48,7 +49,7 @@ export function reduceLive(state: LiveState, payload: unknown): LiveState {
   } else if (gesture === 'up' || gesture === 'down') {
     next.pulses = { ...current.pulses, [control]: { direction: gesture, tick: (current.pulses[control]?.tick ?? 0) + 1 } };
   } else if (rotationSign[gesture]) {
-    next.angles = { ...current.angles, [control]: wrapAngle((current.angles[control] ?? 0) + rotationSign[gesture]! * rotationStep) };
+    next.angles = { ...current.angles, [control]: (current.angles[control] ?? 0) + rotationSign[gesture]! * rotationStep };
   } else if (gesture !== 'short_press' && gesture !== 'long_press') return state;
   return { ...state, [module]: next };
 }

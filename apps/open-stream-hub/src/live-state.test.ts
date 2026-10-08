@@ -23,14 +23,29 @@ describe('reduceLive', () => {
     const state = reduceLive(emptyLive, input('m131e', 0, 'long_press'));
     expect(state.m131e?.keysDown).toEqual([]);
   });
-  it('rotates by 15 degrees and wraps within (-360, 360)', () => {
+  it('rotates by 15 degrees per tick and keeps the angle cumulative', () => {
     let state = emptyLive;
     for (let i = 0; i < 25; i++) state = reduceLive(state, input('m003k', 0, 'clockwise'));
-    expect(state.m003k?.angles[0]).toBe(15);
+    expect(state.m003k?.angles[0]).toBe(375);
+    state = emptyLive;
+    for (let i = 0; i < 25; i++) state = reduceLive(state, input('m003k', 1, 'counter_clockwise'));
+    expect(state.m003k?.angles[1]).toBe(-375);
     state = reduceLive(emptyLive, input('m131e', 0, 'left'));
     expect(state.m131e?.angles[0]).toBe(-15);
     state = reduceLive(state, input('m131e', 0, 'right'));
     expect(state.m131e?.angles[0]).toBe(0);
+  });
+  it('never makes a backwards jump while turning one way (the CSS transition would spin the needle back)', () => {
+    for (const [gesture, direction] of [['clockwise', 1], ['counter_clockwise', -1]] as const) {
+      let state = emptyLive;
+      let previous = 0;
+      for (let i = 0; i < 80; i++) {
+        state = reduceLive(state, input('m003k', 2, gesture));
+        const angle = state.m003k!.angles[2]!;
+        expect((angle - previous) * direction).toBe(15);
+        previous = angle;
+      }
+    }
   });
   it('ignores out-of-range and malformed events', () => {
     expect(reduceLive(emptyLive, input('m003k', 3, 'pressed'))).toBe(emptyLive);

@@ -57,7 +57,8 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
-  ['obs_source_visibility', 'OBS source visibility'],
+  ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
+  ['obs_profile', 'Switch OBS profile'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -78,6 +79,8 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_transition': return { type };
     case 'obs_filter': return { type, source: 'Source', filter: 'Filter', op: 'toggle' };
     case 'obs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
+    case 'obs_scene_collection': return { type, name: 'Scene collection' };
+    case 'obs_profile': return { type, name: 'Profile' };
   }
 }
 
@@ -128,7 +131,7 @@ export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
 // Mirrors the obs_scene rule in Action::validate (profile.rs): the keypad label rules plus the invisible-character rule
 // of text snippets, so the scene OBS receives is exactly the one reviewed.
 // The same rule applies to every OBS name (scene, source, filter): validate_obs_name in profile.rs.
-export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter'): string | null {
+export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' | 'scene collection' | 'profile'): string | null {
   if (!name.trim()) return `Enter the OBS ${what} name exactly as it appears in OBS.`;
   if (utf8.encode(name).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return 'Remove line breaks, tabs and other control characters.';

@@ -48,6 +48,8 @@
     {"type":"obs_filter","source":"Webcam","filter":"Color Correction","op":"toggle"},
     {"type":"obs_filter","source":"Zażółć 🎥","filter":"Blur \"hard\" {x}","op":"off"},
     {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on"},
+    {"type":"obs_scene_collection","name":"Streaming"},
+    {"type":"obs_profile","name":"Zażółć 🎥 {x}"},
     {"type":"multi_action","actions":[{"type":"obs_studio_mode","op":"on"},{"type":"obs_transition"}]}
   ],
   "invalid": [
@@ -109,6 +111,12 @@
     {"type":"obs_filter","source":"Webcam","filter":"zero\u200bwidth","op":"on"},
     {"type":"obs_source_visibility","scene":"Live","source":"Camera"},
     {"type":"obs_source_visibility","scene":"line\nbreak","source":"Camera","op":"on"},
-    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on","endpoint":"127.0.0.1:4455"}
+    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on","endpoint":"127.0.0.1:4455"},
+    {"type":"obs_scene_collection"},
+    {"type":"obs_scene_collection","name":""},
+    {"type":"obs_scene_collection","name":"a","op":"on"},
+    {"type":"obs_profile","name":"zero\u200bwidth"},
+    {"type":"obs_profile","name":"line\nbreak"},
+    {"type":"obs_profile","scene":"Live"}
   ]
 }

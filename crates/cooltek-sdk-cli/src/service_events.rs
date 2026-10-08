@@ -455,6 +455,12 @@ pub fn loggable(action: &Action) -> Value {
             "source_chars":source.chars().count(),
             "op":op,
         }),
+        Action::ObsSceneCollection { name } => {
+            json!({"type":"obs_scene_collection", "name_chars":name.chars().count()})
+        }
+        Action::ObsProfile { name } => {
+            json!({"type":"obs_profile", "name_chars":name.chars().count()})
+        }
         other => json!(other),
     }
 }
@@ -1126,6 +1132,18 @@ mod tests {
                     op: cooltek_sdk_service::ObsSwitchOp::On,
                 },
                 json!({"type":"obs_source_visibility","scene_chars":4,"source_chars":11,"op":"on"}),
+            ),
+            (
+                Action::ObsSceneCollection {
+                    name: "Private show".into(),
+                },
+                json!({"type":"obs_scene_collection","name_chars":12}),
+            ),
+            (
+                Action::ObsProfile {
+                    name: "Work".into(),
+                },
+                json!({"type":"obs_profile","name_chars":4}),
             ),
             (
                 multi,

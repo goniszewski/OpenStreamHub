@@ -500,6 +500,13 @@ impl ObsRequest {
                 ObsOutputOp::Stop => "StopVirtualCam",
             }),
             Action::ObsTransition => Self::new("TriggerStudioModeTransition"),
+            Action::ObsSceneCollection { name } => Self::with_data(
+                "SetCurrentSceneCollection",
+                json!({"sceneCollectionName":name}),
+            ),
+            Action::ObsProfile { name } => {
+                Self::with_data("SetCurrentProfile", json!({"profileName":name}))
+            }
             Action::ObsReplayBuffer { op } => Self::new(match op {
                 ObsReplayBufferOp::Toggle => "ToggleReplayBuffer",
                 ObsReplayBufferOp::Start => "StartReplayBuffer",
@@ -670,6 +677,8 @@ fn check_response(data: &Value, request_id: &str, request: &ObsRequest) -> Resul
 fn refused_what(request_type: &str) -> String {
     match request_type {
         "SetCurrentProgramScene" => "the scene switch".into(),
+        "SetCurrentSceneCollection" => "the scene collection switch".into(),
+        "SetCurrentProfile" => "the profile switch".into(),
         other => other.into(),
     }
 }
@@ -679,6 +688,8 @@ fn refused_what(request_type: &str) -> String {
 fn refusal_reason(request_type: &str, code: u64) -> String {
     match (request_type, code) {
         ("SetCurrentProgramScene", 600) => "no scene with that name".into(),
+        ("SetCurrentSceneCollection", 600) => "no scene collection with that name".into(),
+        ("SetCurrentProfile", 600) => "no profile with that name".into(),
         (_, 207) => "OBS is not ready yet".into(),
         (_, 500) => "the output is already running".into(),
         (_, 501) => "the output is not running".into(),
@@ -2029,6 +2040,61 @@ mod tests {
             .unwrap_err();
         server.join().unwrap();
         assert!(error.contains("studio mode is not active"), "{error}");
+    }
+
+    #[test]
+    fn collection_and_profile_switches_are_one_request_with_specific_refusals() {
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None)
+            .run(&Action::ObsSceneCollection {
+                name: "Show \"A\"".into(),
+            })
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            requests(&seen),
+            [(
+                "SetCurrentSceneCollection".to_string(),
+                json!({"sceneCollectionName":"Show \"A\""})
+            )]
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None)
+            .run(&Action::ObsProfile {
+                name: "Work".into(),
+            })
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            requests(&seen),
+            [(
+                "SetCurrentProfile".to_string(),
+                json!({"profileName":"Work"})
+            )]
+        );
+        for (action, reason) in [
+            (
+                Action::ObsSceneCollection {
+                    name: "Secret show".into(),
+                },
+                "no scene collection with that name",
+            ),
+            (
+                Action::ObsProfile {
+                    name: "Secret".into(),
+                },
+                "no profile with that name",
+            ),
+        ] {
+            let (endpoint, server) = serve(scripted_obs(vec![(
+                json!({"result":false,"code":600,"comment":"No profile called Secret"}),
+                None,
+            )]));
+            let error = client(endpoint, None).run(&action).unwrap_err();
+            server.join().unwrap();
+            assert!(error.contains(reason), "{error}");
+            assert!(!error.contains("Secret"), "{error}");
+        }
     }
 
     #[test]

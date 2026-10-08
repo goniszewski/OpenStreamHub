@@ -188,6 +188,29 @@ describe('obs source actions', () => {
   });
 });
 
+describe('obs scene collection and profile', () => {
+  it('offers both as steps with valid defaults and clipped labels', () => {
+    expect(stepActionTypes.map(([type]) => type)).toEqual(expect.arrayContaining(['obs_scene_collection', 'obs_profile']));
+    const collection = defaultStepAction('obs_scene_collection') as { name: string };
+    const profile = defaultStepAction('obs_profile') as { name: string };
+    expect(obsNameIssue(collection.name, 'scene collection')).toBeNull();
+    expect(obsNameIssue(profile.name, 'profile')).toBeNull();
+    expect(obsNameIssue('', 'profile')).toContain('OBS profile name');
+    expect(obsNameIssue('', 'scene collection')).toContain('OBS scene collection name');
+    expect(actionLabel({ type: 'obs_scene_collection', name: 'Show' })).toBe('OBS scene collection “Show”');
+    expect(actionLabel({ type: 'obs_profile', name: 'x'.repeat(40) })).toBe(`OBS profile “${'x'.repeat(24)}…”`);
+  });
+
+  it('agrees with the shared fixture on which of them are valid', () => {
+    const strict = (action: Record<string, unknown>) => Object.keys(action).sort().join() === 'name,type' && typeof action.name === 'string' && obsNameIssue(action.name, 'profile') === null;
+    const mine = (list: unknown) => (list as Record<string, unknown>[]).filter(action => action.type === 'obs_scene_collection' || action.type === 'obs_profile');
+    expect(mine(fixture.valid).length).toBe(2);
+    for (const action of mine(fixture.valid)) expect(strict(action), JSON.stringify(action)).toBe(true);
+    expect(mine(fixture.invalid).length).toBeGreaterThan(3);
+    for (const action of mine(fixture.invalid)) expect(strict(action), JSON.stringify(action)).toBe(false);
+  });
+});
+
 describe('obs outputs', () => {
   it('offers the virtual camera and the replay buffer with closed operation sets, as steps and top-level actions', () => {
     expect(stepActionTypes.map(([type]) => type)).toEqual(expect.arrayContaining(['obs_virtual_camera', 'obs_replay_buffer']));

@@ -121,6 +121,13 @@ describe('summarizeRecord', () => {
     expect(at({ type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'toggle_mute' }] }))
       .toContain('multi-action [OBS replay buffer save, toggle mute]');
   });
+  it('logs only the length of an OBS scene collection or profile name', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    const lines = [at({ type: 'obs_scene_collection', name: 'Secret show' }), at({ type: 'obs_profile', name_chars: 4 })];
+    expect(lines[0]).toContain('OBS scene collection (11 characters)');
+    expect(lines[1]).toContain('OBS profile (4 characters)');
+    expect(lines[0]).not.toContain('Secret');
+  });
   it('logs only the lengths of OBS source, filter and scene names, from new (_chars) and old records alike', () => {
     const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
     const lines = [

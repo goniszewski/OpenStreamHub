@@ -102,6 +102,7 @@ Everything above runs as request/response with no event subscription, so a one-c
 2. How the progress timer (`startOBSMediaPlayTimer`) draws on the key. It is display-only and out of scope here.
 3. Whether `sceneItemId` for groups (`obsVsbGroupItemParentUuid`) needs a separate field, or a nested scene reference, in our model.
 4. Keypad-only versus multi-action: all 17 are allowed in the 15-key multi-task display (`15keys-multi-tasking`).
+5. Whether OBS answers `SetCurrentSceneCollection` and `SetCurrentProfile` before or after the reload finishes. The implementation sends one request and does not wait; a following OBS step in a `multi_action` could reach OBS mid-reload. Needs a real OBS.
 
 ## Reproduction
 

@@ -25,6 +25,8 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"obs_transition"}` | `TriggerStudioModeTransition`. OBS refuses it while studio mode is off | Same as `obs_scene` |
 | `{"type":"obs_filter","source":"Webcam","filter":"Blur","op":"toggle"}` (`on`, `off`) | `GetSourceFilter` then `SetSourceFilterEnabled` (`toggle`), or the set alone | Same as `obs_scene` |
 | `{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"off"}` (`toggle`, `on`) | `GetSceneItemId`, then `GetSceneItemEnabled` (`toggle` only), then `SetSceneItemEnabled` | Same as `obs_scene` |
+| `{"type":"obs_scene_collection","name":"Streaming"}` | `SetCurrentSceneCollection` with `sceneCollectionName`. See [OBS scene collection and profile](#obs-scene-collection-and-profile-obs_scene_collection-obs_profile) | Same as `obs_scene` |
+| `{"type":"obs_profile","name":"Work"}` | `SetCurrentProfile` with `profileName` | Same as `obs_scene` |
 
 Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution.
 
@@ -233,6 +235,17 @@ The next four of the [official 17](research/masterhub-obs-actions.md), on the sa
 - The Execute confirmation lists studio mode and transition as OBS outputs, and each filter and source change with its names (invisible characters made visible). It stays at normal risk: these change what OBS shows, like a scene switch.
 - Tested against the scripted fake obs-websocket server only; no real OBS has been used.
 
+## OBS scene collection and profile (`obs_scene_collection`, `obs_profile`)
+
+The official app's `scene-collection` and `obs-profile` actions ([action list](research/masterhub-obs-actions.md)), on the same transport.
+
+- JSON: `{"type":"obs_scene_collection","name":"Streaming"}` and `{"type":"obs_profile","name":"Work"}`. `name` follows the `obs_scene` rules (nonempty, at most 128 bytes, no control or invisible characters) and is sent only as a JSON string value. OBS matches it exactly. Extra fields are rejected. Additive variants, no schema bump.
+- One request each (`SetCurrentSceneCollection`, `SetCurrentProfile`) on one connection. OBS **reloads** its scenes or settings and applies the switch a moment after it answers; the service does not wait for or poll that. Switching can interrupt a live stream or recording, and the editor and the Execute confirmation say so. Both are allowed as `multi_action` steps, but later OBS steps in the same sequence may reach OBS while it is still reloading.
+- Failures: a missing name reports "no scene collection with that name" or "no profile with that name" (status 600). OBS's own comment text is never shown (the request carried a name).
+- **Logging and redaction.** Records show `{"type":"obs_profile","name_chars":4}`; the activity panel shows `OBS profile (4 characters)`. Diagnostics bundles with redaction replace `name` with `<N chars>`.
+- The Execute confirmation lists each switch with its name (invisible characters made visible) and a reload note. It stays at normal risk, like a scene switch.
+- Tested against the scripted fake obs-websocket server only; no real OBS has been used. Whether OBS answers before or after the reload completes is unverified.
+
 ## OBS scene (`obs_scene`)
 
 This is the first of the official app's OBS integrations ([app features](research/masterhub-1.0.0.113-app-features.md), "Integrations: OBS", about 18 actions over obs-websocket). Only switching the program scene is implemented; the rest are listed under [Not implemented](#not-implemented).
@@ -328,5 +341,5 @@ Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the ti
 - Selecting a profile by name with the `profile` action (see above). Profile next/previous itself works only under the OpenStreamHub session manager; the CLI loads one profile per process.
 - Showing a timer's remaining time on the key (see above), and importing official timers from `.mhz` files.
 - Recorded key macros, clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
-- Every OBS action except scene switching, the virtual camera, the replay buffer, studio mode, the studio transition, filters and source visibility: recording (start/stop/pause) and streaming, audio mute and volume, media sources, scene collections and profiles, and screenshots (8 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
+- Every OBS action except scene switching, the virtual camera, the replay buffer, studio mode, the studio transition, filters, source visibility, scene collections and profiles: recording (start/stop/pause) and streaming, audio mute and volume, media sources, and screenshots (6 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
 - A media stop for players other than Apple Music and Spotify, fast-forward/rewind (`media-fast-back-forward`) and playing an audio file (`play-pause`).

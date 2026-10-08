@@ -313,6 +313,7 @@ fn redact_action_payloads(
                 Some("timer") => &["label"],
                 Some("obs_scene") => &["scene"],
                 Some("obs_filter") => &["source", "filter"],
+                Some("obs_scene_collection" | "obs_profile") => &["name"],
                 Some("obs_source_visibility") => &["scene", "source"],
                 _ => &[],
             };
@@ -1605,6 +1606,26 @@ mod tests {
         assert_eq!(profile[1]["action"]["scene"], "<3 chars>");
         assert_eq!(profile[2]["action"]["actions"][1]["scene"], "<19 chars>");
         assert!(!bundle.value.to_string().contains("Interview guest"));
+    }
+
+    #[test]
+    fn obs_collection_and_profile_names_are_redacted() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "obs_scene_collection", "name": "Client interview" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "obs_profile", "name": "Private" },
+                    { "type": "obs_transition" },
+                ] } },
+            ] })),
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let profile = &bundle.value["profile"]["bindings"];
+        assert_eq!(profile[0]["action"]["name"], "<16 chars>");
+        assert_eq!(profile[1]["action"]["actions"][0]["name"], "<7 chars>");
+        assert!(!bundle.value.to_string().contains("Client interview"));
     }
 
     #[test]

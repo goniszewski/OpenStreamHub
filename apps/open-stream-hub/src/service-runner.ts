@@ -160,6 +160,8 @@ function describeAction(action: unknown): string {
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_filter': return `OBS filter ${str(action.op) ?? '?'} (${nameChars(action, 'source')} + ${nameChars(action, 'filter')} characters)`;
     case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
+    case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;
+    case 'obs_profile': return `OBS profile (${nameChars(action, 'name')} characters)`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     default: return str(action.type) ?? 'action';
   }

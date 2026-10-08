@@ -35,7 +35,10 @@ export type StepAction =
   | { type: 'obs_studio_mode'; op: ObsSwitchOp }
   | { type: 'obs_transition' }
   | { type: 'obs_filter'; source: string; filter: string; op: ObsSwitchOp }
-  | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp };
+  | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp }
+  // Switch the OBS scene collection or OBS profile by exact name. OBS reloads, which can interrupt a live output.
+  | { type: 'obs_scene_collection'; name: string }
+  | { type: 'obs_profile'; name: string };
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';

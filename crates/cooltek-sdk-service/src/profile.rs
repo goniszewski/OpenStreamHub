@@ -447,6 +447,18 @@ pub enum Action {
         /// What to do with the source's visibility.
         op: ObsSwitchOp,
     },
+    /// Switch the OBS scene collection by name. OBS reloads its scenes, which
+    /// can interrupt a live output. Needs an OBS endpoint like `obs_scene`.
+    ObsSceneCollection {
+        /// Exact scene collection name.
+        name: String,
+    },
+    /// Switch the OBS profile by name. OBS reloads its settings, which can
+    /// interrupt a live output. Needs an OBS endpoint like `obs_scene`.
+    ObsProfile {
+        /// Exact profile name.
+        name: String,
+    },
 }
 
 /// Deserializes a present field as `Some`, so an explicit `null` is rejected
@@ -684,6 +696,12 @@ impl<'de> Deserialize<'de> for Action {
                 source: String,
                 op: ObsSwitchOp,
             },
+            ObsSceneCollection {
+                name: String,
+            },
+            ObsProfile {
+                name: String,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -716,6 +734,8 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsSourceVisibility { scene, source, op } => {
                 Self::ObsSourceVisibility { scene, source, op }
             }
+            Shape::ObsSceneCollection { name } => Self::ObsSceneCollection { name },
+            Shape::ObsProfile { name } => Self::ObsProfile { name },
         })
     }
 }
@@ -763,6 +783,8 @@ impl Action {
             Self::ObsTransition => "obs_transition",
             Self::ObsFilter { .. } => "obs_filter",
             Self::ObsSourceVisibility { .. } => "obs_source_visibility",
+            Self::ObsSceneCollection { .. } => "obs_scene_collection",
+            Self::ObsProfile { .. } => "obs_profile",
         }
     }
 
@@ -775,7 +797,9 @@ impl Action {
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition
             | Self::ObsFilter { .. }
-            | Self::ObsSourceVisibility { .. } => true,
+            | Self::ObsSourceVisibility { .. }
+            | Self::ObsSceneCollection { .. }
+            | Self::ObsProfile { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -827,6 +851,10 @@ impl Action {
             }
             Self::OpenUrl { url } => validate_url(url),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
+            Self::ObsSceneCollection { name } => {
+                validate_obs_name("obs_scene_collection", "name", name)
+            }
+            Self::ObsProfile { name } => validate_obs_name("obs_profile", "name", name),
             Self::ObsFilter { source, filter, .. } => {
                 validate_obs_name("obs_filter", "source", source)?;
                 validate_obs_name("obs_filter", "filter", filter)
@@ -1893,6 +1921,49 @@ mod tests {
         profile.bindings[0].module = ServiceModule::M005S;
         profile.bindings[0].gesture = Gesture::PositionChanged;
         assert!(profile.validate().is_err());
+    }
+
+    #[test]
+    fn obs_collection_and_profile_actions_have_a_strict_json_shape_and_name_rules() {
+        for json in [
+            r#"{"type":"obs_scene_collection","name":"Streaming"}"#,
+            r#"{"type":"obs_profile","name":"Zażółć 🎥"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs(), "{json}");
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_scene_collection"}"#,
+            r#"{"type":"obs_profile","name":null}"#,
+            r#"{"type":"obs_profile","name":"Work","op":"on"}"#,
+            r#"{"type":"obs_scene_collection","scene":"Work"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        let long = "x".repeat(Action::MAX_OBS_NAME_BYTES + 1);
+        for bad in ["", "   ", "line\nbreak", "zero\u{200B}width", long.as_str()] {
+            for action in [
+                Action::ObsSceneCollection { name: bad.into() },
+                Action::ObsProfile { name: bad.into() },
+            ] {
+                assert!(action.validate().is_err(), "{action:?}");
+            }
+        }
+        let error = Action::ObsProfile {
+            name: String::new(),
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.starts_with("obs_profile name must be nonempty"),
+            "{error}"
+        );
+        assert_eq!(
+            Action::ObsSceneCollection { name: "a".into() }.type_name(),
+            "obs_scene_collection"
+        );
     }
 
     #[test]

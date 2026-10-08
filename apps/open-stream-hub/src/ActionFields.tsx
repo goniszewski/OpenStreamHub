@@ -11,6 +11,7 @@ import type { StepActionType } from './action-model';
 type Change = (action: BindingAction | null, field?: string) => void;
 
 const obsNeedsNote = 'Needs OBS 28 or later with its WebSocket server on, and OBS turned on in Settings; the connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
+const obsReloadNote = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording. OBS applies the switch a moment after the press; nothing waits for it to finish.';
 const obsSwitchNote = `Toggle follows OBS's current state; Turn on and Turn off do not, so they are safer inside a multi-action. ${obsNeedsNote}`;
 
 function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {
@@ -157,6 +158,12 @@ function StepFields({ prefix, action, inputKey, onChange }: {
         <label className="spaced-label" htmlFor={id('obs-visibility-source')}>Source name</label><input id={id('obs-visibility-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-visibility-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-visibility-source')} />{sourceIssue && <p id={id('obs-visibility-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
         <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Visibility</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op })} />
         <p className="fine-print">Shows or hides the source in that scene (a group name works as the scene). Both names are matched exactly (up to {maxObsSceneBytes} bytes each). {obsSwitchNote}</p></div>;
+    }
+    case 'obs_scene_collection': case 'obs_profile': {
+      const collection = action.type === 'obs_scene_collection';
+      const issue = obsNameIssue(action.name, collection ? 'scene collection' : 'profile');
+      return <div className="action-fields"><label htmlFor={id('obs-reload-name')}>{collection ? 'OBS scene collection name' : 'OBS profile name'}</label><input id={id('obs-reload-name')} spellCheck={false} value={action.name} aria-invalid={!!issue} aria-describedby={issue ? id('obs-reload-name-error') : undefined} onChange={event => onChange({ ...action, name: event.target.value }, 'obs-reload-name')} />{issue && <p id={id('obs-reload-name-error')} className="field-error" role="alert">{issue}</p>}
+        <p className="fine-print">Switches OBS to this {collection ? 'scene collection' : 'profile'}, matched exactly (up to {maxObsSceneBytes} bytes). {obsReloadNote} {obsNeedsNote}</p></div>;
     }
     case 'obs_scene': {
       const issue = obsSceneIssue(action.scene);

@@ -94,6 +94,8 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_filter': return `OBS filter “${clipLabel(action.filter)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_source_visibility': return `OBS source “${clipLabel(action.source)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
+    case 'obs_scene_collection': return `OBS scene collection “${clipLabel(action.name)}”`;
+    case 'obs_profile': return `OBS profile “${clipLabel(action.name)}”`;
     case 'obs_scene': return `OBS scene “${clipLabel(action.scene)}”`;
   }
 }

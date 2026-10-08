@@ -44,6 +44,9 @@ export interface ProfileCapabilities {
   obsOutputs: string[];
   // OBS filters and source visibility changes, one plain-language entry each (names shown clipped), in profile order.
   obsItems: string[];
+  // OBS scene collection and profile switches, one plain-language entry each (names shown clipped). OBS reloads, which
+  // can interrupt a live output. Shown, but low risk like obs_scene.
+  obsReloads: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   risk: RiskLevel;
@@ -97,6 +100,8 @@ const quoted = (name: unknown) => `“${snippetPreview(String(name ?? '')).text}
 const obsItemLine = (action: Record<string, unknown>) => action.type === 'obs_filter'
   ? `OBS filter ${quoted(action.filter)} on ${quoted(action.source)}: ${opWord(action.op, 'obs_filter')}`
   : `OBS source ${quoted(action.source)} in scene ${quoted(action.scene)}: ${opWord(action.op, 'obs_source_visibility')}`;
+const obsReloadLine = (action: Record<string, unknown>) =>
+  `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
 const obsOpSets: Record<string, string[]> = {
   obs_virtual_camera: outputOps, obs_replay_buffer: [...outputOps, 'save'],
@@ -112,6 +117,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
+  const obsReloads = new Set<string>();
   const sequences = new Map<string, StepAction[]>();
   const reasons = new Set<string>();
   let screenshot = false;
@@ -162,6 +168,11 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         obsItems.add(obsItemLine(action));
         for (const name of [action.scene, action.source, action.filter]) if (codePoints(String(name ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
+      case 'obs_scene_collection':
+      case 'obs_profile':
+        obsReloads.add(obsReloadLine(action));
+        if (codePoints(String(action.name ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
       case 'multi_action': {
         const steps = list(action.actions);
@@ -198,6 +209,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     obsScenes: [...obsScenes],
     obsOutputs: [...obsOutputs],
     obsItems: [...obsItems],
+    obsReloads: [...obsReloads],
     sequences: [...sequences.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
@@ -263,6 +275,7 @@ export function stepLabel(step: StepAction): string {
     case 'obs_studio_mode': return `OBS studio mode: ${opWord(step.op, 'obs_studio_mode')}`;
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_filter': case 'obs_source_visibility': return obsItemLine(step);
+    case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op, 'obs_virtual_camera')}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;
     case 'text': {
@@ -293,6 +306,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.obsScenes.length) lines.push(`Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsScenes.map(scene => `“${snippetPreview(scene).text}”`).join(', ')}.`);
   if (capabilities.obsOutputs.length) lines.push(`Controls OBS outputs through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsOutputs.join(', ')}.`);
   if (capabilities.obsItems.length) lines.push(`Changes OBS filters or source visibility through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsItems.join('; ')}.`);
+  if (capabilities.obsReloads.length) lines.push(`Switches the OBS scene collection or profile through the OBS WebSocket on this Mac (when OBS is turned on in Settings); OBS reloads and this can interrupt a live stream or recording: ${capabilities.obsReloads.join('; ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (capabilities.mediaKeys) lines.push('Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.');
   if (capabilities.mediaStop) lines.push('Stops Music or Spotify if running; it does not start a player that is not running (one that quits at that instant may be relaunched by macOS, without playing). macOS may ask for Automation permission to control them.');

@@ -232,6 +232,19 @@ describe('obs source capabilities', () => {
     expect(stepLabel({ type: 'obs_transition' })).toBe('OBS studio transition');
   });
 
+  it('discloses OBS scene collection and profile switches as a reload, without raising the risk', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'obs_scene_collection', name: 'Show' },
+      { type: 'multi_action', actions: [{ type: 'obs_profile', name: 'Work' }, { type: 'obs_transition' }] },
+    ));
+    expect(capabilities.obsReloads).toEqual(['OBS scene collection “Show”', 'OBS profile “Work”']);
+    expect(capabilities.risk).toBe('elevated');
+    expect(profileCapabilities(flat({ type: 'obs_profile', name: 'Work' })).risk).toBe('normal');
+    expect(capabilityLines(capabilities).join(' ')).toContain('OBS reloads and this can interrupt a live stream or recording: OBS scene collection “Show”; OBS profile “Work”.');
+    expect(stepLabel({ type: 'obs_profile', name: 'Work' })).toBe('Switch OBS profile “Work” (OBS reloads)');
+    expect(profileCapabilities(flat({ type: 'obs_profile', name: 'x'.repeat(5000) })).riskReasons).toContain(tooLongReason);
+  });
+
   it('shows invisible characters in names and flags very long ones', () => {
     const capabilities = profileCapabilities(flat({ type: 'obs_filter', source: 'Cam\u200Bera', filter: 'x'.repeat(5000), op: 'on' }));
     expect(capabilities.obsItems[0]).toContain('\\u{200B}');

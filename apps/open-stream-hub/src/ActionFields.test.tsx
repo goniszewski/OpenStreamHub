@@ -187,6 +187,20 @@ describe('obs source fields', () => {
     expect(blank).toContain('role="alert"');
   });
 
+  it('edits the name of an OBS scene collection or profile and warns that OBS reloads', () => {
+    const markup = render({ type: 'obs_scene_collection', name: 'Show' });
+    expect(markup).toContain('<label for="obs-reload-name">OBS scene collection name</label>');
+    expect(markup).toContain('reloads');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const blank = render({ type: 'obs_profile', name: ' ' });
+    expect(blank).toContain('>OBS profile name</label>');
+    expect(blank).toContain('Enter the OBS profile name');
+    const multi = render({ type: 'multi_action', actions: [{ type: 'obs_profile', name: 'A' }, { type: 'obs_scene_collection', name: 'B' }] });
+    expect(ids(multi)).toEqual(expect.arrayContaining(['step-1-obs-reload-name', 'step-2-obs-reload-name']));
+    expectAccessible(multi);
+  });
+
   it('edits scene and source for visibility, also as a multi-action step', () => {
     const markup = render({ type: 'obs_source_visibility', scene: 'Live', source: '', op: 'off' });
     expect(markup).toContain('for="obs-visibility-scene">Scene name</label>');

@@ -543,7 +543,9 @@ impl MacOsDispatcher {
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition
             | Action::ObsFilter { .. }
-            | Action::ObsSourceVisibility { .. } => self.obs_action(action, None)?,
+            | Action::ObsSourceVisibility { .. }
+            | Action::ObsSceneCollection { .. }
+            | Action::ObsProfile { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;

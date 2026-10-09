@@ -175,8 +175,9 @@ fn live_devices_with_locations(
 /// Resolves the currently documented MasterHUB USB topology to a base
 /// quadrant. The high location-ID byte identifies the host bus; the trailing
 /// port chain is stable across bus-number changes. The observed suffixes are
-/// M4315 `[1,2,2]`, M032LE `[1,1,1,4]`, M131E `[1,1,4,3]` and M003K
-/// `[1,1,3,4]`. Unknown chains stay unset.
+/// M4315 `[1,2,2]`, M032LE `[1,1,1,4]`, M005S `[1,1,2,3]`, M131E `[1,1,4,3]`
+/// and M003K `[1,1,3,4]`. The faders and the rollers both fill the bottom-left
+/// strip. Unknown chains stay unset.
 pub fn base_position(module: ServiceModule, location_id: u32) -> Option<BasePosition> {
     let mut ports: Vec<u8> = (0..6)
         .map(|index| ((location_id >> (20 - 4 * index)) & 0x0f) as u8)
@@ -189,6 +190,7 @@ pub fn base_position(module: ServiceModule, location_id: u32) -> Option<BasePosi
     match module {
         ServiceModule::M4315 if ends_with(&[1, 2, 2]) => Some(BasePosition::TopLeft),
         ServiceModule::M032LE if ends_with(&[1, 1, 1, 4]) => Some(BasePosition::BottomLeft),
+        ServiceModule::M005S if ends_with(&[1, 1, 2, 3]) => Some(BasePosition::BottomLeft),
         ServiceModule::M131E if ends_with(&[1, 1, 4, 3]) => Some(BasePosition::TopRight),
         ServiceModule::M003K if ends_with(&[1, 1, 3, 4]) => Some(BasePosition::BottomRight),
         _ => None,
@@ -715,6 +717,19 @@ impl Feeds {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn faders_on_the_observed_port_chain_sit_bottom_left() {
+        // macOS location ID 0x02112300, read from a connected 5-fader module.
+        assert_eq!(
+            super::base_position(ServiceModule::M005S, 0x0211_2300),
+            Some(BasePosition::BottomLeft)
+        );
+        assert_eq!(
+            super::base_position(ServiceModule::M005S, 0x0211_1340),
+            None
+        );
+    }
+
     use super::*;
     use cooltek_sdk_masterhub::ModuleKind;
     use cooltek_sdk_masterhub::hidapi::{HidError, HidResult};

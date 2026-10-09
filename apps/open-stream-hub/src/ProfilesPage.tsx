@@ -68,9 +68,11 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
     <AllowExecutionDialog target={allowing && flagged && !unsaved ? { name: flagged.name, profile } : null} onCancel={() => setAllowing(false)}
       onConfirm={() => { setAllowing(false); if (flagged && contentHash) void session.allowExecution(flagged.id, flagged.name, contentHash); }} />
     <FocusRulesPanel store={focusRules} profiles={state.profiles} disabled={!desktop || !state.ready} />
-    <section className="panel replay-panel"><div className="section-heading"><div><h2>Test with sample input</h2><p className="fine-print">Built-in samples run through the current profile as if a module sent them, so you can see what each control would do.</p></div><span className="small-label">No hardware required</span></div><div className="replay-controls"><label htmlFor="replay-capture">Sample input</label><SelectField id="replay-capture" value={replayKind} onChange={event => { session.clearReplay(); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || state.replay.status === 'running'} onClick={() => { void session.replayCapture(replayKind); }}><Play size={17} />{state.replay.status === 'running' ? 'Running…' : 'Run test'}</button></div>
+    <details className="panel replay-panel"><summary className="replay-summary"><span>Test with sample input</span><span className="small-label">No hardware required</span></summary>
+      <p className="fine-print">Built-in samples run through the current profile as if a module sent them, so you can see what each control would do.</p>
+      <div className="replay-controls"><label htmlFor="replay-capture">Sample input</label><SelectField id="replay-capture" value={replayKind} onChange={event => { session.clearReplay(); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || state.replay.status === 'running'} onClick={() => { void session.replayCapture(replayKind); }}><Play size={17} />{state.replay.status === 'running' ? 'Running…' : 'Run test'}</button></div>
       <SessionView session={state.replay} />
-    </section>
+    </details>
   </section>;
 }
 

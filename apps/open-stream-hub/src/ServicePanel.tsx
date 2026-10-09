@@ -63,16 +63,29 @@ export const appControlNote = '“Let OpenStreamHub drive the display” is set 
 
 export const stateLabel = (state: ServiceState | undefined) => state === undefined ? 'Stopped' : state === 'exited' ? 'Stopped' : state[0].toUpperCase() + state.slice(1);
 
+// The visible run state. A live run is named by what it does — Dry run or Executing — never just "Running".
+// A session that reported 'stopped' is Stopped even if its last process state has not caught up.
 export const phaseLabel = (run: ServiceRun | undefined) => {
   switch (run?.session?.phase) {
     case 'suspended': return 'Paused';
     case 'waiting_for_device': return 'Waiting';
     case 'reconnecting': return 'Reconnecting';
     case 'needs_confirmation': return 'Needs confirmation';
-    default: return stateLabel(run?.state);
+    case 'stopped': return run.state === 'failed' ? 'Failed' : 'Stopped';
+    case 'running': return run.state === 'stopping' ? 'Stopping' : run.execute ? 'Executing' : 'Dry run';
+    default: return run?.state === 'running' ? (run.execute ? 'Executing' : 'Dry run') : stateLabel(run?.state);
   }
 };
-const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.phase !== 'running' && run.session.phase !== 'stopped' ? run.session.phase : run?.state ?? 'idle';
+const phaseClass = (run: ServiceRun | undefined) => {
+  const phase = run?.session?.phase;
+  if (phase !== undefined && phase !== 'running') return phase === 'stopped' ? (run!.state === 'failed' ? 'failed' : 'exited') : phase;
+  return run?.state ?? 'idle';
+};
+// The state pill's text and CSS classes. Executing carries its own class so it stands out from a dry run.
+export const runStatePill = (run: ServiceRun | undefined) => {
+  const label = phaseLabel(run);
+  return { label, className: `${phaseClass(run)}${label === 'Executing' ? ' executing' : ''}` };
+};
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
@@ -222,15 +235,21 @@ export const runBlockNotes = {
   unreadable: 'The list of imported profiles cannot be read, so every profile runs only as a dry run. Fix it on the Profiles page first.',
 } as const;
 
-export function ServicePanel({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow }: {
-  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; sourceProfileId?: string | null; desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; dryRunOnly?: boolean; dryRunNote?: string; platform?: PlatformInfo; now?: number;
-}) {
+export interface RunSessionOptions {
+  runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; sourceProfileId?: string | null;
+  desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; dryRunOnly?: boolean; dryRunNote?: string;
+  platform?: PlatformInfo; now?: number; initialExecute?: boolean;
+}
+
+// All state and behaviour of starting, stopping and resuming a run. Lives once in App, so the header
+// Run control works on every page and shares its selection and mode with the Devices-page panel.
+export function useRunSession({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow, initialExecute = false }: RunSessionOptions) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
   const display = useSyncExternalStore(displaySettings?.subscribe ?? noopSubscribe, displaySettings?.getState ?? idleDisplay, displaySettings?.getState ?? idleDisplay);
   useEffect(() => { if (displaySettings && display.desktop && !display.loaded) void displaySettings.load(); }, [displaySettings, display.desktop, display.loaded]);
   const [chosen, setChosen] = useState<ServiceSelection | null>(null);
-  const [execute, setExecute] = useState(false);
+  const [execute, setExecute] = useState(initialExecute);
   const [softwareMode, setSoftwareMode] = useState(false);
   const [confirm, setConfirm] = useState<((ok: boolean) => void) | null>(null);
   const [confirmKind, setConfirmKind] = useState<'start' | 'resume'>('start');
@@ -239,8 +258,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   // The high-risk acknowledgement. Cleared with every answer, so each confirmation asks again.
   const [acknowledged, setAcknowledged] = useState(false);
   const [clock, setClock] = useState(() => Date.now());
-  const log = useRef<HTMLOListElement>(null);
-  // A confirmation still open when the panel unmounts (page change) answers false, so the start or resume never hangs.
+  // A confirmation still open when the app unmounts answers false, so the start or resume never hangs.
   const pendingConfirm = useRef(confirm);
   pendingConfirm.current = confirm;
   useEffect(() => () => settlePendingConfirm(pendingConfirm), []);
@@ -270,7 +288,6 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
     const timer = setInterval(() => setClock(Date.now()), 1000);
     return () => clearInterval(timer);
   }, [session?.nextAttemptAt, fixedNow]);
-  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [run?.entries.length]);
 
   const begin = () => {
     if (!runner || !device) return;
@@ -288,25 +305,122 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
   const dialog = dialogCopy(confirmKind, service.runs, resumeId, startCopy);
   const resumeGone = confirm !== null && dialog === null;
   useEffect(() => { if (resumeGone) answer(false); });
-  const copy = dialog ?? startCopy;
+
+  return {
+    service, devices, display, mac, enabled, dryRunOnly, dryRunNote, chosen, selection, setExecute, setSoftwareMode, softwareMode,
+    chooseDevice: (next: LiveDevice) => setChosen({ device: next }),
+    device, run, session, phase, active, blocker, box, stale, now, executeSelected,
+    begin, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
+    confirm, confirmKind, resumeGone, acknowledged, setAcknowledged, answer,
+    copy: dialog ?? startCopy, dialogOpen: confirm !== null && !resumeGone,
+  };
+}
+
+export type RunSession = ReturnType<typeof useRunSession>;
+
+const noop = () => {};
+// A run session for a panel or header control mounted without stores (tests, the browser preview):
+// everything is stopped and Run stays disabled with the desktop-app blocker.
+export const idleRunSession: RunSession = {
+  service: idleServiceState, devices: [], display: idleDisplaySettingsState, mac: false, enabled: false,
+  dryRunOnly: false, dryRunNote: dryRunOnlyRunNote, chosen: null, selection: null, setExecute: noop, setSoftwareMode: noop, softwareMode: false,
+  chooseDevice: noop,
+  device: undefined, run: undefined, session: undefined, phase: undefined, active: false,
+  blocker: runBlocker({ desktop: false, device: undefined, profile: { schema_version: 1, name: '', bindings: [] } }),
+  box: softwareModeBox({ module: undefined, loaded: false, moduleControl: 'app', ticked: false }),
+  stale: false, now: 0, executeSelected: false,
+  begin: noop, resume: noop, stop: noop,
+  confirm: null, confirmKind: 'start', resumeGone: false, acknowledged: false, setAcknowledged: noop, answer: noop,
+  copy: confirmCopy('start', '', 'the selected module'), dialogOpen: false,
+};
+
+// Compact module names for the header Run button ("Run on 15-key"); the tooltip carries the full device name.
+const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315: '15-key', m003k: 'knobs', m005s: 'faders', m032le: 'rollers' };
+
+// The header Run control: the run state (Stopped / Dry run / Executing / Paused / …) next to the one
+// primary action — Run, Stop, or, for a paused run, Resume. The button names the module a start would
+// use and turns danger when it would run with actions. The Execute confirmation lives here too, so
+// Run works from every page.
+export function RunHeaderControl({ run }: { run: RunSession }) {
+  const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device, dialogOpen, copy, answer, acknowledged, setAcknowledged } = run;
+  const pill = runStatePill(activeRun);
+  const needsConfirmation = phase === 'needs_confirmation';
+  const stopping = activeRun?.state === 'stopping';
+  const starting = activeRun?.state === 'starting';
+  const target = device ? runTargetLabel[device.module] : null;
+  const runTitle = blocker ?? `${executeSelected ? 'Run with actions' : 'Dry run'}${device ? ` on ${deviceName(device)}` : ''}`;
+  return <div className="run-control" role="group" aria-label="Run control">
+    <span className={`mode-pill run-state-pill ${pill.className}`} role="status">{pill.label}</span>
+    {needsConfirmation ? <>
+      <button type="button" className="button compact danger" title="Resume actions on this Mac" onClick={resume}>Resume…</button>
+      <button type="button" className="button compact" title="Stop without resuming" disabled={stopping} onClick={stop}>Stop</button>
+    </> : active
+      ? <button type="button" className="button" disabled={stopping} onClick={stop}>{stopping ? 'Stopping…' : <><Square size={16} />Stop</>}</button>
+      : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} title={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? target ? `Run with actions on ${target}` : 'Run with actions' : target ? `Run on ${target}` : 'Run'}</button>}
+    <ExecuteDialog run={run} />
+  </div>;
+}
+
+// Why Run is unavailable, as a full-width strip under the header row: visible on every page, never
+// tooltip-only. The browser preview omits it — its own banner already says the desktop app is needed.
+export function RunBlockerNotice({ run }: { run: RunSession }) {
+  const { blocker, active, enabled } = run;
+  if (!blocker || active || !enabled) return null;
+  return <div className="run-blocker-strip" role="status"><TriangleAlert size={15} aria-hidden="true" /><span>{blocker}</span></div>;
+}
+
+// The Execute confirmation with the capability disclosure. Shown for a start and for a resume.
+export function ExecuteDialog({ run }: { run: RunSession }) {
+  const { copy, dialogOpen, answer, acknowledged, setAcknowledged } = run;
+  return <ModalDialog open={dialogOpen} role="alertdialog" labelledBy="execute-title" describedBy={copy.warning ? 'execute-warning execute-message' : 'execute-message'} onCancel={() => answer(false)} className="execute-dialog">
+    <h2 id="execute-title">{copy.title}</h2>
+    {copy.warning && <p id="execute-warning" className="execute-warning"><TriangleAlert size={18} aria-hidden="true" /><span>{copy.warning}</span></p>}
+    <p id="execute-message">{copy.message}</p>
+    <div className="execute-details" tabIndex={0} role="region" aria-label="What this profile will do">
+      <ul className="execute-capabilities">{copy.lines.map(line => <li key={line}>{line}</li>)}</ul>
+      {copy.snippets.length > 0 && <>
+        <h3>Text snippets</h3>
+        <p className="fine-print">Shown exactly as they will be pasted: ⏎ is a line break, ⇥ a tab and \u{'{…}'} an invisible character or a stack of combining marks.</p>
+        <ol className="execute-snippets">{copy.snippets.map((snippet, index) => <li key={index}>
+          <code>{snippet.text}</code>
+          {snippet.more > 0 && <span className="fine-print"> … and {snippet.more} more characters not shown</span>}
+          {snippet.pressEnter && <strong className="execute-enter"> Then presses Return.</strong>}
+        </li>)}</ol>
+      </>}
+      {copy.sequences.length > 0 && <>
+        <h3>Multi-step sequences</h3>
+        {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={`Sequence ${index + 1}`}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
+      </>}
+    </div>
+    {copy.acknowledge && <label className="service-option execute-acknowledge"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />{copy.acknowledge}</label>}
+    <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" disabled={copy.acknowledge !== null && !acknowledged} onClick={() => answer(true)}>{copy.confirm}</button></div>
+  </ModalDialog>;
+}
+
+// The Devices-page run section: which device and mode the header Run control uses, plus the live
+// banners, counters and activity of the selected run. Run and Stop live in the header.
+export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
+  const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setExecute, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume } = run;
+  const log = useRef<HTMLOListElement>(null);
+  useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [activeRun?.entries.length]);
+  const pill = runStatePill(activeRun);
 
   return <section className="service-panel" aria-label="Run profile">
-    <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${phaseClass(run)}`} role="status">{phaseLabel(run)}</span></div>
-    {run && active && phase === 'running' && run.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>Actions are running on this Mac</strong><span>Every action in this profile, including pasted text, web pages and multi-step sequences, really runs when you use the module. Stop to end it.</span></div></div>}
-    {run && active && phase === 'running' && !run.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>Dry run: actions are logged only. Nothing changes on this Mac.</span></div>}
-    {run && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{run.execute ? session.autoStart ? 'Actions resume automatically after wake.' : 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
-    {run && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{run.execute ? session.autoStart ? 'Actions stay paused until the module reconnects, then resume automatically.' : 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
-    {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? session.autoStart ? ' Actions are paused until the session restarts; they resume automatically.' : ' Actions are paused until you confirm.' : ''}</span></div></div>}
-    {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" ${switchedTo(run.profileSwitchedBy)}.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
-    {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
-    {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, run?.execute ?? false, session.autoDryRunReason)}</p>}
-    {active && phase === 'running' && run?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
-    {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}
+    <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${pill.className}`} role="status">{pill.label}</span></div>
+    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>Actions are running on this Mac</strong><span>Every action in this profile, including pasted text, web pages and multi-step sequences, really runs when you use the module. Stop to end it.</span></div></div>}
+    {activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>Dry run: actions are logged only. Nothing changes on this Mac.</span></div>}
+    {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{activeRun.execute ? session.autoStart ? 'Actions resume automatically after wake.' : 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
+    {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{activeRun.execute ? session.autoStart ? 'Actions stay paused until the module reconnects, then resume automatically.' : 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
+    {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{activeRun.execute ? session.autoStart ? ' Actions are paused until the session restarts; they resume automatically.' : ' Actions are paused until you confirm.' : ''}</span></div></div>}
+    {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? `Resuming starts the saved profile "${activeRun.profileName}" ${switchedTo(activeRun.profileSwitchedBy)}.` : `Resuming restarts "${activeRun.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
+    {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
+    {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
+    {active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
     <div className="service-controls">
       <label className="sr-only" htmlFor="service-device">Device to run on</label>
       <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => {
         const next = devices.find(item => item.path_hex === event.target.value);
-        if (next) setChosen({ device: next });
+        if (next) chooseDevice(next);
       }}>
         {selection && !device && <option value={disconnectedServiceValue}>{deviceName(selection.device)} (disconnected)</option>}
         {devices.length === 0 && !selection ? <option value="">No module connected</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
@@ -315,52 +429,26 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
         <button type="button" aria-pressed={!executeSelected} disabled={!enabled || active} onClick={() => setExecute(false)}>Dry run (default)</button>
         <button type="button" aria-pressed={executeSelected} disabled={!enabled || active || !mac || dryRunOnly} onClick={() => setExecute(true)}>Execute actions</button>
       </div>
-      {run && active
-        ? <button type="button" className="button" disabled={run.state === 'stopping'} onClick={() => { void runner?.stop(run.serviceId); }}><Square size={16} />{run.state === 'stopping' ? 'Stopping…' : 'Stop'}</button>
-        : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} onClick={begin}>{run?.state === 'starting' ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? 'Run with actions' : 'Run'}</button>}
     </div>
     <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
-    {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved changes)' : ''} was used when this run started.</p>}
+    {activeRun && <p className="fine-print">Profile "{activeRun.profileName}"{activeRun.draftUnsaved ? ' (unsaved changes)' : ''} was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}
-    {run?.state === 'failed' && <div className="service-failure" role="alert"><strong>{run.error ?? 'The run failed.'}</strong>{run.stderrTail && <pre>{run.stderrTail}</pre>}</div>}
-    {run?.state === 'exited' && run.exitCode !== undefined && run.exitCode !== 0 && <p className="fine-print">The background helper exited with code {run.exitCode}.</p>}
+    {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? 'The run failed.'}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
+    {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">The background helper exited with code {activeRun.exitCode}.</p>}
     {service.error && <p className="service-failure" role="alert">{service.error}</p>}
-    {run && <>
+    {activeRun && <>
       <dl className="service-counters" aria-label="Run counters">
-        <div><dt>Events</dt><dd>{run.counters.events}</dd></div><div><dt>Would run</dt><dd>{run.counters.planned}</dd></div>
-        <div><dt>Executed</dt><dd>{run.counters.executed}</dd></div><div><dt>Failed</dt><dd>{run.counters.failed}</dd></div>
-        {run.counters.timerAlertsFailed > 0 && <div><dt>Timer alerts failed</dt><dd>{run.counters.timerAlertsFailed}</dd></div>}
+        <div><dt>Events</dt><dd>{activeRun.counters.events}</dd></div><div><dt>Would run</dt><dd>{activeRun.counters.planned}</dd></div>
+        <div><dt>Executed</dt><dd>{activeRun.counters.executed}</dd></div><div><dt>Failed</dt><dd>{activeRun.counters.failed}</dd></div>
+        {activeRun.counters.timerAlertsFailed > 0 && <div><dt>Timer alerts failed</dt><dd>{activeRun.counters.timerAlertsFailed}</dd></div>}
       </dl>
       <ol className="service-log" ref={log} role="log" aria-label="Run activity" tabIndex={0}>
-        {run.entries.length === 0 ? <li className="info">Waiting for activity…</li> : run.entries.slice(-100).map((entry, index) =>
+        {activeRun.entries.length === 0 ? <li className="info">Waiting for activity…</li> : activeRun.entries.slice(-100).map((entry, index) =>
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>
     </>}
-    <ModalDialog open={confirm !== null && !resumeGone} role="alertdialog" labelledBy="execute-title" describedBy={copy.warning ? 'execute-warning execute-message' : 'execute-message'} onCancel={() => answer(false)} className="execute-dialog">
-      <h2 id="execute-title">{copy.title}</h2>
-      {copy.warning && <p id="execute-warning" className="execute-warning"><TriangleAlert size={18} aria-hidden="true" /><span>{copy.warning}</span></p>}
-      <p id="execute-message">{copy.message}</p>
-      <div className="execute-details" tabIndex={0} role="region" aria-label="What this profile will do">
-        <ul className="execute-capabilities">{copy.lines.map(line => <li key={line}>{line}</li>)}</ul>
-        {copy.snippets.length > 0 && <>
-          <h3>Text snippets</h3>
-          <p className="fine-print">Shown exactly as they will be pasted: ⏎ is a line break, ⇥ a tab and \u{'{…}'} an invisible character or a stack of combining marks.</p>
-          <ol className="execute-snippets">{copy.snippets.map((snippet, index) => <li key={index}>
-            <code>{snippet.text}</code>
-            {snippet.more > 0 && <span className="fine-print"> … and {snippet.more} more characters not shown</span>}
-            {snippet.pressEnter && <strong className="execute-enter"> Then presses Return.</strong>}
-          </li>)}</ol>
-        </>}
-        {copy.sequences.length > 0 && <>
-          <h3>Multi-step sequences</h3>
-          {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={`Sequence ${index + 1}`}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
-        </>}
-      </div>
-      {copy.acknowledge && <label className="service-option execute-acknowledge"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />{copy.acknowledge}</label>}
-      <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" disabled={copy.acknowledge !== null && !acknowledged} onClick={() => answer(true)}>{copy.confirm}</button></div>
-    </ModalDialog>
   </section>;
 }

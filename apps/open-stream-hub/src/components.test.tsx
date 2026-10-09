@@ -70,6 +70,14 @@ describe('profiles page', () => {
     expect(markup).toContain('aria-label="Delete profile Alpha"');
   });
 
+  it('keeps the sample-input test as a collapsed section with its summary visible', () => {
+    const session = new ProfileSession(() => new Promise(() => {}), browserProfile, false);
+    const markup = renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
+    expect(markup).toContain('<details class="panel replay-panel">');
+    expect(markup).toContain('<summary class="replay-summary"><span>Test with sample input</span><span class="small-label">No hardware required</span></summary>');
+    expect(markup).toContain('>Run test</button>');
+  });
+
   it('offers Remove for keypad bindings', () => {
     const session = new ProfileSession(() => new Promise(() => {}), { schema_version: 1, name: 'Keys', bindings: [{ module: 'm4315', control: 2, gesture: 'pressed', action: { type: 'toggle_mute' } }] }, false);
     const markup = renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);

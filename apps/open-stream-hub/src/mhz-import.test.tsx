@@ -9,7 +9,7 @@ import { draftDryRunOnly, draftRunBlock, ProfileSession } from './profile-sessio
 import type { Invoke } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
 import { importDropped, importMhzFile, ProfileTransfer } from './ProfileTransfer';
-import { dryRunOnlyRunNote, ServicePanel } from './ServicePanel';
+import { dryRunOnlyRunNote, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import { ServiceRunner } from './service-runner';
 import { browserProfile } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
@@ -265,7 +265,13 @@ describe('import UI', () => {
   it('the Run panel offers only a dry run for a flagged profile', () => {
     const runner = new ServiceRunner(async () => null as never, async () => () => {}, true);
     const profile = upgradeKeypadProfile({ schema_version: 1, name: 'P', bindings: [] });
-    const html = (dryRunOnly: boolean) => renderToStaticMarkup(<ServicePanel runner={runner} profile={profile} desktop unsaved={false} dryRunOnly={dryRunOnly} platform={{ platform: 'MacIntel' }} now={1} />);
+    const html = (dryRunOnly: boolean) => {
+      const View = () => {
+        const run = useRunSession({ runner, profile, desktop: true, unsaved: false, dryRunOnly, platform: { platform: 'MacIntel' }, now: 1 });
+        return <><RunHeaderControl run={run} /><ServicePanel run={run} /></>;
+      };
+      return renderToStaticMarkup(<View />);
+    };
     expect(html(true)).toContain(dryRunOnlyRunNote);
     expect(html(true)).toMatch(/disabled="">Execute actions<\/button>/);
     expect(html(false)).not.toContain(dryRunOnlyRunNote);

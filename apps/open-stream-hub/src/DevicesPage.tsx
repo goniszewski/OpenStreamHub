@@ -1,7 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { CSSProperties } from 'react';
-import { CheckCircle2, ChevronRight, CircleHelp, LoaderCircle, Play, RotateCcw, RotateCw } from 'lucide-react';
-import { IntegerField } from './controls';
+import { ChevronRight, RotateCw } from 'lucide-react';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
@@ -9,18 +8,14 @@ import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from 
 import type { KnobOrientation } from './knob-orientation';
 import { knobControls, moduleArtwork, moduleImage } from './module-controls';
 import { livePointer, livePressed, livePulse, RigPreview } from './RigPreview';
-import { runBlockNotes, ServicePanel } from './ServicePanel';
-import { draftRunBlock } from './profile-session';
-import type { ServiceRunner } from './service-runner';
-import type { DisplaySettingsStore } from './display-settings';
+import { ServicePanel } from './ServicePanel';
+import type { RunSession } from './ServicePanel';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { isUnsaved } from './profile-session';
-import type { KeypadPreview, SessionState } from './profile-session';
-import { actionLabel, controlCounts, controlLabel, faderMaximum, gestureLabels, gestures, moduleNote, modules } from './ui-model';
+import type { SessionState } from './profile-session';
+import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
-import { bindingPreviewText } from './DialFunctionsPanel';
 
 export function ModuleCatalog({ editor, feed }: { editor: DeviceEditor; feed?: DeviceFeed }) {
   const connected = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
@@ -42,12 +37,12 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
   return <p className="status"><span className={`status-dot${connected ? ' on' : ''}`} />{connected ? `${count} module${count === 1 ? '' : 's'} connected` : 'No hardware connected'}</p>;
 }
 
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, runner, displaySettings }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; runner?: ServiceRunner; displaySettings?: DisplaySettingsStore; disabled: boolean; setPage(page: Page): void }) {
-  const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope, faderPosition } = editor;
-  const { preview, keypadPreview } = state;
+// The middle column: the module image with its live input, the control pickers, then the run section.
+// Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
+// lives in the header Run control.
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void }) {
+  const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
-  const serialMissing = serialScope === 'exact' && !selection.serial;
-  const previewRunning = preview.status === 'running' || keypadPreview.status === 'running';
   const knobOrientation = useKnobOrientation();
   const isKnob = selected.id === 'm003k';
   return <section className="workspace" aria-label="Device controls">
@@ -61,22 +56,8 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
         {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => editor.changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
       </div>}
       <p className="hero-note">{moduleNote(selection.module)}</p>
-      <section className="simulation-panel"><div className="section-heading"><h2>Simulation</h2><span className="small-label">Preview only</span></div>
-        {isKeypad ? <button className="button" disabled={disabled || keypadPreview.status === 'running' || serialMissing} onClick={() => { void editor.testKeypad(); }}><Play size={17} />Simulate key click</button> : selection.module === 'm005s' ? <div className="position-preview"><label htmlFor="fader-position">Simulated fader position</label><div className="position-inputs"><input id="fader-position" type="range" min={0} max={faderMaximum} step={1} value={faderPosition} disabled={disabled || preview.status === 'running'} onChange={event => editor.changeFaderPosition(Number(event.target.value))} /><label className="sr-only" htmlFor="fader-position-value">Fader position value</label><IntegerField id="fader-position-value" value={faderPosition} minimum={0} maximum={faderMaximum} disabled={disabled || preview.status === 'running'} onCommit={editor.changeFaderPosition} /></div><p className="fine-print">Position scale: 0–100. The preview sets the volume for the position you choose; the physical fader's endpoints still need checking.</p><button className="button" disabled={disabled || previewRunning || serialMissing} onClick={() => { void editor.testBinding(); }}><Play size={16} />Preview position</button></div> :
-          <div className="event-buttons">{gestures[selection.module].map(gesture => <button className="button" key={gesture} disabled={disabled || previewRunning || serialMissing} onClick={() => { void editor.testBinding(gesture); }}>{gesture === 'clockwise' || gesture === 'right' ? <RotateCw size={17} /> : gesture === 'counter_clockwise' || gesture === 'left' ? <RotateCcw size={17} /> : <Play size={16} />}{gestureLabels[gesture]}</button>)}</div>}
-        {isKeypad ? <div className="preview-result" role={keypadPreview.status === 'failed' ? 'alert' : 'status'}><KeypadResult preview={keypadPreview} /></div> : <div className="preview-result" role={preview.status === 'failed' ? 'alert' : 'status'}>
-          {preview.status === 'idle' ? <><CircleHelp size={20} /><span>{desktop ? 'Choose a gesture to preview what its binding would do.' : 'Launch the desktop app to preview bindings.'}</span></> :
-            preview.status === 'running' ? <><LoaderCircle size={20} className="spinning" /><span>Resolving binding…</span></> :
-            preview.status === 'failed' ? <><CircleHelp size={20} /><span className="error-text">{preview.error}</span></> :
-            <><CheckCircle2 size={22} /><span>{bindingPreviewText(preview.event)}</span></>}
-        </div>}
-        {selection.module === 'm131e' && profile.dial_functions && <p className="fine-print">This profile uses dial functions. These previews use the first function, where a run starts; a short press shows the function it would switch to. <button type="button" className="button compact" onClick={() => setPage('profiles')}>Preview other functions</button></p>}
-        <p className="fine-print">No volume changes, shortcuts or application launches are executed.</p>
-      </section>
     </> : <div className="planned-panel"><h2>Not available yet</h2><p>{selected.name} is in the module catalog, but this app cannot yet read its input or edit its bindings. See Compatibility for what it supports.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
-    <ServicePanel runner={runner} feed={feed} profile={profile} profileId={isUnsaved(state.draft) ? null : state.draft.profileId} desktop={desktop} unsaved={isUnsaved(state.draft)} displaySettings={displaySettings}
-      sourceProfileId={state.draft.sourceId ?? state.draft.profileId}
-      dryRunOnly={draftRunBlock(state) !== null} dryRunNote={runBlockNotes[draftRunBlock(state) ?? 'imported']} />
+    <ServicePanel run={run} />
   </section>;
 }
 
@@ -114,13 +95,4 @@ export function KnobOrientationControl({ orientation, onRotate }: { orientation:
     <button type="button" className="button compact" aria-label="Rotate module 90 degrees clockwise" onClick={onRotate}><RotateCw size={15} />Rotate module</button>
     <span className="orientation-label" aria-live="polite">{knobOrientationLabels[orientation]}</span>
   </div>;
-}
-
-function KeypadResult({ preview }: { preview: KeypadPreview }) {
-  if (preview.status === 'idle') return <><CircleHelp size={20} /><span>Simulate a complete press and release on the current page.</span></>;
-  if (preview.status === 'running') return <><LoaderCircle size={20} className="spinning" /><span>Resolving key click…</span></>;
-  if (preview.status === 'failed') return <><CircleHelp size={20} /><span className="error-text">{preview.error}</span></>;
-  const navigation = preview.result.events.find(event => event.navigation)?.navigation;
-  const actions = preview.result.events.filter(event => event.action);
-  return <><CheckCircle2 size={22} /><span>{navigation ? `Navigated ${navigation.depth ? `to L${navigation.depth}` : 'to root'}.` : actions.length ? actions.map(event => `${gestureLabels[event.gesture]}: would ${actionLabel(event.action).toLowerCase()}`).join('; ') : 'No action is bound to this key click.'}</span></>;
 }

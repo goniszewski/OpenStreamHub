@@ -4,6 +4,7 @@ import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DeviceFeed } from './device-feed';
 import { DeviceWorkspace, HeroImage, KnobOrientationControl, ModuleCatalog } from './DevicesPage';
+import { Inspector } from './Inspector';
 import { CompatibilityPage } from './InfoPages';
 import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { knobOrientationStore } from './knob-orientation';
@@ -202,8 +203,7 @@ describe('hero live input', () => {
   });
 });
 
-describe('module catalog labels', () => {
-  it('marks connected modules and leaves the rest neutral, with no planned or pending labels', async () => {
+describe('module catalog labels', () => {  it('marks connected modules and leaves the rest neutral, with no planned or pending labels', async () => {
     const feed = new DeviceFeed((async () => []) as never, async () => () => {}, true, callback => callback());
     feed.connect(); await new Promise(resolve => setTimeout(resolve, 0));
     (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [{ path_hex: 'a1', module: 'm003k', serial_number: null }] };
@@ -229,5 +229,44 @@ describe('3-knob module wording', () => {
     expect(rows.filter(row => row.includes('<td>Input and key images verified on one module (software mode)</td>'))).toHaveLength(1);
     expect(rows.filter(row => row.includes('<td>Input and dial faces verified on one module (software mode)</td>'))).toHaveLength(1);
     expect(rows.filter(row => row.includes('<td>Unverified</td>'))).toHaveLength(modules.length - 3);
+  });
+});
+
+describe('workspace without the simulation panel', () => {
+  it('leaves testing to the inspector: no Simulation section or per-gesture buttons remain', () => {
+    const markup = render();
+    expect(markup).not.toContain('Simulation');
+    expect(markup).not.toContain('event-buttons');
+    expect(markup).toContain('Run profile');
+  });
+});
+
+describe('inspector test button and one-line result', () => {
+  const session = new ProfileSession(() => new Promise(() => {}), profile, false);
+  const inspector = (editorLike: Record<string, unknown>, sessionState = session.getState()) =>
+    renderToStaticMarkup(<Inspector editor={editorLike as unknown as DeviceEditor} session={session} state={sessionState} disabled={false} desktop />);
+
+  it('offers a compact test with its one-line result', () => {
+    const markup = inspector(editor);
+    expect(markup).toContain('>Test gesture</button>');
+    expect(markup).toContain('Run a test to preview what the binding would do.');
+    expect(markup).toContain('Tests never execute anything');
+    const failed = { ...session.getState(), preview: { status: 'failed', error: 'No action is bound.' } as const };
+    const failedMarkup = inspector(editor, failed);
+    expect(failedMarkup).toContain('role="alert"');
+    expect(failedMarkup).toContain('No action is bound.');
+  });
+
+  it('gives faders a position control and a test for the chosen position', () => {
+    const faders = { ...editor, selectedModule: 'm005s', selected: modules.find(module => module.id === 'm005s')!, selection: { module: 'm005s', control: 0, gesture: 'moved', serial: '' }, faderPosition: 40 } as unknown as DeviceEditor;
+    const markup = inspector(faders);
+    expect(markup).toContain('id="fader-position"');
+    expect(markup).toContain('value="40"');
+    expect(markup).toContain('>Test position</button>');
+  });
+
+  it('says the desktop app is needed to preview in the browser', () => {
+    const markup = renderToStaticMarkup(<Inspector editor={editor as unknown as DeviceEditor} session={session} state={session.getState()} disabled={false} />);
+    expect(markup).toContain('Launch the desktop app to preview bindings.');
   });
 });

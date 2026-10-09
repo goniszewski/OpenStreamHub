@@ -7,8 +7,8 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
   try: {
     title: 'Try it without hardware',
     body: <>
-      <p id="onboarding-body">You do not need a module to look around. On the Devices page, the rig preview shows your modules and the profile's bindings, and the Simulation panel lets you press, turn and slide controls to see which action a binding would run. On the Profiles page, "Test with sample input" runs a built-in sample through the profile.</p>
-      <ul><li>Nothing runs on your Mac in simulation or a sample test. Actions are only listed, never run.</li><li>Start on the Devices page: pick a module in the catalog and select a control.</li></ul>
+      <p id="onboarding-body">You do not need a module to look around. On the Devices page, the rig preview shows your modules and the profile's bindings, and the inspector's Test button shows what a binding would do. On the Profiles page, "Test with sample input" runs a built-in sample through the profile.</p>
+      <ul><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>Start on the Devices page: pick a module in the catalog and select a control.</li></ul>
     </>,
   },
   profile: {
@@ -22,7 +22,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
     title: 'Connect modules',
     body: <>
       <p id="onboarding-body">Plug in a module and it appears in the rig on its own (auto-detect can be turned off). The live view is read-only: it shows input and runs no actions.</p>
-      <ul><li>Running a profile on a module defaults to a dry run, which only logs what would happen.</li><li>Execute actions really runs everything in the profile: it changes volume, sends shortcuts and media keys, opens apps and web pages, pastes text into the focused app (and can press Return after it), captures the screen to the clipboard and runs multi-step sequences. A user-started Execute run asks you to confirm and lists what the profile will do. If you turn on Run actions automatically in Settings, app-started sessions can run actions without a prompt; this option is off by default.</li><li>Only run profiles you wrote or reviewed. A profile from someone else can type and run commands in a terminal, or paste your clipboard into a web page.</li><li>macOS may ask for Accessibility or Automation permission the first time shortcuts, media keys, pasted text, app launches or volume changes execute. Allow it in System Settings only if you want that.</li></ul>
+      <ul><li>Press Run in the header to run the open profile on a module. It defaults to a dry run, which only logs what would happen.</li><li>Execute actions really runs everything in the profile: it changes volume, sends shortcuts and media keys, opens apps and web pages, pastes text into the focused app (and can press Return after it), captures the screen to the clipboard and runs multi-step sequences. A user-started Execute run asks you to confirm and lists what the profile will do. If you turn on Run actions automatically in Settings, app-started sessions can run actions without a prompt; this option is off by default.</li><li>Only run profiles you wrote or reviewed. A profile from someone else can type and run commands in a terminal, or paste your clipboard into a web page.</li><li>macOS may ask for Accessibility or Automation permission the first time shortcuts, media keys, pasted text, app launches or volume changes execute. Allow it in System Settings only if you want that.</li></ul>
     </>,
   },
   safety: {

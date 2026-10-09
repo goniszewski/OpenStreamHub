@@ -10,7 +10,7 @@ import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
-import { serviceResumeId } from './ServicePanel';
+import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
 import { AutoActionsIndicator } from './AutoActionsIndicator';
@@ -25,7 +25,7 @@ import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
 import { DraftPersister, DraftStore } from './draft-store';
-import { isUnsaved, ProfileSession } from './profile-session';
+import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
@@ -89,6 +89,9 @@ export default function App() {
   const { profile, profileId } = draft;
   const unsaved = isUnsaved(draft);
   const disabled = !desktop || !state.ready || busy !== null;
+  // One run session for the whole app: the header Run control and the Devices-page panel share it.
+  const dryRunBlock = draftRunBlock(state);
+  const runSession = useRunSession({ runner, feed, profile, profileId: unsaved ? null : profileId, sourceProfileId: draft.sourceId ?? profileId, desktop, unsaved, displaySettings, dryRunOnly: dryRunBlock !== null, dryRunNote: runBlockNotes[dryRunBlock ?? 'imported'] });
   const connectedModules = deviceFeedState.devices.length;
   const deviceStatus = !desktop ? 'Browser preview'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'
@@ -165,24 +168,28 @@ export default function App() {
 
   return <div className="app-shell">
     <header className="app-header">
-      <div className="brand"><Grid2X2 size={23} /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
-      <div className="profile-switcher"><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
-        {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
-          const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });
-        }}>
-          {!profileId && <option value="__new">{profile.name}</option>}
-          {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
-          {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-        </SelectField> : <span>{profile.name}</span>}
-        {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
-      </div>
-      <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
-        <div className="history-buttons" role="group" aria-label="Change history">
-          <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
-          <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+      <div className="header-row">
+        <div className="brand"><Grid2X2 size={23} /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
+        <div className="profile-switcher"><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
+          {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
+            const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });
+          }}>
+            {!profileId && <option value="__new">{profile.name}</option>}
+            {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
+            {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </SelectField> : <span>{profile.name}</span>}
+          {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
         </div>
-        <button className="button primary" disabled={disabled || !unsaved} title={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
+        <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
+          <RunHeaderControl run={runSession} />
+          <div className="history-buttons" role="group" aria-label="Change history">
+            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+          </div>
+          <button className="button" disabled={disabled || !unsaved} title={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
+        </div>
       </div>
+      <RunBlockerNotice run={runSession} />
     </header>
     <div className="app-body">
       <aside className="sidebar">
@@ -207,8 +214,8 @@ export default function App() {
 
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} feed={feed} />
-          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} displaySettings={displaySettings} />
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} invoke={desktop ? invokeCommand : undefined} />
+          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} />
         </div>}
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}

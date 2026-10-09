@@ -8,12 +8,19 @@ import { autoExecuteDisclosure, defaultProfileNote, DisplaySettingsPanel } from 
 import { DeviceFeed, serviceOwnsDevice } from './device-feed';
 import { FakeStorage } from './fake-storage';
 import { autoActionsNoticeText, markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeStorageKey, moduleControlNoticeText, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
-import { autoStartNote, ServicePanel } from './ServicePanel';
+import { autoStartNote, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
+import type { RunSessionOptions } from './ServicePanel';
 import { autoStartLabel, deviceTakenError, isStale, reasonLabels, ServiceRunner } from './service-runner';
 
 const [dialState, keypadState] = autoStart.events as SessionStatePayload[];
 const draft: Profile = { schema_version: 1, name: 'Everyday', bindings: [] };
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+
+// The header Run control and the panel share the hook, as in the app.
+function RunViews(props: Partial<RunSessionOptions>) {
+  const run = useRunSession({ profile: draft, desktop: true, unsaved: false, platform: { platform: 'MacIntel' }, now: 2000, ...props });
+  return <><RunHeaderControl run={run} /><ServicePanel run={run} /></>;
+}
 
 function setup(list: unknown = autoStart.list_sessions, startService?: () => unknown) {
   const handlers: Record<string, (event: { payload: unknown }) => void> = {};
@@ -72,7 +79,7 @@ describe('automatically started sessions', () => {
     (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
     const t = setup(); t.runner.connect(); await tick();
     t.state(dialState);
-    const markup = renderToStaticMarkup(<ServicePanel runner={t.runner} feed={feed} profile={draft} desktop unsaved={false} platform={{ platform: 'MacIntel' }} now={2000} />);
+    const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
     expect(markup).toContain(autoStartNote('app_opened'));
     expect(markup).toContain('Dry run: actions are logged only');
     expect(markup).not.toContain('Profile changed since start');
@@ -85,7 +92,7 @@ describe('automatically started sessions', () => {
     const t = setup(); t.runner.connect(); await tick();
     t.state(dialState);
     t.state({ ...dialState, phase: 'stopped', service_id: null, reason: 'module_control' });
-    const markup = renderToStaticMarkup(<ServicePanel runner={t.runner} feed={feed} profile={draft} desktop unsaved={false} platform={{ platform: 'MacIntel' }} now={2000} />);
+    const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
     expect(markup).not.toContain(autoStartNote('app_opened'));
     expect(markup).toContain('Session stopped: OpenStreamHub no longer drives the display');
     expect(reasonLabels.module_control).toBe('OpenStreamHub no longer drives the display');

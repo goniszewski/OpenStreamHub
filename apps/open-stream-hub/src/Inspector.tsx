@@ -6,12 +6,13 @@ import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction
 import type { KeypadPreview, Invoke, ProfileSession, SessionState } from './profile-session';
 import { KeyArtworkEditor } from './KeyArtworkEditor';
 import { actionLabel, controlLabel, faderMaximum, gestureLabels, gestures } from './ui-model';
+import type { Page } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
 import { bindingPreviewText } from './DialFunctionsPanel';
 
-export function Inspector({ editor, session, state, disabled, desktop = false, invoke }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke }) {
+export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const previewRunning = state.preview.status === 'running' || state.keypadPreview.status === 'running';
@@ -34,7 +35,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       </SelectField>
       <div className="inspector-divider" />
       <fieldset disabled={disabled || serialMissing || !editorGestures(profile, selection.module).length}>
-        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} />
+        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} />
       </fieldset>
       <div className="inspector-divider" />
       <details className="advanced">

@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
   defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
-  namedKeys, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels, profileDirectionLabels, stepActionTypes, textIssue, timerDuration, timerLabelIssue, timerSeconds,
+  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels,
+  profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
 import { actionLabel } from './ui-model';
@@ -252,5 +253,28 @@ describe('obs_scene', () => {
     expect(obsSceneIssue((action as { scene: string }).scene)).toBeNull();
     expect(actionLabel({ type: 'obs_scene', scene: 'Starting soon' })).toBe('OBS scene “Starting soon”');
     expect(actionLabel({ type: 'obs_scene', scene: 'x'.repeat(40) })).toBe(`OBS scene “${'x'.repeat(24)}…”`);
+  });
+});
+
+describe('obs operations', () => {
+  it('names the nine obs step actions as editor operations', () => {
+    const obsTypes = stepActionTypes.map(([type]) => type).filter(type => type.startsWith('obs_'));
+    expect(Object.keys(obsOperationLabels)).toEqual(obsTypes);
+  });
+
+  it('switches operation, keeping the names both operations share', () => {
+    expect(switchObsOperation({ type: 'obs_scene', scene: 'Live' }, 'obs_source_visibility'))
+      .toEqual({ type: 'obs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' });
+    // Operation settings reset; names the new operation does not have are dropped.
+    expect(switchObsOperation({ type: 'obs_filter', source: 'Cam', filter: 'Blur', op: 'off' }, 'obs_source_visibility'))
+      .toEqual({ type: 'obs_source_visibility', scene: 'Scene', source: 'Cam', op: 'toggle' });
+    expect(switchObsOperation({ type: 'obs_scene', scene: 'Live' }, 'obs_replay_buffer'))
+      .toEqual({ type: 'obs_replay_buffer', op: 'save' });
+    expect(switchObsOperation({ type: 'obs_profile', name: 'Streaming' }, 'obs_scene_collection'))
+      .toEqual({ type: 'obs_scene_collection', name: 'Streaming' });
+    expect(switchObsOperation({ type: 'obs_transition' }, 'obs_scene')).toEqual({ type: 'obs_scene', scene: 'Scene' });
+    // A carried name still passes the checks the editor shows.
+    const switched = switchObsOperation({ type: 'obs_scene_collection', name: 'Stream deck' }, 'obs_profile');
+    expect(obsNameIssue((switched as { name: string }).name, 'profile')).toBeNull();
   });
 });

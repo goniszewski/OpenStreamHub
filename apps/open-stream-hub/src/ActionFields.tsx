@@ -3,12 +3,13 @@ import type { ReactNode } from 'react';
 import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
-import type { StepActionType } from './action-model';
+import type { ObsStepAction, ObsStepType, StepActionType } from './action-model';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultStepAction, defaultTimerSound, maxObsSceneBytes, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels,
-  maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, obsSceneIssue, profileDirectionLabels,
-  systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
+  defaultStepAction, defaultTimerSound, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
+  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
+  obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
+  timerSoundLabels, urlIssue,
 } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
@@ -21,8 +22,6 @@ function Hint({ hint, children }: { hint: string; children: ReactNode }) {
   </>;
 }
 
-const obsNeedsHint = 'Needs OBS 28 or later, with its WebSocket server on and OBS turned on in Settings.';
-const obsNeedsMore = 'The connection goes to this Mac only. Without it the press is logged as unavailable and nothing runs.';
 const obsSwitchHint = 'Toggle follows OBS\'s current state; Turn on and Turn off do not.';
 const obsSwitchMore = 'Turn on and Turn off are safer inside a multi-action.';
 const obsReloadHint = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording.';
@@ -35,16 +34,17 @@ function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitch
 const obsOutputNote = 'OBS refuses Start on a running output and Stop on a stopped one.';
 
 // The action picker and the parameter fields of the chosen action. Top-level ids keep their
-// historical names; multi-action steps prefix theirs with `step-N-`.
-export function ActionFields({ action, fader, selectorKey, onChange }: {
-  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change;
+// historical names; multi-action steps prefix theirs with `step-N-`. onSetUpObs opens
+// Settings, where the OBS connection is configured.
+export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs }: {
+  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change; onSetUpObs?: () => void;
 }) {
   return <>
     <label htmlFor="binding-action">Action</label>
     <ActionPickerField triggerId="binding-action" scope={fader ? 'binding-fader' : 'binding'} action={action}
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
-    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} />}
+    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
         {(Object.keys(profileDirectionLabels) as ProfileDirection[]).map(direction => <option key={direction} value={direction}>{profileDirectionLabels[direction]}</option>)}
@@ -52,7 +52,7 @@ export function ActionFields({ action, fader, selectorKey, onChange }: {
       <Hint hint="Switches the run to the next or previous saved profile, in name order.">It wraps around at the ends. Only runs started from this app switch; nothing happens with a single saved profile or outside this app. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</Hint></div>}
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
     {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
-      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} />}
+      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} />}
   </>;
 }
 
@@ -81,7 +81,7 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
   </div>;
 }
 
-function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction[]; selectorKey: string; onChange: Change }) {
+function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void }) {
   const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
   return <div className="action-fields">
     <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
@@ -93,7 +93,7 @@ function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction
           <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
             onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultStepAction(type as StepActionType) : item)); }} />
           <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
-            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} />
+            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} />
           <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}
             aria-label={`Remove step ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
         </li>;
@@ -104,8 +104,8 @@ function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction
   </div>;
 }
 
-function StepFields({ prefix, action, inputKey, onChange }: {
-  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void;
+function StepFields({ prefix, action, inputKey, onChange, onSetUpObs }: {
+  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void;
 }) {
   const id = (name: string) => `${prefix}${name}`;
   switch (action.type) {
@@ -139,39 +139,87 @@ function StepFields({ prefix, action, inputKey, onChange }: {
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'stop'
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
-    case 'obs_virtual_camera': return <div className="action-fields"><label htmlFor={id('obs-virtual-camera-op')}>Virtual camera</label><SelectField id={id('obs-virtual-camera-op')} value={action.op} onChange={event => onChange({ type: 'obs_virtual_camera', op: event.target.value as ObsOutputOp })}>{(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}</SelectField><Hint hint={`${obsSwitchHint} ${obsNeedsHint}`}>{obsOutputNote} {obsSwitchMore}. {obsNeedsMore}</Hint></div>;
-    case 'obs_replay_buffer': return <div className="action-fields"><label htmlFor={id('obs-replay-buffer-op')}>Replay buffer</label><SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp })}>{(Object.keys(obsReplayBufferOpLabels) as ObsReplayBufferOp[]).map(op => <option key={op} value={op}>{obsReplayBufferOpLabels[op]}</option>)}</SelectField><Hint hint={`Saving needs the buffer to be running in OBS. ${obsSwitchHint} ${obsNeedsHint}`}>{obsOutputNote} {obsSwitchMore}. {obsNeedsMore}</Hint></div>;
-    case 'obs_studio_mode': return <div className="action-fields"><label htmlFor={id('obs-studio-mode-op')}>Studio mode</label><ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op })} /><Hint hint={`${obsSwitchHint} ${obsNeedsHint}`}>{obsSwitchMore}. {obsNeedsMore}</Hint></div>;
-    case 'obs_transition': return <div className="action-fields"><Hint hint="Triggers the studio-mode transition from the preview to the program scene. OBS refuses it while studio mode is off, and the press is logged as failed."> {obsNeedsHint} {obsNeedsMore}</Hint></div>;
+    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_studio_mode': case 'obs_transition':
+    case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile':
+      return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} />;
+    case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
+  }
+}
+
+// The one OBS editor for all nine obs_* actions: an Operation select that moves the action between
+// operations (keeping the names both share), the chosen operation's fields, and a single connection
+// status with the Set up link to Settings. Ids keep their historical names per operation.
+export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
+  action: ObsStepAction; prefix: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void;
+}) {
+  const id = (name: string) => `${prefix}${name}`;
+  let fields: ReactNode;
+  switch (action.type) {
+    case 'obs_virtual_camera':
+      fields = <><label htmlFor={id('obs-virtual-camera-op')}>Virtual camera</label>
+        <SelectField id={id('obs-virtual-camera-op')} value={action.op} onChange={event => onChange({ type: 'obs_virtual_camera', op: event.target.value as ObsOutputOp }, 'obs-virtual-camera-op')}>
+          {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
+        </SelectField>
+        <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_replay_buffer':
+      fields = <><label htmlFor={id('obs-replay-buffer-op')}>Replay buffer</label>
+        <SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp }, 'obs-replay-buffer-op')}>
+          {(Object.keys(obsReplayBufferOpLabels) as ObsReplayBufferOp[]).map(op => <option key={op} value={op}>{obsReplayBufferOpLabels[op]}</option>)}
+        </SelectField>
+        <Hint hint={`Saving needs the buffer to be running in OBS. ${obsSwitchHint}`}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_studio_mode':
+      fields = <><label htmlFor={id('obs-studio-mode-op')}>Studio mode</label>
+        <ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op }, 'obs-studio-mode-op')} />
+        <Hint hint={obsSwitchHint}>{obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_transition':
+      fields = <p className="fine-print">Triggers the studio-mode transition from the preview to the program scene. OBS refuses it while studio mode is off, and the press is logged as failed.</p>;
+      break;
     case 'obs_filter': {
       const sourceIssue = obsNameIssue(action.source, 'source');
       const filterIssue = obsNameIssue(action.filter, 'filter');
-      return <div className="action-fields">
+      fields = <>
         <label htmlFor={id('obs-filter-source')}>Source name</label><input id={id('obs-filter-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-filter-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-filter-source')} />{sourceIssue && <p id={id('obs-filter-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
         <label className="spaced-label" htmlFor={id('obs-filter-name')}>Filter name</label><input id={id('obs-filter-name')} spellCheck={false} value={action.filter} aria-invalid={!!filterIssue} aria-describedby={filterIssue ? id('obs-filter-name-error') : undefined} onChange={event => onChange({ ...action, filter: event.target.value }, 'obs-filter-name')} />{filterIssue && <p id={id('obs-filter-name-error')} className="field-error" role="alert">{filterIssue}</p>}
-        <label className="spaced-label" htmlFor={id('obs-filter-op')}>Filter</label><ObsSwitchSelect id={id('obs-filter-op')} value={action.op} onChange={op => onChange({ ...action, op })} />
-        <Hint hint={`${obsSwitchHint} ${obsNeedsHint}`}>Both names are matched exactly (up to {maxObsSceneBytes} bytes each). {obsSwitchMore}. {obsNeedsMore}</Hint></div>;
+        <label className="spaced-label" htmlFor={id('obs-filter-op')}>Filter</label><ObsSwitchSelect id={id('obs-filter-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-filter-op')} />
+        <Hint hint={`Both names are matched exactly (up to ${maxObsSceneBytes} bytes each). ${obsSwitchHint}`}>{obsSwitchMore}</Hint></>;
+      break;
     }
     case 'obs_source_visibility': {
       const sceneIssue = obsNameIssue(action.scene, 'scene');
       const sourceIssue = obsNameIssue(action.source, 'source');
-      return <div className="action-fields">
+      fields = <>
         <label htmlFor={id('obs-visibility-scene')}>Scene name</label><input id={id('obs-visibility-scene')} spellCheck={false} value={action.scene} aria-invalid={!!sceneIssue} aria-describedby={sceneIssue ? id('obs-visibility-scene-error') : undefined} onChange={event => onChange({ ...action, scene: event.target.value }, 'obs-visibility-scene')} />{sceneIssue && <p id={id('obs-visibility-scene-error')} className="field-error" role="alert">{sceneIssue}</p>}
         <label className="spaced-label" htmlFor={id('obs-visibility-source')}>Source name</label><input id={id('obs-visibility-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-visibility-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-visibility-source')} />{sourceIssue && <p id={id('obs-visibility-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
-        <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Visibility</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op })} />
-        <Hint hint={`Shows or hides the source in that scene (a group name works as the scene). ${obsSwitchHint}`}>Both names are matched exactly (up to {maxObsSceneBytes} bytes each). {obsSwitchMore}. {obsNeedsHint} {obsNeedsMore}</Hint></div>;
+        <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Visibility</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-visibility-op')} />
+        <Hint hint={`Shows or hides the source in that scene (a group name works as the scene). Both names are matched exactly (up to ${maxObsSceneBytes} bytes each). ${obsSwitchHint}`}>{obsSwitchMore}</Hint></>;
+      break;
     }
     case 'obs_scene_collection': case 'obs_profile': {
       const collection = action.type === 'obs_scene_collection';
       const issue = obsNameIssue(action.name, collection ? 'scene collection' : 'profile');
-      return <div className="action-fields"><label htmlFor={id('obs-reload-name')}>{collection ? 'OBS scene collection name' : 'OBS profile name'}</label><input id={id('obs-reload-name')} spellCheck={false} value={action.name} aria-invalid={!!issue} aria-describedby={issue ? id('obs-reload-name-error') : undefined} onChange={event => onChange({ ...action, name: event.target.value }, 'obs-reload-name')} />{issue && <p id={id('obs-reload-name-error')} className="field-error" role="alert">{issue}</p>}
-        <Hint hint={`Switches OBS to this ${collection ? 'scene collection' : 'profile'}, matched exactly (up to ${maxObsSceneBytes} bytes). ${obsReloadHint}`}>{obsReloadMore} {obsNeedsHint} {obsNeedsMore}</Hint></div>;
+      fields = <><label htmlFor={id('obs-reload-name')}>{collection ? 'OBS scene collection name' : 'OBS profile name'}</label><input id={id('obs-reload-name')} spellCheck={false} value={action.name} aria-invalid={!!issue} aria-describedby={issue ? id('obs-reload-name-error') : undefined} onChange={event => onChange({ ...action, name: event.target.value }, 'obs-reload-name')} />{issue && <p id={id('obs-reload-name-error')} className="field-error" role="alert">{issue}</p>}
+        <Hint hint={`Switches OBS to this ${collection ? 'scene collection' : 'profile'}, matched exactly (up to ${maxObsSceneBytes} bytes). ${obsReloadHint}`}>{obsReloadMore}</Hint></>;
+      break;
     }
     case 'obs_scene': {
       const issue = obsSceneIssue(action.scene);
-      return <div className="action-fields"><label htmlFor={id('obs-scene')}>OBS scene name</label><input id={id('obs-scene')} spellCheck={false} value={action.scene} aria-invalid={!!issue} aria-describedby={issue ? id('obs-scene-error') : undefined} onChange={event => onChange({ type: 'obs_scene', scene: event.target.value }, 'obs-scene')} />{issue && <p id={id('obs-scene-error')} className="field-error" role="alert">{issue}</p>}
-        <Hint hint={`Makes this scene the current OBS program scene, matched exactly (up to ${maxObsSceneBytes} bytes). ${obsNeedsHint}`}>{obsNeedsMore}</Hint></div>;
+      fields = <><label htmlFor={id('obs-scene')}>OBS scene name</label><input id={id('obs-scene')} spellCheck={false} value={action.scene} aria-invalid={!!issue} aria-describedby={issue ? id('obs-scene-error') : undefined} onChange={event => onChange({ type: 'obs_scene', scene: event.target.value }, 'obs-scene')} />{issue && <p id={id('obs-scene-error')} className="field-error" role="alert">{issue}</p>}
+        <p className="fine-print">Makes this scene the current OBS program scene, matched exactly (up to {maxObsSceneBytes} bytes).</p></>;
+      break;
     }
-    case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
+  return <div className="action-fields">
+    <label htmlFor={id('obs-operation')}>Operation</label>
+    <SelectField id={id('obs-operation')} value={action.type} onChange={event => onChange(switchObsOperation(action, event.target.value as ObsStepType), 'obs-operation')}>
+      {(Object.keys(obsOperationLabels) as ObsStepType[]).map(type => <option key={type} value={type}>{obsOperationLabels[type]}</option>)}
+    </SelectField>
+    {fields}
+    <div className="obs-connection" role="note">
+      <p className="fine-print">Connects to OBS 28 or later on this Mac while OBS runs with its WebSocket server on. <button type="button" className="obs-setup" onClick={onSetUpObs}>Set up in Settings</button></p>
+      <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only. Without it, the press is logged as unavailable and nothing runs.</p></details>
+    </div>
+  </div>;
 }

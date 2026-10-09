@@ -61,7 +61,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />The current changes are valid.</p>}
       <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
       <BindingsPanel profile={profile} session={session} editor={editor} disabled={disabled} />
-      <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} />
+      <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} />
       <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
     </section></div>
     <MhzImportReport result={state.mhzReportOpen ? state.mhzImport : null} onClose={() => session.dismissMhzImport()} />

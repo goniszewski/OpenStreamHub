@@ -1,6 +1,10 @@
+import { isValidElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields } from './ActionFields';
+import { ActionFields, ObsFields } from './ActionFields';
+import { obsOperationLabels } from './action-model';
+import type { ObsStepAction } from './action-model';
 import type { BindingAction, StepAction } from './contracts';
 
 const render = (action: BindingAction | null, fader = false) =>
@@ -15,6 +19,17 @@ function expectAccessible(markup: string) {
   const all = ids(markup);
   expect(new Set(all).size).toBe(all.length);
   for (const [, target] of markup.matchAll(/<label for="([^"]+)"/g)) expect(all).toContain(target);
+}
+
+// Direct element-tree helpers: ObsFields is hook-free, so tests call it as a function and
+// invoke the handlers exactly as the browser would.
+type AnyElement = ReactElement<{ [key: string]: unknown }>;
+
+function elementsOf(node: ReactNode): AnyElement[] {
+  if (!node || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap(elementsOf);
+  if (isValidElement(node)) return [node as AnyElement, ...elementsOf((node.props as { children?: ReactNode }).children)];
+  return [];
 }
 
 describe('action fields', () => {
@@ -122,98 +137,127 @@ describe('action fields', () => {
   });
 });
 
-describe('obs_scene fields', () => {
-  it('edits the scene name with inline problems and explains what it needs', () => {
+describe('obs fields', () => {
+  it('edits every operation from one editor with an Operation select and one connection status', () => {
     const markup = render({ type: 'obs_scene', scene: 'Live' });
+    expect(markup).toContain('<label for="obs-operation">Operation</label>');
+    expect(markup).toMatch(/<option value="obs_scene" selected="">Scene<\/option>/);
     expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
     expect(markup).toContain('value="Live"');
     expect(markup).toContain('>Switch OBS scene</span>');
-    expect(markup).not.toContain('role="alert"');
-    expect(markup).toContain('OBS turned on in Settings');
+    // One connection status per editor, with the Set up link to Settings.
+    expect(markup.match(/WebSocket server on/g)).toHaveLength(1);
+    expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
+    expect(markup).not.toContain('OBS turned on in Settings');
     expectAccessible(markup);
     const blank = render({ type: 'obs_scene', scene: ' ' });
     expect(blank).toContain('aria-invalid="true"');
     expect(blank).toContain('role="alert"');
+    expectAccessible(blank);
   });
 
-  it('is offered as a multi-action step with prefixed ids', () => {
-    const markup = render({ type: 'multi_action', actions: [{ type: 'obs_scene', scene: 'Live' }, { type: 'toggle_mute' }] });
-    expect(ids(markup)).toContain('step-1-obs-scene');
-    expect(markup).toContain('>Switch OBS scene</span>');
+  it('offers the nine operations in the Operation select', () => {
+    const markup = render({ type: 'obs_transition' });
+    for (const [type, label] of Object.entries(obsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
+    expect(markup).toMatch(/<option value="obs_transition" selected="">Studio transition<\/option>/);
+    // The transition has no parameters of its own, only the shared status.
+    expect(ids(markup)).toEqual(expect.arrayContaining(['obs-operation']));
+    expect(markup).toContain('studio-mode transition');
     expectAccessible(markup);
   });
-});
 
-describe('obs output fields', () => {
-  it('edits the virtual camera and replay buffer operation from closed lists', () => {
+  it('keeps the historical parameter fields of every operation', () => {
     const camera = render({ type: 'obs_virtual_camera', op: 'start' });
     expect(camera).toContain('<label for="obs-virtual-camera-op">Virtual camera</label>');
     expect(camera).toMatch(/<option value="start" selected="">Start<\/option>/);
     expect(camera).not.toContain('value="save"');
-    expect(camera).toContain('OBS turned on in Settings');
-    expectAccessible(camera);
     const buffer = render({ type: 'obs_replay_buffer', op: 'save' });
     expect(buffer).toContain('<label for="obs-replay-buffer-op">Replay buffer</label>');
     expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
-    expect(buffer).toContain('Saving needs the buffer to be running');
+    expect(render({ type: 'obs_studio_mode', op: 'on' })).toMatch(/<option value="on" selected="">Turn on<\/option>/);
+    expect(ids(render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' })))
+      .toEqual(expect.arrayContaining(['obs-filter-source', 'obs-filter-name', 'obs-filter-op']));
+    expect(ids(render({ type: 'obs_source_visibility', scene: 'Live', source: 'Cam', op: 'off' })))
+      .toEqual(expect.arrayContaining(['obs-visibility-scene', 'obs-visibility-source', 'obs-visibility-op']));
+    const collection = render({ type: 'obs_scene_collection', name: 'Show' });
+    expect(collection).toContain('<label for="obs-reload-name">OBS scene collection name</label>');
+    expect(render({ type: 'obs_profile', name: 'P' })).toContain('>OBS profile name</label>');
+    expectAccessible(camera);
     expectAccessible(buffer);
-    expect(render({ type: 'obs_virtual_camera', op: 'toggle' })).toContain('>OBS virtual camera</span>');
-    expect(render({ type: 'obs_replay_buffer', op: 'save' })).toContain('>OBS replay buffer</span>');
+    expectAccessible(collection);
   });
 
-  it('is offered as a multi-action step with prefixed ids', () => {
-    const markup = render({ type: 'multi_action', actions: [{ type: 'obs_replay_buffer', op: 'save' }, { type: 'obs_virtual_camera', op: 'stop' }] });
-    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-obs-replay-buffer-op', 'step-2-obs-virtual-camera-op']));
+  it('is offered as a multi-action step with prefixed ids, one status per step editor', () => {
+    const markup = render({ type: 'multi_action', actions: [
+      { type: 'obs_scene', scene: 'Live' }, { type: 'obs_replay_buffer', op: 'save' },
+    ] });
+    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-obs-operation', 'step-1-obs-scene', 'step-2-obs-operation', 'step-2-obs-replay-buffer-op']));
+    expect(markup).toContain('>Switch OBS scene</span>');
+    expect(markup).toContain('>OBS replay buffer</span>');
+    expect((markup.match(/Set up in Settings/g) ?? []).length).toBe(2);
     expectAccessible(markup);
-  });
-});
-
-describe('obs source fields', () => {
-  it('edits studio mode and the transition', () => {
-    const studio = render({ type: 'obs_studio_mode', op: 'on' });
-    expect(studio).toContain('<label for="obs-studio-mode-op">Studio mode</label>');
-    expect(studio).toMatch(/<option value="on" selected="">Turn on<\/option>/);
-    expectAccessible(studio);
-    const transition = render({ type: 'obs_transition' });
-    expect(transition).toContain('studio-mode transition');
-    expect(transition).toContain('OBS turned on in Settings');
-    expectAccessible(transition);
+    const named = render({ type: 'multi_action', actions: [
+      { type: 'obs_profile', name: 'A' }, { type: 'obs_filter', source: 'A', filter: 'B', op: 'off' },
+    ] });
+    expect(ids(named)).toEqual(expect.arrayContaining(['step-1-obs-reload-name', 'step-2-obs-filter-source', 'step-2-obs-filter-name', 'step-2-obs-filter-op']));
+    expectAccessible(named);
   });
 
-  it('edits both names of a filter with inline problems', () => {
-    const markup = render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' });
-    expect(markup).toContain('<label for="obs-filter-source">Source name</label>');
-    expect(markup).toContain('for="obs-filter-name">Filter name</label>');
-    expect(markup).not.toContain('role="alert"');
-    expectAccessible(markup);
+  it('keeps the per-operation behaviour notes without the repeated connection story', () => {
+    expect(render({ type: 'obs_replay_buffer', op: 'save' })).toContain('Saving needs the buffer to be running');
+    expect(render({ type: 'obs_virtual_camera', op: 'toggle' })).toContain('OBS refuses Start on a running output');
+    expect(render({ type: 'obs_scene_collection', name: 'Show' })).toContain('reloads');
+    expect(render({ type: 'obs_scene_collection', name: 'Show' })).toContain('put it last');
+    const blankProfile = render({ type: 'obs_profile', name: ' ' });
+    expect(blankProfile).toContain('Enter the OBS profile name');
+    const filter = render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' });
+    expect(filter).toContain('matched exactly');
+    expect(filter).toContain('Toggle follows OBS');
+    expect(filter).not.toContain('role="alert"');
     const blank = render({ type: 'obs_filter', source: 'Webcam', filter: ' ', op: 'toggle' });
     expect(blank).toContain('OBS filter name');
     expect(blank).toContain('role="alert"');
   });
 
-  it('edits the name of an OBS scene collection or profile and warns that OBS reloads', () => {
-    const markup = render({ type: 'obs_scene_collection', name: 'Show' });
-    expect(markup).toContain('<label for="obs-reload-name">OBS scene collection name</label>');
-    expect(markup).toContain('reloads');
-    expect(markup).toContain('put it last');
-    expect(markup).not.toContain('role="alert"');
-    expectAccessible(markup);
-    const blank = render({ type: 'obs_profile', name: ' ' });
-    expect(blank).toContain('>OBS profile name</label>');
-    expect(blank).toContain('Enter the OBS profile name');
-    const multi = render({ type: 'multi_action', actions: [{ type: 'obs_profile', name: 'A' }, { type: 'obs_scene_collection', name: 'B' }] });
-    expect(ids(multi)).toEqual(expect.arrayContaining(['step-1-obs-reload-name', 'step-2-obs-reload-name']));
-    expectAccessible(multi);
-  });
-
-  it('edits scene and source for visibility, also as a multi-action step', () => {
+  it('edits scene and source for visibility', () => {
     const markup = render({ type: 'obs_source_visibility', scene: 'Live', source: '', op: 'off' });
     expect(markup).toContain('for="obs-visibility-scene">Scene name</label>');
     expect(markup).toContain('for="obs-visibility-source">Source name</label>');
     expect(markup).toContain('OBS source name');
     expectAccessible(markup);
-    const multi = render({ type: 'multi_action', actions: [{ type: 'obs_studio_mode', op: 'on' }, { type: 'obs_filter', source: 'A', filter: 'B', op: 'off' }] });
-    expect(ids(multi)).toEqual(expect.arrayContaining(['step-1-obs-studio-mode-op', 'step-2-obs-filter-source', 'step-2-obs-filter-name', 'step-2-obs-filter-op']));
-    expectAccessible(multi);
+  });
+
+  it('switches operation from the Operation select, keeping the names both share', () => {
+    const treeOf = (action: ObsStepAction, prefix = '') => {
+      const result: { changed?: StepAction; field?: string; setUp?: boolean } = {};
+      const tree = ObsFields({
+        action, prefix,
+        onChange: (changed, field) => { result.changed = changed; result.field = field; },
+        onSetUpObs: () => { result.setUp = true; },
+      }) as AnyElement;
+      return { result, tree };
+    };
+    const selectOperation = (tree: AnyElement, next: string) => {
+      const select = elementsOf(tree).find(element => element.props.id === 'obs-operation');
+      expect(select, 'Operation select').toBeTruthy();
+      (select!.props as { onChange(event: { target: { value: string } }): void }).onChange({ target: { value: next } });
+    };
+
+    const scene = treeOf({ type: 'obs_scene', scene: 'Live' });
+    selectOperation(scene.tree, 'obs_source_visibility');
+    expect(scene.result).toEqual({ changed: { type: 'obs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' }, field: 'obs-operation' });
+    // Operation settings reset; names unrelated to the new operation are dropped.
+    const filter = treeOf({ type: 'obs_filter', source: 'Cam', filter: 'Blur', op: 'off' });
+    selectOperation(filter.tree, 'obs_scene');
+    expect(filter.result).toEqual({ changed: { type: 'obs_scene', scene: 'Scene' }, field: 'obs-operation' });
+    const profile = treeOf({ type: 'obs_profile', name: 'Streaming' });
+    selectOperation(profile.tree, 'obs_scene_collection');
+    expect(profile.result).toEqual({ changed: { type: 'obs_scene_collection', name: 'Streaming' }, field: 'obs-operation' });
+
+    const setUp = treeOf({ type: 'obs_transition' }, 'step-1-');
+    const button = elementsOf(setUp.tree).find(element => element.type === 'button' && element.props.className === 'obs-setup');
+    expect(button, 'Set up button').toBeTruthy();
+    (button!.props as { onClick(): void }).onClick();
+    expect(setUp.result.setUp).toBe(true);
   });
 });

@@ -88,6 +88,29 @@ export function defaultProfileAction(): Action {
   return { type: 'profile', direction: 'next' };
 }
 
+// The nine OBS operations of the one OBS editor, in the Operation list's order. The picker keeps
+// one entry per operation; the editor groups them behind this dropdown.
+export type ObsStepType = Extract<StepActionType, `obs_${string}`>;
+export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
+
+export const obsOperationLabels: Record<ObsStepType, string> = {
+  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer',
+  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
+  obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile',
+};
+
+// Switching operation starts from the new operation's defaults and keeps the names the two
+// operations share (scene, source, filter, or the collection/profile name), so a scene switch
+// becomes a source visibility for the same scene. Operation settings (toggle, start, save) reset.
+export function switchObsOperation(action: ObsStepAction, next: ObsStepType): ObsStepAction {
+  const target = { ...defaultStepAction(next) } as Record<string, unknown>;
+  const previous = action as unknown as Record<string, unknown>;
+  for (const field of ['scene', 'source', 'filter', 'name'] as const) {
+    if (typeof previous[field] === 'string' && field in target) target[field] = previous[field];
+  }
+  return target as unknown as ObsStepAction;
+}
+
 export function defaultTimerAction(): Action {
   return { type: 'timer', seconds: 300 };
 }

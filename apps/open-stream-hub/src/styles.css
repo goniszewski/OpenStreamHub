@@ -433,7 +433,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 @media(max-width:670px) { .focus-bundle-row { flex-wrap:wrap; }.focus-bundle-row .button { width:100%; justify-content:center; } }
 /* Action editor: text snippet and ordered multi-action steps. */
 .inspector textarea { width:100%; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font:inherit; font-size:13px; color:inherit; resize:vertical; }.inspector textarea[aria-invalid="true"] { border-color:var(--red); }.inspector textarea:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
-.action-steps { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }.action-steps>li { border:1px solid var(--line); border-radius:9px; padding:12px; }.action-steps>li>.button { margin-top:12px; }.action-fields .setting-toggle { display:flex; align-items:center; gap:7px; margin-top:12px; font-weight:400; }
+.action-steps { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }.action-steps>li { border:1px solid var(--line); border-radius:9px; padding:12px; }.action-steps>li>.button { margin-top:12px; }.action-fields .setting-toggle { display:flex; align-items:center; gap:7px; margin-top:12px; font-weight:400; }.obs-connection .obs-setup { border:0; background:none; padding:0; font:inherit; color:var(--accent); text-decoration:underline; cursor:pointer; }.obs-connection .obs-setup:hover { color:var(--text); }
 
 /* Dial functions: editor panel, function list, preview and replay switch rows. */
 .dial-functions { margin-top:22px; }.dial-functions h3 { display:flex; align-items:center; gap:10px; }.dial-functions h4 { margin:0 0 10px; font-size:13px; }

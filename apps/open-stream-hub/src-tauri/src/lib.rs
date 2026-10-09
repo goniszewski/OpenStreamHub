@@ -22,8 +22,8 @@ mod store;
 mod test_profiles;
 
 use cooltek_sdk_service::{
-    obs::{ObsCatalog, ObsClient},
     Gesture, InputValue, Profile, ServiceModule,
+    obs::{MAX_LISTED_NAME_BYTES, ObsCatalog, ObsClient},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1254,8 +1254,8 @@ fn set_obs_password(
 // The OBS listings for the editor pickers: one short loopback connection per
 // reply, using the saved endpoint and the in-memory password. Refused while
 // OBS is off in Settings, with the reason the editor shows in its place. The
-// name arguments are data: they travel only as JSON strings to OBS.
-const MAX_LISTED_NAME_BYTES: usize = 256;
+// name arguments are data: they travel only as JSON strings to OBS. The
+// name bound is the profile's own limit, like the listings.
 
 #[tauri::command(async)]
 fn obs_catalog(state: State<'_, AppState>) -> Result<ObsCatalog, String> {

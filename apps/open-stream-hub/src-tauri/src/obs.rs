@@ -405,11 +405,7 @@ mod tests {
         let path = directory.path().join(FILE_NAME);
         std::fs::write(&path, b"not json").unwrap();
         assert!(state.for_listing().unwrap_err().contains("unreadable"));
-        std::fs::write(
-            &path,
-            br#"{"enabled":true,"host":"127.0.0.1","port":4455}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, br#"{"enabled":true,"host":"127.0.0.1","port":4455}"#).unwrap();
         let listed = state.for_listing().unwrap();
         assert_eq!(listed, launch(None));
         assert_eq!(
@@ -418,11 +414,12 @@ mod tests {
         );
         state.set_password(Some(PASSWORD.into())).unwrap();
         assert_eq!(state.for_listing().unwrap(), launch(Some(PASSWORD)));
-        state.set(ObsSettings {
-            enabled: false,
-            ..on()
-        })
-        .unwrap();
+        state
+            .set(ObsSettings {
+                enabled: false,
+                ..on()
+            })
+            .unwrap();
         assert_eq!(
             state.for_listing().unwrap_err(),
             "OBS is off in OpenStreamHub Settings"
@@ -432,7 +429,8 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_hosts_and_bad_passwords_are_refused_without_echo() {        let directory = tempfile::tempdir().unwrap();
+    fn non_loopback_hosts_and_bad_passwords_are_refused_without_echo() {
+        let directory = tempfile::tempdir().unwrap();
         let state = ObsState::open(Ok(directory.path()));
         for (host, port) in [
             ("192.168.1.10", 4455),

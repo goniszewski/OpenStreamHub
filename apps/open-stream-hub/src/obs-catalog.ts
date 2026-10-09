@@ -1,4 +1,5 @@
 import { useEffect, useSyncExternalStore } from 'react';
+import { maxObsSceneBytes } from './action-model';
 import type { ObsCatalogNames, ObsNameList } from './contracts';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
@@ -12,8 +13,10 @@ import { errorMessage } from './ui-model';
 
 // Mirrors MAX_LISTED_NAMES in crates/cooltek-sdk-service/src/obs.rs.
 const maxListedNames = 1000;
-// Mirrors the longest name the backend lists (crates/cooltek-sdk-service/src/obs.rs).
-const maxListedNameBytes = 256;
+// The backend drops listed names beyond the profile's own name limit (MAX_LISTED_NAME_BYTES there
+// equals Action::MAX_OBS_NAME_BYTES), so a request for a longer name could never be answered with
+// anything the editor could save.
+const maxListableNameBytes = maxObsSceneBytes;
 
 const utf8 = new TextEncoder();
 
@@ -123,11 +126,11 @@ export class ObsCatalogStore {
 
   readonly list = (kind: ObsNameKind, name: string): ObsNameList | null => this.state.lists[listKey(kind, name)] ?? null;
 
-  // Called from a field's open event, never from render. A name too long for OBS listings is
-  // ignored: the field's own validation already asks for a shorter one.
+  // Called from a field's open event, never from render. A name too long for the backend's
+  // listings is ignored: the field's own validation already asks for a shorter one.
   readonly requestNames = (kind: ObsNameKind, name: string): void => {
     const key = listKey(kind, name);
-    if (!this.state.desktop || this.state.lists[key] || !name.trim() || utf8.encode(name).length > maxListedNameBytes) return;
+    if (!this.state.desktop || this.state.lists[key] || !name.trim() || utf8.encode(name).length > maxListableNameBytes) return;
     const { command, argument } = nameCommands[kind];
     this.set({ lists: { ...this.state.lists, [key]: { status: 'loading' } } });
     void (async () => {

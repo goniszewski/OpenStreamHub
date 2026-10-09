@@ -135,15 +135,16 @@ describe('ObsCatalogStore', () => {
     calls.length = 0;
     store.requestNames('filters', '');
     store.requestNames('filters', '   ');
-    store.requestNames('filters', 'x'.repeat(257));
+    store.requestNames('filters', 'x'.repeat(129));
     expect(calls).toEqual([]);
+    // The longest name a profile can save is still answerable.
+    store.requestNames('filters', 'x'.repeat(128));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([['obs_source_filters', { source: 'x'.repeat(128) }]]);
     // An empty list is a real answer, never re-requested.
-    store.requestNames('filters', 'Cam');
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(store.list('filters', 'Cam')).toEqual({ status: 'ready', names: [] });
     calls.length = 0;
-    store.requestNames('filters', 'Cam');
+    store.requestNames('filters', 'x'.repeat(128));
     expect(calls).toEqual([]);
   });
 

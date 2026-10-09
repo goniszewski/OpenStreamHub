@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { Check, Copy, FileDown, ImageUp, LoaderCircle, TriangleAlert } from 'lucide-react';
 import {
-  artworkName, buildArtworkRequest, buildSaveRequest, clampQuality, createLatestRunner, dataUrl, debounceMs, defaultArtworkOptions, fitInfo,
+  artworkName, buildArtworkRequest, buildSaveRequest, createLatestRunner, dataUrl, debounceMs, defaultArtworkOptions, fitInfo,
   formatHexColour, maxSourceBytes, offlineNote, parseHexColour, prepareArtwork, readSourceFile, rotationLabel, rotations, saveArtwork, targetInfo,
 } from './artwork-model';
 import type { ArtworkFit, ArtworkOptions, ArtworkTarget, PrepareResult, SaveResult } from './artwork-model';
@@ -151,14 +151,7 @@ export function ArtworkPage({ desktop, invoke, initialSource, initialResult, ini
             {colourInvalid ? <p id="artwork-background-error" className="field-error" role="alert">Background colour must be a hex value such as #000000 or #fff.</p>
               : <p className="fine-print">Fills margins and transparent areas.</p>}
           </div>
-          <div className="artwork-field">
-            <label htmlFor="artwork-quality">JPEG quality</label>
-            <div className="position-inputs">
-              <input id="artwork-quality" type="range" min={1} max={100} step={1} value={options.quality} disabled={locked} onChange={event => set('quality', clampQuality(Number(event.target.value)))} />
-              <output htmlFor="artwork-quality">{options.quality}</output>
-            </div>
-            <p className="fine-print" aria-live="polite">{result && !loading ? `Prepared size: ${formatBytes(result.bytes)}` : 'Prepared size: —'}</p>
-          </div>
+          <p className="fine-print" aria-live="polite">{result && !loading ? `Prepared size: ${formatBytes(result.bytes)}` : 'Prepared size: —'}</p>
         </section>
       </div>
       <section className="panel artwork-preview" aria-labelledby="artwork-preview-title">

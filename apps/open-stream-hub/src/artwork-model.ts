@@ -31,10 +31,12 @@ export interface ArtworkOptions {
   quarterTurns: number;
   /** As typed: `#rrggbb`, `rrggbb`, `#rgb` or `rgb`. */
   background: string;
-  quality: number;
 }
 
-export const defaultArtworkOptions: ArtworkOptions = { target: 'dial', fit: 'contain', quarterTurns: 0, background: '#000000', quality: 100 };
+export const defaultArtworkOptions: ArtworkOptions = { target: 'dial', fit: 'contain', quarterTurns: 0, background: '#000000' };
+
+/** Where preparation starts; the backend lowers it itself when a frame must fit a size budget. */
+export const preparedQuality = 100;
 
 export interface PrepareRequest {
   image_base64: string;
@@ -48,7 +50,6 @@ export interface SaveRequest extends PrepareRequest { name: string }
 export interface PrepareResult { jpeg_base64: string; width: number; height: number; bytes: number }
 export interface SaveResult { path: string; bytes: number; width: number; height: number }
 
-export const clampQuality = (value: number) => Number.isFinite(value) ? Math.min(100, Math.max(1, Math.round(value))) : defaultArtworkOptions.quality;
 export const clampQuarterTurns = (value: number) => Number.isFinite(value) ? ((Math.round(value) % 4) + 4) % 4 : 0;
 
 export function parseHexColour(text: string): Rgb | null {
@@ -69,7 +70,7 @@ export function buildArtworkRequest(imageBase64: string | null, options: Artwork
   return {
     ok: true,
     request: {
-      image_base64: imageBase64, target: options.target, quality: clampQuality(options.quality), fit: options.fit,
+      image_base64: imageBase64, target: options.target, quality: preparedQuality, fit: options.fit,
       quarter_turns: clampQuarterTurns(options.quarterTurns), background,
     },
   };

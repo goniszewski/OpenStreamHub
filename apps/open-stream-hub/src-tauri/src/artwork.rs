@@ -11,6 +11,7 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cooltek_sdk_cli::image_prep::{
     FitMode, PrepareOptions, prepare_image, prepare_keypad_artwork, prepare_keypad_image,
+    within_frame_budget,
 };
 use cooltek_sdk_masterhub::{dial, keypad};
 use serde::{Deserialize, Serialize};
@@ -157,7 +158,9 @@ fn prepare(request: &PrepareRequest) -> Result<Prepared, String> {
     let input = decode_input(&request.image_base64)?;
     let jpeg = match request.target {
         Target::Dial => prepare_image(&input, options),
-        Target::Keypad => prepare_keypad_image(&input, options),
+        Target::Keypad => {
+            within_frame_budget(options, |options| prepare_keypad_image(&input, options))
+        }
     }?;
     let (width, height) = request.target.size();
     Ok(Prepared {
@@ -473,6 +476,20 @@ mod tests {
         low.quality = 5;
         let high = request(&input, Target::Dial, Fit::Stretch, 0);
         assert!(prepare_artwork(&low).unwrap().bytes < prepare_artwork(&high).unwrap().bytes);
+    }
+
+    #[test]
+    fn keypad_artwork_is_lowered_to_fit_the_frame_budget() {
+        let noisy = RgbImage::from_fn(256, 256, |x, y| {
+            Rgb([
+                (x * 37 ^ y * 11) as u8,
+                (y * 91 + x * 7) as u8,
+                (x * y % 251) as u8,
+            ])
+        });
+        let asked = request(&png(&noisy), Target::Keypad, Fit::Stretch, 0);
+        let prepared = prepare_artwork(&asked).unwrap();
+        assert!(prepared.bytes <= cooltek_sdk_service::KeyArtwork::MAX_FRAME_BYTES as u64);
     }
 
     #[test]

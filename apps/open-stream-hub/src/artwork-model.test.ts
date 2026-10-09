@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  artworkName, buildArtworkRequest, buildSaveRequest, bytesToBase64, clampQuality, clampQuarterTurns, createLatestRunner, defaultArtworkOptions, formatHexColour,
+  artworkName, preparedQuality, buildArtworkRequest, buildSaveRequest, bytesToBase64, clampQuarterTurns, createLatestRunner, defaultArtworkOptions, formatHexColour,
   maxSourceBytes, parseHexColour, prepareArtwork, readSourceFile, saveArtwork,
 } from './artwork-model';
 import type { ArtworkOptions, PrepareRequest } from './artwork-model';
@@ -29,9 +29,6 @@ describe('colour helpers', () => {
 });
 
 describe('clamping', () => {
-  it('keeps quality in 1..100', () => {
-    expect([clampQuality(0), clampQuality(-5), clampQuality(101), clampQuality(55.6), clampQuality(NaN)]).toEqual([1, 1, 100, 56, 100]);
-  });
   it('wraps quarter turns into 0..3', () => {
     expect([clampQuarterTurns(0), clampQuarterTurns(4), clampQuarterTurns(-1), clampQuarterTurns(2.4), clampQuarterTurns(NaN)]).toEqual([0, 0, 3, 2, 0]);
   });
@@ -57,8 +54,6 @@ describe('buildArtworkRequest', () => {
     [{ fit: 'stretch' as const }, { fit: 'stretch' }],
     [{ quarterTurns: 3 }, { quarter_turns: 3 }],
     [{ quarterTurns: 5 }, { quarter_turns: 1 }],
-    [{ quality: 0 }, { quality: 1 }],
-    [{ quality: 250 }, { quality: 100 }],
     [{ background: '#0f0' }, { background: [0, 255, 0] }],
   ])('maps %j', (patch, expected) => {
     const outcome = buildArtworkRequest('AAAA', options(patch));
@@ -151,10 +146,10 @@ describe('commands and shared fixtures', () => {
     expect(save).toHaveBeenCalledWith('save_artwork', { request: saveRequest.request });
   });
   it('requests built here match the Rust request shape', () => {
-    const outcome = buildArtworkRequest(contracts.request.image_base64, options({ target: 'keypad', quality: 90, quarterTurns: 1 }));
-    expect(outcome).toEqual({ ok: true, request: contracts.request });
+    const outcome = buildArtworkRequest(contracts.request.image_base64, options({ target: 'keypad', quarterTurns: 1 }));
+    expect(outcome).toEqual({ ok: true, request: { ...contracts.request, quality: preparedQuality } });
     expect(Object.keys(saveRequest.request).sort()).toEqual([...Object.keys(contracts.request), 'name'].sort());
-    if (outcome.ok) expect(buildSaveRequest(outcome.request, 'Four squares')).toEqual(saveRequest.request);
+    if (outcome.ok) expect(buildSaveRequest(outcome.request, 'Four squares')).toEqual({ ...saveRequest.request, quality: preparedQuality });
   });
   it('results have the documented fields', () => {
     expect(Object.keys(prepareResult.prepare_artwork).sort()).toEqual(['bytes', 'height', 'jpeg_base64', 'width']);

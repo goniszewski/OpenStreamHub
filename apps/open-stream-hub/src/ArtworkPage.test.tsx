@@ -23,7 +23,7 @@ describe('ArtworkPage', () => {
     expect(html).toMatch(/aria-pressed="true"[^>]*>Contain/);
     expect(html).toMatch(/aria-pressed="true"[^>]*>0°/);
     expect(html).toContain('value="#000000"');
-    expect(html).toContain('type="range" min="1" max="100" step="1" value="100"');
+    expect(html).not.toContain('artwork-quality');
     expect(html).toContain('Choose an image to see how it will look');
     expect(html).not.toContain('artwork-stage');
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>[^<]*(<svg[^>]*>.*?<\/svg>)?Export JPEG/);
@@ -37,7 +37,6 @@ describe('ArtworkPage', () => {
     expect(html).toContain('cover.png');
     expect(html.match(/<fieldset[^>]*disabled=""/g)).toHaveLength(3);
     expect(html).toMatch(/<input id="artwork-background"[^>]*disabled=""/);
-    expect(html).toMatch(/<input id="artwork-quality"[^>]*disabled=""/);
     expect(html).toMatch(/disabled=""[^>]*>(<svg[^>]*>.*?<\/svg>)?Export JPEG/);
     // The picker itself stays usable.
     expect(html).not.toMatch(/<input[^>]*aria-label="Source image file"[^>]*disabled/);
@@ -45,7 +44,7 @@ describe('ArtworkPage', () => {
   });
 
   it('shows the prepared image in the module artwork and at actual size with its path after export', () => {
-    const html = render({ initialSource: source, initialOptions: { target: 'keypad', quality: 80 }, initialResult: prepareResult.prepare_artwork, initialSaved: { path: '/storage/artwork/cover-keypad-20261005-120000.jpg', bytes: 1673, width: 72, height: 72 } });
+    const html = render({ initialSource: source, initialOptions: { target: 'keypad' }, initialResult: prepareResult.prepare_artwork, initialSaved: { path: '/storage/artwork/cover-keypad-20261005-120000.jpg', bytes: 1673, width: 72, height: 72 } });
     const jpeg = `data:image/jpeg;base64,${prepareResult.prepare_artwork.jpeg_base64}`;
     expect(html.split(jpeg).length - 1).toBe(2);
     expect(html).toContain('artwork-stage keypad');

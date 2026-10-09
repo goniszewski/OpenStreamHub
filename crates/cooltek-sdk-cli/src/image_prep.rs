@@ -167,7 +167,7 @@ pub fn prepare_keypad_artwork(
 /// Encodes at the requested quality, then steps the quality down until the
 /// frame fits [`KeyArtwork::MAX_FRAME_BYTES`], so a prepared frame always
 /// passes profile validation.
-fn within_frame_budget(
+pub fn within_frame_budget(
     mut options: PrepareOptions,
     mut encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {

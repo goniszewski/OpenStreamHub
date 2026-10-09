@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import type { Profile } from './contracts';
 import { DeviceFeed } from './device-feed';
 import { DeviceWorkspace, HeroImage, KnobOrientationControl, ModuleCatalog } from './DevicesPage';
 import { Inspector } from './Inspector';
@@ -287,8 +288,18 @@ describe('encoder inspector with dial functions', () => {
     expect(markup).toContain('aria-labelledby="dial-functions-heading"');
     expect(markup).toContain('aria-label="Bindings of Main"');
     expect(markup).not.toContain('id="binding-gesture"');
-    // The old pointer to a separate page is gone: the editor is right here.
-    expect(markup).not.toContain('Profiles · Dial functions');
+  });
+
+  it('shows the flat-encoder-bindings warning once, in the editor that carries the Move action', () => {
+    // A flat encoder binding beside dial functions: the dial editor's block warns and offers to
+    // move; the generic Binding warnings card would only repeat it.
+    const withFunctions: Profile = { ...session.getState().draft.profile, dial_functions: [{ name: 'Main', bindings: [] }], bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 5 } }] };
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profile: withFunctions } };
+    const markup = inspector(state);
+    expect(markup).toContain('aria-label="Encoder bindings outside dial functions"');
+    expect(markup).toContain('Move 1 encoder binding into Main');
+    expect(markup).not.toContain('The service rejects flat encoder bindings');
+    expect(markup).not.toContain('Binding warnings');
   });
 
   it('keeps the flat editor for the encoder without dial functions and offers to add them', () => {

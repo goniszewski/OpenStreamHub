@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Search, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Profile } from './contracts';
 import { bindingWarnings, entryOnControl, filterBindings, listBindings, warningsForControl } from './binding-model';
-import type { BindingEntry, BindingWarning, SelectedControl } from './binding-model';
+import type { BindingEntry, BindingWarning, SelectedControl, WarningKind } from './binding-model';
 import { removeDialBinding } from './dial-function-model';
 import { dialFunctionNameId } from './DialFunctionsPanel';
 import { focusWhenRendered } from './NoticeRegion';
@@ -45,10 +45,13 @@ function WarningList({ warnings, entries, editor, label, current }: {
   </div>;
 }
 
-// A note in the Inspector listing the warnings that involve the selected control.
-export function ControlWarnings({ profile, editor, selected }: { profile: Profile; editor: DeviceEditor; selected: SelectedControl }) {
+// A note in the Inspector listing the warnings that involve the selected control. `excludeKinds`
+// drops warnings another editor renders better: while the dial functions editor is open below,
+// its own block names the flat encoder bindings and carries the Move action.
+export function ControlWarnings({ profile, editor, selected, excludeKinds }: { profile: Profile; editor: DeviceEditor; selected: SelectedControl; excludeKinds?: readonly WarningKind[] }) {
   const entries = listBindings(profile);
-  const warnings = warningsForControl(bindingWarnings(profile), entries, selected);
+  const warnings = warningsForControl(bindingWarnings(profile), entries, selected)
+    .filter(warning => !excludeKinds?.includes(warning.kind));
   return <WarningList warnings={warnings} entries={entries} editor={editor} label="Binding warnings" current={{ control: selected, gesture: editor.selection.gesture, serial: editor.selection.serial }} />;
 }
 

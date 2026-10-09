@@ -240,6 +240,26 @@ impl ObsState {
             password: self.password.lock().ok()?.clone(),
         })
     }
+
+    /// The connection for a picker listing (`obs_catalog`,
+    /// `obs_source_filters`, `obs_scene_sources`). Unlike
+    /// [`Self::for_new_session`], an off switch is an error the Settings
+    /// panel can show rather than a silent `None`, and a damaged settings
+    /// file is reported too.
+    pub fn for_listing(&self) -> Result<ObsLaunch, String> {
+        let settings = self.load()?;
+        if !settings.enabled {
+            return Err("OBS is off in OpenStreamHub Settings".into());
+        }
+        Ok(ObsLaunch {
+            endpoint: settings.endpoint()?,
+            password: self
+                .password
+                .lock()
+                .map_err(|_| "OBS password lock is unavailable".to_string())?
+                .clone(),
+        })
+    }
 }
 
 #[cfg(test)]
@@ -373,8 +393,46 @@ mod tests {
     }
 
     #[test]
-    fn non_loopback_hosts_and_bad_passwords_are_refused_without_echo() {
+    fn listing_launches_need_the_switch_on_and_report_why() {
         let directory = tempfile::tempdir().unwrap();
+        let state = ObsState::open(Ok(directory.path()));
+        // Off (the default) and a damaged file are errors the Settings panel
+        // can show, never a silent fallback.
+        assert_eq!(
+            state.for_listing().unwrap_err(),
+            "OBS is off in OpenStreamHub Settings"
+        );
+        let path = directory.path().join(FILE_NAME);
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(state.for_listing().unwrap_err().contains("unreadable"));
+        std::fs::write(
+            &path,
+            br#"{"enabled":true,"host":"127.0.0.1","port":4455}"#,
+        )
+        .unwrap();
+        let listed = state.for_listing().unwrap();
+        assert_eq!(listed, launch(None));
+        assert_eq!(
+            obs_args(Some(&listed)),
+            ["--obs-endpoint", "127.0.0.1:4455"]
+        );
+        state.set_password(Some(PASSWORD.into())).unwrap();
+        assert_eq!(state.for_listing().unwrap(), launch(Some(PASSWORD)));
+        state.set(ObsSettings {
+            enabled: false,
+            ..on()
+        })
+        .unwrap();
+        assert_eq!(
+            state.for_listing().unwrap_err(),
+            "OBS is off in OpenStreamHub Settings"
+        );
+        // The non-descriptor paths are unchanged: off stays a silent `None`.
+        assert_eq!(state.for_new_session(), None);
+    }
+
+    #[test]
+    fn non_loopback_hosts_and_bad_passwords_are_refused_without_echo() {        let directory = tempfile::tempdir().unwrap();
         let state = ObsState::open(Ok(directory.path()));
         for (host, port) in [
             ("192.168.1.10", 4455),

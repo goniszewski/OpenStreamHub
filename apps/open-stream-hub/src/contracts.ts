@@ -187,3 +187,8 @@ export interface DefaultProfile { profile_id: string | null }
 export type ObsHost = '127.0.0.1' | '::1' | 'localhost';
 export interface ObsSettings { enabled: boolean; host: ObsHost; port: number }
 export interface ObsSettingsView extends ObsSettings { password_set: boolean }
+// The OBS listings (obs_catalog, obs_source_filters, obs_scene_sources): what the editor pickers
+// offer. Names are exact, in OBS's own order (the store sorts them for display only).
+export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }
+// One name list an OBS editor field can offer: loading, the names, or why OBS could not be asked.
+export type ObsNameList = { status: 'loading' } | { status: 'ready'; names: string[] } | { status: 'failed'; error: string }

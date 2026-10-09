@@ -1,0 +1,31 @@
+{
+  "obs_catalog_result": {
+    "profiles": [
+      "Streaming"
+    ],
+    "scene_collections": [
+      "Show"
+    ],
+    "scenes": [
+      "Live",
+      "Games"
+    ],
+    "sources": [
+      "Cam",
+      "Mic"
+    ]
+  },
+  "obs_scene_sources_args": {
+    "scene": "Live"
+  },
+  "obs_scene_sources_result": [
+    "Cam",
+    "Title \"2\""
+  ],
+  "obs_source_filters_args": {
+    "source": "Cam"
+  },
+  "obs_source_filters_result": [
+    "Blur"
+  ]
+}

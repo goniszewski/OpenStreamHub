@@ -9,6 +9,8 @@ import { DisplaySettingsStore } from './display-settings';
 import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
+import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
+import type { ObsCatalogNames } from './contracts';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
@@ -36,6 +38,11 @@ import type { ConfirmRequest } from './useDeviceEditor';
 
 const desktop = isTauri();
 const invokeCommand = <T,>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args);
+// Browser-preview QA only (never set in the desktop app): design captures seed sample OBS
+// listings, because the preview cannot reach Tauri. See ObsCatalogStore.seedPreview.
+declare global {
+  interface Window { __oshObsCatalogSeed?: (names: ObsCatalogNames) => void }
+}
 function webStorage(): Storage | null {
   try { return localStorage; } catch { return null; }
 }
@@ -64,6 +71,7 @@ export default function App() {
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
+  const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
@@ -114,6 +122,15 @@ export default function App() {
   }, [appearance, systemDark]);
 
   useEffect(() => { if (desktop) void session.bootstrap(); }, [session]);
+  // Browser-preview QA hook (dev only): the preview cannot reach Tauri, so design captures seed
+  // sample OBS listings through window.__oshObsCatalogSeed. The effect, not the store
+  // initializer, points the hook at the store that is actually mounted (StrictMode safe).
+  useEffect(() => {
+    if (!desktop && import.meta.env.DEV) {
+      exposePreviewSeeding(obsCatalog);
+      window.__oshObsCatalogSeed = seedPreviewCatalog;
+    }
+  }, [obsCatalog]);
 
   // Write any pending crash-recovery copy before the page goes away.
   useEffect(() => {
@@ -215,9 +232,9 @@ export default function App() {
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} feed={feed} />
           <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} />
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
         </div>}
-        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
+        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} catalog={obsCatalog} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}

@@ -133,10 +133,22 @@ The user explicitly authorized a repeat dry-run replug on the same dial and then
 - **Real crash.** With the desktop app running a dry-run, software-mode session on the dial (the sidecar was a child of the app, in its own process group, started with `--exit-on-stdin-eof --software-mode`), the app was killed with `kill -9`. The sidecar was gone about 120 ms later, and the user reported that the dial's built-in animation returned within milliseconds, well under a second.
 - **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit in the app after this change; a crash while a session is still starting; sleep and wake. Dry-run dial replug and recovered input were observed in the [replug record](#desktop-app-dial-replug-m131e-8-october-2026). Normal app Stop on the dial was verified in the [app dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026).
 
+## OBS editor listings against the fake obs-websocket server (9 October 2026)
+
+The scene/source/filter/collection/profile listings behind the editor pickers (see [the editor's OBS listings](masterhub-actions.md#the-editors-obs-listings)) were verified against the scripted fake obs-websocket server in `crates/cooltek-sdk-service/src/obs.rs`; no real OBS took part.
+
+- **Catalog.** One connection, four requests in order (`GetSceneList`, `GetInputList`, `GetSceneCollectionList`, `GetProfileList`), no request data, one close frame; the reply's four name lists come back verbatim. A reply missing a list key is an error, not a partial catalog.
+- **Per-source and per-scene lists.** `GetSourceFilterList` carries `{"sourceName":…}` and `GetSceneItemList` `{"sceneName":…}`, names with quotes and emoji included, sent only as JSON string values. A refused listing (status 600) reports "no such source" or "no such scene" and never echoes the name it was given.
+- **Bounds.** Over-long names (over 256 bytes), a name-less entry, a non-array list and a list beyond 1000 entries are all errors; the editor never shows a silently partial list.
+- **App side.** While OBS is off in Settings, the listing commands refuse without connecting ("OBS is off in OpenStreamHub Settings") and the editor keeps plain inputs; the endpoint and in-memory password come from the same `ObsState` as a run's (`for_listing`).
+- **Browser evidence.** The picker behavior (open on click or ArrowDown, case-insensitive narrowing, pick fills the exact name, the inline "OBS does not list this scene right now" cross-check, the Refresh row) is captured in `apps/open-stream-hub/qa/obs-listing-dark.png` and `qa/obs-warning-dark.png` (browser preview with sample listings; the real app reaches OBS through the commands above).
+- **Still pending: real OBS.** This Mac has no OBS install. The manual check against OBS 28+ — listings appearing for a running OBS with its WebSocket server on, the password-required path, a refresh after renaming a scene in OBS — remains for the next hardware session with OBS installed.
+
 ## Not tested
 
 - The M005S faders (not connected).
 - Lighting writes of any kind.
 - Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session exercised an app crash (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A later [app dial dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026) verified the App-controlled display path, live dial preview and normal Stop. The later [app keypad dry-run](#desktop-app-keypad-dry-run-m4315-8-october-2026) verified two-level folder redraws, L1/L2 badges, live keypad preview and normal Stop. App-driven dial function cycling, other modules' live previews and switching the Module control setting remain untested.
 - `shortcut`, `launch_app` and every `obs_*` action.
+- Every `obs_*` action and listing against a real OBS (no OBS install on this Mac). The listings are verified against the fake obs-websocket server (see [the record above](#obs-editor-listings-against-the-fake-obs-websocket-server-9-october-2026)); the real-OBS manual check remains for the next session with OBS installed.
 - Sleep/wake, executing-session reconnect confirmation, reconnect on other modules and the intermediate disconnected UI. A repeated dry-run dial replug recovered the selected session and rotation input after the initial UI selection defect was fixed; the user confirmed the app display returned after reconnect and the built-in animation returned after Stop. See the [replug record](#desktop-app-dial-replug-m131e-8-october-2026).

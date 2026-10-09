@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, MediaCommand, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -164,6 +164,21 @@ export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' |
 
 export function obsSceneIssue(scene: string): string | null {
   return obsNameIssue(scene, 'scene');
+}
+
+// Whether an OBS name can be referenced by a saved profile (the byte cap of obsNameIssue). The
+// name choices only offer names that pass, so picking one never fails validation outright.
+export function obsNameFits(name: string): boolean {
+  return utf8.encode(name).length <= maxObsSceneBytes;
+}
+
+// Live cross-check against OBS's own lists: when the editor holds the matching list and the exact
+// name is not in it, say so without claiming the press must fail — the list may be stale, and a
+// Refresh re-checks. Only exact matches count, like the press itself.
+export function obsMissingWarning(value: string, list: ObsNameList | null, what: string): string | null {
+  if (!value.trim() || list?.status !== 'ready') return null;
+  if (list.names.includes(value)) return null;
+  return `OBS does not list this ${what} right now. Refresh the OBS lists, or check the exact spelling.`;
 }
 
 export function textIssue(text: string): string | null {

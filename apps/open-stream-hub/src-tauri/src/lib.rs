@@ -21,7 +21,10 @@ mod store;
 #[cfg(test)]
 mod test_profiles;
 
-use cooltek_sdk_service::{Gesture, InputValue, Profile, ServiceModule};
+use cooltek_sdk_service::{
+    obs::{ObsCatalog, ObsClient},
+    Gesture, InputValue, Profile, ServiceModule,
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -1248,6 +1251,40 @@ fn set_obs_password(
     state.obs.set_password(password)
 }
 
+// The OBS listings for the editor pickers: one short loopback connection per
+// reply, using the saved endpoint and the in-memory password. Refused while
+// OBS is off in Settings, with the reason the editor shows in its place. The
+// name arguments are data: they travel only as JSON strings to OBS.
+const MAX_LISTED_NAME_BYTES: usize = 256;
+
+#[tauri::command(async)]
+fn obs_catalog(state: State<'_, AppState>) -> Result<ObsCatalog, String> {
+    let launch = state.obs.for_listing()?;
+    ObsClient::new(launch.endpoint, launch.password).catalog()
+}
+
+#[tauri::command(async)]
+fn obs_source_filters(state: State<'_, AppState>, source: String) -> Result<Vec<String>, String> {
+    if source.len() > MAX_LISTED_NAME_BYTES {
+        return Err(format!(
+            "the source name is longer than {MAX_LISTED_NAME_BYTES} bytes"
+        ));
+    }
+    let launch = state.obs.for_listing()?;
+    ObsClient::new(launch.endpoint, launch.password).source_filters(&source)
+}
+
+#[tauri::command(async)]
+fn obs_scene_sources(state: State<'_, AppState>, scene: String) -> Result<Vec<String>, String> {
+    if scene.len() > MAX_LISTED_NAME_BYTES {
+        return Err(format!(
+            "the scene name is longer than {MAX_LISTED_NAME_BYTES} bytes"
+        ));
+    }
+    let launch = state.obs.for_listing()?;
+    ObsClient::new(launch.endpoint, launch.password).scene_sources(&scene)
+}
+
 // The last app other than OpenStreamHub that was frontmost.
 #[tauri::command]
 fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
@@ -1425,6 +1462,9 @@ pub fn run() {
             obs_settings,
             set_obs_settings,
             set_obs_password,
+            obs_catalog,
+            obs_source_filters,
+            obs_scene_sources,
             switch_session_profile,
             session_profile,
             create_diagnostics,

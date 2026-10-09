@@ -434,6 +434,18 @@ input[aria-invalid="true"] { border-color:var(--red); }
 /* Action editor: text snippet and ordered multi-action steps. */
 .inspector textarea { width:100%; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font:inherit; font-size:13px; color:inherit; resize:vertical; }.inspector textarea[aria-invalid="true"] { border-color:var(--red); }.inspector textarea:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 .action-steps { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }.action-steps>li { border:1px solid var(--line); border-radius:9px; padding:12px; }.action-steps>li>.button { margin-top:12px; }.action-fields .setting-toggle { display:flex; align-items:center; gap:7px; margin-top:12px; font-weight:400; }.obs-connection .obs-setup { border:0; background:none; padding:0; font:inherit; color:var(--accent); text-decoration:underline; cursor:pointer; }.obs-connection .obs-setup:hover { color:var(--text); }
+/* OBS name fields: combobox choices under the input, the live cross-check note, and the
+   listing row of the connection note (Refresh button plus why a listing failed). */
+.obs-name { position:relative; display:block; }
+.combo-list { position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:40; margin:0; padding:5px; list-style:none; max-height:260px; overflow-y:auto; overscroll-behavior:contain; border:1px solid var(--line); border-radius:9px; background:var(--panel); box-shadow:var(--shadow); }
+.combo-list li:not(.combo-note) { padding:8px 10px; border-radius:6px; font-size:13px; cursor:pointer; overflow-wrap:anywhere; }
+.combo-list li:not(.combo-note):hover, .combo-list li:not(.combo-note).active { background:var(--selected); }
+.combo-list li[aria-selected="true"] { font-weight:600; }
+.combo-note { padding:7px 10px; font-size:12px; color:var(--muted); line-height:1.5; overflow-wrap:anywhere; }
+.field-warning { margin:6px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
+.obs-catalog { display:grid; gap:8px; justify-items:start; margin-top:10px; }
+.obs-catalog .button { display:inline-flex; }
+.obs-catalog-error { color:var(--red); margin:0; }
 
 /* Dial functions: editor panel, function list, preview and replay switch rows. */
 .dial-functions { margin-top:22px; }.dial-functions h3 { display:flex; align-items:center; gap:10px; }.dial-functions h4 { margin:0 0 10px; font-size:13px; }

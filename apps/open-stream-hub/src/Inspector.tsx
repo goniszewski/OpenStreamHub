@@ -3,6 +3,8 @@ import type { Gesture } from './contracts';
 import { ActionFields } from './ActionFields';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
+import { useObsCatalog } from './obs-catalog';
+import type { ObsCatalogStore } from './obs-catalog';
 import type { KeypadPreview, Invoke, ProfileSession, SessionState } from './profile-session';
 import { KeyArtworkEditor } from './KeyArtworkEditor';
 import { actionLabel, controlLabel, faderMaximum, gestureLabels, gestures } from './ui-model';
@@ -12,7 +14,7 @@ import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
 import { bindingPreviewText } from './DialFunctionsPanel';
 
-export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void }) {
+export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const previewRunning = state.preview.status === 'running' || state.keypadPreview.status === 'running';
@@ -21,6 +23,8 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   const resultDone = isKeypad ? state.keypadPreview.status === 'completed' : state.preview.status === 'completed';
   // Number fields remount when the edited selector changes, discarding typed text.
   const selectorKey = `${selection.module}:${keypadPath.join('/')}:${selection.control}:${selection.gesture}:${selection.serial}`;
+  // OBS's current listings for the name fields; asked once per app session, refreshed on demand.
+  const catalog = useObsCatalog(catalogStore);
   return <aside className="inspector" aria-label="Selected control settings">
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? `Folder · L${keypadDepth(keypadPath)}` : 'Root page'}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />Delete folder</button>}<div className="inspector-divider" /></>}
@@ -35,7 +39,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       </SelectField>
       <div className="inspector-divider" />
       <fieldset disabled={disabled || serialMissing || !editorGestures(profile, selection.module).length}>
-        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} />
+        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} />
       </fieldset>
       <div className="inspector-divider" />
       <details className="advanced">

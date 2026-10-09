@@ -747,6 +747,30 @@ fn obs_settings_payloads_match_the_shared_fixture() {
 }
 
 #[test]
+fn obs_listing_payloads_match_the_shared_fixture() {
+    use cooltek_sdk_service::obs::ObsCatalog;
+    // The reply shapes of `obs_catalog`, `obs_source_filters` and
+    // `obs_scene_sources`: the lists the editor pickers offer, and the name
+    // arguments exactly as the frontend sends them.
+    let catalog = ObsCatalog {
+        scenes: vec!["Live".into(), "Games".into()],
+        sources: vec!["Cam".into(), "Mic".into()],
+        scene_collections: vec!["Show".into()],
+        profiles: vec!["Streaming".into()],
+    };
+    check_or_update(
+        "obs-catalog.json",
+        &json!({
+            "obs_catalog_result": catalog,
+            "obs_source_filters_args": { "source": "Cam" },
+            "obs_source_filters_result": ["Blur"],
+            "obs_scene_sources_args": { "scene": "Live" },
+            "obs_scene_sources_result": ["Cam", "Title \"2\""],
+        }),
+    );
+}
+
+#[test]
 fn mhz_import_payloads_match_the_shared_fixture() {
     use crate::mhz::tests::{mhz, page, tile};
     let directory = tempfile::tempdir().unwrap();

@@ -2,10 +2,11 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsConnection, ObsFields } from './ActionFields';
+import { ActionFields, ObsCombo, ObsConnection, ObsFields } from './ActionFields';
 import { obsOperationLabels } from './action-model';
 import type { ObsStepAction } from './action-model';
-import type { BindingAction, StepAction } from './contracts';
+import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
+import type { BindingAction, ObsNameList, StepAction } from './contracts';
 
 const render = (action: BindingAction | null, fader = false, onSetUpObs: (() => void) | null = () => {}) =>
   renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} onSetUpObs={onSetUpObs ?? undefined} />);
@@ -277,5 +278,257 @@ describe('obs fields', () => {
     const bare = ObsConnection({}) as AnyElement;
     expect(elementsOf(bare).some(element => element.type === 'button')).toBe(false);
     expect(renderToStaticMarkup(bare)).not.toContain('Set up in Settings');
+  });
+});
+
+// The catalog view ObsNameField-based tests use: scenes plus one per-name list, and spies for
+// refresh and on-demand fetches (the real view comes from useObsCatalog with the store).
+function catalogView(overrides?: Partial<ObsCatalogView>): ObsCatalogView {
+  return {
+    desktop: true, status: 'ready', error: null, lists: {},
+    names: { scenes: ['Games', 'Live'], sources: ['Cam', 'Mic'], scene_collections: ['Show'], profiles: ['Streaming'] },
+    refresh: () => {}, list: () => null, requestNames: () => {},
+    ...overrides,
+  };
+}
+
+describe('obs name listings', () => {
+  const renderAction = (action: BindingAction | null, catalog?: ObsCatalogView) =>
+    renderToStaticMarkup(ActionFields({
+      action, fader: false, selectorKey: 'm4315:root:0:pressed:', onChange: () => {}, onSetUpObs: () => {}, catalog,
+    }));
+
+  it('turns the OBS name fields into comboboxes only while the list is there', () => {
+    const plain = renderAction({ type: 'obs_scene', scene: 'Live' });
+    expect(plain).not.toContain('role="combobox"');
+    expect(plain).not.toContain('Refresh from OBS');
+    expectAccessible(plain);
+    const withCatalog = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView());
+    expect(withCatalog).toMatch(/id="obs-scene"[^>]*role="combobox"[^>]*aria-expanded="false"/);
+    expect(withCatalog).toMatch(/aria-autocomplete="list"/);
+    expect(withCatalog).toContain('Refresh from OBS');
+    expectAccessible(withCatalog);
+    // While listing, the fields stay comboboxes (their popups say so) and the press is off;
+    // a failed listing leaves plain inputs, says why, and keeps the Refresh press.
+    expect(renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'loading', names: null }))).toContain('role="combobox"');
+    const failed = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'failed', names: null, error: 'OBS at 127.0.0.1:4455: could not connect' }));
+    expect(failed).not.toContain('role="combobox"');
+    expect(failed).toContain('could not connect');
+    expect(failed).not.toMatch(/disabled=""[^>]*>.*Refresh from OBS/);
+    expectAccessible(failed);
+  });
+
+  it('warns when the exact saved name is not in the OBS list, and stays quiet when it is', () => {
+    const missing = renderAction({ type: 'obs_scene', scene: 'Liev' }, catalogView());
+    expect(missing).toContain('OBS does not list this scene right now. Refresh the OBS lists, or check the exact spelling.');
+    expect(missing).toMatch(/aria-describedby="obs-scene-warning"/);
+    expect(missing).not.toMatch(/aria-invalid="true"[^>]*aria-describedby="obs-scene-warning"/);
+    expectAccessible(missing);
+    const exact = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView());
+    expect(exact).not.toContain('field-warning');
+    // Other operations check their own lists, including scene collection and profile.
+    expect(renderAction({ type: 'obs_profile', name: 'Ghost' }, catalogView()))
+      .toContain('OBS does not list this profile right now.');
+    expect(renderAction({ type: 'obs_scene_collection', name: 'Ghost' }, catalogView()))
+      .toContain('OBS does not list this scene collection right now.');
+    // A name rule error still wins over the live cross-check.
+    const blank = renderAction({ type: 'obs_scene', scene: ' ' }, catalogView());
+    expect(blank).not.toContain('field-warning');
+    expect(blank).toContain('role="alert"');
+  });
+
+  it('offers a filter its source inputs plus scenes, and fetches filters per source on open', () => {
+    const requested: [ObsNameKind, string][] = [];
+    const view = catalogView({
+      list: (kind, name) => kind === 'filters' && name === 'Cam' ? { status: 'ready', names: ['Blur'] } : null,
+      requestNames: (kind, name) => requested.push([kind, name]),
+    });
+    const markup = renderAction({ type: 'obs_filter', source: 'Cam', filter: 'Blur', op: 'toggle' }, view);
+    expect(markup).toMatch(/id="obs-filter-source"[^>]*role="combobox"/);
+    expect(markup).toMatch(/id="obs-filter-name"[^>]*role="combobox"/);
+    expect(markup).not.toContain('field-warning');
+    // An unknown source says so; the filter of a known source stays quiet.
+    const unknown = renderAction({ type: 'obs_filter', source: 'Ghost', filter: 'Blur', op: 'toggle' }, view);
+    expect(unknown).toContain('OBS does not list this source right now.');
+    expect(unknown).not.toContain('OBS does not list this filter');
+    expectAccessible(unknown);
+    // A visibility source is checked against the items of its scene, fetched on open.
+    const inScene = catalogView({
+      list: (kind, name) => kind === 'sceneSources' && name === 'Live' ? { status: 'ready', names: ['Cam'] } : null,
+      requestNames: (kind, name) => requested.push([kind, name]),
+    });
+    const visibility = renderAction({ type: 'obs_source_visibility', scene: 'Live', source: 'Ghost', op: 'off' }, inScene);
+    expect(visibility).toContain('OBS does not list this source right now.');
+    const fine = renderAction({ type: 'obs_source_visibility', scene: 'Live', source: 'Cam', op: 'off' }, inScene);
+    expect(fine).not.toContain('field-warning');
+    expectAccessible(visibility);
+  });
+
+  it('shows one Refresh row per editor and refreshes on press', () => {
+    let refreshed = false;
+    const single = renderToStaticMarkup(ActionFields({
+      action: { type: 'obs_scene', scene: 'Live' }, fader: false, selectorKey: 'k', onChange: () => {}, onSetUpObs: () => {},
+      catalog: catalogView({ refresh: () => { refreshed = true; } }),
+    }));
+    expect((single.match(/Refresh from OBS/g) ?? []).length).toBe(1);
+    expect(single).not.toMatch(/disabled=""[^>]*>.*Refresh from OBS/);
+    const tree = ObsConnection({ onSetUpObs: () => {}, catalog: catalogView({ refresh: () => { refreshed = true; } }) }) as AnyElement;
+    const refresh = elementsOf(tree).find(element => element.type === 'button' && String(element.props.className).includes('button compact'));
+    expect(refresh, 'Refresh button').toBeTruthy();
+    (refresh!.props as { onClick(): void }).onClick();
+    expect(refreshed).toBe(true);
+    // While listing, the press is off.
+    const loading = ObsConnection({ catalog: catalogView({ status: 'loading', names: null }) }) as AnyElement;
+    expect(renderToStaticMarkup(loading)).toMatch(/<button[^>]*disabled=""[^>]*>.*Listing…<\/button>/);
+    // The browser preview (desktop false, nothing fetched) shows nothing new.
+    const preview = ObsConnection({ catalog: { ...catalogView(), desktop: false, status: 'idle', names: null } }) as AnyElement;
+    expect(renderToStaticMarkup(preview)).not.toContain('Refresh from OBS');
+    const inStep = renderToStaticMarkup(ActionFields({
+      action: { type: 'multi_action', actions: [{ type: 'obs_scene', scene: 'Live' }, { type: 'obs_transition' }] },
+      fader: false, selectorKey: 'k', onChange: () => {}, onSetUpObs: () => {}, catalog: catalogView(),
+    }));
+    expect((inStep.match(/Refresh from OBS/g) ?? []).length).toBe(1);
+    expectAccessible(inStep);
+  });
+});
+
+describe('obs combo', () => {
+  const ready: ObsNameList = { status: 'ready', names: ['Cam', 'cam 2', 'Games', 'Live', 'Mic', 'Title “2”'] };
+  type ComboResult = { typed?: string; picked?: string; opened?: boolean; active?: number; requested?: boolean };
+  const comboOf = (overrides: { value?: string; entry?: ObsNameList | null; open?: boolean; active?: number } = {}, onOpenList?: () => void) => {
+    const result: ComboResult = {};
+    const tree = ObsCombo({
+      id: 'obs-scene', value: overrides.value ?? '', entry: 'entry' in overrides ? overrides.entry! : ready,
+      open: overrides.open ?? false, onOpenChange: open => { result.opened = open; },
+      active: overrides.active ?? 0, onActiveChange: at => { result.active = at; },
+      onType: value => { result.typed = value; }, onPick: name => { result.picked = name; },
+      onOpenList,
+    }) as AnyElement;
+    return { result, tree };
+  };
+  const inputOf = (tree: AnyElement) => {
+    const input = elementsOf(tree).find(element => element.type === 'input');
+    expect(input, 'combo input').toBeTruthy();
+    return input!.props as {
+      value: string; role?: string; 'aria-expanded'?: boolean; 'aria-controls'?: string; 'aria-activedescendant'?: string;
+      onClick(event: { target: unknown }): void; onKeyDown(event: { key: string; preventDefault(): void }): void;
+      onChange(event: { target: { value: string } }): void; onBlur(): void;
+    };
+  };
+  const optionsOf = (tree: AnyElement) => elementsOf(tree).filter(element => element.props.role === 'option')
+    .map(element => ({ element, props: element.props as { id: string; 'aria-selected'?: boolean; onClick(): void; onMouseDown(event: { preventDefault(): void }): void; className?: string } }));
+  const notesOf = (tree: AnyElement) => elementsOf(tree).filter(element => element.props.className === 'combo-note')
+    .map(element => renderToStaticMarkup(element as AnyElement));
+
+  it('is a plain input without a list and a combobox with one', () => {
+    const { tree } = comboOf({ entry: null });
+    const input = inputOf(tree);
+    expect(input.role).toBe(undefined);
+    expect(input['aria-expanded']).toBe(undefined);
+    expect(renderToStaticMarkup(tree)).toContain('value=""');
+    const listed = inputOf(comboOf().tree);
+    expect(listed.role).toBe('combobox');
+    expect(listed['aria-expanded']).toBe(false);
+    expect(listed['aria-controls']).toBe('obs-scene-choices');
+  });
+
+  it('opens on click, filtered by what is typed, and offers every savable name', () => {
+    const { tree, result } = comboOf({ value: 'ca' });
+    inputOf(tree).onClick({ target: null });
+    expect(result.opened).toBe(true);
+    expect(result.active).toBe(0);
+    // Filtering is case-insensitive on the trimmed text.
+    const open = comboOf({ value: 'ca', open: true });
+    const names = optionsOf(open.tree).map(option => renderToStaticMarkup(option.element));
+    expect(names).toHaveLength(2);
+    expect(renderToStaticMarkup(open.tree)).not.toContain('Games');
+    // Typing keeps the choices open and never closes them; picking does.
+    const typing = comboOf({ open: true });
+    inputOf(typing.tree).onChange({ target: { value: 'Cam' } });
+    expect(typing.result.typed).toBe('Cam');
+    expect(typing.result.opened).toBe(undefined);
+    const pick = comboOf({ open: true, active: 1 });
+    optionsOf(pick.tree)[1].props.onClick();
+    expect(pick.result.picked).toBe('cam 2');
+    expect(pick.result.opened).toBe(false);
+    // The exact current value is marked selected, options keep the popup on mousedown.
+    const current = comboOf({ value: 'Live', open: true });
+    const selected = optionsOf(current.tree).find(option => option.props['aria-selected']);
+    // The query "Live" leaves one match.
+    expect(selected?.props.id).toBe('obs-scene-choice-0');
+    selected!.props.onMouseDown({ preventDefault() {} });
+  });
+
+  it('moves with the arrow keys, picks with Enter and closes with Escape or blur', () => {
+    const open = comboOf({ open: true, active: 0 });
+    const input = inputOf(open.tree);
+    input.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+    expect(open.result.active).toBe(1);
+    input.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+    expect(open.result.active).toBe(0);
+    // ArrowUp never leaves the first match.
+    input.onKeyDown({ key: 'ArrowUp', preventDefault() {} });
+    expect(open.result.active).toBe(0);
+    // An out-of-range active option clamps to the last match, where ArrowDown stays.
+    const atEnd = comboOf({ open: true, active: 99 });
+    expect(renderToStaticMarkup(atEnd.tree)).toContain('aria-activedescendant="obs-scene-choice-5"');
+    inputOf(atEnd.tree).onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+    expect(atEnd.result.active).toBe(5);
+    const enter = comboOf({ open: true, active: 2 });
+    inputOf(enter.tree).onKeyDown({ key: 'Enter', preventDefault() {} });
+    expect(enter.result.picked).toBe('Games');
+    expect(enter.result.opened).toBe(false);
+    const closed = comboOf({ active: 2 });
+    inputOf(closed.tree).onKeyDown({ key: 'Enter', preventDefault() {} });
+    expect(closed.result.picked).toBe(undefined);
+    for (const key of ['Escape', 'ArrowUp']) {
+      const silent = comboOf({ active: 2 });
+      inputOf(silent.tree).onKeyDown({ key, preventDefault() {} });
+      expect(silent.result.opened, key).toBe(undefined);
+    }
+    const blur = comboOf({ open: true });
+    inputOf(blur.tree).onBlur();
+    expect(blur.result.opened).toBe(false);
+    // ArrowDown opens a closed combobox.
+    const opening = comboOf();
+    inputOf(opening.tree).onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+    expect(opening.result.opened).toBe(true);
+  });
+
+  it('says what the list is doing and keeps long or unmatched names typing', () => {
+    const loading = comboOf({ entry: { status: 'loading' }, open: true });
+    expect(notesOf(loading.tree)).toHaveLength(1);
+    expect(notesOf(loading.tree)[0]).toContain('Looking up OBS…');
+    const failed = comboOf({ entry: { status: 'failed', error: 'OBS refused GetSourceFilterList (no such source)' }, open: true });
+    expect(notesOf(failed.tree)[0]).toContain('OBS refused GetSourceFilterList (no such source)');
+    const empty = comboOf({ value: 'zzz', open: true });
+    expect(optionsOf(empty.tree)).toHaveLength(0);
+    expect(notesOf(empty.tree)[0]).toContain('Nothing in the OBS list matches. The name you type is kept.');
+    // Names a profile can never reference are not offered, but typing one is kept.
+    const long: ObsNameList = { status: 'ready', names: ['x'.repeat(129), 'ok', 'y'.repeat(200)] };
+    const filtered = comboOf({ entry: long, open: true });
+    expect(optionsOf(filtered.tree).map(option => option.props.id)).toEqual(['obs-scene-choice-0']);
+    inputOf(filtered.tree).onChange({ target: { value: 'x'.repeat(129) } });
+    expect(filtered.result.typed).toBe('x'.repeat(129));
+    // More matches than shown say how many; 50 stay offered.
+    const many: ObsNameList = { status: 'ready', names: Array.from({ length: 55 }, (_, index) => `S${index}`) };
+    const paged = comboOf({ entry: many, open: true });
+    expect(optionsOf(paged.tree)).toHaveLength(50);
+    expect(notesOf(paged.tree)[0]).toContain('5 more — keep typing to narrow the list.');
+  });
+
+  it('fetches per-name lists when its choices open', () => {
+    let requested: string | null = null;
+    const once = comboOf({}, () => { requested = 'once'; });
+    inputOf(once.tree).onClick({ target: null });
+    expect(requested).toBe('once');
+    // Already open: no second fetch.
+    const open = comboOf({ open: true }, () => { requested = 'twice'; });
+    inputOf(open.tree).onClick({ target: null });
+    expect(requested).toBe('once');
+    // Without a list there is nothing to fetch.
+    const plain = comboOf({ entry: null }, () => { requested = 'plain'; });
+    inputOf(plain.tree).onClick({ target: null });
+    expect(requested).toBe('once');
   });
 });

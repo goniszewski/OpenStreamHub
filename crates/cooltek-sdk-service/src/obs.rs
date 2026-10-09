@@ -518,6 +518,126 @@ impl ObsRequest {
     }
 }
 
+/// What OBS currently has, for the app's editor pickers: the names of its
+/// scenes, inputs ("sources"), scene collections and profiles. One reply of
+/// [`ObsClient::catalog`]; every list is in OBS's own order and capped at
+/// [`MAX_LISTED_NAMES`] entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ObsCatalog {
+    /// Scene names of the current scene collection.
+    pub scenes: Vec<String>,
+    /// Input (source) names of the current scene collection.
+    pub sources: Vec<String>,
+    /// Scene collection names.
+    pub scene_collections: Vec<String>,
+    /// Profile names.
+    pub profiles: Vec<String>,
+}
+
+/// Upper bound on one list of a catalog reply.
+pub const MAX_LISTED_NAMES: usize = 1000;
+/// Upper bound on one listed name. OBS allows longer names, but a profile
+/// can never reference one (`Action::MAX_OBS_NAME_BYTES`), so longer names
+/// are refused rather than shown and rejected on save.
+const MAX_LISTED_NAME_BYTES: usize = 256;
+
+/// The `name_key` of every entry of a listing reply's `list_key` array,
+/// bounded. A longer or missing name is an error: silently showing a partial
+/// list would make the editor call a real name missing.
+fn listed_names(response: &Value, list_key: &str, name_key: &str) -> Result<Vec<String>, String> {
+    let items = response
+        .get(list_key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("OBS response has no {list_key}"))?;
+    if items.len() > MAX_LISTED_NAMES {
+        return Err(format!(
+            "OBS lists more than {MAX_LISTED_NAMES} entries in {list_key}"
+        ));
+    }
+    items
+        .iter()
+        .map(|item| {
+            let name = item
+                .get(name_key)
+                .and_then(Value::as_str)
+                .ok_or_else(|| format!("OBS response has a {list_key} entry without {name_key}"))?;
+            if name.len() > MAX_LISTED_NAME_BYTES {
+                return Err(format!(
+                    "OBS lists a {} name longer than {MAX_LISTED_NAME_BYTES} bytes",
+                    list_key.trim_end_matches('s')
+                ));
+            }
+            Ok(name.to_string())
+        })
+        .collect()
+}
+
+impl ObsClient {
+    /// Asks OBS for everything the editor pickers offer: one connection, the
+    /// four list requests, one deadline.
+    pub fn catalog(&self) -> Result<ObsCatalog, String> {
+        self.session(|session| {
+            let scenes = listed_names(
+                &session.request(&ObsRequest::new("GetSceneList"))?,
+                "scenes",
+                "sceneName",
+            )?;
+            let sources = listed_names(
+                &session.request(&ObsRequest::new("GetInputList"))?,
+                "inputs",
+                "inputName",
+            )?;
+            let scene_collections = listed_names(
+                &session.request(&ObsRequest::new("GetSceneCollectionList"))?,
+                "sceneCollections",
+                "sceneCollectionName",
+            )?;
+            let profiles = listed_names(
+                &session.request(&ObsRequest::new("GetProfileList"))?,
+                "profiles",
+                "profileName",
+            )?;
+            Ok(ObsCatalog {
+                scenes,
+                sources,
+                scene_collections,
+                profiles,
+            })
+        })
+    }
+
+    /// The filter names on one source. A scene name works too: OBS carries
+    /// filters on scenes as well as on inputs.
+    pub fn source_filters(&self, source: &str) -> Result<Vec<String>, String> {
+        self.session(|session| {
+            listed_names(
+                &session.request(&ObsRequest::with_data(
+                    "GetSourceFilterList",
+                    json!({"sourceName":source}),
+                ))?,
+                "filters",
+                "filterName",
+            )
+        })
+    }
+
+    /// The names of the items of one scene (its inputs, nested scenes and
+    /// groups), in OBS's own order. This is what a source visibility in that
+    /// scene can target.
+    pub fn scene_sources(&self, scene: &str) -> Result<Vec<String>, String> {
+        self.session(|session| {
+            listed_names(
+                &session.request(&ObsRequest::with_data(
+                    "GetSceneItemList",
+                    json!({"sceneName":scene}),
+                ))?,
+                "sceneItems",
+                "sourceName",
+            )
+        })
+    }
+}
+
 /// An identified connection inside [`ObsClient::session`].
 pub struct ObsSession<'a> {
     connection: &'a mut Connection,
@@ -699,6 +819,8 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
         (_, 505) => "studio mode is active".into(),
         (_, 506) => "studio mode is not active".into(),
         ("GetSceneItemId", 600) => "no such scene, or no such source in it".into(),
+        ("GetSourceFilterList", 600) => "no such source".into(),
+        ("GetSceneItemList", 600) => "no such scene".into(),
         ("GetSourceFilter" | "SetSourceFilterEnabled", 600) => {
             "no such source, or no such filter on it".into()
         }
@@ -1782,6 +1904,149 @@ mod tests {
             .unwrap();
         assert_eq!(data, Value::Null);
         server.join().unwrap();
+    }
+
+    // ---- Listings for the editor pickers ----
+
+    #[test]
+    fn the_catalog_fetches_four_lists_on_one_connection() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            (
+                json!({"result":true}),
+                Some(json!({"scenes":[{"sceneIndex":0,"sceneName":"Live"},{"sceneIndex":1,"sceneName":"Games"}]})),
+            ),
+            (
+                json!({"result":true}),
+                Some(json!({"inputs":[{"inputName":"Cam"},{"inputName":"Mic"}]})),
+            ),
+            (
+                json!({"result":true}),
+                Some(json!({"currentSceneCollectionName":"Show","sceneCollections":[{"sceneCollectionName":"Show"}]})),
+            ),
+            (
+                json!({"result":true}),
+                Some(json!({"currentProfileName":"Streaming","profiles":[{"profileName":"Streaming"}]})),
+            ),
+        ]));
+        let catalog = client(endpoint, None).catalog().unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(
+            catalog,
+            ObsCatalog {
+                scenes: ["Live".into(), "Games".into()].into(),
+                sources: ["Cam".into(), "Mic".into()].into(),
+                scene_collections: ["Show".into()].into(),
+                profiles: ["Streaming".into()].into(),
+            }
+        );
+        let types: Vec<_> = seen.messages[1..]
+            .iter()
+            .map(|message| message["d"]["requestType"].clone())
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "GetSceneList",
+                "GetInputList",
+                "GetSceneCollectionList",
+                "GetProfileList"
+            ]
+        );
+        for message in &seen.messages[1..] {
+            assert!(message["d"].get("requestData").is_none(), "{message}");
+        }
+        // One Identify, four requests, one close frame: one connection.
+        let ops: Vec<_> = seen.messages.iter().map(|m| m["op"].clone()).collect();
+        assert_eq!(ops, [json!(1), json!(6), json!(6), json!(6), json!(6)]);
+        assert_eq!(seen.frames, [(OPCODE_CLOSE, 1000u16.to_be_bytes().to_vec())]);
+    }
+
+    #[test]
+    fn source_filters_and_scene_sources_send_the_name_as_data() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":true}),
+            Some(json!({"filters":[{"filterEnabled":true,"filterIndex":0,"filterKind":"color_filter_v2","filterName":"Blur"}]})),
+        )]));
+        let filters = client(endpoint, None)
+            .source_filters("Web \"cam\" 🎥")
+            .unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(filters, ["Blur".to_string()]);
+        assert_eq!(
+            seen.messages[1]["d"]["requestData"],
+            json!({"sourceName":"Web \"cam\" 🎥"})
+        );
+
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":true}),
+            Some(json!({"sceneItems":[{"sceneItemId":1,"sceneItemEnabled":true,"sourceName":"Cam"},{"sceneItemId":2,"sourceName":"Title \"2\" 🎬"}]})),
+        )]));
+        let sources = client(endpoint, None).scene_sources("Live").unwrap();
+        let seen = server.join().unwrap();
+        assert_eq!(sources, ["Cam".to_string(), "Title \"2\" 🎬".to_string()]);
+        assert_eq!(seen.messages[1]["d"]["requestData"], json!({"sceneName":"Live"}));
+    }
+
+    #[test]
+    fn a_refused_listing_reports_the_reason_without_the_name() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600}),
+            None,
+        )]));
+        let error = client(endpoint, None).source_filters("Private source").unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("refused GetSourceFilterList (no such source)"), "{error}");
+        assert!(!error.contains("Private source"), "{error}");
+        assert_eq!(refusal_reason("GetSceneItemList", 600), "no such scene");
+        assert_eq!(
+            refusal_reason("GetSceneCollectionList", 600),
+            "not found"
+        );
+    }
+
+    #[test]
+    fn listing_replies_are_bounded_and_malformed_ones_are_errors() {
+        let name = |count: usize| "x".repeat(count);
+        let one = |name: &str| json!([{"sceneName":name}]);
+        assert_eq!(
+            listed_names(&json!({"scenes":one("Scene")}), "scenes", "sceneName").unwrap(),
+            ["Scene".to_string()]
+        );
+        // Names a profile can never reference are refused, not shown.
+        let over = listed_names(&json!({"scenes":one(&name(257))}), "scenes", "sceneName")
+            .unwrap_err();
+        assert!(over.contains("longer than 256 bytes"), "{over}");
+        for (response, list, key) in [
+            (json!({}), "scenes", "sceneName"),
+            (json!({"scenes":"no"}), "scenes", "sceneName"),
+            (json!({"scenes":[{"sceneIndex":0}]}), "scenes", "sceneName"),
+            (json!({"scenes":[{"sceneName":5}]}), "scenes", "sceneName"),
+        ] {
+            let error = listed_names(&response, list, key).unwrap_err();
+            assert!(error.contains("OBS response"), "{error}");
+        }
+        // A list beyond the cap is refused: a silently partial list would
+        // make the editor call real names missing.
+        let many: Vec<_> = (0..=MAX_LISTED_NAMES)
+            .map(|index| json!({"sceneName":format!("S{index}")}))
+            .collect();
+        assert!(listed_names(&json!({"scenes":many}), "scenes", "sceneName").is_err());
+        assert_eq!(MAX_LISTED_NAME_BYTES, 256);
+    }
+
+    #[test]
+    fn the_catalog_reports_a_broken_list_without_inventing_one() {
+        // The second request answers without its `inputs` key: no catalog.
+        let (endpoint, server) = serve(scripted_obs(vec![
+            (
+                json!({"result":true}),
+                Some(json!({"scenes":[{"sceneName":"Live"}]})),
+            ),
+            (json!({"result":true}), Some(json!({}))),
+        ]));
+        let error = client(endpoint, None).catalog().unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("no inputs"), "{error}");
     }
 
     #[test]

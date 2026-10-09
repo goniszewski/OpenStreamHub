@@ -13,11 +13,12 @@ import { BindingsPanel } from './BindingsPanel';
 import { DialFunctionsPanel } from './DialFunctionsPanel';
 import { FocusRulesPanel } from './FocusRulesPanel';
 import type { FocusRulesStore } from './focus-rules';
+import type { ObsCatalogStore } from './obs-catalog';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 
-export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false, focusRules }: {
+export function ProfilesPage({ session, state, editor, desktop, disabled, replayKind, setReplayKind, setPage, confirm, mac = false, focusRules, catalog }: {
   session: ProfileSession; state: SessionState; editor: DeviceEditor; desktop: boolean; disabled: boolean;
-  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void; mac?: boolean; focusRules?: FocusRulesStore;
+  replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void; setPage(page: Page): void; confirm(request: ConfirmRequest): void; mac?: boolean; focusRules?: FocusRulesStore; catalog?: ObsCatalogStore;
 }) {
   const { profile, profileId } = state.draft;
   const unsaved = isUnsaved(state.draft);
@@ -61,7 +62,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />The current changes are valid.</p>}
       <h3>Bindings <span className="small-label">{profileBindingCount(profile)}</span></h3>
       <BindingsPanel profile={profile} session={session} editor={editor} disabled={disabled} />
-      <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} />
+      <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalog} />
       <button className="button" onClick={() => setPage('devices')}><Plus size={17} />Edit device bindings</button>
     </section></div>
     <MhzImportReport result={state.mhzReportOpen ? state.mhzImport : null} onClose={() => session.dismissMhzImport()} />

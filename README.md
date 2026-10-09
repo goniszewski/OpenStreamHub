@@ -62,7 +62,7 @@ The desktop command builds the Rust service sidecar before starting the app.
 3. Start a **Dry run** to inspect input and planned actions.
 4. Select **Execute** and confirm when you are ready to run those actions.
 
-With **Settings → Module control → App**, running a keypad or dial profile enables software mode and drives its display. Stopping the session restores the built-in animation. Choose **Built-in animation** to leave those modules in their own mode; their input requires software mode.
+With **Settings → Let OpenStreamHub drive the display → App**, running a keypad or dial profile enables software mode and drives its display. Stopping the session restores the built-in animation. Choose **Built-in animation** to leave those modules in their own mode; their input requires software mode.
 
 To build a local debug app bundle:
 

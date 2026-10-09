@@ -4,6 +4,8 @@ fn main() {
             "bootstrap",
             "list_profiles",
             "load_profile",
+            "profile_versions",
+            "load_profile_version",
             "save_profile",
             "delete_profile",
             "import_mhz_profile",

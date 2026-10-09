@@ -31,7 +31,7 @@ import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { ProfilesPage } from './ProfilesPage';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
-import { appearanceStorageKey, browserProfile, errorMessage, readAppearance } from './ui-model';
+import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, writeAutosaveSetting } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
 import type { ConfirmRequest } from './useDeviceEditor';
@@ -99,7 +99,17 @@ export default function App() {
   const disabled = !desktop || !state.ready || busy !== null;
   // One run session for the whole app: the header Run control and the Devices-page panel share it.
   const dryRunBlock = draftRunBlock(state);
-  const runSession = useRunSession({ runner, feed, profile, profileId: unsaved ? null : profileId, sourceProfileId: draft.sourceId ?? profileId, desktop, unsaved, displaySettings, dryRunOnly: dryRunBlock !== null, dryRunNote: runBlockNotes[dryRunBlock ?? 'imported'] });
+  // A start settles the pending automatic save first and runs the saved
+  // profile it produced (the session is the truth, not the last render).
+  const runSession = useRunSession({
+    runner, feed, profile, profileId: unsaved ? null : profileId, sourceProfileId: draft.sourceId ?? profileId,
+    desktop, unsaved, displaySettings, dryRunOnly: dryRunBlock !== null, dryRunNote: runBlockNotes[dryRunBlock ?? 'imported'],
+    beforeStart: async () => {
+      await session.flushAutosave();
+      const settled = session.getState().draft;
+      return { profile: settled.profile, profileId: isUnsaved(settled) ? null : settled.profileId, sourceProfileId: settled.sourceId ?? settled.profileId, unsaved: isUnsaved(settled) };
+    },
+  });
   const connectedModules = deviceFeedState.devices.length;
   const deviceStatus = !desktop ? 'Browser preview'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'
@@ -122,6 +132,9 @@ export default function App() {
   }, [appearance, systemDark]);
 
   useEffect(() => { if (desktop) void session.bootstrap(); }, [session]);
+  // Automatic saving is on by default; the stored choice applies as soon as
+  // the session exists, and the toggle keeps both in step.
+  useEffect(() => { session.setAutosave(readAutosaveSetting(webStorage())); }, [session]);
   // Browser-preview QA hook (dev only): the preview cannot reach Tauri, so design captures seed
   // sample OBS listings through window.__oshObsCatalogSeed. The effect, not the store
   // initializer, points the hook at the store that is actually mounted (StrictMode safe).
@@ -237,7 +250,7 @@ export default function App() {
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} catalog={obsCatalog} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('devices'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
@@ -253,7 +266,7 @@ export default function App() {
     <ModalDialog open={state.restorePrompt !== null} labelledBy="restore-title" describedBy="restore-message" onCancel={() => { /* Escape never discards recovered changes. */ }}>
       <h2 id="restore-title">Restore unsaved changes to {state.restorePrompt?.name}?</h2>
       <p id="restore-message">OpenStreamHub closed before these changes were saved. Restore them to continue editing, or discard them and keep the saved profile.</p>
-      {state.restorePrompt?.changedOnDisk && <p className="fine-print" role="note">The saved profile changed on disk after these changes were made. You can still restore them; saving will then ask you to reload first, so nothing on disk is overwritten.</p>}
+      {state.restorePrompt?.changedOnDisk && <p className="fine-print" role="note">The saved profile changed on disk after these changes were made. You can still restore them; saving will then refuse until you reload first, so nothing on disk is overwritten.</p>}
       <div className="dialog-actions"><button className="button danger" onClick={() => session.resolveRestore(false)}>Discard</button><button className="button primary" autoFocus onClick={() => session.resolveRestore(true)}>Restore</button></div>
     </ModalDialog>
     <ModalDialog open={pendingIntent !== null} labelledBy="unsaved-title" describedBy="unsaved-message" onCancel={() => session.resolveIntent(false)}>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { clampUtf8, closeDecision, labelIssue, maximumLabelBytes, parseIntegerInput, stableStringify } from './draft-model';
+import type { Profile } from './contracts';
+import { clampUtf8, labelIssue, maximumLabelBytes, parseIntegerInput, profileIssue, stableStringify } from './draft-model';
 import { actionLabel } from './ui-model';
 
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -39,6 +40,30 @@ describe('inline label validation', () => {
   });
 });
 
+describe('whole-profile validity for automatic saving', () => {
+  const named = (name: string): Profile => ({ schema_version: 1, name, bindings: [] });
+  const withKeypad = (profile: Profile, slots: NonNullable<Profile['keypad']>['pages'][number]['slots']): Profile =>
+    ({ ...profile, keypad: { pages: [{ id: 'root', name: 'Root', slots }] } });
+
+  it('accepts a profile the fields accept', () => {
+    expect(profileIssue(named('Work'))).toBeNull();
+    expect(profileIssue(withKeypad(named('Work'), [{ type: 'action', label: 'Mute', bindings: [] }]))).toBeNull();
+    expect(profileIssue({ ...named('Work'), dial_functions: [{ name: 'Zoom', bindings: [] }] })).toBeNull();
+    // Empty optional sections are fine.
+    expect(profileIssue({ ...named('Work'), keypad: { pages: [] }, dial_functions: [] })).toBeNull();
+  });
+
+  it('reports the first failing field the editor shows', () => {
+    expect(profileIssue(named(''))).toBe('Profile name cannot be empty.');
+    expect(profileIssue({ ...named('Work'), dial_functions: [{ name: '', bindings: [] }] })).toBe('Function name cannot be empty.');
+    const page = withKeypad(named('Work'), [{ type: 'action', label: '  ', bindings: [] }]);
+    expect(profileIssue(page)).toBe('Key label cannot be empty.');
+    const pageName = withKeypad(named('Work'), []);
+    (pageName.keypad!.pages[0] as { name: string }).name = 'x'.repeat(129);
+    expect(profileIssue(pageName)).toContain('128 bytes');
+  });
+});
+
 describe('integer inputs', () => {
   it('accepts only whole numbers within range', () => {
     expect(parseIntegerInput('42', 0, 100)).toEqual({ ok: true, value: 42 });
@@ -50,14 +75,5 @@ describe('integer inputs', () => {
     const zero = parseIntegerInput('0', -100, 100, { nonZero: true });
     expect(zero.ok).toBe(false);
     expect(zero.ok ? '' : zero.error).toContain('Zero');
-  });
-});
-
-describe('window close decision', () => {
-  it('closes clean drafts, asks for unsaved ones and waits while busy', () => {
-    expect(closeDecision(false, false)).toBe('allow');
-    expect(closeDecision(true, false)).toBe('allow');
-    expect(closeDecision(false, true)).toBe('confirm');
-    expect(closeDecision(true, true)).toBe('wait');
   });
 });

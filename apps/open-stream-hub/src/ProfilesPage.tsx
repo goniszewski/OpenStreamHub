@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, History, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert } from 'lucide-react';
 import type { ProfileSummary, ReplayKind } from './contracts';
 import { LabelError, SelectField } from './controls';
 import { profileBindingCount } from './keypad-model';
 import { isUnsaved } from './profile-session';
 import type { ProfileSession, ReplaySession, SessionState } from './profile-session';
-import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels } from './ui-model';
+import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels, versionTimeLabel } from './ui-model';
 import type { Page } from './ui-model';
 import type { ConfirmRequest, DeviceEditor } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
@@ -46,6 +46,7 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
     </section><section className="panel profile-editor"><div className="section-heading"><h2>Profile</h2><span className={`small-label ${unsaved ? 'draft-label' : ''}`}>{unsaved ? 'Unsaved changes' : 'Saved'}</span></div>
       <label htmlFor="profile-name">Name</label><input id="profile-name" disabled={disabled} value={profile.name} aria-describedby="profile-name-error" onChange={event => session.edit({ ...profile, name: event.target.value }, 'profile-name')} /><LabelError id="profile-name-error" value={profile.name} field="Profile name" />
       <div className="profile-actions"><button className="button" disabled={disabled || state.validation === 'running'} onClick={() => { void session.validate(); }}>{state.validation === 'running' ? <LoaderCircle size={16} className="spinning" /> : <Check size={17} />}Validate changes</button><button className="button" disabled={disabled || !profileId} onClick={() => { if (profileId) session.guard('reload the saved profile', () => { void session.load(profileId); }); }}><ArrowDownToLine size={17} />Reload saved</button></div>
+      <VersionHistory session={session} state={state} disabled={disabled} now={Date.now()} />
       {flagged && <div className="service-banner paused attention dry-run-notice" role="status"><ShieldAlert size={20} /><div>
         <strong>Imported profile: dry run only</strong>
         <span>This profile was imported from a MasterHUB .mhz file. It can run only as a dry run until you review its bindings and allow it to execute actions.</span>
@@ -75,6 +76,31 @@ export function ProfilesPage({ session, state, editor, desktop, disabled, replay
       <SessionView session={state.replay} />
     </details>
   </section>;
+}
+
+// The kept earlier versions of the open profile, listed when the panel is
+// opened. Hook-free and controlled by the session state, so tests can call
+// it as a function; the details element holds its own open state, and every
+// open fetches the list again, so versions kept while it was closed appear.
+export function VersionHistory({ session, state, disabled, now }: { session: ProfileSession; state: SessionState; disabled: boolean; now: number }) {
+  const { profileId } = state.draft;
+  const listed = profileId !== null && state.versionsId === profileId ? state.versions : null;
+  const toggle = (event: { currentTarget: { open: boolean } }) => {
+    if (event.currentTarget.open && profileId && !disabled) void session.loadVersions(profileId);
+  };
+  return <details className="panel version-history" data-testid="version-history" onToggle={toggle}>
+    <summary><History size={17} />Earlier versions</summary>
+    <p className="fine-print">Each time this profile is saved — by you or automatically — the previous version is kept here. Restoring makes the profile exactly as it was at that moment; the version being replaced is kept in this list first.</p>
+    {state.versionsError && <p className="fine-print" role="alert">{state.versionsError}</p>}
+    {listed === null && !state.versionsError && <p className="fine-print" role="status">Open this list to load the kept versions.</p>}
+    {listed && listed.length === 0 && <p className="fine-print" role="status">No earlier versions yet. They are kept from now on, each time the profile is saved.</p>}
+    {listed && listed.length > 0 && <ul className="version-list">
+      {listed.map(version => <li key={version.modified_at_ms}>
+        <span>Saved at {versionTimeLabel(version.modified_at_ms, now)}</span>
+        <button className="button compact" disabled={disabled} onClick={() => { void session.restoreVersion(version.modified_at_ms); }}>Restore</button>
+      </li>)}
+    </ul>}
+  </details>;
 }
 
 export function SessionView({ session }: { session: ReplaySession }) {

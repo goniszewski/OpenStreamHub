@@ -14,6 +14,30 @@ export function readAppearance(storage: Pick<Storage, 'getItem'>): Appearance {
   } catch { return 'system'; }
 }
 
+// Automatic saving is on unless it was turned off: an edit should survive a
+// quit without a save step, and the earlier versions make it reversible.
+export const autosaveStorageKey = 'open-stream-hub.autosave';
+
+export function readAutosaveSetting(storage: Pick<Storage, 'getItem'> | null): boolean {
+  try { return storage?.getItem(autosaveStorageKey) !== 'off'; } catch { return true; }
+}
+
+export function writeAutosaveSetting(storage: Pick<Storage, 'setItem'> | null, on: boolean) {
+  try { storage?.setItem(autosaveStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
+}
+
+// When a version was saved, for the "Earlier versions" list: a clock time
+// today, otherwise the date and the clock time.
+export function versionTimeLabel(modifiedAtMs: number, now = Date.now()): string {
+  const time = (date: Date) => `${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const saved = new Date(modifiedAtMs);
+  const current = new Date(now);
+  if (saved.toDateString() === current.toDateString()) return time(saved);
+  const day = saved.getDate();
+  const month = saved.toLocaleString('en', { month: 'short' });
+  return `${day} ${month}, ${time(saved)}`;
+}
+
 export const modules: { id: ModuleId; name: string; shortName: string; art: string; supported: boolean; input: string }[] = [
   { id: 'm131e', name: 'Encoder with IPS Display', shortName: 'Encoder IPS display', art: 'encoder', supported: true, input: 'Rotate · Press · Release' },
   { id: 'm4315', name: '15x Key IPS Display', shortName: '15-key IPS display', art: 'keys', supported: true, input: 'Press · Release' },

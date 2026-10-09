@@ -637,6 +637,27 @@ fn load_profile(state: State<'_, AppState>, id: String) -> Result<store::StoredP
     state.with_store(|store| store.load(&id))
 }
 
+// The editor's "Earlier versions" list: the versions automatic and manual
+// saving keep for this profile, newest first. A version is restored by
+// loading it and saving it as the profile, so conflict protection and the
+// imported-content flags apply unchanged.
+#[tauri::command]
+fn profile_versions(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<store::ProfileVersion>, String> {
+    state.with_store(move |store| store.versions(&id))
+}
+
+#[tauri::command]
+fn load_profile_version(
+    state: State<'_, AppState>,
+    id: String,
+    modified_at_ms: u64,
+) -> Result<store::StoredProfile, String> {
+    state.with_store(move |store| store.load_version(&id, modified_at_ms))
+}
+
 #[tauri::command]
 fn save_profile(
     state: State<'_, AppState>,
@@ -1432,6 +1453,8 @@ pub fn run() {
             bootstrap,
             list_profiles,
             load_profile,
+            profile_versions,
+            load_profile_version,
             save_profile,
             delete_profile,
             import_mhz_profile,

@@ -105,6 +105,7 @@ describe('import', () => {
 
   it('asks before replacing an unsaved draft and imports nothing if the user cancels', async () => {
     const { session, calls } = await open([stored('a', 'Alpha')]);
+    session.setAutosave(false);
     session.update(item => ({ ...item, name: 'Edited' }));
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Desk', bindings: [] })));
     expect(session.getState().pendingIntent?.label).toBe('import this profile');
@@ -305,6 +306,7 @@ describe('crash-recovery drafts in the session', () => {
   it('explicitly discarding a draft through the guard clears its recovery copy', async () => {
     const { store, persister } = persistence();
     const { session } = await open([stored('a', 'Alpha')], {}, persister);
+    session.setAutosave(false);
     session.update(item => ({ ...item, name: 'Edited' }));
     session.flushDraft();
     session.guard('reload the saved profile', () => { void session.load('a'); });

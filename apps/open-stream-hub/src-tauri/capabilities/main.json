@@ -10,6 +10,8 @@
     "allow-bootstrap",
     "allow-list-profiles",
     "allow-load-profile",
+    "allow-profile-versions",
+    "allow-load-profile-version",
     "allow-save-profile",
     "allow-delete-profile",
     "allow-import-mhz-profile",

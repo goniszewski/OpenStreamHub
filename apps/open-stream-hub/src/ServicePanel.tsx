@@ -239,11 +239,20 @@ export interface RunSessionOptions {
   runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; sourceProfileId?: string | null;
   desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; dryRunOnly?: boolean; dryRunNote?: string;
   platform?: PlatformInfo; now?: number; initialExecute?: boolean;
+  // Settles the draft before a start (the pending automatic save), so the run
+  // uses the last saved version. It returns the draft identity to start with;
+  // without a result the start uses the values this hook was rendered with.
+  // The start still goes ahead when settling fails, as it would have without it.
+  beforeStart?(): Promise<SettledDraft | void>;
 }
+
+// The draft values a start uses after beforeStart settled it. profileId is
+// null exactly when the draft is still unsaved, matching the props.
+export interface SettledDraft { profile: Profile; profileId: string | null; sourceProfileId?: string | null; unsaved: boolean }
 
 // All state and behaviour of starting, stopping and resuming a run. Lives once in App, so the header
 // Run control works on every page and shares its selection and mode with the Devices-page panel.
-export function useRunSession({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow, initialExecute = false }: RunSessionOptions) {
+export function useRunSession({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow, initialExecute = false, beforeStart }: RunSessionOptions) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
   const display = useSyncExternalStore(displaySettings?.subscribe ?? noopSubscribe, displaySettings?.getState ?? idleDisplay, displaySettings?.getState ?? idleDisplay);
@@ -289,10 +298,23 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     return () => clearInterval(timer);
   }, [session?.nextAttemptAt, fixedNow]);
 
-  const begin = () => {
-    if (!runner || !device) return;
-    const confirmExecute = executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
-    void runner.start({ profile, profileId, sourceProfileId, pathHex: device.path_hex, execute: executeSelected, softwareMode: box.requested, draftUnsaved: unsaved, device }, confirmExecute);
+  // A start that settles the draft first must use the settled identity, not
+  // the values captured when this closure was created (an automatic save can
+  // save the draft while it waits, and the run then carries the profile id).
+  const latest = useRef({ runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device });
+  latest.current = { runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device };
+  const begin = async () => {
+    let settled: SettledDraft | void = undefined;
+    try { settled = await beforeStart?.(); } catch { /* the start uses the draft as it is */ }
+    const atStart = settled ?? latest.current;
+    const current = latest.current;
+    if (!current.runner || !current.device) return;
+    const confirmExecute = current.executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
+    void current.runner.start({
+      profile: atStart.profile, profileId: atStart.profileId, sourceProfileId: atStart.sourceProfileId,
+      pathHex: current.device.path_hex, execute: current.executeSelected, softwareMode: current.box.requested,
+      draftUnsaved: atStart.unsaved, device: current.device,
+    }, confirmExecute);
   };
   const resume = () => {
     if (!runner || !run) return;
@@ -329,7 +351,7 @@ export const idleRunSession: RunSession = {
   blocker: runBlocker({ desktop: false, device: undefined, profile: { schema_version: 1, name: '', bindings: [] } }),
   box: softwareModeBox({ module: undefined, loaded: false, moduleControl: 'app', ticked: false }),
   stale: false, now: 0, executeSelected: false,
-  begin: noop, resume: noop, stop: noop,
+  begin: async () => {}, resume: noop, stop: noop,
   confirm: null, confirmKind: 'start', resumeGone: false, acknowledged: false, setAcknowledged: noop, answer: noop,
   copy: confirmCopy('start', '', 'the selected module'), dialogOpen: false,
 };
@@ -434,7 +456,7 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
-    {activeRun && <p className="fine-print">Profile "{activeRun.profileName}"{activeRun.draftUnsaved ? ' (unsaved changes)' : ''} was used when this run started.</p>}
+    {activeRun && <p className="fine-print">Profile "{activeRun.profileName}" ({activeRun.draftUnsaved ? 'unsaved changes' : 'the saved version'}) was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}
     {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? 'The run failed.'}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
     {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">The background helper exited with code {activeRun.exitCode}.</p>}

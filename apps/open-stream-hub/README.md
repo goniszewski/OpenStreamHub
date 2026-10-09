@@ -46,7 +46,7 @@ The app is written to `src-tauri/target/debug/bundle/macos/OpenStreamHub.app`. B
 
 Sample tests and previews use `DryRunDispatcher`. The app executes host actions only through a service run you start with Execute. It has no arbitrary file access, browser integration or user scripts. Physical control placement and dial/roller direction still require device validation.
 
-Profiles are stored in the application's local data directory, shown in Settings. A fresh store starts with the sample profile. Saving uses an atomic replacement; invalid or corrupted data produces an error and is preserved. Bootstrap selects the most recently saved profile.
+Profiles are stored in the application's local data directory, shown in Settings. A fresh store starts with the sample profile. Saving uses an atomic replacement; invalid or corrupted data produces an error and is preserved. Bootstrap selects the most recently saved profile. Each overwrite keeps the previous version in a hidden `.history/<profile id>` folder (newest 20 per profile) so the Profiles page can restore an earlier one.
 
 Alongside `profiles`, the app data folder holds `focus-rules.json` (focused-app rules, written atomically and owner-only), `exports/` (profile exports), `diagnostics/` (diagnostic bundles), `artwork/` (prepared images), `display-settings.json` and `obs-settings.json` (the two Settings above), `imported-profiles.json` (which profiles are dry run only) and `service-profiles/` (temporary profile snapshots for running services). Files there are created owner-only and the oldest are pruned.
 
@@ -54,7 +54,7 @@ On macOS, the app uses `~/Library/Application Support/dev.cooltek.openstreamhub/
 
 Appearance reads the previous preference key when it is available in the webview's local storage. A new macOS bundle identity can have separate webview storage and start with System appearance; profile migration does not copy that storage.
 
-Unsaved drafts prompt before profile changes, window closing, or Quit OpenStreamHub / Command-Q. Drafts are also saved to the webview's local storage as you edit, so after a crash, Dock Quit or system termination the app offers to restore them on the next launch. Saving to disk is still explicit; a draft restored over a file that changed meanwhile is protected by the save conflict check.
+Saving is automatic by default (Settings > Profile storage > Save changes automatically): an edit is written to the profile file about a second after it settles, and every save keeps the previous version in the store's hidden `.history` folder — the Profiles page lists the last 20 per profile under "Earlier versions" and can put one back (as an ordinary, conflict-checked save). Switching profiles, closing the window or starting a run settle the pending edit first, so there is normally no unsaved-changes prompt. With the setting off, edits prompt before profile changes or window closing, and ⌘S / Save profile writes the file. Changes that are not saved yet (a new profile, or a name still being retyped) are also kept as a recovery copy in the webview's local storage and offered after a crash, Dock Quit or system termination; a copy restored over a file that changed meanwhile is protected by the save conflict check.
 
 ## Privacy
 

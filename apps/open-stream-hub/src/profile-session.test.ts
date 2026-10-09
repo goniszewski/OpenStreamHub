@@ -12,14 +12,20 @@ function harness(desktop = true) {
   const invoke: Invoke = <T,>(command: string, args?: Record<string, unknown>) => new Promise<T>((resolve, reject) => {
     calls.push({ command, args, resolve: resolve as (value: unknown) => void, reject });
   });
-  const session = new ProfileSession(invoke, browserProfile, desktop);
+  // The automatic-save debounce never elapses on its own: tests fire it.
+  const scheduled: (() => void)[] = [];
+  const schedule = (action: () => void) => {
+    scheduled.push(action);
+    return () => { const index = scheduled.indexOf(action); if (index >= 0) scheduled.splice(index, 1); };
+  };
+  const session = new ProfileSession(invoke, browserProfile, desktop, null, Date.now, schedule);
   // Takes the oldest pending call for a command.
   const take = (command: string) => {
     const index = calls.findIndex(call => call.command === command);
     if (index < 0) throw new Error(`no pending ${command} call`);
     return calls.splice(index, 1)[0];
   };
-  return { session, calls, take };
+  return { session, calls, take, scheduled, fireDebounce: () => scheduled.splice(0).forEach(run => run()) };
 }
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -98,8 +104,34 @@ describe('bootstrap', () => {
 });
 
 describe('unsaved-draft guard', () => {
-  it('runs immediately for a clean draft and asks before discarding edits', async () => {
+  it('runs immediately for a clean draft', async () => {
     const { session } = await ready();
+    let runs = 0;
+    session.guard('switch profiles', () => { runs += 1; });
+    expect(runs).toBe(1);
+    expect(session.getState().pendingIntent).toBeNull();
+  });
+
+  it('saves the edit first when automatic saving is on, then runs', async () => {
+    const { session, take } = await ready();
+    let runs = 0;
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    session.guard('switch profiles', () => { runs += 1; });
+    expect(runs).toBe(0);
+    expect(session.getState().pendingIntent).toBeNull();
+    const save = take('save_profile');
+    expect(save.args).toEqual({ request: expect.objectContaining({ id: 'a', sourceProfileId: 'a' }) });
+    save.resolve(stored('a', 'Edited', 2000));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Edited', 2000)));
+    await flush();
+    expect(runs).toBe(1);
+    expect(session.unsaved).toBe(false);
+  });
+
+  it('asks before discarding when automatic saving is off', async () => {
+    const { session } = await ready();
+    session.setAutosave(false);
     let runs = 0;
     session.guard('switch profiles', () => { runs += 1; });
     expect(runs).toBe(1);
@@ -118,6 +150,14 @@ describe('unsaved-draft guard', () => {
     expect(runs).toBe(2);
   });
 
+  it('asks before discarding when the edit cannot be saved (an invalid name mid-typing)', async () => {
+    const { session, scheduled } = await ready();
+    session.update(profile => ({ ...profile, name: '' }));
+    session.guard('switch profiles', () => {});
+    expect(session.getState().pendingIntent?.label).toBe('switch profiles');
+    expect(scheduled).toHaveLength(0);
+  });
+
   it('treats a reordered but equal profile as saved', async () => {
     const { session } = await ready();
     const { name, schema_version, bindings, keypad } = session.getState().draft.profile;
@@ -129,24 +169,241 @@ describe('unsaved-draft guard', () => {
 });
 
 describe('window close request', () => {
-  it('allows a clean close, confirms an unsaved close and waits while busy', async () => {
+  it('allows a clean close and waits while busy', async () => {
     const { session, take } = await ready();
     let destroyed = 0;
     expect(session.requestClose(() => { destroyed += 1; })).toBe(true);
 
+    const saving = session.save();
+    expect(session.requestClose(() => { destroyed += 1; })).toBe(false);
+    expect(session.getState().error).toContain('Wait for the profile operation');
+    take('save_profile').reject('disk full');
+    await saving;
+    expect(destroyed).toBe(0);
+  });
+
+  it('saves an unsaved edit and then closes when automatic saving is on', async () => {
+    const { session, take } = await ready();
+    let destroyed = 0;
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    expect(session.requestClose(() => { destroyed += 1; })).toBe(false);
+    const save = take('save_profile');
+    save.resolve(stored('a', 'Edited', 2000));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Edited', 2000)));
+    await flush();
+    expect(destroyed).toBe(1);
+    expect(session.getState().pendingIntent).toBeNull();
+  });
+
+  it('hands over to the confirmation when the automatic save fails', async () => {
+    const { session, take } = await ready();
+    let destroyed = 0;
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    expect(session.requestClose(() => { destroyed += 1; })).toBe(false);
+    take('save_profile').reject('disk full');
+    await flush();
+    expect(destroyed).toBe(0);
+    expect(session.getState().pendingIntent?.label).toBe('close the window');
+    session.resolveIntent(true);
+    expect(destroyed).toBe(1);
+  });
+
+  it('confirms an unsaved close when automatic saving is off', async () => {
+    const { session } = await ready();
+    session.setAutosave(false);
+    let destroyed = 0;
     session.update(profile => ({ ...profile, name: 'Edited' }));
     expect(session.requestClose(() => { destroyed += 1; })).toBe(false);
     expect(session.getState().pendingIntent?.label).toBe('close the window');
     session.resolveIntent(true);
     expect(destroyed).toBe(1);
+  });
+});
 
-    const saving = session.save();
-    expect(session.requestClose(() => { destroyed += 1; })).toBe(false);
-    expect(session.getState().error).toContain('Wait for the profile operation');
-    expect(session.getState().pendingIntent).toBeNull();
-    take('save_profile').reject('disk full');
-    await saving;
-    expect(destroyed).toBe(1);
+describe('automatic saving', () => {
+  it('saves a settled edit to the saved profile without a manual save', async () => {
+    const { session, scheduled, take, fireDebounce } = await ready();
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    expect(session.unsaved).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    fireDebounce();
+    const save = take('save_profile');
+    expect(save.args).toEqual({ request: expect.objectContaining({ id: 'a', expectedModifiedAtMs: 1000, sourceProfileId: 'a' }) });
+    save.resolve(stored('a', 'Edited', 2000));
+    await flush();
+    expect(session.unsaved).toBe(false);
+    expect(scheduled).toHaveLength(0);
+    expect(session.getState().draft.modifiedAtMs).toBe(2000);
+    // The recovery copy is gone once the file holds the edit.
+    expect(session.getState().restorePrompt).toBeNull();
+  });
+
+  it('does not save a new profile, an invalid draft, and cancels with the setting off', async () => {
+    const { session, scheduled } = await ready();
+    // A new profile has no file to save to.
+    session.newProfile();
+    session.update(profile => ({ ...profile, name: 'Idea' }));
+    expect(scheduled).toHaveLength(0);
+    expect(session.unsaved).toBe(true);
+
+    // An invalid name is never scheduled; fixing it schedules the save.
+    const valid = await ready();
+    valid.session.update(profile => ({ ...profile, name: '' }));
+    expect(valid.scheduled).toHaveLength(0);
+    valid.session.update(profile => ({ ...profile, name: 'Fixed' }));
+    expect(valid.scheduled).toHaveLength(1);
+
+    // The setting cancels a pending save and restores it when on again.
+    const gated = await ready();
+    gated.session.update(profile => ({ ...profile, name: 'Edited' }));
+    expect(gated.scheduled).toHaveLength(1);
+    gated.session.setAutosave(false);
+    expect(gated.scheduled).toHaveLength(0);
+    gated.session.setAutosave(true);
+    expect(gated.scheduled).toHaveLength(1);
+  });
+
+  it('waits for a running profile operation and saves afterwards', async () => {
+    const { session, calls, scheduled, take, fireDebounce } = await ready();
+    const manual = session.save();
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    fireDebounce();
+    // The manual save is still the only save request; the automatic one
+    // waits for its turn.
+    expect(calls.filter(call => call.command === 'save_profile')).toHaveLength(1);
+    expect(scheduled).toHaveLength(1);
+    take('save_profile').resolve(stored('a', 'Alpha', 2000));
+    await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 0));
+    take('list_profiles').resolve(listing(stored('a', 'Alpha')));
+    await manual;
+    // The manual save left the draft clean; nothing else stays pending.
+    expect(scheduled).toHaveLength(0);
+    expect(session.unsaved).toBe(false);
+  });
+
+  it('stops after a disk conflict and recovers on a reload', async () => {
+    const { session, scheduled, take, fireDebounce } = await ready(stored('a', 'Alpha', 1234));
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    fireDebounce();
+    take('save_profile').reject('this profile changed on disk after it was loaded, possibly in another OpenStreamHub window; reload the saved profile before saving again');
+    await flush();
+    expect(session.getState().autosaveBlocked).toBe(true);
+    expect(session.getState().error).toContain('changed on disk');
+    expect(session.unsaved).toBe(true);
+    // Further edits do not retry the save.
+    session.update(profile => ({ ...profile, name: 'Edited twice' }));
+    expect(scheduled).toHaveLength(0);
+    // Reloading the saved profile clears the stop.
+    const loading = session.load('a');
+    take('load_profile').resolve(stored('a', 'Alpha', 5000));
+    await loading;
+    expect(session.getState().autosaveBlocked).toBe(false);
+    session.update(profile => ({ ...profile, name: 'After reload' }));
+    expect(scheduled).toHaveLength(1);
+  });
+
+  it('keeps the undo history across an automatic save', async () => {
+    const { session, scheduled, take, fireDebounce } = await ready();
+    session.update(profile => ({ ...profile, name: 'Edited' }));
+    fireDebounce();
+    take('save_profile').resolve(stored('a', 'Edited', 2000));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Edited', 2000)));
+    await flush();
+    expect(session.getState().canUndo).toBe(true);
+    expect(session.undo()).toBe(true);
+    expect(session.getState().draft.profile.name).toBe('Alpha');
+    // The undone draft differs from the saved one, so it is saved too.
+    expect(scheduled).toHaveLength(1);
+    expect(session.unsaved).toBe(true);
+  });
+
+  it('skips a superseded response and keeps the newer edit pending', async () => {
+    const { session, scheduled, take, fireDebounce } = await ready();
+    session.update(profile => ({ ...profile, name: 'First' }));
+    fireDebounce();
+    const first = take('save_profile');
+    // A second edit lands while the request is out; it is not lost.
+    session.update(profile => ({ ...profile, name: 'Second' }));
+    first.resolve(stored('a', 'First', 2000));
+    await flush();
+    expect(scheduled).toHaveLength(1);
+    expect(session.unsaved).toBe(true);
+    fireDebounce();
+    const second = take('save_profile');
+    expect(second.args).toEqual({ request: expect.objectContaining({ id: 'a' }) });
+    second.resolve(stored('a', 'Second', 3000));
+    await flush();
+    expect(session.unsaved).toBe(false);
+    expect(session.getState().draft.modifiedAtMs).toBe(3000);
+  });
+});
+
+describe('earlier versions', () => {
+  it('lists the kept versions of a profile', async () => {
+    const { session, take } = await ready();
+    const listing = session.loadVersions('a');
+    const call = take('profile_versions');
+    expect(call.args).toEqual({ id: 'a' });
+    call.resolve([{ modified_at_ms: 500 }, { modified_at_ms: 200 }]);
+    await listing;
+    expect(session.getState().versions).toEqual([{ modified_at_ms: 500 }, { modified_at_ms: 200 }]);
+    expect(session.getState().versionsId).toBe('a');
+    expect(session.getState().versionsError).toBeNull();
+  });
+
+  it('reports a failed listing instead of showing an empty list', async () => {
+    const { session, take } = await ready();
+    const listing = session.loadVersions('a');
+    take('profile_versions').reject('gone');
+    await listing;
+    expect(session.getState().versions).toBeNull();
+    expect(session.getState().versionsError).toContain('gone');
+  });
+
+  it('restores a version through an ordinary save, keeping the open profile', async () => {
+    const { session, take } = await ready(stored('a', 'Alpha', 1234));
+    const restore = session.restoreVersion(500);
+    const load = take('load_profile_version');
+    expect(load.args).toEqual({ id: 'a', modifiedAtMs: 500 });
+    load.resolve({ id: 'a', modified_at_ms: 500, profile: upgradeKeypadProfile({ schema_version: 1, name: 'Earlier', bindings: [] }) });
+    await Promise.resolve();
+    const save = take('save_profile');
+    expect(save.args).toEqual({ request: expect.objectContaining({ id: 'a', expectedModifiedAtMs: 1234, sourceProfileId: 'a' }) });
+    save.resolve(stored('a', 'Earlier', 3000));
+    await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 0));
+    take('list_profiles').resolve(listing(stored('a', 'Earlier')));
+    await restore;
+    const state = session.getState();
+    expect(state.draft.profile.name).toBe('Earlier');
+    expect(state.draft.modifiedAtMs).toBe(3000);
+    expect(state.notice).toContain('Restored the version from');
+    expect(state.versions).toBeNull();
+    expect(state.versionsId).toBeNull();
+    expect(session.unsaved).toBe(false);
+    expect(session.getState().canUndo).toBe(false);
+  });
+
+  it('keeps the draft when the restore save conflicts', async () => {
+    const { session, take } = await ready(stored('a', 'Alpha', 1234));
+    const restore = session.restoreVersion(500);
+    const load = take('load_profile_version');
+    load.resolve({ id: 'a', modified_at_ms: 500, profile: upgradeKeypadProfile({ schema_version: 1, name: 'Earlier', bindings: [] }) });
+    await Promise.resolve();
+    take('save_profile').reject('this profile changed on disk after it was loaded, possibly in another OpenStreamHub window; reload the saved profile before saving again');
+    await restore;
+    expect(session.getState().error).toContain('Could not restore the version');
+    expect(session.getState().draft.profile.name).toBe('Alpha');
+    expect(session.unsaved).toBe(false);
+  });
+
+  it('does nothing without an open saved profile', async () => {
+    const { session } = await ready();
+    session.newProfile();
+    await session.restoreVersion(500);
+    expect(session.getState().busy).toBeNull();
+    expect(session.getState().error).toBeNull();
   });
 });
 

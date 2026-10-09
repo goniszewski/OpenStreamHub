@@ -90,6 +90,64 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
 // The header Run button, disabled with its spinner and its target label ("Run", "Run on 15-key", …).
 const runDisabled = /<button[^>]*disabled=""[^>]*>[^<]*<svg[^>]*>.*Run/s;
 
+describe('settling the draft before a start', () => {
+  it('runs the profile identity the settling produced, not the rendered one', async () => {
+    const calls: { command: string; args?: Record<string, unknown> }[] = [];
+    const runner = new ServiceRunner(async (command, args) => {
+      calls.push({ command, args });
+      return undefined as never;
+    }, async () => () => {}, true);
+    const feed = new DeviceFeed(async () => [dial] as never, async () => () => {}, true);
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
+    let run: ReturnType<typeof useRunSession> | null = null;
+    const View = () => {
+      run = useRunSession({
+        runner, feed, profile: flat, profileId: null, desktop: true, unsaved: true, platform: mac, now: 2000,
+        beforeStart: async () => ({ profile: { ...flat, name: 'Saved' }, profileId: 'saved-1', sourceProfileId: 'saved-1', unsaved: false }),
+      });
+      return null;
+    };
+    renderToStaticMarkup(<View />);
+    await run!.begin();
+    const start = calls.find(call => call.command === 'start_service');
+    expect(start).toBeDefined();
+    const request = start!.args!.request as Record<string, unknown>;
+    expect(request.profile_id).toBe('saved-1');
+    expect(request.source_profile_id).toBe('saved-1');
+    expect((request.profile as Profile).name).toBe('Saved');
+  });
+
+  it('starts with the rendered values when the settling returns nothing or fails', async () => {
+    const calls: { command: string; args?: Record<string, unknown> }[] = [];
+    const invoke = async (command: string, args?: Record<string, unknown>) => {
+      calls.push({ command, args });
+      return undefined as never;
+    };
+    // A fresh runner per start: the first start's run would own the device.
+    const beginWith = async (beforeStart: RunSessionOptions['beforeStart']) => {
+      const runner = new ServiceRunner(invoke, async () => () => {}, true);
+      const feed = new DeviceFeed(async () => [dial] as never, async () => () => {}, true);
+      (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
+      let run: ReturnType<typeof useRunSession> | null = null;
+      const View = () => {
+        run = useRunSession({ runner, feed, profile: flat, profileId: null, desktop: true, unsaved: true, platform: mac, now: 2000, beforeStart });
+        return null;
+      };
+      renderToStaticMarkup(<View />);
+      await run!.begin();
+    };
+    await beginWith(async () => {});
+    // No result: the rendered draft is used, unsaved, so no profile id.
+    let start = calls.find(call => call.command === 'start_service');
+    expect((start!.args!.request as Record<string, unknown>).profile_id).toBeUndefined();
+    calls.length = 0;
+    // A failed settling still starts.
+    await beginWith(async () => { throw new Error('disk full'); });
+    start = calls.find(call => call.command === 'start_service');
+    expect(start).toBeDefined();
+  });
+});
+
 describe('ServicePanel markup', () => {
   it('shows an unmistakable banner while executing', () => {
     const { feed, runner } = fixtures(true);
@@ -103,6 +161,10 @@ describe('ServicePanel markup', () => {
     expect(render({ feed, runner })).not.toContain(runPreviewNote);
     expect(markup).toContain('Profile changed since start. Restart to apply.');
     expect(markup).toContain('(unsaved changes)');
+    setRun(runner, { draftUnsaved: false });
+    const saved = render({ feed, runner });
+    expect(saved).toContain('(the saved version)');
+    expect(saved).not.toContain('(unsaved changes)');
     expect(markup).toContain('>Stop<');
     expect(markup).toContain('role="log"');
     expect(markup).toContain('<time>now</time>');

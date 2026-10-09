@@ -67,11 +67,14 @@ describe('onboarding persistence', () => {
 });
 
 describe('Settings entries', () => {
-  it('offers the guide and the connection notices toggle', () => {
+  it('offers the guide, the connection notices toggle and the automatic-saving toggle', () => {
     const markup = renderToStaticMarkup(<SettingsPage desktop themePicker={null} storagePath="" noticesEnabled onNoticesEnabled={() => {}} onShowGuide={() => {}} />);
     expect(markup).toContain('Show the getting-started guide');
     expect(markup).toContain('Show connection notices');
+    expect(markup).toContain('Save changes automatically');
     expect(markup).toMatch(/type="checkbox"[^>]*checked/);
-    expect(renderToStaticMarkup(<SettingsPage desktop themePicker={null} storagePath="" noticesEnabled={false} />)).not.toMatch(/type="checkbox"[^>]*checked/);
+    expect(renderToStaticMarkup(<SettingsPage desktop themePicker={null} storagePath="" noticesEnabled={false} autosave={false} />)).not.toMatch(/type="checkbox"[^>]*checked/);
+    // The toggle exists only in the desktop app.
+    expect(renderToStaticMarkup(<SettingsPage desktop={false} themePicker={null} storagePath="" />)).not.toContain('Save changes automatically');
   });
 });

@@ -10,6 +10,10 @@ use std::{
 use uuid::Uuid;
 
 pub(crate) const MAX_PROFILES: usize = 128;
+/// Versions kept per profile for the editor's "Earlier versions" list.
+/// Automatic saving writes a version on every settled edit, so the limit
+/// is what bounds the history folder, not a save button.
+pub(crate) const HISTORY_LIMIT: usize = 20;
 /// Hidden temporary files and staging folders older than this are leftovers
 /// of an interrupted write, not work in progress in another app window.
 pub(crate) const STALE_TEMPORARY: Duration = Duration::from_secs(60 * 60);
@@ -24,6 +28,13 @@ pub struct StoredProfile {
     /// `import_flags::content_hash` of `profile`: the version a confirmation
     /// showed, sent back when the user allows an imported profile.
     pub content_hash: String,
+}
+
+/// One kept earlier version of a profile, named by its own modification
+/// time (the moment that version was saved).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ProfileVersion {
+    pub modified_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -442,6 +453,15 @@ impl ProfileStore {
         if bytes.len() > Profile::MAX_JSON_BYTES {
             return Err("encoded profile exceeds the size limit".into());
         }
+        // An identical rewrite (an automatic save of an unchanged profile)
+        // keeps the file, its modification time and the version history as
+        // they are.
+        if read_private_file(&path, Profile::MAX_JSON_BYTES, "profile")
+            .is_ok_and(|current| current.is_some_and(|(current, _)| current == bytes))
+        {
+            return self.load(id);
+        }
+        self.snapshot_history(id);
         #[cfg(test)]
         if fault::WRITE.with(std::cell::Cell::get) {
             return Err("could not write profile (test fault)".into());
@@ -455,6 +475,136 @@ impl ProfileStore {
         self.load(id)
     }
 
+    /// The history folder for one profile: `<storage>/.history/<id>`. The
+    /// dot keeps the folder invisible to listings and seeding, which ignore
+    /// hidden entries.
+    fn history_directory(&self, id: &str) -> Result<PathBuf, String> {
+        validate_id(id)?;
+        Ok(self.directory.join(".history").join(id))
+    }
+
+    /// Copies the profile's current file into its history before an
+    /// overwrite. Best effort: a failed snapshot never fails the save, and
+    /// the version list simply misses that one step. The copy keeps the
+    /// original file's modification time, so the version is named by the
+    /// moment it was saved.
+    fn snapshot_history(&self, id: &str) {
+        let Ok(path) = self.path(id) else {
+            return;
+        };
+        let Ok(directory) = self.history_directory(id) else {
+            return;
+        };
+        let Ok(Some((bytes, metadata))) =
+            read_private_file(&path, Profile::MAX_JSON_BYTES, "profile")
+        else {
+            return;
+        };
+        let modified_at_ms = match metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        {
+            Some(age) => age.as_millis() as u64,
+            None => return,
+        };
+        if fs::create_dir_all(&directory).is_err() {
+            return;
+        }
+        // Two versions saved within the same millisecond step on each
+        // other's name; one bumped millisecond is enough in practice.
+        let mut name = modified_at_ms;
+        loop {
+            let path = directory.join(format!("{name}.json"));
+            if !path.exists()
+                && write_private_file(&directory, &path, &bytes, "profile version").is_ok()
+            {
+                let _ = File::options().write(true).open(&path).and_then(|file| {
+                    file.set_times(
+                        fs::FileTimes::new()
+                            .set_modified(UNIX_EPOCH + Duration::from_millis(modified_at_ms)),
+                    )
+                });
+                break;
+            }
+            name = match name.checked_add(1) {
+                Some(next) => next,
+                None => break,
+            };
+        }
+        self.prune_history(&directory);
+    }
+
+    /// Keeps only the newest `HISTORY_LIMIT` versions. Files whose name is
+    /// not a millisecond stamp are left alone, never counted and never
+    /// removed.
+    fn prune_history(&self, directory: &Path) {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return;
+        };
+        let mut versions: Vec<(u64, String)> = entries
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter_map(|name| {
+                name.strip_suffix(".json")
+                    .and_then(|stem| stem.parse::<u64>().ok())
+                    .map(|modified_at_ms| (modified_at_ms, name))
+            })
+            .collect();
+        versions.sort_by_key(|(modified_at_ms, _)| *modified_at_ms);
+        while versions.len() > HISTORY_LIMIT {
+            let (_, oldest) = versions.remove(0);
+            let _ = fs::remove_file(directory.join(oldest));
+        }
+    }
+
+    /// The kept earlier versions of a profile, newest first. Junk in the
+    /// history folder (a name that is not a millisecond stamp) is skipped.
+    pub fn versions(&self, id: &str) -> Result<Vec<ProfileVersion>, String> {
+        let directory = self.history_directory(id)?;
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("could not list profile versions: {error}")),
+        };
+        let mut versions = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if let Ok(modified_at_ms) = stem.parse::<u64>() {
+                versions.push(ProfileVersion { modified_at_ms });
+            }
+        }
+        versions.sort_by_key(|version| std::cmp::Reverse(version.modified_at_ms));
+        Ok(versions)
+    }
+
+    /// One earlier version, as a full stored profile (upgraded like a load,
+    /// never touching the version file).
+    pub fn load_version(&self, id: &str, modified_at_ms: u64) -> Result<StoredProfile, String> {
+        if !self
+            .versions(id)?
+            .iter()
+            .any(|version| version.modified_at_ms == modified_at_ms)
+        {
+            return Err("this profile version no longer exists in storage".into());
+        }
+        let path = self
+            .history_directory(id)?
+            .join(format!("{modified_at_ms}.json"));
+        let (bytes, _) = read_private_file(&path, Profile::MAX_JSON_BYTES, "profile version")?
+            .ok_or("this profile version no longer exists in storage")?;
+        let profile = Profile::from_json(&bytes)?.into_v2()?;
+        Ok(StoredProfile {
+            id: id.to_owned(),
+            content_hash: crate::import_flags::content_hash(&profile),
+            profile,
+            modified_at_ms,
+        })
+    }
+
     /// Deletes a readable profile. `expected_modified_at_ms` protects against
     /// removing a version changed elsewhere since it was listed or loaded.
     pub fn delete(&self, id: &str, expected_modified_at_ms: Option<u64>) -> Result<(), String> {
@@ -466,6 +616,11 @@ impl ProfileStore {
             .map_err(|error| format!("could not delete profile: {error}"))?;
         if let Ok(mut summaries) = self.summaries.lock() {
             summaries.remove(id);
+        }
+        // The versions are unreachable without the profile; the folder is
+        // removed best effort (a failure leaves hidden data, never an error).
+        if let Ok(directory) = self.history_directory(id) {
+            let _ = fs::remove_dir_all(directory);
         }
         self.sync_directory()
     }
@@ -592,6 +747,17 @@ mod tests {
         (directory, store)
     }
 
+    /// Visible entries of a directory: what the store's own rules count as
+    /// data (hidden entries such as the version-history folder are never
+    /// profiles).
+    fn visible_entries(path: &std::path::Path) -> usize {
+        fs::read_dir(path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| !is_hidden_entry(&entry.file_name()))
+            .count()
+    }
+
     #[test]
     fn seed_save_restart_roundtrip_keeps_bindings_and_identity() {
         let (directory, store) = store();
@@ -610,12 +776,7 @@ mod tests {
         assert_eq!(restarted.load(&id).unwrap().profile, profile);
         assert_eq!(restarted.bootstrap().unwrap().profile.unwrap().id, id);
         assert_eq!(restarted.list().unwrap().profiles.len(), 1);
-        assert_eq!(
-            fs::read_dir(directory.path().join("profiles"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(visible_entries(&directory.path().join("profiles")), 1);
     }
 
     #[test]
@@ -650,12 +811,7 @@ mod tests {
         let saved_bytes = fs::read(&path).unwrap();
         assert_ne!(saved_bytes, bytes);
         assert_eq!(Profile::from_json(&saved_bytes).unwrap().schema_version, 2);
-        assert_eq!(
-            fs::read_dir(directory.path().join("profiles"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(visible_entries(&directory.path().join("profiles")), 1);
     }
 
     #[test]
@@ -694,12 +850,7 @@ mod tests {
         assert_eq!(recovered.unreadable.len(), 1);
         assert_eq!(recovered.unreadable[0].id, saved.id);
         assert_eq!(fs::read(&path).unwrap(), invalid_bytes);
-        assert_eq!(
-            fs::read_dir(directory.path().join("profiles"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(visible_entries(&directory.path().join("profiles")), 1);
     }
 
     #[test]
@@ -751,12 +902,7 @@ mod tests {
         );
         fs::write(&path, vec![b' '; Profile::MAX_JSON_BYTES + 1]).unwrap();
         assert!(store.load(&id).unwrap_err().contains("size limit"));
-        assert_eq!(
-            fs::read_dir(directory.path().join("profiles"))
-                .unwrap()
-                .count(),
-            1
-        );
+        assert_eq!(visible_entries(&directory.path().join("profiles")), 1);
     }
 
     #[test]
@@ -945,7 +1091,7 @@ mod tests {
             .save(Some(&first.id), first.profile, Some(first.modified_at_ms))
             .unwrap();
         store.delete(&saved.id, Some(saved.modified_at_ms)).unwrap();
-        assert_eq!(fs::read_dir(&profiles).unwrap().count(), MAX_PROFILES + 1);
+        assert_eq!(visible_entries(&profiles), MAX_PROFILES + 1);
     }
 
     #[test]
@@ -1015,5 +1161,158 @@ mod tests {
         assert!(store.delete(&id, None).is_err());
         assert!(store.path(&id).unwrap().symlink_metadata().is_ok());
         assert_eq!(fs::read(outside).unwrap(), before);
+    }
+
+    /// Sets the profile file's modification time, so each test version has a
+    /// distinct, controlled millisecond stamp.
+    fn age_to(path: &Path, modified_at_ms: u64) {
+        File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(
+                fs::FileTimes::new()
+                    .set_modified(UNIX_EPOCH + Duration::from_millis(modified_at_ms)),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn overwrites_keep_a_rolling_history_that_restores_reversibly() {
+        let (directory, store) = store();
+        let first = store.save(None, test_profiles::folders(), None).unwrap();
+        let path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{}.json", first.id));
+        age_to(&path, 1_000);
+        let mut second = test_profiles::folders();
+        second.name = "Second".into();
+        store.save(Some(&first.id), second, Some(1_000)).unwrap();
+
+        let versions = store.versions(&first.id).unwrap();
+        assert_eq!(
+            versions,
+            vec![ProfileVersion {
+                modified_at_ms: 1_000
+            }]
+        );
+
+        // The version content is the first save, never touched by the read.
+        let restored_version = store.load_version(&first.id, 1_000).unwrap();
+        assert_eq!(restored_version.profile, first.profile);
+
+        // Restoring goes through save(): the second version is snapshotted
+        // first, so the restore itself is reversible.
+        age_to(&path, 2_000);
+        store
+            .save(Some(&first.id), restored_version.profile, Some(2_000))
+            .unwrap();
+        let versions = store.versions(&first.id).unwrap();
+        assert_eq!(
+            versions,
+            vec![
+                ProfileVersion {
+                    modified_at_ms: 2_000
+                },
+                ProfileVersion {
+                    modified_at_ms: 1_000
+                },
+            ]
+        );
+        assert_eq!(store.load(&first.id).unwrap().profile, first.profile);
+
+        // Unknown versions and ids are refused, never invented.
+        assert!(store.load_version(&first.id, 3_000).is_err());
+        assert!(store.load_version("../escape", 1_000).is_err());
+        assert!(store.versions("../escape").is_err());
+    }
+
+    #[test]
+    fn history_is_capped_hidden_from_listings_and_removed_with_the_profile() {
+        let (directory, store) = store();
+        let saved = store.save(None, test_profiles::folders(), None).unwrap();
+        let path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{}.json", saved.id));
+        for stamp in 1..=HISTORY_LIMIT as u64 + 5 {
+            age_to(&path, stamp * 1_000);
+            let mut version = test_profiles::folders();
+            version.name = format!("Version {stamp}");
+            store
+                .save(Some(&saved.id), version, Some(stamp * 1_000))
+                .unwrap();
+        }
+        let versions = store.versions(&saved.id).unwrap();
+        assert_eq!(versions.len(), HISTORY_LIMIT);
+        assert_eq!(
+            versions[0].modified_at_ms,
+            (HISTORY_LIMIT as u64 + 5) * 1_000
+        );
+        assert_eq!(
+            versions.last().unwrap().modified_at_ms,
+            6 * 1_000,
+            "the oldest kept version is the one after the first evicted"
+        );
+
+        // The history folder is hidden: never a profile, never a blocker.
+        let listing = store.list().unwrap();
+        assert_eq!(listing.profiles.len(), 1);
+        let restarted = ProfileStore::open(directory.path().join("profiles")).unwrap();
+        assert_eq!(restarted.list().unwrap().profiles.len(), 1);
+        assert_eq!(restarted.versions(&saved.id).unwrap(), versions);
+
+        // Deleting the profile removes its history with it.
+        restarted
+            .delete(
+                &saved.id,
+                Some(restarted.load(&saved.id).unwrap().modified_at_ms),
+            )
+            .unwrap();
+        assert!(
+            !directory
+                .path()
+                .join("profiles/.history")
+                .join(&saved.id)
+                .exists()
+        );
+        assert_eq!(restarted.versions(&saved.id).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn identical_rewrites_and_failed_saves_change_no_history() {
+        let (directory, store) = store();
+        let saved = store.save(None, test_profiles::folders(), None).unwrap();
+        let path = directory
+            .path()
+            .join("profiles")
+            .join(format!("{}.json", saved.id));
+        age_to(&path, 1_000);
+        let same = store.load(&saved.id).unwrap();
+        store
+            .save(Some(&saved.id), same.profile, Some(1_000))
+            .unwrap();
+        assert_eq!(store.versions(&saved.id).unwrap(), Vec::new());
+        assert_eq!(
+            fs::metadata(&path).unwrap().modified().unwrap(),
+            UNIX_EPOCH + Duration::from_millis(1_000),
+            "an identical automatic save keeps the file as it is"
+        );
+
+        // A refused overwrite (bad content) snapshots nothing.
+        let mut invalid = test_profiles::folders_json();
+        invalid["keypad"]["pages"][0]["slots"][0]["page_id"] = "missing".into();
+        let invalid_profile: Profile = serde_json::from_value(invalid).unwrap();
+        assert!(
+            store
+                .save(Some(&saved.id), invalid_profile, Some(1_000))
+                .is_err()
+        );
+        assert_eq!(store.versions(&saved.id).unwrap(), Vec::new());
+
+        // A brand-new profile has no previous version to keep.
+        let created = store.save(None, test_profiles::folders(), None).unwrap();
+        assert_eq!(store.versions(&created.id).unwrap(), Vec::new());
     }
 }

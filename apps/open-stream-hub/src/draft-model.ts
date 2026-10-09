@@ -1,6 +1,8 @@
 // Pure helpers for the profile draft. Rust remains the authority on validity;
 // these only give earlier, local feedback in the editor.
 
+import type { Profile } from './contracts';
+
 export const maximumLabelBytes = 128;
 
 // JSON with object keys sorted, so the dirty check ignores key order.
@@ -35,6 +37,31 @@ export function labelIssue(value: string, field: string): string | null {
   return null;
 }
 
+// Why the profile cannot be saved yet, from the same rules the editor fields
+// show while typing. Automatic saving skips the write for such a draft — it
+// stays a local recovery copy until the field passes — instead of failing on
+// the backend for text the user is still settling. Control values (modules,
+// gestures, action fields) are chosen in editors, never typed freely, so the
+// backend's remaining rules are not mirrored here.
+export function profileIssue(profile: Profile): string | null {
+  const direct = labelIssue(profile.name, 'Profile name');
+  if (direct) return direct;
+  for (const page of profile.keypad?.pages ?? []) {
+    const pageIssue = labelIssue(page.name, 'Page name');
+    if (pageIssue) return pageIssue;
+    for (const slot of page.slots) {
+      if (slot?.type !== 'action') continue;
+      const labelIssueFound = labelIssue(slot.label, 'Key label');
+      if (labelIssueFound) return labelIssueFound;
+    }
+  }
+  for (const dialFunction of profile.dial_functions ?? []) {
+    const functionIssue = labelIssue(dialFunction.name, 'Function name');
+    if (functionIssue) return functionIssue;
+  }
+  return null;
+}
+
 export type IntegerParse = { ok: true; value: number } | { ok: false; error: string };
 
 export function parseIntegerInput(raw: string, minimum: number, maximum: number, options: { nonZero?: boolean } = {}): IntegerParse {
@@ -44,12 +71,4 @@ export function parseIntegerInput(raw: string, minimum: number, maximum: number,
   if (value < minimum || value > maximum) return { ok: false, error: `Enter a whole number from ${minimum} to ${maximum}.` };
   if (options.nonZero && value === 0) return { ok: false, error: 'Zero has no effect. Enter a nonzero change.' };
   return { ok: true, value: value === 0 ? 0 : value };
-}
-
-export type CloseDecision = 'allow' | 'wait' | 'confirm';
-
-// The window close guard: never lose an unsaved draft silently.
-export function closeDecision(busy: boolean, unsaved: boolean): CloseDecision {
-  if (!unsaved) return 'allow';
-  return busy ? 'wait' : 'confirm';
 }

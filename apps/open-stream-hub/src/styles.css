@@ -475,3 +475,12 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .key-artwork-editor { margin:12px 0; }
 .key-artwork-editor > .key-artwork-image { width:72px; height:72px; margin:10px 0; border-radius:6px; }
 .key-artwork-editor input[type="file"] { width:100%; font-size:12px; }
+
+/* Earlier versions: the collapsed history panel on the Profiles page and its rows. */
+.version-history { margin-top:22px; }
+.version-history summary { display:flex; align-items:center; gap:8px; cursor:pointer; font-size:15px; font-weight:600; letter-spacing:-.2px; user-select:none; }
+.version-history[open] summary { margin-bottom:12px; }
+.version-history .fine-print { margin-top:8px; }
+.version-list { list-style:none; margin:12px 0 0; padding:0; }
+.version-list li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; }
+.version-list li:first-child { border-top:0; padding-top:0; }

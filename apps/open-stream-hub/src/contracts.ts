@@ -72,6 +72,9 @@ export interface Profile { schema_version: number; name: string; bindings: Bindi
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }
+// One earlier version of a profile kept by saving (manual or automatic), named by the moment it was saved. Restoring is a
+// load plus an ordinary save, so it goes through validation, conflict protection and the imported-content flags.
+export interface ProfileVersion { modified_at_ms: number }
 // dry_run_only: an imported .mhz profile that may run only as a dry run until the user allows it to execute actions
 // (allow_imported_profile_execution). Stored in <app data>/imported-profiles.json, never inside the profile.
 export interface ProfileSummary { id: string; name: string; binding_count: number; modified_at_ms: number; dry_run_only: boolean }

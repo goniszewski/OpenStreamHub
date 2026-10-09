@@ -18,9 +18,12 @@ function harness(profile: Profile = browserProfile) {
   });
   const storage = new FakeStorage();
   const scheduled: (() => void)[] = [];
-  const persister = new DraftPersister(new DraftStore(storage), action => { scheduled.push(action); return () => {}; });
+  const schedule = (action: () => void) => { scheduled.push(action); return () => {}; };
+  const persister = new DraftPersister(new DraftStore(storage), schedule);
   let clock = 1000;
-  const session = new ProfileSession(invoke, profile, true, persister, () => clock);
+  // The crash-recovery copy and the automatic save share the manual schedule:
+  // nothing fires unless a test runs it.
+  const session = new ProfileSession(invoke, profile, true, persister, () => clock, schedule);
   const take = (command: string) => {
     const index = calls.findIndex(call => call.command === command);
     if (index < 0) throw new Error(`no pending ${command} call`);

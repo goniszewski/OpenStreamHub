@@ -1,12 +1,17 @@
-import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, MhzImportResult, Profile, ProfileListing, ProfileSummary, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
-import { closeDecision, stableStringify } from './draft-model';
+import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, MhzImportResult, Profile, ProfileListing, ProfileSummary, ProfileVersion, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
+import { profileIssue, stableStringify } from './draft-model';
 import { emptyHistory, recordEdit, redoStep, undoStep } from './edit-history';
 import type { History } from './edit-history';
-import { newDraftKey, restoreDecision } from './draft-store';
-import type { DraftPersister, StoredDraft } from './draft-store';
+import { newDraftKey, restoreDecision, timeoutSchedule } from './draft-store';
+import type { Cancel, DraftPersister, Schedule, StoredDraft } from './draft-store';
 import { copyName, ImportError, importName, parseImportedProfile, withName } from './profile-library';
 import { keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
-import { errorMessage, faderMaximum, replayLabels } from './ui-model';
+import { errorMessage, faderMaximum, replayLabels, versionTimeLabel } from './ui-model';
+
+// How long an edit settles before it is saved to the profile file. The
+// crash-recovery copy in local storage is written sooner (draftWriteDelayMs);
+// this is the distance to the real file.
+export const autosaveDelayMs = 1000;
 
 export type Invoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 
@@ -66,9 +71,19 @@ export interface SessionState {
   // Increments whenever a different stored or new profile replaces the draft,
   // so view state such as the open keypad folder can reset.
   draftGeneration: number;
-  // Whether the bounded edit history has a step to undo or redo.
+  // The bounded edit history has a step to undo or redo.
   canUndo: boolean;
   canRedo: boolean;
+  // The automatic-saving setting (default on; persisted in local storage by App).
+  autosave: boolean;
+  // Set when automatic saving hit a disk conflict and stopped for this draft,
+  // so it cannot loop errors. A reload or a successful save clears it.
+  autosaveBlocked: boolean;
+  // The earlier versions of `versionsId` (newest first), listed on demand for
+  // the Profiles page. Null while nothing was fetched for that profile.
+  versions: ProfileVersion[] | null;
+  versionsId: string | null;
+  versionsError: string | null;
 }
 
 export const emptyProfile: Profile = { schema_version: 1, name: 'New profile', bindings: [] };
@@ -123,10 +138,17 @@ export interface KeypadPreviewRequest { path: string[]; control: number; serial:
 export class ProfileSession {
   private state: SessionState;
   private readonly listeners = new Set<() => void>();
-  private readonly sequence = { bootstrap: 0, load: 0, list: 0, replay: 0, preview: 0, validation: 0 };
+  private readonly sequence = { bootstrap: 0, load: 0, list: 0, replay: 0, preview: 0, validation: 0, versions: 0 };
   private history: History<Profile> = emptyHistory();
+  private readonly desktop: boolean;
+  // The pending automatic save: one timer, one in-flight request. The edit
+  // history and every result stay live across an automatic save; only the
+  // saved baseline moves.
+  private autosaveTimer: { cancel: Cancel } | null = null;
+  private autosaveInFlight = false;
 
-  constructor(private readonly invoke: Invoke, initial: Profile, desktop: boolean, private readonly drafts: DraftPersister | null = null, private readonly now: () => number = Date.now) {
+  constructor(private readonly invoke: Invoke, initial: Profile, desktop: boolean, private readonly drafts: DraftPersister | null = null, private readonly now: () => number = Date.now, private readonly autosaveSchedule: Schedule = timeoutSchedule) {
+    this.desktop = desktop;
     if (drafts) drafts.onOversize = () => this.setNotice('This draft is too large for a crash-recovery copy. Save it to keep your changes.');
     const draft = newDraft(initial);
     this.state = {
@@ -135,6 +157,7 @@ export class ProfileSession {
       busy: desktop ? 'Opening profiles' : null, error: null, notice: null, noticeAction: null, validation: 'idle',
       replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, pendingIntent: null,
       duplicatePrompt: false, restorePrompt: null, importError: null, mhzImport: null, mhzReportOpen: false, importFlagsError: null, exportResult: null, canUndo: false, canRedo: false,
+      autosave: true, autosaveBlocked: false, versions: null, versionsId: null, versionsError: null,
     };
   }
 
@@ -152,14 +175,85 @@ export class ProfileSession {
 
   get unsaved() { return isUnsaved(this.state.draft); }
 
-  // Mirrors the draft into crash-recovery storage.
+  // Mirrors the draft into crash-recovery storage and follows it with the
+  // automatic save: scheduled for a dirty saved profile, cancelled once the
+  // draft is clean again (undone back to the baseline, or saved).
   private observeDraft() {
     const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
     const worthKeeping = this.unsaved && (profileId !== null || stableStringify(profile) !== stableStringify(upgradeKeypadProfile(emptyProfile)));
     this.drafts?.observe({ key: profileId ?? newDraftKey, profile, baseModifiedAtMs: modifiedAtMs, dirty: worthKeeping, sourceId: sourceId ?? null });
+    this.syncAutosaveTimer();
   }
 
   flushDraft() { this.drafts?.flush(); }
+
+  // The automatic save applies to a saved profile with edits that can be
+  // saved. A new profile has no file yet and keeps the crash-recovery copy
+  // and its restore offer; an invalid draft (a name still being retyped, for
+  // example) stays a local recovery copy too — the field's validation
+  // message says why, and the next edit re-checks.
+  private autosaveEligible(): boolean {
+    const state = this.state;
+    return state.autosave && !state.autosaveBlocked && this.desktop && state.ready
+      && state.draft.profileId !== null && this.unsaved && profileIssue(state.draft.profile) === null;
+  }
+
+  // Exactly one timer at a time; a scheduled save is not delayed further by
+  // more edits, and a clean draft cancels the pending one.
+  private syncAutosaveTimer() {
+    if (!this.autosaveEligible()) {
+      this.autosaveTimer?.cancel();
+      this.autosaveTimer = null;
+      return;
+    }
+    if (this.autosaveTimer || this.autosaveInFlight) return;
+    const timer = { cancel: this.autosaveSchedule(() => { this.autosaveTimer = null; void this.runAutosave(); }, autosaveDelayMs) };
+    this.autosaveTimer = timer;
+  }
+
+  setAutosave(on: boolean) {
+    this.set({ autosave: on });
+    this.syncAutosaveTimer();
+  }
+
+  // Saves the pending edit now instead of after the debounce: the guard, the
+  // window close and starting a run all settle the draft first. Resolves to
+  // true when the draft is saved afterwards.
+  async flushAutosave(): Promise<boolean> {
+    this.autosaveTimer?.cancel();
+    this.autosaveTimer = null;
+    if (!this.unsaved) return true;
+    if (!this.autosaveEligible()) return false;
+    return this.runAutosave();
+  }
+
+  private async runAutosave(): Promise<boolean> {
+    if (!this.autosaveEligible()) return false;
+    // A manual save or another operation is running; try again after the
+    // debounce instead of failing against it.
+    if (this.state.busy !== null) { this.syncAutosaveTimer(); return false; }
+    const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
+    const snapshot = stableStringify(profile);
+    this.autosaveInFlight = true;
+    try {
+      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: structuredClone(profile), expectedModifiedAtMs: modifiedAtMs, sourceProfileId: sourceId ?? null } });
+      // An edit that landed while the request was out has already
+      // rescheduled; the response then only confirms the older file, and the
+      // draft stays unsaved so a guard still asks before discarding it.
+      if (stableStringify(this.state.draft.profile) === snapshot) {
+        this.set({ draft: { ...storedDraft(stored) }, autosaveBlocked: false });
+        await this.refreshAfterChange('Profile saved');
+      }
+    } catch (reason) {
+      const message = errorMessage(reason);
+      const conflict = message.includes('changed on disk');
+      this.set({ error: `Could not save automatically: ${message}`, ...(conflict ? { autosaveBlocked: true } : {}) });
+    } finally {
+      this.autosaveInFlight = false;
+      this.syncAutosaveTimer();
+    }
+    return !this.unsaved;
+  }
 
   // Looks for a stored draft of the profile just opened. Holds its key until
   // the user decides, so it is not cleared by the draft becoming current.
@@ -209,7 +303,7 @@ export class ProfileSession {
   }
 
   private adopt(stored: StoredProfile): Partial<SessionState> {
-    return { ...this.invalidateResults(), ...this.resetHistory(), draft: storedDraft(stored), draftGeneration: this.state.draftGeneration + 1 };
+    return { ...this.invalidateResults(), ...this.resetHistory(), draft: storedDraft(stored), draftGeneration: this.state.draftGeneration + 1, autosaveBlocked: false };
   }
 
   setError(error: string | null) { this.set({ error }); }
@@ -241,10 +335,18 @@ export class ProfileSession {
     return true;
   }
 
-  newProfile(profile: Profile = emptyProfile) { this.set({ ...this.invalidateResults(), ...this.resetHistory(), draft: newDraft(profile), draftGeneration: this.state.draftGeneration + 1 }); }
+  newProfile(profile: Profile = emptyProfile) { this.set({ ...this.invalidateResults(), ...this.resetHistory(), draft: newDraft(profile), draftGeneration: this.state.draftGeneration + 1, autosaveBlocked: false, versions: null, versionsId: null, versionsError: null }); }
 
-  // Runs immediately, or asks before discarding an unsaved draft.
+  // Runs immediately, or saves the edit first when automatic saving is on.
+  // Only an edit that cannot be saved (automatic saving off, an invalid
+  // draft, or a stopped save) still asks before being discarded.
   guard(label: string, run: () => void) {
+    if (this.unsaved && this.autosaveEligible()) {
+      void this.flushAutosave().then(saved => {
+        if (saved) run(); else this.set({ pendingIntent: { label, run } });
+      });
+      return;
+    }
     if (this.unsaved) this.set({ pendingIntent: { label, run } }); else run();
   }
 
@@ -254,12 +356,25 @@ export class ProfileSession {
     if (discard) { this.drafts?.discardCurrent(); intent?.run(); }
   }
 
-  // Returns true if the window may close now.
+  // Returns true if the window may close now. With automatic saving, an
+  // unsaved edit is saved and the window then closes through `destroy`; the
+  // caller must keep the window open until that lands (Tauri's close request
+  // stays prevented). A save that cannot finish hands over to the usual
+  // confirmation instead of closing on a lost edit.
   requestClose(destroy: () => void): boolean {
-    const decision = closeDecision(this.state.busy !== null, this.unsaved);
-    if (decision === 'wait') this.set({ error: 'Wait for the profile operation to finish before closing the window.' });
-    if (decision === 'confirm') this.set({ pendingIntent: { label: 'close the window', run: destroy } });
-    return decision === 'allow';
+    if (this.state.busy !== null) {
+      this.set({ error: 'Wait for the profile operation to finish before closing the window.' });
+      return false;
+    }
+    if (!this.unsaved) return true;
+    if (this.autosaveEligible()) {
+      void this.flushAutosave().then(saved => {
+        if (saved) destroy(); else this.set({ pendingIntent: { label: 'close the window', run: destroy } });
+      });
+      return false;
+    }
+    this.set({ pendingIntent: { label: 'close the window', run: destroy } });
+    return false;
   }
 
   async bootstrap() {
@@ -334,7 +449,47 @@ export class ProfileSession {
       // Saving keeps the open keypad folder, so the generation is unchanged.
       this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', notice: `Saved ${stored.profile.name}.` });
       await this.refreshAfterChange('Profile saved');
-    } catch (reason) { this.set({ error: `Could not save profile: ${errorMessage(reason)}`, validation: 'failed' }); }
+    } catch (reason) {
+      const message = errorMessage(reason);
+      // A conflict also stops the pending automatic save, which would refuse
+      // with the same message a moment later.
+      this.set({ error: `Could not save profile: ${message}`, validation: 'failed', ...(message.includes('changed on disk') ? { autosaveBlocked: true } : {}) });
+    }
+    finally { this.set({ busy: null }); }
+  }
+
+  // The kept earlier versions of a profile, listed when the Profiles page
+  // opens its "Earlier versions" list. The list follows the open profile.
+  async loadVersions(id: string) {
+    const sequence = ++this.sequence.versions;
+    this.set({ versionsError: null });
+    try {
+      const versions = await this.invoke<ProfileVersion[]>('profile_versions', { id });
+      if (sequence !== this.sequence.versions) return;
+      this.set({ versions, versionsId: id });
+    } catch (reason) {
+      if (sequence === this.sequence.versions) this.set({ versions: null, versionsId: id, versionsError: `Could not list the earlier versions: ${errorMessage(reason)}` });
+    }
+  }
+
+  // Puts one earlier version back: it is loaded from the version history and
+  // then saved as the profile, so the current version is kept first (as a new
+  // history entry) and a change on disk since loading still refuses.
+  async restoreVersion(modifiedAtMs: number) {
+    const { profileId, modifiedAtMs: loadedAt, sourceId } = this.state.draft;
+    if (!profileId || !this.state.ready || this.state.busy !== null) return;
+    this.set({ busy: 'Restoring version', error: null, notice: null });
+    try {
+      const version = await this.invoke<StoredProfile>('load_profile_version', { id: profileId, modifiedAtMs });
+      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: version.profile, expectedModifiedAtMs: loadedAt, sourceProfileId: sourceId ?? null } });
+      this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', versions: null, versionsId: null, notice: `Restored the version from ${versionTimeLabel(version.modified_at_ms, this.now())}.` });
+      await this.refreshAfterChange('Version restored');
+    } catch (reason) {
+      const message = errorMessage(reason);
+      // A conflict also stops the pending automatic save, which would refuse
+      // with the same message a moment later.
+      this.set({ error: `Could not restore the version: ${message}`, ...(message.includes('changed on disk') ? { autosaveBlocked: true } : {}) });
+    }
     finally { this.set({ busy: null }); }
   }
 

@@ -4,9 +4,18 @@ import { CrashScreen, ErrorBoundary, IntegerField, LabelError, ModalDialog } fro
 import { KeypadScreen } from './KeypadScreen';
 import { createKeypadFolder, keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
-import { ProfilesPage } from './ProfilesPage';
+import { ProfilesPage, VersionHistory } from './ProfilesPage';
 import { browserProfile } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
+
+// A session over a recorded invoke, as in the session tests.
+function recordedSession() {
+  const calls: { command: string; args?: Record<string, unknown>; resolve(value: unknown): void }[] = [];
+  const session = new ProfileSession(<T,>(command: string, args?: Record<string, unknown>) => new Promise<T>(resolve => {
+    calls.push({ command, args, resolve: resolve as (value: unknown) => void });
+  }), browserProfile, true);
+  return { session, calls };
+}
 
 describe('keypad breadcrumbs', () => {
   it('shows the root page once, followed by each folder', () => {
@@ -50,6 +59,61 @@ describe('error boundary', () => {
     expect(markup).toContain('Something went wrong');
     expect(markup).toContain('boom');
     expect(markup).toContain('Reload window');
+  });
+});
+
+describe('earlier versions panel', () => {
+  it('lists the kept versions with restore buttons once loaded', () => {
+    const { session } = recordedSession();
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 1_700_000_000_000 }], versionsId: 'a', versionsError: null };
+    const markup = renderToStaticMarkup(<VersionHistory session={session} state={state} disabled={false} now={1_700_000_100_000} />);
+    expect(markup).toContain('Earlier versions');
+    expect(markup).toContain('Saved at');
+    expect(markup).toContain('>Restore</button>');
+    // Closed by default; nothing fetched during render.
+    expect(markup).toContain('<details class="panel version-history"');
+  });
+
+  it('shows the empty state and a failed listing honestly', () => {
+    const { session } = recordedSession();
+    const base = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versionsId: 'a', versionsError: null };
+    const empty = renderToStaticMarkup(<VersionHistory session={session} state={{ ...base, versions: [] }} disabled={false} now={0} />);
+    expect(empty).toContain('No earlier versions yet');
+    const failed = renderToStaticMarkup(<VersionHistory session={session} state={{ ...base, versions: null, versionsError: 'Could not list the earlier versions: gone' }} disabled={false} now={0} />);
+    expect(failed).toContain('Could not list the earlier versions: gone');
+    expect(failed).not.toContain('No earlier versions yet');
+  });
+
+  it('restores through the session when a Restore button is pressed', async () => {
+    const { session, calls } = recordedSession();
+    const boot = session.bootstrap();
+    calls[0].resolve({ profile: { id: 'a', modified_at_ms: 1000, profile: upgradeKeypadProfile(browserProfile) }, profiles: [{ id: 'a', name: 'Everyday', binding_count: 4, modified_at_ms: 1000, dry_run_only: false }], unreadable: [], storage_path: '/s', desktop: true });
+    await boot;
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 500 }], versionsId: 'a', versionsError: null };
+    const panel = VersionHistory({ session, state, disabled: false, now: 1_000 });
+    // Walk the returned element tree to the row's Restore handler.
+    const list = panel.props.children.find((child: { props?: { className?: string } }) => child?.props?.className === 'version-list');
+    const row = list.props.children[0];
+    const button = row.props.children.find((child: { props?: { onClick?: () => void } }) => typeof child?.props?.onClick === 'function');
+    button.props.onClick();
+    await Promise.resolve();
+    expect(calls.map(call => call.command)).toEqual(['bootstrap', 'load_profile_version']);
+  });
+
+  it('fetches the list when the panel opens for a profile with none loaded', () => {
+    const { session, calls } = recordedSession();
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: null, versionsId: null, versionsError: null };
+    const panel = VersionHistory({ session, state, disabled: false, now: 0 });
+    const toggle = panel.props.onToggle;
+    toggle({ currentTarget: { open: true } });
+    expect(calls.map(call => call.command)).toEqual(['profile_versions']);
+    // Opening again asks again, so versions kept while it was closed appear.
+    const listed = { ...state, versions: [{ modified_at_ms: 1 }], versionsId: 'a' };
+    VersionHistory({ session, state: listed, disabled: false, now: 0 }).props.onToggle({ currentTarget: { open: true } });
+    expect(calls).toHaveLength(2);
+    // Closing does not fetch.
+    VersionHistory({ session, state: listed, disabled: false, now: 0 }).props.onToggle({ currentTarget: { open: false } });
+    expect(calls).toHaveLength(2);
   });
 });
 

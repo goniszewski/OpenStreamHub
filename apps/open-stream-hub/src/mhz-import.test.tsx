@@ -114,6 +114,7 @@ describe('official .mhz import', () => {
 
   it('asks before replacing an unsaved draft', async () => {
     const { session, calls } = await open();
+    session.setAutosave(false);
     session.update(item => ({ ...item, name: 'Edited' }));
     await importMhzFile(session, mhzFile([1]));
     expect(session.getState().pendingIntent?.label).toBe('import this profile');

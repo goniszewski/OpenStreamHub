@@ -421,7 +421,7 @@ Save two or three profiles in the app, one of them with a `{"type":"profile","di
 
 #### 7e. Importing a real `.mhz` export (no hardware needed, needs a real file)
 
-Every importer test so far uses synthetic files. Export a profile from the official Windows MasterHUB app that has key images (`uploadImages/`), a folder, a multi-action and a dial function, and, if possible, a multi-profile `.zip`. In the app choose **Import official .mhz** on the Profiles page.
+Every importer test so far uses synthetic files. Export a profile from the official Windows MasterHUB app that has key images (`uploadImages/`), a folder, a multi-action and a dial function, and, if possible, a multi-profile `.zip`. In the app open **Manage profiles** (next to the profile switcher in the header) and choose **Import official .mhz**.
 
 | Question | Expected observable | Confirms or refutes |
 | --- | --- | --- |

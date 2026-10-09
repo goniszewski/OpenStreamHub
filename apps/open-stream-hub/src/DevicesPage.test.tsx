@@ -287,7 +287,7 @@ describe('encoder inspector with dial functions', () => {
     expect(markup).toContain('aria-labelledby="dial-functions-heading"');
     expect(markup).toContain('aria-label="Bindings of Main"');
     expect(markup).not.toContain('id="binding-gesture"');
-    // The old pointer to the Profiles page is gone: the editor is right here.
+    // The old pointer to a separate page is gone: the editor is right here.
     expect(markup).not.toContain('Profiles · Dial functions');
   });
 

@@ -21,7 +21,7 @@ export const moduleControlCaveat = 'Tested on one 15-key module, one encoder dia
 
 // "Run actions automatically": the disclosure stays next to the toggle, worded as agreed.
 export const autoExecuteDisclosure = 'Key and knob presses will act on your Mac from the moment the app opens, and again after sleep, wake and reconnect, with no confirmation.';
-export const autoExecuteNote = 'Off by default. Turning it on or off restarts the runs that started by themselves; turning it off ends their actions at once and they go on as dry runs. Imported profiles not yet allowed to execute (under Profiles in the header) still only run as dry runs, and the Run panel says why. Actions run only on macOS.';
+export const autoExecuteNote = 'Off by default. Turning it on or off restarts the runs that started by themselves; turning it off ends their actions at once and they go on as dry runs. Imported profiles not yet allowed to execute (see Manage profiles in the header) still only run as dry runs, and the Run panel says why. Actions run only on macOS.';
 export const defaultProfileNote = 'The profile every module that starts by itself uses (15-key module, encoder dial and knobs; a profile holds the bindings of each module). With No default, each module uses the profile last run on it, or a blank one. A default that is deleted or cannot be read is skipped the same way. Applies the next time a module starts by itself.';
 
 // The note shown while profiles run: the setting is read when a profile starts, never mid-run.

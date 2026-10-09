@@ -103,8 +103,8 @@ export interface ConfirmCopy {
   warning: string | null; acknowledge: string | null;
 }
 
-const unknownContents = 'This app cannot read the contents of this profile here, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Review it under Profiles in the header before you continue.';
-// After a profile key switch the run holds its own copy, which the saved profile under Profiles in the header may no longer match.
+const unknownContents = 'This app cannot read the contents of this profile here, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Open Manage profiles in the header to review it before you continue.';
+// After a profile key switch the run holds its own copy, which the saved profile it came from may no longer match.
 const unknownKeyContents = 'This app could not load the profile this run holds, so it cannot list what will run. It may paste text, press Return, open web pages, capture the screen or run multi-step sequences. Cancel and choose Resume again to retry.';
 
 // Copy for the Execute confirmation, used when starting a run and when resuming a paused one. It discloses what the
@@ -228,11 +228,11 @@ export function resolveServiceSelection(devices: LiveDevice[], runs: Record<stri
 
 // dryRunOnly: the open profile (saved, or a draft of it) was imported from a .mhz file and not yet allowed to execute
 // actions. Execute is unavailable; the session manager refuses it too.
-export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Review it under Profiles (the button next to the profile switcher) and allow it to execute actions first.';
+export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Open Manage profiles (next to the profile switcher) to review it and allow it to execute actions first.';
 export const runBlockNotes = {
   imported: dryRunOnlyRunNote,
   deleted: 'The saved profile behind these unsaved changes was deleted. Save it to run it with actions.',
-  unreadable: 'The list of imported profiles cannot be read, so every profile runs only as a dry run. Open Profiles (next to the profile switcher) to fix it first.',
+  unreadable: 'The list of imported profiles cannot be read, so every profile runs only as a dry run. Open Manage profiles (next to the profile switcher) to fix it first.',
 } as const;
 
 export interface RunSessionOptions {

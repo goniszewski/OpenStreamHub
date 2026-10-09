@@ -1,6 +1,6 @@
 # OpenStreamHub focused-app profile rules
 
-The desktop app (`apps/open-stream-hub`) can switch the profile of a running session when another app comes to the front. A rule maps an app bundle ID, such as `com.apple.Safari`, to a saved profile. The feature is **opt-in**: it stays off until the user enables it on the Profiles page. The code is in `src-tauri/src/focus.rs` (storage, matching and the macOS watcher), `src-tauri/src/session.rs` (`Driver::switch_profile`), `src/focus-rules.ts` (frontend store) and `src/FocusRulesPanel.tsx` (UI). Nothing here has been tested with a real focus change or on hardware; see [What is not verified](#what-is-not-verified).
+The desktop app (`apps/open-stream-hub`) can switch the profile of a running session when another app comes to the front. A rule maps an app bundle ID, such as `com.apple.Safari`, to a saved profile. The feature is **opt-in**: it stays off until the user enables it in the profile manager (the app header’s Manage profiles button, next to the profile switcher). The code is in `src-tauri/src/focus.rs` (storage, matching and the macOS watcher), `src-tauri/src/session.rs` (`Driver::switch_profile`), `src/focus-rules.ts` (frontend store) and `src/FocusRulesPanel.tsx` (UI). Nothing here has been tested with a real focus change or on hardware; see [What is not verified](#what-is-not-verified).
 
 ## Storage
 

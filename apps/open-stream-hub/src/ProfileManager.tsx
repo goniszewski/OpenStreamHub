@@ -10,10 +10,10 @@ import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { FocusRulesPanel } from './FocusRulesPanel';
 import type { FocusRulesStore } from './focus-rules';
 
-// The profile manager: a sheet that opens from the header profile switcher and holds everything
-// that used to live on the Profiles page except editing itself — the saved profile list,
-// import/export, the open profile's name, validation, earlier versions, the dry-run flag and the
-// focused-app rules. The workspace stays on screen behind it.
+// The profile manager: a sheet opened by the header's Manage profiles button (next to the
+// profile switcher). It holds the saved profile list, import/export, the open profile's name,
+// validation, earlier versions, the dry-run flag and the focused-app rules. The workspace stays
+// on screen behind it.
 export function ProfileManagerSheet({ session, state, desktop, disabled, confirm, mac = false, focusRules, onAllow, onClose }: {
   session: ProfileSession; state: SessionState; desktop: boolean; disabled: boolean; confirm(request: ConfirmRequest): void; mac?: boolean;
   focusRules?: FocusRulesStore; onAllow(): void; onClose(): void;

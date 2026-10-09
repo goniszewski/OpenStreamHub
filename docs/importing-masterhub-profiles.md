@@ -4,7 +4,7 @@ OpenStreamHub can import a profile exported by the official MasterHUB app for Wi
 
 ## How to import
 
-1. Open **Profiles** and choose **Import official .mhz**, or drop the file onto the Profiles page.
+1. Open **Manage profiles** (next to the profile switcher in the app header) and choose **Import official .mhz**, or drop the file onto the workspace.
 2. Read the report. While the profile is still dry run only, its banner can reopen the report of the latest import of this app session; after a restart or another import it is gone. It lists every control in the file: imported, imported with changes, or left unbound, and why. Values are shortened: a program path shows only its file name, a web address only its `scheme://host`, and text only its length.
 3. The new profile opens. It is always a new profile named `<name> (imported)` (or `(imported 2)`, and so on). An existing profile is never changed or overwritten.
 
@@ -12,11 +12,11 @@ OpenStreamHub can import a profile exported by the official MasterHUB app for Wi
 
 An imported profile runs only as a dry run. The **Execute actions** mode is unavailable for it in the Run panel, and the session manager refuses to start, resume or switch an executing run into it, whether by Start, by a focused-app rule or by a profile key. Anything derived from it in this app stays dry run only too: an edited draft (also one recovered after a crash), a duplicate, a copy saved over another profile, a JSON export made here (also of unsaved edits) and imported again, and the open draft after you delete it.
 
-If the list of imported profiles is ever missing or damaged, no profile can run with actions and the Profiles page says so. Choose **Mark all profiles as needing review** to continue; every profile then runs only as a dry run until you allow it again. If the app also cannot read its marker file, it says so; to recover by hand, quit OpenStreamHub, replace `profiles/.imported-profiles` in the app data folder with an empty file, start the app again and choose **Mark all profiles as needing review** (imported profiles you deleted earlier are then no longer tracked). Never delete `imported-profiles.json` or the marker to recover: that would make every profile runnable. Content of imported profiles you deleted earlier stays dry run only too: a second copy of those fingerprints is kept beside the profiles.
+If the list of imported profiles is ever missing or damaged, no profile can run with actions and the profile manager says so. Choose **Mark all profiles as needing review** to continue; every profile then runs only as a dry run until you allow it again. If the app also cannot read its marker file, it says so; to recover by hand, quit OpenStreamHub, replace `profiles/.imported-profiles` in the app data folder with an empty file, start the app again and choose **Mark all profiles as needing review** (imported profiles you deleted earlier are then no longer tracked). Never delete `imported-profiles.json` or the marker to recover: that would make every profile runnable. Content of imported profiles you deleted earlier stays dry run only too: a second copy of those fingerprints is kept beside the profiles.
 
 To let it run actions:
 
-1. Open it on the Profiles page and review its bindings. Save or discard any changes first. While the list of imported profiles cannot be read, saving an existing profile or a copy of one is refused; only brand-new profiles can be saved until you recover.
+1. Open it with **Manage profiles** and review its bindings. Save or discard any changes first. While the list of imported profiles cannot be read, saving an existing profile or a copy of one is refused; only brand-new profiles can be saved until you recover.
 2. Choose **Allow this imported profile to execute actions…**. The confirmation names the profile and lists everything it can do: pasted text (shown in full), web pages, screenshots, shortcuts and multi-step sequences.
 3. Tick the acknowledgement and choose **Allow actions**. Starting a run with actions still asks for confirmation every time.
 

@@ -119,7 +119,8 @@ export interface LiveInputEvent { timestamp_micros: number; control: number; ges
 export interface DeviceInputPayload { feed_id: string; module: ServiceModule; serial_number: string | null; event: LiveInputEvent }
 export type FeedState = 'running' | 'finished' | 'stopped' | 'failed';
 export interface DeviceStatusPayload { feed_id: string; state: FeedState; source: 'demo' | 'live'; module: ServiceModule | null; error?: string }
-export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null }
+export type BasePosition = 'top_left' | 'bottom_left' | 'top_right' | 'bottom_right';
+export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null; base_position?: BasePosition }
 export interface DeviceInventoryPayload { devices: LiveDevice[] }
 export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };
 
@@ -137,7 +138,8 @@ export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'rec
 // profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
 // start_refused: the service exited with an error before it reported service_start; the session stops without retrying.
 // module_control: an automatic session ended because Module control is no longer App (or its file cannot be read).
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control';
+// auto_actions: 'Run actions automatically' was turned on or off, so an automatic session restarts with or without actions.
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control' | 'auto_actions';
 // Set for the whole life of a session the session manager started on its own (Module control App): a dry run on the
 // 15-key module or the dial when the app opened, when the module was connected, or when Module control was switched to
 // App with the module connected. Absent for a user's Start.
@@ -151,6 +153,8 @@ export interface SessionStatePayload {
   // still runs the profile it was started with), profile_name its name. The runner resyncs its confirmation copy from them.
   profile_id: string | null; profile_name: string;
   detail?: string; next_attempt_in_ms?: number; auto_start?: SessionAutoStart;
+  // Why an automatic session runs as a dry run although 'Run actions automatically' is on (the execution guard's refusal).
+  auto_dry_run_reason?: string;
 }
 
 // Focused-app profile rules (stored in <app data>/focus-rules.json, never inside a profile). Opt-in: enabled is false by default.
@@ -173,7 +177,10 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // dial_content is what the M131E dial shows under 'app'.
 export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu';
 export type ModuleControl = 'app' | 'built_in_animation';
-export interface DisplaySettings { module_control: ModuleControl; dial_content: DialContent }
+// auto_execute: 'Run actions automatically' for sessions the session manager starts on its own. Off unless the user turns it on.
+export interface DisplaySettings { module_control: ModuleControl; dial_content: DialContent; auto_execute: boolean }
+// default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
+export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.
 // The password is never stored or returned: set_obs_password({ password }) holds it in the app's memory only (null
 // forgets it) and every reply says only whether one is set.

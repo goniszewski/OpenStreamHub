@@ -19,8 +19,10 @@ export interface SessionInfo {
   module: ServiceModule; serialNumber: string | null; detail?: string; nextAttemptAt?: number;
   // The backend's latest profile generation for this session (missing = 0).
   profileGeneration?: number;
-  // Set when the session manager started this session on its own (always a dry run).
+  // Set when the session manager started this session on its own.
   autoStart?: SessionAutoStart;
+  // Why such a session is a dry run although 'Run actions automatically' is on.
+  autoDryRunReason?: string;
 }
 export interface ServiceRun {
   // The run key: the session id once a session names the run, before that the key start() chose.
@@ -70,15 +72,17 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App', auto_actions: 'Run actions automatically was turned on or off' };
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
 // How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
 // for a Start by the user.
-export const autoStartLabels: Record<SessionAutoStart, string> = {
-  app_opened: 'Started automatically (dry run) when the app opened',
-  module_connected: 'Started automatically (dry run) when the module was connected',
-  module_control_set: 'Started automatically (dry run) when Module control was set to App',
+const autoStartWhen: Record<SessionAutoStart, string> = {
+  app_opened: 'when the app opened',
+  module_connected: 'when the module was connected',
+  module_control_set: 'when Module control was set to App',
 };
+export const autoStartLabel = (autoStart: SessionAutoStart, execute: boolean) =>
+  `Started automatically (${execute ? 'actions run' : 'dry run'}) ${autoStartWhen[autoStart]}`;
 // start_service's refusals for a module a session already owns (session::Driver::start).
 export const deviceTaken = /^(service \S+ is already running|session \S+ already runs this device)$/;
 export const deviceTakenError = 'This module already has a running session (it may have started automatically). Stop it in the Run panel, then run again.';
@@ -112,7 +116,7 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
   switch (next.phase) {
     case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
     case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect`);
-    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
+    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'auto_actions' ? 'Restarting: Run actions automatically was turned on or off' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
       const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
@@ -457,7 +461,7 @@ export class ServiceRunner {
     // module. That one is replaced, never merged, so the automatic run never shows the user's profile or log.
     if (payload.auto_start && existing && !existing.session && payload.phase !== 'stopped') {
       const base = existing.processId === undefined ? existing : this.blankRun(id, payload.execute, 'Unknown profile', '', false);
-      const label: ActivityEntry = { kind: 'info', text: `${autoStartLabels[payload.auto_start]}.`, at: this.now() };
+      const label: ActivityEntry = { kind: 'info', text: `${autoStartLabel(payload.auto_start, payload.execute)}.`, at: this.now() };
       const entries = [label, ...base.entries.map(({ seq: _, ...entry }) => entry)].reduce(appendEntry, [] as ActivityEntry[]);
       existing = { ...base, snapshot: unknownSnapshot, draftUnsaved: false, startedOn: undefined, processId: undefined, entries };
       this.pending = { ...this.runs(), [id]: existing };
@@ -482,7 +486,7 @@ export class ServiceRunner {
       if (!this.adopt(provisional, id)) {
         // A session the manager started on its own: its profile body is not known here, but it is no stale copy of the
         // draft either, and its log says first how it started.
-        const auto = payload.auto_start ? autoStartLabels[payload.auto_start] : undefined;
+        const auto = payload.auto_start ? autoStartLabel(payload.auto_start, payload.execute) : undefined;
         const run = this.blankRun(id, payload.execute, 'Unknown profile', auto ? unknownSnapshot : '', false);
         this.pending = { ...this.runs(), [id]: auto ? { ...run, entries: appendEntry(run.entries, { kind: 'info', text: `${auto}.`, at: this.now() }) } : run };
       }
@@ -502,6 +506,7 @@ export class ServiceRunner {
         module: payload.module, serialNumber: payload.serial_number ?? null, detail: payload.detail, profileGeneration: payload.profile_generation ?? 0,
         ...(typeof payload.next_attempt_in_ms === 'number' ? { nextAttemptAt: at + payload.next_attempt_in_ms } : {}),
         ...(payload.auto_start ? { autoStart: payload.auto_start } : {}),
+        ...(typeof payload.auto_dry_run_reason === 'string' ? { autoDryRunReason: payload.auto_dry_run_reason } : {}),
       };
       const entry = sessionEntry(run.session, session, at);
       const state: ServiceState = payload.phase === 'stopped' ? (run.state === 'failed' ? 'failed' : 'exited') : payload.phase === 'running' && run.state !== 'stopping' ? 'running' : run.state;

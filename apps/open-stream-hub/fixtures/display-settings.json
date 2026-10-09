@@ -1,4 +1,10 @@
 {
+  "default_profile_none": {
+    "profile_id": null
+  },
+  "default_profile_result": {
+    "profile_id": "00000000-0000-4000-8000-000000000000"
+  },
   "dial_contents": [
     "off",
     "function",
@@ -7,6 +13,7 @@
     "cpu"
   ],
   "display_settings_default": {
+    "auto_execute": false,
     "dial_content": "function",
     "module_control": "app"
   },
@@ -14,13 +21,18 @@
     "app",
     "built_in_animation"
   ],
+  "set_default_profile_args": {
+    "profileId": "00000000-0000-4000-8000-000000000000"
+  },
   "set_display_settings_args": {
     "settings": {
+      "auto_execute": true,
       "dial_content": "analog_clock",
       "module_control": "built_in_animation"
     }
   },
   "set_display_settings_result": {
+    "auto_execute": true,
     "dial_content": "analog_clock",
     "module_control": "built_in_animation"
   }

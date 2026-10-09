@@ -12,7 +12,7 @@ import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, f
 import type { RigItem } from './rig-model';
 import type { SessionState } from './profile-session';
 import { controlLabel, faderMaximum, gestures, modules, replayLabels } from './ui-model';
-import type { LiveDevice, ReplayKind } from './contracts';
+import type { BasePosition, LiveDevice, ReplayKind } from './contracts';
 import type { ModuleId } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -23,6 +23,40 @@ const demoKinds = Object.keys(replayLabels) as ReplayKind[];
 const webStorage = { getItem: (key: string) => globalThis.localStorage?.getItem(key) ?? null, setItem: (key: string, value: string) => globalThis.localStorage?.setItem(key, value) };
 
 const noDevices: LiveDevice[] = [];
+const basePositionLabel: Record<BasePosition, string> = {
+  top_left: 'Top-left', bottom_left: 'Bottom-left', top_right: 'Top-right', bottom_right: 'Bottom-right',
+};
+const basePositionClass: Record<BasePosition, string> = {
+  top_left: 'top-left', bottom_left: 'bottom-left', top_right: 'top-right', bottom_right: 'bottom-right',
+};
+
+function ConnectedBaseLayout({ devices, knobOrientation, selectedModule, onSelectModule }: {
+  devices: LiveDevice[];
+  knobOrientation: ReturnType<typeof useKnobOrientation>;
+  selectedModule: ModuleId;
+  onSelectModule(module: ModuleId): void;
+}) {
+  if (devices.length === 0) return null;
+  const positioned = devices.filter(device => device.base_position);
+  const unpositioned = devices.filter(device => !device.base_position);
+
+  return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left</p></div><span>6 × 4 cells</span></div>
+    <div className="base-layout-frame">
+      <div className="base-layout-grid" role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${basePositionLabel[device.base_position!]}`).join(', ') || 'module positions not detected'}`}>
+        {positioned.map(device => {
+          const module = modules.find(entry => entry.id === device.module)!;
+          const image = moduleImage(module, device.module === 'm003k' ? knobOrientation : undefined);
+          return <button key={device.path_hex} type="button" className={`base-layout-module ${basePositionClass[device.base_position!]}${selectedModule === device.module ? ' selected' : ''}`} aria-label={`Select ${module.shortName}, ${basePositionLabel[device.base_position!]} on base`} aria-pressed={selectedModule === device.module} onClick={() => onSelectModule(device.module)}>
+            <img src={image.src} style={image.style} alt="" draggable={false} />
+            <span>{module.shortName}</span>
+          </button>;
+        })}
+      </div>
+    </div>
+    {unpositioned.length > 0 && <p className="base-layout-unknown">Position not detected: {unpositioned.map(device => modules.find(module => module.id === device.module)?.shortName ?? device.module).join(', ')}</p>}
+  </section>;
+}
 
 // With auto-detect on, the rig mirrors connected devices (ids `device:<path>`, session-only, never persisted).
 export function useRig(devices: LiveDevice[] = noDevices, autoDetect = false) {
@@ -58,6 +92,11 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
     editor.changeSelection({ module: item.module, control, gesture: gestures[item.module][0], serial: '' });
   }
 
+  function selectModule(module: ModuleId) {
+    editor.chooseModule(module);
+    editor.changeSelection({ module, control: 0, gesture: gestures[module][0], serial: '' });
+  }
+
   function dragFader(item: RigItem, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -69,22 +108,27 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
 
   const faderValue = (item: RigItem, control: number) =>
     feedState.live[item.module]?.faders[control] ?? (item.id === active && selection.control === control ? editor.faderPosition : faders[`${item.id}:${control}`] ?? defaultFaderPosition);
+  const showConnectedLayout = feedState.devices.some(device => device.base_position !== undefined);
 
   return <section className="rig" aria-label="Module rig">
-    <div className="rig-heading"><h2>Rig</h2>
+    {!showConnectedLayout && <div className="rig-heading"><h2>Rig</h2>
       <label className="sr-only" htmlFor="rig-add">Add module to rig</label>
       <select id="rig-add" className="rig-add" value="" onChange={event => { if (event.target.value) add(event.target.value as ModuleId); }}>
         <option value="">Add module…</option>{modules.filter(module => module.supported).map(module => <option key={module.id} value={module.id}>{module.shortName}</option>)}
       </select>
-    </div>
+    </div>}
     {feed && <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />}
-    {rig.length === 0 ? <p className="fine-print">Add a module to arrange your setup.</p> : <ol className="rig-row" style={{ '--stage-h': `${rig.length <= 3 ? 104 : rig.length <= 5 ? 96 : 76}px` } as CSSProperties}>
+    {feed && <ConnectedBaseLayout devices={feedState.devices} knobOrientation={knobOrientation} selectedModule={selection.module} onSelectModule={selectModule} />}
+    {!showConnectedLayout && (rig.length === 0 ? <p className="fine-print">Add a module to arrange your setup.</p> : <ol className="rig-row" style={{ '--stage-h': `${rig.length <= 3 ? 104 : rig.length <= 5 ? 96 : 76}px` } as CSSProperties}>
       {rig.map((item, index) => {
         const module = modules.find(entry => entry.id === item.module)!;
         const art = moduleArtwork[item.module];
         const isKnob = item.module === 'm003k';
         const controls = isKnob ? knobControls(knobOrientation) : art.controls;
         const isActive = item.id === active;
+        const connectedDevice = isDeviceItem(item)
+          ? feedState.devices.find(device => `device:${device.path_hex}` === item.id)
+          : undefined;
         const bound = boundControlCount(profile, item.module);
         const live = feedState.live[item.module];
         return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
@@ -118,7 +162,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
               </button>;
             })}
           </div>
-          <div className="rig-caption"><span title={module.shortName}>{module.shortName}</span><small>{bound ? `${bound} bound` : 'No bindings'}{isDeviceItem(item) ? ' · connected' : ''}</small></div>
+          <div className="rig-caption"><span title={module.shortName}>{module.shortName}</span><small>{connectedDevice?.base_position ? `${basePositionLabel[connectedDevice.base_position]} on base · ` : ''}{bound ? `${bound} bound` : 'No bindings'}{isDeviceItem(item) ? ' · connected' : ''}</small></div>
           <div className="rig-tools">
             <button type="button" className="icon-button" aria-label={`Move ${module.shortName} left`} disabled={index === 0} onClick={() => move(item.id, -1)}><ChevronLeft size={14} /></button>
             <button type="button" className="icon-button" aria-label={`Move ${module.shortName} right`} disabled={index === rig.length - 1} onClick={() => move(item.id, 1)}><ChevronRight size={14} /></button>
@@ -126,8 +170,8 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
           </div>
         </li>;
       })}
-    </ol>}
-    <p className="fine-print">Arrangement is a preview only. Modules of the same type share their bindings and live input. Live input is read-only and no actions run.</p>
+    </ol>)}
+    {!showConnectedLayout && <p className="fine-print">Arrangement is a preview only. Modules of the same type share their bindings and live input. Live input is read-only and no actions run.</p>}
   </section>;
 }
 
@@ -159,7 +203,8 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
       {demoKinds.map(kind => <option key={kind} value={`demo:${kind}`}>Demo: {replayLabels[kind]}</option>)}
       {feedState.devices.map(device => {
         const short = modules.find(entry => entry.id === device.module)?.shortName ?? device.module;
-        return <option key={device.path_hex} value={`live:${device.path_hex}`}>{short} {device.serial_number ?? device.path_hex.slice(-6)}</option>;
+        const position = device.base_position ? ` · ${basePositionLabel[device.base_position]} on base` : '';
+        return <option key={device.path_hex} value={`live:${device.path_hex}`}>{short}{position} {device.serial_number ?? device.path_hex.slice(-6)}</option>;
       })}
     </select>
     {running ? <button type="button" className="button" onClick={stop}>Stop</button> : <button type="button" className="button" disabled={!enabled || source === 'off'} onClick={start}>Start</button>}

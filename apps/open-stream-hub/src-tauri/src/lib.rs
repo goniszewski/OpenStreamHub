@@ -750,7 +750,7 @@ fn preview_keypad(
 fn list_live_devices() -> Result<Vec<feed::LiveDevice>, String> {
     let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
         .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
-    Ok(feed::live_devices(&registry.devices()))
+    Ok(feed::live_devices_with_host_positions(&registry.devices()))
 }
 
 #[tauri::command(async)]
@@ -938,7 +938,7 @@ impl session::Runner for AppRunner {
 
     fn enumerate(&mut self) -> Option<Vec<feed::LiveDevice>> {
         let registry = cooltek_sdk_masterhub::DeviceRegistry::new().ok()?;
-        Some(feed::live_devices(&registry.devices()))
+        Some(feed::live_devices_with_host_positions(&registry.devices()))
     }
 
     // The listing comes from the store's summary cache (only changed files
@@ -981,9 +981,10 @@ impl session::Runner for AppRunner {
         self.app.state::<AppState>().execution_guard()
     }
 
-    // The last saved profile used on this serial while it still loads and
-    // validates, otherwise the blank built-in profile (also when the record
-    // file is unreadable).
+    // The global default profile, else the last saved profile used on this
+    // serial, each only while it still loads and validates, otherwise the
+    // blank built-in profile (also when the record file is unreadable).
+    // Whether it may execute is decided by the session driver.
     fn startup_profile(
         &mut self,
         module: ServiceModule,
@@ -991,6 +992,7 @@ impl session::Runner for AppRunner {
     ) -> Option<(Option<String>, Profile)> {
         let state = self.app.state::<AppState>();
         Some(startup::choose(
+            state.last_profiles.default_profile(),
             state.last_profiles.get(module, serial),
             |id| {
                 let stored = state.with_store(|store| store.load(id))?;
@@ -1185,6 +1187,41 @@ fn set_display_settings(
     let saved = state.display.set(settings);
     state.sessions.module_control_changed();
     saved
+}
+
+/// `default_profile` result: the saved profile every automatic start uses
+/// first, or null for none.
+#[derive(Debug, PartialEq, Serialize)]
+struct DefaultProfile {
+    profile_id: Option<String>,
+}
+
+// The global default profile for automatic starts (`startup.rs`), stored as
+// an id beside the last profile of each module. An unreadable file is an
+// error here and means "no default" for automatic starts.
+#[tauri::command]
+fn default_profile(state: State<'_, AppState>) -> Result<DefaultProfile, String> {
+    state
+        .last_profiles
+        .default_profile()
+        .map(|profile_id| DefaultProfile { profile_id })
+}
+
+// Sets or (with null) clears it; the profile must be a readable saved
+// profile. It applies at the next automatic start.
+#[tauri::command]
+fn set_default_profile(
+    state: State<'_, AppState>,
+    profile_id: Option<String>,
+) -> Result<DefaultProfile, String> {
+    if let Some(id) = &profile_id {
+        let stored = state.with_store(|store| store.load(id))?;
+        replay::validate_profile(&stored.profile)?;
+    }
+    state
+        .last_profiles
+        .set_default_profile(profile_id.as_deref())?;
+    Ok(DefaultProfile { profile_id })
 }
 
 // The OBS WebSocket setting (`obs.rs`). Off by default; loopback endpoints
@@ -1383,6 +1420,8 @@ pub fn run() {
             focus_current_app,
             display_settings,
             set_display_settings,
+            default_profile,
+            set_default_profile,
             obs_settings,
             set_obs_settings,
             set_obs_password,

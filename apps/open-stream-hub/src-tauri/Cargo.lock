@@ -2565,6 +2565,7 @@ dependencies = [
  "cooltek-sdk-service",
  "crc32fast",
  "flate2",
+ "hidapi",
  "icu_normalizer",
  "image",
  "libc",

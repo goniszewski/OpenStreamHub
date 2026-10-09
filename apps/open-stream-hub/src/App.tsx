@@ -13,9 +13,10 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
+import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
@@ -63,6 +64,7 @@ export default function App() {
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
+  const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
   // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
@@ -73,6 +75,7 @@ export default function App() {
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
   const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
+  const service = useSyncExternalStore(runner.subscribe, runner.getState);
   const showControlNotice = moduleControlNoticeVisible({ pending: controlNotice, guideOpen: guide.open, loaded: display.loaded, moduleControl: display.settings.module_control });
   useEffect(() => { if (showControlNotice) markModuleControlNoticeShown(webStorage()); }, [showControlNotice]);
   const state = useSyncExternalStore(session.subscribe, session.getState);
@@ -86,6 +89,14 @@ export default function App() {
   const { profile, profileId } = draft;
   const unsaved = isUnsaved(draft);
   const disabled = !desktop || !state.ready || busy !== null;
+  const connectedModules = deviceFeedState.devices.length;
+  const deviceStatus = !desktop ? 'Browser preview'
+    : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'
+      : connectedModules === 0 ? 'No modules connected'
+        : `${connectedModules} module${connectedModules === 1 ? '' : 's'} connected`;
+  const deviceStatusKind = !desktop ? 'browser'
+    : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'unavailable' : 'checking'
+      : connectedModules > 0 ? 'connected' : 'disconnected';
 
   useEffect(() => {
     const query = matchMedia('(prefers-color-scheme: dark)');
@@ -165,7 +176,7 @@ export default function App() {
         </SelectField> : <span>{profile.name}</span>}
         {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
       </div>
-      <div className="header-actions"><span className="mode-pill"><Activity size={16} />Device-free</span>
+      <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
         <div className="history-buttons" role="group" aria-label="Draft history">
           <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
           <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
@@ -192,7 +203,8 @@ export default function App() {
           <button className="button compact" disabled={busy !== null} onClick={() => { void session.bootstrap(); }}><RotateCcw size={16} />Retry</button></div>}
         {error && <div className="alert error" role="alert"><CircleHelp size={19} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => session.setError(null)}><X size={17} /></button></div>}
         {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
-        {showControlNotice && <ModuleControlNotice onDismiss={() => setControlNotice(false)} />}
+        <AutoActionsIndicator runs={service.runs} busy={display.busy} onStop={() => { void displaySettings.stopAutomaticActions(); }} />
+        {showControlNotice && <ModuleControlNotice autoExecute={display.settings.auto_execute} onDismiss={() => setControlNotice(false)} />}
 
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} />
@@ -202,7 +214,7 @@ export default function App() {
         {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} display={<DisplaySettingsPanel store={displaySettings} runner={runner} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('devices'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

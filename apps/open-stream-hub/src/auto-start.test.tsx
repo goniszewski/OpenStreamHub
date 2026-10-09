@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import autoStart from '../fixtures/session-auto-start-events.json';
-import type { LiveDevice, Profile, SessionStatePayload } from './contracts';
+import type { DisplaySettings, LiveDevice, Profile, SessionStatePayload } from './contracts';
+import { AutoActionsIndicator, automaticExecutingRuns } from './AutoActionsIndicator';
+import { DisplaySettingsStore } from './display-settings';
+import { autoExecuteDisclosure, defaultProfileNote, DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { DeviceFeed, serviceOwnsDevice } from './device-feed';
 import { FakeStorage } from './fake-storage';
-import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeStorageKey, moduleControlNoticeText, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
+import { autoActionsNoticeText, markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeStorageKey, moduleControlNoticeText, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { autoStartNote, ServicePanel } from './ServicePanel';
-import { autoStartLabels, deviceTakenError, isStale, reasonLabels, ServiceRunner } from './service-runner';
+import { autoStartLabel, deviceTakenError, isStale, reasonLabels, ServiceRunner } from './service-runner';
 
 const [dialState, keypadState] = autoStart.events as SessionStatePayload[];
 const draft: Profile = { schema_version: 1, name: 'Everyday', bindings: [] };
@@ -38,7 +41,7 @@ describe('automatically started sessions', () => {
     expect(isStale(dial, draft)).toBe(false);
     const keypad = t.runner.getState().runs[keypadState.session_id];
     expect(keypad.session?.autoStart).toBe('module_connected');
-    expect(keypad.entries[0].text).toBe(`${autoStartLabels.module_connected}.`);
+    expect(keypad.entries[0].text).toBe(`${autoStartLabel('module_connected', false)}.`);
     // A session the user started carries no label.
     const { auto_start: _, ...manual } = { ...dialState, session_id: 'service:ccdd', service_id: 'service:ccdd' };
     t.state(manual);
@@ -103,7 +106,7 @@ describe('automatically started sessions', () => {
     const run = t.runner.getState().runs[keypadState.session_id];
     expect(run).toMatchObject({ profileName: 'Blank (built-in)', state: 'running', execute: false });
     expect(run.session?.autoStart).toBe('module_connected');
-    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabels.module_connected}.`]);
+    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('module_connected', false)}.`]);
     // Its event arrives while the refused Run waits for its reply: the user's run is replaced, not merged into.
     const late = setup([], () => { late.state(keypadState); throw new Error(refusal); });
     late.runner.connect(); await tick();
@@ -120,7 +123,7 @@ describe('automatically started sessions', () => {
     t.handlers['service://record']({ payload: { service_id: dialState.service_id, record: { type: 'profile_valid' } } });
     t.state(dialState);
     const run = t.runner.getState().runs[dialState.session_id];
-    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabels.app_opened}.`, 'Profile validated.']);
+    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('app_opened', false)}.`, 'Profile validated.']);
     expect(run.entries.map(entry => entry.seq)).toEqual([0, 1]);
     expect(isStale(run, draft)).toBe(false);
   });
@@ -174,5 +177,87 @@ describe('the Module control first-run notice', () => {
     const broken = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
     expect(shouldShowModuleControlNotice(broken, true)).toBe(false);
     expect(() => markModuleControlNoticeShown(broken)).not.toThrow();
+  });
+});
+
+describe('automatic actions', () => {
+  const executing = { ...keypadState, execute: true };
+  it('label automatic runs by whether actions run, and say why one that should is a dry run', async () => {
+    expect(autoStartLabel('app_opened', true)).toBe('Started automatically (actions run) when the app opened');
+    expect(autoStartLabel('app_opened', false)).toBe('Started automatically (dry run) when the app opened');
+    const t = setup(); t.runner.connect(); await tick();
+    t.state(executing);
+    t.state({ ...dialState, auto_dry_run_reason: 'this profile was imported and is not yet allowed to execute' });
+    const runs = t.runner.getState().runs;
+    expect(runs[keypadState.session_id].entries[0].text).toBe('Started automatically (actions run) when the module was connected.');
+    expect(runs[dialState.session_id].session?.autoDryRunReason).toBe('this profile was imported and is not yet allowed to execute');
+    expect(autoStartNote('module_connected', true)).toContain('Started automatically (actions run)');
+    expect(autoStartNote('app_opened', false, 'blocked')).toContain('Actions are off for this run: blocked');
+    expect(reasonLabels.auto_actions).toBe('Run actions automatically was turned on or off');
+  });
+  it('show a persistent indicator while any automatic run executes, with a one-click stop', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    t.state(dialState);
+    expect(automaticExecutingRuns(t.runner.getState().runs)).toEqual([]);
+    expect(renderToStaticMarkup(<AutoActionsIndicator runs={t.runner.getState().runs} onStop={() => {}} />)).toBe('');
+    t.state(executing);
+    const markup = renderToStaticMarkup(<AutoActionsIndicator runs={t.runner.getState().runs} onStop={() => {}} />);
+    expect(markup).toContain('role="status"');
+    expect(markup).not.toContain('dialog');
+    expect(markup).toContain('Actions run automatically on');
+    expect(markup).toContain('>Stop automatic actions</button>');
+    let stopped = 0;
+    const element = AutoActionsIndicator({ runs: t.runner.getState().runs, onStop: () => { stopped += 1; } })!;
+    const button = (element.props.children as { type: unknown; props: { onClick(): void } }[]).find(child => child.type === 'button')!;
+    button.props.onClick();
+    expect(stopped).toBe(1);
+    // A stopped automatic run, or a user's executing run, is not counted.
+    t.state({ ...executing, phase: 'stopped', service_id: null });
+    expect(automaticExecutingRuns(t.runner.getState().runs)).toEqual([]);
+  });
+  it('turn Run actions automatically off with one click, never saving settings it has not read', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    let stored: DisplaySettings = { module_control: 'app', dial_content: 'cpu', auto_execute: true };
+    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+      calls.push([command, args]);
+      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
+      return stored as T;
+    }, true);
+    expect(await store.stopAutomaticActions()).toBe(true);
+    expect(calls).toEqual([['display_settings', undefined], ['set_display_settings', { settings: { module_control: 'app', dial_content: 'cpu', auto_execute: false } }]]);
+    // Unreadable settings: nothing is saved (the backend already stopped automatic runs).
+    const broken = new DisplaySettingsStore(async () => { throw 'unreadable'; }, true);
+    expect(await broken.stopAutomaticActions()).toBe(false);
+  });
+  it('offer the toggle with its disclosure and a default profile picker in Settings', async () => {
+    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) =>
+      (command === 'default_profile' ? { profile_id: 'p-1' } : command === 'set_default_profile' ? { profile_id: args!.profileId as string | null } : { module_control: 'app', dial_content: 'function', auto_execute: false }) as T, true);
+    await store.load();
+    await store.loadDefaultProfile();
+    expect(store.getState().defaultProfile).toMatchObject({ loaded: true, profileId: 'p-1' });
+    const markup = renderToStaticMarkup(<DisplaySettingsPanel store={store} profiles={[{ id: 'p-1', name: 'Everyday' }, { id: 'p-2', name: 'Streaming' }]} />);
+    expect(markup).toContain('Run actions automatically</label>');
+    expect(autoExecuteDisclosure).toBe('Key and knob presses will act on your Mac from the moment the app opens, and again after sleep, wake and reconnect, with no confirmation.');
+    expect(markup).toContain(autoExecuteDisclosure);
+    expect(markup).toMatch(/<input type="checkbox" aria-describedby="display-auto-execute-disclosure display-auto-execute-note"\/>Run actions automatically/);
+    expect(markup).toContain('<option value="">No default</option>');
+    expect(markup).toContain('<option value="p-1" selected="">Everyday</option>');
+    expect(markup).toContain(defaultProfileNote);
+    expect(await store.setDefaultProfile(null)).toBe(true);
+    expect(store.getState().defaultProfile.profileId).toBeNull();
+    // A default that is no longer saved is shown as skipped.
+    expect(await store.setDefaultProfile('p-gone')).toBe(true);
+    expect(renderToStaticMarkup(<DisplaySettingsPanel store={store} profiles={[]} />)).toContain('Missing profile (skipped)');
+    // Unreadable: the error is shown, nothing is assumed.
+    const broken = new DisplaySettingsStore(async () => { throw 'the last module profiles are unreadable'; }, true);
+    expect(await broken.loadDefaultProfile()).toBe(false);
+    expect(broken.getState().defaultProfile).toMatchObject({ loaded: false, error: 'the last module profiles are unreadable' });
+  });
+  it('add one sentence to the first-run notice only while actions run automatically', () => {
+    expect(autoActionsNoticeText).toBe('Actions run automatically; turn that off in Settings > Module control.');
+    const plain = renderToStaticMarkup(<ModuleControlNotice onDismiss={() => {}} />);
+    expect(plain).not.toContain('Actions run automatically');
+    const on = renderToStaticMarkup(<ModuleControlNotice autoExecute onDismiss={() => {}} />);
+    expect(on).toContain(`${moduleControlNoticeText} ${autoActionsNoticeText}`.replace(/>/g, '&gt;'));
   });
 });

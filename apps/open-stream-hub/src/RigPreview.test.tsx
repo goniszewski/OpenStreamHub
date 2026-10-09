@@ -72,4 +72,26 @@ describe('RigPreview', () => {
     const off = make(false); await new Promise(resolve => setTimeout(resolve, 0));
     expect(renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={off} />)).not.toContain('5x Fader Precision in rig');
   });
+
+  it('shows only the connected base map when physical positions are available', async () => {
+    const profile = upgradeKeypadProfile({ schema_version: 1, name: 'Rig', bindings: [] });
+    const state = new ProfileSession(() => new Promise(() => {}), profile, false).getState();
+    const editor = { selection: { module: 'm003k', control: 0, gesture: 'clockwise', serial: '' }, faderPosition: 50, keypadPath: [keypadRoot], currentKeypadPage: state.draft.profile.keypad!.pages[0] } as unknown as DeviceEditor;
+    const devices = [
+      { path_hex: 'keys', module: 'm4315', serial_number: null, base_position: 'top_left' },
+      { path_hex: 'rollers', module: 'm032le', serial_number: null, base_position: 'bottom_left' },
+      { path_hex: 'dial', module: 'm131e', serial_number: null, base_position: 'top_right' },
+      { path_hex: 'knobs', module: 'm003k', serial_number: null, base_position: 'bottom_right' },
+    ];
+    const feed = new DeviceFeed((async (command: string) => command === 'list_live_devices' ? devices : 'live') as never, async () => () => {}, true, callback => callback());
+    feed.connect(); await new Promise(resolve => setTimeout(resolve, 0));
+    const markup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={feed} />);
+
+    expect(markup).toContain('Connected base layout');
+    expect(markup).toContain('MasterHUB base layout: 15-key IPS display at Top-left, 2-roller scroll module at Bottom-left, Encoder IPS display at Top-right, 3-knob module at Bottom-right');
+    expect(markup).toContain('aria-label="Select 3-knob module, Bottom-right on base" aria-pressed="true"');
+    expect(markup).not.toContain('Add module');
+    expect(markup).not.toContain('in rig');
+    expect(markup).not.toContain('bound');
+  });
 });

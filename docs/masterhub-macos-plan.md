@@ -96,7 +96,7 @@ The live service owns input and mode cleanup on one thread, normalizes arrival-t
 
 `DialSession` now provides explicit activation, suspension, caller-timed two-second resume and shutdown, clearing stale decoder state on transport failure. It does not subscribe to macOS notifications or reconnect automatically; firmware queries and display refresh remain caller operations. Optional host gesture tracking classifies a press/release at the application's 600 ms threshold.
 
-The desktop app wraps each `masterhub-service` run in a session that stops the service on sleep, restarts it after wake, unplug or a crash by module and serial, and requires user confirmation before an executing session resumes; see the [session manager](masterhub-session-manager.md). It is tested with fake clocks, runners, inventories and power events. Actual lifecycle reliability remains pending hardware.
+The desktop app wraps each `masterhub-service` run in a session that stops the service on sleep and restarts it after wake, unplug or a crash by module and serial. A user-started Execute session requires confirmation before it resumes; the separate, off-by-default “Run actions automatically” setting allows app-started sessions to resume after rechecking the execution guard. See the [session manager](masterhub-session-manager.md). These paths are tested with fake clocks, runners, inventories and power events. Actual automatic-session reliability remains pending hardware.
 
 Gate: base unplug/replug, module reinsertion, app restart, and sleep/wake recover without duplicate actions, stuck presses, or stale sessions. Fixture tests can prepare these behaviors, but actual lifecycle acceptance requires hardware.
 

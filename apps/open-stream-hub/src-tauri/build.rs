@@ -29,6 +29,8 @@ fn main() {
             "focus_current_app",
             "display_settings",
             "set_display_settings",
+            "default_profile",
+            "set_default_profile",
             "obs_settings",
             "set_obs_settings",
             "set_obs_password",

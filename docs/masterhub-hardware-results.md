@@ -13,6 +13,20 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M131E dial | 518 | Input, a raw 240x240 image upload, the four generated faces, backlight and color writes verified in software mode. App-controlled dry-run display, live preview and normal Stop verified below. |
 | M005S faders | n/a | Not connected. |
 
+## USB topology and reported physical layout
+
+The following maps the read-only macOS `ioreg` location IDs to the user's reported current arrangement (9 October 2026). This is a mapping for this connected base and orientation, not a general layout discovery implementation.
+
+| Module | `locationID` path | Reported base position | Product footprint |
+| --- | --- | --- | --- |
+| M4315 15-key | `1.1.2.2` | Top-left | 4x3 |
+| M032LE 2x roller | `1.1.1.1.4` | Bottom-left, below the keypad | 4x1 |
+| M131E dial | `1.1.1.4.3` | Top-right | 2x2 |
+| M003K knobs | `1.1.1.3.4` | Bottom-right, below the dial | 2x2 |
+| M0064 base | `1.1.1.4.4` | Base; USB-C ports are on the left and top edges in landscape orientation | 4x6 |
+
+Interpreting the product-name dimensions as module footprints, they total 24 cells (12 + 4 + 4 + 4), matching the 4x6 base. With the base in landscape and its USB-C port edges used as the top/left reference, the reported arrangement tiles the base: keypad and rollers occupy the left 4x4 area; dial and knobs occupy the right 2x4 area. The user reports no free module space. The physical positions come from the user's description; the paths come from the earlier read-only `ioreg` inventory. No slot information has been read from a base or module HID feature report, and a second arrangement has not been tested.
+
 ## M4315 keys
 
 - **Default mode.** A passive 30 s capture recorded 0 reports. The keys report only after software mode (`--software-mode`, which writes `03 3a 01` and restores hardware mode on exit).

@@ -102,7 +102,7 @@ Settled by the [app features](research/masterhub-1.0.0.113-app-features.md) sour
 
 ## Lifecycle and reconnect
 
-Implemented: sleep/wake observers on macOS, clock-gap fallback elsewhere, reconnect with bounded backoff, device identity by serial, Execute never auto-resumes (`session.rs`, `power.rs`, [session manager](masterhub-session-manager.md)). Gaps against the official sequence: no firmware query and no display refresh after resume; the 2 s delay is copied, not verified. Dock Quit still loses unsaved drafts to disk, mitigated by webview draft restore (README).
+Implemented: sleep/wake observers on macOS, clock-gap fallback elsewhere, reconnect with bounded backoff, device identity by serial, and confirmation before a user-started Execute session resumes (`session.rs`, `power.rs`, [session manager](masterhub-session-manager.md)). The separate “Run actions automatically” opt-in lets app-started sessions execute and resume automatically after a fresh guard check. Gaps against the official sequence: no firmware query and no display refresh after resume; the 2 s delay is copied, not verified. Dock Quit still loses unsaved drafts to disk, mitigated by webview draft restore (README).
 
 ## Packaging and signing
 

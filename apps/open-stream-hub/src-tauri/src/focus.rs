@@ -9,8 +9,9 @@
 //! The watcher reports every frontmost-app change; `match_rule` picks the
 //! profile, and the frontend asks the session manager to switch the active
 //! sessions to it (`session::Driver::switch_profile`). That switch keeps the
-//! session safety rule: an executing session waits for the user's
-//! confirmation before actions run with the new profile.
+//! session safety rule: a user-started executing session waits for the user's
+//! confirmation before actions run with the new profile. App-started sessions
+//! re-check the automatic-actions setting and execution guard before restart.
 //!
 //! macOS observes `NSWorkspaceDidActivateApplicationNotification` (no
 //! polling) on the main thread and hands the bundle id to a worker thread.

@@ -69,7 +69,7 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
   const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
   const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-  const settings: DisplaySettings = { module_control: control, dial_content: 'function' };
+  const settings: DisplaySettings = { module_control: control, dial_content: 'function', auto_execute: false };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
   return render({ feed, runner, profile, displaySettings });
@@ -266,6 +266,16 @@ describe('session banners', () => {
     expect(markup).toContain('Paused while your Mac sleeps');
     expect(markup).toContain('resumes automatically in dry-run mode');
     expect(markup).toContain('>Stop<');
+  });
+  it('explains that opted-in automatic actions resume without confirmation', () => {
+    for (const [phase, expected] of [
+      ['suspended', 'Actions resume automatically after wake.'],
+      ['waiting_for_device', 'Actions stay paused until the module reconnects, then resume automatically.'],
+      ['reconnecting', 'Actions are paused until the session restarts; they resume automatically.'],
+    ] as const) {
+      const { feed, runner } = sessionFor(phase, { autoStart: 'app_opened' });
+      expect(render({ feed, runner })).toContain(expected);
+    }
   });
   it('waiting names the module and serial tail', () => {
     const { feed, runner } = sessionFor('waiting_for_device', { reason: 'device_removed' });

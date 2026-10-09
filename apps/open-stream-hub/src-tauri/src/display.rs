@@ -100,12 +100,17 @@ pub enum ModuleControl {
     Unreadable,
 }
 
-/// The stored settings. `App` and the dial function name by default.
+/// The stored settings. `App`, the dial function name and dry-run automatic
+/// sessions by default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredSettings")]
 pub struct DisplaySettings {
     pub module_control: ModuleControl,
     pub dial_content: DialContent,
+    /// "Run actions automatically": sessions the session manager starts on
+    /// its own execute actions instead of a dry run. Off unless the user
+    /// turns it on; a file written before it existed reads as off.
+    pub auto_execute: bool,
 }
 
 impl DisplaySettings {
@@ -115,6 +120,7 @@ impl DisplaySettings {
     pub const UNREADABLE: Self = Self {
         module_control: ModuleControl::Unreadable,
         dial_content: DialContent::Function,
+        auto_execute: false,
     };
 }
 
@@ -131,6 +137,9 @@ enum StoredSettings {
 struct CurrentSettings {
     module_control: ModuleControl,
     dial_content: DialContent,
+    /// Missing in files written before the setting existed: off.
+    #[serde(default)]
+    auto_execute: bool,
 }
 
 /// `{"enabled":…,"dial_content":…}`, written by the experimental toggle.
@@ -147,9 +156,11 @@ impl From<StoredSettings> for DisplaySettings {
             StoredSettings::Current(CurrentSettings {
                 module_control,
                 dial_content,
+                auto_execute,
             }) => Self {
                 module_control,
                 dial_content,
+                auto_execute,
             },
             StoredSettings::Legacy(LegacySettings {
                 enabled,
@@ -161,6 +172,7 @@ impl From<StoredSettings> for DisplaySettings {
                     ModuleControl::BuiltInAnimation
                 },
                 dial_content,
+                auto_execute: false,
             },
         }
     }
@@ -169,6 +181,15 @@ impl From<StoredSettings> for DisplaySettings {
 /// The modules `ModuleControl::App` drives in software mode.
 pub fn app_controls(module: ServiceModule) -> bool {
     matches!(module, ServiceModule::M4315 | ServiceModule::M131E)
+}
+
+/// The modules the session manager starts on its own under `App`: the
+/// keypad and the dial (software mode and display sync), and the M003K
+/// knobs, which report input in their own mode and get an input-only
+/// session: never software mode, display flags or any other write
+/// (`software_mode`, `spawn_display`). Faders, rollers and the base never.
+pub fn auto_takes_over(module: ServiceModule) -> bool {
+    app_controls(module) || module == ServiceModule::M003K
 }
 
 /// Why a schema-2 keypad profile cannot run on an M4315 with module control
@@ -315,7 +336,13 @@ pub struct SpawnDisplay {
 /// The display profile and arguments for one spawn: only a session-managed
 /// process gets any, never an unmanaged run (`lib.rs` `run_service`).
 pub fn spawn_display(managed: bool, request: &StartRequest) -> SpawnDisplay {
-    if !managed {
+    // Only the keypad and the dial ever get a display profile or flags; the
+    // knobs' automatic session is input-only, whatever else it carries.
+    if !managed
+        || !request
+            .display
+            .is_some_and(|launch| app_controls(launch.module))
+    {
         return SpawnDisplay::default();
     }
     let launch = request.display.as_ref();
@@ -446,10 +473,12 @@ mod tests {
     const APP: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         dial_content: DialContent::Clock,
+        auto_execute: false,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         dial_content: DialContent::Clock,
+        auto_execute: false,
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
@@ -473,7 +502,8 @@ mod tests {
             DisplaySettings::default(),
             DisplaySettings {
                 module_control: ModuleControl::App,
-                dial_content: DialContent::Function
+                dial_content: DialContent::Function,
+                auto_execute: false,
             }
         );
         let parsed = parse(r#"{"module_control":"app","dial_content":"analog_clock"}"#).unwrap();
@@ -485,12 +515,13 @@ mod tests {
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
                 dial_content: DialContent::Cpu,
+                auto_execute: false,
             }
         );
         // Always written in the current shape.
         assert_eq!(
             serde_json::to_value(BUILT_IN).unwrap(),
-            serde_json::json!({"module_control":"built_in_animation","dial_content":"clock"})
+            serde_json::json!({"module_control":"built_in_animation","dial_content":"clock","auto_execute":false})
         );
         for bad in [
             r#"{"module_control":"app"}"#,
@@ -517,6 +548,7 @@ mod tests {
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
                 dial_content: DialContent::Function,
+                auto_execute: false,
             }
         );
         assert_eq!(
@@ -541,7 +573,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"module_control":"app","dial_content":"clock"})
+            serde_json::json!({"module_control":"app","dial_content":"clock","auto_execute":false})
         );
     }
 
@@ -985,5 +1017,69 @@ mod tests {
             std::fs::read(&outside).unwrap(),
             br#"{"module_control":"app","dial_content":"clock"}"#
         );
+    }
+
+    #[test]
+    fn running_actions_automatically_is_off_unless_stored_on() {
+        // Files written before the setting existed, and the default: off.
+        assert!(!DisplaySettings::default().auto_execute);
+        const { assert!(!DisplaySettings::UNREADABLE.auto_execute) };
+        assert!(
+            !parse(r#"{"module_control":"app","dial_content":"clock"}"#)
+                .unwrap()
+                .auto_execute
+        );
+        assert!(
+            !parse(r#"{"enabled":true,"dial_content":"clock"}"#)
+                .unwrap()
+                .auto_execute
+        );
+        let on = parse(r#"{"module_control":"app","dial_content":"clock","auto_execute":true}"#)
+            .unwrap();
+        assert!(on.auto_execute);
+        // Strict: no other spelling or type, never through the old shape.
+        for bad in [
+            r#"{"module_control":"app","dial_content":"clock","auto_execute":"yes"}"#,
+            r#"{"module_control":"app","dial_content":"clock","auto_execute":1}"#,
+            r#"{"enabled":true,"dial_content":"clock","auto_execute":true}"#,
+        ] {
+            assert!(parse(bad).is_err(), "{bad}");
+        }
+        // Round trip through the file.
+        let directory = tempfile::tempdir().unwrap();
+        let state = DisplayState::open(Ok(directory.path()));
+        state.set(on).unwrap();
+        assert_eq!(state.get().unwrap(), on);
+        // A damaged file never turns it on.
+        std::fs::write(directory.path().join(FILE_NAME), b"{").unwrap();
+        assert!(!state.for_new_session().auto_execute);
+    }
+
+    #[test]
+    fn the_knobs_are_taken_over_input_only() {
+        assert!(auto_takes_over(ServiceModule::M003K));
+        assert!(auto_takes_over(ServiceModule::M4315) && auto_takes_over(ServiceModule::M131E));
+        for module in [ServiceModule::M005S, ServiceModule::M032LE] {
+            assert!(!auto_takes_over(module));
+        }
+        let auto_on = DisplaySettings {
+            auto_execute: true,
+            ..APP
+        };
+        for settings in [APP, auto_on] {
+            assert!(!software_mode(settings, ServiceModule::M003K, true));
+            // Even a request that claims software mode gets nothing.
+            let request = StartRequest {
+                profile: flat(),
+                path_hex: "41".into(),
+                execute: true,
+                software_mode: true,
+                profile_id: None,
+                source_profile_id: None,
+                display: Some(launch(ServiceModule::M003K, settings)),
+                obs: None,
+            };
+            assert_eq!(spawn_display(true, &request), SpawnDisplay::default());
+        }
     }
 }

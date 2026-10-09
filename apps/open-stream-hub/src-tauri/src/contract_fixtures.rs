@@ -681,6 +681,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
     let chosen = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         dial_content: DialContent::AnalogClock,
+        auto_execute: true,
     };
     let args = json!({ "settings": chosen });
     // `set_display_settings` arguments as the frontend sends them parse back.
@@ -694,6 +695,13 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "set_display_settings_result": chosen,
             "dial_contents": DialContent::ALL,
             "module_controls": [ModuleControl::App, ModuleControl::BuiltInAnimation],
+            // The global default profile for automatic starts. Tauri maps
+            // snake_case command arguments to camelCase.
+            "set_default_profile_args": { "profileId": "00000000-0000-4000-8000-000000000000" },
+            "default_profile_result": crate::DefaultProfile {
+                profile_id: Some("00000000-0000-4000-8000-000000000000".into()),
+            },
+            "default_profile_none": crate::DefaultProfile { profile_id: None },
         }),
     );
 }

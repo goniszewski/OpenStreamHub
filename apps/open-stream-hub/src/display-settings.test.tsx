@@ -13,8 +13,8 @@ const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
 root.slots[1] = { type: 'folder', page_id: 'sub' };
 const nested: Profile = { schema_version: 2, name: 'Nested', bindings: [], keypad: { pages: [root, emptyKeypadPage('sub', 'Sub')] } };
-const app: DisplaySettings = { module_control: 'app', dial_content: 'clock' };
-const builtIn: DisplaySettings = { module_control: 'built_in_animation', dial_content: 'clock' };
+const app: DisplaySettings = { module_control: 'app', dial_content: 'clock', auto_execute: false };
+const builtIn: DisplaySettings = { module_control: 'built_in_animation', dial_content: 'clock', auto_execute: false };
 const otherModules = ['m003k', 'm005s', 'm032le'] as const;
 
 describe('display settings contract', () => {
@@ -22,14 +22,23 @@ describe('display settings contract', () => {
     expect(fixture.display_settings_default).toEqual(defaultDisplaySettings);
     expect(defaultDisplaySettings.module_control).toBe('app');
     expect(isDisplaySettings(fixture.set_display_settings_result)).toBe(true);
+    // Off unless the user turns it on.
+    expect(fixture.display_settings_default.auto_execute).toBe(false);
+    expect(fixture.set_display_settings_result.auto_execute).toBe(true);
+    expect(Object.keys(fixture.set_default_profile_args)).toEqual(['profileId']);
+    expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(fixture.default_profile_none).toEqual({ profile_id: null });
     expect(Object.keys(fixture.set_display_settings_args)).toEqual(['settings']);
     expect(dialContentOptions.map(option => option.value).sort()).toEqual([...fixture.dial_contents].sort());
     expect(moduleControlOptions.map(option => option.value)).toEqual(fixture.module_controls);
     expect(moduleControlOptions.map(option => option.label)).toEqual(['App', 'Built-in animation']);
   });
   it('accepts only the exact settings shape', () => {
-    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function' })).toBe(true);
-    expect(isDisplaySettings({ module_control: 'built_in_animation', dial_content: 'cpu' })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function', auto_execute: false })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'built_in_animation', dial_content: 'cpu', auto_execute: true })).toBe(true);
+    // Run actions automatically is required and strictly a boolean.
+    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function', auto_execute: 'yes' })).toBe(false);
     // The old toggle's shape is migrated by Rust and never reaches the frontend.
     for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', dial_content: 'clock' }, { module_control: 'app', dial_content: 'analog-clock' }, { module_control: 'app', dial_content: 'gpu' }, { module_control: 'app', dial_content: 'clock', extra: 1 }]) {
       expect(isDisplaySettings(bad)).toBe(false);
@@ -71,7 +80,7 @@ describe('display flags and software mode', () => {
 describe('DisplaySettingsStore', () => {
   it('loads, saves and shows App until the backend answers', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', dial_content: 'function' };
+    let stored: DisplaySettings = { module_control: 'app', dial_content: 'function', auto_execute: false };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -82,11 +91,11 @@ describe('DisplaySettingsStore', () => {
     expect(await store.load()).toBe(true);
     expect(await store.setModuleControl('built_in_animation')).toBe(true);
     expect(await store.setDialContent('analog_clock' as DialContent)).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', dial_content: 'analog_clock' });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', dial_content: 'analog_clock', auto_execute: false });
     expect(calls).toEqual([
       ['display_settings', undefined],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'function' } }],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'analog_clock' } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'function', auto_execute: false } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'analog_clock', auto_execute: false } }],
     ]);
   });
   it('reports errors and unexpected replies', async () => {

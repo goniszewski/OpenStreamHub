@@ -1,4 +1,4 @@
-import type { DialContent, DisplaySettings, ModuleControl, Profile, ServiceModule } from './contracts';
+import type { DefaultProfile, DialContent, DisplaySettings, ModuleControl, Profile, ServiceModule } from './contracts';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
@@ -7,7 +7,7 @@ import { errorMessage } from './ui-model';
 // them once when a profile is started. This store only shows and edits them; changing them never touches a running
 // profile.
 
-export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', dial_content: 'function' };
+export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', dial_content: 'function', auto_execute: false };
 
 export const moduleControlOptions: readonly { value: ModuleControl; label: string }[] = [
   { value: 'app', label: 'App' },
@@ -26,6 +26,9 @@ const dialArgs: Record<DialContent, string> = { off: 'off', function: 'function'
 
 // The modules "App" module control drives in software mode: the 15-key module and the dial. Mirrors display::app_controls.
 export const appControls = (module: ServiceModule) => module === 'm4315' || module === 'm131e';
+// The modules the session manager starts on its own under App: those two and the knobs, which get an input-only session
+// (no software mode, no display writes). Mirrors display::auto_takes_over.
+export const autoTakesOver = (module: ServiceModule) => appControls(module) || module === 'm003k';
 
 // Mirrors display::spawn_display in Rust: the masterhub-service flags a managed run started with `settings` gets.
 // Nothing unless module control is App and the run is in software mode; the 15-key module for a keypad profile and for a
@@ -45,13 +48,23 @@ export function displayFlags(settings: DisplaySettings, module: ServiceModule, s
 export function isDisplaySettings(value: unknown): value is DisplaySettings {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).length === 2
+  return Object.keys(record).length === 3
     && moduleControlOptions.some(option => option.value === record.module_control)
-    && dialContentOptions.some(option => option.value === record.dial_content);
+    && dialContentOptions.some(option => option.value === record.dial_content)
+    && typeof record.auto_execute === 'boolean';
 }
 
-export interface DisplaySettingsState { desktop: boolean; loaded: boolean; busy: boolean; error: string | null; settings: DisplaySettings }
-export const idleDisplaySettingsState: DisplaySettingsState = { desktop: false, loaded: false, busy: false, error: null, settings: defaultDisplaySettings };
+const isDefaultProfile = (value: unknown): value is DefaultProfile => !!value && typeof value === 'object'
+  && Object.keys(value).length === 1 && (((value as DefaultProfile).profile_id === null) || typeof (value as DefaultProfile).profile_id === 'string');
+
+// defaultProfile: the global default profile for automatic starts (Rust startup.rs), loaded on its own; an unreadable
+// file shows its error and means no default.
+export interface DisplaySettingsState {
+  desktop: boolean; loaded: boolean; busy: boolean; error: string | null; settings: DisplaySettings;
+  defaultProfile: { loaded: boolean; busy: boolean; error: string | null; profileId: string | null };
+}
+export const idleDisplaySettingsState: DisplaySettingsState = { desktop: false, loaded: false, busy: false, error: null, settings: defaultDisplaySettings,
+  defaultProfile: { loaded: false, busy: false, error: null, profileId: null } };
 
 export class DisplaySettingsStore {
   private state: DisplaySettingsState;
@@ -88,5 +101,30 @@ export class DisplaySettingsStore {
   save(settings: DisplaySettings) { return this.run('set_display_settings', { settings }); }
   setModuleControl(moduleControl: ModuleControl) { return this.save({ ...this.state.settings, module_control: moduleControl }); }
   setDialContent(dialContent: DialContent) { return this.save({ ...this.state.settings, dial_content: dialContent }); }
+  // Turning it off restarts every automatic session that runs actions as a dry run (the backend does that on save).
+  setAutoExecute(autoExecute: boolean) { return this.save({ ...this.state.settings, auto_execute: autoExecute }); }
+  // The indicator's one-click stop. Never saves defaults over settings it has not read: it loads them first. If they cannot
+  // be read, the backend treats them as not App and has already stopped every automatic session.
+  async stopAutomaticActions() {
+    if (!this.state.loaded && !(await this.load())) return false;
+    return this.setAutoExecute(false);
+  }
   dismissError() { this.set({ error: null }); }
+
+  private async runDefault(command: string, args?: Record<string, unknown>): Promise<boolean> {
+    if (!this.state.desktop) return false;
+    this.set({ defaultProfile: { ...this.state.defaultProfile, busy: true } });
+    try {
+      const reply = await this.invoke<unknown>(command, args);
+      if (!isDefaultProfile(reply)) throw new Error('The default profile reply was not understood.');
+      this.set({ defaultProfile: { loaded: true, busy: false, error: null, profileId: reply.profile_id } });
+      return true;
+    } catch (reason) {
+      this.set({ defaultProfile: { ...this.state.defaultProfile, busy: false, error: errorMessage(reason) } });
+      return false;
+    }
+  }
+
+  loadDefaultProfile() { return this.runDefault('default_profile'); }
+  setDefaultProfile(profileId: string | null) { return this.runDefault('set_default_profile', { profileId }); }
 }

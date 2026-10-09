@@ -92,6 +92,20 @@ pub struct LiveDevice {
     pub path_hex: String,
     pub module: ServiceModule,
     pub serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_position: Option<BasePosition>,
+}
+
+/// Physical quadrant on the 4x6 MasterHUB base, oriented with its USB-C edges
+/// at the top and left. These locations are recognized from the observed
+/// macOS USB port paths for this base layout.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BasePosition {
+    TopLeft,
+    BottomLeft,
+    TopRight,
+    BottomRight,
 }
 
 /// Payload of `device://inventory`: every input-capable device, sorted.
@@ -117,6 +131,13 @@ const VENDOR_USAGE_PAGE: u16 = 0xff00;
 /// This is inferred from the SDK and synthetic captures, not yet verified on
 /// every module's hardware.
 pub fn live_devices(devices: &[ModuleIdentity]) -> Vec<LiveDevice> {
+    live_devices_with_locations(devices, &HashMap::new())
+}
+
+fn live_devices_with_locations(
+    devices: &[ModuleIdentity],
+    location_ids: &HashMap<Vec<u8>, u32>,
+) -> Vec<LiveDevice> {
     let supported: Vec<_> = devices
         .iter()
         .filter_map(|device| replay::service_module(device.module).map(|module| (device, module)))
@@ -142,10 +163,75 @@ pub fn live_devices(devices: &[ModuleIdentity]) -> Vec<LiveDevice> {
             path_hex,
             module: *module,
             serial_number: device.serial_number.clone(),
+            base_position: location_ids
+                .get(device.path.as_bytes())
+                .and_then(|location_id| base_position(*module, *location_id)),
         });
     }
     sort_devices(&mut listed);
     listed
+}
+
+/// Resolves the currently documented MasterHUB USB topology to a base
+/// quadrant. The high location-ID byte identifies the host bus; the trailing
+/// port chain is stable across bus-number changes. The observed suffixes are
+/// M4315 `[1,2,2]`, M032LE `[1,1,1,4]`, M131E `[1,1,4,3]` and M003K
+/// `[1,1,3,4]`. Unknown chains stay unset.
+pub fn base_position(module: ServiceModule, location_id: u32) -> Option<BasePosition> {
+    let mut ports: Vec<u8> = (0..6)
+        .map(|index| ((location_id >> (20 - 4 * index)) & 0x0f) as u8)
+        .collect();
+    while ports.last() == Some(&0) {
+        ports.pop();
+    }
+
+    let ends_with = |suffix: &[u8]| ports.ends_with(suffix);
+    match module {
+        ServiceModule::M4315 if ends_with(&[1, 2, 2]) => Some(BasePosition::TopLeft),
+        ServiceModule::M032LE if ends_with(&[1, 1, 1, 4]) => Some(BasePosition::BottomLeft),
+        ServiceModule::M131E if ends_with(&[1, 1, 4, 3]) => Some(BasePosition::TopRight),
+        ServiceModule::M003K if ends_with(&[1, 1, 3, 4]) => Some(BasePosition::BottomRight),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_location_ids(
+    devices: &[ModuleIdentity],
+    known: &HashMap<Vec<u8>, u32>,
+) -> HashMap<Vec<u8>, u32> {
+    let Ok(api) = hidapi::HidApi::new() else {
+        return HashMap::new();
+    };
+    let was_exclusive = api.get_open_exclusive();
+    api.set_open_exclusive(false);
+    let locations = devices
+        .iter()
+        .filter(|device| replay::service_module(device.module).is_some())
+        .filter(|device| !known.contains_key(device.path.as_bytes()))
+        .filter_map(|device| {
+            let location_id = api
+                .open_path(device.path.as_c_str())
+                .ok()?
+                .get_location_id()
+                .ok()?;
+            Some((device.path.as_bytes().to_vec(), location_id))
+        })
+        .collect();
+    api.set_open_exclusive(was_exclusive);
+    locations
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_location_ids(_: &[ModuleIdentity], _: &HashMap<Vec<u8>, u32>) -> HashMap<Vec<u8>, u32> {
+    HashMap::new()
+}
+
+/// Builds the live inventory and reads macOS HID location IDs without sending
+/// input, feature, or output reports. Other platforms leave positions unknown.
+pub fn live_devices_with_host_positions(devices: &[ModuleIdentity]) -> Vec<LiveDevice> {
+    let locations = read_location_ids(devices, &HashMap::new());
+    live_devices_with_locations(devices, &locations)
 }
 
 /// Orders devices by wire module id, then serial number (absent first), then
@@ -218,6 +304,7 @@ pub fn watch_inventory(
 /// sends no feature or output reports. Not yet verified on hardware.
 pub fn hid_inventory() -> impl FnMut() -> Result<Vec<LiveDevice>, String> {
     let mut registry: Option<DeviceRegistry> = None;
+    let mut locations: HashMap<Vec<u8>, u32> = HashMap::new();
     move || {
         let refreshed = match registry.as_mut() {
             Some(existing) => existing.refresh(),
@@ -229,10 +316,18 @@ pub fn hid_inventory() -> impl FnMut() -> Result<Vec<LiveDevice>, String> {
             registry = None;
             return Err(format!("could not enumerate HID devices: {error}"));
         }
-        Ok(registry
+        let devices = registry
             .as_ref()
-            .map(|registry| live_devices(&registry.devices()))
-            .unwrap_or_default())
+            .map(DeviceRegistry::devices)
+            .unwrap_or_default();
+        let present: std::collections::HashSet<Vec<u8>> = devices
+            .iter()
+            .map(|device| device.path.as_bytes().to_vec())
+            .collect();
+        locations.retain(|path, _| present.contains(path));
+        let discovered_locations = read_location_ids(&devices, &locations);
+        locations.extend(discovered_locations);
+        Ok(live_devices_with_locations(&devices, &locations))
     }
 }
 
@@ -1011,6 +1106,7 @@ mod tests {
             path_hex: encode_hex(path.as_bytes()),
             module,
             serial_number: serial.map(str::to_owned),
+            base_position: None,
         }
     }
 
@@ -1170,16 +1266,19 @@ mod tests {
                     path_hex: encode_hex(b"knobs-vendor"),
                     module: ServiceModule::M003K,
                     serial_number: Some("K1".into()),
+                    base_position: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"faders"),
                     module: ServiceModule::M005S,
                     serial_number: None,
+                    base_position: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"keys"),
                     module: ServiceModule::M4315,
                     serial_number: Some("K2".into()),
+                    base_position: None,
                 },
             ]
         );

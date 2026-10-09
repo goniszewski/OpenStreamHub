@@ -35,6 +35,8 @@
     "allow-focus-current-app",
     "allow-display-settings",
     "allow-set-display-settings",
+    "allow-default-profile",
+    "allow-set-default-profile",
     "allow-obs-settings",
     "allow-set-obs-settings",
     "allow-set-obs-password",

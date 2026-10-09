@@ -28,6 +28,7 @@ base64 = "0.22"
 cooltek-sdk-service = { path = "../../../crates/cooltek-sdk-service" }
 cooltek-sdk-masterhub = { path = "../../../crates/cooltek-sdk-masterhub" }
 cooltek-sdk-cli = { path = "../../../crates/cooltek-sdk-cli" }
+hidapi = { version = "2", features = ["macos-shared-device"] }
 # Official `.mhz` profile import (src/mhz). Already locked (flate2 and
 # crc32fast through png/image, sha2 through tauri-codegen): raw deflate,
 # entry CRC-32 and the provenance hash for a hand-written in-memory ZIP

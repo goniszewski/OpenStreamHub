@@ -31,7 +31,8 @@ describe('onboarding steps', () => {
   });
   it('states the permission and privacy facts', () => {
     expect(render(2)).toContain('Accessibility or Automation');
-    expect(render(2)).toContain('never runs actions without that explicit Execute confirmation');
+    expect(render(2)).toContain('app-started sessions can run actions without a prompt');
+    expect(render(2)).toContain('this option is off by default');
     expect(render(2)).toContain('pastes text into the focused app (and can press Return after it)');
     expect(render(2)).toContain('Only run profiles you wrote or reviewed.');
     expect(render(3)).toContain('Nothing is uploaded');

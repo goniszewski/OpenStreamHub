@@ -541,10 +541,17 @@ pub const MAX_LISTED_NAMES: usize = 1000;
 /// are refused rather than shown and rejected on save.
 const MAX_LISTED_NAME_BYTES: usize = 256;
 
-/// The `name_key` of every entry of a listing reply's `list_key` array,
-/// bounded. A longer or missing name is an error: silently showing a partial
-/// list would make the editor call a real name missing.
-fn listed_names(response: &Value, list_key: &str, name_key: &str) -> Result<Vec<String>, String> {
+/// The names in a listing reply's `list_key` array, bounded. Per the
+/// obs-websocket v5 protocol, some lists are arrays of objects with a name
+/// key (`name_key`, e.g. `scenes`/`sceneName`) and some are bare string
+/// arrays (`sceneCollections`, `profiles`). A longer or missing name is an
+/// error: silently showing a partial list would make the editor call a real
+/// name missing.
+fn listed_names(
+    response: &Value,
+    list_key: &str,
+    name_key: Option<&str>,
+) -> Result<Vec<String>, String> {
     let items = response
         .get(list_key)
         .and_then(Value::as_array)
@@ -557,10 +564,14 @@ fn listed_names(response: &Value, list_key: &str, name_key: &str) -> Result<Vec<
     items
         .iter()
         .map(|item| {
-            let name = item
-                .get(name_key)
-                .and_then(Value::as_str)
-                .ok_or_else(|| format!("OBS response has a {list_key} entry without {name_key}"))?;
+            let name = match name_key {
+                Some(key) => item.get(key).and_then(Value::as_str),
+                None => item.as_str(),
+            }
+            .ok_or_else(|| match name_key {
+                Some(key) => format!("OBS response has a {list_key} entry without {key}"),
+                None => format!("OBS response has a non-string entry in {list_key}"),
+            })?;
             if name.len() > MAX_LISTED_NAME_BYTES {
                 return Err(format!(
                     "OBS lists a {} name longer than {MAX_LISTED_NAME_BYTES} bytes",
@@ -574,28 +585,30 @@ fn listed_names(response: &Value, list_key: &str, name_key: &str) -> Result<Vec<
 
 impl ObsClient {
     /// Asks OBS for everything the editor pickers offer: one connection, the
-    /// four list requests, one deadline.
+    /// four list requests, one deadline. The list shapes are the obs-websocket
+    /// v5 protocol's: objects with `sceneName`/`inputName` for scenes and
+    /// inputs, bare strings for scene collections and profiles.
     pub fn catalog(&self) -> Result<ObsCatalog, String> {
         self.session(|session| {
             let scenes = listed_names(
                 &session.request(&ObsRequest::new("GetSceneList"))?,
                 "scenes",
-                "sceneName",
+                Some("sceneName"),
             )?;
             let sources = listed_names(
                 &session.request(&ObsRequest::new("GetInputList"))?,
                 "inputs",
-                "inputName",
+                Some("inputName"),
             )?;
             let scene_collections = listed_names(
                 &session.request(&ObsRequest::new("GetSceneCollectionList"))?,
                 "sceneCollections",
-                "sceneCollectionName",
+                None,
             )?;
             let profiles = listed_names(
                 &session.request(&ObsRequest::new("GetProfileList"))?,
                 "profiles",
-                "profileName",
+                None,
             )?;
             Ok(ObsCatalog {
                 scenes,
@@ -616,7 +629,7 @@ impl ObsClient {
                     json!({"sourceName":source}),
                 ))?,
                 "filters",
-                "filterName",
+                Some("filterName"),
             )
         })
     }
@@ -632,7 +645,7 @@ impl ObsClient {
                     json!({"sceneName":scene}),
                 ))?,
                 "sceneItems",
-                "sourceName",
+                Some("sourceName"),
             )
         })
     }
@@ -1910,6 +1923,9 @@ mod tests {
 
     #[test]
     fn the_catalog_fetches_four_lists_on_one_connection() {
+        // List shapes are the obs-websocket v5 protocol's, which real OBS
+        // sends: scenes and inputs are objects, scene collections and
+        // profiles are BARE STRINGS.
         let (endpoint, server) = serve(scripted_obs(vec![
             (
                 json!({"result":true}),
@@ -1921,11 +1937,11 @@ mod tests {
             ),
             (
                 json!({"result":true}),
-                Some(json!({"currentSceneCollectionName":"Show","sceneCollections":[{"sceneCollectionName":"Show"}]})),
+                Some(json!({"currentSceneCollectionName":"Show","sceneCollections":["Show","Testing"]})),
             ),
             (
                 json!({"result":true}),
-                Some(json!({"currentProfileName":"Streaming","profiles":[{"profileName":"Streaming"}]})),
+                Some(json!({"currentProfileName":"Streaming","profiles":["Streaming","Recording"]})),
             ),
         ]));
         let catalog = client(endpoint, None).catalog().unwrap();
@@ -1935,8 +1951,8 @@ mod tests {
             ObsCatalog {
                 scenes: ["Live".into(), "Games".into()].into(),
                 sources: ["Cam".into(), "Mic".into()].into(),
-                scene_collections: ["Show".into()].into(),
-                profiles: ["Streaming".into()].into(),
+                scene_collections: ["Show".into(), "Testing".into()].into(),
+                profiles: ["Streaming".into(), "Recording".into()].into(),
             }
         );
         let types: Vec<_> = seen.messages[1..]
@@ -2007,30 +2023,43 @@ mod tests {
     #[test]
     fn listing_replies_are_bounded_and_malformed_ones_are_errors() {
         let name = |count: usize| "x".repeat(count);
-        let one = |name: &str| json!([{"sceneName":name}]);
+        let one_object = |name: &str| json!([{"sceneName":name}]);
+        let one_string = |name: &str| json!([name]);
+        // Object lists read the name key; bare string lists (scene collections
+        // and profiles, per the obs-websocket v5 protocol) are their own names.
         assert_eq!(
-            listed_names(&json!({"scenes":one("Scene")}), "scenes", "sceneName").unwrap(),
+            listed_names(&json!({"scenes":one_object("Scene")}), "scenes", Some("sceneName")).unwrap(),
             ["Scene".to_string()]
         );
-        // Names a profile can never reference are refused, not shown.
-        let over = listed_names(&json!({"scenes":one(&name(257))}), "scenes", "sceneName")
-            .unwrap_err();
-        assert!(over.contains("longer than 256 bytes"), "{over}");
+        assert_eq!(
+            listed_names(&json!({"profiles":one_string("Work")}), "profiles", None).unwrap(),
+            ["Work".to_string()]
+        );
         for (response, list, key) in [
-            (json!({}), "scenes", "sceneName"),
-            (json!({"scenes":"no"}), "scenes", "sceneName"),
-            (json!({"scenes":[{"sceneIndex":0}]}), "scenes", "sceneName"),
-            (json!({"scenes":[{"sceneName":5}]}), "scenes", "sceneName"),
+            (json!({}), "scenes", Some("sceneName")),
+            (json!({"scenes":"no"}), "scenes", Some("sceneName")),
+            (json!({"scenes":[{"sceneIndex":0}]}), "scenes", Some("sceneName")),
+            (json!({"scenes":[{"sceneName":5}]}), "scenes", Some("sceneName")),
+            (json!({"profiles":"no"}), "profiles", None),
+            (json!({"profiles":[5]}), "profiles", None),
+            (json!({"profiles":[{"profileName":"Work"}]}), "profiles", None),
         ] {
             let error = listed_names(&response, list, key).unwrap_err();
             assert!(error.contains("OBS response"), "{error}");
         }
+        // Names a profile can never reference are refused, not shown.
+        let over = listed_names(&json!({"scenes":one_object(&name(257))}), "scenes", Some("sceneName"))
+            .unwrap_err();
+        assert!(over.contains("longer than 256 bytes"), "{over}");
+        let over_string =
+            listed_names(&json!({"profiles":one_string(&name(257))}), "profiles", None).unwrap_err();
+        assert!(over_string.contains("longer than 256 bytes"), "{over_string}");
         // A list beyond the cap is refused: a silently partial list would
         // make the editor call real names missing.
         let many: Vec<_> = (0..=MAX_LISTED_NAMES)
             .map(|index| json!({"sceneName":format!("S{index}")}))
             .collect();
-        assert!(listed_names(&json!({"scenes":many}), "scenes", "sceneName").is_err());
+        assert!(listed_names(&json!({"scenes":many}), "scenes", Some("sceneName")).is_err());
         assert_eq!(MAX_LISTED_NAME_BYTES, 256);
     }
 

@@ -486,9 +486,11 @@ struct FeedHandle {
 }
 
 impl FeedHandle {
+    /// A handle whose join a stopper took is running until that stopper
+    /// joined the thread and removed it (`Feeds::stop`).
     fn running(&self) -> bool {
         !self.done.load(Ordering::SeqCst)
-            && self.join.as_ref().is_some_and(|join| !join.is_finished())
+            && self.join.as_ref().is_none_or(|join| !join.is_finished())
     }
 }
 
@@ -507,11 +509,9 @@ impl Feeds {
     ) -> Result<String, String> {
         let mut feeds = self.lock()?;
         if let Entry::Occupied(entry) = feeds.entry(feed_id.clone()) {
-            // A panicked thread never sets `done` but has still finished.
-            let handle = entry.get();
-            let finished = handle.done.load(Ordering::SeqCst)
-                || handle.join.as_ref().is_none_or(JoinHandle::is_finished);
-            if !finished {
+            // A panicked thread never sets `done` but has still finished. A
+            // handle whose join a stopper holds is still being stopped.
+            if entry.get().running() {
                 return Err(format!("feed {feed_id} is already running"));
             }
             if let Some(join) = entry.remove().join {
@@ -540,14 +540,42 @@ impl Feeds {
     }
 
     /// Stops a feed and waits for its thread, which emits `stopped` (or its
-    /// earlier terminal status). Unknown ids are ignored.
+    /// earlier terminal status), so its device handle is closed on return.
+    /// Unknown ids are ignored. The handle stays in the map until its thread
+    /// was joined: a second stop of the same id (another `stop_feed`, or a
+    /// service start) waits for the first, and `start` refuses the id
+    /// meanwhile. No lock is held while waiting.
     pub fn stop(&self, feed_id: &str) -> Result<(), String> {
-        let handle = self.lock()?.remove(feed_id);
-        if let Some(mut handle) = handle {
+        let (join, done) = {
+            let mut feeds = self.lock()?;
+            let Some(handle) = feeds.get_mut(feed_id) else {
+                return Ok(());
+            };
             handle.stop.store(true, Ordering::SeqCst);
-            if let Some(join) = handle.join.take() {
+            (handle.join.take(), Arc::clone(&handle.done))
+        };
+        let same = |handle: &FeedHandle| Arc::ptr_eq(&handle.done, &done);
+        match join {
+            Some(join) => {
                 let _ = join.join();
+                let mut feeds = self.lock()?;
+                if feeds.get(feed_id).is_some_and(same) {
+                    feeds.remove(feed_id);
+                }
             }
+            // Another stop owns the join: wait until its thread is done or
+            // that stop removed the handle (a panicked thread never sets
+            // `done`, but its stopper still joins and removes it).
+            None => loop {
+                let pending = self
+                    .lock()?
+                    .get(feed_id)
+                    .is_some_and(|handle| same(handle) && !handle.done.load(Ordering::SeqCst));
+                if !pending {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            },
         }
         Ok(())
     }
@@ -892,6 +920,47 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_second_stop_waits_for_the_first_and_the_id_stays_taken_meanwhile() {
+        let feeds = Feeds::default();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let finished = Arc::new(AtomicBool::new(false));
+        let thread_finished = Arc::clone(&finished);
+        // A feed that ignores the stop flag until released, like a read
+        // still blocked inside its timeout.
+        feeds
+            .start("live:41".into(), move |_| {
+                let _ = release_rx.recv();
+                thread::sleep(Duration::from_millis(50));
+                thread_finished.store(true, Ordering::SeqCst);
+            })
+            .unwrap();
+        thread::scope(|scope| {
+            let first = scope.spawn(|| feeds.stop("live:41"));
+            // Wait until the first stop holds the join.
+            while feeds.lock().unwrap()["live:41"].join.is_some() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            // A service start's feed stop, and a feed start, meanwhile.
+            let second = scope.spawn(|| {
+                feeds.stop("live:41").unwrap();
+                finished.load(Ordering::SeqCst)
+            });
+            thread::sleep(Duration::from_millis(30));
+            assert!(!second.is_finished(), "the second stop did not wait");
+            assert!(feeds.is_running("live:41"));
+            assert!(feeds.start("live:41".into(), |_| {}).is_err());
+            release_tx.send(()).unwrap();
+            assert!(
+                second.join().unwrap(),
+                "returned before the thread finished"
+            );
+            first.join().unwrap().unwrap();
+        });
+        assert!(!feeds.is_running("live:41"));
+        feeds.start("live:41".into(), |_| {}).unwrap();
     }
 
     #[test]

@@ -21,6 +21,7 @@ fn main() {
             "stop_service",
             "resume_session",
             "stop_session",
+            "list_sessions",
             "list_focus_rules",
             "save_focus_rule",
             "delete_focus_rule",

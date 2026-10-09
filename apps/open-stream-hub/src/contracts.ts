@@ -136,7 +136,12 @@ export interface ServiceRecordPayload { service_id: string; record: unknown }
 export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
 // profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
 // start_refused: the service exited with an error before it reported service_start; the session stops without retrying.
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action';
+// module_control: an automatic session ended because Module control is no longer App (or its file cannot be read).
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control';
+// Set for the whole life of a session the session manager started on its own (Module control App): a dry run on the
+// 15-key module or the dial when the app opened, when the module was connected, or when Module control was switched to
+// App with the module connected. Absent for a user's Start.
+export type SessionAutoStart = 'app_opened' | 'module_connected' | 'module_control_set';
 export interface SessionStatePayload {
   session_id: string; service_id: string | null; phase: SessionPhase; reason: SessionReason | null; attempt: number; execute: boolean;
   module: ServiceModule; serial_number: string | null;
@@ -145,7 +150,7 @@ export interface SessionStatePayload {
   // The profile of profile_generation: profile_id is the saved profile a switch put in place (null while the session
   // still runs the profile it was started with), profile_name its name. The runner resyncs its confirmation copy from them.
   profile_id: string | null; profile_name: string;
-  detail?: string; next_attempt_in_ms?: number;
+  detail?: string; next_attempt_in_ms?: number; auto_start?: SessionAutoStart;
 }
 
 // Focused-app profile rules (stored in <app data>/focus-rules.json, never inside a profile). Opt-in: enabled is false by default.

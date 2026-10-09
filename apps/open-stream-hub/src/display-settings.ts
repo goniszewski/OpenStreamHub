@@ -27,13 +27,18 @@ const dialArgs: Record<DialContent, string> = { off: 'off', function: 'function'
 // The modules "App" module control drives in software mode: the 15-key module and the dial. Mirrors display::app_controls.
 export const appControls = (module: ServiceModule) => module === 'm4315' || module === 'm131e';
 
-// Mirrors display::display_args in Rust: the masterhub-service flags a managed run started with `settings` gets.
-// Nothing unless module control is App and the run is in software mode; the 15-key module only for a schema-2 keypad
-// profile; the dial unless its content is off.
+// Mirrors display::spawn_display in Rust: the masterhub-service flags a managed run started with `settings` gets.
+// Nothing unless module control is App and the run is in software mode; the 15-key module for a keypad profile and for a
+// flat one, which the backend writes as one page (a flat profile it cannot convert runs without them); the dial unless its
+// content is off, with the analog clock instead of the function name for a profile with nothing on the dial.
 export function displayFlags(settings: DisplaySettings, module: ServiceModule, softwareMode: boolean, profile: Profile): string[] {
   if (settings.module_control !== 'app' || !softwareMode) return [];
-  if (module === 'm4315' && profile.schema_version === 2 && profile.keypad !== undefined) return ['--display-sync'];
-  if (module === 'm131e' && settings.dial_content !== 'off') return ['--display-sync', '--dial-content', dialArgs[settings.dial_content]];
+  if (module === 'm4315' && (profile.schema_version === 1 || profile.keypad !== undefined)) return ['--display-sync'];
+  if (module === 'm131e' && settings.dial_content !== 'off') {
+    const bindsDial = profile.dial_functions !== undefined || profile.bindings.some(binding => binding.module === 'm131e');
+    const content = settings.dial_content === 'function' && !bindsDial ? 'analog_clock' : settings.dial_content;
+    return ['--display-sync', '--dial-content', dialArgs[content]];
+  }
   return [];
 }
 

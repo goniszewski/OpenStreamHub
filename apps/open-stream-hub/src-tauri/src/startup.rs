@@ -1,0 +1,354 @@
+//! Startup profiles for the sessions the session manager starts on its own.
+//!
+//! With module control `App` the session manager starts a dry run on every
+//! M4315 15-key module and M131E dial when the app opens and whenever one is
+//! connected (`session::Driver::inventory`). That run uses the saved profile
+//! last used on that module's serial number, otherwise `blank_profile`, which
+//! binds nothing: the keys show one empty page and the dial its idle face
+//! (`display::display_args`).
+//!
+//! The last profile per serial number lives in
+//! `<app data>/module-profiles.json`, beside `display-settings.json`, with the
+//! same bounded, symlink-safe read and atomic 0600 write. It holds saved
+//! profile ids only, never a profile body or an execute flag: an automatic
+//! start is always a dry run. Only the M4315 and M131E with a nonblank serial
+//! number are remembered. A missing file means no last profiles. A damaged or
+//! unreadable file fails closed: every automatic start uses the blank profile
+//! and the file is never overwritten.
+
+use crate::{display, store};
+use cooltek_sdk_service::{Profile, ServiceModule};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+
+const FILE_NAME: &str = "module-profiles.json";
+const MAX_FILE_BYTES: usize = 64 * 1024;
+/// Most module serial numbers remembered; the least recently used is dropped.
+pub const MAX_ENTRIES: usize = 64;
+/// Name of the built-in profile an automatic start runs without a last one.
+pub const BLANK_PROFILE_NAME: &str = "Blank (built-in)";
+
+/// The built-in startup profile: no bindings, so nothing is planned or run,
+/// and nothing is drawn but an empty key page and the dial's idle face.
+pub fn blank_profile() -> Profile {
+    Profile {
+        schema_version: 1,
+        name: BLANK_PROFILE_NAME.into(),
+        bindings: Vec::new(),
+        keypad: None,
+        dial_functions: None,
+    }
+}
+
+/// The profile an automatic start runs and the saved profile id it came
+/// from: the last saved profile used on the module serial while it still
+/// loads (`load` reads and validates it), otherwise the blank profile with no
+/// id. A last-profile record that cannot be read also gives the blank one.
+pub fn choose(
+    last: Result<Option<String>, String>,
+    load: impl FnOnce(&str) -> Result<Profile, String>,
+) -> (Option<String>, Profile) {
+    match last {
+        Ok(Some(id)) => match load(&id) {
+            Ok(profile) => (Some(id), profile),
+            Err(_) => (None, blank_profile()),
+        },
+        Ok(None) | Err(_) => (None, blank_profile()),
+    }
+}
+
+/// The serial number a module's last profile is kept under, or `None` when it
+/// is not kept: another module than the 15-key module or the dial, or no
+/// serial number.
+fn remembered_serial(module: ServiceModule, serial: Option<&str>) -> Option<&str> {
+    serial
+        .map(str::trim)
+        .filter(|serial| display::app_controls(module) && !serial.is_empty())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LastProfile {
+    module: ServiceModule,
+    serial_number: String,
+    profile_id: String,
+}
+
+/// The file: most recently used first.
+#[derive(Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredProfiles {
+    last_profiles: Vec<LastProfile>,
+}
+
+impl StoredProfiles {
+    fn validate(&self) -> Result<(), String> {
+        if self.last_profiles.len() > MAX_ENTRIES {
+            return Err(format!("more than {MAX_ENTRIES} entries"));
+        }
+        let mut keys = HashSet::new();
+        for entry in &self.last_profiles {
+            if remembered_serial(entry.module, Some(&entry.serial_number))
+                != Some(entry.serial_number.as_str())
+                || entry.serial_number.len() > 256
+                || entry.serial_number.chars().any(char::is_control)
+            {
+                return Err("an entry names another module or an invalid serial number".into());
+            }
+            store::validate_id(&entry.profile_id)?;
+            if !keys.insert((entry.module, entry.serial_number.as_str())) {
+                return Err("a module serial number is listed twice".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn find(&self, module: ServiceModule, serial: &str) -> Option<&LastProfile> {
+        self.last_profiles
+            .iter()
+            .find(|entry| entry.module == module && entry.serial_number == serial)
+    }
+}
+
+/// `module-profiles.json`; the lock serializes read-modify-write.
+pub struct LastProfiles {
+    directory: Result<PathBuf, String>,
+    lock: Mutex<()>,
+}
+
+impl LastProfiles {
+    pub fn open(app_data: Result<&Path, String>) -> Self {
+        Self {
+            directory: app_data.map(Path::to_path_buf),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn load(directory: &Path) -> Result<StoredProfiles, String> {
+        let path = directory.join(FILE_NAME);
+        let Some((bytes, _)) =
+            store::read_private_file(&path, MAX_FILE_BYTES, "last module profiles file")?
+        else {
+            return Ok(StoredProfiles::default());
+        };
+        let stored: StoredProfiles = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "the last module profiles in {} are unreadable ({error}); fix or delete the file",
+                path.display()
+            )
+        })?;
+        stored.validate().map_err(|error| {
+            format!(
+                "the last module profiles in {} are invalid ({error}); fix or delete the file",
+                path.display()
+            )
+        })?;
+        Ok(stored)
+    }
+
+    /// The saved profile last used on `module` with `serial`, if any. `Err`
+    /// when the file cannot be read (the caller then uses the blank profile).
+    pub fn get(
+        &self,
+        module: ServiceModule,
+        serial: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let directory = self.directory.as_ref().map_err(Clone::clone)?;
+        let Some(serial) = remembered_serial(module, serial) else {
+            return Ok(None);
+        };
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "last module profiles lock is unavailable".to_string())?;
+        Ok(Self::load(directory)?
+            .find(module, serial)
+            .map(|entry| entry.profile_id.clone()))
+    }
+
+    /// Records that a session on `module` with `serial` now runs the saved
+    /// profile `profile_id`. Modules that are not kept are ignored. A damaged
+    /// file is reported and never overwritten.
+    pub fn remember(
+        &self,
+        module: ServiceModule,
+        serial: Option<&str>,
+        profile_id: &str,
+    ) -> Result<(), String> {
+        let directory = self.directory.as_ref().map_err(Clone::clone)?;
+        let Some(serial) = remembered_serial(module, serial) else {
+            return Ok(());
+        };
+        store::validate_id(profile_id)?;
+        let _guard = self
+            .lock
+            .lock()
+            .map_err(|_| "last module profiles lock is unavailable".to_string())?;
+        let mut stored = Self::load(directory)?;
+        let entry = LastProfile {
+            module,
+            serial_number: serial.to_owned(),
+            profile_id: profile_id.to_owned(),
+        };
+        if stored.last_profiles.first() == Some(&entry) {
+            return Ok(());
+        }
+        stored
+            .last_profiles
+            .retain(|other| !(other.module == module && other.serial_number == serial));
+        stored.last_profiles.insert(0, entry);
+        stored.last_profiles.truncate(MAX_ENTRIES);
+        match std::fs::symlink_metadata(directory) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                return Err(
+                    "the application data folder must be a directory, not a symbolic link".into(),
+                );
+            }
+            Err(error) => {
+                return Err(format!(
+                    "could not inspect the application data folder: {error}"
+                ));
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&stored)
+            .map_err(|error| format!("could not encode the last module profiles: {error}"))?;
+        store::write_private_file(
+            directory,
+            &directory.join(FILE_NAME),
+            &bytes,
+            "last module profiles file",
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEYS: ServiceModule = ServiceModule::M4315;
+    const DIAL: ServiceModule = ServiceModule::M131E;
+    const FIRST: &str = "00000000-0000-4000-8000-000000000001";
+    const SECOND: &str = "00000000-0000-4000-8000-000000000002";
+
+    #[test]
+    fn the_last_profile_is_kept_per_module_serial_and_survives_a_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let last = LastProfiles::open(Ok(directory.path()));
+        // A missing file: nothing remembered and nothing written.
+        assert_eq!(last.get(KEYS, Some("K-1")), Ok(None));
+        assert!(!directory.path().join(FILE_NAME).exists());
+        last.remember(KEYS, Some("K-1"), FIRST).unwrap();
+        last.remember(KEYS, Some("K-2"), SECOND).unwrap();
+        last.remember(DIAL, Some("K-1"), SECOND).unwrap();
+        let reopened = LastProfiles::open(Ok(directory.path()));
+        assert_eq!(reopened.get(KEYS, Some("K-1")), Ok(Some(FIRST.into())));
+        assert_eq!(reopened.get(KEYS, Some(" K-2 ")), Ok(Some(SECOND.into())));
+        assert_eq!(reopened.get(DIAL, Some("K-1")), Ok(Some(SECOND.into())));
+        assert_eq!(reopened.get(DIAL, Some("K-2")), Ok(None));
+        // The newest use replaces the older one.
+        reopened.remember(KEYS, Some("K-1"), SECOND).unwrap();
+        assert_eq!(last.get(KEYS, Some("K-1")), Ok(Some(SECOND.into())));
+        // Serial-less modules and other modules are never kept.
+        last.remember(KEYS, None, FIRST).unwrap();
+        last.remember(KEYS, Some("  "), FIRST).unwrap();
+        last.remember(ServiceModule::M003K, Some("N-1"), FIRST)
+            .unwrap();
+        assert_eq!(last.get(KEYS, None), Ok(None));
+        assert_eq!(last.get(ServiceModule::M003K, Some("N-1")), Ok(None));
+        let stored = LastProfiles::load(directory.path()).unwrap();
+        assert_eq!(stored.last_profiles.len(), 3);
+        assert!(last.remember(KEYS, Some("K-1"), "not-a-uuid").is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = directory.path().join(FILE_NAME);
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn the_list_is_bounded_by_dropping_the_least_recently_used() {
+        let directory = tempfile::tempdir().unwrap();
+        let last = LastProfiles::open(Ok(directory.path()));
+        for index in 0..=MAX_ENTRIES {
+            last.remember(KEYS, Some(&format!("K-{index}")), FIRST)
+                .unwrap();
+        }
+        assert_eq!(last.get(KEYS, Some("K-0")), Ok(None));
+        assert_eq!(
+            last.get(KEYS, Some(&format!("K-{MAX_ENTRIES}"))),
+            Ok(Some(FIRST.into()))
+        );
+        assert_eq!(
+            LastProfiles::load(directory.path())
+                .unwrap()
+                .last_profiles
+                .len(),
+            MAX_ENTRIES
+        );
+    }
+
+    #[test]
+    fn a_damaged_file_fails_closed_and_is_never_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(FILE_NAME);
+        let last = LastProfiles::open(Ok(directory.path()));
+        let duplicate = format!(
+            r#"{{"last_profiles":[{{"module":"m4315","serial_number":"K","profile_id":"{FIRST}"}},{{"module":"m4315","serial_number":"K","profile_id":"{SECOND}"}}]}}"#
+        );
+        for bytes in [
+            b"not json".to_vec(),
+            br#"{"last_profiles":[],"extra":1}"#.to_vec(),
+            br#"{"last_profiles":[{"module":"m4315","serial_number":"K","profile_id":"x"}]}"#
+                .to_vec(),
+            format!(r#"{{"last_profiles":[{{"module":"m003k","serial_number":"K","profile_id":"{FIRST}"}}]}}"#)
+                .into_bytes(),
+            duplicate.into_bytes(),
+            vec![b' '; MAX_FILE_BYTES + 1],
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(last.get(KEYS, Some("K")).is_err());
+            assert!(last.remember(KEYS, Some("K"), FIRST).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "the file was changed");
+            // The startup choice falls back to the blank profile.
+            let (id, profile) = choose(last.get(KEYS, Some("K")), |_| unreachable!());
+            assert_eq!((id, profile), (None, blank_profile()));
+        }
+        assert!(
+            LastProfiles::open(Err("no app data".into()))
+                .get(KEYS, Some("K"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_startup_choice_falls_back_to_the_blank_profile() {
+        let folders = crate::test_profiles::folders();
+        assert_eq!(
+            choose(Ok(Some(FIRST.into())), |id| {
+                assert_eq!(id, FIRST);
+                Ok(folders.clone())
+            }),
+            (Some(FIRST.into()), folders)
+        );
+        // Deleted or no longer valid: blank, without the id.
+        assert_eq!(
+            choose(Ok(Some(FIRST.into())), |_| Err("missing".into())),
+            (None, blank_profile())
+        );
+        assert_eq!(
+            choose(Ok(None), |_| unreachable!()),
+            (None, blank_profile())
+        );
+        // The blank profile is valid, binds nothing and runs no action.
+        let blank = blank_profile();
+        crate::replay::validate_profile(&blank).unwrap();
+        assert_eq!(blank.binding_count(), 0);
+    }
+}

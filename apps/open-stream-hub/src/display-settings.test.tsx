@@ -38,19 +38,23 @@ describe('display settings contract', () => {
 });
 
 describe('display flags and software mode', () => {
-  it('mirror the Rust display_args rules', () => {
+  it('mirror the Rust spawn_display rules', () => {
     // Built-in animation, or without software mode: no flags at all.
     expect(displayFlags(builtIn, 'm4315', true, nested)).toEqual([]);
     expect(displayFlags(builtIn, 'm131e', true, flat)).toEqual([]);
     expect(displayFlags(app, 'm4315', false, nested)).toEqual([]);
     expect(displayFlags(app, 'm131e', false, flat)).toEqual([]);
     expect(displayFlags(app, 'm4315', true, nested)).toEqual(['--display-sync']);
-    expect(displayFlags(app, 'm4315', true, flat)).toEqual([]);
+    // A flat 15-key profile is written as one page, so it is drawn too.
+    expect(displayFlags(app, 'm4315', true, flat)).toEqual(['--display-sync']);
     expect(displayFlags(app, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'clock']);
-    expect(displayFlags(defaultDisplaySettings, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'function']);
+    // The function name needs something on the dial; otherwise the dial shows the analog clock.
+    const dialBound: Profile = { ...flat, bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 2 } }] };
+    expect(displayFlags(defaultDisplaySettings, 'm131e', true, dialBound)).toEqual(['--display-sync', '--dial-content', 'function']);
+    expect(displayFlags(defaultDisplaySettings, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
     expect(displayFlags({ ...app, dial_content: 'analog_clock' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
     expect(displayFlags({ ...app, dial_content: 'cpu' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'cpu']);
-    expect(displayFlags({ ...app, dial_content: 'cpu' }, 'm4315', true, flat)).toEqual([]);
+    expect(displayFlags({ ...app, dial_content: 'cpu' }, 'm4315', true, flat)).toEqual(['--display-sync']);
     expect(displayFlags({ ...app, dial_content: 'off' }, 'm131e', true, flat)).toEqual([]);
   });
   it('App control covers the keypad and dial only and never gives other modules flags', () => {

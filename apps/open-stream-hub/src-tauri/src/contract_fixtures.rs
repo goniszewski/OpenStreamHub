@@ -332,6 +332,35 @@ fn session_payloads_match_the_shared_fixtures() {
 }
 
 #[test]
+fn automatic_session_payloads_match_the_shared_fixture() {
+    use crate::{display, session};
+    use cooltek_sdk_service::ServiceModule;
+    use session::fake::{FakeRunner, device};
+    // Module control App: the dial was connected when the app opened, the
+    // keypad was connected later. `list_sessions` returns the same states.
+    let mut driver = session::Driver::new(FakeRunner {
+        display: display::DisplaySettings::default(),
+        auto_start: true,
+        ..FakeRunner::default()
+    });
+    let dial = device(
+        ServiceModule::M131E,
+        Some("ABCDEF123456"),
+        "/dev/hidraw-0202",
+    );
+    let keypad = device(ServiceModule::M4315, Some("KEY123456"), "/dev/hidraw-0404");
+    driver.inventory(vec![dial.clone()], 0);
+    driver.inventory(vec![dial, keypad], 1_000);
+    check_or_update(
+        "session-auto-start-events.json",
+        &json!({
+            "events": driver.runner().emitted,
+            "list_sessions": driver.states(),
+        }),
+    );
+}
+
+#[test]
 fn diagnostics_payloads_match_the_shared_fixtures() {
     let fader_hex =
         cooltek_sdk_cli::capture::encode_hex(br"\\?\HID#VID_2516&PID_0200#FADER-SERIAL-0042");

@@ -43,12 +43,23 @@
 //! combination, unusable stdout, ...) while its module is still in the
 //! inventory ends the session at once as `start_refused`, with the reason
 //! shown once. A module that is merely not available yet (the service could
-//! not find its path or HIDAPI could not open it) keeps the retry.
+//! not find its path or HIDAPI could not open it) keeps the retry. A module
+//! another program holds open (`IN_USE`) is a refusal too, never a retry.
+//!
+//! Automatic starts: while module control is `App`, the driver itself starts
+//! a session on every M4315 and M131E when the app opens and whenever one
+//! appears in the inventory and no session claims it (`Driver::auto_start`).
+//! Such a session is always a dry run (so no wake, reconnect or crash restart
+//! can ever execute an action), runs the module serial's startup profile
+//! (`startup.rs`) and is marked `auto_start` so the Run panel can tell it
+//! from a user's Start. A module whose session the user stopped stays
+//! stopped until it is connected again. Executing actions still needs the
+//! user's own Start with its Execute confirmation.
 //! See `docs/masterhub-session-manager.md`, `docs/masterhub-focus-rules.md`
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
-    display::{self, DisplayLaunch, DisplaySettings},
+    display::{self, DisplayLaunch, DisplaySettings, ModuleControl},
     feed::LiveDevice,
     import_flags::ExecutionGuard,
     power::PowerEvent,
@@ -121,6 +132,13 @@ pub const PROFILE_CHANGED: &str = "the session's profile changed after the confi
 /// once. Requests from a process that is already stopping (the switch it
 /// requested is under way) are dropped as well.
 pub const PROFILE_STEP_DEBOUNCE_MS: u64 = 500;
+/// After an automatic start was refused (`start_refused`, including a module
+/// in use by another program, or a spawn that failed), that module serial
+/// does not start on its own again for this long, so a flapping module does
+/// not spawn one refused session per appearance.
+pub const AUTO_RETRY_COOLDOWN_MS: u64 = 30_000;
+/// How often a live automatic session re-reads module control (`tick`).
+pub const MODULE_CONTROL_CHECK_MS: u64 = 10_000;
 
 /// Restart delay for crash attempt `attempt` (1-based): 1 s, 2 s, 4 s, 8 s, 8 s.
 pub fn backoff_ms(attempt: u32) -> u64 {
@@ -152,6 +170,22 @@ pub enum Reason {
     ProfileSwitch,
     /// A `profile` key action (next/previous) replaced the session's profile.
     ProfileAction,
+    /// Module control is no longer `App` (changed in Settings, or the
+    /// settings file cannot be read), so an automatic session ended.
+    ModuleControl,
+}
+
+/// Why the session manager started a session on its own (module control
+/// `App`); absent for a session the user started.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AutoStart {
+    /// The module was connected when the app opened.
+    AppOpened,
+    /// The module was connected (or reconnected) while the app was open.
+    ModuleConnected,
+    /// Module control was switched to `App` while the module was connected.
+    ModuleControlSet,
 }
 
 /// Payload of `session://state`.
@@ -178,6 +212,10 @@ pub struct SessionState {
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_attempt_in_ms: Option<u64>,
+    /// Set for the whole life of a session the session manager started on
+    /// its own; omitted for a user's Start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_start: Option<AutoStart>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -202,6 +240,9 @@ pub enum Event {
     Tick,
     UserStop,
     UserResume,
+    /// An automatic session is no longer allowed: module control is not
+    /// `App` any more. Ends it like a user stop, with its own reason.
+    ModuleControlOff,
     /// The stored request now carries another profile; the current process
     /// stops and the session restarts it under the usual safety rule.
     ProfileSwitched {
@@ -264,6 +305,7 @@ pub struct Session {
     profile_generation: u64,
     profile_id: Option<String>,
     profile_name: String,
+    auto_start: Option<AutoStart>,
     last_emitted: Option<SessionState>,
 }
 
@@ -294,6 +336,7 @@ fn exit_detail(exit_code: Option<i32>, stderr_tail: &str) -> String {
         Some(line) if line.contains(NESTED_KEYPAD_REFUSAL) => {
             display::BUILT_IN_KEYPAD_REFUSAL.into()
         }
+        Some(_) if in_use(stderr_tail) => IN_USE.into(),
         Some(line) => line.chars().take(DETAIL_CHARS).collect(),
         None => match exit_code {
             Some(code) => format!("exit code {code}"),
@@ -331,11 +374,37 @@ fn device_unavailable(stderr_tail: &str) -> bool {
         .is_some_and(|line| TRANSIENT_ERRORS.iter().any(|error| line.contains(error)))
 }
 
+/// What HIDAPI reports when another program holds the module open
+/// exclusively: macOS's `kIOReturnExclusiveAccess` (`0xE00002C5`, "exclusive
+/// access and device already open"), compared without case. It arrives as a
+/// `hidapi error`, which alone would be transient, but it does not go away
+/// by retrying, so `in_use` wins over `TRANSIENT_ERRORS`. It can only come
+/// from another program: this app opens HID devices shared on macOS
+/// (`macos-shared-device`), and its own live feed cannot hold the path while
+/// a service starts, since the feed stop, the spawn and the registration
+/// happen under the same lock as a feed's check and registration
+/// (`service::start_feed_checked`).
+const IN_USE_ERRORS: [&str; 2] = ["0xe00002c5", "exclusive access"];
+
+/// The session detail for a module another program holds open. Short enough
+/// for a notice.
+pub const IN_USE: &str = "Another program is using this module. Quit it, then reconnect the module or start the profile again.";
+
+/// Whether a pre-start exit means another program holds the module open.
+fn in_use(stderr_tail: &str) -> bool {
+    last_line(stderr_tail).is_some_and(|line| {
+        let line = line.to_ascii_lowercase();
+        IN_USE_ERRORS.iter().any(|error| line.contains(error))
+    })
+}
+
 impl Session {
     /// A session named `session_id` for a service already spawned as
     /// `service_id` on `device`. `None` means the Mac is asleep and nothing
     /// was spawned: the session starts suspended and starts its process only
-    /// after wake, under the usual safety rule.
+    /// after wake, under the usual safety rule. `auto_start` is set for a
+    /// session the driver started on its own.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         session_id: String,
         service_id: Option<String>,
@@ -343,6 +412,7 @@ impl Session {
         execute: bool,
         profile_name: String,
         inventory: Vec<LiveDevice>,
+        auto_start: Option<AutoStart>,
         now_ms: u64,
     ) -> (Self, Vec<Action>) {
         let asleep = service_id.is_none();
@@ -371,6 +441,7 @@ impl Session {
             profile_generation: 0,
             profile_id: None,
             profile_name,
+            auto_start,
             last_emitted: None,
         };
         let mut actions = Vec::new();
@@ -429,6 +500,7 @@ impl Session {
             profile_name: self.profile_name.clone(),
             detail: self.detail.clone(),
             next_attempt_in_ms,
+            auto_start: self.auto_start,
         }
     }
 
@@ -519,12 +591,13 @@ impl Session {
                 // wrote `service_start`, while its module is still present
                 // and was not merely unavailable. The same arguments would be
                 // refused again, so the session ends at once (an executing
-                // one too: nothing ran).
+                // one too: nothing ran). A module another program holds open
+                // ends it too, with its own message, instead of retrying.
                 if process.running
                     && !process.ready
                     && exit_code.is_some_and(|code| code != 0)
                     && self.find_device().is_ok()
-                    && !device_unavailable(&stderr_tail)
+                    && (in_use(&stderr_tail) || !device_unavailable(&stderr_tail))
                 {
                     self.phase = Phase::Stopped;
                     self.reason = Some(Reason::StartRefused);
@@ -561,6 +634,15 @@ impl Session {
                 self.retry_at = None;
                 self.stop_process(actions);
             }
+            Event::ModuleControlOff if !stopped => {
+                self.phase = Phase::Stopped;
+                self.reason = Some(Reason::ModuleControl);
+                self.detail = None;
+                self.asleep = false;
+                self.settle_until = None;
+                self.retry_at = None;
+                self.stop_process(actions);
+            }
             Event::UserResume if self.phase == Phase::NeedsConfirmation => {
                 self.confirmed = true;
                 self.retry_at = None;
@@ -589,6 +671,7 @@ impl Session {
             | Event::Tick
             | Event::UserStop
             | Event::UserResume
+            | Event::ModuleControlOff
             | Event::ProfileSwitched { .. } => {}
         }
     }
@@ -740,6 +823,27 @@ pub trait Runner {
     /// list that cannot be read yields a guard that refuses every Execute run.
     fn execution_guard(&mut self) -> ExecutionGuard {
         ExecutionGuard::default()
+    }
+    /// The profile an automatic start on `module` with `serial` runs, and
+    /// the saved profile id it came from (`startup::choose`: the profile last
+    /// used on that serial, otherwise the blank built-in one). `None` means
+    /// this runner never starts sessions on its own (the default).
+    fn startup_profile(
+        &mut self,
+        _module: ServiceModule,
+        _serial: Option<&str>,
+    ) -> Option<(Option<String>, Profile)> {
+        None
+    }
+    /// A session on `module` with `serial` now runs the saved profile
+    /// `profile_id` (a Start or a switch), so the next automatic start
+    /// there uses it. Failures are the runner's to report; nothing waits.
+    fn remember_profile(
+        &mut self,
+        _module: ServiceModule,
+        _serial: Option<&str>,
+        _profile_id: &str,
+    ) {
     }
 }
 
@@ -913,6 +1017,18 @@ pub struct Driver<R> {
     asleep: bool,
     /// When the last `Suspend` arrived (monotonic ms).
     suspended_ms: u64,
+    /// Paths of the last inventory from the watcher (`inventory`), `None`
+    /// before the first one; automatic starts compare against it.
+    watched: Option<Vec<String>>,
+    /// Module, serial number and monotonic deadline: no automatic start on
+    /// that module before it (`AUTO_RETRY_COOLDOWN_MS`).
+    auto_cooldowns: Vec<(ServiceModule, Option<String>, u64)>,
+    /// The module control the driver last read for automatic starts, so a
+    /// switch to `App` is told apart from `App` read again.
+    last_control: Option<ModuleControl>,
+    /// When a live automatic session next re-reads module control
+    /// (`MODULE_CONTROL_CHECK_MS`).
+    control_check_at: u64,
 }
 
 impl<R: Runner> Driver<R> {
@@ -926,6 +1042,10 @@ impl<R: Runner> Driver<R> {
             deferred_stops: None,
             asleep: false,
             suspended_ms: 0,
+            watched: None,
+            auto_cooldowns: Vec::new(),
+            last_control: None,
+            control_check_at: 0,
         }
     }
 
@@ -1008,11 +1128,37 @@ impl<R: Runner> Driver<R> {
     ///
     /// Returns the session id (which may be `session:<uuid>`), or the service
     /// id of an unmanaged run, so the frontend can key the run at once.
-    pub fn start(&mut self, mut request: StartRequest, now_ms: u64) -> Result<String, String> {
+    pub fn start(&mut self, request: StartRequest, now_ms: u64) -> Result<String, String> {
+        self.begin(request, now_ms, None)
+    }
+
+    /// The session that already claims `device`: the same module and serial
+    /// number, or, for a serial-less device, which has no identity to
+    /// compare, a process-less session waiting on the same module on any
+    /// path.
+    fn claimant(&self, device: &LiveDevice) -> Option<&Managed> {
+        self.sessions.iter().find(|managed| {
+            managed.session.same_identity(device) || managed.session.awaits_serial_less(device)
+        })
+    }
+
+    /// `start` for a user's Start (`auto` is `None`) or an automatic start,
+    /// which carries the display settings `auto_start` already read and why
+    /// it started. An automatic start is always a dry run and never fires
+    /// the missed-wake valve, which only a user's Start may (`missed_wake`).
+    fn begin(
+        &mut self,
+        mut request: StartRequest,
+        now_ms: u64,
+        auto: Option<(DisplaySettings, AutoStart)>,
+    ) -> Result<String, String> {
         if self.is_closed() {
             return Err(service::SHUTTING_DOWN.into());
         }
-        let woke = self.missed_wake(now_ms);
+        if auto.is_some() {
+            request.execute = false;
+        }
+        let woke = auto.is_none() && self.missed_wake(now_ms);
         let deferred = self.asleep || woke;
         let service_id = service::service_id(&request.path_hex)?;
         // Only a live process holds the path; a session name does not.
@@ -1025,12 +1171,8 @@ impl<R: Runner> Driver<R> {
         }
         let path_hex = service_id.trim_start_matches("service:").to_owned();
         let device = self.lookup(&path_hex);
-        // A serial-less device has no identity to compare, so a process-less
-        // session waiting on the same module still claims it on any path.
         if let Some(device) = &device
-            && let Some(other) = self.sessions.iter().find(|managed| {
-                managed.session.same_identity(device) || managed.session.awaits_serial_less(device)
-            })
+            && let Some(other) = self.claimant(device)
         {
             return Err(format!(
                 "session {} already runs this device",
@@ -1056,7 +1198,10 @@ impl<R: Runner> Driver<R> {
         // With module control `App` the keypad and the dial always run in
         // software mode; other modules never enter it.
         if let Some(device) = &device {
-            let settings = self.runner.display_settings();
+            let settings = match auto {
+                Some((settings, _)) => settings,
+                None => self.runner.display_settings(),
+            };
             // The service would refuse it with its flag's name; say which
             // setting (or damaged settings file) to fix instead, before
             // anything is spawned.
@@ -1105,6 +1250,13 @@ impl<R: Runner> Driver<R> {
         } else {
             id.clone()
         };
+        if let Some(profile_id) = &request.profile_id {
+            self.runner.remember_profile(
+                device.module,
+                device.serial_number.as_deref(),
+                profile_id,
+            );
+        }
         let (session, mut actions) = Session::start(
             session_id.clone(),
             (!deferred).then_some(id),
@@ -1112,6 +1264,7 @@ impl<R: Runner> Driver<R> {
             request.execute,
             request.profile.name.clone(),
             inventory,
+            auto.map(|(_, why)| why),
             now_ms,
         );
         // Created after the missed wake was cleared: it settles like the rest.
@@ -1243,6 +1396,10 @@ impl<R: Runner> Driver<R> {
         self.sessions[index].request.profile = profile;
         self.sessions[index].request.profile_id = Some(profile_id.clone());
         self.sessions[index].request.source_profile_id = Some(profile_id.clone());
+        let session = &self.sessions[index].session;
+        let (module, serial) = (session.module, session.serial_number.clone());
+        self.runner
+            .remember_profile(module, serial.as_deref(), &profile_id);
         let event = Event::ProfileSwitched {
             profile_id,
             profile_name,
@@ -1380,10 +1537,115 @@ impl<R: Runner> Driver<R> {
         results
     }
 
-    /// Never clears `asleep`: inventory polls keep running in dark wakes.
+    /// A watcher inventory. Sessions reclaim their modules first (by
+    /// identity, on any path), then modules nobody claims may start on their
+    /// own (`auto_start`). Never clears `asleep`: inventory polls keep running
+    /// in dark wakes.
     pub fn inventory(&mut self, devices: Vec<LiveDevice>, now_ms: u64) {
         self.inventory = Some(devices.clone());
+        let paths = devices
+            .iter()
+            .map(|device| device.path_hex.clone())
+            .collect();
+        let previous = self.watched.replace(paths);
         self.broadcast(|| Event::Inventory(devices.clone()), now_ms);
+        let why = if previous.is_none() {
+            AutoStart::AppOpened
+        } else {
+            AutoStart::ModuleConnected
+        };
+        self.auto_start(previous.as_deref(), &devices, why, None, now_ms);
+    }
+
+    /// Automatic starts, only while module control is `App`: every M4315 and
+    /// M131E in `devices` that was not in the previous watcher inventory
+    /// (every one in the first, when the app opened) and that no session
+    /// claims gets a dry-run session with its serial's startup profile
+    /// (`Runner::startup_profile`). Software mode and display sync follow
+    /// from `App` exactly as for a user's Start. A module stays as it is
+    /// while it stays connected, so one whose session the user stopped (or
+    /// that was refused) is not started again until it reappears; nothing
+    /// is retried here. While the Mac is asleep the session is created
+    /// suspended and spawns only after wake, like a Start. Built-in
+    /// animation and unreadable settings start nothing; other modules never
+    /// start on their own. `settings` is the value the caller already read,
+    /// if any.
+    fn auto_start(
+        &mut self,
+        previous: Option<&[String]>,
+        devices: &[LiveDevice],
+        why: AutoStart,
+        settings: Option<DisplaySettings>,
+        now_ms: u64,
+    ) {
+        if self.is_closed() {
+            return;
+        }
+        let appeared: Vec<&LiveDevice> = devices
+            .iter()
+            .filter(|device| {
+                display::app_controls(device.module)
+                    && previous.is_none_or(|paths| !paths.contains(&device.path_hex))
+            })
+            .collect();
+        if appeared.is_empty() {
+            return;
+        }
+        // Read once for this inventory, like a Start reads it once.
+        let settings = settings.unwrap_or_else(|| self.runner.display_settings());
+        self.last_control = Some(settings.module_control);
+        if settings.module_control != ModuleControl::App {
+            return;
+        }
+        self.auto_cooldowns.retain(|(_, _, until)| now_ms < *until);
+        for device in appeared {
+            // Claimed modules are skipped quietly; `begin` checks again.
+            let Ok(busy) = service::service_id(&device.path_hex) else {
+                continue;
+            };
+            // A live serial-less session of the same module may be this
+            // module back on a new path before its old process ended; it
+            // cannot be told apart, so no second session is started.
+            let serial = blank_to_none(device.serial_number.as_deref());
+            if self.claimant(device).is_some()
+                || self.sessions.iter().any(|managed| {
+                    let session = &managed.session;
+                    session.service_id() == Some(busy.as_str())
+                        || (session.phase != Phase::Stopped
+                            && session.serial_number.is_none()
+                            && session.module == device.module)
+                })
+                || self
+                    .auto_cooldowns
+                    .iter()
+                    .any(|(module, cooled, _)| *module == device.module && *cooled == serial)
+            {
+                continue;
+            }
+            let Some((profile_id, profile)) = self
+                .runner
+                .startup_profile(device.module, device.serial_number.as_deref())
+            else {
+                return;
+            };
+            let request = StartRequest {
+                profile,
+                path_hex: device.path_hex.clone(),
+                execute: false,
+                software_mode: true,
+                source_profile_id: profile_id.clone(),
+                profile_id,
+                display: None,
+                obs: None,
+            };
+            if let Err(error) = self.begin(request, now_ms, Some((settings, why))) {
+                self.cool_down(device.module, serial, now_ms);
+                eprintln!(
+                    "could not start the {:?} module automatically: {error}",
+                    device.module
+                );
+            }
+        }
     }
 
     /// Every process a sleep (or wake) interrupts is stopped in parallel.
@@ -1437,6 +1699,64 @@ impl<R: Runner> Driver<R> {
                 stderr_tail,
             };
             self.apply(index, event, now_ms);
+            // A refused automatic start (a bad profile, or another program
+            // holding the module) is not tried again at once when a
+            // flapping module reappears.
+            let session = &self.sessions[index].session;
+            if session.auto_start.is_some() && session.reason == Some(Reason::StartRefused) {
+                let (module, serial) = (session.module, session.serial_number.clone());
+                self.cool_down(module, serial, now_ms);
+            }
+        }
+        self.prune();
+    }
+
+    /// No automatic start on `module` with `serial` for
+    /// `AUTO_RETRY_COOLDOWN_MS` from `now_ms`.
+    fn cool_down(&mut self, module: ServiceModule, serial: Option<String>, now_ms: u64) {
+        self.auto_cooldowns
+            .retain(|(other, cooled, _)| !(*other == module && *cooled == serial));
+        self.auto_cooldowns
+            .push((module, serial, now_ms + AUTO_RETRY_COOLDOWN_MS));
+    }
+
+    /// Module control may have changed, or its file may have become
+    /// unreadable: every automatic session the current setting no longer
+    /// allows (anything but `App`) ends with reason `module_control`, its
+    /// process stopped in one parallel batch, which restores the module's
+    /// built-in mode. Sessions the user started keep the setting they
+    /// started with, as before. Called after Settings saved or failed to
+    /// read the setting; a reconnecting automatic session also checks it
+    /// before every respawn (`execute`).
+    ///
+    /// A switch to `App` from another setting starts the connected modules
+    /// nobody runs, as when the app opens (reason `module_control_set`).
+    pub fn module_control_changed(&mut self, now_ms: u64) {
+        let settings = self.runner.display_settings();
+        let before = self.last_control.replace(settings.module_control);
+        if settings.module_control == ModuleControl::App {
+            if before.is_some_and(|before| before != ModuleControl::App) {
+                let devices = self.inventory.clone().unwrap_or_default();
+                let why = AutoStart::ModuleControlSet;
+                self.auto_start(None, &devices, why, Some(settings), now_ms);
+            }
+            return;
+        }
+        let automatic = |managed: &Managed| {
+            managed.session.auto_start.is_some() && managed.session.phase != Phase::Stopped
+        };
+        if !self.sessions.iter().any(automatic) {
+            return;
+        }
+        self.deferred_stops = Some(Vec::new());
+        for index in 0..self.sessions.len() {
+            if automatic(&self.sessions[index]) {
+                self.apply(index, Event::ModuleControlOff, now_ms);
+            }
+        }
+        let stops = self.deferred_stops.take().unwrap_or_default();
+        if !stops.is_empty() {
+            self.runner.stop_many(&stops);
         }
         self.prune();
     }
@@ -1461,10 +1781,42 @@ impl<R: Runner> Driver<R> {
             }
         }
         self.prune();
+        // A settings file changed or damaged from outside the app is
+        // noticed while an automatic session runs, not only at its next
+        // respawn: a cheap locked read at most every few seconds.
+        if self.automatic_live() && now_ms >= self.control_check_at {
+            self.control_check_at = now_ms + MODULE_CONTROL_CHECK_MS;
+            self.module_control_changed(now_ms);
+        }
     }
 
     pub fn next_due(&self) -> Option<u64> {
-        self.timers.first().map(|(at, _)| *at)
+        let timer = self.timers.first().map(|(at, _)| *at);
+        let check = self.automatic_live().then_some(self.control_check_at);
+        timer.into_iter().chain(check).min()
+    }
+
+    /// True while an automatic session has not stopped.
+    fn automatic_live(&self) -> bool {
+        self.sessions.iter().any(|managed| {
+            managed.session.auto_start.is_some() && managed.session.phase != Phase::Stopped
+        })
+    }
+
+    /// The last emitted state of every session, for a window that connects
+    /// after those states were emitted: an automatic start when the app
+    /// opened happens before the webview listens, and a reload loses them.
+    pub fn states(&self) -> Vec<SessionState> {
+        self.sessions
+            .iter()
+            .map(|managed| {
+                managed
+                    .session
+                    .last_emitted
+                    .clone()
+                    .unwrap_or_else(|| managed.session.state(None))
+            })
+            .collect()
     }
 
     /// App exit: every session ends without restarting anything. Processes
@@ -1530,6 +1882,16 @@ impl<R: Runner> Driver<R> {
                     self.sessions[index].session.service = None;
                     self.apply(index, Event::UserStop, now_ms);
                 }
+                // An automatic session respawns (wake, reconnect, crash)
+                // only while module control is still `App`; otherwise it
+                // ends before anything enters software mode.
+                Action::StartService { .. }
+                    if self.sessions[index].session.auto_start.is_some()
+                        && self.runner.display_settings().module_control != ModuleControl::App =>
+                {
+                    self.sessions[index].session.service = None;
+                    self.apply(index, Event::ModuleControlOff, now_ms);
+                }
                 Action::StartService { path_hex, execute } => {
                     let service_id = format!("service:{path_hex}");
                     let busy = self.sessions.iter().enumerate().any(|(other, managed)| {
@@ -1575,6 +1937,11 @@ pub enum Input {
     SwitchProfile(String, String, Box<Profile>, Sender<Result<u64, String>>),
     /// Session id and the generation the Resume dialog is about to show.
     SessionProfile(String, u64, Sender<Result<HeldProfile, String>>),
+    /// Every session's current state (`Driver::states`).
+    Sessions(Sender<Vec<SessionState>>),
+    /// Module control was saved or could not be read
+    /// (`Driver::module_control_changed`).
+    ModuleControlChanged,
     /// A service process reported `profile_switch_requested` (a profile key).
     ProfileStep {
         service_id: String,
@@ -1620,6 +1987,10 @@ impl<R: Runner> Driver<R> {
             Input::SessionProfile(id, generation, reply) => {
                 let _ = reply.send(self.session_profile(&id, generation));
             }
+            Input::Sessions(reply) => {
+                let _ = reply.send(self.states());
+            }
+            Input::ModuleControlChanged => self.module_control_changed(now_ms),
             Input::ProfileStep {
                 service_id,
                 direction,
@@ -1871,6 +2242,21 @@ impl Manager {
             .and_then(|held| held)
     }
 
+    /// Every session's current state; none without a driver.
+    pub fn sessions(&self) -> Result<Vec<SessionState>, String> {
+        self.request(Input::Sessions)
+            .unwrap_or_else(|| Ok(Vec::new()))
+    }
+
+    /// Tells the driver that module control was saved or could not be read,
+    /// so it ends automatic sessions the setting no longer allows. Does not
+    /// wait: nothing here can start a process.
+    pub fn module_control_changed(&self) {
+        if self.running.load(Ordering::SeqCst) {
+            let _ = self.inputs.send(Input::ModuleControlChanged);
+        }
+    }
+
     /// App exit: ends every session; waits at most `wait`.
     pub fn shutdown(&self, wait: Duration) {
         self.closed.store(true, Ordering::SeqCst);
@@ -1921,6 +2307,15 @@ pub mod fake {
         pub dry_run_only: BTreeSet<String>,
         /// Number of `execution_guard` reads.
         pub guard_reads: usize,
+        /// Whether `startup_profile` answers (automatic starts happen).
+        pub auto_start: bool,
+        /// Startup profile id and profile per serial number; any other
+        /// serial (or none) gets the blank profile.
+        pub last_profiles: std::collections::BTreeMap<String, (String, Profile)>,
+        /// Every `remember_profile` call, in order.
+        pub remembered: Vec<(ServiceModule, Option<String>, String)>,
+        /// Number of `display_settings` reads.
+        pub display_reads: usize,
     }
 
     impl Runner for FakeRunner {
@@ -1989,6 +2384,7 @@ pub mod fake {
         }
 
         fn display_settings(&mut self) -> DisplaySettings {
+            self.display_reads += 1;
             self.display
         }
 
@@ -2000,6 +2396,32 @@ pub mod fake {
         fn execution_guard(&mut self) -> ExecutionGuard {
             self.guard_reads += 1;
             ExecutionGuard::with_ids(self.dry_run_only.clone(), self.dry_run_hashes.clone())
+        }
+
+        fn startup_profile(
+            &mut self,
+            _module: ServiceModule,
+            serial: Option<&str>,
+        ) -> Option<(Option<String>, Profile)> {
+            if !self.auto_start {
+                return None;
+            }
+            Some(
+                serial
+                    .and_then(|serial| self.last_profiles.get(serial))
+                    .map(|(id, profile)| (Some(id.clone()), profile.clone()))
+                    .unwrap_or_else(|| (None, crate::startup::blank_profile())),
+            )
+        }
+
+        fn remember_profile(
+            &mut self,
+            module: ServiceModule,
+            serial: Option<&str>,
+            profile_id: &str,
+        ) {
+            self.remembered
+                .push((module, serial.map(str::to_owned), profile_id.into()));
         }
     }
 
@@ -2097,6 +2519,7 @@ mod tests {
                 profile_name: crate::test_profiles::folders().name,
                 detail: None,
                 next_attempt_in_ms: None,
+                auto_start: None,
             }]
         );
         // Starting the same device again is refused, even under another path.
@@ -2505,6 +2928,7 @@ mod tests {
             false,
             "Folders".into(),
             vec![dial("/a")],
+            None,
             0,
         );
         let events = [
@@ -3678,7 +4102,7 @@ mod tests {
     /// The display arguments of the `index`th spawn.
     fn spawned_args(driver: &mut Driver<FakeRunner>, index: usize) -> Vec<std::ffi::OsString> {
         let started = driver.runner().starts[index].clone();
-        crate::display::spawn_args(true, &started)
+        crate::display::spawn_display(true, &started).args
     }
 
     #[test]
@@ -3893,7 +4317,8 @@ mod tests {
 
     #[test]
     fn a_switch_into_keypad_pages_follows_module_control() {
-        // App: the switched-to keypad profile gets display sync.
+        // App: the switched-to keypad profile gets display sync (and the
+        // flat one too, shown as one page).
         let mut driver = Driver::new(FakeRunner {
             display: APP_CONTROL,
             ..FakeRunner::default()
@@ -3904,7 +4329,7 @@ mod tests {
         flat.software_mode = false;
         let id = driver.start(flat.clone(), 0).unwrap();
         assert!(driver.runner().starts[0].software_mode);
-        assert!(spawned_args(&mut driver, 0).is_empty());
+        assert_eq!(spawned_args(&mut driver, 0), ["--display-sync"]);
         driver
             .switch_profile(&id, "Folders".into(), crate::test_profiles::folders(), 10)
             .unwrap();
@@ -4381,5 +4806,565 @@ mod tests {
             Ok(1)
         );
         assert_eq!(last(&mut driver).profile_id.as_deref(), Some("id-a"));
+    }
+
+    // Automatic starts (module control `App`).
+
+    const SAVED_ID: &str = "00000000-0000-4000-8000-0000000000aa";
+
+    fn auto_driver(settings: DisplaySettings) -> Driver<FakeRunner> {
+        Driver::new(FakeRunner {
+            display: settings,
+            auto_start: true,
+            ..FakeRunner::default()
+        })
+    }
+
+    fn knob(path: &str) -> LiveDevice {
+        device(ServiceModule::M003K, Some("KNB-1"), path)
+    }
+
+    /// One of every module, the keypad and dial first.
+    fn rig() -> Vec<LiveDevice> {
+        vec![
+            dial("/a"),
+            keypad("/k"),
+            knob("/n"),
+            device(ServiceModule::M032LE, Some("ROL-1"), "/r"),
+            device(ServiceModule::M005S, Some("FAD-1"), "/f"),
+        ]
+    }
+
+    fn auto_states(driver: &mut Driver<FakeRunner>) -> Vec<(ServiceModule, Option<AutoStart>)> {
+        driver
+            .states()
+            .into_iter()
+            .map(|state| (state.module, state.auto_start))
+            .collect()
+    }
+
+    #[test]
+    fn app_control_starts_a_dry_run_display_session_on_the_keypad_and_dial_only() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(rig(), 0);
+        // Exactly the dial and the keypad, as dry runs in software mode with
+        // the settings read for this inventory and the blank profile.
+        assert_eq!(starts(&mut driver), 2);
+        for index in 0..2 {
+            let started = driver.runner().starts[index].clone();
+            assert!(!started.execute && started.software_mode);
+            assert_eq!(started.profile, crate::startup::blank_profile());
+            assert_eq!(started.profile_id, None);
+            assert_eq!(started.display.unwrap().settings, APP_CONTROL);
+            assert!(display::app_controls(started.display.unwrap().module));
+        }
+        assert_eq!(
+            spawned_args(&mut driver, 0),
+            ["--display-sync", "--dial-content", "clock"]
+        );
+        // The blank (flat) profile is drawn as one empty page on the keys.
+        assert_eq!(spawned_args(&mut driver, 1), ["--display-sync"]);
+        let started = driver.runner().starts[1].clone();
+        let page = crate::display::spawn_display(true, &started)
+            .profile
+            .unwrap();
+        assert_eq!(page.keypad.unwrap().pages.len(), 1);
+        // Marked as started when the app opened, in every emitted state and
+        // in the list a reconnecting window reads.
+        assert!(driver.runner().emitted.iter().all(|state| {
+            state.auto_start == Some(AutoStart::AppOpened)
+                && !state.execute
+                && state.phase == Phase::Running
+        }));
+        assert_eq!(
+            auto_states(&mut driver),
+            [
+                (DIAL, Some(AutoStart::AppOpened)),
+                (ServiceModule::M4315, Some(AutoStart::AppOpened)),
+            ]
+        );
+        let json = serde_json::to_value(&driver.states()[0]).unwrap();
+        assert_eq!(json["auto_start"], "app_opened");
+        // The same inventory again starts nothing new.
+        driver.inventory(rig(), 1);
+        assert_eq!(starts(&mut driver), 2);
+        // A user's Start on a module an automatic session runs is refused
+        // like any other second start.
+        let error = driver.start(request(&keypad("/k"), false), 2).unwrap_err();
+        assert!(error.contains("already running"), "{error}");
+    }
+
+    #[test]
+    fn a_connected_module_starts_once_per_appearance_and_a_replug_reclaims_its_session() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![knob("/n")], 0);
+        assert_eq!(starts(&mut driver), 0);
+        driver.inventory(vec![knob("/n"), keypad("/k")], 10);
+        assert_eq!(starts(&mut driver), 1);
+        let keypad_id = last(&mut driver).session_id;
+        assert_eq!(
+            last(&mut driver).auto_start,
+            Some(AutoStart::ModuleConnected)
+        );
+        // Unplugged and replugged on a new path: its own session reconnects
+        // there (a dry run, still marked automatic); no second session.
+        driver.inventory(vec![knob("/n")], 20);
+        exit(
+            &mut driver,
+            &keypad_id,
+            "masterhub-service: read failed",
+            21,
+        );
+        assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
+        driver.inventory(vec![knob("/n"), keypad("/k2")], 30);
+        // After the usual backoff for the exit while it was unplugged.
+        driver.tick(21 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.states().len(), 1);
+        let state = last(&mut driver);
+        assert_eq!(state.session_id, keypad_id);
+        assert_eq!(state.auto_start, Some(AutoStart::ModuleConnected));
+        assert!(!driver.runner().starts[1].execute);
+        // The user stops it: it stays stopped while the module stays.
+        driver.stop(&keypad_id, true, 40);
+        let current = driver.runner().stops.last().unwrap().clone();
+        exit(&mut driver, &current, "", 41);
+        assert!(driver.states().is_empty());
+        driver.inventory(vec![knob("/n"), keypad("/k2")], 50);
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 2);
+        // Connected again: one new automatic session.
+        driver.inventory(vec![knob("/n")], 1_000_001);
+        driver.inventory(vec![knob("/n"), keypad("/k3")], 1_000_002);
+        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(
+            auto_states(&mut driver),
+            [(ServiceModule::M4315, Some(AutoStart::ModuleConnected))]
+        );
+    }
+
+    #[test]
+    fn built_in_animation_unreadable_settings_and_other_modules_never_start_on_their_own() {
+        for settings in [BUILT_IN, DisplaySettings::UNREADABLE] {
+            let mut driver = auto_driver(settings);
+            driver.inventory(rig(), 0);
+            driver.inventory(vec![], 1);
+            driver.inventory(rig(), 2);
+            assert_eq!(starts(&mut driver), 0);
+            assert!(driver.runner().emitted.is_empty());
+        }
+        // App: knobs, rollers and faders never start on their own.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(rig()[2..].to_vec(), 0);
+        assert_eq!(starts(&mut driver), 0);
+        // A runner without startup profiles never starts anything either.
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL,
+            ..FakeRunner::default()
+        });
+        driver.inventory(rig(), 0);
+        assert_eq!(starts(&mut driver), 0);
+        // Nothing starts once app exit began.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.shutdown(0);
+        driver.inventory(rig(), 1);
+        assert_eq!(starts(&mut driver), 0);
+    }
+
+    #[test]
+    fn an_automatic_start_is_a_dry_run_even_when_its_profile_last_ran_with_actions() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![knob("/n")], 0);
+        // The user runs a saved profile with actions on the keypad; it is
+        // remembered for the module's serial.
+        driver.inventory(vec![knob("/n"), keypad("/k")], 1);
+        let auto_id = last(&mut driver).session_id;
+        driver.stop(&auto_id, true, 2);
+        exit(&mut driver, &auto_id, "", 3);
+        let mut executing = request(&keypad("/k"), true);
+        executing.profile_id = Some(SAVED_ID.into());
+        let id = driver.start(executing, 4).unwrap();
+        assert!(driver.runner().starts[1].execute);
+        assert_eq!(
+            driver.runner().remembered,
+            [(ServiceModule::M4315, Some("KEY-1".into()), SAVED_ID.into())]
+        );
+        driver.stop(&id, true, 5);
+        exit(&mut driver, &id, "", 6);
+        // Reconnected: the remembered profile starts, as a dry run.
+        driver.runner().last_profiles.insert(
+            "KEY-1".into(),
+            (SAVED_ID.into(), crate::test_profiles::folders()),
+        );
+        driver.inventory(vec![knob("/n")], 7);
+        driver.inventory(vec![knob("/n"), keypad("/k")], 8);
+        let started = driver.runner().starts[2].clone();
+        assert!(!started.execute);
+        assert_eq!(started.profile, crate::test_profiles::folders());
+        assert_eq!(started.profile_id.as_deref(), Some(SAVED_ID));
+        let auto_id = last(&mut driver).session_id;
+        // Sleep and wake, and a crash: it restarts on its own, never
+        // executing and never waiting for a confirmation.
+        driver.power(PowerEvent::Suspend, 10);
+        exit(&mut driver, &auto_id, "", 11);
+        driver.power(PowerEvent::Resume, 20);
+        driver.tick(20 + SETTLE_DELAY_MS);
+        let current = last(&mut driver).service_id.unwrap();
+        exit(
+            &mut driver,
+            &current,
+            "masterhub-service: read failed",
+            3_000,
+        );
+        driver.tick(3_000 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 5);
+        assert!(
+            driver.runner().starts[2..]
+                .iter()
+                .all(|start| !start.execute)
+        );
+        assert!(
+            driver
+                .runner()
+                .emitted
+                .iter()
+                .all(|state| state.phase != Phase::NeedsConfirmation)
+        );
+    }
+
+    #[test]
+    fn a_module_connected_while_asleep_starts_only_after_wake() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![], 0);
+        driver.power(PowerEvent::Suspend, 1);
+        // Inventory polls in a dark wake: a session, but no process.
+        driver.inventory(vec![dial("/a")], MISSED_WAKE_MS * 2);
+        assert_eq!(starts(&mut driver), 0);
+        assert_eq!(phase(&mut driver), Phase::Suspended);
+        // It never clears the sleep the way a user's Start would.
+        driver.tick(MISSED_WAKE_MS * 3);
+        assert_eq!(starts(&mut driver), 0);
+        let woke = MISSED_WAKE_MS * 3 + 1;
+        driver.power(PowerEvent::Resume, woke);
+        driver.tick(woke + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 1);
+        assert!(!driver.runner().starts[0].execute);
+        assert_eq!(
+            last(&mut driver).auto_start,
+            Some(AutoStart::ModuleConnected)
+        );
+    }
+
+    #[test]
+    fn starts_and_switches_remember_the_saved_profile_of_the_module() {
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![keypad("/k"), dial("/a")], 0);
+        // An unsaved draft (no profile id) is not remembered.
+        driver.start(request(&dial("/a"), false), 0).unwrap();
+        assert!(driver.runner().remembered.is_empty());
+        let mut saved = request(&keypad("/k"), false);
+        saved.profile_id = Some(SAVED_ID.into());
+        let id = driver.start(saved, 1).unwrap();
+        let other = "00000000-0000-4000-8000-0000000000bb";
+        driver
+            .switch_profile(&id, other.into(), renamed("Other"), 2)
+            .unwrap();
+        assert_eq!(
+            driver.runner().remembered,
+            [
+                (ServiceModule::M4315, Some("KEY-1".into()), SAVED_ID.into()),
+                (ServiceModule::M4315, Some("KEY-1".into()), other.into()),
+            ]
+        );
+    }
+
+    /// HIDAPI's error on macOS for a module another program holds open.
+    const EXCLUSIVE: &str = "masterhub-service: hidapi error: hid_open_path: failed to open IOHIDDevice from mach entry: (0xE00002C5) (iokit/common) exclusive access and device already open\n";
+
+    #[test]
+    fn a_module_in_use_by_another_program_stops_with_a_message_instead_of_retrying() {
+        // It is a HIDAPI error, which alone would be retried.
+        assert!(device_unavailable(EXCLUSIVE) && in_use(EXCLUSIVE));
+        assert!(in_use("hidapi error: (0xe00002c5)"));
+        assert!(!in_use(
+            "masterhub-service: hidapi error: Selected interface is absent"
+        ));
+        for execute in [false, true] {
+            let mut driver = Driver::new(FakeRunner::default());
+            driver.inventory(vec![keypad("/k")], 0);
+            let id = driver.start(request(&keypad("/k"), execute), 0).unwrap();
+            refuse(&mut driver, &id, EXCLUSIVE, 10);
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.detail.as_deref()),
+                (Phase::Stopped, Some(Reason::StartRefused), Some(IN_USE))
+            );
+            assert_eq!(driver.next_due(), None);
+            driver.tick(1_000_000);
+            driver.inventory(vec![keypad("/k")], 1_000_001);
+            assert_eq!(starts(&mut driver), 1);
+        }
+        // An automatic session is tried once per appearance, never in a loop.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![keypad("/k")], 0);
+        let id = last(&mut driver).session_id;
+        refuse(&mut driver, &id, EXCLUSIVE, 10);
+        assert_eq!(last(&mut driver).detail.as_deref(), Some(IN_USE));
+        for now in [20, 30, 40] {
+            driver.inventory(vec![keypad("/k")], now);
+            driver.tick(now * 1_000);
+        }
+        assert_eq!(starts(&mut driver), 1);
+        driver.inventory(vec![], 50_000);
+        driver.inventory(vec![keypad("/k")], 50_001);
+        assert_eq!(starts(&mut driver), 2);
+    }
+
+    #[test]
+    fn app_exit_ends_automatic_sessions_like_any_other() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(rig(), 0);
+        let (done, finished) = mpsc::channel();
+        assert!(!driver.handle(Input::Shutdown(done), 1));
+        assert!(finished.try_recv().is_ok());
+        let stopped: Vec<_> = driver
+            .runner()
+            .emitted
+            .iter()
+            .filter(|state| state.phase == Phase::Stopped)
+            .map(|state| (state.module, state.reason))
+            .collect();
+        // Both stop as the user's runs do; `Services::stop_all` then stops
+        // the processes, which restores the built-in animation.
+        assert_eq!(
+            stopped,
+            [
+                (DIAL, Some(Reason::User)),
+                (ServiceModule::M4315, Some(Reason::User))
+            ]
+        );
+        assert!(driver.states().is_empty());
+    }
+
+    #[test]
+    fn the_driver_thread_lists_session_states() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![dial("/a")], 0);
+        let (reply, answer) = mpsc::channel();
+        assert!(driver.handle(Input::Sessions(reply), 1));
+        let states = answer.try_recv().unwrap();
+        assert_eq!(states, [last(&mut driver)]);
+    }
+
+    #[test]
+    fn leaving_app_control_ends_automatic_sessions_and_a_replug_starts_nothing() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![keypad("/k"), knob("/n")], 0);
+        let auto_id = last(&mut driver).session_id;
+        // A run the user started (here on the knobs) is not affected.
+        driver.inventory(vec![keypad("/k"), knob("/n"), dial("/a")], 1);
+        let dial_id = last(&mut driver).session_id;
+        driver.stop(&dial_id, true, 2);
+        exit(&mut driver, &dial_id, "", 3);
+        let user_id = driver.start(request(&dial("/a"), false), 4).unwrap();
+        // Still App: nothing changes.
+        driver.module_control_changed(5);
+        assert!(driver.runner().stops.len() == 1);
+        // Settings switched to built-in animation with the keypad connected.
+        driver.runner().display = BUILT_IN;
+        driver.module_control_changed(10);
+        assert_eq!(driver.runner().batches, [vec![auto_id.clone()]]);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.session_id.as_str(), state.phase, state.reason),
+            (
+                auto_id.as_str(),
+                Phase::Stopped,
+                Some(Reason::ModuleControl)
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(state.reason).unwrap(),
+            "module_control"
+        );
+        exit(&mut driver, &auto_id, "", 11);
+        assert!(driver.session(&auto_id).is_none());
+        assert_eq!(driver.session(&user_id).unwrap().phase(), Phase::Running);
+        // Unplugged and replugged afterwards: nothing starts on its own.
+        driver.inventory(vec![knob("/n"), dial("/a")], 20);
+        driver.inventory(vec![keypad("/k2"), knob("/n"), dial("/a")], 21);
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(driver.states().len(), 1);
+        // Unreadable settings end automatic sessions too.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![dial("/a")], 0);
+        driver.runner().display = DisplaySettings::UNREADABLE;
+        driver.module_control_changed(1);
+        assert_eq!(last(&mut driver).reason, Some(Reason::ModuleControl));
+    }
+
+    #[test]
+    fn a_reconnecting_automatic_session_checks_module_control_before_it_respawns() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![keypad("/k")], 0);
+        let id = last(&mut driver).session_id;
+        // Unplugged; the setting changes without a notification reaching
+        // the driver (the file became unreadable meanwhile).
+        driver.inventory(vec![], 10);
+        exit(&mut driver, &id, "masterhub-service: read failed", 11);
+        driver.runner().display = BUILT_IN;
+        driver.inventory(vec![keypad("/k2")], 20);
+        driver.tick(11 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 1, "respawned under built-in animation");
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason),
+            (Phase::Stopped, Some(Reason::ModuleControl))
+        );
+        assert!(driver.session(&id).is_none());
+        // Sleep and wake take the same check.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![dial("/a")], 0);
+        let id = last(&mut driver).session_id;
+        driver.power(PowerEvent::Suspend, 1);
+        exit(&mut driver, &id, "", 2);
+        driver.runner().display = DisplaySettings::UNREADABLE;
+        driver.power(PowerEvent::Resume, 3);
+        driver.tick(3 + SETTLE_DELAY_MS);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(last(&mut driver).reason, Some(Reason::ModuleControl));
+        // A user's run under App keeps respawning: it keeps its setting.
+        let (mut driver, id) = running(false);
+        driver.runner().display = BUILT_IN;
+        exit(&mut driver, &id, "masterhub-service: read failed", 10);
+        driver.tick(10 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 2);
+    }
+
+    #[test]
+    fn a_serial_less_module_back_on_a_new_path_gets_no_second_session() {
+        let serial_less = |path: &str| device(ServiceModule::M4315, None, path);
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![serial_less("/k")], 0);
+        assert_eq!(starts(&mut driver), 1);
+        // The old process has not ended yet when the new path appears.
+        driver.inventory(vec![serial_less("/k2")], 10);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(driver.states().len(), 1);
+    }
+
+    #[test]
+    fn a_refused_automatic_start_cools_down_before_the_module_starts_again() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![keypad("/k"), dial("/a")], 0);
+        let keypad_id = driver.states()[0].session_id.clone();
+        refuse(&mut driver, &keypad_id, EXCLUSIVE, 1_000);
+        assert_eq!(starts(&mut driver), 2);
+        // Flapping within the cooldown: no new session for that serial,
+        // while another module is unaffected.
+        for now in [2_000, 10_000, 30_998] {
+            driver.inventory(vec![dial("/a")], now);
+            driver.inventory(vec![keypad("/k"), dial("/a")], now + 1);
+        }
+        assert_eq!(starts(&mut driver), 2);
+        driver.inventory(vec![keypad("/k")], 31_100);
+        assert_eq!(starts(&mut driver), 2);
+        // After it, the next appearance starts once more.
+        driver.inventory(vec![], 31_200);
+        driver.inventory(vec![keypad("/k"), dial("/a")], 31_201);
+        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(last(&mut driver).module, ServiceModule::M4315);
+        // A spawn that fails at once cools down the same way.
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.runner().fail_next = Some("could not spawn".into());
+        driver.inventory(vec![dial("/a")], 0);
+        assert_eq!(starts(&mut driver), 0);
+        driver.inventory(vec![], 1);
+        driver.inventory(vec![dial("/a")], 2);
+        assert_eq!(starts(&mut driver), 0);
+        driver.inventory(vec![], AUTO_RETRY_COOLDOWN_MS);
+        driver.inventory(vec![dial("/a")], AUTO_RETRY_COOLDOWN_MS + 1);
+        assert_eq!(starts(&mut driver), 1);
+    }
+
+    #[test]
+    fn a_settings_file_damaged_from_outside_is_noticed_while_an_automatic_session_runs() {
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![dial("/a")], 0);
+        let id = last(&mut driver).session_id;
+        // A live automatic session wakes the driver for the check.
+        assert_eq!(driver.next_due(), Some(0));
+        driver.tick(0);
+        assert_eq!(driver.next_due(), Some(MODULE_CONTROL_CHECK_MS));
+        // Read at most once per interval.
+        let reads = driver.runner().display_reads;
+        driver.tick(1);
+        driver.tick(MODULE_CONTROL_CHECK_MS - 1);
+        assert_eq!(driver.runner().display_reads, reads);
+        driver.runner().display = DisplaySettings::UNREADABLE;
+        driver.tick(MODULE_CONTROL_CHECK_MS);
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason),
+            (Phase::Stopped, Some(Reason::ModuleControl))
+        );
+        exit(&mut driver, &id, "", MODULE_CONTROL_CHECK_MS + 1);
+        // Nothing automatic left: no more checks.
+        assert_eq!(driver.next_due(), None);
+        // Without automatic sessions the setting is never polled.
+        let (mut driver, _) = running(false);
+        let reads = driver.runner().display_reads;
+        driver.tick(1_000_000);
+        assert_eq!(driver.runner().display_reads, reads);
+        assert_eq!(driver.next_due(), None);
+    }
+
+    #[test]
+    fn switching_to_app_control_starts_the_modules_already_connected() {
+        let mut driver = auto_driver(BUILT_IN);
+        driver.inventory(vec![keypad("/k"), dial("/a"), knob("/n")], 0);
+        assert_eq!(starts(&mut driver), 0);
+        // The user runs the dial by hand meanwhile; it is left alone.
+        let user_id = driver.start(request(&dial("/a"), false), 1).unwrap();
+        // Built-in again: nothing changes.
+        driver.module_control_changed(2);
+        assert_eq!(starts(&mut driver), 1);
+        driver.runner().display = APP_CONTROL;
+        driver.module_control_changed(3);
+        assert_eq!(starts(&mut driver), 2);
+        let started = driver.runner().starts[1].clone();
+        assert!(!started.execute && started.software_mode);
+        assert_eq!(started.display.unwrap().module, ServiceModule::M4315);
+        assert_eq!(
+            auto_states(&mut driver),
+            [
+                (DIAL, None),
+                (ServiceModule::M4315, Some(AutoStart::ModuleControlSet))
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(AutoStart::ModuleControlSet).unwrap(),
+            "module_control_set"
+        );
+        // App read again (Settings saved, or the periodic check) starts
+        // nothing more, so a module the user stopped stays stopped.
+        let keypad_id = last(&mut driver).session_id;
+        driver.stop(&keypad_id, true, 4);
+        exit(&mut driver, &keypad_id, "", 5);
+        driver.module_control_changed(6);
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.session(&user_id).is_some());
+        // Unreadable settings that are fixed again count as a switch to App.
+        driver.runner().display = DisplaySettings::UNREADABLE;
+        driver.module_control_changed(1_000_001);
+        driver.runner().display = APP_CONTROL;
+        driver.module_control_changed(1_000_002);
+        assert_eq!(starts(&mut driver), 3);
     }
 }

@@ -33,6 +33,9 @@ export const writeAutoDetect = (storage: Pick<Storage, 'setItem'>, on: boolean) 
   try { storage.setItem(autoDetectStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
 };
 
+// start_feed's refusal while a service runs on the path (service::check_feed_allowed).
+export const serviceOwnsDevice = /^service \S+ is using this device; stop it before starting a feed$/;
+
 // Devices are identified by path. A module swap shows up as one removal plus one addition.
 export function diffDevices(previous: LiveDevice[], next: LiveDevice[]): { added: LiveDevice[]; removed: LiveDevice[] } {
   const before = new Set(previous.map(device => device.path_hex));
@@ -208,6 +211,9 @@ export class DeviceFeed {
         if (!this.state.feeds[feedId]) this.set({ feeds: { ...this.state.feeds, [feedId]: { feedId, state: 'running', source: 'live', module: null } } });
         return;
       }
+      // A session owns the module (the session manager can start one on its own the moment a module appears, before
+      // this window heard of it): its own records drive the preview, so an automatic feed has nothing to report.
+      if (auto && serviceOwnsDevice.test(errorMessage(reason))) return;
       if (!auto || present()) this.set({ error: errorMessage(reason) });
     }
   }

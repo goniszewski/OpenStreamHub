@@ -27,6 +27,7 @@
     "allow-stop-service",
     "allow-resume-session",
     "allow-stop-session",
+    "allow-list-sessions",
     "allow-list-focus-rules",
     "allow-save-focus-rule",
     "allow-delete-focus-rule",

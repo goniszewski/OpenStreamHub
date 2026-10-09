@@ -19,12 +19,15 @@
 //! any module, nothing drawn on a display, and a schema-2 keypad profile is
 //! refused with a message that names the damaged file.
 //!
-//! The settings are read once when the user starts a managed session
-//! (`session::Driver::start`) and kept with that session, so wake, reconnect,
-//! crash and profile-switch restarts use the value the session started with.
-//! Changing the setting never stops or restarts anything; it applies at the
-//! next Start. `display_args` turns the session's copy into
-//! `masterhub-service` arguments for each spawn. Hardware results are in
+//! The settings are read once when a managed session starts (a user's Start,
+//! or an automatic start, which happens only under `App`; see `startup.rs`)
+//! and kept with that session, so wake, reconnect, crash and profile-switch
+//! restarts use the value the session started with. Changing the setting
+//! never stops or restarts anything; it applies at the next start.
+//! `spawn_display` turns the session's copy into `masterhub-service`
+//! arguments for each spawn, showing a flat keypad profile as one page
+//! (`single_page`) and a calm dial face for a profile with nothing on the
+//! dial (`dial_content`). Hardware results are in
 //! `docs/masterhub-hardware-results.md`; see also
 //! `docs/masterhub-display-sync.md` and `docs/masterhub-session-manager.md`.
 
@@ -216,15 +219,38 @@ pub struct DisplayLaunch {
     pub module: ServiceModule,
 }
 
+/// True when `profile` binds anything on the M131E dial.
+fn binds_dial(profile: &Profile) -> bool {
+    profile.dial_functions.is_some()
+        || profile
+            .bindings
+            .iter()
+            .any(|binding| binding.module == ServiceModule::M131E)
+}
+
+/// What the dial shows for `profile`. With the default "function" content a
+/// profile that binds nothing on the dial (such as the blank startup profile)
+/// has no function to name, so the dial shows the calm analog clock face
+/// instead of a profile name; every other choice is kept as set.
+fn dial_content(settings: DisplaySettings, profile: &Profile) -> DialContent {
+    if settings.dial_content == DialContent::Function && !binds_dial(profile) {
+        DialContent::AnalogClock
+    } else {
+        settings.dial_content
+    }
+}
+
 /// Extra `masterhub-service run` arguments for one spawn of a managed session.
 ///
 /// Nothing unless module control is `App` and the run requests software mode,
 /// which `--display-sync` requires (`session::Driver::start` requests it for
 /// every M4315 and M131E session with `App`). An M4315 gets `--display-sync`
-/// only for a schema-2 keypad profile, so a profile switch between flat and
-/// keypad profiles follows the profile of each spawn; an M131E gets
-/// `--display-sync --dial-content` unless the dial content is off. Every
-/// other module runs with exactly the arguments it had without the setting.
+/// only for a schema-2 keypad profile (`spawn_display` first turns a flat
+/// profile into one page), so a profile switch between flat and keypad
+/// profiles follows the profile of each spawn; an M131E gets
+/// `--display-sync --dial-content` unless the dial content is off (see
+/// `dial_content` for a profile with nothing on the dial). Every other module
+/// runs with exactly the arguments it had without the setting.
 pub fn display_args(
     launch: Option<&DisplayLaunch>,
     software_mode: bool,
@@ -243,23 +269,63 @@ pub fn display_args(
         ServiceModule::M131E if launch.settings.dial_content != DialContent::Off => vec![
             "--display-sync".into(),
             "--dial-content".into(),
-            launch.settings.dial_content.arg().into(),
+            dial_content(launch.settings, profile).arg().into(),
         ],
         _ => Vec::new(),
     }
 }
 
-/// The display arguments for one spawn: only a session-managed process gets
-/// any, never an unmanaged run (`lib.rs` `run_service`).
-pub fn spawn_args(managed: bool, request: &StartRequest) -> Vec<OsString> {
-    if !managed {
-        return Vec::new();
+/// A flat (schema-1) profile as one keypad page, for a keypad spawn that syncs
+/// its display. `Profile::into_v2` puts every M4315 binding on its own root
+/// key (labelled "Key N") with its gesture, serial selector and action, and
+/// keeps every other binding, so `--display-sync` can draw it and the keys
+/// plan and run the same actions as the flat profile. Only under module
+/// control `App` with software mode on an M4315; never for a schema-2 profile
+/// or one the conversion or the app's validation refuses, which runs flat in
+/// software mode without display sync, as before.
+pub fn single_page(
+    launch: Option<&DisplayLaunch>,
+    software_mode: bool,
+    profile: &Profile,
+) -> Option<Profile> {
+    let launch = launch?;
+    if launch.module != ServiceModule::M4315
+        || launch.settings.module_control != ModuleControl::App
+        || !software_mode
+        || profile.schema_version != 1
+    {
+        return None;
     }
-    display_args(
-        request.display.as_ref(),
+    let page = profile.clone().into_v2().ok()?;
+    crate::replay::validate_profile(&page).ok()?;
+    Some(page)
+}
+
+/// What one spawn writes and passes for the module displays.
+#[derive(Debug, Default, PartialEq)]
+pub struct SpawnDisplay {
+    /// The profile to write instead of the session's own (a flat keypad
+    /// profile shown as one page), or `None` to write the session's profile.
+    /// The session keeps its own profile for restarts, switches and the
+    /// Resume dialog.
+    pub profile: Option<Profile>,
+    pub args: Vec<OsString>,
+}
+
+/// The display profile and arguments for one spawn: only a session-managed
+/// process gets any, never an unmanaged run (`lib.rs` `run_service`).
+pub fn spawn_display(managed: bool, request: &StartRequest) -> SpawnDisplay {
+    if !managed {
+        return SpawnDisplay::default();
+    }
+    let launch = request.display.as_ref();
+    let profile = single_page(launch, request.software_mode, &request.profile);
+    let args = display_args(
+        launch,
         request.software_mode,
-        &request.profile,
-    )
+        profile.as_ref().unwrap_or(&request.profile),
+    );
+    SpawnDisplay { profile, args }
 }
 
 /// `display-settings.json` inside the app data folder.
@@ -582,7 +648,7 @@ mod tests {
             display_args(
                 Some(&launch(ServiceModule::M131E, DisplaySettings::default())),
                 true,
-                &flat()
+                &with_dial_binding(flat())
             ),
             ["--display-sync", "--dial-content", "function"]
         );
@@ -641,13 +707,189 @@ mod tests {
             display: Some(launch(ServiceModule::M4315, APP)),
             obs: None,
         };
-        assert_eq!(spawn_args(true, &request), ["--display-sync"]);
-        assert!(spawn_args(false, &request).is_empty());
+        assert_eq!(
+            spawn_display(true, &request),
+            SpawnDisplay {
+                profile: None,
+                args: vec!["--display-sync".into()]
+            }
+        );
+        assert_eq!(spawn_display(false, &request), SpawnDisplay::default());
         let unidentified = StartRequest {
             display: None,
+            ..request.clone()
+        };
+        assert_eq!(spawn_display(true, &unidentified), SpawnDisplay::default());
+        // Not even a flat profile is converted for an unmanaged run.
+        let flat_unmanaged = StartRequest {
+            profile: flat(),
             ..request
         };
-        assert!(spawn_args(true, &unidentified).is_empty());
+        assert_eq!(
+            spawn_display(false, &flat_unmanaged),
+            SpawnDisplay::default()
+        );
+    }
+
+    /// `profile` with one binding on the dial.
+    fn with_dial_binding(mut profile: Profile) -> Profile {
+        profile.bindings.push(cooltek_sdk_service::Binding {
+            module: ServiceModule::M131E,
+            control: 0,
+            gesture: cooltek_sdk_service::Gesture::Right,
+            serial_number: None,
+            action: cooltek_sdk_service::Action::Volume { delta: 2 },
+        });
+        profile.validate().unwrap();
+        profile
+    }
+
+    /// A flat profile with two keypad bindings on keys 1 and 15.
+    fn flat_keys() -> Profile {
+        let mut profile = flat();
+        for (control, delta) in [(0, 3), (14, -3)] {
+            profile.bindings.push(cooltek_sdk_service::Binding {
+                module: ServiceModule::M4315,
+                control,
+                gesture: cooltek_sdk_service::Gesture::Pressed,
+                serial_number: None,
+                action: cooltek_sdk_service::Action::Volume { delta },
+            });
+        }
+        profile.validate().unwrap();
+        profile
+    }
+
+    #[test]
+    fn a_flat_keypad_profile_is_shown_as_one_page_under_app_control() {
+        use cooltek_sdk_service::KeypadTile;
+        let request = |profile: Profile, settings, module, software_mode| StartRequest {
+            profile,
+            path_hex: "41".into(),
+            execute: false,
+            software_mode,
+            profile_id: None,
+            source_profile_id: None,
+            display: Some(launch(module, settings)),
+            obs: None,
+        };
+        let shown = spawn_display(true, &request(flat_keys(), APP, ServiceModule::M4315, true));
+        assert_eq!(shown.args, ["--display-sync"]);
+        let page = shown.profile.unwrap();
+        // One root page; each keypad binding on its own key with its action,
+        // every other binding unchanged, the name kept.
+        assert_eq!((page.schema_version, page.name.as_str()), (2, "Folders"));
+        let pages = &page.keypad.as_ref().unwrap().pages;
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].id, "root");
+        let bound: Vec<usize> = pages[0]
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.is_some())
+            .map(|(index, _)| index)
+            .collect();
+        assert_eq!(bound, [0, 14]);
+        let Some(KeypadTile::Action { bindings, .. }) = &pages[0].slots[14] else {
+            panic!("key 15 is not an action tile");
+        };
+        assert_eq!(
+            bindings[0].action,
+            cooltek_sdk_service::Action::Volume { delta: -3 }
+        );
+        assert_eq!(
+            page.bindings,
+            flat()
+                .bindings
+                .into_iter()
+                .filter(|binding| binding.module != ServiceModule::M4315)
+                .collect::<Vec<_>>()
+        );
+        // The blank startup profile is one empty page.
+        let blank = spawn_display(
+            true,
+            &request(
+                crate::startup::blank_profile(),
+                APP,
+                ServiceModule::M4315,
+                true,
+            ),
+        );
+        assert_eq!(blank.args, ["--display-sync"]);
+        let blank = blank.profile.unwrap();
+        assert!(
+            blank.keypad.unwrap().pages[0]
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
+        // Never under built-in animation or unreadable settings, without
+        // software mode, for a schema-2 profile or on another module.
+        for (profile, settings, module, software_mode) in [
+            (flat_keys(), BUILT_IN, ServiceModule::M4315, true),
+            (
+                flat_keys(),
+                DisplaySettings::UNREADABLE,
+                ServiceModule::M4315,
+                true,
+            ),
+            (flat_keys(), APP, ServiceModule::M4315, false),
+            (test_profiles::folders(), APP, ServiceModule::M4315, true),
+            (flat_keys(), APP, ServiceModule::M131E, true),
+            (flat_keys(), APP, ServiceModule::M003K, true),
+        ] {
+            let request = request(profile, settings, module, software_mode);
+            assert_eq!(
+                single_page(request.display.as_ref(), software_mode, &request.profile),
+                None
+            );
+            assert!(spawn_display(true, &request).profile.is_none());
+        }
+        // A profile the conversion refuses is passed on flat, without display
+        // sync, exactly as before (the service then reports its own error).
+        let mut invalid = flat_keys();
+        invalid.name = " ".into();
+        let refused = request(invalid, APP, ServiceModule::M4315, true);
+        assert_eq!(spawn_display(true, &refused), SpawnDisplay::default());
+    }
+
+    #[test]
+    fn the_dial_shows_an_idle_face_for_a_profile_with_nothing_on_it() {
+        let dial = |settings| launch(ServiceModule::M131E, settings);
+        let function = DisplaySettings::default();
+        let blank = crate::startup::blank_profile();
+        // Nothing bound on the dial: the analog clock instead of a name.
+        for profile in [&blank, &flat(), &test_profiles::folders()] {
+            assert_eq!(
+                display_args(Some(&dial(function)), true, profile),
+                ["--display-sync", "--dial-content", "analog-clock"]
+            );
+        }
+        // A dial binding or dial functions keep the function name.
+        assert_eq!(
+            display_args(Some(&dial(function)), true, &with_dial_binding(flat()))[2],
+            "function"
+        );
+        // Every explicit choice is kept, and off stays off.
+        for content in [
+            DialContent::Clock,
+            DialContent::Cpu,
+            DialContent::AnalogClock,
+        ] {
+            let settings = DisplaySettings {
+                dial_content: content,
+                ..APP
+            };
+            assert_eq!(
+                display_args(Some(&dial(settings)), true, &blank)[2],
+                content.arg()
+            );
+        }
+        let off = DisplaySettings {
+            dial_content: DialContent::Off,
+            ..APP
+        };
+        assert!(display_args(Some(&dial(off)), true, &blank).is_empty());
     }
 
     #[test]

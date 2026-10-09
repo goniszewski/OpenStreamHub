@@ -1,0 +1,62 @@
+{
+  "events": [
+    {
+      "attempt": 0,
+      "auto_start": "app_opened",
+      "execute": false,
+      "module": "m131e",
+      "phase": "running",
+      "profile_generation": 0,
+      "profile_id": null,
+      "profile_name": "Blank (built-in)",
+      "reason": null,
+      "serial_number": "ABCDEF123456",
+      "service_id": "service:2f6465762f6869647261772d30323032",
+      "session_id": "service:2f6465762f6869647261772d30323032"
+    },
+    {
+      "attempt": 0,
+      "auto_start": "module_connected",
+      "execute": false,
+      "module": "m4315",
+      "phase": "running",
+      "profile_generation": 0,
+      "profile_id": null,
+      "profile_name": "Blank (built-in)",
+      "reason": null,
+      "serial_number": "KEY123456",
+      "service_id": "service:2f6465762f6869647261772d30343034",
+      "session_id": "service:2f6465762f6869647261772d30343034"
+    }
+  ],
+  "list_sessions": [
+    {
+      "attempt": 0,
+      "auto_start": "app_opened",
+      "execute": false,
+      "module": "m131e",
+      "phase": "running",
+      "profile_generation": 0,
+      "profile_id": null,
+      "profile_name": "Blank (built-in)",
+      "reason": null,
+      "serial_number": "ABCDEF123456",
+      "service_id": "service:2f6465762f6869647261772d30323032",
+      "session_id": "service:2f6465762f6869647261772d30323032"
+    },
+    {
+      "attempt": 0,
+      "auto_start": "module_connected",
+      "execute": false,
+      "module": "m4315",
+      "phase": "running",
+      "profile_generation": 0,
+      "profile_id": null,
+      "profile_name": "Blank (built-in)",
+      "reason": null,
+      "serial_number": "KEY123456",
+      "service_id": "service:2f6465762f6869647261772d30343034",
+      "session_id": "service:2f6465762f6869647261772d30343034"
+    }
+  ]
+}

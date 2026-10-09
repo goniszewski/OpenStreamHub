@@ -4,7 +4,7 @@ import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } 
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor } from './service-runner';
+import { autoStartLabels, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
@@ -48,6 +48,10 @@ export const settingsErrorBlocker = (error: string) => `The Module control setti
 
 // The feed never reads a path a run owns; the live preview shows that module's input from the run's own records instead.
 export const runPreviewNote = 'The live preview shows the input this run reads from the module (read-only).';
+// The label of a run the session manager started on its own, so it is never taken for a Start by the user. It is always a
+// dry run; running another profile or executing actions needs Stop and then the user's own Run.
+export const autoStartNote = (autoStart: NonNullable<ServiceRun['session']>['autoStart']) => autoStart
+  ? `${autoStartLabels[autoStart]}. Stop it to run another profile on this module or to execute actions.` : null;
 // Why the software mode box is ticked and locked for the 15-key module and the dial.
 export const appControlNote = 'Module control is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
 
@@ -66,7 +70,7 @@ const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App' } as const;
 // The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
 const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
 // Who switched the run, as one phrase for the banner and the Resume dialog.
@@ -289,6 +293,7 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
     {run && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{run.execute ? ' Actions are paused.' : ''}</span></div></div>}
     {run && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {run.profileSwitched ? `Resuming starts the saved profile "${run.profileName}" ${switchedTo(run.profileSwitchedBy)}.` : `Resuming restarts "${run.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {run && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
+    {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart)}</p>}
     {active && phase === 'running' && run?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
     {blocker && !active && <p className="service-blocker" role="status">{blocker}</p>}
     <div className="service-controls">

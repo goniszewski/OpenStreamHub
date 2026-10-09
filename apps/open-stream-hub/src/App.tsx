@@ -13,6 +13,7 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
+import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { Activity, CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
@@ -62,11 +63,18 @@ export default function App() {
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
-  useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
+  useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
   // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
   const [guide, setGuide] = useState<{ open: boolean; step: number }>(() => ({ open: shouldAutoOpenOnboarding(webStorage(), desktop), step: 0 }));
   const closeGuide = () => { markOnboardingDone(webStorage()); setGuide({ open: false, step: 0 }); };
+  // The one-time Module control notice: shown once the setting is known to be App and the guide no longer covers it, and
+  // recorded as shown only then.
+  const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
+  const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
+  useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
+  const showControlNotice = moduleControlNoticeVisible({ pending: controlNotice, guideOpen: guide.open, loaded: display.loaded, moduleControl: display.settings.module_control });
+  useEffect(() => { if (showControlNotice) markModuleControlNoticeShown(webStorage()); }, [showControlNotice]);
   const state = useSyncExternalStore(session.subscribe, session.getState);
   const [page, setPage] = useState<Page>('devices');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
@@ -184,6 +192,7 @@ export default function App() {
           <button className="button compact" disabled={busy !== null} onClick={() => { void session.bootstrap(); }}><RotateCcw size={16} />Retry</button></div>}
         {error && <div className="alert error" role="alert"><CircleHelp size={19} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => session.setError(null)}><X size={17} /></button></div>}
         {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
+        {showControlNotice && <ModuleControlNotice onDismiss={() => setControlNotice(false)} />}
 
         {page === 'devices' && <div className="device-layout">
           <ModuleCatalog editor={editor} />

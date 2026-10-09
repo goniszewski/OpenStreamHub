@@ -16,6 +16,7 @@ mod quit;
 mod replay;
 mod service;
 mod session;
+mod startup;
 mod store;
 #[cfg(test)]
 mod test_profiles;
@@ -39,6 +40,8 @@ struct AppState {
     sessions: session::Manager,
     focus: focus::FocusState,
     display: display::DisplayState,
+    /// The saved profile last used on each keypad and dial serial number.
+    last_profiles: startup::LastProfiles,
     /// The OBS endpoint setting and the in-memory OBS password.
     obs: obs::ObsState,
     /// Import records and the dry-run-only flag of imported profiles.
@@ -70,6 +73,7 @@ impl AppState {
             .and_then(store::ProfileStore::open_for_app_data);
         let focus = focus::FocusState::open(app_data.as_deref().map_err(Clone::clone));
         let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
+        let last_profiles = startup::LastProfiles::open(app_data.as_deref().map_err(Clone::clone));
         let obs = obs::ObsState::open(app_data.as_deref().map_err(Clone::clone));
         let imports = import_flags::ImportFlags::open(app_data.as_deref().map_err(Clone::clone));
         Self {
@@ -81,6 +85,7 @@ impl AppState {
             sessions: session::Manager::default(),
             focus,
             display,
+            last_profiles,
             obs,
             imports,
             artwork: tauri::async_runtime::Mutex::new(()),
@@ -756,17 +761,22 @@ fn start_feed(
 ) -> Result<String, String> {
     let feed_id = feed::feed_id(&source)?;
     // A running service owns its interface; the feed must not open it too.
-    service::check_feed_allowed(&state.services, &source)?;
+    // The check and the registration are atomic with service starts, so the
+    // feed never opens a path a service is starting on (its feed stop has
+    // already run).
     let thread_id = feed_id.clone();
-    state.feeds.start(feed_id, move |stop| {
-        feed::run_feed(&thread_id, &source, stop, |message| {
-            let emitted = match message {
-                feed::FeedMessage::Input(payload) => app.emit(feed::INPUT_EVENT, payload),
-                feed::FeedMessage::Status(payload) => app.emit(feed::STATUS_EVENT, payload),
-            };
-            if let Err(error) = emitted {
-                eprintln!("could not emit a device feed event: {error}");
-            }
+    let checked = source.clone();
+    service::start_feed_checked(&state.services, &checked, || {
+        state.feeds.start(feed_id, move |stop| {
+            feed::run_feed(&thread_id, &source, stop, |message| {
+                let emitted = match message {
+                    feed::FeedMessage::Input(payload) => app.emit(feed::INPUT_EVENT, payload),
+                    feed::FeedMessage::Status(payload) => app.emit(feed::STATUS_EVENT, payload),
+                };
+                if let Err(error) = emitted {
+                    eprintln!("could not emit a device feed event: {error}");
+                }
+            })
         })
     })
 }
@@ -824,8 +834,17 @@ fn run_service(
     let profile_switch_requests =
         sessions.is_some() && service::uses_profile_action(&request.profile);
     // Display flags, only for a session-managed process and from
-    // the settings its session started with (never the current setting).
-    let display_args = display::spawn_args(sessions.is_some(), request);
+    // the settings its session started with (never the current setting). A
+    // flat keypad profile is written as one page so its keys can be drawn;
+    // the session keeps its own profile.
+    let display = display::spawn_display(sessions.is_some(), request);
+    let request = &match display.profile {
+        Some(profile) => service::StartRequest {
+            profile,
+            ..request.clone()
+        },
+        None => request.clone(),
+    };
     // One forwarder per spawn: nothing of this process reaches the driver
     // after its exit (see `SpawnForwarder`).
     let forwarder = sessions.map(session::SpawnForwarder::new);
@@ -846,7 +865,7 @@ fn run_service(
         &state.services,
         request.clone(),
         profile_switch_requests,
-        display_args,
+        display.args,
         state.app_data.as_deref().map_err(Clone::clone),
         service_program(),
         |feed_id| state.feeds.stop(feed_id),
@@ -960,6 +979,32 @@ impl session::Runner for AppRunner {
 
     fn execution_guard(&mut self) -> import_flags::ExecutionGuard {
         self.app.state::<AppState>().execution_guard()
+    }
+
+    // The last saved profile used on this serial while it still loads and
+    // validates, otherwise the blank built-in profile (also when the record
+    // file is unreadable).
+    fn startup_profile(
+        &mut self,
+        module: ServiceModule,
+        serial: Option<&str>,
+    ) -> Option<(Option<String>, Profile)> {
+        let state = self.app.state::<AppState>();
+        Some(startup::choose(
+            state.last_profiles.get(module, serial),
+            |id| {
+                let stored = state.with_store(|store| store.load(id))?;
+                replay::validate_profile(&stored.profile)?;
+                Ok(stored.profile)
+            },
+        ))
+    }
+
+    fn remember_profile(&mut self, module: ServiceModule, serial: Option<&str>, profile_id: &str) {
+        let state = self.app.state::<AppState>();
+        if let Err(error) = state.last_profiles.remember(module, serial, profile_id) {
+            eprintln!("could not remember the module's last profile: {error}");
+        }
     }
 }
 
@@ -1079,6 +1124,14 @@ fn stop_session(state: State<'_, AppState>, session_id: String) -> Result<(), St
     state.sessions.stop(&session_id, true).map(drop)
 }
 
+// The current state of every session, as its last `session://state` event.
+// A window asks once it listens: a session started automatically when the
+// app opened was announced before the webview existed, and a reload forgets.
+#[tauri::command(async)]
+fn list_sessions(state: State<'_, AppState>) -> Result<Vec<session::SessionState>, String> {
+    state.sessions.sessions()
+}
+
 // Focused-app rules (`focus.rs`). Opt-in: nothing matches until enabled.
 #[tauri::command]
 fn list_focus_rules(state: State<'_, AppState>) -> Result<focus::FocusRules, String> {
@@ -1111,11 +1164,17 @@ fn set_focus_rules_enabled(
 }
 
 // Module control and the dial content (`display.rs`). App by default. A
-// change applies at the next Start; running sessions keep the value they
-// started with.
+// change applies at the next Start; sessions the user started keep the value
+// they started with. Automatic sessions run only under App: a save, or a
+// read that finds the file unreadable, lets the session driver end the ones
+// the setting no longer allows.
 #[tauri::command]
 fn display_settings(state: State<'_, AppState>) -> Result<display::DisplaySettings, String> {
-    state.display.get()
+    let settings = state.display.get();
+    if settings.is_err() {
+        state.sessions.module_control_changed();
+    }
+    settings
 }
 
 #[tauri::command]
@@ -1123,7 +1182,9 @@ fn set_display_settings(
     state: State<'_, AppState>,
     settings: display::DisplaySettings,
 ) -> Result<display::DisplaySettings, String> {
-    state.display.set(settings)
+    let saved = state.display.set(settings);
+    state.sessions.module_control_changed();
+    saved
 }
 
 // The OBS WebSocket setting (`obs.rs`). Off by default; loopback endpoints
@@ -1314,6 +1375,7 @@ pub fn run() {
             stop_service,
             resume_session,
             stop_session,
+            list_sessions,
             list_focus_rules,
             save_focus_rule,
             delete_focus_rule,
@@ -1381,6 +1443,7 @@ mod tests {
             sessions: session::Manager::default(),
             focus: focus::FocusState::open(Err("no app data".into())),
             display: display::DisplayState::open(Err("no app data".into())),
+            last_profiles: startup::LastProfiles::open(Err("no app data".into())),
             obs: obs::ObsState::open(Err("no app data".into())),
             imports: import_flags::ImportFlags::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),

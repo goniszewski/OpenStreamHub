@@ -530,9 +530,20 @@ pub struct Services {
     services: Mutex<HashMap<String, ServiceHandle>>,
     /// Set by `stop_all` (app exit) under the lock; no child starts after it.
     closed: AtomicBool,
+    /// Held across a service start (stop the path's feed, spawn, register)
+    /// and across a live feed start (check, register), so a feed can never
+    /// open a path between a service's feed stop and its registration
+    /// (`start_service`, `start_feed_checked`). Taken before any other lock.
+    claims: Mutex<()>,
 }
 
 impl Services {
+    fn claim(&self) -> MutexGuard<'_, ()> {
+        self.claims
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn lock(&self) -> MutexGuard<'_, HashMap<String, ServiceHandle>> {
         self.services
             .lock()
@@ -941,6 +952,8 @@ pub fn start_service(
     emit: Emit,
 ) -> Result<String, String> {
     let service_id = service_id(&request.path_hex)?;
+    // Until the process is registered, no live feed can start on its path.
+    let _claim = services.claim();
     if services.is_closed() {
         return Err(SHUTTING_DOWN.into());
     }
@@ -983,6 +996,19 @@ pub fn start_service(
         crate::obs::password_stdin(request.obs.as_ref()),
         emit,
     )
+}
+
+/// Starts a feed (`start` registers it) only if no service owns its path,
+/// atomically with service starts: a service start in progress finishes,
+/// and registers, before the check runs, and none starts during `start`.
+pub fn start_feed_checked(
+    services: &Services,
+    source: &feed::FeedSource,
+    start: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    let _claim = services.claim();
+    check_feed_allowed(services, source)?;
+    start()
 }
 
 /// A read-only live feed may not open an interface a service owns.
@@ -1649,6 +1675,69 @@ mod tests {
             .is_err()
         );
         assert_eq!(states(&messages), [ServiceState::Failed]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_feed_asked_for_between_the_feed_stop_and_the_registration_waits_and_is_refused() {
+        use process::*;
+        let services = Services::default();
+        let root = tempfile::tempdir().unwrap();
+        let fake = root.path().join("slow-service");
+        fs::write(&fake, "#!/bin/sh\nsleep 2\n").unwrap();
+        fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let request = StartRequest {
+            profile: test_profiles::folders(),
+            path_hex: "4A".into(),
+            execute: false,
+            software_mode: true,
+            profile_id: None,
+            source_profile_id: None,
+            display: None,
+            obs: None,
+        };
+        let opened = AtomicBool::new(false);
+        let source = feed::FeedSource::Live {
+            path_hex: "4a".into(),
+        };
+        thread::scope(|scope| {
+            let mut feed = None;
+            let (emit, _messages) = collector();
+            let id = start_service(
+                &services,
+                request,
+                false,
+                Vec::new(),
+                Ok(root.path()),
+                Ok(fake.clone()),
+                |_| {
+                    // The app's auto-detect asks for a feed on this path
+                    // right after the service stopped the old one.
+                    feed = Some(scope.spawn(|| {
+                        start_feed_checked(&services, &source, || {
+                            opened.store(true, Ordering::SeqCst);
+                            Ok("live:4a".into())
+                        })
+                    }));
+                    thread::sleep(Duration::from_millis(100));
+                    assert!(!opened.load(Ordering::SeqCst), "the feed did not wait");
+                    Ok(())
+                },
+                emit,
+            )
+            .unwrap();
+            // It ran only after the service was registered, and was refused.
+            let error = feed.unwrap().join().unwrap().unwrap_err();
+            assert!(error.contains("is using this device"), "{error}");
+            assert!(!opened.load(Ordering::SeqCst));
+            services.stop(&id, Duration::from_secs(1)).unwrap();
+            wait_done(&services, &id);
+        });
+        // With no service on the path the feed starts.
+        assert_eq!(
+            start_feed_checked(&services, &source, || Ok("live:4a".into())),
+            Ok("live:4a".into())
+        );
     }
 
     #[cfg(unix)]

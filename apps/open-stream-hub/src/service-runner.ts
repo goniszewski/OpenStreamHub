@@ -1,4 +1,4 @@
-import type { HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
+import type { HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionAutoStart, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
 import { timerDuration, urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
 import type { DeviceFeed, Listen, Scheduler } from './device-feed';
@@ -19,6 +19,8 @@ export interface SessionInfo {
   module: ServiceModule; serialNumber: string | null; detail?: string; nextAttemptAt?: number;
   // The backend's latest profile generation for this session (missing = 0).
   profileGeneration?: number;
+  // Set when the session manager started this session on its own (always a dry run).
+  autoStart?: SessionAutoStart;
 }
 export interface ServiceRun {
   // The run key: the session id once a session names the run, before that the key start() chose.
@@ -68,8 +70,18 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App' };
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
+// How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
+// for a Start by the user.
+export const autoStartLabels: Record<SessionAutoStart, string> = {
+  app_opened: 'Started automatically (dry run) when the app opened',
+  module_connected: 'Started automatically (dry run) when the module was connected',
+  module_control_set: 'Started automatically (dry run) when Module control was set to App',
+};
+// start_service's refusals for a module a session already owns (session::Driver::start).
+export const deviceTaken = /^(service \S+ is already running|session \S+ already runs this device)$/;
+export const deviceTakenError = 'This module already has a running session (it may have started automatically). Stop it in the Run panel, then run again.';
 
 // The process a run has now. A session owns only its current process's path, never the path its name came from.
 const processOf = (key: string, run: ServiceRun) => run.session ? run.session.serviceId : run.processId ?? key;
@@ -104,7 +116,7 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
       const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
-      return { kind: next.reason === 'user' || next.reason === null ? 'info' : 'error', text, at };
+      return { kind: next.reason === 'user' || next.reason === 'module_control' || next.reason === null ? 'info' : 'error', text, at };
     }
     default: return previous && previous.phase !== 'running' ? info('Reconnected') : null;
   }
@@ -303,6 +315,8 @@ export class ServiceRunner {
   // Where the input of running sessions goes (the live preview), and how many reading processes drive each module now.
   private liveSink: Pick<DeviceFeed, 'sessionInput' | 'setSessionModules'> | null = null;
   private liveModules = new Map<ModuleId, number>();
+  // Settles once this connection's event listeners are registered.
+  private listening: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly invoke: Invoke, private readonly listen: Listen, desktop: boolean,
     private readonly schedule: Scheduler = frame, private readonly now: () => number = Date.now) {
@@ -366,14 +380,31 @@ export class ServiceRunner {
     if (!this.state.desktop || this.connected) return;
     this.connected = true;
     const generation = ++this.generation;
-    const add = (event: string, handler: (payload: unknown) => void) => {
-      this.listen(event, e => handler(e.payload)).then(
-        unlisten => { if (this.generation === generation && this.connected) this.unlisteners.push(unlisten); else unlisten(); },
-        reason => { if (this.generation === generation) this.set({ error: errorMessage(reason) }); });
-    };
-    add('service://record', payload => this.onRecord(payload as ServiceRecordPayload));
-    add('service://status', payload => this.onStatus(payload as ServiceStatusPayload));
-    add('session://state', payload => this.onSession(payload as SessionStatePayload));
+    const add = (event: string, handler: (payload: unknown) => void) => this.listen(event, e => handler(e.payload)).then(
+      unlisten => { if (this.generation === generation && this.connected) this.unlisteners.push(unlisten); else unlisten(); },
+      reason => { if (this.generation === generation) this.set({ error: errorMessage(reason) }); });
+    this.listening = Promise.all([
+      add('service://record', payload => this.onRecord(payload as ServiceRecordPayload)),
+      add('service://status', payload => this.onStatus(payload as ServiceStatusPayload)),
+      add('session://state', payload => this.onSession(payload as SessionStatePayload)),
+    ]);
+  }
+
+  // Takes in the sessions that were announced before this window listened: the session manager starts the 15-key
+  // module and the dial on its own when the app opens, before the webview exists, and a reload forgets every run. Asked
+  // only once the listeners are registered, and only sessions this runner does not know yet are taken, so the older
+  // list never overwrites a newer event.
+  async syncSessions() {
+    if (!this.state.desktop || !this.connected) return;
+    const generation = this.generation;
+    await this.listening;
+    let states: unknown;
+    try { states = await this.invoke<SessionStatePayload[]>('list_sessions'); }
+    catch { return; /* Without the list the runner still follows every later event. */ }
+    if (this.generation !== generation || !this.connected || !Array.isArray(states)) return;
+    for (const state of states as SessionStatePayload[]) {
+      if (state && typeof state.session_id === 'string' && !this.runs()[state.session_id] && !this.sessionOf.has(state.session_id)) this.onSession(state);
+    }
   }
 
   private onRecord(payload: ServiceRecordPayload) {
@@ -420,7 +451,17 @@ export class ServiceRunner {
       if (current && current.phase !== 'stopped' && (payload.module !== current.module || normalSerial(payload.serial_number) !== normalSerial(current.serialNumber)
         || (typeof payload.service_id === 'string' && payload.service_id !== current.serviceId))) return;
     }
-    const existing = this.runs()[id];
+    let existing = this.runs()[id];
+    // An automatic session whose run here has no session yet: a run made from its process's own status and records keeps
+    // its log, while a run start() began is the user's own Start, which the backend refuses because this session owns the
+    // module. That one is replaced, never merged, so the automatic run never shows the user's profile or log.
+    if (payload.auto_start && existing && !existing.session && payload.phase !== 'stopped') {
+      const base = existing.processId === undefined ? existing : this.blankRun(id, payload.execute, 'Unknown profile', '', false);
+      const label: ActivityEntry = { kind: 'info', text: `${autoStartLabels[payload.auto_start]}.`, at: this.now() };
+      const entries = [label, ...base.entries.map(({ seq: _, ...entry }) => entry)].reduce(appendEntry, [] as ActivityEntry[]);
+      existing = { ...base, snapshot: unknownSnapshot, draftUnsaved: false, startedOn: undefined, processId: undefined, entries };
+      this.pending = { ...this.runs(), [id]: existing };
+    }
     // A new session reusing the name of a run that ended (or, defensively, one still on another process): its run is
     // the `pending:` one start() began, never the old run with its log, counters and profile.
     const waiting = existing && payload.phase !== 'stopped' ? this.waitingRun(id, existing, payload) : undefined;
@@ -438,7 +479,13 @@ export class ServiceRunner {
       // started while asleep has no process yet; its run is the one start() began on the same module.
       const provisional = typeof payload.service_id === 'string' ? this.sessionOf.get(payload.service_id)
         : Object.entries(this.runs()).find(([key, run]) => startedOnMatches(key, run, payload))?.[0];
-      if (!this.adopt(provisional, id)) this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };
+      if (!this.adopt(provisional, id)) {
+        // A session the manager started on its own: its profile body is not known here, but it is no stale copy of the
+        // draft either, and its log says first how it started.
+        const auto = payload.auto_start ? autoStartLabels[payload.auto_start] : undefined;
+        const run = this.blankRun(id, payload.execute, 'Unknown profile', auto ? unknownSnapshot : '', false);
+        this.pending = { ...this.runs(), [id]: auto ? { ...run, entries: appendEntry(run.entries, { kind: 'info', text: `${auto}.`, at: this.now() }) } : run };
+      }
     }
     // The old run's 'stopped' leaves the path's process routed to the pending run that waits for the new session, and so
     // does any other event of the old session: only an event on the path's own process takes it back from a pending run
@@ -454,6 +501,7 @@ export class ServiceRunner {
         serviceId: payload.service_id, phase: payload.phase, reason: payload.reason ?? null, attempt: payload.attempt ?? 0,
         module: payload.module, serialNumber: payload.serial_number ?? null, detail: payload.detail, profileGeneration: payload.profile_generation ?? 0,
         ...(typeof payload.next_attempt_in_ms === 'number' ? { nextAttemptAt: at + payload.next_attempt_in_ms } : {}),
+        ...(payload.auto_start ? { autoStart: payload.auto_start } : {}),
       };
       const entry = sessionEntry(run.session, session, at);
       const state: ServiceState = payload.phase === 'stopped' ? (run.state === 'failed' ? 'failed' : 'exited') : payload.phase === 'running' && run.state !== 'stopping' ? 'running' : run.state;
@@ -566,6 +614,22 @@ export class ServiceRunner {
       const target = this.sessionOf.get(id) ?? key;
       // A pending run that failed to start gives the path's routing back, so it never receives the old session's events.
       if (key !== id && target === key) this.sessionOf.delete(id);
+      // A session this window did not know about owns the module (one the session manager started on its own, announced
+      // before this window listened): this run is dropped rather than left for that session's events to merge into, the
+      // refusal is shown, and the session list is read again so the panel shows the real session.
+      if (deviceTaken.test(message)) {
+        const current = this.runs()[target];
+        if (current && !current.session && current.state === 'starting') {
+          const runs = { ...this.runs() };
+          delete runs[target];
+          this.pending = runs;
+          this.sessionOf.forEach((session, process) => { if (session === target) this.sessionOf.delete(process); });
+          this.forgetAwaiting(target);
+        }
+        this.set({ error: deviceTakenError });
+        void this.syncSessions();
+        return false;
+      }
       this.update(target, current => current.state === 'starting' ? { ...current, state: 'failed', error: message } : current, true);
       return false;
     }

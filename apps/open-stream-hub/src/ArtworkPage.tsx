@@ -101,7 +101,7 @@ export function ArtworkPage({ desktop, invoke, initialSource, initialResult, ini
   const { size } = targetInfo[options.target];
 
   return <section className="page-content artwork-page" aria-labelledby="artwork-title">
-    <div className="page-title"><div><h1 id="artwork-title">Display artwork</h1><p>Prepare a PNG or JPEG for a module display and see the exact result.</p></div><span className="mode-pill">Offline only</span></div>
+    <div className="page-title"><div><h1 id="artwork-title">Display artwork</h1><p>Prepare a PNG or JPEG for a module display and see the exact result. To assign artwork to one key, use the Key artwork editor in the workspace inspector.</p></div><span className="mode-pill">Offline only</span></div>
     <div className="artwork-offline" role="note"><TriangleAlert size={19} /><strong>{offlineNote}</strong></div>
     {!desktop && <p className="fine-print" role="status">Preparing and exporting artwork needs the desktop app. You can still look at a source image here.</p>}
     <div className="artwork-layout">

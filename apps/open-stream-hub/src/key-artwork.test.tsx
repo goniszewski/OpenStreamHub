@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { isValidElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import type { KeyArtwork, Profile } from './contracts';
-import { KeyArtworkPreview, KeyArtworkEditor } from './KeyArtworkEditor';
+import type { BindingAction, KeyArtwork, Profile } from './contracts';
+import { KeyArtworkPreview, KeyArtworkEditor, KeyDesignStudio } from './KeyArtworkEditor';
+import { appIconId, defaultKeyArtworkDesign, initialKeyArtworkDesign } from './key-artwork-design';
 import { keyArtworkFrame, setKeyArtwork } from './key-artwork';
 import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, emptyKeypadPage, renameKeypadAction } from './keypad-model';
 import { KeyDisplayContent } from './DisplayContent';
@@ -60,5 +63,122 @@ describe('per-key artwork', () => {
     expect(markup).toContain('Remove artwork');
     expect(markup).toMatch(/type="file"[^>]*disabled/);
     expect(markup).toContain('needs the desktop app');
+  });
+});
+
+// Direct element-tree helpers: KeyDesignStudio is hook-free, so tests call it as a
+// function and invoke the handlers exactly as the browser would.
+type AnyElement = ReactElement<{ [key: string]: unknown }>;
+
+function elementsOf(node: ReactNode): AnyElement[] {
+  if (!node || typeof node !== 'object') return [];
+  if (Array.isArray(node)) return node.flatMap(elementsOf);
+  if (isValidElement(node)) return [node as AnyElement, ...elementsOf((node.props as { children?: ReactNode }).children)];
+  return [];
+}
+type StudioProps = Parameters<typeof KeyDesignStudio>[0];
+const treeOf = (props: StudioProps) => KeyDesignStudio(props) as AnyElement;
+
+const studioBase = (over: Partial<StudioProps> = {}): StudioProps => ({
+  design: { ...defaultKeyArtworkDesign }, onDesign: () => {}, action: null, appIcon: null, appIconFailed: false,
+  recents: [], query: '', onQuery: () => {}, libraryOpen: false, onLibraryOpen: () => {}, preview: null,
+  disabled: false, busy: false, prepareAvailable: true, onApply: () => {}, ...over,
+});
+
+const buttonByLabel = (tree: AnyElement, label: string, group?: string) => {
+  const scope = group ? elementsOf(tree).find(element => element.props['aria-label'] === group) : tree;
+  const found = elementsOf(scope).filter(element => element.type === 'button' && element.props['aria-label'] === label);
+  expect(found).toHaveLength(1);
+  return found[0];
+};
+
+describe('key design studio', () => {
+  it('opens with the key label as text and the first catalog suggestion preselected', () => {
+    const mute = initialKeyArtworkDesign({ type: 'toggle_mute' }, 'Quiet');
+    expect(mute.text).toBe('Quiet');
+    expect(mute.iconId).toBe('volume-x');
+    // The .app icon needs a lookup first, so the next catalog icon is picked.
+    const launch = initialKeyArtworkDesign({ type: 'launch_app', bundle_id: 'com.apple.finder' });
+    expect(launch.iconId).toBe('app-window');
+    expect(initialKeyArtworkDesign(null).iconId).toBeNull();
+  });
+
+  it('suggests icons for the bound action and toggles the choice', () => {
+    const designs: Parameters<StudioProps['onDesign']>[0][] = [];
+    const tree = treeOf(studioBase({ action: { type: 'toggle_mute' }, onDesign: design => designs.push(design) }));
+    const markup = renderToStaticMarkup(tree);
+    expect(markup).toContain('Suggested');
+    expect(markup).toContain('aria-label="Muted"');
+    expect(markup).toContain('aria-label="Microphone off"');
+    (buttonByLabel(tree, 'Muted', 'Suggested icons').props as { onClick(): void }).onClick();
+    expect(designs).toHaveLength(1);
+    expect(designs[0].iconId).toBe('volume-x');
+    // Pressing the selected icon again clears it.
+    const selected = treeOf(studioBase({ action: { type: 'toggle_mute' }, design: { ...defaultKeyArtworkDesign, iconId: 'volume-x' }, onDesign: design => designs.push(design) }));
+    (buttonByLabel(selected, 'Muted', 'Suggested icons').props as { onClick(): void }).onClick();
+    expect(designs[1].iconId).toBeNull();
+  });
+
+  it('carries the search query, recents and library open state', () => {
+    const queries: string[] = [];
+    const opens: boolean[] = [];
+    const tree = treeOf(studioBase({ recents: ['globe', 'play'], onQuery: query => queries.push(query), onLibraryOpen: open => opens.push(open) }));
+    const markup = renderToStaticMarkup(tree);
+    expect(markup).toContain('Recently used');
+    expect(markup).toContain('aria-label="Website"');
+    expect(markup).toContain('All icons');
+    const search = elementsOf(tree).find(element => element.props.id === 'key-icon-search');
+    (search!.props as { onChange(event: { target: { value: string } }): void }).onChange({ target: { value: 'loud' } });
+    expect(queries).toEqual(['loud']);
+    (elementsOf(tree).find(element => element.type === 'details')!.props as { onToggle(event: { target: { open: boolean } }): void }).onToggle({ target: { open: true } });
+    expect(opens).toEqual([true]);
+    expect(renderToStaticMarkup(treeOf(studioBase({ query: 'nothing matches' })))).toContain('No icon matches.');
+  });
+
+  it('edits text, size, alignment and colours through the controlled handlers', () => {
+    const designs: Parameters<StudioProps['onDesign']>[0][] = [];
+    const tree = treeOf(studioBase({ onDesign: design => designs.push(design) }));
+    (elementsOf(tree).find(element => element.props.id === 'key-design-text')!.props as { onChange(event: { target: { value: string } }): void }).onChange({ target: { value: 'Mute' } });
+    expect(designs[0].text).toBe('Mute');
+    const sizeButtons = elementsOf(tree).filter(element => element.type === 'button' && (element.props as { 'aria-pressed'?: boolean })['aria-pressed'] !== undefined);
+    expect(sizeButtons.length).toBeGreaterThanOrEqual(7);
+    const large = sizeButtons.find(element => element.props.children === 'Large');
+    (large!.props as { onClick(): void }).onClick();
+    expect(designs[1].textSize).toBe(2);
+    const colour = elementsOf(tree).find(element => element.props.id === 'key-design-background');
+    (colour!.props as { onChange(event: { target: { value: string } }): void }).onChange({ target: { value: '#102030' } });
+    expect(designs[2].background).toBe('#102030');
+  });
+
+  it('gates applying on a valid design and the desktop pipeline', () => {
+    const applies: number[] = [];
+    const ready = treeOf(studioBase({ design: { ...defaultKeyArtworkDesign, iconId: 'volume-2', text: 'Mute' }, onApply: () => applies.push(1) }));
+    const applyButton = elementsOf(ready).find(element => element.type === 'button' && (element.props.children as string[] ?? []).includes?.('Set key artwork'));
+    (applyButton!.props as { onClick(): void }).onClick();
+    expect(applies).toHaveLength(1);
+    // An invalid colour is shown and blocks applying.
+    const invalid = treeOf(studioBase({ design: { ...defaultKeyArtworkDesign, background: 'zzz' } }));
+    expect(renderToStaticMarkup(invalid)).toContain('Background colour must be a hex value');
+    expect(elementsOf(invalid).find(element => (element.props.children as string)?.includes?.('Set key artwork'))?.props.disabled).toBe(true);
+    // Without the desktop app there is nothing to prepare onto.
+    expect(elementsOf(treeOf(studioBase({ prepareAvailable: false }))).find(element => (element.props.children as string)?.includes?.('Set key artwork'))?.props.disabled).toBe(true);
+  });
+
+  it('offers the fetched app icon and blocks applying until it has loaded', () => {
+    const action: BindingAction = { type: 'launch_app', bundle_id: 'com.apple.finder' };
+    const loading = renderToStaticMarkup(treeOf(studioBase({ action })));
+    expect(loading).toContain('aria-label="Application icon"');
+    expect(loading).toContain('key-icon-loading');
+    expect(buttonByLabel(treeOf(studioBase({ action })), 'Application icon').props.disabled).toBe(true);
+    const designs: Parameters<StudioProps['onDesign']>[0][] = [];
+    const loaded = treeOf(studioBase({ action, appIcon: { bundleId: 'com.apple.finder', pngBase64: 'QUJD' }, onDesign: design => designs.push(design) }));
+    expect(renderToStaticMarkup(loaded)).toContain('data:image/png;base64,QUJD');
+    (buttonByLabel(loaded, 'Application icon', 'Suggested icons').props as { onClick(): void }).onClick();
+    expect(designs[0].iconId).toBe(appIconId('com.apple.finder'));
+    // A failed lookup removes the chip; the catalog fallback stays.
+    expect(renderToStaticMarkup(treeOf(studioBase({ action, appIconFailed: true })))).not.toContain('Application icon');
+    // A chosen app icon cannot be applied without its image.
+    const chosen = treeOf(studioBase({ action, design: { ...defaultKeyArtworkDesign, iconId: appIconId('com.apple.finder') } }));
+    expect(elementsOf(chosen).find(element => (element.props.children as string)?.includes?.('Set key artwork'))?.props.disabled).toBe(true);
   });
 });

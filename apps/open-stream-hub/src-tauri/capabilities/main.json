@@ -50,6 +50,7 @@
     "allow-create-diagnostics",
     "allow-prepare-artwork",
     "allow-prepare-key-artwork",
-    "allow-save-artwork"
+    "allow-save-artwork",
+    "allow-app-icon"
   ]
 }

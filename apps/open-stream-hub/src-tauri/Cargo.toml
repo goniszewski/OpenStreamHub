@@ -43,13 +43,15 @@ icu_normalizer = { version = "2.3", default-features = false, features = ["compi
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-# Sleep/wake observers (src/power.rs) and the frontmost-app watcher
-# (src/focus.rs). Already locked as Tauri dependencies; only features of those
+# Sleep/wake observers (src/power.rs), the frontmost-app watcher
+# (src/focus.rs) and application icons for key artwork (src/app_icon.rs).
+# Already locked as Tauri dependencies; only features of those
 # crates are added.
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
+objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
 
 [dev-dependencies]
 tempfile = "3"

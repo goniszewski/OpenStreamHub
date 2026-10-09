@@ -359,6 +359,39 @@ mod tests {
     }
 
     #[test]
+    fn a_full_size_key_design_survives_the_key_pipeline_pixel_identically() {
+        // The icon-and-label studio renders exactly 72×72 PNGs; the contain
+        // fit at the key's own size must pass through without resampling, so
+        // the editor preview is what the key receives (a pixel test, not just
+        // a dimension check).
+        let design = RgbImage::from_fn(72, 72, |x, y| {
+            if (14..58).contains(&x) && (14..58).contains(&y) {
+                Rgb([235, 235, 240])
+            } else {
+                Rgb([8, 8, 12])
+            }
+        });
+        let mut asked = request(&png(&design), Target::Keypad, Fit::Contain, 0);
+        asked.quality = 85;
+        let artwork = prepare_key_artwork(&asked).unwrap();
+        assert_eq!(artwork.frames.len(), 1);
+        let decoded = image::load_from_memory_with_format(
+            &STANDARD.decode(&artwork.frames[0].jpeg_base64).unwrap(),
+            ImageFormat::Jpeg,
+        )
+        .unwrap()
+        .to_rgb8();
+        assert_eq!(decoded.dimensions(), (72, 72));
+        for (x, y, pixel) in decoded.enumerate_pixels() {
+            let original = design.get_pixel(x, y);
+            assert!(
+                near(pixel, original.0),
+                "pixel {x},{y}: {pixel:?} vs {original:?}"
+            );
+        }
+    }
+
+    #[test]
     fn png_and_jpeg_inputs_produce_target_sized_jpegs() {
         for input in [png(&wide()), jpeg(&wide())] {
             for (target, size) in [(Target::Dial, 240), (Target::Keypad, 72)] {

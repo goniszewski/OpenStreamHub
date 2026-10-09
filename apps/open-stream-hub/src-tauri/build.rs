@@ -45,6 +45,7 @@ fn main() {
             "prepare_artwork",
             "prepare_key_artwork",
             "save_artwork",
+            "app_icon",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

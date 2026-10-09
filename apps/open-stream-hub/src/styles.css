@@ -503,6 +503,25 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .key-artwork-editor { margin:12px 0; }
 .key-artwork-editor > .key-artwork-image { width:72px; height:72px; margin:10px 0; border-radius:6px; }
 .key-artwork-editor input[type="file"] { width:100%; font-size:12px; }
+.key-design-studio { display:grid; gap:13px; }
+.key-design-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.key-design-head h3 { font-size:15px; }
+.key-design-preview { width:72px; height:72px; border-radius:6px; border:1px solid var(--line); flex:none; }
+.key-design-suggested { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.key-design-suggested .picker-group-label { margin:0; }
+.key-icon { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--control); color:var(--muted); }
+.key-icon:hover:enabled { border-color:var(--accent); color:var(--accent); }
+.key-icon.active { border-color:var(--accent); background:var(--selected); color:var(--accent); }
+.key-icon svg { width:19px; height:19px; }
+.key-icon-app img { width:22px; height:22px; border-radius:5px; }
+.key-icon-loading { width:14px; height:14px; border:2px solid var(--line); border-top-color:var(--muted); border-radius:50%; animation:spin 1s linear infinite; }
+@media(prefers-reduced-motion:reduce) { .key-icon-loading { animation:none; } }
+.key-icon-library { border-top:1px solid var(--line); padding-top:11px; }
+.key-icon-library summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }
+.key-icon-library[open] summary { margin-bottom:9px; }
+.key-icon-library input[type="search"] { width:100%; min-height:35px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--control); font:inherit; font-size:12px; color:inherit; margin-bottom:4px; }
+.key-icon-grid { display:grid; grid-template-columns:repeat(7,32px); gap:6px; margin:4px 0 2px; }
+.key-design-apply { display:grid; gap:7px; justify-items:start; }
 
 /* Earlier versions: the collapsed history panel in the profile manager and its rows. */
 .version-history { margin-top:22px; }

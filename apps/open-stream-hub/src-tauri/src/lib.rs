@@ -1,3 +1,4 @@
+mod app_icon;
 mod artwork;
 #[cfg(test)]
 mod contract_fixtures;
@@ -1120,6 +1121,19 @@ async fn save_artwork(
     .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
 
+// The installed app's icon for the key artwork suggestion of an Open
+// application action; one job at a time, like the other artwork work.
+#[tauri::command]
+async fn app_icon(
+    state: State<'_, AppState>,
+    request: app_icon::AppIconRequest,
+) -> Result<app_icon::AppIconResult, String> {
+    let _permit = state.artwork.lock().await;
+    tauri::async_runtime::spawn_blocking(move || app_icon::app_icon(&request))
+        .await
+        .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
 // Stopping a managed service's current process (or its session id) ends the
 // session, so it is not restarted.
 #[tauri::command(async)]
@@ -1493,7 +1507,8 @@ pub fn run() {
             create_diagnostics,
             prepare_artwork,
             prepare_key_artwork,
-            save_artwork
+            save_artwork,
+            app_icon
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

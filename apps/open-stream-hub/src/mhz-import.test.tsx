@@ -7,7 +7,7 @@ import { AllowExecutionDialog, allowCopy, countsLine, MhzImportReport } from './
 import { isMhzFileName, maximumMhzBytes } from './profile-library';
 import { draftDryRunOnly, draftRunBlock, ProfileSession } from './profile-session';
 import type { Invoke } from './profile-session';
-import { ProfilesPage } from './ProfilesPage';
+import { ProfileManagerSheet } from './ProfileManager';
 import { importDropped, importMhzFile, ProfileTransfer } from './ProfileTransfer';
 import { dryRunOnlyRunNote, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import { ServiceRunner } from './service-runner';
@@ -223,12 +223,12 @@ describe('import UI', () => {
     expect(allowCopy('H', high).warning).toMatch(/^High risk/);
   });
 
-  it('the Profiles page shows the badge and the explicit allow action for a flagged profile', async () => {
+  it('the profile manager shows the badge and the explicit allow action for a flagged profile', async () => {
     const { session } = await open();
     await importMhzFile(session, mhzFile([1]));
     await flush();
     session.dismissMhzImport();
-    const render = () => renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop disabled={false} replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
+    const render = () => renderToStaticMarkup(<ProfileManagerSheet session={session} state={session.getState()} desktop disabled={false} confirm={() => {}} onAllow={() => {}} onClose={() => {}} />);
     let html = render();
     expect(html).toContain('Imported · dry run only');
     expect(html).toContain('Allow this imported profile to execute actions…');
@@ -240,9 +240,9 @@ describe('import UI', () => {
     expect(render()).not.toContain('Allow this imported profile');
   });
 
-  it('the Profiles page offers the recovery for a damaged list and reopens the last report', async () => {
+  it('the profile manager offers the recovery for a damaged list and reopens the last report', async () => {
     const damaged = await open({ damaged: true });
-    const page = (session: ProfileSession) => renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop disabled={false} replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
+    const page = (session: ProfileSession) => renderToStaticMarkup(<ProfileManagerSheet session={session} state={session.getState()} desktop disabled={false} confirm={() => {}} onAllow={() => {}} onClose={() => {}} />);
     expect(page(damaged.session)).toContain('Mark all profiles as needing review');
     expect(page(damaged.session)).toContain('Every profile runs only as a dry run');
     const { session } = await open();

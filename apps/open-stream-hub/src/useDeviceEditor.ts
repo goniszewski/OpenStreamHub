@@ -6,7 +6,7 @@ import { clampUtf8 } from './draft-model';
 import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot } from './keypad-model';
 import type { ProfileSession, SessionState } from './profile-session';
 import { actionLabel, controlLabel, editBinding, errorMessage, gestures, modules, sameSelector } from './ui-model';
-import type { BindingSelection, ModuleId, Page } from './ui-model';
+import type { BindingSelection, ModuleId } from './ui-model';
 
 export interface ConfirmRequest { title: string; description: string; confirmLabel: string; run: () => void }
 export type SerialScope = 'any' | 'exact';
@@ -60,9 +60,9 @@ export function dropNoticeText(found: { previous?: BindingAction; keptSerial?: s
   return `Added ${pickerEntryLabel(type)} to ${control}.`;
 }
 
-// View state for the Devices page and inspector: which module, control,
+// View state for the workspace and inspector: which module, control,
 // gesture and keypad folder is selected. The draft itself lives in ProfileSession.
-export function useDeviceEditor(session: ProfileSession, state: SessionState, setPage: (page: Page) => void, confirm: (request: ConfirmRequest) => void) {
+export function useDeviceEditor(session: ProfileSession, state: SessionState, confirm: (request: ConfirmRequest) => void) {
   const profile = state.draft.profile;
   const [selectedModule, setSelectedModule] = useState<ModuleId>('m003k');
   const [selection, setSelection] = useState<BindingSelection>({ module: 'm003k', control: 0, gesture: 'clockwise', serial: '' });
@@ -107,7 +107,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
   function dropAction(module: ModuleId, control: number, type: PickerActionType) {
     if (!isValidForControl(type, module)) return;
     if (module === 'm131e' && profile.dial_functions) {
-      session.setError('This profile uses dial functions, so encoder bindings are edited under Profiles · Dial functions.');
+      session.setError('This profile uses dial functions, so encoder bindings are edited in the dial functions editor of the inspector.');
       return;
     }
     try {
@@ -131,7 +131,6 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
     setSelectedModule(item.module);
     setSelection({ module: item.module, control: item.control, gesture: item.gesture, serial: item.serial_number ?? '' });
     setSerialScope(item.serial_number ? 'exact' : 'any');
-    setPage('devices');
     session.clearPreview();
   }
 
@@ -149,7 +148,6 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
     navigateKeypad(keypadPathToPage(profile, pageId));
     setSelection({ module: 'm4315', control, gesture: item.gesture, serial: item.serial_number ?? '' });
     setSerialScope(item.serial_number ? 'exact' : 'any');
-    setPage('devices');
   }
 
   function removeKeypadBinding(pageId: string, control: number, item: KeypadBinding) {

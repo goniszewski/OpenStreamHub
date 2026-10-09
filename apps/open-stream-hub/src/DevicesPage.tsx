@@ -1,10 +1,13 @@
 import { useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
-import { ChevronRight, RotateCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
-import type { ServiceModule } from './contracts';
+import type { Profile, ServiceModule } from './contracts';
+import { bindingWarnings } from './binding-model';
+import { BindingsPanel } from './BindingsPanel';
+import { profileBindingCount } from './keypad-model';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from './knob-orientation';
@@ -15,7 +18,7 @@ import { ServicePanel } from './ServicePanel';
 import type { RunSession } from './ServicePanel';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import type { SessionState } from './profile-session';
+import type { ProfileSession, SessionState } from './profile-session';
 import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
@@ -33,6 +36,22 @@ export function ModuleCatalog({ editor, feed }: { editor: DeviceEditor; feed?: D
 
 const noopSubscribe = () => () => {};
 const idleState = () => idleFeedState;
+
+// The collapsible list of every binding in the profile, under the module canvas. Closed it shows
+// only the counts (bindings and, in the accent pill, warnings); open it is the full searchable
+// list. Controlled by the app so ⌘F can open it and focus the search field.
+export function BindingsDrawer({ open, onToggle, profile, session, editor, disabled }: {
+  open: boolean; onToggle(): void; profile: Profile; session: ProfileSession; editor: DeviceEditor; disabled: boolean;
+}) {
+  const warnings = bindingWarnings(profile).length;
+  return <section className={`bindings-drawer panel${open ? ' open' : ''}`} aria-label="All bindings in this profile">
+    <button type="button" className="drawer-toggle" aria-expanded={open} aria-controls="bindings-drawer-content" onClick={onToggle}>
+      <ChevronDown size={17} aria-hidden="true" />Bindings <span className="small-label">{profileBindingCount(profile)} in this profile</span>
+      {warnings > 0 && <span className="drawer-warnings"><TriangleAlert size={13} aria-hidden="true" />{warnings}</span>}
+    </button>
+    {open && <div id="bindings-drawer-content" className="drawer-content"><BindingsPanel profile={profile} session={session} editor={editor} disabled={disabled} /></div>}
+  </section>;
+}
 
 function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean }) {
   const count = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).devices.length;

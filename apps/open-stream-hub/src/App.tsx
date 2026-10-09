@@ -18,17 +18,19 @@ import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
-import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
+import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
+import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
-import { ProfilesPage } from './ProfilesPage';
+import { ProfileManagerSheet, SampleTestPanel } from './ProfileManager';
+import { useImportDrop } from './ProfileTransfer';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
 import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, writeAutosaveSetting } from './ui-model';
@@ -87,16 +89,27 @@ export default function App() {
   const showControlNotice = moduleControlNoticeVisible({ pending: controlNotice, guideOpen: guide.open, loaded: display.loaded, moduleControl: display.settings.module_control });
   useEffect(() => { if (showControlNotice) markModuleControlNoticeShown(webStorage()); }, [showControlNotice]);
   const state = useSyncExternalStore(session.subscribe, session.getState);
-  const [page, setPage] = useState<Page>('devices');
+  const [page, setPage] = useState<Page>('workspace');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
   const [replayKind, setReplayKind] = useState<ReplayKind>('knobs');
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
-  const editor = useDeviceEditor(session, state, setPage, setConfirmation);
+  const editor = useDeviceEditor(session, state, setConfirmation);
+  // The profile manager sheet from the header switcher, the bindings drawer under the canvas and
+  // the confirmation that lets an imported profile execute actions (opened from the sheet).
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [bindingsOpen, setBindingsOpen] = useState(false);
+  const [allowExecutionOpen, setAllowExecutionOpen] = useState(false);
+  const switcherRef = useRef<HTMLDivElement>(null);
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
-  const { profile, profileId } = draft;
+  const { profile, profileId, contentHash } = draft;
   const unsaved = isUnsaved(draft);
+  // The open profile (saved, or a draft of it) imported from a .mhz file and not yet allowed to
+  // execute actions; the confirmation lives here so it can open over the closed manager sheet.
+  const flaggedProfile = state.profiles.find(item => item.id === profileId && item.dry_run_only);
   const disabled = !desktop || !state.ready || busy !== null;
+  // Profile files can be dropped anywhere on the workspace to import them.
+  const drop = useImportDrop(session, disabled);
   // One run session for the whole app: the header Run control and the Devices-page panel share it.
   const dryRunBlock = draftRunBlock(state);
   // A start settles the pending automatic save first and runs the saved
@@ -165,13 +178,26 @@ export default function App() {
     duplicate: () => { if (!latest.current.desktop) session.setNotice('Duplicating needs the desktop app.'); else session.requestDuplicate(); },
     undo: () => { session.undo(); },
     redo: () => { session.redo(); },
-    // Search belongs to the Profiles page; elsewhere the browser keeps Cmd/Ctrl+F.
+    // Search opens the bindings drawer on the workspace; elsewhere the browser keeps Cmd/Ctrl+F.
     find: () => {
-      const input = latest.current.page === 'profiles' ? document.getElementById(bindingSearchId) as HTMLInputElement | null : null;
-      input?.focus(); input?.select();
-      return input !== null;
+      if (latest.current.page !== 'workspace') return false;
+      setBindingsOpen(true);
+      focusWhenRendered(() => document.getElementById(bindingSearchId) as HTMLInputElement | null);
+      return true;
     },
   })), [session]);
+
+  // The profile manager sheet closes on Escape and on a click outside the switcher.
+  useEffect(() => {
+    if (!managerOpen) return;
+    const keydown = (event: Event) => { if ((event as KeyboardEvent).key === 'Escape') setManagerOpen(false); };
+    const mousedown = (event: MouseEvent) => {
+      if (switcherRef.current && event.target instanceof Node && !switcherRef.current.contains(event.target)) setManagerOpen(false);
+    };
+    document.addEventListener('keydown', keydown);
+    document.addEventListener('mousedown', mousedown);
+    return () => { document.removeEventListener('keydown', keydown); document.removeEventListener('mousedown', mousedown); };
+  }, [managerOpen]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -200,7 +226,7 @@ export default function App() {
     <header className="app-header">
       <div className="header-row">
         <div className="brand"><Grid2X2 size={23} /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
-        <div className="profile-switcher"><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
+        <div className="profile-switcher" ref={switcherRef}><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
           {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
             const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });
           }}>
@@ -209,6 +235,8 @@ export default function App() {
             {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
+          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label="Manage profiles" title="Manage profiles" onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
+          {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
           <RunHeaderControl run={runSession} />
@@ -224,8 +252,7 @@ export default function App() {
     <div className="app-body">
       <aside className="sidebar">
         <nav aria-label="Primary navigation">
-          {([{ id: 'devices', label: 'Devices', icon: Grid2X2 }, { id: 'profiles', label: 'Profiles', icon: FileText }] as const).map(item =>
-            <button key={item.id} className={page === item.id ? 'active' : ''} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><item.icon size={22} />{item.label}</button>)}
+          <button className={page === 'workspace' ? 'active' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><Grid2X2 size={22} />Workspace</button>
           <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
@@ -242,18 +269,25 @@ export default function App() {
         <AutoActionsIndicator runs={service.runs} busy={display.busy} onStop={() => { void displaySettings.stopAutomaticActions(); }} />
         {showControlNotice && <ModuleControlNotice autoExecute={display.settings.auto_execute} onDismiss={() => setControlNotice(false)} />}
 
-        {page === 'devices' && <div className="device-layout">
+        {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <ModuleCatalog editor={editor} feed={feed} />
-          <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} />
+          <div className="workspace-column">
+            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} />
+            <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
+            <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
+          </div>
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
         </div>}
-        {page === 'profiles' && <ProfilesPage session={session} state={state} editor={editor} desktop={desktop} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} setPage={setPage} confirm={setConfirmation} mac={mac} focusRules={focusRules} catalog={obsCatalog} />}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
-    <NoticeRegion store={notices} onReview={() => { setPage('devices'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
+    <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
+    <MhzImportReport result={state.mhzReportOpen ? state.mhzImport : null} onClose={() => session.dismissMhzImport()} />
+    <AllowExecutionDialog target={allowExecutionOpen && flaggedProfile && !unsaved ? { name: flaggedProfile.name, profile } : null}
+      onCancel={() => setAllowExecutionOpen(false)}
+      onConfirm={() => { setAllowExecutionOpen(false); if (flaggedProfile && contentHash) void session.allowExecution(flaggedProfile.id, flaggedProfile.name, contentHash); }} />
     <OnboardingDialog open={guide.open} step={guide.step} mac={mac} onStep={step => setGuide({ open: true, step })} onSkip={closeGuide} onDone={closeGuide} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>

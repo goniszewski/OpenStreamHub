@@ -7,8 +7,8 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
   try: {
     title: 'Try it without hardware',
     body: <>
-      <p id="onboarding-body">You do not need a module to look around. On the Devices page, the rig preview shows your modules and the profile's bindings, and the inspector's Test button shows what a binding would do. On the Profiles page, "Test with sample input" runs a built-in sample through the profile.</p>
-      <ul><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>Start on the Devices page: pick a module in the catalog and select a control.</li></ul>
+      <p id="onboarding-body">You do not need a module to look around. In the workspace, the rig preview shows your modules and the profile's bindings, and the inspector's Test button shows what a binding would do. "Test with sample input" under the module canvas runs a built-in sample through the profile.</p>
+      <ul><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>Pick a module in the catalog and select a control on its image to edit what it does.</li><li>Profiles, import and export live behind the button next to the profile switcher in the header.</li></ul>
     </>,
   },
   profile: {

@@ -270,3 +270,31 @@ describe('inspector test button and one-line result', () => {
     expect(markup).toContain('Launch the desktop app to preview bindings.');
   });
 });
+
+describe('encoder inspector with dial functions', () => {
+  const encoder = {
+    ...editor, selectedModule: 'm131e', selected: modules.find(module => module.id === 'm131e')!,
+    selection: { module: 'm131e', control: 0, gesture: 'right', serial: '' },
+  } as unknown as DeviceEditor;
+  const session = new ProfileSession(() => new Promise(() => {}), profile, false);
+  const inspector = (state = session.getState()) =>
+    renderToStaticMarkup(<Inspector editor={encoder} session={session} state={state} disabled={false} desktop setPage={() => {}} />);
+
+  it('replaces the flat encoder editor with the dial functions editor while dial functions are on', () => {
+    const withFunctions = { ...session.getState().draft.profile, dial_functions: [{ name: 'Main', bindings: [] }] };
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profile: withFunctions } };
+    const markup = inspector(state);
+    expect(markup).toContain('aria-labelledby="dial-functions-heading"');
+    expect(markup).toContain('aria-label="Bindings of Main"');
+    expect(markup).not.toContain('id="binding-gesture"');
+    // The old pointer to the Profiles page is gone: the editor is right here.
+    expect(markup).not.toContain('Profiles · Dial functions');
+  });
+
+  it('keeps the flat editor for the encoder without dial functions and offers to add them', () => {
+    const markup = inspector();
+    expect(markup).toContain('id="binding-gesture"');
+    expect(markup).toContain('aria-labelledby="dial-functions-heading"');
+    expect(markup).toContain('Add dial functions');
+  });
+});

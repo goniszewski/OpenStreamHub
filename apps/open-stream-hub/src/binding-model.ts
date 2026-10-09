@@ -171,7 +171,7 @@ export function entryOnControl(entry: BindingEntry, selected: SelectedControl): 
 }
 
 // Warnings that involve at least one flat or keypad binding on the selected
-// control. Dial function bindings are edited on the Profiles page, so warnings
+// control. Dial function bindings are edited in the dial functions editor, so warnings
 // about them stay in the full binding list rather than the Inspector.
 export function warningsForControl(warnings: BindingWarning[], entries: BindingEntry[], selected: SelectedControl): BindingWarning[] {
   const byId = new Map(entries.map(entry => [entry.id, entry]));

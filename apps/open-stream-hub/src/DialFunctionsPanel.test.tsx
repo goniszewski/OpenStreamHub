@@ -6,7 +6,7 @@ import type { Profile, ReplayEvent } from './contracts';
 import { addDialFunction, editDialBinding, renameDialFunction } from './dial-function-model';
 import { DialFunctionsPanel, bindingPreviewText, dialPreviewText, selectionAfterMove } from './DialFunctionsPanel';
 import { ProfileSession } from './profile-session';
-import { SessionView } from './ProfilesPage';
+import { SessionView } from './ProfileManager';
 import { dialSwitchLabel } from './ui-model';
 import type { Invoke } from './profile-session';
 

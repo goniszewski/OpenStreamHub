@@ -4,7 +4,8 @@ import type { Profile } from './contracts';
 import { bindingWarnings, entryOnControl, filterBindings, listBindings, warningsForControl } from './binding-model';
 import type { BindingEntry, BindingWarning, SelectedControl } from './binding-model';
 import { removeDialBinding } from './dial-function-model';
-import { focusDialFunction } from './DialFunctionsPanel';
+import { dialFunctionNameId } from './DialFunctionsPanel';
+import { focusWhenRendered } from './NoticeRegion';
 import { profileBindingCount } from './keypad-model';
 import type { ProfileSession } from './profile-session';
 import { gestureLabels, controlLabel } from './ui-model';
@@ -12,10 +13,17 @@ import type { DeviceEditor } from './useDeviceEditor';
 
 export const bindingSearchId = 'binding-search';
 
-// Opens the binding in the Devices editor.
+// Opens the binding in the workspace: the module and control are selected. A dial function's
+// binding selects the encoder first so its editor is on screen, then focuses the function's name
+// field; a flat encoder binding under dial functions lands on the dial functions editor, which
+// offers to move or remove it.
 export function showEntry(editor: DeviceEditor, entry: BindingEntry) {
   if (entry.keypad && entry.keypadBinding) editor.selectKeypadBinding(entry.keypad.pageId, entry.control, entry.keypadBinding);
-  else if (entry.dialFunction) focusDialFunction(entry.dialFunction.index);
+  else if (entry.dialFunction) {
+    editor.chooseModule('m131e');
+    const index = entry.dialFunction.index;
+    focusWhenRendered(() => document.getElementById(dialFunctionNameId(index)));
+  }
   else if (entry.flat) editor.selectBinding(entry.flat);
 }
 
@@ -72,7 +80,7 @@ export function BindingsPanel({ profile, session, editor, disabled, initialQuery
       <button className="button compact" onClick={() => showEntry(editor, entry)}>Edit</button>
       <button className="icon-button" aria-label={`Remove ${entry.keypad ? `${entry.keypad.pageName} Key ${entry.control + 1}` : entry.dialFunction ? `Encoder ${entry.dialFunction.name}` : controlLabel(entry.module, entry.control)} ${gestureLabels[entry.gesture]} binding`} disabled={disabled} onClick={() => remove(entry)}><Trash2 size={17} /></button>
     </div>)}</div>}
-    {entries.length === 0 && <p className="empty-state">No bindings yet. Select a module in Devices and choose an action to add one.</p>}
+    {entries.length === 0 && <p className="empty-state">No bindings yet. Select a module and choose an action to add one.</p>}
     {entries.length > 0 && shown.length === 0 && <p className="empty-state" role="status">No bindings match “{query.trim()}”. <button type="button" className="button compact" onClick={() => setQuery('')}>Clear search</button></p>}
   </>;
 }

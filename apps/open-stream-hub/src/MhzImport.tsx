@@ -17,7 +17,7 @@ export function countsLine(counts: ImportCounts): string {
   return (Object.keys(outcomeLabels) as ImportOutcome[]).map(outcome => `${outcomeLabels[outcome]}: ${counts[outcome]}`).join(' · ');
 }
 
-export const dryRunOnlyNote = 'Imported profiles run only as a dry run until you allow them to execute actions on the Profiles page.';
+export const dryRunOnlyNote = 'Imported profiles run only as a dry run until you allow them to execute actions under Profiles in the header.';
 
 function ImportedSummary({ item }: { item: ImportedProfile }) {
   const { report, stored } = item;

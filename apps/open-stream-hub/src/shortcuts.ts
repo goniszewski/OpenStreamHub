@@ -10,7 +10,7 @@ export interface KeyEventLike {
   target?: unknown;
 }
 
-export const shortcutPages: readonly Page[] = ['devices', 'profiles', 'compatibility', 'settings'];
+export const shortcutPages: readonly Page[] = ['workspace', 'artwork', 'compatibility', 'settings'];
 
 export function isMacPlatform(navigatorLike: { platform?: string; userAgent?: string } | undefined) {
   return /mac/i.test(navigatorLike?.platform || navigatorLike?.userAgent || '');
@@ -56,9 +56,9 @@ export const shortcutList: { keys: string; label: string }[] = [
   { keys: 'D', label: 'Duplicate profile' },
   { keys: 'Z', label: 'Undo your last change (not while typing in a field)' },
   { keys: 'Shift+Z', label: 'Redo your last change (Ctrl+Y also works on Windows and Linux)' },
-  { keys: 'F', label: 'Search bindings (Profiles page)' },
-  { keys: '1', label: 'Devices' },
-  { keys: '2', label: 'Profiles' },
+  { keys: 'F', label: 'Search bindings (opens the bindings drawer)' },
+  { keys: '1', label: 'Workspace' },
+  { keys: '2', label: 'Display artwork' },
   { keys: '3', label: 'Compatibility' },
   { keys: '4', label: 'Settings' },
 ];
@@ -71,7 +71,7 @@ export interface ShortcutHandlers {
   duplicate(): void;
   undo(): void;
   redo(): void;
-  // Returns false when search is not available (not on the Profiles page).
+  // Returns false when search is not available (the bindings drawer is on the workspace).
   find(): boolean;
 }
 

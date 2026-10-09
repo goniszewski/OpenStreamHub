@@ -67,7 +67,7 @@ export interface KeypadPage { id: string; name: string; slots: KeypadSlot[]; art
 // Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
 export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }
 export interface DialFunction { name: string; bindings: DialBinding[] }
-// dial_functions is edited in the Profiles page (DialFunctionsPanel) or imported; edit paths that do not touch it must carry it through untouched.
+// dial_functions is edited in the dial functions editor of the inspector or imported; edit paths that do not touch it must carry it through untouched.
 export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[] }
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.

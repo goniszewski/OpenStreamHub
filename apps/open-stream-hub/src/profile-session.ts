@@ -80,7 +80,7 @@ export interface SessionState {
   // so it cannot loop errors. A reload or a successful save clears it.
   autosaveBlocked: boolean;
   // The earlier versions of `versionsId` (newest first), listed on demand for
-  // the Profiles page. Null while nothing was fetched for that profile.
+  // the profile manager sheet. Null while nothing was fetched for that profile.
   versions: ProfileVersion[] | null;
   versionsId: string | null;
   versionsError: string | null;
@@ -458,7 +458,7 @@ export class ProfileSession {
     finally { this.set({ busy: null }); }
   }
 
-  // The kept earlier versions of a profile, listed when the Profiles page
+  // The kept earlier versions of a profile, listed when the profile manager sheet
   // opens its "Earlier versions" list. The list follows the open profile.
   async loadVersions(id: string) {
     const sequence = ++this.sequence.versions;

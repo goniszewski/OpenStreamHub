@@ -12,11 +12,14 @@ import type { Page } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
-import { bindingPreviewText } from './DialFunctionsPanel';
+import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
 
 export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
+  // While the profile uses dial functions, the encoder's inspector is the dial functions editor
+  // (every encoder binding belongs to a function there); the other modules keep the flat editor.
+  const dialFunctionsActive = selection.module === 'm131e' && !!profile.dial_functions;
   const previewRunning = state.preview.status === 'running' || state.keypadPreview.status === 'running';
   const serialMissing = serialScope === 'exact' && !selection.serial;
   const resultFailed = isKeypad ? state.keypadPreview.status === 'failed' : state.preview.status === 'failed';
@@ -32,8 +35,8 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <ControlWarnings profile={profile} editor={editor} selected={{ module: selection.module, control: selection.control, keypadPageId: isKeypad ? currentKeypadPage.id : undefined }} />
       {isKeypad && !isBack && <KeyArtworkEditor key={`${state.draftGeneration}:${currentKeypadPage.id}:${selection.control}`} session={session} path={keypadPath} control={selection.control} artwork={currentKeypadPage.artwork?.[String(selection.control)]} disabled={disabled} invoke={invoke} />}
       {isKeypad && <>{isBack ? <p className="fine-print">The reserved Back key returns one level. Its badge shows the current nesting level.</p> : folderPage ? <><button className="button" onClick={() => editor.navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />Open {folderPage.name}</button><button className="button" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={17} />Delete folder</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">Key label</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} aria-describedby="keypad-label-error" onChange={event => session.edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value), `key-label:${keypadPath.join('/')}:${selection.control}`)} /><LabelError id="keypad-label-error" value={keypadSlot.label} field="Key label" /><button className="button compact" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={16} />Clear key</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={editor.createFolder}><Folder size={17} />Create folder</button>}</>}</>}
-      {!(isKeypad && (isBack || folderPage)) && <>
-      {!editorGestures(profile, selection.module).length && <p className="fine-print" role="note">This profile uses dial functions, so every encoder binding belongs to a function and a short press switches functions. Edit them under Profiles · Dial functions.</p>}
+      {dialFunctionsActive ? <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} />
+      : !(isKeypad && (isBack || folderPage)) && <>
       <label htmlFor="binding-gesture">Gesture</label><SelectField id="binding-gesture" disabled={!editorGestures(profile, selection.module).length} value={selection.gesture} onChange={event => editor.changeSelection({ ...selection, gesture: event.target.value as Gesture })}>
         {editorGestures(profile, selection.module).map(gesture => <option key={gesture} value={gesture}>{gestureLabels[gesture]}</option>)}
       </SelectField>
@@ -52,10 +55,13 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <div className="inspector-test">
         <button className="button compact" disabled={disabled || previewRunning || serialMissing} onClick={() => { void editor.testBinding(); }}><Play size={15} />{selection.module === 'm005s' ? 'Test position' : isKeypad ? 'Simulate key click' : 'Test gesture'}</button>
         <p className={`preview-line${resultDone ? ' done' : ''}`} role={resultFailed ? 'alert' : 'status'}><TestResult desktop={desktop} preview={state.preview} keypadPreview={state.keypadPreview} isKeypad={isKeypad} /></p>
-        {selection.module === 'm131e' && profile.dial_functions && <p className="fine-print">Tests use the first dial function, where a run starts; a short press shows the function it would switch to.</p>}
         <p className="fine-print">Tests never execute anything. Your changes are not saved until you press Save profile.</p>
       </div>
       </>}
+      {/* The dial functions editor always lives here: while functions are off it offers to add
+          them (flat bindings keep working until then), and with functions on it is the only
+          editor, since every encoder binding then belongs to a function. */}
+      {!dialFunctionsActive && selection.module === 'm131e' && <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} />}
     </> : <><h2>{selected.name}</h2><div className="status offline"><span className="status-dot" />Not available yet</div><p className="inspector-note">Binding editing is available for the encoder and three-knob modules. See Compatibility for what this module supports.</p></>}
   </aside>;
 }

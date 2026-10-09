@@ -4,7 +4,8 @@ import { CrashScreen, ErrorBoundary, IntegerField, LabelError, ModalDialog } fro
 import { KeypadScreen } from './KeypadScreen';
 import { createKeypadFolder, keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
-import { ProfilesPage, VersionHistory } from './ProfilesPage';
+import { BindingsDrawer } from './DevicesPage';
+import { ProfileManagerSheet, SampleTestPanel, VersionHistory } from './ProfileManager';
 import { browserProfile } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -117,7 +118,10 @@ describe('earlier versions panel', () => {
   });
 });
 
-describe('profiles page', () => {
+describe('profile manager sheet', () => {
+  const sheet = (session: ProfileSession, state = session.getState()) =>
+    renderToStaticMarkup(<ProfileManagerSheet session={session} state={state} desktop={false} disabled confirm={() => {}} onAllow={() => {}} onClose={() => {}} />);
+
   it('lists unreadable profiles with the storage folder and offers delete for saved profiles', () => {
     const session = new ProfileSession(() => new Promise(() => {}), browserProfile, false);
     const base = session.getState();
@@ -126,7 +130,7 @@ describe('profiles page', () => {
       profiles: [{ id: 'a', name: 'Alpha', binding_count: 2, modified_at_ms: 1, dry_run_only: false }],
       unreadable: [{ id: 'bad', error: 'invalid profile JSON' }],
     };
-    const markup = renderToStaticMarkup(<ProfilesPage session={session} state={state} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
+    const markup = sheet(session, state);
     expect(markup).toContain('Unreadable profiles');
     expect(markup).toContain('bad.json');
     expect(markup).toContain('invalid profile JSON');
@@ -134,17 +138,61 @@ describe('profiles page', () => {
     expect(markup).toContain('aria-label="Delete profile Alpha"');
   });
 
+  it('keeps the open profile, the saved list, import and export, and the focused-app rules in one sheet', () => {
+    const session = new ProfileSession(() => new Promise(() => {}), browserProfile, false);
+    const markup = sheet(session);
+    expect(markup).toContain('aria-label="Profiles"');
+    expect(markup).toContain('id="profile-name"');
+    expect(markup).toContain('Validate changes');
+    expect(markup).toContain('Earlier versions');
+    expect(markup).toContain('New profile');
+    expect(markup).toContain('Import official .mhz');
+    expect(markup).toContain('Focused-app rules');
+  });
+
+  it('offers Remove for keypad bindings from the bindings drawer', () => {
+    const session = new ProfileSession(() => new Promise(() => {}), { schema_version: 1, name: 'Keys', bindings: [{ module: 'm4315', control: 2, gesture: 'pressed', action: { type: 'toggle_mute' } }] }, false);
+    const markup = renderToStaticMarkup(<BindingsDrawer open onToggle={() => {}} profile={session.getState().draft.profile} session={session} editor={{} as DeviceEditor} disabled />);
+    expect(markup).toContain('aria-label="Remove Root Key 3 Press binding"');
+  });
+});
+
+describe('bindings drawer', () => {
+  const session = new ProfileSession(() => new Promise(() => {}), { schema_version: 1, name: 'K', bindings: [{ module: 'm003k', control: 0, gesture: 'clockwise', action: { type: 'volume', delta: 5 } }] }, false);
+  const drawer = (open: boolean) => renderToStaticMarkup(<BindingsDrawer open={open} onToggle={() => {}} profile={session.getState().draft.profile} session={session} editor={{} as DeviceEditor} disabled />);
+
+  it('is collapsed to a count by default and expands to the full list', () => {
+    const closed = drawer(false);
+    expect(closed).toContain('aria-expanded="false"');
+    expect(closed).toContain('aria-controls="bindings-drawer-content"');
+    expect(closed).toContain('1 in this profile');
+    expect(closed).not.toContain('binding-search');
+    const open = drawer(true);
+    expect(open).toContain('aria-expanded="true"');
+    expect(open).toContain('id="bindings-drawer-content"');
+    expect(open).toContain('Search bindings');
+    expect(open).toContain('Knob 1 · Clockwise');
+  });
+
+  it('shows a warning pill when the profile has binding warnings', () => {
+    const warned = new ProfileSession(() => new Promise(() => {}), { schema_version: 1, name: 'W', bindings: [
+      { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } },
+      { module: 'm003k', control: 0, gesture: 'released', action: { type: 'toggle_mute' } },
+    ] }, false);
+    // A release with no press gesture bound is not a warning on knobs; a duplicate selector is.
+    warned.update(latest => ({ ...latest, bindings: [latest.bindings[0], { ...latest.bindings[0] }] }));
+    const markup = renderToStaticMarkup(<BindingsDrawer open={false} onToggle={() => {}} profile={warned.getState().draft.profile} session={warned} editor={{} as DeviceEditor} disabled />);
+    expect(markup).toContain('drawer-warnings');
+    expect(markup).toContain('aria-label="All bindings in this profile"');
+  });
+});
+
+describe('sample test panel', () => {
   it('keeps the sample-input test as a collapsed section with its summary visible', () => {
     const session = new ProfileSession(() => new Promise(() => {}), browserProfile, false);
-    const markup = renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
+    const markup = renderToStaticMarkup(<SampleTestPanel session={session} state={session.getState()} disabled replayKind="knobs" setReplayKind={() => {}} />);
     expect(markup).toContain('<details class="panel replay-panel">');
     expect(markup).toContain('<summary class="replay-summary"><span>Test with sample input</span><span class="small-label">No hardware required</span></summary>');
     expect(markup).toContain('>Run test</button>');
-  });
-
-  it('offers Remove for keypad bindings', () => {
-    const session = new ProfileSession(() => new Promise(() => {}), { schema_version: 1, name: 'Keys', bindings: [{ module: 'm4315', control: 2, gesture: 'pressed', action: { type: 'toggle_mute' } }] }, false);
-    const markup = renderToStaticMarkup(<ProfilesPage session={session} state={session.getState()} editor={{} as DeviceEditor} desktop={false} disabled replayKind="knobs" setReplayKind={() => {}} setPage={() => {}} confirm={() => {}} />);
-    expect(markup).toContain('aria-label="Remove Root Key 3 Press binding"');
   });
 });

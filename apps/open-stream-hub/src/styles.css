@@ -129,6 +129,26 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:32px; letter-spacing:-.9px; line-hei
 .fine-print { font-size:11px; color:var(--muted); line-height:1.6; margin:11px 0 0; overflow-wrap:anywhere; }
 .inspector { border-left:1px solid var(--line); padding:34px 22px; min-width:0; }.inspector h2 { font-size:27px; margin-bottom:28px; letter-spacing:-.7px; }.inspector label { font-size:14px; }.inspector input,.inspector select { font-size:13px; }
 .inspector-divider { height:1px; background:var(--line); margin:26px 0; }.action-fields { margin-top:18px; }.action-fields label { font-weight:500; font-size:12px; }.spaced-label { margin-top:15px; }.modifiers { display:grid; grid-template-columns:1fr 1fr; margin-top:18px; gap:9px; }.modifiers legend { font-size:12px; font-weight:600; margin-bottom:11px; }.modifiers label { display:flex; align-items:center; gap:7px; margin:0; font-size:12px; font-weight:400; }.inspector .full-width { margin-top:24px; font-size:12px; }
+/* The action picker: a trigger styled like the other inputs and its popover, which must be able
+   to overflow the fieldset it lives in. */
+.action-picker-field { display:block; position:relative; }
+.action-picker-trigger { display:flex; align-items:center; justify-content:space-between; gap:9px; width:100%; min-height:43px; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font-size:13px; text-align:left; }
+.action-picker-trigger:hover:enabled { border-color:var(--accent); }
+.action-picker-trigger svg { flex:none; color:var(--muted); }
+.action-picker-trigger[aria-expanded="true"] svg { transform:rotate(180deg); }
+.action-picker-trigger-label { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.action-picker-panel { position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:40; display:grid; gap:4px; max-height:430px; overflow-y:auto; overscroll-behavior:contain; padding:11px; border:1px solid var(--line); border-radius:11px; background:var(--panel); box-shadow:var(--shadow); }
+.action-picker-panel input { min-height:37px; }
+.picker-group { display:grid; gap:3px; }
+.picker-group-label { margin:9px 0 2px; font-size:11px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; color:var(--muted); }
+.picker-entries { display:grid; gap:1px; }
+.picker-entry { display:flex; align-items:center; gap:8px; width:100%; min-height:33px; padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:13px; text-align:left; }
+.picker-entry:hover { background:var(--selected); }
+.picker-entry svg { flex:none; color:var(--accent); }
+.picker-entry.current { color:var(--accent); font-weight:600; }
+.picker-empty { margin:9px 0 3px; font-size:13px; color:var(--muted); }
+.picker-unbind { display:flex; align-items:center; gap:8px; margin-top:9px; width:100%; min-height:33px; padding:6px 9px; border:0; border-radius:7px; background:transparent; font-size:13px; color:var(--red); text-align:left; }
+.picker-unbind:hover { background:var(--soft-red); }
 .inspector-note { color:var(--muted); margin-top:20px; font-size:13px; line-height:1.7; }.inspector details.advanced { border-top:1px solid var(--line); padding-top:17px; margin-top:22px; }.inspector details.advanced summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }.inspector details.advanced[open] summary { margin-bottom:13px; }.learn-more { margin-top:7px; }.learn-more summary { cursor:pointer; color:var(--muted); font-size:11px; user-select:none; }.learn-more[open] summary { margin-bottom:4px; }.learn-more .fine-print { margin-top:4px; }
 .planned-panel { max-width:500px; margin:22px auto; padding:21px; border:1px solid var(--line); border-radius:11px; background:var(--panel); }.planned-panel h2 { margin-bottom:12px; }.planned-panel p { color:var(--muted); font-size:13px; }.planned-panel .button { margin-top:7px; }
 .page-content { padding:32px 30px 35px; max-width:1500px; }.page-title { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:26px; }.page-title h1 { margin-bottom:10px; }.page-title p { color:var(--muted); margin:0; font-size:13px; }

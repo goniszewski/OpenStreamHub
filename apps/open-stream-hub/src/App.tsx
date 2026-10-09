@@ -85,7 +85,7 @@ export default function App() {
   const [replayKind, setReplayKind] = useState<ReplayKind>('knobs');
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const editor = useDeviceEditor(session, state, setPage, setConfirmation);
-  const { draft, busy, error, notice, pendingIntent, bootstrapError } = state;
+  const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
   const { profile, profileId } = draft;
   const unsaved = isUnsaved(draft);
   const disabled = !desktop || !state.ready || busy !== null;
@@ -208,7 +208,7 @@ export default function App() {
           <small className="alert-hint">Check that the profile storage folder exists, is a real folder rather than a link, and is readable by your account{bootstrapError.storagePath ? <>: <code>{bootstrapError.storagePath}</code></> : '.'} Files in it are never changed by a failed start.</small></span>
           <button className="button compact" disabled={busy !== null} onClick={() => { void session.bootstrap(); }}><RotateCcw size={16} />Retry</button></div>}
         {error && <div className="alert error" role="alert"><CircleHelp size={19} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => session.setError(null)}><X size={17} /></button></div>}
-        {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span><button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
+        {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span>{noticeAction && <button className="button compact" onClick={() => { const action = noticeAction; session.setNotice(null); action.run(); }}>{noticeAction.label}</button>}<button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
         <AutoActionsIndicator runs={service.runs} busy={display.busy} onStop={() => { void displaySettings.stopAutomaticActions(); }} />
         {showControlNotice && <ModuleControlNotice autoExecute={display.settings.auto_execute} onDismiss={() => setControlNotice(false)} />}
 

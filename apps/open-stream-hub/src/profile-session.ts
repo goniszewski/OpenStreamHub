@@ -33,6 +33,9 @@ export interface Draft {
   contentHash?: string | null;
 }
 
+// An action offered beside a notice, such as Undo after a drop replaced a binding.
+export interface NoticeAction { label: string; run(): void }
+
 export interface SessionState {
   draft: Draft;
   profiles: ProfileSummary[];
@@ -43,6 +46,7 @@ export interface SessionState {
   busy: string | null;
   error: string | null;
   notice: string | null;
+  noticeAction: NoticeAction | null;
   validation: Validation;
   replay: ReplaySession;
   preview: Preview;
@@ -128,7 +132,7 @@ export class ProfileSession {
     this.state = {
       draft: { ...draft, savedSnapshot: stableStringify(draft.profile) }, draftGeneration: 0,
       profiles: [], unreadable: [], storagePath: '', ready: !desktop, bootstrapError: null,
-      busy: desktop ? 'Opening profiles' : null, error: null, notice: null, validation: 'idle',
+      busy: desktop ? 'Opening profiles' : null, error: null, notice: null, noticeAction: null, validation: 'idle',
       replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, pendingIntent: null,
       duplicatePrompt: false, restorePrompt: null, importError: null, mhzImport: null, mhzReportOpen: false, importFlagsError: null, exportResult: null, canUndo: false, canRedo: false,
     };
@@ -138,8 +142,10 @@ export class ProfileSession {
   readonly getState = () => this.state;
 
   private set(patch: Partial<SessionState>) {
+    // A notice write drops a stale notice action unless it carries a fresh one.
+    const cleared = 'notice' in patch && patch.noticeAction === undefined ? { noticeAction: null } : {};
     const previous = this.state.draft;
-    this.state = { ...this.state, ...patch };
+    this.state = { ...this.state, ...cleared, ...patch };
     if (this.state.draft !== previous) this.observeDraft();
     for (const listener of this.listeners) listener();
   }
@@ -207,7 +213,7 @@ export class ProfileSession {
   }
 
   setError(error: string | null) { this.set({ error }); }
-  setNotice(notice: string | null) { this.set({ notice }); }
+  setNotice(notice: string | null, action?: NoticeAction) { this.set({ notice, ...(action ? { noticeAction: action } : {}) }); }
 
   // Replaces the draft profile and records the change for undo. Results computed
   // from the old draft are discarded. An optional `key` names the edited field:

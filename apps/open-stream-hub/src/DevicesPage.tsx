@@ -1,7 +1,10 @@
 import { useSyncExternalStore } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, DragEvent } from 'react';
 import { ChevronRight, RotateCw } from 'lucide-react';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
+import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
+import type { PickerActionType } from './action-picker-model';
+import type { ServiceModule } from './contracts';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from './knob-orientation';
@@ -48,10 +51,11 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
     <RigPreview editor={editor} state={state} feed={feed} />
-    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} />
+    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} disabled={disabled} />
     {isKnob && <KnobOrientationControl orientation={knobOrientation} onRotate={knobOrientationStore.rotate} />}
     {selected.supported ? <>
-      {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad} />}
+      {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad}
+        onDropAction={disabled ? undefined : (control, type) => editor.dropAction('m4315', control, type)} />}
       {!isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
         {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => editor.changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
       </div>}
@@ -61,10 +65,27 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   </section>;
 }
 
+// The drag handlers a control needs to accept one picker entry: dragover admits only action
+// drags, drop assigns the action's default parameters. Disabled controls accept nothing.
+export function controlDropHandlers(module: ServiceModule, control: number, drop: ((type: PickerActionType) => void) | undefined): {
+  onDragOver?: (event: DragEvent<HTMLElement>) => void; onDrop?: (event: DragEvent<HTMLElement>) => void;
+} {
+  if (!drop) return {};
+  return {
+    onDragOver: event => { if (offersActionDrag(event.dataTransfer)) event.preventDefault(); },
+    onDrop: event => {
+      const type = readActionDrag(event.dataTransfer);
+      if (!type || !isValidForControl(type, module)) return;
+      event.preventDefault();
+      drop(type);
+    },
+  };
+}
+
 // The module image with its hit areas. It alone subscribes to the feed, so live input re-renders
 // only this image, not the rest of the workspace. Live state is read-only and keyed by module type,
-// as in the rig: same-type devices share one live state.
-export function HeroImage({ editor, profile, feed, knobOrientation }: { editor: DeviceEditor; profile: SessionState['draft']['profile']; feed?: DeviceFeed; knobOrientation: KnobOrientation }) {
+// as in the rig: same-type devices share one live state. Controls accept a dragged picker entry.
+export function HeroImage({ editor, profile, feed, knobOrientation, disabled = false }: { editor: DeviceEditor; profile: SessionState['draft']['profile']; feed?: DeviceFeed; knobOrientation: KnobOrientation; disabled?: boolean }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding } = editor;
   const live = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).live[selected.id];
   const isKnob = selected.id === 'm003k';
@@ -80,7 +101,8 @@ export function HeroImage({ editor, profile, feed, knobOrientation }: { editor: 
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
           aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
           aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
-          onClick={() => editor.changeSelection({ ...selection, control: area.control })}>
+          onClick={() => editor.changeSelection({ ...selection, control: area.control })}
+          {...controlDropHandlers(selected.id, area.control, disabled ? undefined : type => editor.dropAction(selected.id, area.control, type))}>
           {isKeypad && <KeyDisplayContent key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
           {selected.id === 'm005s' && live?.faders[area.control] !== undefined && <span className="fader-thumb" style={{ bottom: `${live.faders[area.control]}%` }} />}
           {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}

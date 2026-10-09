@@ -1,16 +1,28 @@
 import { ChevronRight } from 'lucide-react';
+import type { DragEvent } from 'react';
 import { KeyDisplayContent } from './DisplayContent';
+import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
+import type { PickerActionType } from './action-picker-model';
 import type { KeypadPage } from './contracts';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 
 interface Props {
   pages: KeypadPage[]; allPages: KeypadPage[]; path: string[]; selected: number;
   onSelect(control: number): void; onNavigate(path: string[]): void;
+  // When set, keys accept a dragged picker entry (never the reserved Back key).
+  onDropAction?(control: number, type: PickerActionType): void;
 }
 
-export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavigate }: Props) {
+export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavigate, onDropAction }: Props) {
   const page = pages.at(-1)!;
   const depth = keypadDepth(path);
+  const acceptDrop = (control: number) => (event: DragEvent<HTMLElement>) => {
+    if (!onDropAction) return;
+    const type = readActionDrag(event.dataTransfer);
+    if (!type || !isValidForControl(type, 'm4315')) return;
+    event.preventDefault();
+    onDropAction(control, type);
+  };
   return <section className="keypad-screen" aria-label="Keypad screen preview">
     <nav className="keypad-breadcrumbs" aria-label="Keypad folders">
       {/* The root page is the first crumb; no separate profile-name crumb. */}
@@ -24,7 +36,9 @@ export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavi
         return <button key={control} className={`keypad-tile${selected === control ? ' selected' : ''}${back ? ' back' : ''}${slot?.type === 'folder' ? ' folder' : ''}`}
           aria-label={back ? `Back one level, L${depth}` : slot?.type === 'folder' ? `Open folder ${folderName}, Key ${control + 1}` : `Select Key ${control + 1}${slot?.type === 'action' ? `, ${slot.label}` : ', empty'}`}
           aria-pressed={!back && slot?.type !== 'folder' ? selected === control : undefined}
-          onClick={() => back ? onNavigate(path.slice(0, -1)) : slot?.type === 'folder' ? onNavigate([...path, slot.page_id]) : onSelect(control)}>
+          onClick={() => back ? onNavigate(path.slice(0, -1)) : slot?.type === 'folder' ? onNavigate([...path, slot.page_id]) : onSelect(control)}
+          onDragOver={onDropAction && !back ? event => { if (offersActionDrag(event.dataTransfer)) event.preventDefault(); } : undefined}
+          onDrop={onDropAction && !back ? acceptDrop(control) : undefined}>
           {!back && <span className="keypad-key-number">{control + 1}</span>}
           <KeyDisplayContent key={page.id} slot={slot} pages={allPages} depth={depth} back={back} artwork={page.artwork?.[String(control)]} />
         </button>;

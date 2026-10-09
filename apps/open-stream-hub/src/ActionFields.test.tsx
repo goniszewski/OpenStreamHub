@@ -18,14 +18,20 @@ function expectAccessible(markup: string) {
 }
 
 describe('action fields', () => {
-  it('offers only the position action for faders and the full catalogue elsewhere', () => {
-    const fader = render(null, true);
-    expect(fader).toContain('value="volume_from_position"');
-    expect(fader).not.toContain('value="open_url"');
+  it('replaces the flat select with the picker trigger', () => {
     const key = render(null);
-    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile']) expect(key).toContain(`value="${type}"`);
-    expect(key).not.toContain('value="volume_from_position"');
-    expect(fader).not.toContain('value="profile"');
+    expect(key).toContain('<label for="binding-action">Action</label>');
+    expect(key).toMatch(/<button[^>]*id="binding-action"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+    expect(key).toContain('Choose an action');
+    // The closed picker carries no catalogue; its entries are covered by the action-picker tests.
+    expect(key).not.toContain('data-action-type=');
+    expectAccessible(key);
+    const fader = render(null, true);
+    expect(fader).toMatch(/id="binding-action"[^>]*aria-haspopup="dialog"/);
+    const bound = render({ type: 'volume_from_position' }, true);
+    expect(bound).toContain('>Output volume follows position</span>');
+    expect(bound).toContain('Each position change plans an absolute output volume');
+    expect(bound).toContain('aria-expanded="false"');
   });
 
   it('keeps the historical top-level field ids', () => {
@@ -67,22 +73,21 @@ describe('action fields', () => {
     expect(markup).toContain('pause until you confirm the new profile');
     expect(markup).toContain('Only runs started from this app switch');
     expect(markup).toContain('Learn more');
+    expect(markup).toContain('>Switch profile</span>');
     expectAccessible(markup);
     const steps = render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] });
-    expect(steps).not.toMatch(/id="step-1-action"[^]*value="profile"[^]*id="step-2-action"/);
-    expect(steps.match(/value="profile"/g)).toHaveLength(1);
+    expect(steps).not.toContain('>Switch profile</span>');
   });
 
   it('offers timers on keys and dials only, never on faders or as a multi-action step', () => {
-    expect(render(null)).toContain('value="timer"');
-    expect(render(null, true)).not.toContain('value="timer"');
+    expect(render({ type: 'timer', seconds: 90 })).toContain('>Timer</span>');
+    // Catalogue validity (faders, steps) is covered by the action-picker-model tests.
     const steps = render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] });
-    expect(steps.match(/value="timer"/g)).toHaveLength(1);
+    expect(steps).not.toContain('>Timer</span>');
   });
 
   it('renders timer duration, optional label and the closed sound list', () => {
     const markup = render({ type: 'timer', seconds: 90 });
-    expect(markup).toMatch(/<option value="timer" selected="">Timer<\/option>/);
     expect(ids(markup)).toEqual(expect.arrayContaining(['timer-seconds', 'timer-label', 'timer-sound']));
     expect(markup).toMatch(/id="timer-seconds"[^>]*min="1"[^>]*max="86400"/);
     // Absent sound shows the service default.
@@ -106,8 +111,9 @@ describe('action fields', () => {
     const two = render({ type: 'multi_action', actions: steps });
     expectAccessible(two);
     expect(ids(two)).toEqual(expect.arrayContaining(['step-1-action', 'step-1-volume-delta', 'step-2-action', 'step-2-shortcut-key-kind']));
-    // Only the top-level select offers multi_action; steps cannot nest.
-    expect(two.match(/value="multi_action"/g)).toHaveLength(1);
+    // Each step shows its action on its own picker trigger.
+    expect(two).toContain('>Change output volume</span>');
+    expect(two).toContain('>Keyboard shortcut</span>');
     expect(two.match(/aria-label="Remove step \d"/g)).toHaveLength(2);
     expect(two).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove step 1"/);
     const eight = render({ type: 'multi_action', actions: Array.from({ length: 8 }, () => ({ type: 'toggle_mute' as const })) });
@@ -121,20 +127,19 @@ describe('obs_scene fields', () => {
     const markup = render({ type: 'obs_scene', scene: 'Live' });
     expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
     expect(markup).toContain('value="Live"');
+    expect(markup).toContain('>Switch OBS scene</span>');
     expect(markup).not.toContain('role="alert"');
     expect(markup).toContain('OBS turned on in Settings');
     expectAccessible(markup);
     const blank = render({ type: 'obs_scene', scene: ' ' });
     expect(blank).toContain('aria-invalid="true"');
     expect(blank).toContain('role="alert"');
-    expect(render(null)).toContain('value="obs_scene"');
-    expect(render(null, true)).not.toContain('value="obs_scene"');
   });
 
   it('is offered as a multi-action step with prefixed ids', () => {
     const markup = render({ type: 'multi_action', actions: [{ type: 'obs_scene', scene: 'Live' }, { type: 'toggle_mute' }] });
     expect(ids(markup)).toContain('step-1-obs-scene');
-    expect(markup).toMatch(/<option value="obs_scene" selected="">Switch OBS scene<\/option>/);
+    expect(markup).toContain('>Switch OBS scene</span>');
     expectAccessible(markup);
   });
 });
@@ -152,10 +157,8 @@ describe('obs output fields', () => {
     expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
     expect(buffer).toContain('Saving needs the buffer to be running');
     expectAccessible(buffer);
-    for (const type of ['obs_virtual_camera', 'obs_replay_buffer']) {
-      expect(render(null)).toContain(`value="${type}"`);
-      expect(render(null, true)).not.toContain(`value="${type}"`);
-    }
+    expect(render({ type: 'obs_virtual_camera', op: 'toggle' })).toContain('>OBS virtual camera</span>');
+    expect(render({ type: 'obs_replay_buffer', op: 'save' })).toContain('>OBS replay buffer</span>');
   });
 
   it('is offered as a multi-action step with prefixed ids', () => {
@@ -212,6 +215,5 @@ describe('obs source fields', () => {
     const multi = render({ type: 'multi_action', actions: [{ type: 'obs_studio_mode', op: 'on' }, { type: 'obs_filter', source: 'A', filter: 'B', op: 'off' }] });
     expect(ids(multi)).toEqual(expect.arrayContaining(['step-1-obs-studio-mode-op', 'step-2-obs-filter-source', 'step-2-obs-filter-name', 'step-2-obs-filter-op']));
     expectAccessible(multi);
-    for (const type of ['obs_studio_mode', 'obs_transition', 'obs_filter', 'obs_source_visibility']) expect(render(null)).toContain(`value="${type}"`);
   });
 });

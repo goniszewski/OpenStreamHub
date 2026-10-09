@@ -1,9 +1,11 @@
 import { useState } from 'react';
-import type { Binding, BindingAction, KeypadBinding } from './contracts';
+import type { Action, Binding, BindingAction, KeypadBinding, Profile, ServiceModule } from './contracts';
+import { defaultBindingAction, isValidForControl, pickerEntryLabel, pickerWebStorage, recordRecentAction } from './action-picker-model';
+import type { PickerActionType } from './action-picker-model';
 import { clampUtf8 } from './draft-model';
 import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot } from './keypad-model';
 import type { ProfileSession, SessionState } from './profile-session';
-import { actionLabel, editBinding, errorMessage, gestures, modules, sameSelector } from './ui-model';
+import { actionLabel, controlLabel, editBinding, errorMessage, gestures, modules, sameSelector } from './ui-model';
 import type { BindingSelection, ModuleId, Page } from './ui-model';
 
 export interface ConfirmRequest { title: string; description: string; confirmLabel: string; run: () => void }
@@ -21,6 +23,41 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
 export function syncKeypad(state: SessionState, keypad: { generation: number; path: string[] }) {
   const path = usablePath(state, keypad);
   return path === keypad.path ? keypad : { generation: state.draftGeneration, path };
+}
+
+// The draft a dropped picker entry writes: the action's default parameters on the control's
+// primary gesture, or on the key's press, in the keypad folder being edited. Throws for slots
+// that cannot take a binding (a folder key, the reserved Back key).
+export function dropProfileEdit(profile: Profile, keypadPath: readonly string[], module: ServiceModule, control: number, type: PickerActionType): Profile {
+  const action = defaultBindingAction(type);
+  if (module === 'm4315') return editKeypadBinding(profile, keypadPath, control, 'pressed', '', action as Action, clampUtf8(actionLabel(action)));
+  return editBinding(profile, { module, control, gesture: gestures[module][0], serial: '' }, action);
+}
+
+// What a drop finds on the target's primary gesture: the any-serial action it replaces, and the
+// serial of an exact-serial binding that stays in place beside the new any-serial one.
+export function dropTargetState(profile: Profile, keypadPath: readonly string[], module: ServiceModule, control: number): { previous?: BindingAction; keptSerial?: string } {
+  const gesture = gestures[module][0];
+  if (module === 'm4315') {
+    const slot = keypadPagesAtPath(profile, keypadPath).at(-1)!.slots[control];
+    if (slot?.type !== 'action') return {};
+    return {
+      previous: slot.bindings.find(item => item.gesture === 'pressed' && (item.serial_number ?? '') === '')?.action,
+      keptSerial: slot.bindings.find(item => item.gesture === 'pressed' && item.serial_number)?.serial_number,
+    };
+  }
+  return {
+    previous: profile.bindings.find(item => sameSelector(item, { module, control, gesture, serial: '' }))?.action,
+    keptSerial: profile.bindings.find(item => item.module === module && item.control === control && item.gesture === gesture && item.serial_number)?.serial_number,
+  };
+}
+
+// The one-line result of a drop, in catalogue names: what replaced what, or what was added and
+// what an exact-serial binding keeps doing.
+export function dropNoticeText(found: { previous?: BindingAction; keptSerial?: string }, type: PickerActionType, control: string): string {
+  if (found.previous) return `Replaced ${pickerEntryLabel(found.previous.type as PickerActionType)} with ${pickerEntryLabel(type)} on ${control}.`;
+  if (found.keptSerial) return `Added ${pickerEntryLabel(type)} to ${control}; the binding for serial ${found.keptSerial} is unchanged.`;
+  return `Added ${pickerEntryLabel(type)} to ${control}.`;
 }
 
 // View state for the Devices page and inspector: which module, control,
@@ -61,6 +98,26 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
   function changeSelection(next: BindingSelection) {
     setSelection(next);
     session.clearPreview();
+  }
+
+  // Dropping a picker entry on a control selects it and assigns the action's default parameters
+  // to its primary gesture, as if it had been picked in the inspector. Like the inspector, the
+  // encoder refuses flat bindings while dial functions exist. The notice names what changed,
+  // with Undo, since a replaced binding is otherwise silent.
+  function dropAction(module: ModuleId, control: number, type: PickerActionType) {
+    if (!isValidForControl(type, module)) return;
+    if (module === 'm131e' && profile.dial_functions) {
+      session.setError('This profile uses dial functions, so encoder bindings are edited under Profiles · Dial functions.');
+      return;
+    }
+    try {
+      const found = dropTargetState(profile, keypadPath, module, control);
+      session.edit(dropProfileEdit(profile, keypadPath, module, control, type), `drop:${type}:${module}:${control}`);
+      recordRecentAction(pickerWebStorage, type);
+      session.setNotice(dropNoticeText(found, type, controlLabel(module, control)), { label: 'Undo', run: () => session.undo() });
+    } catch (reason) { session.setError(errorMessage(reason)); }
+    chooseModule(module);
+    changeSelection({ module, control, gesture: gestures[module][0], serial: '' });
   }
 
   function chooseModule(id: ModuleId) {
@@ -159,7 +216,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, se
     selectedModule, selected, selection, serialScope, faderPosition, keypadPath, keypadPages, currentKeypadPage,
     isKeypad, isBack, keypadSlot, folderPage, binding,
     mutateAction, changeSelection, chooseModule, selectBinding, navigateKeypad, selectKeypadBinding, removeKeypadBinding,
-    createFolder, clearKey, deleteCurrentFolder, changeFaderPosition, changeSerialScope, testKeypad, testBinding,
+    createFolder, clearKey, deleteCurrentFolder, changeFaderPosition, changeSerialScope, testKeypad, testBinding, dropAction,
   };
 }
 

@@ -1,13 +1,15 @@
 import { Plus, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import { ActionPickerField } from './ActionPicker';
+import { defaultBindingAction } from './action-picker-model';
+import type { StepActionType } from './action-model';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, defaultTimerSound, maxObsSceneBytes, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels,
+  defaultStepAction, defaultTimerSound, maxObsSceneBytes, obsNameIssue, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels,
   maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps, namedKeys, obsSceneIssue, profileDirectionLabels,
-  stepActionTypes, systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
+  systemLabels, textIssue, timerLabelIssue, timerSeconds, timerSoundLabels, urlIssue,
 } from './action-model';
-import type { StepActionType } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
 
@@ -32,26 +34,15 @@ function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitch
 
 const obsOutputNote = 'OBS refuses Start on a running output and Stop on a stopped one.';
 
-// The action select and its parameter fields. Top-level ids keep their
+// The action picker and the parameter fields of the chosen action. Top-level ids keep their
 // historical names; multi-action steps prefix theirs with `step-N-`.
 export function ActionFields({ action, fader, selectorKey, onChange }: {
   action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change;
 }) {
   return <>
     <label htmlFor="binding-action">Action</label>
-    <SelectField id="binding-action" value={action?.type ?? 'unbound'} onChange={event => {
-      const type = event.target.value;
-      onChange(type === 'unbound' ? null : type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction()
-        : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction() : defaultStepAction(type as StepActionType));
-    }}>
-      <option value="unbound">Unbound</option>
-      {fader ? <option value="volume_from_position">Output volume follows position</option> : <>
-        {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
-        <option value="multi_action">Multi-action</option>
-        <option value="profile">Switch profile</option>
-        <option value="timer">Timer</option>
-      </>}
-    </SelectField>
+    <ActionPickerField triggerId="binding-action" scope={fader ? 'binding-fader' : 'binding'} action={action}
+      onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
@@ -99,9 +90,8 @@ function MultiActionFields({ steps, selectorKey, onChange }: { steps: StepAction
         const prefix = `step-${index + 1}-`;
         return <li key={`${index}:${step.type}`}>
           <label htmlFor={`${prefix}action`}>Step {index + 1}</label>
-          <SelectField id={`${prefix}action`} value={step.type} onChange={event => update(steps.map((item, at) => at === index ? defaultStepAction(event.target.value as StepActionType) : item))}>
-            {stepActionTypes.map(([type, label]) => <option key={type} value={type}>{label}</option>)}
-          </SelectField>
+          <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
+            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultStepAction(type as StepActionType) : item)); }} />
           <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
             onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} />
           <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}

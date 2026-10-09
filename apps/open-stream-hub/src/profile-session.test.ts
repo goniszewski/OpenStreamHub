@@ -323,3 +323,27 @@ describe('saving and deleting', () => {
     expect(session.getState().draft.profileId).toBe('a');
   });
 });
+
+describe('notice actions', () => {
+  it('carries an action with its notice and drops it when the notice changes', () => {
+    const { session } = harness(false);
+    let undone = 0;
+    session.setNotice('Replaced Timer with Open URL on Knob 1.', { label: 'Undo', run: () => { undone += 1; } });
+    expect(session.getState().notice).toContain('Replaced Timer');
+    expect(session.getState().noticeAction).toMatchObject({ label: 'Undo' });
+    session.setNotice('Saved Alpha.');
+    expect(session.getState().noticeAction).toBeNull();
+    expect(undone).toBe(0);
+  });
+
+  it('keeps a fresh action when a notice write replaces both', () => {
+    const { session } = harness(false);
+    session.setNotice('First.', { label: 'Undo', run: () => {} });
+    session.setNotice('Second.', { label: 'Redo', run: () => {} });
+    expect(session.getState().noticeAction?.label).toBe('Redo');
+    // Clearing the notice clears its action.
+    session.setNotice(null);
+    expect(session.getState().notice).toBeNull();
+    expect(session.getState().noticeAction).toBeNull();
+  });
+});

@@ -202,6 +202,21 @@ describe('hero live input', () => {
   });
 });
 
+describe('module catalog labels', () => {
+  it('marks connected modules and leaves the rest neutral, with no planned or pending labels', async () => {
+    const feed = new DeviceFeed((async () => []) as never, async () => () => {}, true, callback => callback());
+    feed.connect(); await new Promise(resolve => setTimeout(resolve, 0));
+    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [{ path_hex: 'a1', module: 'm003k', serial_number: null }] };
+    const markup = renderToStaticMarkup(<ModuleCatalog editor={editor} feed={feed} />);
+    expect(markup).toContain('<small>Connected</small>');
+    expect(markup).toContain('<small>Not connected</small>');
+    expect(markup).not.toContain('Planned');
+    expect(markup).not.toContain('pending');
+    const quiet = renderToStaticMarkup(<ModuleCatalog editor={editor} />);
+    expect(quiet.match(/<small>Not connected<\/small>/g)).toHaveLength(modules.length);
+  });
+});
+
 describe('3-knob module wording', () => {
   it('states the verified knob order and the verified input', () => {
     expect(moduleNote('m003k')).toBe('Knob order verified on hardware: with the single knob on top, Knob 3 is on top, Knob 1 bottom-left and Knob 2 bottom-right.');

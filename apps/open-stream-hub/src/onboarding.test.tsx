@@ -36,7 +36,7 @@ describe('onboarding steps', () => {
     expect(render(2)).toContain('pastes text into the focused app (and can press Return after it)');
     expect(render(2)).toContain('Only run profiles you wrote or reviewed.');
     expect(render(3)).toContain('Nothing is uploaded');
-    expect(render(3)).toContain('set Module control to Built-in animation in Settings');
+    expect(render(3)).toContain('set “Let OpenStreamHub drive the display” to Built-in animation in Settings');
     expect(render(1, false)).toContain('Ctrl+S');
   });
   it('keeps step numbers in range', () => {

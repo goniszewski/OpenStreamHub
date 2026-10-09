@@ -309,7 +309,7 @@ describe('session manager', () => {
     session(t, 'running', { service_id: id2, execute: true });
     session(t, 'stopped', { service_id: null, reason: 'service_exited', detail: 'crashed', execute: true });
     expect(texts(t)).toEqual(['Mac went to sleep — actions paused', 'Paused: confirm to resume actions', 'Waiting for m131e to reconnect',
-      'Reconnecting (attempt 2/5)', 'Reconnected', 'Session stopped: the service exited (crashed)']);
+      'Reconnecting (attempt 2/5)', 'Reconnected', 'Session stopped: the background helper exited (crashed)']);
     expect(run(t).entries.at(-1)!.kind).toBe('error');
   });
   it('a refused start ends the run once, without reconnect attempts or the service sentence', async () => {

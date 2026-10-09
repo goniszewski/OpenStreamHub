@@ -30,7 +30,7 @@ describe('platform and blockers', () => {
     // is refused, exactly as the service refuses it.
     const blocker = runBlocker({ desktop: true, device: keypad, profile: nested, moduleControl: 'built_in_animation' });
     expect(blocker).toBe(builtInKeypadBlocker);
-    expect(blocker).toContain('Module control');
+    expect(blocker).toContain('Let OpenStreamHub drive the display');
     expect(blocker).not.toContain('--display-sync');
     const pagedWithoutFolders: Profile = { ...nested, keypad: { pages: [emptyKeypadPage()] } };
     expect(runBlocker({ desktop: true, device: keypad, profile: pagedWithoutFolders, moduleControl: 'built_in_animation' })).toBe(builtInKeypadBlocker);
@@ -88,7 +88,7 @@ describe('ServicePanel markup', () => {
     setRun(runner, { state: 'stopping' });
     expect(render({ feed, runner })).not.toContain(runPreviewNote);
     expect(markup).toContain('Profile changed since start. Restart to apply.');
-    expect(markup).toContain('(unsaved draft)');
+    expect(markup).toContain('(unsaved changes)');
     expect(markup).toContain('>Stop<');
     expect(markup).toContain('role="log"');
     expect(markup).toContain('<time>now</time>');
@@ -157,7 +157,7 @@ describe('ServicePanel markup', () => {
   it('disables Run with the Module control reason for a paged profile on the 15-key module', () => {
     const markup = panelFor(keypad, 'built_in_animation', nested);
     expect(markup).toContain(builtInKeypadBlocker);
-    expect(markup).toContain('Module control in Settings is set to Built-in animation');
+    expect(markup).toContain('“Let OpenStreamHub drive the display” is set to Built-in animation');
     expect(markup).not.toContain('--display-sync');
     expect(markup).toMatch(runDisabled);
     // App control runs it.
@@ -297,7 +297,7 @@ describe('session banners', () => {
   it('stopped shows reason and detail and no Stop', () => {
     const { feed, runner } = sessionFor('stopped', { reason: 'service_exited', detail: 'HID read failed' });
     const markup = render({ feed, runner });
-    expect(markup).toContain('Session stopped: the service exited');
+    expect(markup).toContain('Session stopped: the background helper exited');
     expect(markup).toContain('HID read failed');
     expect(markup).not.toContain(liveBanner);
     expect(markup).not.toContain('>Stop<');
@@ -309,6 +309,7 @@ describe('session banners', () => {
     setRun(runner, { state: 'exited', exitCode: 1, stderrTail: 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings' });
     const markup = render({ feed, runner });
     expect(markup).toContain('Session stopped: the profile could not start');
+    // The backend refusal appears exactly once, as the session detail.
     expect(markup.split('Module control in Settings is set to Built-in animation').length).toBe(2);
     expect(markup).not.toContain('Reconnecting');
     expect(markup).not.toContain('--display-sync');

@@ -78,14 +78,14 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
 
   return <section className="dial-functions" aria-labelledby={dialFunctionHeadingId}>
     <h3 id={dialFunctionHeadingId}>Dial functions <span className="small-label">{functions.length ? `${functions.length} of ${maxDialFunctions}` : 'Off'}</span></h3>
-    <p className="fine-print">A short press on the encoder switches to the next function and never runs an action. Rotation and long press use the current function. The service starts at the first function and returns to it whenever it restarts. The encoder display shows the current function while Module control in Settings is App (the default) and the dial screen is set to show the function name.</p>
+    <p className="fine-print">A short press on the encoder switches to the next function and never runs an action. Rotation and long press use the current function. A run always starts at the first function and returns to it when it restarts. The encoder display shows the current function while OpenStreamHub drives the display (the default) and the dial screen is set to show the function name.</p>
     {!functions.length ? <>
       <p className="empty-state">This profile has no dial functions. Encoder bindings work as before, including Short press.</p>
       <button type="button" className="button" disabled={disabled} onClick={() => { run(latest => addDialFunction(latest)); choose(0); }}><Plus size={17} />Add dial functions</button>
-      {flatCount > 0 && <p className="fine-print">After adding functions, the {flatCount} existing encoder binding{flatCount === 1 ? '' : 's'} must move into a function or be removed: the service rejects encoder bindings outside functions.</p>}
+      {flatCount > 0 && <p className="fine-print">After adding functions, the {flatCount} existing encoder binding{flatCount === 1 ? '' : 's'} must move into a function or be removed before the profile can be saved.</p>}
     </> : <>
       {flatCount > 0 && current && <div className="binding-warnings" role="region" aria-label="Encoder bindings outside dial functions">
-        <p>{flatCount} encoder binding{flatCount === 1 ? ' is' : 's are'} outside the dial functions, which the service rejects.</p>
+        <p>{flatCount} encoder binding{flatCount === 1 ? ' is' : 's are'} outside the dial functions and must move into one before the profile can be saved.</p>
         {flat.conflicting.length > 0 && <p>{plural(flat.conflicting.length, 'binding')} will be dropped because {currentName} already has the same gesture: {bindingNames(flat.conflicting)}.</p>}
         {flat.dropped.length > 0 && <p>{plural(flat.dropped.length, 'binding')} will be dropped because no function can hold {flat.dropped.length === 1 ? 'it' : 'them'}: {bindingNames(flat.dropped)}.</p>}
         <button type="button" className="button compact" disabled={disabled} onClick={() => run(latest => moveFlatDialBindings(latest, selected))}>{flat.moved.length ? `Move ${plural(flat.moved.length, 'encoder binding')} into ${currentName}` : 'Remove the encoder bindings outside functions'}</button>

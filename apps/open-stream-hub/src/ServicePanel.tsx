@@ -18,7 +18,7 @@ export const serviceResumeId = 'service-resume';
 export type PlatformInfo = { platform?: string; userAgent?: string };
 export const isMacPlatform = (info: PlatformInfo | undefined) => /mac/i.test(`${info?.platform ?? ''} ${info?.userAgent ?? ''}`);
 
-export const builtInKeypadBlocker = 'This profile has 15-key pages, which run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App to run this profile.';
+export const builtInKeypadBlocker = 'This profile has 15-key pages, which run live only when OpenStreamHub drives the module. In Settings, “Let OpenStreamHub drive the display” is set to Built-in animation: set it to App to run this profile.';
 
 // Why Run is unavailable for this selection, or null. Until the Module control settings have loaded nothing runs, and
 // settings that cannot be read are named rather than shown as App. The service refuses schema-2 (paged) M4315 profiles
@@ -43,8 +43,8 @@ export function softwareModeBox(input: { module: ServiceModule | undefined; load
   return { appDriven, requested, checked: appDriven || requested, locked: !input.loaded || !capable || appDriven };
 }
 
-export const settingsLoadingBlocker = 'Reading the Module control setting…';
-export const settingsErrorBlocker = (error: string) => `The Module control settings could not be read, so profiles cannot run yet: ${error} Open Settings for details.`;
+export const settingsLoadingBlocker = 'Reading the display settings…';
+export const settingsErrorBlocker = (error: string) => `The display settings could not be read, so profiles cannot run yet: ${error} Open Settings for details.`;
 
 // The feed never reads a path a run owns; the live preview shows that module's input from the run's own records instead.
 export const runPreviewNote = 'The live preview shows the input this run reads from the module (read-only).';
@@ -59,7 +59,7 @@ export function autoStartNote(autoStart: NonNullable<ServiceRun['session']>['aut
   return `${label}${why} Stop it to run another profile on this module or to execute actions.`;
 }
 // Why the software mode box is ticked and locked for the 15-key module and the dial.
-export const appControlNote = 'Module control is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
+export const appControlNote = '“Let OpenStreamHub drive the display” is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
 
 export const stateLabel = (state: ServiceState | undefined) => state === undefined ? 'Stopped' : state === 'exited' ? 'Stopped' : state[0].toUpperCase() + state.slice(1);
 
@@ -76,7 +76,7 @@ const phaseClass = (run: ServiceRun | undefined) => run?.session && run.session.
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App', auto_actions: 'Run actions automatically was turned on or off' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', auto_actions: 'Run actions automatically was turned on or off' } as const;
 // The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
 const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
 // Who switched the run, as one phrase for the banner and the Resume dialog.
@@ -218,7 +218,7 @@ export function resolveServiceSelection(devices: LiveDevice[], runs: Record<stri
 export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Review it on the Profiles page and allow it to execute actions first.';
 export const runBlockNotes = {
   imported: dryRunOnlyRunNote,
-  deleted: "This draft's saved profile was deleted. Save it to run it with actions.",
+  deleted: 'The saved profile behind these unsaved changes was deleted. Save it to run it with actions.',
   unreadable: 'The list of imported profiles cannot be read, so every profile runs only as a dry run. Fix it on the Profiles page first.',
 } as const;
 
@@ -323,18 +323,18 @@ export function ServicePanel({ runner, feed, profile, profileId = null, sourcePr
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
-    {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved draft)' : ''} was used when this run started.</p>}
+    {run && <p className="fine-print">Profile "{run.profileName}"{run.draftUnsaved ? ' (unsaved changes)' : ''} was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}
-    {run?.state === 'failed' && <div className="service-failure" role="alert"><strong>{run.error ?? 'The service failed.'}</strong>{run.stderrTail && <pre>{run.stderrTail}</pre>}</div>}
-    {run?.state === 'exited' && run.exitCode !== undefined && run.exitCode !== 0 && <p className="fine-print">The service exited with code {run.exitCode}.</p>}
+    {run?.state === 'failed' && <div className="service-failure" role="alert"><strong>{run.error ?? 'The run failed.'}</strong>{run.stderrTail && <pre>{run.stderrTail}</pre>}</div>}
+    {run?.state === 'exited' && run.exitCode !== undefined && run.exitCode !== 0 && <p className="fine-print">The background helper exited with code {run.exitCode}.</p>}
     {service.error && <p className="service-failure" role="alert">{service.error}</p>}
     {run && <>
       <dl className="service-counters" aria-label="Run counters">
-        <div><dt>Events</dt><dd>{run.counters.events}</dd></div><div><dt>Planned</dt><dd>{run.counters.planned}</dd></div>
+        <div><dt>Events</dt><dd>{run.counters.events}</dd></div><div><dt>Would run</dt><dd>{run.counters.planned}</dd></div>
         <div><dt>Executed</dt><dd>{run.counters.executed}</dd></div><div><dt>Failed</dt><dd>{run.counters.failed}</dd></div>
         {run.counters.timerAlertsFailed > 0 && <div><dt>Timer alerts failed</dt><dd>{run.counters.timerAlertsFailed}</dd></div>}
       </dl>
-      <ol className="service-log" ref={log} role="log" aria-label="Service activity" tabIndex={0}>
+      <ol className="service-log" ref={log} role="log" aria-label="Run activity" tabIndex={0}>
         {run.entries.length === 0 ? <li className="info">Waiting for activity…</li> : run.entries.slice(-100).map((entry, index) =>
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>

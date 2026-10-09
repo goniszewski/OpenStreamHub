@@ -72,14 +72,14 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the service exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'Module control is no longer App', auto_actions: 'Run actions automatically was turned on or off' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', auto_actions: 'Run actions automatically was turned on or off' };
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
 // How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
 // for a Start by the user.
 const autoStartWhen: Record<SessionAutoStart, string> = {
   app_opened: 'when the app opened',
   module_connected: 'when the module was connected',
-  module_control_set: 'when Module control was set to App',
+  module_control_set: 'when OpenStreamHub started driving the display',
 };
 export const autoStartLabel = (autoStart: SessionAutoStart, execute: boolean) =>
   `Started automatically (${execute ? 'actions run' : 'dry run'}) ${autoStartWhen[autoStart]}`;

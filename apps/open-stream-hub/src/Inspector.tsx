@@ -1,4 +1,4 @@
-import { FileText, Folder, Play, Trash2, Workflow } from 'lucide-react';
+import { Folder, Play, Trash2 } from 'lucide-react';
 import type { Gesture } from './contracts';
 import { ActionFields } from './ActionFields';
 import { LabelError, SelectField } from './controls';
@@ -34,13 +34,15 @@ export function Inspector({ editor, session, state, disabled, invoke }: { editor
         <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} />
       </fieldset>
       <div className="inspector-divider" />
-      <label htmlFor="serial-scope">Device selector</label><SelectField id="serial-scope" value={serialScope} onChange={event => editor.changeSerialScope(event.target.value as SerialScope)}><option value="any">Any device serial</option><option value="exact">Exact device serial</option></SelectField>
-      {serialScope === 'exact' && <><label className="spaced-label" htmlFor="serial-number">Exact serial number</label><input id="serial-number" value={selection.serial} spellCheck={false} onChange={event => editor.changeSelection({ ...selection, serial: event.target.value })} /><p className="fine-print">Case-sensitive. Enter a serial before adding an exact binding.</p></>}
-      <p className="fine-print">The action editor targets this exact selector. The Rust service applies exact-serial precedence during preview and replay.</p>
+      <details className="advanced">
+        <summary>Advanced</summary>
+        <label htmlFor="serial-scope">Limit to one device</label><SelectField id="serial-scope" value={serialScope} onChange={event => editor.changeSerialScope(event.target.value as SerialScope)}><option value="any">Any device of this type</option><option value="exact">One device by serial number</option></SelectField>
+        {serialScope === 'exact' && <><label className="spaced-label" htmlFor="serial-number">Serial number</label><input id="serial-number" value={selection.serial} spellCheck={false} onChange={event => editor.changeSelection({ ...selection, serial: event.target.value })} /><p className="fine-print">Matched exactly, including upper and lower case. Enter a serial before adding the binding.</p></>}
+        <p className="fine-print">If you connect more than one module of the same type, a serial number keeps this binding on the one you chose.</p>
+      </details>
       <button className="button full-width" disabled={disabled || previewRunning || serialMissing} onClick={() => { void editor.testBinding(); }}><Play size={18} />{selection.module === 'm005s' ? 'Test selected position' : isKeypad ? 'Simulate key click' : 'Test selected gesture'}</button>
-      <p className="fine-print">Edits belong to the unsaved profile draft. Save to retain them after restart.</p>
+      <p className="fine-print">Your changes are not saved until you press Save profile.</p>
       </>}
-      <div className="planned-actions"><span><Workflow size={17} />Run flow<small>Planned</small></span><span><FileText size={17} />Run script<small>Planned</small></span></div>
-    </> : <><h2>{selected.name}</h2><div className="status planned"><span className="status-dot" />Planned</div><p className="inspector-note">Binding editing is available for the encoder and three-knob modules. This module cannot be added to a service profile yet.</p></>}
+    </> : <><h2>{selected.name}</h2><div className="status offline"><span className="status-dot" />Not available yet</div><p className="inspector-note">Binding editing is available for the encoder and three-knob modules. See Compatibility for what this module supports.</p></>}
   </aside>;
 }

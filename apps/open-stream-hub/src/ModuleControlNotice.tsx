@@ -3,9 +3,9 @@ import type { ModuleControl } from './contracts';
 
 // One non-blocking notice, shown once per user, that says the app drives the 15-key module and the dial (Module control
 // App, the default): the session manager starts a dry run unless automatic actions are enabled in Settings.
-export const moduleControlNoticeText = 'OpenStreamHub drives the 15-key module and the encoder dial whenever it is open; their built-in animation returns when you quit. Change this in Settings > Module control.';
+export const moduleControlNoticeText = 'OpenStreamHub drives the 15-key module and the encoder dial whenever it is open; their built-in animation returns when you quit. Change this in Settings, under “Let OpenStreamHub drive the display”.';
 // Added only while "Run actions automatically" is on.
-export const autoActionsNoticeText = 'Actions run automatically; turn that off in Settings > Module control.';
+export const autoActionsNoticeText = 'Actions run automatically; turn that off in Settings.';
 export const moduleControlNoticeStorageKey = 'open-stream-hub.module-control-notice-shown';
 
 // True until the notice was shown once. If storage cannot be read the answer is unknown, so the notice stays hidden

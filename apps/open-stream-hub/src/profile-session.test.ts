@@ -295,7 +295,7 @@ describe('saving and deleting', () => {
     expect(session.unsaved).toBe(false);
   });
 
-  it('keeps a deleted open profile as an unsaved draft', async () => {
+  it('keeps a deleted open profile as unsaved changes', async () => {
     const alpha = stored('a', 'Alpha', 1234);
     const { session, take } = await ready(alpha);
     const remove = session.deleteProfile(summary(alpha));
@@ -310,7 +310,7 @@ describe('saving and deleting', () => {
     expect(state.draft.profile.name).toBe('Alpha');
     expect(session.unsaved).toBe(true);
     expect(state.profiles).toEqual([]);
-    expect(state.notice).toContain('unsaved draft');
+    expect(state.notice).toContain('unsaved changes');
   });
 
   it('reports a failed delete without changing the draft', async () => {

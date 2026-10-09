@@ -54,7 +54,7 @@ export function CrashScreen({ error }: { error: Error }) {
   return <div className="crash-screen" role="alert">
     <CircleHelp size={28} />
     <h1>Something went wrong</h1>
-    <p>OpenStreamHub hit an unexpected problem and stopped this view. Saved profiles on disk are not affected; unsaved draft changes may be lost.</p>
+    <p>OpenStreamHub hit an unexpected problem and stopped this view. Saved profiles on disk are not affected; unsaved changes may be lost.</p>
     <code>{error.message}</code>
     <button className="button primary" onClick={() => window.location.reload()}><RotateCcw size={17} />Reload window</button>
   </div>;

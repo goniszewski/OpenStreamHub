@@ -87,10 +87,10 @@ describe('automatically started sessions', () => {
     t.state({ ...dialState, phase: 'stopped', service_id: null, reason: 'module_control' });
     const markup = renderToStaticMarkup(<ServicePanel runner={t.runner} feed={feed} profile={draft} desktop unsaved={false} platform={{ platform: 'MacIntel' }} now={2000} />);
     expect(markup).not.toContain(autoStartNote('app_opened'));
-    expect(markup).toContain('Session stopped: Module control is no longer App');
-    expect(reasonLabels.module_control).toBe('Module control is no longer App');
+    expect(markup).toContain('Session stopped: OpenStreamHub no longer drives the display');
+    expect(reasonLabels.module_control).toBe('OpenStreamHub no longer drives the display');
     // Stopped by a settings change the user made: an info line, not an error.
-    expect(t.runner.getState().runs[dialState.session_id].entries.at(-1)).toMatchObject({ kind: 'info', text: 'Session stopped: Module control is no longer App' });
+    expect(t.runner.getState().runs[dialState.session_id].entries.at(-1)).toMatchObject({ kind: 'info', text: 'Session stopped: OpenStreamHub no longer drives the display' });
   });
   it('never merge into a Run the backend refused because an automatic session owns the module', async () => {
     const pathHex = keypadState.service_id!.replace('service:', '');
@@ -127,13 +127,13 @@ describe('automatically started sessions', () => {
     expect(run.entries.map(entry => entry.seq)).toEqual([0, 1]);
     expect(isStale(run, draft)).toBe(false);
   });
-  it('name a start caused by switching Module control to App', async () => {
+  it('name a start caused by OpenStreamHub starting to drive the display', async () => {
     const t = setup(); t.runner.connect(); await tick();
     t.state({ ...keypadState, auto_start: 'module_control_set' });
     const run = t.runner.getState().runs[keypadState.session_id];
     expect(run.session?.autoStart).toBe('module_control_set');
-    expect(run.entries[0].text).toBe('Started automatically (dry run) when Module control was set to App.');
-    expect(autoStartNote('module_control_set')).toContain('when Module control was set to App. Stop it');
+    expect(run.entries[0].text).toBe('Started automatically (dry run) when OpenStreamHub started driving the display.');
+    expect(autoStartNote('module_control_set')).toContain('when OpenStreamHub started driving the display. Stop it');
   });
   it('keep an automatic live feed on the same module quiet', () => {
     expect(serviceOwnsDevice.test('service service:aabb is using this device; stop it before starting a feed')).toBe(true);
@@ -141,9 +141,9 @@ describe('automatically started sessions', () => {
   });
 });
 
-describe('the Module control first-run notice', () => {
+describe('the display-control first-run notice', () => {
   it('has the agreed text and is a dismissable status, not a dialog', () => {
-    expect(moduleControlNoticeText).toBe('OpenStreamHub drives the 15-key module and the encoder dial whenever it is open; their built-in animation returns when you quit. Change this in Settings > Module control.');
+    expect(moduleControlNoticeText).toBe('OpenStreamHub drives the 15-key module and the encoder dial whenever it is open; their built-in animation returns when you quit. Change this in Settings, under “Let OpenStreamHub drive the display”.');
     const markup = renderToStaticMarkup(<ModuleControlNotice onDismiss={() => {}} />);
     expect(markup).toContain(moduleControlNoticeText.replace('>', '&gt;'));
     expect(markup).toContain('role="status"');
@@ -254,7 +254,7 @@ describe('automatic actions', () => {
     expect(broken.getState().defaultProfile).toMatchObject({ loaded: false, error: 'the last module profiles are unreadable' });
   });
   it('add one sentence to the first-run notice only while actions run automatically', () => {
-    expect(autoActionsNoticeText).toBe('Actions run automatically; turn that off in Settings > Module control.');
+    expect(autoActionsNoticeText).toBe('Actions run automatically; turn that off in Settings.');
     const plain = renderToStaticMarkup(<ModuleControlNotice onDismiss={() => {}} />);
     expect(plain).not.toContain('Actions run automatically');
     const on = renderToStaticMarkup(<ModuleControlNotice autoExecute onDismiss={() => {}} />);

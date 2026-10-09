@@ -42,7 +42,7 @@ export function DiagnosticsPanel({ desktop, invoke, profile, runner, feed, initi
 
   return <section className="panel diagnostics-panel" aria-labelledby="diagnostics-title">
     <h2 id="diagnostics-title"><LifeBuoy size={18} />Diagnostics</h2>
-    <p>Create a local file that helps explain how this Mac and your modules behave. It contains app and OS information, the USB device list with HID descriptors, an optional short passive input capture, and recent service and device-feed activity. The activity never shows text snippets, timer labels or OBS scene names, and shows web addresses only as their site address.</p>
+    <p>Create a local file that helps explain how this Mac and your modules behave. It contains app and OS information, the USB device list with HID descriptors, an optional short passive input capture, and recent run and device-feed activity. The activity never shows text snippets, timer labels or OBS scene names, and shows web addresses only as their site address.</p>
     <p className="fine-print"><strong>Nothing is uploaded or sent.</strong> The file stays on this Mac. You decide whether to share it.</p>
     {!desktop && <p className="fine-print" role="status">Creating a bundle needs the desktop app.</p>}
     <div className="diagnostics-options">
@@ -54,9 +54,9 @@ export function DiagnosticsPanel({ desktop, invoke, profile, runner, feed, initi
           {[1, 2, 3, 4, 5].map(value => <option key={value} value={value}>{value} {value === 1 ? 'second' : 'seconds'}</option>)}
         </SelectField>
       </div>
-      <p className="fine-print">The capture only listens. Modules in use by a device feed or a running service are skipped, so stop those first. Move or press controls on the modules during the capture.</p>
+      <p className="fine-print">The capture only listens. Modules in use by a device feed or a running profile are skipped, so stop those first. Move or press controls on the modules during the capture.</p>
       <label className="service-option"><input type="checkbox" checked={options.includeProfile} disabled={locked} onChange={event => set('includeProfile', event.target.checked)} />Include current profile</label>
-      <p className="fine-print">The profile draft is included as it is now. Application bundle IDs, keyboard shortcuts, text snippets, timer labels, OBS scene names and web addresses in it would be part of the file. With Hide serial numbers on, each text snippet, timer label and OBS scene name is replaced by its length and each web address is reduced to its site address (no path or query).</p>
+      <p className="fine-print">The profile is included as it is right now, including unsaved changes. Application bundle IDs, keyboard shortcuts, text snippets, timer labels, OBS scene names and web addresses in it would be part of the file. With Hide serial numbers on, each text snippet, timer label and OBS scene name is replaced by its length and each web address is reduced to its site address (no path or query).</p>
       <label htmlFor="diagnostics-notes">Notes (optional)</label>
       <textarea id="diagnostics-notes" rows={3} maxLength={maxNotesChars} value={options.notes} disabled={locked} placeholder="What were you trying to do?" onChange={event => set('notes', event.target.value)} />
       <p className="fine-print diagnostics-counter">{options.notes.length} / {maxNotesChars}</p>

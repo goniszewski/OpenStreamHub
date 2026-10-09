@@ -203,7 +203,7 @@ describe('session notices', () => {
     const t = setup();
     t.store.onRuns({ a: run('a', 'running'), b: run('b', 'running') });
     t.store.onRuns({ a: run('a', 'stopped', { reason: 'service_exited', detail: 'exit code 2' }, 'failed'), b: run('b', 'stopped', { reason: 'user' }, 'exited') });
-    expect(t.texts()).toEqual(['Run stopped: the service exited (exit code 2)']);
+    expect(t.texts()).toEqual(['Run stopped: the background helper exited (exit code 2)']);
     const quiet = setup();
     quiet.store.onRuns({ c: run('c', 'stopped', { reason: 'service_exited' }, 'failed') });
     expect(quiet.texts()).toEqual([]);

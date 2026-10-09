@@ -81,7 +81,7 @@ export function noticesFromRuns(runs: Record<string, ServiceRun>, seen: Record<s
     if (session?.phase === 'stopped' && session.reason !== null && session.reason !== 'user') {
       add.push({ kind: 'stopped', text: `Run stopped: ${reasonLabels[session.reason]}${session.detail ? ` (${session.detail.slice(0, 120)})` : ''}`, ttl: failureTtl });
     } else if (!session && status === 'failed') {
-      add.push({ kind: 'stopped', text: `Run stopped: ${run.error ? run.error.slice(0, 160) : 'the service failed'}`, ttl: failureTtl });
+      add.push({ kind: 'stopped', text: `Run stopped: ${run.error ? run.error.slice(0, 160) : 'the run failed'}`, ttl: failureTtl });
     }
   }
   for (const key of Object.keys(seen)) if (!(key in runs) && seen[key] === 'needs_confirmation') resolved.push(confirmKey(key));

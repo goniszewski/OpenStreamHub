@@ -16,7 +16,7 @@ import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Workflow, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
 import type { ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { DeviceWorkspace, ModuleCatalog } from './DevicesPage';
@@ -177,7 +177,7 @@ export default function App() {
         {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
       </div>
       <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
-        <div className="history-buttons" role="group" aria-label="Draft history">
+        <div className="history-buttons" role="group" aria-label="Change history">
           <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
           <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
         </div>
@@ -189,14 +189,13 @@ export default function App() {
         <nav aria-label="Primary navigation">
           {([{ id: 'devices', label: 'Devices', icon: Grid2X2 }, { id: 'profiles', label: 'Profiles', icon: FileText }] as const).map(item =>
             <button key={item.id} className={page === item.id ? 'active' : ''} aria-current={page === item.id ? 'page' : undefined} onClick={() => setPage(item.id)}><item.icon size={22} />{item.label}</button>)}
-          <button disabled title="Flow editor is planned"><Workflow size={22} /><span>Flows<small>Planned</small></span></button>
           <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
         <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
       </aside>
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
-        {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and replay run in the native app.</span></div></div>}
+        {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and sample tests run in the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
         {bootstrapError && <div className="alert error" role="alert"><CircleHelp size={19} /><span><strong>Could not open profile storage.</strong> {bootstrapError.message}
           <small className="alert-hint">Check that the profile storage folder exists, is a real folder rather than a link, and is readable by your account{bootstrapError.storagePath ? <>: <code>{bootstrapError.storagePath}</code></> : '.'} Files in it are never changed by a failed start.</small></span>
@@ -207,7 +206,7 @@ export default function App() {
         {showControlNotice && <ModuleControlNotice autoExecute={display.settings.auto_execute} onDismiss={() => setControlNotice(false)} />}
 
         {page === 'devices' && <div className="device-layout">
-          <ModuleCatalog editor={editor} />
+          <ModuleCatalog editor={editor} feed={feed} />
           <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} runner={runner} displaySettings={displaySettings} />
           <Inspector editor={editor} session={session} state={state} disabled={disabled} invoke={desktop ? invokeCommand : undefined} />
         </div>}
@@ -224,8 +223,8 @@ export default function App() {
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>
     </ModalDialog>
     <ModalDialog open={state.duplicatePrompt} labelledBy="duplicate-title" describedBy="duplicate-message" onCancel={() => { void session.resolveDuplicate(null); }}>
-      <h2 id="duplicate-title">Duplicate which version?</h2><p id="duplicate-message">{profile.name} has unsaved changes. The copy replaces the open draft, so the other version is not kept open. Your saved file is never changed.</p>
-      <div className="dialog-actions wrap"><button className="button" onClick={() => { void session.resolveDuplicate(null); }}>Cancel</button><button className="button" onClick={() => { void session.resolveDuplicate('saved'); }}>Saved version</button><button className="button primary" autoFocus onClick={() => { void session.resolveDuplicate('draft'); }}>Current draft</button></div>
+      <h2 id="duplicate-title">Duplicate which version?</h2><p id="duplicate-message">{profile.name} has unsaved changes. The copy replaces them, so the other version is not kept open. Your saved file is never changed.</p>
+      <div className="dialog-actions wrap"><button className="button" onClick={() => { void session.resolveDuplicate(null); }}>Cancel</button><button className="button" onClick={() => { void session.resolveDuplicate('saved'); }}>Saved version</button><button className="button primary" autoFocus onClick={() => { void session.resolveDuplicate('draft'); }}>Unsaved changes</button></div>
     </ModalDialog>
     <ModalDialog open={state.restorePrompt !== null} labelledBy="restore-title" describedBy="restore-message" onCancel={() => { /* Escape never discards recovered changes. */ }}>
       <h2 id="restore-title">Restore unsaved changes to {state.restorePrompt?.name}?</h2>
@@ -234,7 +233,7 @@ export default function App() {
       <div className="dialog-actions"><button className="button danger" onClick={() => session.resolveRestore(false)}>Discard</button><button className="button primary" autoFocus onClick={() => session.resolveRestore(true)}>Restore</button></div>
     </ModalDialog>
     <ModalDialog open={pendingIntent !== null} labelledBy="unsaved-title" describedBy="unsaved-message" onCancel={() => session.resolveIntent(false)}>
-      <h2 id="unsaved-title">Keep your changes?</h2><p id="unsaved-message">You have an unsaved profile draft. Discard it to {pendingIntent?.label}, or cancel and save your changes first.</p>
+      <h2 id="unsaved-title">Keep your changes?</h2><p id="unsaved-message">You have unsaved changes. Discard them to {pendingIntent?.label}, or cancel and save your changes first.</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => session.resolveIntent(false)}>Cancel</button><button className="button danger" onClick={() => session.resolveIntent(true)}>Discard changes</button></div>
     </ModalDialog>
   </div>;

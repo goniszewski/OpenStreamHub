@@ -39,8 +39,8 @@ export const gestures: Record<ServiceModule, Gesture[]> = {
 export const controlCounts: Record<ServiceModule, number> = { m003k: 3, m131e: 1, m4315: 15, m005s: 5, m032le: 2 };
 export const faderMaximum = 100;
 export const replayLabels: Record<ReplayKind, string> = {
-  knobs: '3-knob synthetic capture', dial: 'Encoder synthetic capture', keys: '15-key synthetic capture',
-  faders: '5-fader synthetic capture', rollers: '2-roller synthetic capture',
+  knobs: '3-knob module sample', dial: 'Encoder module sample', keys: '15-key module sample',
+  faders: '5-fader module sample', rollers: '2-roller module sample',
 };
 
 export function moduleNote(module: ServiceModule) {

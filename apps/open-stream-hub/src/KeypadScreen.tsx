@@ -30,6 +30,6 @@ export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavi
         </button>;
       })}
     </div>
-    <p className="fine-print">Artwork follows the active page when the keypad runs with Module control set to App.</p>
+    <p className="fine-print">Artwork follows the active page while OpenStreamHub drives the display.</p>
   </section>;
 }

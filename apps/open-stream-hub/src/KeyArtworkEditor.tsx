@@ -53,7 +53,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, disabled, in
     {busy && <p role="status">Preparing key artwork…</p>}
     {error && <p className="field-error" role="alert">{error}</p>}
     {artwork && <><KeyArtworkPreview artwork={artwork} /><p className="fine-print">{artwork.frames.length > 1 ? `${artwork.frames.length} frames · ${artwork.loop_count === 0 ? 'loops continuously' : `${artwork.loop_count} play(s)`}` : 'Static image'}</p><button className="button compact" disabled={disabled || busy} onClick={() => session.edit(setKeyArtwork(session.getState().draft.profile, path, control, null))}>Remove artwork</button></>}
-    <p className="fine-print">PNG, JPEG or GIF · up to 8 MiB. GIFs: up to 512×512 and 120 frames, at most 10 FPS. Artwork is saved with the profile and sent when this keypad runs with Module control set to App.</p>
+    <p className="fine-print">PNG, JPEG or GIF · up to 8 MiB. GIFs: up to 512×512 and 120 frames, at most 10 FPS. Artwork is saved with the profile and sent while OpenStreamHub drives the display.</p>
     {!invoke && <p className="fine-print">Preparing key artwork needs the desktop app.</p>}
   </section>;
 }

@@ -54,8 +54,8 @@ export function redoHint(mac: boolean) { return mac ? '⌘⇧Z' : 'Ctrl+Y'; }
 export const shortcutList: { keys: string; label: string }[] = [
   { keys: 'S', label: 'Save profile' },
   { keys: 'D', label: 'Duplicate profile' },
-  { keys: 'Z', label: 'Undo draft edit (not while typing in a field)' },
-  { keys: 'Shift+Z', label: 'Redo draft edit (Ctrl+Y also works on Windows and Linux)' },
+  { keys: 'Z', label: 'Undo your last change (not while typing in a field)' },
+  { keys: 'Shift+Z', label: 'Redo your last change (Ctrl+Y also works on Windows and Linux)' },
   { keys: 'F', label: 'Search bindings (Profiles page)' },
   { keys: '1', label: 'Devices' },
   { keys: '2', label: 'Profiles' },

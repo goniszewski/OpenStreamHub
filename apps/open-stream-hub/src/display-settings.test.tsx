@@ -126,9 +126,9 @@ function runnerWith(count: number) {
 }
 
 describe('DisplaySettingsPanel markup', () => {
-  it('shows Module control set to App by default, with the honest caveats and the dial choice', () => {
+  it('shows the display control set to App by default, with the honest caveats and the dial choice', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} />);
-    expect(markup).toContain('<h2 id="display-settings-title">Module control</h2>');
+    expect(markup).toContain('<h2 id="display-settings-title">Let OpenStreamHub drive the display</h2>');
     expect(markup).toContain('<option value="app" selected="">App</option>');
     expect(markup).toContain('<option value="built_in_animation">Built-in animation</option>');
     expect(markup).toContain(moduleControlNotes.app.replace(/"/g, '&quot;'));
@@ -161,7 +161,7 @@ describe('DisplaySettingsPanel markup', () => {
     const loading = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ loaded: false })} />);
     expect(loading).toMatch(/<select id="display-module-control" disabled=""/);
     const preview = renderToStaticMarkup(<DisplaySettingsPanel />);
-    expect(preview).toContain('Module control needs the desktop app.');
+    expect(preview).toContain('This setting needs the desktop app.');
     const failed = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ error: 'display settings are unreadable' })} />);
     expect(failed).toContain('role="alert"><span>display settings are unreadable</span>');
   });

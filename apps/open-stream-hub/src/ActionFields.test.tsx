@@ -65,7 +65,8 @@ describe('action fields', () => {
     expect(markup).toMatch(/<option value="previous" selected="">Previous profile<\/option>/);
     expect(markup).toContain('value="next"');
     expect(markup).toContain('pause until you confirm the new profile');
-    expect(markup).toContain('standalone service');
+    expect(markup).toContain('Only runs started from this app switch');
+    expect(markup).toContain('Learn more');
     expectAccessible(markup);
     const steps = render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] });
     expect(steps).not.toMatch(/id="step-1-action"[^]*value="profile"[^]*id="step-2-action"/);

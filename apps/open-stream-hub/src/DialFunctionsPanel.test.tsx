@@ -118,7 +118,7 @@ describe('dial function replay rows', () => {
     const html = renderToStaticMarkup(<SessionView session={result([preview.rotation, preview.switch])} />);
     expect(html).toContain('Function: Scroll');
     expect(html).toContain('<span class="dial-switch">Dial function: Apps → Volume (1/3)</span>');
-    expect(html).toContain('<strong>0</strong><span>Unbound events</span>');
+    expect(html).toContain('<strong>0</strong><span>No action bound</span>');
   });
 
   it('formats the switch label', () => {

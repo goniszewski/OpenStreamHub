@@ -7,15 +7,15 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
   try: {
     title: 'Try it without hardware',
     body: <>
-      <p id="onboarding-body">You do not need a module to look around. On the Devices page, the rig preview shows your modules and the profile's bindings, and the Simulation panel lets you press, turn and slide controls to see which action a binding would plan. On the Profiles page, replay runs a built-in capture through the profile.</p>
-      <ul><li>Nothing runs on your Mac in simulation or replay. Actions are only planned and listed.</li><li>Start on the Devices page: pick a module in the catalog and select a control.</li></ul>
+      <p id="onboarding-body">You do not need a module to look around. On the Devices page, the rig preview shows your modules and the profile's bindings, and the Simulation panel lets you press, turn and slide controls to see which action a binding would run. On the Profiles page, "Test with sample input" runs a built-in sample through the profile.</p>
+      <ul><li>Nothing runs on your Mac in simulation or a sample test. Actions are only listed, never run.</li><li>Start on the Devices page: pick a module in the catalog and select a control.</li></ul>
     </>,
   },
   profile: {
     title: 'Edit and save a profile',
     body: <>
-      <p id="onboarding-body">Changes you make are a draft until you save. The saved profile on disk stays as it was until you press Save profile.</p>
-      <ul><li>Save with {mod}+S, undo with {mod}+Z and redo with Shift+{mod}+Z.</li><li>If the app quits unexpectedly, your draft is offered back the next time you open it. That recovery copy stays on this Mac.</li><li>Switching profiles or quitting with unsaved changes asks first.</li></ul>
+      <p id="onboarding-body">Your changes stay unsaved until you press Save profile; the saved profile on disk is not touched before that.</p>
+      <ul><li>Save with {mod}+S, undo with {mod}+Z and redo with Shift+{mod}+Z.</li><li>If the app quits unexpectedly, your unsaved changes are offered back the next time you open it. That recovery copy stays on this Mac.</li><li>Switching profiles or quitting with unsaved changes asks first.</li></ul>
     </>,
   },
   connect: {
@@ -29,7 +29,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
     title: 'Safety and privacy',
     body: <>
       <p id="onboarding-body">OpenStreamHub is an unofficial app, not affiliated with Cooler Master. Behaviour on real hardware is not yet verified.</p>
-      <ul><li>Nothing is uploaded. The app sends no data over the network.</li><li>The diagnostic bundle in Settings is built locally. You decide whether to share it.</li><li>While the app is open it controls the 15-key module, the encoder dial and the knobs, and draws on the displays of the first two: a run starts on them by itself, as a dry run unless you turn on Run actions automatically in Settings. When you quit, the app gives them back their built-in animation (so far checked on the 15-key module only). To keep their built-in animation instead, set Module control to Built-in animation in Settings.</li></ul>
+      <ul><li>Nothing is uploaded. The app sends no data over the network.</li><li>The diagnostic bundle in Settings is built locally. You decide whether to share it.</li><li>While the app is open it controls the 15-key module, the encoder dial and the knobs, and draws on the displays of the first two: a run starts on them by itself, as a dry run unless you turn on Run actions automatically in Settings. When you quit, the app gives them back their built-in animation (so far checked on the 15-key module only). To keep their built-in animation instead, set “Let OpenStreamHub drive the display” to Built-in animation in Settings.</li></ul>
     </>,
   },
 });

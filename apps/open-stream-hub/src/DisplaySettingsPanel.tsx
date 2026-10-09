@@ -47,7 +47,7 @@ export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?:
   const missingDefault = chosen.profileId !== null && !profiles.some(profile => profile.id === chosen.profileId);
 
   return <section className="panel display-settings-panel" aria-labelledby="display-settings-title">
-    <h2 id="display-settings-title">Module control</h2>
+    <h2 id="display-settings-title">Let OpenStreamHub drive the display</h2>
     <label htmlFor="display-module-control">Who controls the 15-key module and the encoder dial</label>
     <SelectField id="display-module-control" value={moduleControl} disabled={off} aria-describedby="display-module-control-note display-settings-applies" onChange={event => { void store?.setModuleControl(event.target.value as ModuleControl); }}>
       {moduleControlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -70,7 +70,7 @@ export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?:
     {chosen.error && <div className="service-failure" role="alert"><span>{chosen.error}</span></div>}
     <p className="fine-print">{moduleControlCaveat}</p>
     <p id="display-settings-applies" className="fine-print" role="status">{appliesNote(activeRuns)}</p>
-    {!state.desktop && <p className="fine-print">Module control needs the desktop app.</p>}
+    {!state.desktop && <p className="fine-print">This setting needs the desktop app.</p>}
     {state.error && <div className="service-failure" role="alert"><span>{state.error}</span><button type="button" className="icon-button" aria-label="Dismiss display settings error" onClick={() => store?.dismissError()}><X size={15} /></button></div>}
   </section>;
 }

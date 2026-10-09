@@ -346,7 +346,7 @@ export class ProfileSession {
         // The draft keeps sourceId: a later Start or Save still names the deleted source.
         draft: deletedOpen ? { ...draft, profileId: null, savedSnapshot: '', modifiedAtMs: null, contentHash: null } : draft,
         profiles: this.state.profiles.filter(item => item.id !== summary.id),
-        notice: deletedOpen ? `Deleted ${summary.name}. Its contents remain open as an unsaved draft.` : `Deleted ${summary.name}.`,
+        notice: deletedOpen ? `Deleted ${summary.name}. Its contents stay open as unsaved changes.` : `Deleted ${summary.name}.`,
       });
       await this.refreshAfterChange('Profile deleted');
     } catch (reason) { this.set({ error: `Could not delete profile: ${errorMessage(reason)}` }); }

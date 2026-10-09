@@ -2,8 +2,9 @@ import type { BindingAction, ServiceModule } from './contracts';
 import { defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
 import type { StepActionType } from './action-model';
 
-// Every type the picker can assign: the step actions plus the binding-only ones.
-export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'volume_from_position';
+// Every type the picker can assign: the step actions plus the binding-only ones, and the one
+// OBS entry ('obs'), which stands in for the nine obs_* action types.
+export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'volume_from_position' | 'obs';
 
 export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'navigation';
 
@@ -15,7 +16,7 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
 const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['profile', 'Switch profile'],
-  ['timer', 'Timer'], ['volume_from_position', 'Output volume follows position']]);
+  ['timer', 'Timer'], ['volume_from_position', 'Output volume follows position'], ['obs', 'OBS']]);
 
 export interface PickerEntry { type: PickerActionType; label: string; category: PickerCategory; keywords: string }
 
@@ -31,15 +32,9 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['open_url', 'apps', 'website link address browser http web page'],
   ['media', 'media', 'play pause next previous track stop music spotify itunes'],
   ['system', 'system', 'undo redo screenshot clipboard'],
-  ['obs_scene', 'obs', 'program scene'],
-  ['obs_virtual_camera', 'obs', 'camera webcam output'],
-  ['obs_replay_buffer', 'obs', 'replay save buffer'],
-  ['obs_studio_mode', 'obs', 'studio mode preview'],
-  ['obs_transition', 'obs', 'transition cut switch'],
-  ['obs_filter', 'obs', 'filter source enable disable'],
-  ['obs_source_visibility', 'obs', 'show hide source visible'],
-  ['obs_scene_collection', 'obs', 'collection scenes switch'],
-  ['obs_profile', 'obs', 'settings switch'],
+  // One OBS entry: the operation is chosen in the editor afterwards. The keywords keep the nine
+  // operations findable ("camera", "filter", "replay" all land here).
+  ['obs', 'obs', 'scene switch program virtual camera webcam replay buffer save output studio mode preview transition cut filter source enable disable visibility show hide collection profile settings stream'],
   ['timer', 'sequences', 'countdown alarm reminder notification wait'],
   ['multi_action', 'sequences', 'sequence steps batch several queue'],
   ['profile', 'navigation', 'next previous saved profiles change'],
@@ -56,9 +51,15 @@ export function pickerEntry(type: PickerActionType): PickerEntry | undefined {
   return entryFor(type);
 }
 
-// The trigger's text for a bound action.
+// The trigger's text for a bound action: the one OBS entry stands in for every bound obs_* type,
+// so the trigger and the editor's Operation dropdown never say the same thing twice.
 export function pickerEntryLabel(type: PickerActionType): string {
-  return entryFor(type)?.label ?? type;
+  return entryFor(type)?.label ?? (type.startsWith('obs_') ? 'OBS' : type);
+}
+
+// Whether the catalogue entry is the one bound: the OBS entry matches every obs_* action.
+export function pickerEntryIsCurrent(entry: PickerActionType, action: PickerActionType | undefined): boolean {
+  return entry === action || (entry === 'obs' && !!action?.startsWith('obs_'));
 }
 
 // Which catalogue the picker offers: faders take only the position-driven action, multi-action
@@ -100,10 +101,12 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 }
 
 // The action a picker choice starts from: the type's default parameters, as the flat
-// select's onChange built them.
+// select's onChange built them. The OBS entry starts from the scene operation; the editor's
+// Operation dropdown changes it from there.
 export function defaultBindingAction(type: PickerActionType): BindingAction {
   return type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction()
-    : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction() : defaultStepAction(type);
+    : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
+    : type === 'obs' ? defaultStepAction('obs_scene') : defaultStepAction(type);
 }
 
 // Recently assigned types, newest first, shown at the top of the picker. The list is a

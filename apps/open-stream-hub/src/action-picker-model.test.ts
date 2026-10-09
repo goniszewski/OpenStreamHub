@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   actionDragMime, defaultBindingAction, entriesForScope, isValidForControl, pickerCategories, pickerEntries,
-  pickerEntryLabel, pickerGroups, readActionDrag, readRecentActions, recentActionLimit, recentActionsStorageKey,
-  recordRecentAction, searchPickerEntries, offersActionDrag, writeActionDrag,
+  pickerEntryIsCurrent, pickerEntryLabel, pickerGroups, readActionDrag, readRecentActions, recentActionLimit,
+  recentActionsStorageKey, recordRecentAction, searchPickerEntries, offersActionDrag, writeActionDrag,
 } from './action-picker-model';
 import type { PickerActionType, StorageLike } from './action-picker-model';
 
@@ -16,8 +16,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs_scene', 'obs_virtual_camera', 'obs_replay_buffer', 'obs_studio_mode',
-      'obs_transition', 'obs_filter', 'obs_source_visibility', 'obs_scene_collection', 'obs_profile', 'timer', 'multi_action', 'profile'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'profile'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -28,6 +27,13 @@ describe('picker catalogue', () => {
     expect(pickerEntryLabel('profile')).toBe('Switch profile');
     expect(pickerEntryLabel('timer')).toBe('Timer');
     expect(pickerEntryLabel('volume_from_position')).toBe('Output volume follows position');
+    // The one OBS entry names every obs_* action, so the trigger and the editor's
+    // Operation dropdown never repeat each other.
+    expect(pickerEntryLabel('obs')).toBe('OBS');
+    for (const type of ['obs_scene', 'obs_filter', 'obs_profile'] as PickerActionType[]) expect(pickerEntryLabel(type)).toBe('OBS');
+    expect(pickerEntryIsCurrent('obs', 'obs_filter')).toBe(true);
+    expect(pickerEntryIsCurrent('obs', 'open_url')).toBe(false);
+    expect(pickerEntryIsCurrent('open_url', 'open_url')).toBe(true);
   });
 
   it('places every entry in a known category, in display order', () => {
@@ -40,16 +46,17 @@ describe('scope filtering', () => {
   it('offers faders only the position-driven action', () => {
     expect(types(entriesForScope('binding-fader'))).toEqual(['volume_from_position']);
     expect(isValidForControl('volume_from_position', 'm005s')).toBe(true);
-    for (const type of ['open_url', 'timer', 'multi_action', 'profile', 'volume'] as PickerActionType[]) expect(isValidForControl(type, 'm005s')).toBe(false);
+    for (const type of ['open_url', 'timer', 'multi_action', 'profile', 'volume', 'obs'] as PickerActionType[]) expect(isValidForControl(type, 'm005s')).toBe(false);
   });
 
   it('offers every other control all actions except the fader one', () => {
     const offered = types(entriesForScope('binding'));
     expect(offered).not.toContain('volume_from_position');
-    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile', 'timer', 'obs_scene']) expect(offered).toContain(type);
+    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile', 'timer', 'obs']) expect(offered).toContain(type);
     for (const module of ['m003k', 'm131e', 'm4315', 'm032le'] as const) {
       expect(isValidForControl('volume_from_position', module)).toBe(false);
       expect(isValidForControl('timer', module)).toBe(true);
+      expect(isValidForControl('obs', module)).toBe(true);
     }
   });
 
@@ -60,13 +67,13 @@ describe('scope filtering', () => {
     expect(offered).not.toContain('timer');
     expect(offered).not.toContain('volume_from_position');
     expect(offered).toContain('toggle_mute');
-    expect(offered).toContain('obs_scene');
+    expect(offered).toContain('obs');
   });
 
   it('groups the visible entries by category and drops empty groups', () => {
     const groups = pickerGroups('', 'binding');
     expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Timers & sequences', 'Navigation']);
-    expect(groups.find(group => group.category === 'obs')!.entries).toHaveLength(9);
+    expect(groups.find(group => group.category === 'obs')!.entries).toHaveLength(1);
     expect(pickerGroups('', 'binding-fader').map(group => group.label)).toEqual(['Audio']);
   });
 });
@@ -75,13 +82,17 @@ describe('search', () => {
   const binding = entriesForScope('binding');
 
   it('matches every whitespace-separated word across label, keywords and type', () => {
-    expect(types(searchPickerEntries('obs', binding))).toHaveLength(9);
+    expect(types(searchPickerEntries('obs', binding))).toEqual(['obs']);
     expect(types(searchPickerEntries('spotify', binding))).toEqual(['media']);
     expect(types(searchPickerEntries('countdown', binding))).toEqual(['timer']);
     expect(types(searchPickerEntries('url', binding))).toEqual(['open_url']);
-    expect(types(searchPickerEntries('scene switch', binding))).toContain('obs_scene');
+    // The single OBS entry stays findable by each of the nine operations.
+    for (const word of ['scene', 'camera', 'replay', 'studio', 'transition', 'filter', 'visibility', 'collection', 'profile']) {
+      expect(types(searchPickerEntries(word, binding))).toContain('obs');
+    }
+    expect(types(searchPickerEntries('scene switch', binding))).toContain('obs');
     // Words match in any order.
-    expect(types(searchPickerEntries('switch scene', binding))).toContain('obs_scene');
+    expect(types(searchPickerEntries('switch scene', binding))).toContain('obs');
     expect(searchPickerEntries('  ', binding)).toEqual(binding);
   });
 
@@ -94,12 +105,14 @@ describe('search', () => {
 
 describe('default actions', () => {
   it('builds the same defaults the flat select built, for every type', () => {
-    for (const entry of pickerEntries) expect(defaultBindingAction(entry.type).type).toBe(entry.type);
+    for (const entry of pickerEntries) expect(defaultBindingAction(entry.type).type).toBe(entry.type === 'obs' ? 'obs_scene' : entry.type);
     expect(defaultBindingAction('shortcut')).toEqual({ type: 'shortcut', key: 'c', modifiers: ['command'] });
     expect(defaultBindingAction('multi_action')).toEqual({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'shortcut', key: 'c', modifiers: ['command'] }] });
     expect(defaultBindingAction('profile')).toEqual({ type: 'profile', direction: 'next' });
     expect(defaultBindingAction('timer')).toEqual({ type: 'timer', seconds: 300 });
     expect(defaultBindingAction('volume_from_position')).toEqual({ type: 'volume_from_position' });
+    // The OBS entry starts from the scene operation, which the editor's Operation dropdown changes.
+    expect(defaultBindingAction('obs')).toEqual({ type: 'obs_scene', scene: 'Scene' });
   });
 });
 
@@ -116,6 +129,11 @@ describe('recent actions', () => {
     for (const type of ['open_url', 'timer', 'open_url', 'media', 'system', 'shortcut', 'profile'] as PickerActionType[]) recordRecentAction(storage, type);
     expect(readRecentActions(storage)).toEqual(['profile', 'shortcut', 'system', 'media']);
     expect(readRecentActions(storage)).toHaveLength(recentActionLimit);
+    recordRecentAction(storage, 'obs');
+    expect(readRecentActions(storage)).toEqual(['obs', 'profile', 'shortcut', 'system']);
+    // A stored obs_* type from before the one-entry picker is dropped, not shown.
+    const legacy = memoryStorage({ [recentActionsStorageKey]: '["obs_filter","volume"]' });
+    expect(readRecentActions(legacy)).toEqual(['volume']);
   });
 });
 
@@ -128,10 +146,10 @@ describe('drag payload', () => {
       setData(name: string, value: string) { stored[name] = value; this.types.push(name); },
       getData(name: string) { return stored[name] ?? ''; },
     };
-    writeActionDrag(dataTransfer as unknown as DataTransfer, 'obs_scene');
-    expect(stored[actionDragMime]).toBe('obs_scene');
+    writeActionDrag(dataTransfer as unknown as DataTransfer, 'obs');
+    expect(stored[actionDragMime]).toBe('obs');
     expect(offersActionDrag(dataTransfer)).toBe(true);
-    expect(readActionDrag(dataTransfer)).toBe('obs_scene');
+    expect(readActionDrag(dataTransfer)).toBe('obs');
   });
 
   it('ignores foreign payloads', () => {

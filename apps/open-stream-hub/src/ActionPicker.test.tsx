@@ -51,6 +51,10 @@ describe('closed picker', () => {
     expect(bound).toContain('aria-expanded="false"');
     expect(bound).toContain('>Open URL</span>');
     expect(bound).not.toContain('https://example.com');
+    // A bound obs_* action reads as the one OBS entry, leaving the operation to the editor.
+    const obs = renderToStaticMarkup(createElement(ActionPicker, base({ state: closedPicker, action: { type: 'obs_source_visibility', scene: 'L', source: 'S', op: 'off' } })));
+    expect(obs).toContain('>OBS</span>');
+    expect(obs).not.toContain('Source visibility</span>');
   });
 
   it('opens on a trigger press', () => {
@@ -68,7 +72,7 @@ describe('open panel', () => {
     expect(markup).toContain('aria-label="Choose an action"');
     expect(markup).toContain('id="binding-action-search"');
     for (const label of ['Audio', 'Keyboard', 'Apps &amp; web', 'Media', 'System', 'OBS', 'Timers &amp; sequences', 'Navigation']) expect(markup).toContain(`>${label}</p>`);
-    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile', 'timer', 'obs_scene', 'volume']) expect(markup).toContain(`data-action-type="${type}"`);
+    for (const type of ['open_url', 'text', 'media', 'system', 'multi_action', 'shortcut', 'profile', 'timer', 'obs', 'volume']) expect(markup).toContain(`data-action-type="${type}"`);
     expect(markup).not.toContain('data-action-type="volume_from_position"');
     expect(markup).not.toContain('data-action-type="unbound"');
   });
@@ -78,6 +82,10 @@ describe('open panel', () => {
     expect(current).toContain('data-action-type="media"');
     expect(current).toMatch(/class="picker-entry current" data-action-entry="" data-action-type="media"/);
     expect((current.match(/aria-current="true"/g) ?? []).length).toBe(1);
+    // The one OBS entry is the current one for every bound obs_* action.
+    const obs = renderToStaticMarkup(createElement(ActionPicker, base({ action: { type: 'obs_scene', scene: 'Live' } })));
+    expect((obs.match(/aria-current="true"/g) ?? []).length).toBe(1);
+    expect(obs).toMatch(/class="picker-entry current" data-action-entry="" data-action-type="obs"/);
     const fader = renderToStaticMarkup(createElement(ActionPicker, base({ scope: 'binding-fader', action: { type: 'volume_from_position' } })));
     expect(fader).toContain('data-action-type="volume_from_position"');
     expect(fader).toContain('data-action-type="unbound"');
@@ -93,7 +101,8 @@ describe('open panel', () => {
 describe('search', () => {
   it('narrows the catalogue and reports a miss', () => {
     const markup = renderToStaticMarkup(createElement(ActionPicker, base({ state: { open: true, query: 'obs' } })));
-    expect(markup).toContain('data-action-type="obs_scene"');
+    expect(markup).toContain('data-action-type="obs"');
+    expect(markup).not.toContain('data-action-type="obs_scene"');
     expect(markup).not.toContain('data-action-type="open_url"');
     expect(markup).not.toContain('>Recent</p>');
     const miss = renderToStaticMarkup(createElement(ActionPicker, base({ state: { open: true, query: 'printer' } })));
@@ -165,12 +174,12 @@ describe('drag-assign', () => {
   it('writes the action type as the drag payload', () => {
     const stored: Record<string, string> = {};
     const tree = treeOf(base());
-    const entry = findButton(tree, props => props['data-action-type'] === 'obs_scene');
+    const entry = findButton(tree, props => props['data-action-type'] === 'obs');
     expect(entry.props.draggable).toBe(true);
     const handler = entry.props.onDragStart as ((event: { dataTransfer: unknown }) => void) | undefined;
     expect(handler).toBeTypeOf('function');
     handler!({ dataTransfer: { setData: (name: string, value: string) => { stored[name] = value; }, effectAllowed: '' } });
-    expect(stored[actionDragMime]).toBe('obs_scene');
+    expect(stored[actionDragMime]).toBe('obs');
   });
 
   it('carries no payload in a multi-action step', () => {

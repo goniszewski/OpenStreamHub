@@ -33,6 +33,9 @@ describe('dropProfileEdit', () => {
   it('assigns the default action to the primary gesture of a flat control', () => {
     const next = dropProfileEdit(flat, [keypadRoot], 'm003k', 2, 'open_url');
     expect(next.bindings).toEqual([{ module: 'm003k', control: 2, gesture: 'clockwise', action: { type: 'open_url', url: 'https://example.com' } }]);
+    // The one OBS entry drops the scene operation; the editor's Operation dropdown changes it.
+    const obs = dropProfileEdit(flat, [keypadRoot], 'm003k', 2, 'obs');
+    expect(obs.bindings).toEqual([{ module: 'm003k', control: 2, gesture: 'clockwise', action: { type: 'obs_scene', scene: 'Scene' } }]);
     const fader = dropProfileEdit(flat, [keypadRoot], 'm005s', 0, 'volume_from_position');
     expect(fader.bindings).toEqual([{ module: 'm005s', control: 0, gesture: 'position_changed', action: { type: 'volume_from_position' } }]);
   });
@@ -99,9 +102,9 @@ describe('controlDropHandlers', () => {
   });
 
   it('drops a known action and refuses foreign or module-invalid payloads', () => {
-    const good = dropped({ [actionDragMime]: 'obs_scene' });
+    const good = dropped({ [actionDragMime]: 'obs' });
     handlers.onDrop!(good as never);
-    expect(calls).toEqual([['obs_scene']]);
+    expect(calls).toEqual([['obs']]);
     expect(good.prevented).toEqual([true]);
     handlers.onDrop!(dropped({ [actionDragMime]: 'not-a-type' }) as never);
     handlers.onDrop!(dropped({}) as never);

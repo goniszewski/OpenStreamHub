@@ -3,7 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Check, ChevronDown, Trash2 } from 'lucide-react';
 import type { BindingAction } from './contracts';
 import {
-  entriesForScope, pickerEntry, pickerEntryLabel, pickerGroups, pickerWebStorage, readRecentActions, recordRecentAction, writeActionDrag,
+  entriesForScope, pickerEntry, pickerEntryIsCurrent, pickerEntryLabel, pickerGroups, pickerWebStorage, readRecentActions, recordRecentAction, writeActionDrag,
 } from './action-picker-model';
 import type { PickerActionType, PickerEntry, PickerScope, StorageLike } from './action-picker-model';
 
@@ -52,11 +52,11 @@ export function ActionPicker({ state, onStateChange, scope, action, triggerId, i
     close();
   };
 
-  const entryButton = (entry: PickerEntry) => <button key={entry.type} type="button" className={`picker-entry${entry.type === currentType ? ' current' : ''}`}
-    data-action-entry="" data-action-type={entry.type} draggable={allowDrag} aria-current={entry.type === currentType || undefined}
+  const entryButton = (entry: PickerEntry) => <button key={entry.type} type="button" className={`picker-entry${pickerEntryIsCurrent(entry.type, currentType) ? ' current' : ''}`}
+    data-action-entry="" data-action-type={entry.type} draggable={allowDrag} aria-current={pickerEntryIsCurrent(entry.type, currentType) || undefined}
     onClick={() => assign(entry.type)}
     onDragStart={allowDrag ? event => writeActionDrag(event.dataTransfer, entry.type) : undefined}>
-    {entry.type === currentType && <Check size={15} aria-hidden="true" />}
+    {pickerEntryIsCurrent(entry.type, currentType) && <Check size={15} aria-hidden="true" />}
     <span>{entry.label}</span>
   </button>;
 

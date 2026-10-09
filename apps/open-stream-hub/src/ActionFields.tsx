@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import type { BindingAction, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
-import type { ObsStepAction, ObsStepType, StepActionType } from './action-model';
+import type { ObsStepAction, ObsStepType } from './action-model';
 import { IntegerField, SelectField } from './controls';
 import {
   defaultStepAction, defaultTimerSound, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
@@ -32,6 +32,15 @@ function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitch
 }
 
 const obsOutputNote = 'OBS refuses Start on a running output and Stop on a stopped one.';
+
+// The one OBS connection status: shown once per editor (top-level OBS action, or a multi-action
+// with OBS steps), never per step. The Set up link renders only where it can navigate.
+export function ObsConnection({ onSetUpObs }: { onSetUpObs?: () => void }) {
+  return <div className="obs-connection" role="note">
+    <p className="fine-print">Connects to OBS 28 or later on this Mac while OBS runs with its WebSocket server on. {onSetUpObs && <button type="button" className="obs-setup" onClick={onSetUpObs}>Set up in Settings</button>}</p>
+    <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only. Without it, the press is logged as unavailable and nothing runs.</p></details>
+  </div>;
+}
 
 // The action picker and the parameter fields of the chosen action. Top-level ids keep their
 // historical names; multi-action steps prefix theirs with `step-N-`. onSetUpObs opens
@@ -91,7 +100,7 @@ function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs }: { steps
         return <li key={`${index}:${step.type}`}>
           <label htmlFor={`${prefix}action`}>Step {index + 1}</label>
           <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
-            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultStepAction(type as StepActionType) : item)); }} />
+            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
           <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
             onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} />
           <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}
@@ -101,6 +110,7 @@ function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs }: { steps
     </ol>
     <button type="button" className="button compact" disabled={steps.length >= multiActionSteps.maximum}
       onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add step</button>
+    {steps.some(step => step.type.startsWith('obs_')) && <ObsConnection onSetUpObs={onSetUpObs} />}
   </div>;
 }
 
@@ -147,8 +157,9 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs }: {
 }
 
 // The one OBS editor for all nine obs_* actions: an Operation select that moves the action between
-// operations (keeping the names both share), the chosen operation's fields, and a single connection
-// status with the Set up link to Settings. Ids keep their historical names per operation.
+// operations (keeping the names both share) and the chosen operation's fields. The connection
+// status shows once per editor — here for a top-level action, and once for a multi-action with
+// OBS steps (in MultiActionFields), never per step. Ids keep their historical names per operation.
 export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
   action: ObsStepAction; prefix: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void;
 }) {
@@ -156,21 +167,21 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
   let fields: ReactNode;
   switch (action.type) {
     case 'obs_virtual_camera':
-      fields = <><label htmlFor={id('obs-virtual-camera-op')}>Virtual camera</label>
+      fields = <><label htmlFor={id('obs-virtual-camera-op')}>Action</label>
         <SelectField id={id('obs-virtual-camera-op')} value={action.op} onChange={event => onChange({ type: 'obs_virtual_camera', op: event.target.value as ObsOutputOp }, 'obs-virtual-camera-op')}>
           {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
         </SelectField>
         <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
     case 'obs_replay_buffer':
-      fields = <><label htmlFor={id('obs-replay-buffer-op')}>Replay buffer</label>
+      fields = <><label htmlFor={id('obs-replay-buffer-op')}>Action</label>
         <SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp }, 'obs-replay-buffer-op')}>
           {(Object.keys(obsReplayBufferOpLabels) as ObsReplayBufferOp[]).map(op => <option key={op} value={op}>{obsReplayBufferOpLabels[op]}</option>)}
         </SelectField>
         <Hint hint={`Saving needs the buffer to be running in OBS. ${obsSwitchHint}`}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
     case 'obs_studio_mode':
-      fields = <><label htmlFor={id('obs-studio-mode-op')}>Studio mode</label>
+      fields = <><label htmlFor={id('obs-studio-mode-op')}>Action</label>
         <ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op }, 'obs-studio-mode-op')} />
         <Hint hint={obsSwitchHint}>{obsSwitchMore}</Hint></>;
       break;
@@ -183,7 +194,7 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
       fields = <>
         <label htmlFor={id('obs-filter-source')}>Source name</label><input id={id('obs-filter-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-filter-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-filter-source')} />{sourceIssue && <p id={id('obs-filter-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
         <label className="spaced-label" htmlFor={id('obs-filter-name')}>Filter name</label><input id={id('obs-filter-name')} spellCheck={false} value={action.filter} aria-invalid={!!filterIssue} aria-describedby={filterIssue ? id('obs-filter-name-error') : undefined} onChange={event => onChange({ ...action, filter: event.target.value }, 'obs-filter-name')} />{filterIssue && <p id={id('obs-filter-name-error')} className="field-error" role="alert">{filterIssue}</p>}
-        <label className="spaced-label" htmlFor={id('obs-filter-op')}>Filter</label><ObsSwitchSelect id={id('obs-filter-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-filter-op')} />
+        <label className="spaced-label" htmlFor={id('obs-filter-op')}>Action</label><ObsSwitchSelect id={id('obs-filter-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-filter-op')} />
         <Hint hint={`Both names are matched exactly (up to ${maxObsSceneBytes} bytes each). ${obsSwitchHint}`}>{obsSwitchMore}</Hint></>;
       break;
     }
@@ -193,7 +204,7 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
       fields = <>
         <label htmlFor={id('obs-visibility-scene')}>Scene name</label><input id={id('obs-visibility-scene')} spellCheck={false} value={action.scene} aria-invalid={!!sceneIssue} aria-describedby={sceneIssue ? id('obs-visibility-scene-error') : undefined} onChange={event => onChange({ ...action, scene: event.target.value }, 'obs-visibility-scene')} />{sceneIssue && <p id={id('obs-visibility-scene-error')} className="field-error" role="alert">{sceneIssue}</p>}
         <label className="spaced-label" htmlFor={id('obs-visibility-source')}>Source name</label><input id={id('obs-visibility-source')} spellCheck={false} value={action.source} aria-invalid={!!sourceIssue} aria-describedby={sourceIssue ? id('obs-visibility-source-error') : undefined} onChange={event => onChange({ ...action, source: event.target.value }, 'obs-visibility-source')} />{sourceIssue && <p id={id('obs-visibility-source-error')} className="field-error" role="alert">{sourceIssue}</p>}
-        <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Visibility</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-visibility-op')} />
+        <label className="spaced-label" htmlFor={id('obs-visibility-op')}>Action</label><ObsSwitchSelect id={id('obs-visibility-op')} value={action.op} onChange={op => onChange({ ...action, op }, 'obs-visibility-op')} />
         <Hint hint={`Shows or hides the source in that scene (a group name works as the scene). Both names are matched exactly (up to ${maxObsSceneBytes} bytes each). ${obsSwitchHint}`}>{obsSwitchMore}</Hint></>;
       break;
     }
@@ -217,9 +228,6 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs }: {
       {(Object.keys(obsOperationLabels) as ObsStepType[]).map(type => <option key={type} value={type}>{obsOperationLabels[type]}</option>)}
     </SelectField>
     {fields}
-    <div className="obs-connection" role="note">
-      <p className="fine-print">Connects to OBS 28 or later on this Mac while OBS runs with its WebSocket server on. <button type="button" className="obs-setup" onClick={onSetUpObs}>Set up in Settings</button></p>
-      <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only. Without it, the press is logged as unavailable and nothing runs.</p></details>
-    </div>
+    {prefix === '' && <ObsConnection onSetUpObs={onSetUpObs} />}
   </div>;
 }

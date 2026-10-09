@@ -2,13 +2,13 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsFields } from './ActionFields';
+import { ActionFields, ObsConnection, ObsFields } from './ActionFields';
 import { obsOperationLabels } from './action-model';
 import type { ObsStepAction } from './action-model';
 import type { BindingAction, StepAction } from './contracts';
 
-const render = (action: BindingAction | null, fader = false) =>
-  renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} />);
+const render = (action: BindingAction | null, fader = false, onSetUpObs: (() => void) | null = () => {}) =>
+  renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} onSetUpObs={onSetUpObs ?? undefined} />);
 
 function ids(markup: string) {
   return [...markup.matchAll(/ id="([^"]+)"/g)].map(match => match[1]);
@@ -144,11 +144,17 @@ describe('obs fields', () => {
     expect(markup).toMatch(/<option value="obs_scene" selected="">Scene<\/option>/);
     expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
     expect(markup).toContain('value="Live"');
-    expect(markup).toContain('>Switch OBS scene</span>');
+    expect(markup).toContain('>OBS</span>');
+    expect(markup).not.toContain('Switch OBS scene');
     // One connection status per editor, with the Set up link to Settings.
     expect(markup.match(/WebSocket server on/g)).toHaveLength(1);
     expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
     expect(markup).not.toContain('OBS turned on in Settings');
+    // Without a handler the button is not rendered; the status text stays.
+    const bare = render({ type: 'obs_scene', scene: 'Live' }, false, null);
+    expect(bare).toContain('WebSocket server on');
+    expect(bare).not.toContain('Set up in Settings');
+    expect((bare.match(/obs-setup/g) ?? []).length).toBe(0);
     expectAccessible(markup);
     const blank = render({ type: 'obs_scene', scene: ' ' });
     expect(blank).toContain('aria-invalid="true"');
@@ -168,11 +174,11 @@ describe('obs fields', () => {
 
   it('keeps the historical parameter fields of every operation', () => {
     const camera = render({ type: 'obs_virtual_camera', op: 'start' });
-    expect(camera).toContain('<label for="obs-virtual-camera-op">Virtual camera</label>');
+    expect(camera).toContain('<label for="obs-virtual-camera-op">Action</label>');
     expect(camera).toMatch(/<option value="start" selected="">Start<\/option>/);
     expect(camera).not.toContain('value="save"');
     const buffer = render({ type: 'obs_replay_buffer', op: 'save' });
-    expect(buffer).toContain('<label for="obs-replay-buffer-op">Replay buffer</label>');
+    expect(buffer).toContain('<label for="obs-replay-buffer-op">Action</label>');
     expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
     expect(render({ type: 'obs_studio_mode', op: 'on' })).toMatch(/<option value="on" selected="">Turn on<\/option>/);
     expect(ids(render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' })))
@@ -187,14 +193,14 @@ describe('obs fields', () => {
     expectAccessible(collection);
   });
 
-  it('is offered as a multi-action step with prefixed ids, one status per step editor', () => {
+  it('is offered as a multi-action step with prefixed ids and one status for the whole editor', () => {
     const markup = render({ type: 'multi_action', actions: [
       { type: 'obs_scene', scene: 'Live' }, { type: 'obs_replay_buffer', op: 'save' },
     ] });
     expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-obs-operation', 'step-1-obs-scene', 'step-2-obs-operation', 'step-2-obs-replay-buffer-op']));
-    expect(markup).toContain('>Switch OBS scene</span>');
-    expect(markup).toContain('>OBS replay buffer</span>');
-    expect((markup.match(/Set up in Settings/g) ?? []).length).toBe(2);
+    expect(markup).toContain('>OBS</span>');
+    expect((markup.match(/Set up in Settings/g) ?? []).length).toBe(1);
+    expect((markup.match(/obs-connection/g) ?? []).length).toBe(1);
     expectAccessible(markup);
     const named = render({ type: 'multi_action', actions: [
       { type: 'obs_profile', name: 'A' }, { type: 'obs_filter', source: 'A', filter: 'B', op: 'off' },
@@ -254,10 +260,22 @@ describe('obs fields', () => {
     selectOperation(profile.tree, 'obs_scene_collection');
     expect(profile.result).toEqual({ changed: { type: 'obs_scene_collection', name: 'Streaming' }, field: 'obs-operation' });
 
-    const setUp = treeOf({ type: 'obs_transition' }, 'step-1-');
-    const button = elementsOf(setUp.tree).find(element => element.type === 'button' && element.props.className === 'obs-setup');
+    // The connection status shows in the standalone editor and once per multi-action,
+    // never per step; the Set up button renders only with a handler.
+    const setUp = render({ type: 'obs_transition' });
+    expect(setUp).toContain('class="obs-setup"');
+    const inStep = renderToStaticMarkup(ObsFields({ action: { type: 'obs_transition' }, prefix: 'step-1-', onChange: () => {}, onSetUpObs: () => {} }));
+    expect(inStep).not.toContain('WebSocket server on');
+    expect(inStep).not.toContain('class="obs-setup"');
+
+    let setUpSpied = false;
+    const connection = ObsConnection({ onSetUpObs: () => { setUpSpied = true; } }) as AnyElement;
+    const button = elementsOf(connection).find(element => element.type === 'button' && element.props.className === 'obs-setup');
     expect(button, 'Set up button').toBeTruthy();
     (button!.props as { onClick(): void }).onClick();
-    expect(setUp.result.setUp).toBe(true);
+    expect(setUpSpied).toBe(true);
+    const bare = ObsConnection({}) as AnyElement;
+    expect(elementsOf(bare).some(element => element.type === 'button')).toBe(false);
+    expect(renderToStaticMarkup(bare)).not.toContain('Set up in Settings');
   });
 });

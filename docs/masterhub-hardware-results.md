@@ -141,6 +141,16 @@ Both checks need a module running a profile with actions, and are for the next h
 - **Applied save.** With a run active, edit a binding of the running profile and save: the run swaps in place (same session, no stop or restart by the user), the display redraws from the saved profile, and a press runs the new action in Live and only logs it in Test. A save that adds a new kind of action in Live pauses the run once, and the resume dialog lists the additions.
 - **Watch.** An applied save restarts the run's process, so the module's display redraws briefly. The automatic save fires about a second after an edit settles; if a running profile is edited in bursts, check the redraw is not disruptive.
 
+## Automatic key artwork: desktop check (pending, 10 October 2026)
+
+Needs the desktop app, not a module. The drawing logic is covered by unit tests with a fake session and a fake icon source; the editor's own wiring (the settle delay, the effect, Remove artwork) is not.
+
+- **Open application.** On a key with no artwork, assign Open application and set the bundle id to an installed app (for example `com.apple.Safari`): within about a second the key shows that app's icon, and the Icon and label studio reopens with it. Undo removes it; redo brings it back.
+- **Following the app.** Change the bundle id to another installed app: the drawing follows. Change the label text in the studio first, or upload an image: the key is left alone.
+- **Declined.** Remove artwork, then keep the same app: nothing is drawn again until the app changes.
+- **Open URL.** Assign Open URL with an https address: a globe with the host appears. An address that is not http(s) draws nothing.
+- **Selecting.** Selecting a key that already has an Open application action and no artwork draws nothing.
+
 ## Not tested
 
 - The dial's `image` face and the per-profile `dial_display` setting in the app.

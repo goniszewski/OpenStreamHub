@@ -26,6 +26,18 @@ export function writeAutosaveSetting(storage: Pick<Storage, 'setItem'> | null, o
   try { storage?.setItem(autosaveStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
 }
 
+// "Switch to Test mode while editing" is on unless it was turned off: it is
+// the safe choice, and the badge always says when it is holding the mode.
+export const testWhileEditingStorageKey = 'open-stream-hub.test-while-editing';
+
+export function readTestWhileEditingSetting(storage: Pick<Storage, 'getItem'> | null): boolean {
+  try { return storage?.getItem(testWhileEditingStorageKey) !== 'off'; } catch { return true; }
+}
+
+export function writeTestWhileEditingSetting(storage: Pick<Storage, 'setItem'> | null, on: boolean) {
+  try { storage?.setItem(testWhileEditingStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
+}
+
 // When a version was saved, for the "Earlier versions" list: a clock time
 // today, otherwise the date and the clock time.
 export function versionTimeLabel(modifiedAtMs: number, now = Date.now()): string {

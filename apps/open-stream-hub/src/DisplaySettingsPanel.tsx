@@ -33,8 +33,12 @@ export function appliesNote(activeRuns: number): string {
   return `${base} ${rest}; nothing is restarted for you.`;
 }
 
-// Settings panel for Module control (App by default) and the dial content.
-export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?: DisplaySettingsStore; runner?: { subscribe(listener: () => void): () => void; getState(): ServiceStoreState }; profiles?: { id: string; name: string }[] }) {
+// What "Switch to Test mode while editing" does, shown under the checkbox.
+export const testWhileEditingNote = 'While you are editing a binding — an open action picker, the bindings drawer, or a change you have not saved yet — presses are held in Test mode on every module, and the badge in the header reads “Test (editing)”. When you save, undo or close the editor, the mode goes back to what you chose. A switch you make yourself while editing stands.';
+
+// Settings panel for Module control (App by default), the default profile and
+// the run mode's editing hold.
+export function DisplaySettingsPanel({ store, runner, profiles = [], testWhileEditing = true, onTestWhileEditing }: { store?: DisplaySettingsStore; runner?: { subscribe(listener: () => void): () => void; getState(): ServiceStoreState }; profiles?: { id: string; name: string }[]; testWhileEditing?: boolean; onTestWhileEditing?: (on: boolean) => void }) {
   const state = useSyncExternalStore(store?.subscribe ?? noopSubscribe, store?.getState ?? idle, store?.getState ?? idle);
   const runs = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner).runs;
   const activeRuns = Object.values(runs).filter(isActiveRun).length;
@@ -52,6 +56,13 @@ export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?:
       {moduleControlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
     </SelectField>
     <p id="display-module-control-note" className="fine-print">{moduleControlNotes[moduleControl]}</p>
+    <h3 className="display-settings-subtitle">Run mode</h3>
+    <label className="service-option" htmlFor="run-mode-editing">
+      <input id="run-mode-editing" type="checkbox" checked={testWhileEditing} disabled={!store || !state.desktop}
+        aria-describedby="run-mode-editing-note" onChange={event => onTestWhileEditing?.(event.target.checked)} />
+      Switch to Test mode while editing
+    </label>
+    <p id="run-mode-editing-note" className="fine-print">{testWhileEditingNote}</p>
     <label htmlFor="display-default-profile">Default profile</label>
     <SelectField id="display-default-profile" value={chosen.profileId ?? ''} disabled={!store || !state.desktop || chosen.busy || !chosen.loaded} aria-describedby="display-default-profile-note" onChange={event => { void store?.setDefaultProfile(event.target.value || null); }}>
       <option value="">No default</option>

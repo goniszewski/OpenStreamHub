@@ -11,6 +11,7 @@ import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, 
 import type { RunMode } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
+import { endEditingHold, restoreNeedsConfirm } from './editing-hold';
 
 // The Resume actions button, focused after Review on a paused-run notice.
 export const serviceResumeId = 'service-resume';
@@ -167,13 +168,17 @@ export function dialogCopy(kind: 'start' | 'resume', runs: Record<string, Servic
   return kind === 'resume' ? resumeCopy(runs, resumeId) : startCopy;
 }
 
-// The header badge for the run mode. Two holds read as Test whatever the
-// mode is, because with either in place a press will not run actions: an
-// imported profile not yet allowed to execute, and the one-time confirmation
-// still owed on a fresh install (automatic sessions run dry until it).
-export const runModeBadge = (runMode: RunMode, dryRunOnly: boolean, liveConfirmed = true): string =>
-  runMode === 'live' && !dryRunOnly && liveConfirmed ? 'Live'
-    : dryRunOnly ? 'Test (imported profile)' : 'Test';
+// The header badge for the run mode. Three holds read as Test whatever the
+// mode is, because with any of them in place a press will not run actions: an
+// imported profile not yet allowed to execute, the one-time confirmation
+// still owed on a fresh install (automatic sessions run dry until it), and
+// the editing hold ("Switch to Test mode while editing").
+export const runModeBadge = (runMode: RunMode, dryRunOnly: boolean, liveConfirmed = true, editingHeld = false): string =>
+  dryRunOnly ? 'Test (imported profile)' : editingHeld ? 'Test (editing)'
+    : runMode === 'live' && !dryRunOnly && liveConfirmed ? 'Live' : 'Test';
+
+// Why the badge reads "Test (editing)", as its tooltip.
+export const editingHoldNote = 'You are editing a binding, so presses are held in Test mode. Save, undo or close the editor to go back to the mode you chose.';
 
 // The copy of the run-mode switch to Live: one dialog for every running
 // session that would start executing. A profile whose body the frontend does
@@ -349,24 +354,53 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   const now = fixedNow ?? clock;
   // The one mode decides what a press does: the badge, the Run button and the
   // banners all read it. An imported profile not yet allowed keeps the badge
-  // on Test for the open profile whatever the mode is.
+  // on Test for the open profile whatever the mode is, and the editing hold
+  // keeps it on "Test (editing)" for as long as the user edits.
   const runMode: RunMode = display.settings.run_mode;
-  const executeSelected = runMode === 'live' && mac && !dryRunOnly;
+  const editingHeld = display.heldByEditing;
+  const executeSelected = runMode === 'live' && !editingHeld && mac && !dryRunOnly;
   // The switch saves the mode; the backend applies it to every running
   // module. Test needs no confirmation. Live with running sessions that
   // would start executing asks once, listing their profiles; Live with
   // nothing running just saves (a later Run still confirms, as always).
   const modeBusy = display.busy || !display.loaded;
+  // The switch-to-Live dialog for the dry runs that would start executing:
+  // the manual switch and the editing hold's restore share it.
+  const askLive = (switching: ServiceRun[]) => {
+    void Promise.all(switching.map(async item => {
+      if (item.snapshot !== unknownSnapshot) return snapshotProfile(item.snapshot);
+      const heldProfile = await runner?.heldProfile(item.serviceId, item.profileGeneration ?? 0);
+      return heldProfile?.profile ?? null;
+    })).then(bodies => setModeCopy(modeSwitchCopy(switching, bodies)));
+  };
   const switchMode = (next: RunMode) => {
     if (!displaySettings || modeBusy || next === runMode) return;
     if (next === 'test') { void displaySettings.setRunMode('test'); return; }
     const switching = Object.values(service.runs).filter(item => isActiveRun(item) && !item.execute);
     if (!switching.length) { void displaySettings.setRunMode('live'); return; }
-    void Promise.all(switching.map(async item => {
-      if (item.snapshot !== unknownSnapshot) return snapshotProfile(item.snapshot);
-      const held = await runner?.heldProfile(item.serviceId, item.profileGeneration ?? 0);
-      return held?.profile ?? null;
-    })).then(bodies => setModeCopy(modeSwitchCopy(switching, bodies)));
+    askLive(switching);
+  };
+
+  // The editing hold ("Switch to Test mode while editing"): the first edit
+  // holds the mode at Test — the save reaches the backend, so a press on any
+  // module is logged, never run — and ending the edit restores the user's
+  // own mode. Restoring asks through the same dialog as a manual switch only
+  // when a dry run started during the hold would begin executing; the runs
+  // the hold itself turned dry were running with actions before it, so the
+  // user's mode goes back to them in silence. Both saves keep live_offered
+  // as it is: the hold never answers the one-time confirmation.
+  const applyEditingHold = (editing: boolean, whileEditing: boolean) => {
+    if (!displaySettings || !display.loaded) return;
+    if (editing && whileEditing) {
+      displaySettings.beginEditingHold(whileEditing, Object.values(service.runs).filter(item => item.execute && isActiveRun(item)).map(item => item.serviceId));
+      return;
+    }
+    const step = endEditingHold(displaySettings.editingHeld);
+    if (!step.save) return;
+    displaySettings.dropEditingHold();
+    const switching = Object.values(service.runs).filter(item => isActiveRun(item) && !item.execute && item.session);
+    if (!restoreNeedsConfirm(displaySettings.editingSnapshotRuns, switching)) { void displaySettings.setHeldMode(step.save); return; }
+    askLive(switching);
   };
 
   useEffect(() => {
@@ -428,7 +462,7 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   return {
     service, devices, display, mac, enabled, dryRunOnly, dryRunNote, chosen, selection, runMode, setRunMode: switchMode, setSoftwareMode, softwareMode,
     chooseDevice: (next: LiveDevice) => setChosen({ device: next }),
-    device, run, session, phase, active, blocker, box, stale, now, executeSelected,
+    device, run, session, phase, active, blocker, box, stale, now, executeSelected, editingHeld, applyEditingHold,
     // The open draft, for the panel's stale note (what the run holds against it).
     draftProfile: profile,
     begin, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
@@ -449,7 +483,7 @@ export const idleRunSession: RunSession = {
   device: undefined, run: undefined, session: undefined, phase: undefined, active: false,
   blocker: runBlocker({ desktop: false, device: undefined, profile: { schema_version: 1, name: '', bindings: [] } }),
   box: softwareModeBox({ module: undefined, loaded: false, moduleControl: 'app', ticked: false }),
-  stale: false, now: 0, executeSelected: false,
+  stale: false, now: 0, executeSelected: false, editingHeld: false, applyEditingHold: noop,
   draftProfile: { schema_version: 1, name: '', bindings: [] },
   begin: async () => {}, resume: noop, stop: noop,
   confirm: null, confirmKind: 'start', resumeGone: false, acknowledged: false, setAcknowledged: noop, answer: noop,
@@ -461,14 +495,17 @@ const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315:
 
 // The one run-mode badge and its switch: the only place that shows and
 // changes what a press does. The switch saves the mode; with running sessions
-// that would start executing, Live asks first (the dialog below).
+// that would start executing, Live asks first (the dialog below). While the
+// editing hold is on, the badge reads "Test (editing)" and its tooltip says
+// why.
 export function ModeControl({ run }: { run: RunSession }) {
-  const { runMode, setRunMode, display, enabled, mac, dryRunOnly } = run;
-  const live = runMode === 'live';
+  const { runMode, setRunMode, display, enabled, mac, dryRunOnly, editingHeld } = run;
+  const live = runMode === 'live' && !editingHeld;
   const confirmed = display.settings.live_offered;
   const busy = display.busy || !display.loaded;
   return <div className="mode-control" role="group" aria-label="Run mode">
-    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly, confirmed)}</span>
+    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status"
+      title={editingHeld ? editingHoldNote : undefined}>{runModeBadge(runMode, dryRunOnly, confirmed, editingHeld)}</span>
     <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy}
       title="Switch to Test mode: presses are logged only, nothing happens on the Mac" onClick={() => setRunMode('test')}>Test</button>
     <button type="button" className="mode-choice" aria-pressed={live} disabled={!enabled || busy || !mac}

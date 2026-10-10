@@ -428,6 +428,12 @@ describe('the run mode', () => {
     // the badge never claims Live before it is answered.
     expect(runModeBadge('live', false, false)).toBe('Test');
     expect(runModeBadge('test', false, false)).toBe('Test');
+    // The editing hold: presses are held in Test while a binding is edited,
+    // whatever the stored mode is; the imported profile stays the more
+    // specific reason about the open profile.
+    expect(runModeBadge('live', false, true, true)).toBe('Test (editing)');
+    expect(runModeBadge('test', false, true, true)).toBe('Test (editing)');
+    expect(runModeBadge('live', true, true, true)).toBe('Test (imported profile)');
   });
   it('builds the switch-to-Live copy from every running profile; one that cannot be read is high risk', () => {
     const single = modeSwitchCopy([named('Everyday')], [flat]);
@@ -491,6 +497,129 @@ describe('the run mode', () => {
     await tick();
     expect(run!.dialogOpen).toBe(false);
     expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }]]);
+  });
+});
+
+describe('the editing hold', () => {
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  // A settings store whose saves echo the settings back (as the backend does)
+  // and record every command. It starts loaded, so the hold can act.
+  const echoStore = (initial: DisplaySettings) => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+      calls.push([command, args]);
+      return (command === 'set_display_settings' ? args!.settings : initial) as T;
+    }, true);
+    (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings: initial };
+    return { store, calls };
+  };
+  // One render of the hook. Each call is a fresh instance over the same
+  // stores — how a re-render reads the hold the last call changed.
+  const hookWith = (displaySettings: DisplaySettingsStore, fixturesOut?: ReturnType<typeof fixtures>) => {
+    let run: ReturnType<typeof useRunSession> | null = null;
+    const View = () => {
+      run = useRunSession({ runner: fixturesOut?.runner, feed: fixturesOut?.feed, profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, displaySettings });
+      return null;
+    };
+    renderToStaticMarkup(<View />);
+    return () => run!;
+  };
+  const live: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: true };
+  // A live session on the dial, executing or dry as asked.
+  const runningSession = (execute: boolean) => fixtures(execute, 'running', {
+    session: { serviceId: serviceIdFor('aabb'), phase: 'running', reason: null, attempt: 0, module: 'm131e', serialNumber: 'S1' },
+  });
+
+  it('holds Test at the first edit and restores Live when it ends', () => {
+    const { store, calls } = echoStore(live);
+    const run = hookWith(store);
+    run().applyEditingHold(true, true);
+    // A fresh render reads the hold from the store: the badge inputs flip.
+    const held = hookWith(store)();
+    expect(held.editingHeld).toBe(true);
+    expect(held.executeSelected).toBe(false);
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'test', live_offered: true } }]]);
+    run().applyEditingHold(false, true);
+    expect(hookWith(store)().editingHeld).toBe(false);
+    expect(calls).toEqual([
+      ['set_display_settings', { settings: { module_control: 'app', run_mode: 'test', live_offered: true } }],
+      ['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }],
+    ]);
+  });
+  it('never answers the one-time confirmation through the hold', () => {
+    const { store, calls } = echoStore({ module_control: 'app', run_mode: 'live', live_offered: false });
+    const run = hookWith(store);
+    run().applyEditingHold(true, true);
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'test', live_offered: false } }]]);
+    run().applyEditingHold(false, true);
+    expect(calls[1]).toEqual(['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: false } }]);
+  });
+  it('does nothing with the setting off or while the mode is already Test', () => {
+    const { store, calls } = echoStore(live);
+    const run = hookWith(store);
+    run().applyEditingHold(true, false);
+    expect(run().editingHeld).toBe(false);
+    expect(calls).toEqual([]);
+    const testStore = echoStore({ module_control: 'app', run_mode: 'test', live_offered: true });
+    const testRun = hookWith(testStore.store);
+    testRun().applyEditingHold(true, true);
+    expect(hookWith(testStore.store)().editingHeld).toBe(false);
+    expect(testStore.calls).toEqual([]);
+  });
+  it('keeps a mode the user switches to during the hold, and restores nothing afterwards', async () => {
+    const { store, calls } = echoStore(live);
+    const run = hookWith(store);
+    run().applyEditingHold(true, true);
+    await tick();
+    expect(calls).toHaveLength(1);
+    // The user's own switch to Live during the hold (a fresh render reads the
+    // held Test): one save, hold over.
+    hookWith(store)().setRunMode('live');
+    await tick();
+    expect(calls).toEqual([
+      ['set_display_settings', { settings: { module_control: 'app', run_mode: 'test', live_offered: true } }],
+      ['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }],
+    ]);
+    // Editing ends: their Live stands, nothing else is saved.
+    run().applyEditingHold(false, true);
+    expect(calls).toHaveLength(2);
+  });
+  it('restores in silence when every dry run was already executing before the hold', async () => {
+    const { store, calls } = echoStore(live);
+    const out = runningSession(true);
+    const run = hookWith(store, out);
+    run().applyEditingHold(true, true);
+    // The hold had the session restarted as a dry run (the backend does it);
+    // the run here is the frontend's record of it, seen by a fresh render.
+    setRun(out.runner, { execute: false });
+    hookWith(store, out)().applyEditingHold(false, true);
+    await tick();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual(['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }]);
+  });
+  it('asks before restoring Live over a dry run the hold did not start', async () => {
+    const { store, calls } = echoStore(live);
+    const out = runningSession(false);
+    const run = hookWith(store, out);
+    run().applyEditingHold(true, true);
+    expect(calls).toHaveLength(1);
+    // A dry run started during the hold (never executing, never confirmed for
+    // Live): the restore opens the same dialog as a manual switch first.
+    run().applyEditingHold(false, true);
+    await tick();
+    expect(calls).toHaveLength(1);
+    // Cancelling keeps the mode where it is; nothing more is saved.
+    run().answer(false);
+    expect(calls).toHaveLength(1);
+    // Switching to Live themselves goes through the dialog again, and the
+    // confirmation saves the mode through the ordinary switch.
+    const user = hookWith(store, out);
+    user().setRunMode('live');
+    await tick();
+    expect(calls).toHaveLength(1);
+    user().answer(true);
+    await tick();
+    expect(calls[1]).toEqual(['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }]);
   });
 });
 

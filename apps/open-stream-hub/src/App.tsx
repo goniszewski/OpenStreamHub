@@ -30,6 +30,8 @@ import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
+import { readOpenPickers, subscribeOpenPickers } from './ActionPicker';
+import { isEditing } from './editing-hold';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { defaultDisplaySettings } from './display-settings';
@@ -38,7 +40,7 @@ import { useImportDrop } from './ProfileTransfer';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
 import { editKeypadBinding } from './keypad-model';
-import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, writeAutosaveSetting } from './ui-model';
+import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, readTestWhileEditingSetting, writeAutosaveSetting, writeTestWhileEditingSetting } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
 import type { ConfirmRequest } from './useDeviceEditor';
@@ -153,6 +155,9 @@ export default function App() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [bindingsOpen, setBindingsOpen] = useState(false);
   const [allowExecutionOpen, setAllowExecutionOpen] = useState(false);
+  // "Switch to Test mode while editing" (on by default, kept in local storage
+  // like automatic saving): the setting the editing hold of the run mode obeys.
+  const [testWhileEditing, setTestWhileEditing] = useState(() => readTestWhileEditingSetting(webStorage()));
   const switcherRef = useRef<HTMLDivElement>(null);
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
   const { profile, profileId, contentHash } = draft;
@@ -185,6 +190,17 @@ export default function App() {
       return { profile: settled.profile, profileId: isUnsaved(settled) ? null : settled.profileId, sourceProfileId: settled.sourceId ?? settled.profileId, unsaved: isUnsaved(settled) };
     },
   });
+  // "Switch to Test mode while editing": while a binding is being edited (an
+  // open action picker, the bindings drawer, or unsaved changes) and the
+  // setting is on, the mode is held to Test; ending the edit restores it.
+  const pickerOpenCount = useSyncExternalStore(subscribeOpenPickers, readOpenPickers);
+  const editing = isEditing({ unsavedChanges: unsaved, pickerOpen: pickerOpenCount > 0, drawerOpen: bindingsOpen });
+  useEffect(() => {
+    runSession.applyEditingHold(editing, testWhileEditing);
+    // The hold reads the current stores through the hook's own closures; only
+    // the two inputs decide when it runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, testWhileEditing]);
   const connectedModules = deviceFeedState.devices.length;
   const deviceStatus = !desktop ? 'Browser preview'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'
@@ -388,7 +404,7 @@ export default function App() {
           <button className="button compact" disabled={busy !== null} onClick={() => { void session.bootstrap(); }}><RotateCcw size={16} />Retry</button></div>}
         {error && <div className="alert error" role="alert"><CircleHelp size={19} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => session.setError(null)}><X size={17} /></button></div>}
         {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span>{noticeAction && <button className="button compact" onClick={() => { const action = noticeAction; session.setNotice(null); action.run(); }}>{noticeAction.label}</button>}<button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
-        {showControlNotice && <ModuleControlNotice runMode={display.settings.run_mode} onDismiss={() => setControlNotice(false)} />}
+        {showControlNotice && <ModuleControlNotice runMode={runSession.editingHeld ? 'test' : display.settings.run_mode} onDismiss={() => setControlNotice(false)} />}
 
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <ModuleCatalog editor={editor} feed={feed} />
@@ -403,7 +419,7 @@ export default function App() {
         {page === 'lighting' && <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} feed={feed} runner={runner} storage={webStorage()} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

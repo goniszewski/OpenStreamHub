@@ -6,7 +6,7 @@ import { emptyKeypadPage } from './keypad-model';
 import { appControls, defaultDisplaySettings, displayFlags, DisplaySettingsStore, isDisplaySettings, moduleControlOptions } from './display-settings';
 import { dialDisplayArgs, dialDisplayOptions } from './dial-display-model';
 import type { DisplaySettingsState } from './display-settings';
-import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes } from './DisplaySettingsPanel';
+import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes, testWhileEditingNote } from './DisplaySettingsPanel';
 import { emptyCounters } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
 
@@ -158,6 +158,40 @@ describe('DisplaySettingsStore', () => {
     expect(await store.markLiveConfirmed()).toBe(true);
     expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
   });
+  it('holds the mode for editing without answering the confirmation, and a switch ends the hold', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: true };
+    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+      calls.push([command, args]);
+      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
+      return stored as T;
+    }, true);
+    (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings: stored };
+    // The first edit holds Test over the user's Live and remembers what was
+    // executing (the runs the restore may return to Live in silence).
+    expect(store.beginEditingHold(true, ['s1', 's2'])).toBe(true);
+    expect(store.editingHeld).toBe(true);
+    expect(store.editingSnapshotRuns).toEqual(new Set(['s1', 's2']));
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    // Already held, or the setting off, or the mode already Test: nothing.
+    expect(store.beginEditingHold(true, [])).toBe(false);
+    expect(store.beginEditingHold(false, [])).toBe(false);
+    // A fresh install's owed confirmation is never answered by the hold.
+    const fresh = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+      calls.push([command, args]);
+      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
+      return stored as T;
+    }, true);
+    (fresh as unknown as { state: unknown }).state = { ...fresh.getState(), loaded: true, settings: { module_control: 'app', run_mode: 'live', live_offered: false } };
+    fresh.beginEditingHold(true, []);
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: false });
+    // The user's own switch during the hold ends it: their choice stands.
+    await store.setRunMode('live');
+    expect(store.editingHeld).toBe(false);
+    // Dropping a hold that is not on does nothing.
+    expect(store.dropEditingHold()).toBe(false);
+    expect(store.editingHeld).toBe(false);
+  });
   it('seeds the browser preview for captures and never the desktop app', () => {
     const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);
     preview.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true });
@@ -221,5 +255,20 @@ describe('DisplaySettingsPanel markup', () => {
     expect(preview).toContain('This setting needs the desktop app.');
     const failed = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ error: 'display settings are unreadable' })} />);
     expect(failed).toContain('role="alert"><span>display settings are unreadable</span>');
+  });
+  it('offers the editing hold on by default, with its plain description', () => {
+    const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} />);
+    expect(markup).toContain('>Run mode</h3>');
+    expect(markup).toContain('Switch to Test mode while editing');
+    expect(markup).toMatch(/<input id="run-mode-editing" type="checkbox"[^>]*checked=""/);
+    expect(markup).toContain(testWhileEditingNote.replace(/"/g, '&quot;'));
+    // Off is rendered as off, and the checkbox alone still works in the
+    // browser preview (the rest of the panel needs the desktop app).
+    const off = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} testWhileEditing={false} />);
+    expect(off).toMatch(/<input id="run-mode-editing" type="checkbox"(?:[^>]*)\/>/);
+    expect(off).not.toMatch(/run-mode-editing[^>]*checked=""/);
+    const preview = renderToStaticMarkup(<DisplaySettingsPanel />);
+    expect(preview).toContain('Switch to Test mode while editing');
+    expect(preview).toMatch(/<input id="run-mode-editing" type="checkbox" disabled=""/);
   });
 });

@@ -594,3 +594,5 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .about-facts { display:grid; grid-template-columns:max-content 1fr; gap:9px 18px; margin:0; font-size:13px; }
 .about-facts dt { color:var(--muted); }
 .about-facts dd { margin:0; overflow-wrap:anywhere; }
+
+.display-settings-subtitle { margin:17px 0 10px; }

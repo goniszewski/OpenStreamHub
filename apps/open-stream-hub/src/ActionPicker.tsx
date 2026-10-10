@@ -11,6 +11,19 @@ import type { PickerActionType, PickerEntry, PickerScope, StorageLike } from './
 export interface PickerState { open: boolean; query: string }
 export const closedPicker: PickerState = { open: false, query: '' };
 
+// How many action-picker popovers are open anywhere. Each picker owns its open
+// state where it renders, so the count lives here and App reads it to know a
+// binding is being edited (the editing hold of the run mode). The count is a
+// plain number, so it is a stable snapshot for useSyncExternalStore.
+let openPickers = 0;
+const pickerListeners = new Set<() => void>();
+const notifyPickerListeners = () => pickerListeners.forEach(listener => listener());
+export const subscribeOpenPickers = (listener: () => void) => {
+  pickerListeners.add(listener);
+  return () => { pickerListeners.delete(listener); };
+};
+export const readOpenPickers = (): number => openPickers;
+
 // Moves keyboard focus among the panel's action entries, wrapping at both ends. With no entry
 // focused (the search box has it), ArrowDown moves to the first entry and ArrowUp to the last.
 export function cycleEntryFocus(root: ParentNode, active: Element | null, delta: 1 | -1): void {
@@ -101,9 +114,11 @@ export function ActionPickerField(props: Omit<Parameters<typeof ActionPicker>[0]
   const wrapper = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     if (!state.open) return;
+    openPickers += 1;
+    notifyPickerListeners();
     const close = (event: PointerEvent) => { if (!wrapper.current?.contains(event.target as Node)) setState(closedPicker); };
     document.addEventListener('pointerdown', close);
-    return () => document.removeEventListener('pointerdown', close);
+    return () => { openPickers -= 1; notifyPickerListeners(); document.removeEventListener('pointerdown', close); };
   }, [state.open]);
   return <span className="action-picker-field" ref={wrapper}>
     <ActionPicker {...props} state={state} onStateChange={setState} recent={state.open ? readRecentActions(pickerWebStorage) : []} />

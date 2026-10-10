@@ -2111,7 +2111,7 @@
     "file_count": 254
   },
   "analysis_date": "2026-10-03",
-  "local_workspace": "/Users/<user>/Documents/masterhub-analysis/1.0.0.113",
+  "local_workspace": "<local-workspace>/1.0.0.113",
   "analysis_sources": [
     {
       "local_relative_path": "app-analysis/background.js",

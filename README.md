@@ -46,7 +46,7 @@ See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol refe
 
 ## Quick start
 
-Build from source on **macOS 12.3 or later**, with **Node.js 22.12+**, **Rust 1.97+** and the **Xcode command-line tools** installed. Repository access is required while the project is private.
+Build from source on **macOS 12.3 or later**, with **Node.js 22.12+**, **Rust 1.97+** and the **Xcode command-line tools** installed.
 
 ```sh
 git clone git@github.com:goniszewski/OpenStreamHub.git

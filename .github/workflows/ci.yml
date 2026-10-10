@@ -1,9 +1,22 @@
 name: CI
 
+# macOS runners bill at a multiple of Linux minutes, so CI runs the essentials:
+# one Apple Silicon job, skipped for docs-only changes. The Intel compile check
+# runs on demand (Actions -> CI -> Run workflow) and is covered by the release
+# workflow's per-arch bundles.
 on:
   pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
   push:
     branches: [master]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "LICENSE*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,11 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-15 # Apple Silicon (arm64)
-            label: macos-arm64
-          - os: macos-15-intel # x86_64 compile coverage
-            label: macos-x86_64
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"macos-15","label":"macos-arm64"},{"os":"macos-15-intel","label":"macos-x86_64"}]' || '[{"os":"macos-15","label":"macos-arm64"}]') }}
     steps:
       - uses: actions/checkout@v4
 

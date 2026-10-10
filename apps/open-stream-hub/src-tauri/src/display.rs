@@ -132,6 +132,8 @@ struct WithDialContentSettings {
     /// Missing in files written before the setting existed: off.
     #[serde(default)]
     auto_execute: bool,
+    /// Named only so the old file shape still parses; never read.
+    #[allow(dead_code)]
     dial_content: IgnoredAny,
 }
 
@@ -140,6 +142,8 @@ struct WithDialContentSettings {
 #[serde(deny_unknown_fields)]
 struct LegacySettings {
     enabled: bool,
+    /// Named only so the old file shape still parses; never read.
+    #[allow(dead_code)]
     dial_content: IgnoredAny,
 }
 

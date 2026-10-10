@@ -1,4 +1,4 @@
-import type { HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionAutoStart, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
+import type { AppliedSavedProfile, HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionAutoStart, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
 import { timerDuration, urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
 import type { DeviceFeed, Listen, Scheduler } from './device-feed';
@@ -55,6 +55,9 @@ export interface ServiceRun {
   // A focused-app rule or a profile key switched this run to a saved profile; set by switchProfile and by session
   // events, and kept for later pauses.
   profileSwitched?: boolean;
+  // The snapshot the run held just before a save applied the saved profile to it, when it was a readable body. The
+  // resume dialog of a save-paused run lists only what the save added over this.
+  savedSwap?: string;
   // What made the latest switch: a profile key ('key', a session event with reason profile_action) or a focused-app
   // rule ('rule'). Unset when not known.
   profileSwitchedBy?: 'rule' | 'key';
@@ -72,8 +75,8 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' };
-const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', profile_saved: 'the profile was saved', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' };
+const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action' || reason === 'profile_saved';
 // How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
 // for a Start by the user.
 const autoStartWhen: Record<SessionAutoStart, string> = {
@@ -132,13 +135,16 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
 function adoptProfile(run: ServiceRun, payload: SessionStatePayload): Partial<ServiceRun> {
   const generation = payload.profile_generation ?? 0;
   if (typeof payload.profile_name !== 'string' || generation < (run.profileGeneration ?? 0)) return {};
+  // A save (profile_saved) keeps the run on its saved profile: the run is not
+  // switched away from it, so its copy is the saved version again.
+  const saved = payload.reason === 'profile_saved';
   const switched = generation > 0 && typeof payload.profile_id === 'string';
   const newer = generation > (run.profileGeneration ?? 0);
   return {
     profileName: payload.profile_name, profileGeneration: generation,
-    ...(switched ? { profileId: payload.profile_id, profileSwitched: true, draftUnsaved: false } : {}),
+    ...(switched ? { profileId: payload.profile_id, profileSwitched: !saved, draftUnsaved: false } : {}),
     // A newer switch says who made it when the event carries the reason; otherwise who switched is not known.
-    ...(switched && newer ? { snapshot: unknownSnapshot, profileSwitchedBy: payload.reason === 'profile_action' ? 'key' as const : payload.reason === 'profile_switch' ? 'rule' as const : undefined } : {}),
+    ...(switched && newer ? { snapshot: unknownSnapshot, ...(saved ? {} : { profileSwitchedBy: payload.reason === 'profile_action' ? 'key' as const : payload.reason === 'profile_switch' ? 'rule' as const : undefined }) } : {}),
   };
 }
 const normalSerial = (serial: string | null | undefined) => serial?.trim() || null;
@@ -283,10 +289,25 @@ export function countRecord(counters: ServiceCounters, record: unknown, execute 
 export const unknownSnapshot = '\u0000unknown';
 export const isStale = (run: ServiceRun | undefined, draft: Profile) => run !== undefined && isActiveRun(run) && run.snapshot !== unknownSnapshot && stableStringify(draft) !== run.snapshot;
 
+// Why the open draft is not what the run holds. A save applies the saved profile to the running session in place (a
+// swap that adds nothing the run was confirmed for restarts it, anything new pauses it for one confirmation), so what
+// remains here is unsaved changes: saving is what applies them. A run started from a draft that had no file yet keeps
+// its copy regardless of saves, so only restarting it applies the draft's later edits.
+export const unsavedChangesNote = 'Unsaved changes are not applied to the running profile yet. Save to apply them.';
+export const restartToApplyNote = 'Profile changed since start. Restart to apply.';
+export const staleNote = (run: ServiceRun | undefined, draft: Profile): string | null =>
+  run !== undefined && isStale(run, draft) ? (run.draftUnsaved ? restartToApplyNote : unsavedChangesNote) : null;
+
 // sourceProfileId: the saved profile the draft was opened from, even when edited or deleted since. The backend refuses Execute
 // for a derivative of an imported dry-run-only profile.
 export type StartOptions = { profile: Profile; pathHex: string; execute: boolean; softwareMode: boolean; draftUnsaved: boolean; profileId?: string | null; sourceProfileId?: string | null; device?: LiveDevice };
 export type ConfirmExecute = () => Promise<boolean>;
+
+// What saving a profile did to the runs that hold it. switched counts the
+// sessions that swapped to the saved content; paused the executing ones that
+// will wait for a confirmation of it; refused carries why a session kept its
+// previous profile.
+export type ApplySavedResult = { ok: true; switched: number; paused: number; refused: string[] } | { ok: false; error: string };
 
 interface QueuedSwitch { profileId: string; why: string; settle: (ok: boolean) => void }
 interface SwitchQueue { done: Promise<void>; queued: QueuedSwitch | null }
@@ -784,6 +805,43 @@ export class ServiceRunner {
       this.set({ error: errorMessage(reason) });
       return false;
     }
+  }
+
+  // Applies a saved profile to every running session that holds it (called
+  // by the profile store after a save). The backend swaps each session in
+  // place — same session, mode and device, the process restarts — and this
+  // resyncs the runs it names: the saved body, the new generation, no
+  // switched-away flag (the run holds exactly the saved version again). A
+  // command failure is shown in the run panel as well; a per-session refusal
+  // is only reported to the caller.
+  async applySavedProfile(profileId: string): Promise<ApplySavedResult> {
+    if (!this.state.desktop) return { ok: false, error: 'Running profiles are managed by the desktop app.' };
+    let applied: AppliedSavedProfile;
+    try {
+      applied = await this.invoke<AppliedSavedProfile>('apply_saved_profile', { profileId });
+    } catch (reason) {
+      const error = errorMessage(reason);
+      this.set({ error });
+      return { ok: false, error };
+    }
+    const at = this.now();
+    const refused: string[] = [];
+    let paused = 0;
+    for (const session of applied.sessions) {
+      if (session.error !== undefined) { refused.push(session.error); continue; }
+      if (session.paused) paused += 1;
+      // What the run held before the swap, kept for the resume dialog's
+      // additions-only listing (a readable body only: neither empty nor the
+      // unknown marker).
+      const prior = this.runs()[session.session_id]?.snapshot;
+      this.update(session.session_id, current => (current.profileGeneration ?? 0) > session.profile_generation ? current : ({
+        ...current, profileId: applied.id, profileName: applied.profile.name, snapshot: stableStringify(applied.profile),
+        profileGeneration: session.profile_generation, profileSwitched: false, profileSwitchedBy: undefined, draftUnsaved: false,
+        savedSwap: prior && prior !== unknownSnapshot ? prior : current.savedSwap,
+        entries: appendEntry(current.entries, { kind: 'info', text: `Saved profile applied: the run switched to the saved "${applied.profile.name}".`, at }),
+      }), true);
+    }
+    return { ok: true, switched: applied.sessions.filter(session => session.error === undefined).length, paused, refused: [...new Set(refused)] };
   }
 
   dismissError() { this.set({ error: null }); }

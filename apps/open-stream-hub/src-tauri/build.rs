@@ -43,6 +43,7 @@ fn main() {
             "obs_scene_sources",
             "switch_session_profile",
             "session_profile",
+            "apply_saved_profile",
             "create_diagnostics",
             "prepare_artwork",
             "prepare_key_artwork",

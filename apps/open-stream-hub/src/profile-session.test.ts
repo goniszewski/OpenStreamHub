@@ -644,3 +644,68 @@ describe('notice actions', () => {
     expect(session.getState().noticeAction).toBeNull();
   });
 });
+
+describe('a save applies to running profiles', () => {
+  const alpha = stored('a', 'Alpha');
+  const alphaListing = listing(alpha);
+  const settle = async (test: ReturnType<typeof harness>, save: Promise<void>, renamed = false) => {
+    test.take('save_profile').resolve(stored('a', renamed ? 'Renamed' : 'Alpha', 2000));
+    await flush();
+    test.take('list_profiles').resolve(listing(stored('a', renamed ? 'Renamed' : 'Alpha')));
+    await save;
+  };
+
+  it('a manual save says what the running profile did', async () => {
+    const test = await ready(alpha);
+    const applied: string[] = [];
+    test.session.setApplySaved(async id => {
+      applied.push(id);
+      return { ok: true, switched: 1, paused: 0, refused: [] };
+    });
+    await settle(test, test.session.save());
+    expect(applied).toEqual(['a']);
+    expect(test.session.getState().notice).toBe('Saved Alpha. The running profile switched to it.');
+  });
+
+  it('a paused run sends the user to Resume, and a refusal keeps the previous version with its reason', async () => {
+    const test = await ready(alpha);
+    test.session.setApplySaved(async () => ({ ok: true, switched: 1, paused: 1, refused: ['this profile may not execute actions yet'] }));
+    await settle(test, test.session.save());
+    const notice = test.session.getState().notice!;
+    expect(notice).toContain('Saved Alpha.');
+    expect(notice).toContain('One run pauses until you confirm the changes: press Resume in the header.');
+    expect(notice).toContain('The running profile kept the previous version: this profile may not execute actions yet');
+  });
+
+  it('a failed switch surfaces with the save', async () => {
+    const test = await ready(alpha);
+    test.session.setApplySaved(async () => ({ ok: false, error: 'the saved profile is gone' }));
+    await settle(test, test.session.save());
+    expect(test.session.getState().notice).toBe('Saved Alpha. The running profile could not switch: the saved profile is gone');
+  });
+
+  it('an automatic save stays silent unless a run needs attention', async () => {
+    const test = await ready(alpha);
+    test.session.update(profile => ({ ...profile, name: 'Renamed' }));
+    test.fireDebounce();
+    const call = test.take('save_profile');
+    call.resolve(stored('a', 'Renamed', 2000));
+    await flush();
+    test.take('list_profiles').resolve(listing(stored('a', 'Renamed')));
+    await flush();
+    // Nothing wired and nothing to say: no notice, the draft is clean.
+    expect(test.session.getState().notice).toBeNull();
+    expect(test.session.unsaved).toBe(false);
+
+    // With the hook set, only an attention-worthy result is spoken.
+    const noticed = await ready(alpha);
+    noticed.session.setApplySaved(async () => ({ ok: true, switched: 0, paused: 0, refused: [] }));
+    noticed.session.update(profile => ({ ...profile, name: 'Renamed' }));
+    noticed.fireDebounce();
+    noticed.take('save_profile').resolve(stored('a', 'Renamed', 3000));
+    await flush();
+    noticed.take('list_profiles').resolve(listing(stored('a', 'Renamed')));
+    await flush();
+    expect(noticed.session.getState().notice).toBeNull();
+  });
+});

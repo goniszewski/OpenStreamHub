@@ -6,6 +6,7 @@ import { newDraftKey, restoreDecision, timeoutSchedule } from './draft-store';
 import type { Cancel, DraftPersister, Schedule, StoredDraft } from './draft-store';
 import { copyName, ImportError, importName, parseImportedProfile, starterName, withName } from './profile-library';
 import { keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
+import type { ApplySavedResult } from './service-runner';
 import { errorMessage, faderMaximum, replayLabels, versionTimeLabel } from './ui-model';
 
 // How long an edit settles before it is saved to the profile file. The
@@ -146,6 +147,37 @@ export class ProfileSession {
   // saved baseline moves.
   private autosaveTimer: { cancel: Cancel } | null = null;
   private autosaveInFlight = false;
+  // Called after a save of a saved profile: the running sessions of that
+  // profile swap to the saved content in place. The app points this at the
+  // run store once it exists; without it a save simply applies at the next
+  // start.
+  private applySaved: ((id: string) => Promise<ApplySavedResult>) | null = null;
+
+  setApplySaved(apply: ((id: string) => Promise<ApplySavedResult>) | null) {
+    this.applySaved = apply;
+  }
+
+  // What a save changed in the runs that hold the profile, as the notice's
+  // tail: swapped live, paused for one confirmation of the additions, or
+  // kept back with a reason. Null when nothing runs the profile, or nothing
+  // needs saying (an automatic save stays silent unless it does).
+  private async savedRunTail(id: string): Promise<string | null> {
+    if (!this.applySaved) return null;
+    let result: ApplySavedResult;
+    try {
+      result = await this.applySaved(id);
+    } catch (reason) {
+      return ` The running profile could not switch: ${errorMessage(reason)}`;
+    }
+    if (!result.ok) return ` The running profile could not switch: ${result.error}`;
+    const refused = result.refused.length ? ` The running profile kept the previous version: ${result.refused.join(' ')}` : '';
+    if (result.paused > 0) {
+      const runs = result.paused === 1 ? 'One run pauses' : `${result.paused} runs pause`;
+      return ` ${runs} until you confirm the changes: press Resume in the header.${refused}`;
+    }
+    if (result.switched > 0 && !refused) return ' The running profile switched to it.';
+    return refused || null;
+  }
 
   constructor(private readonly invoke: Invoke, initial: Profile, desktop: boolean, private readonly drafts: DraftPersister | null = null, private readonly now: () => number = Date.now, private readonly autosaveSchedule: Schedule = timeoutSchedule) {
     this.desktop = desktop;
@@ -243,6 +275,9 @@ export class ProfileSession {
       if (stableStringify(this.state.draft.profile) === snapshot) {
         this.set({ draft: { ...storedDraft(stored) }, autosaveBlocked: false });
         await this.refreshAfterChange('Profile saved');
+        // The automatic save stays silent unless a run needs attention.
+        const tail = await this.savedRunTail(stored.id);
+        if (tail !== null) this.set({ notice: `Saved ${stored.profile.name}.${tail}` });
       }
     } catch (reason) {
       const message = errorMessage(reason);
@@ -446,8 +481,11 @@ export class ProfileSession {
     this.set({ busy: 'Saving profile', error: null, notice: null });
     try {
       const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: snapshot, expectedModifiedAtMs: profileId ? modifiedAtMs : null, sourceProfileId: sourceId ?? null } });
-      // Saving keeps the open keypad folder, so the generation is unchanged.
-      this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', notice: `Saved ${stored.profile.name}.` });
+      // Running profiles of this save switch in place; the notice says what
+      // that did. Saving keeps the open keypad folder, so the generation is
+      // unchanged.
+      const tail = await this.savedRunTail(stored.id);
+      this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', notice: `Saved ${stored.profile.name}.${tail ?? ''}` });
       await this.refreshAfterChange('Profile saved');
     } catch (reason) {
       const message = errorMessage(reason);
@@ -482,7 +520,8 @@ export class ProfileSession {
     try {
       const version = await this.invoke<StoredProfile>('load_profile_version', { id: profileId, modifiedAtMs });
       const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: version.profile, expectedModifiedAtMs: loadedAt, sourceProfileId: sourceId ?? null } });
-      this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', versions: null, versionsId: null, notice: `Restored the version from ${versionTimeLabel(version.modified_at_ms, this.now())}.` });
+      const tail = await this.savedRunTail(stored.id);
+      this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', versions: null, versionsId: null, notice: `Restored the version from ${versionTimeLabel(version.modified_at_ms, this.now())}.${tail ?? ''}` });
       await this.refreshAfterChange('Version restored');
     } catch (reason) {
       const message = errorMessage(reason);

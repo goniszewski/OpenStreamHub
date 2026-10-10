@@ -1,5 +1,6 @@
 mod app_icon;
 mod artwork;
+mod capabilities;
 #[cfg(test)]
 mod contract_fixtures;
 mod diagnostics;
@@ -1398,6 +1399,37 @@ fn session_profile(
         .session_profile(&session_id, profile_generation)
 }
 
+/// `apply_saved_profile` result: the saved profile the sessions now use and,
+/// per affected session, its new `profile_generation` and whether an
+/// executing session paused for confirmation. A session with an `error`
+/// keeps running its previous profile.
+#[derive(Serialize)]
+struct SavedProfileApplied {
+    #[serde(flatten)]
+    stored: store::StoredProfile,
+    sessions: Vec<session::AppliedSession>,
+}
+
+// Applies a saved profile to every running session that holds it (the user
+// saved the profile a run uses; the save path calls this). The swap keeps
+// the session, its mode and its device: the process restarts with the saved
+// content, a dry run at once, an executing session without a new
+// confirmation only when the saved profile adds nothing the confirmed
+// profile could not do. A refused session keeps its old profile, with the
+// reason in its result.
+#[tauri::command(async)]
+fn apply_saved_profile(
+    state: State<'_, AppState>,
+    profile_id: String,
+) -> Result<SavedProfileApplied, String> {
+    let stored = state.with_store(|store| store.load(&profile_id))?;
+    replay::validate_profile(&stored.profile)?;
+    let sessions = state
+        .sessions
+        .apply_saved(&stored.id, stored.profile.clone())?;
+    Ok(SavedProfileApplied { stored, sessions })
+}
+
 /// Matches a frontmost-app change and tells the frontend.
 fn focus_changed(app: &tauri::AppHandle, bundle_id: Option<String>) {
     let state = app.state::<AppState>();
@@ -1532,6 +1564,7 @@ pub fn run() {
             obs_scene_sources,
             switch_session_profile,
             session_profile,
+            apply_saved_profile,
             create_diagnostics,
             prepare_artwork,
             prepare_key_artwork,

@@ -5,6 +5,7 @@ import { emptyKeypadPage } from './keypad-model';
 import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, modeSwitchCopy, phaseLabel, relativeTime, resumeCopy, runBlocker, runModeBadge, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, RunBlockerNotice, RunHeaderControl, ServicePanel, settlePendingConfirm, useRunSession } from './ServicePanel';
 import type { RunSessionOptions } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
+import { stableStringify } from './draft-model';
 import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
 import { DeviceFeed } from './device-feed';
 
@@ -627,6 +628,41 @@ describe('session banners', () => {
   it('keeps the stale-profile notice against the original snapshot', () => {
     const { feed, runner } = sessionFor('needs_confirmation');
     expect(render({ feed, runner })).toContain('Profile changed since start. Restart to apply.');
+  });
+  it('a run paused by a save resumes with the saved content', () => {
+    const { feed, runner } = sessionFor('needs_confirmation', { reason: 'profile_saved' });
+    const markup = render({ feed, runner });
+    expect(markup).toContain('Paused because the profile was saved.');
+    expect(markup).toContain('Resuming starts &quot;Flat&quot; as you saved it.');
+    expect(markup).toContain('Resume actions…');
+    const copy = confirmCopy('resume', 'Flat', 'X', false, flat, undefined, 'saved-1', true);
+    expect(copy.message).toContain('(as you saved it) will resume');
+    // The resume dialog reads the run: the save names the saved content, not the start.
+    expect(resumeCopy(runner.getState().runs, serviceIdFor('aabb'))!.message).toContain('(as you saved it)');
+    // With the body the run held before the swap, the dialog lists only what the save added.
+    setRun(runner, {
+      savedSwap: stableStringify(flat),
+      snapshot: stableStringify({ schema_version: 1, name: 'Flat', bindings: [{ module: 'm003k' as const, control: 1, gesture: 'pressed' as const, action: { type: 'open_url', url: 'https://example.com/a' } }] }),
+    });
+    const added = resumeCopy(runner.getState().runs, serviceIdFor('aabb'))!;
+    expect(added.lines).toEqual(['Opens web pages: https://example.com.']);
+    expect(added.snippets).toEqual([]);
+    expect(added.sequences).toEqual([]);
+    // Without a readable previous body, the full disclosure stays.
+    setRun(runner, { savedSwap: undefined });
+    const full = resumeCopy(runner.getState().runs, serviceIdFor('aabb'))!;
+    expect(full.lines).toEqual(['Opens web pages: https://example.com.']);
+    expect(full.message).toContain('(as you saved it)');
+  });
+  it('a saved-and-applied run does not nag, unsaved changes say saving applies them', () => {
+    // The run holds exactly the saved profile and the draft matches it.
+    const { feed, runner } = sessionFor('running');
+    setRun(runner, { snapshot: stableStringify(flat), draftUnsaved: false });
+    expect(render({ feed, runner, profile: flat, unsaved: false })).not.toContain('not applied to the running profile');
+    // Unsaved edits against the applied run: saving is what applies them.
+    setRun(runner, { snapshot: '{}' });
+    expect(render({ feed, runner, profile: flat, unsaved: true })).toContain('Unsaved changes are not applied to the running profile yet. Save to apply them.');
+    expect(render({ feed, runner, profile: flat, unsaved: true })).not.toContain('Restart to apply');
   });
   it('the Resume dialog names the run being resumed, not the run of the device selected now', () => {
     const session = (module: 'm131e' | 'm003k', serialNumber: string) => ({ serviceId: null, phase: 'needs_confirmation' as const, reason: 'sleep' as const, attempt: 0, module, serialNumber });

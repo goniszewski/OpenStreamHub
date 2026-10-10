@@ -6,7 +6,7 @@ import sessionResults from '../fixtures/session-command-results.json';
 import sessionEvents from '../fixtures/session-state-events.json';
 import switchEvents from '../fixtures/session-switch-events.json';
 import profileActionEvents from '../fixtures/session-profile-action-events.json';
-import { countRecord, findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, summarizeRecord, unknownSnapshot } from './service-runner';
+import { countRecord, emptyCounters, findRun, isActiveRun, isStale, maxEntries, profileChangedError, ServiceRunner, serviceIdFor, staleNote, summarizeRecord, unknownSnapshot } from './service-runner';
 import type { ServiceRun } from './service-runner';
 import { stableStringify } from './draft-model';
 
@@ -971,5 +971,83 @@ describe('session manager', () => {
     expect(await t.runner.start(options)).toBe(true);
     expect(run(t).session).toBeUndefined();
     expect(run(t).state).toBe('starting');
+  });
+});
+
+describe('applying a saved profile', () => {
+  const saved: Profile = { ...profile, name: 'Everyday', bindings: [{ module: 'm003k', control: 1, gesture: 'pressed', action: { type: 'toggle_mute' } }] };
+  const applied = (sessions: unknown): Record<string, () => unknown> => ({
+    apply_saved_profile: () => ({ id: 'saved-1', profile: saved, modified_at_ms: 2, sessions }),
+  });
+  // A run started from the saved profile, its session live.
+  const emit = (t: ReturnType<typeof setup>, phase: string, extra: Record<string, unknown> = {}) =>
+    t.handlers['session://state']({ payload: { session_id: t.id, service_id: t.id, phase, reason: null, attempt: 0, execute: false, module: 'm131e', serial_number: 'SER12345', ...extra } });
+  const runningSaved = async (execute = false) => {
+    const t = setup(); t.runner.connect(); await tick();
+    await t.runner.start({ ...options, profileId: 'saved-1', execute }, async () => true);
+    t.status('running', { execute }); emit(t, 'running', { execute });
+    return t;
+  };
+  const run = (t: ReturnType<typeof setup>) => t.runner.getState().runs[t.id];
+  const savedSession = (t: ReturnType<typeof setup>, phase: string, extra: Record<string, unknown> = {}) =>
+    emit(t, phase, { reason: 'profile_saved', profile_generation: 3, profile_id: 'saved-1', profile_name: 'Everyday', ...extra });
+
+  it('resyncs the runs the save applied to and reports what happened', async () => {
+    const t = await runningSaved();
+    Object.assign(t.results, applied([{ session_id: t.id, profile_generation: 3, paused: false }]));
+    expect(await t.runner.applySavedProfile('saved-1')).toEqual({ ok: true, switched: 1, paused: 0, refused: [] });
+    expect(t.calls.at(-1)).toEqual({ command: 'apply_saved_profile', args: { profileId: 'saved-1' } });
+    expect(run(t)).toMatchObject({
+      profileName: 'Everyday', profileId: 'saved-1', profileGeneration: 3, profileSwitched: false, draftUnsaved: false,
+      snapshot: stableStringify(saved),
+    });
+    expect(run(t).entries.at(-1)!.text).toContain('Saved profile applied');
+    // The matching session event changes nothing further: the run holds the
+    // saved body, not an unknown switch snapshot, and stays unswitched.
+    savedSession(t, 'running');
+    expect(run(t)).toMatchObject({ snapshot: stableStringify(saved), profileSwitched: false });
+  });
+
+  it('reports a paused executing session', async () => {
+    const t = await runningSaved(true);
+    Object.assign(t.results, applied([{ session_id: t.id, profile_generation: 3, paused: true }]));
+    expect(await t.runner.applySavedProfile('saved-1')).toEqual({ ok: true, switched: 1, paused: 1, refused: [] });
+    savedSession(t, 'needs_confirmation');
+    expect(run(t).session).toMatchObject({ phase: 'needs_confirmation', reason: 'profile_saved' });
+  });
+
+  it('keeps a refused session unchanged and carries the reason', async () => {
+    const t = await runningSaved(true);
+    const before = run(t);
+    Object.assign(t.results, applied([{ session_id: t.id, profile_generation: 0, paused: false, error: 'dry-run only' }]));
+    expect(await t.runner.applySavedProfile('saved-1')).toEqual({ ok: true, switched: 0, paused: 0, refused: ['dry-run only'] });
+    expect(run(t)).toEqual(before);
+    expect(t.runner.getState().error).toBeNull();
+  });
+
+  it('shows a command failure in the run panel and returns it', async () => {
+    const t = await runningSaved();
+    t.failures['apply_saved_profile'] = 'the saved profile is gone';
+    expect(await t.runner.applySavedProfile('saved-1')).toEqual({ ok: false, error: 'the saved profile is gone' });
+    expect(t.runner.getState().error).toContain('the saved profile is gone');
+  });
+
+  it('falls back to the unknown snapshot when an event names a generation the runner missed', async () => {
+    const t = await runningSaved();
+    savedSession(t, 'running');
+    expect(run(t)).toMatchObject({ snapshot: unknownSnapshot, profileId: 'saved-1', profileSwitched: false, profileName: 'Everyday' });
+    // A later switch by a rule still names itself as before.
+    emit(t, 'running', { reason: 'profile_switch', profile_generation: 4, profile_id: 'other', profile_name: 'Other' });
+    expect(run(t)).toMatchObject({ snapshot: unknownSnapshot, profileSwitched: true, profileSwitchedBy: 'rule' });
+  });
+
+  it('names what is stale: unsaved changes for a saved run, a restart for an unsaved-draft run', () => {
+    const draft: Profile = { ...profile, name: 'Everyday' };
+    const appliedRun = { serviceId: 's', state: 'running' as const, execute: false, entries: [], counters: emptyCounters(), startedAt: 0, profileName: 'Everyday', snapshot: stableStringify(saved), draftUnsaved: false, profileId: 'saved-1' };
+    expect(staleNote(appliedRun, draft)).toBe('Unsaved changes are not applied to the running profile yet. Save to apply them.');
+    expect(staleNote(appliedRun, saved)).toBeNull();
+    const draftRun = { ...appliedRun, draftUnsaved: true, snapshot: stableStringify(profile) };
+    expect(staleNote(draftRun, { ...profile, name: 'Edited' })).toBe('Profile changed since start. Restart to apply.');
+    expect(staleNote(undefined, draft)).toBeNull();
   });
 });

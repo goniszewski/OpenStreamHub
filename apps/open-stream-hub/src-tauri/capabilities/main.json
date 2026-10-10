@@ -49,6 +49,7 @@
     "allow-obs-scene-sources",
     "allow-switch-session-profile",
     "allow-session-profile",
+    "allow-apply-saved-profile",
     "allow-create-diagnostics",
     "allow-prepare-artwork",
     "allow-prepare-key-artwork",

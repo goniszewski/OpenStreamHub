@@ -30,6 +30,13 @@
 //! only reports `profile_switch_requested`, and `Driver::profile_step`
 //! resolves it against the saved profiles in a stable order and switches
 //! through the focused-app path (reason `profile_action`).
+//! Saving a profile takes a third path (`apply_saved`): every session that
+//! runs that saved profile swaps to the saved content in place (reason
+//! `profile_saved`). In Live mode such a swap only restarts executing
+//! without a new confirmation when the saved profile adds nothing the
+//! confirmed profile could not do (`crate::capabilities`); anything new
+//! pauses the session in `needs_confirmation` like a rule switch, and the
+//! app's resume dialog then names the additions.
 //! A profile imported from an official `.mhz` file stays dry-run only until
 //! the user allows it (`import_flags`): `Runner::execution_guard` refuses an
 //! executing Start or resume of it (by saved id, source id or content hash),
@@ -71,6 +78,7 @@
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
+    capabilities::adds_capabilities,
     display::{self, DisplayLaunch, DisplaySettings, ModuleControl, RunMode},
     feed::LiveDevice,
     import_flags::ExecutionGuard,
@@ -182,6 +190,9 @@ pub enum Reason {
     ProfileSwitch,
     /// A `profile` key action (next/previous) replaced the session's profile.
     ProfileAction,
+    /// The user saved the profile the session runs: it swapped to the saved
+    /// content in place, keeping its mode and device.
+    ProfileSaved,
     /// Module control is no longer `App` (changed in Settings, or the
     /// settings file cannot be read), so an automatic session ended.
     ModuleControl,
@@ -1007,6 +1018,18 @@ pub struct HeldProfile {
     pub profile: Profile,
 }
 
+/// One session a save applied to (`Driver::apply_saved`). An `error` keeps
+/// the session on its previous profile; `paused` marks an executing session
+/// that will wait in `needs_confirmation` for the saved content.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AppliedSession {
+    pub session_id: String,
+    pub profile_generation: u64,
+    pub paused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 /// Forwards one service process's messages to the driver: its exit, and
 /// strictly parsed profile key requests. Each spawn gets its own forwarder,
 /// and nothing is forwarded after that spawn's exit, so a late record of a
@@ -1446,9 +1469,83 @@ impl<R: Runner> Driver<R> {
             Reason::ProfileSwitch,
             now_ms,
         )
+        .map(|(generation, _)| generation)
     }
 
-    /// The shared switch path of focused-app rules and profile keys.
+    /// Applies a saved profile to every live session that runs it (the user
+    /// saved the profile a session holds). Each swap keeps the session, its
+    /// mode and its device; the process restarts with the saved content
+    /// under the usual safety rule, with one exception: an executing session
+    /// restarts executing without a new confirmation when it is not paused
+    /// and the saved profile adds nothing the profile a confirmation covered
+    /// could not do (`adds_capabilities`). Anything new — or a swap of a
+    /// session that sits in `needs_confirmation` for a profile nobody
+    /// confirmed — pauses it, and the resume dialog names the additions.
+    /// Stops of the interrupted processes run in one parallel batch. Every
+    /// affected session is reported, a refused one with the reason; it keeps
+    /// running its previous profile then.
+    pub fn apply_saved(
+        &mut self,
+        profile_id: &str,
+        profile: Profile,
+        now_ms: u64,
+    ) -> Vec<AppliedSession> {
+        // The saved profile a session runs: the last switch's target, or the
+        // one it was started from.
+        let matches: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|managed| {
+                managed.session.phase != Phase::Stopped
+                    && managed
+                        .session
+                        .profile_id
+                        .as_deref()
+                        .or(managed.request.profile_id.as_deref())
+                        == Some(profile_id)
+            })
+            .map(|managed| managed.session.session_id.clone())
+            .collect();
+        if matches.is_empty() {
+            return Vec::new();
+        }
+        self.deferred_stops = Some(Vec::new());
+        let results = matches
+            .into_iter()
+            .map(|session_id| {
+                match self.replace_profile(
+                    &session_id,
+                    profile_id.to_owned(),
+                    profile.clone(),
+                    Reason::ProfileSaved,
+                    now_ms,
+                ) {
+                    Ok((profile_generation, paused)) => AppliedSession {
+                        session_id,
+                        profile_generation,
+                        paused,
+                        error: None,
+                    },
+                    Err(error) => AppliedSession {
+                        session_id,
+                        profile_generation: 0,
+                        paused: false,
+                        error: Some(error),
+                    },
+                }
+            })
+            .collect();
+        let stops = self.deferred_stops.take().unwrap_or_default();
+        if !stops.is_empty() {
+            self.runner.stop_many(&stops);
+        }
+        self.prune();
+        results
+    }
+
+    /// The shared switch path of focused-app rules, profile keys and saves.
+    /// Returns the new generation and whether an executing session will wait
+    /// in `needs_confirmation` for the swapped-in profile.
     fn replace_profile(
         &mut self,
         session_id: &str,
@@ -1456,7 +1553,7 @@ impl<R: Runner> Driver<R> {
         profile: Profile,
         reason: Reason,
         now_ms: u64,
-    ) -> Result<u64, String> {
+    ) -> Result<(u64, bool), String> {
         let index = self
             .sessions
             .iter()
@@ -1483,6 +1580,18 @@ impl<R: Runner> Driver<R> {
         {
             return Err(reason);
         }
+        // A saved swap that adds nothing may restart executing without a new
+        // confirmation — unless the session is paused for a profile nobody
+        // confirmed, whose pause only a resume ends.
+        let covered = reason == Reason::ProfileSaved
+            && self.sessions[index].session.phase != Phase::NeedsConfirmation
+            && !adds_capabilities(&self.sessions[index].request.profile, &profile);
+        // A rule or key switch, or a saved swap with additions, replaces the
+        // profile a pending run-mode confirmation covered, so it must not
+        // carry the new profile past the user.
+        if !covered {
+            self.sessions[index].session.pending_confirm = false;
+        }
         let profile_name = profile.name.clone();
         self.sessions[index].request.profile = profile;
         self.sessions[index].request.profile_id = Some(profile_id.clone());
@@ -1497,9 +1606,14 @@ impl<R: Runner> Driver<R> {
             reason,
         };
         self.apply(index, event, now_ms);
-        let generation = self.sessions[index].session.profile_generation;
+        if covered {
+            self.sessions[index].session.confirmed = true;
+        }
+        let session = &self.sessions[index].session;
+        let paused = session.execute && !session.confirmed && session.auto_start.is_none();
+        let generation = session.profile_generation;
         self.prune();
-        Ok(generation)
+        Ok((generation, paused))
     }
 
     /// A `profile` key action of the process `service_id` asked for the next
@@ -1576,6 +1690,7 @@ impl<R: Runner> Driver<R> {
             Reason::ProfileAction,
             now_ms,
         )
+        .map(|(generation, _)| generation)
     }
 
     /// The profile `session_id` holds, exactly as `resume_session` would
@@ -2128,6 +2243,13 @@ pub enum Input {
     /// Session id, saved profile id and profile; answered with the new
     /// profile generation.
     SwitchProfile(String, String, Box<Profile>, Sender<Result<u64, String>>),
+    /// The user saved a profile: apply it to every session that runs it,
+    /// answered with one result per affected session.
+    ApplySaved(
+        String,
+        Box<Profile>,
+        Sender<Result<Vec<AppliedSession>, String>>,
+    ),
     /// Session id and the generation the Resume dialog is about to show.
     SessionProfile(String, u64, Sender<Result<HeldProfile, String>>),
     /// Every session's current state (`Driver::states`).
@@ -2176,6 +2298,9 @@ impl<R: Runner> Driver<R> {
             }
             Input::SwitchProfile(id, profile_id, profile, reply) => {
                 self.handle_switches(vec![(id, profile_id, profile, reply)], now_ms);
+            }
+            Input::ApplySaved(profile_id, profile, reply) => {
+                let _ = reply.send(Ok(self.apply_saved(&profile_id, *profile, now_ms)));
             }
             Input::SessionProfile(id, generation, reply) => {
                 let _ = reply.send(self.session_profile(&id, generation));
@@ -2423,6 +2548,18 @@ impl Manager {
         })
         .unwrap_or_else(|| Err(format!("unknown session {session_id}")))
         .and_then(|switched| switched)
+    }
+
+    /// Applies a saved profile to every session that runs it (`Driver::
+    /// apply_saved`). Without a driver nothing runs, so nothing is affected.
+    pub fn apply_saved(
+        &self,
+        profile_id: &str,
+        profile: Profile,
+    ) -> Result<Vec<AppliedSession>, String> {
+        self.request(|reply| Input::ApplySaved(profile_id.into(), Box::new(profile), reply))
+            .unwrap_or_else(|| Ok(Ok(Vec::new())))
+            .and_then(|applied| applied)
     }
 
     pub fn session_profile(
@@ -3433,6 +3570,188 @@ mod tests {
         assert_eq!(phase(&mut driver), Phase::Running);
     }
 
+    /// Saved profile ids: the backend accepts only opaque UUIDs.
+    const SAVED: &str = "00000000-0000-4000-8000-0000000000bb";
+    const SWITCHED: &str = "00000000-0000-4000-8000-0000000000bc";
+
+    /// A Start request that names the saved profile it runs.
+    fn saved_request(device: &LiveDevice, execute: bool, profile_id: &str) -> StartRequest {
+        StartRequest {
+            profile_id: Some(profile_id.into()),
+            source_profile_id: Some(profile_id.into()),
+            ..request(device, execute)
+        }
+    }
+
+    /// A saved edit without its flat bindings: a strict subset of the
+    /// profile, so a swap to it adds nothing.
+    fn subset() -> Profile {
+        let mut next = crate::test_profiles::folders();
+        next.bindings.clear();
+        next
+    }
+
+    /// A saved edit with a pasted-text binding added: an action the profile
+    /// never had.
+    fn with_paste() -> Profile {
+        use cooltek_sdk_service::{Action, Binding, Gesture};
+        let mut next = crate::test_profiles::folders();
+        next.bindings.push(Binding {
+            module: ServiceModule::M003K,
+            control: 5,
+            gesture: Gesture::Pressed,
+            serial_number: None,
+            action: Action::Text {
+                text: "typed".into(),
+                press_enter: false,
+            },
+        });
+        next
+    }
+
+    #[test]
+    fn a_saved_profile_switches_a_dry_run_in_place() {
+        let (mut driver, id) = running_saved(false, SAVED);
+        let applied = driver.apply_saved(SAVED, renamed("Saved"), 100);
+        assert_eq!(
+            applied,
+            vec![AppliedSession {
+                session_id: id.clone(),
+                profile_generation: 1,
+                paused: false,
+                error: None,
+            }]
+        );
+        assert_eq!(driver.runner().stops, std::slice::from_ref(&id));
+        exit(&mut driver, &id, "", 150);
+        assert_eq!(starts(&mut driver), 2);
+        let restarted = driver.runner().starts[1].clone();
+        assert!(!restarted.execute);
+        assert_eq!(restarted.profile.name, "Saved");
+        assert_eq!(restarted.profile_id.as_deref(), Some(SAVED));
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.profile_generation),
+            (Phase::Running, None, 1)
+        );
+        // A save of a profile nothing runs affects nothing.
+        assert!(
+            driver
+                .apply_saved("other", renamed("Other"), 200)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_saved_swap_restarts_an_executing_run_without_asking_when_nothing_is_new() {
+        let (mut driver, id) = running_saved(true, SAVED);
+        let applied = driver.apply_saved(SAVED, subset(), 100).remove(0);
+        assert_eq!(
+            (applied.profile_generation, applied.paused, applied.error),
+            (1, false, None)
+        );
+        exit(&mut driver, &id, "", 150);
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.runner().starts[1].execute);
+        assert!(driver.runner().starts[1].profile.bindings.is_empty());
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn a_saved_swap_with_new_actions_pauses_an_executing_run_for_one_confirmation() {
+        let (mut driver, id) = running_saved(true, SAVED);
+        let applied = driver.apply_saved(SAVED, with_paste(), 100).remove(0);
+        assert!(applied.paused && applied.error.is_none());
+        exit(&mut driver, &id, "", 150);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.profile_generation),
+            (Phase::NeedsConfirmation, Some(Reason::ProfileSaved), 1)
+        );
+        // Nothing restarts on its own, and a resume of the older generation
+        // is refused; the current one restarts executing with the additions.
+        driver.tick(1_000_000);
+        driver.inventory(vec![dial("/a")], 1_000_001);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(
+            driver.resume(&id, 0, 1_000_002).unwrap_err(),
+            PROFILE_CHANGED
+        );
+        driver.resume(&id, 1, 1_000_003).unwrap();
+        assert!(driver.runner().starts[1].execute);
+        // The saved edit's own binding, beside the one the profile had.
+        assert_eq!(driver.runner().starts[1].profile.bindings.len(), 2);
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
+    #[test]
+    fn a_saved_swap_never_ends_a_pause_nobody_confirmed() {
+        let (mut driver, id) = running_saved(true, SAVED);
+        // A rule switch pauses the executing session on the switched-to
+        // profile; saving that very profile must not resume it on its own.
+        driver
+            .switch_profile(&id, SWITCHED.into(), renamed("Browser"), 50)
+            .unwrap();
+        exit(&mut driver, &id, "", 60);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        // The session keeps waiting (the reply reports it), even though the
+        // saved edit adds nothing over the switched-to profile.
+        let applied = driver.apply_saved(SWITCHED, subset(), 70).remove(0);
+        assert!(applied.paused);
+        assert_eq!(applied.profile_generation, 2);
+        driver.tick(1_000_000);
+        assert_eq!(starts(&mut driver), 1);
+        assert_eq!(phase(&mut driver), Phase::NeedsConfirmation);
+        // The resume must name the new generation, and only it restarts.
+        assert_eq!(
+            driver.resume(&id, 1, 1_000_002).unwrap_err(),
+            PROFILE_CHANGED
+        );
+        driver.resume(&id, 2, 1_000_003).unwrap();
+        assert!(driver.runner().starts[1].execute);
+    }
+
+    #[test]
+    fn a_saved_swap_does_not_ride_on_a_pending_mode_confirmation() {
+        let (mut driver, id) = running_saved(false, SAVED);
+        // The stored mode turns Live: the dry run is to restart executing,
+        // carried by the switch's own pending confirmation. The save lands
+        // while the old process is still stopping and adds actions, so the
+        // restart must pause instead of executing the additions unasked.
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(8);
+        let applied = driver.apply_saved(SAVED, with_paste(), 9).remove(0);
+        assert!(applied.paused);
+        exit(&mut driver, &id, "", 10);
+        let state = last(&mut driver);
+        assert_eq!(state.phase, Phase::NeedsConfirmation);
+        driver.tick(1_000_000);
+        driver.inventory(vec![dial("/a")], 1_000_001);
+        assert_eq!(starts(&mut driver), 1);
+        driver.resume(&id, 1, 1_000_002).unwrap();
+        assert_eq!(starts(&mut driver), 2);
+        assert!(driver.runner().starts[1].execute);
+    }
+
+    #[test]
+    fn a_refused_saved_swap_keeps_the_running_profile() {
+        let (mut driver, id) = running_saved(true, SAVED);
+        // The saved edit is flagged dry-run-only: an executing session
+        // refuses the swap and keeps its confirmed profile.
+        driver.runner().dry_run_only.insert(SAVED.into());
+        let applied = driver.apply_saved(SAVED, renamed("Saved"), 100).remove(0);
+        assert_eq!(applied.session_id, id);
+        assert_eq!(applied.profile_generation, 0);
+        assert!(applied.error.is_some());
+        assert!(driver.runner().stops.is_empty());
+        assert_eq!(
+            driver.runner().starts[0].profile.name,
+            crate::test_profiles::folders().name
+        );
+        // Nothing was interrupted: the session keeps running as it was.
+        assert_eq!(phase(&mut driver), Phase::Running);
+    }
+
     #[test]
     fn switches_for_several_sessions_stop_in_one_parallel_batch() {
         let (mut driver, first) = running(false);
@@ -3457,6 +3776,27 @@ mod tests {
         assert!(results[2].is_err());
         assert_eq!(driver.runner().batches, [vec![first, second]]);
         assert_eq!(driver.runner().stops.len(), 2);
+    }
+
+    #[test]
+    fn a_save_stops_every_affected_session_in_one_parallel_batch() {
+        let (mut driver, first) = running_saved(false, SAVED);
+        let keys = device(ServiceModule::M003K, Some("K"), "/k");
+        driver.inventory(vec![dial("/a"), keys.clone()], 1);
+        let second = driver.start(saved_request(&keys, false, SAVED), 1).unwrap();
+        let applied = driver.apply_saved(SAVED, renamed("Saved"), 2);
+        assert_eq!(
+            applied
+                .iter()
+                .map(|item| item.session_id.as_str())
+                .collect::<Vec<_>>(),
+            [first.as_str(), second.as_str()]
+        );
+        assert!(applied.iter().all(|item| item.error.is_none()));
+        assert_eq!(
+            driver.runner().batches,
+            [vec![first.clone(), second.clone()]]
+        );
     }
 
     fn switch_input(id: &str) -> (Input, Receiver<Result<u64, String>>) {

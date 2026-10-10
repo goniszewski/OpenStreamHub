@@ -4,11 +4,10 @@ import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } 
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, unknownSnapshot } from './service-runner';
+import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, staleNote, unknownSnapshot } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
-import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
-import type { RiskLevel } from './profile-capabilities';
+import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';import type { RiskLevel } from './profile-capabilities';
 import type { RunMode } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
@@ -90,7 +89,7 @@ export const runStatePill = (run: ServiceRun | undefined) => {
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', profile_saved: 'the profile was saved', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' } as const;
 // The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
 const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
 // Who switched the run, as one phrase for the banner and the Resume dialog.
@@ -113,13 +112,16 @@ const unknownKeyContents = 'This app could not load the profile this run holds, 
 // frontend does not hold (a run it did not start, or one a backend switch moved to another profile): that is treated
 // as high risk. A run a focused-app rule or a profile key switched resumes with the saved profile it switched to, not the
 // original snapshot. A profile key switch carries no profile body, so its resume is treated as high risk too.
-export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false, profile: Profile | null = null, switchedBy?: ServiceRun['profileSwitchedBy'], profileId?: string | null): ConfirmCopy {
+export function confirmCopy(kind: 'start' | 'resume', profileName: string, deviceLabel: string, switched = false, profile: Profile | null = null, switchedBy?: ServiceRun['profileSwitchedBy'], profileId?: string | null, saved = false): ConfirmCopy {
   const key = kind === 'resume' && switched && switchedBy === 'key';
   // A key switch names the saved profile by id (two profiles can share a name) and says the run holds its own copy.
   const keyNote = key ? ` ${profileId ? `Saved profile "${profileName}", id ${shortId(profileId)}. ` : ''}This is the copy the run took when it switched; later edits to the saved profile do not apply until the next switch.` : '';
+  // A save applied the saved content to the run; the resume restarts that.
+  const version = switched ? `(the saved profile ${switchedTo(switchedBy)})`
+    : saved ? '(as you saved it)' : '(as it was when this run started)';
   const head = kind === 'start'
     ? { title: 'Run actions on this Mac?', confirm: 'Run actions', message: `Profile "${profileName}" will run on ${deviceLabel}. Everything listed here will really run on this Mac whenever you use the module, without asking again.` }
-    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" (${switched ? `the saved profile ${switchedTo(switchedBy)}` : 'as it was when this run started'}) will resume on ${deviceLabel}. Everything listed here will really run on this Mac again whenever you use the module, without asking again.${keyNote}` };
+    : { title: 'Resume actions on this Mac?', confirm: 'Resume actions', message: `Profile "${profileName}" ${version} will resume on ${deviceLabel}. Everything listed here will really run on this Mac again whenever you use the module, without asking again.${keyNote}` };
   const capabilities = profile ? profileCapabilities(profile) : null;
   const risk: RiskLevel = capabilities?.risk ?? 'high';
   const reasons = capabilities ? capabilities.riskReasons : ['The profile contents could not be checked.'];
@@ -137,8 +139,26 @@ export function confirmCopy(kind: 'start' | 'resume', profileName: string, devic
 // the selection can move while the dialog is open (a module plugged in or out). Null once that run is gone.
 export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string | null) {
   const run = sessionId === null ? undefined : runs[sessionId];
+  if (!run) return null;
   // The run's own snapshot, never the draft: resuming restarts the profile the run holds.
-  return run ? confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true, snapshotProfile(run.snapshot), run.profileSwitchedBy, run.profileId) : null;
+  const copy = confirmCopy('resume', run.profileName, run.session ? sessionDeviceName(run.session) : 'the module', run.profileSwitched === true, snapshotProfile(run.snapshot), run.profileSwitchedBy, run.profileId, run.session?.reason === 'profile_saved');
+  // A save-paused run whose previous body the frontend holds lists only what the save added over it; the dialog is
+  // never emptier than the full disclosure.
+  const prior = run.session?.reason === 'profile_saved' && run.savedSwap ? snapshotProfile(run.savedSwap) : null;
+  const body = snapshotProfile(run.snapshot);
+  if (!prior || !body) return copy;
+  const previous = profileCapabilities(prior);
+  const current = profileCapabilities(body);
+  const previousLines = new Set(capabilityLines(previous));
+  const lines = capabilityLines(current).filter(line => !previousLines.has(line));
+  const previousTexts = new Set(previous.texts.map(snippet => JSON.stringify([snippet.text, snippet.pressEnter])));
+  const previousSequences = new Set(previous.sequences.map(steps => JSON.stringify(steps)));
+  return {
+    ...copy,
+    lines: lines.length ? lines : copy.lines,
+    snippets: current.texts.filter(snippet => !previousTexts.has(JSON.stringify([snippet.text, snippet.pressEnter]))).map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter })),
+    sequences: current.sequences.filter(steps => !previousSequences.has(JSON.stringify(steps))).map(steps => steps.map(stepLabel)),
+  };
 }
 
 // The copy of the open confirmation. Null for a resume whose run disappeared while its dialog was open: the panel then
@@ -409,6 +429,8 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     service, devices, display, mac, enabled, dryRunOnly, dryRunNote, chosen, selection, runMode, setRunMode: switchMode, setSoftwareMode, softwareMode,
     chooseDevice: (next: LiveDevice) => setChosen({ device: next }),
     device, run, session, phase, active, blocker, box, stale, now, executeSelected,
+    // The open draft, for the panel's stale note (what the run holds against it).
+    draftProfile: profile,
     begin, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
     confirm, confirmKind, resumeGone, acknowledged, setAcknowledged, answer,
     copy: modeCopy ?? dialog ?? startCopy, dialogOpen: modeCopy !== null || (confirm !== null && !resumeGone),
@@ -428,6 +450,7 @@ export const idleRunSession: RunSession = {
   blocker: runBlocker({ desktop: false, device: undefined, profile: { schema_version: 1, name: '', bindings: [] } }),
   box: softwareModeBox({ module: undefined, loaded: false, moduleControl: 'app', ticked: false }),
   stale: false, now: 0, executeSelected: false,
+  draftProfile: { schema_version: 1, name: '', bindings: [] },
   begin: async () => {}, resume: noop, stop: noop,
   confirm: null, confirmKind: 'start', resumeGone: false, acknowledged: false, setAcknowledged: noop, answer: noop,
   copy: confirmCopy('start', '', 'the selected module'), dialogOpen: false,
@@ -518,7 +541,7 @@ export function ExecuteDialog({ run }: { run: RunSession }) {
 // The Devices-page run section: which device and mode the header Run control uses, plus the live
 // banners, counters and activity of the selected run. Run and Stop live in the header.
 export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
-  const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume } = run;
+  const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume, draftProfile } = run;
   const log = useRef<HTMLOListElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [activeRun?.entries.length]);
   const pill = runStatePill(activeRun);
@@ -530,7 +553,7 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
     {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{activeRun.execute ? session.autoStart ? 'Actions resume automatically after wake.' : 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
     {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{activeRun.execute ? session.autoStart ? 'Actions stay paused until the module reconnects, then resume automatically.' : 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
     {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{activeRun.execute ? session.autoStart ? ' Actions are paused until the session restarts; they resume automatically.' : ' Actions are paused until you confirm.' : ''}</span></div></div>}
-    {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? `Resuming starts the saved profile "${activeRun.profileName}" ${switchedTo(activeRun.profileSwitchedBy)}.` : `Resuming restarts "${activeRun.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
+    {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? `Resuming starts the saved profile "${activeRun.profileName}" ${switchedTo(activeRun.profileSwitchedBy)}.` : session.reason === 'profile_saved' ? `Resuming starts "${activeRun.profileName}" as you saved it.` : `Resuming restarts "${activeRun.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
     {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
     {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
     {active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
@@ -550,7 +573,7 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
     {!mac && enabled && <p className="fine-print">Running actions is only available on macOS. Test mode logs what would happen.</p>}
     {activeRun && <p className="fine-print">Profile "{activeRun.profileName}" ({activeRun.draftUnsaved ? 'unsaved changes' : 'the saved version'}) was used when this run started.</p>}
-    {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}
+    {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />{staleNote(activeRun, draftProfile)}</p>}
     {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? 'The run failed.'}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
     {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">The background helper exited with code {activeRun.exitCode}.</p>}
     {service.error && <p className="service-failure" role="alert">{service.error}</p>}

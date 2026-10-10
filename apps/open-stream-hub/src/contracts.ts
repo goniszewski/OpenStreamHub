@@ -153,11 +153,12 @@ export interface ServiceRecordPayload { service_id: string; record: unknown }
 // Session manager (sleep/wake and reconnect for service runs). session_id is the first service_id and stays stable.
 export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'reconnecting' | 'needs_confirmation' | 'stopped';
 // profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
+// profile_saved: the user saved the profile the session runs and it swapped to the saved content in place.
 // start_refused: the service exited with an error before it reported service_start; the session stops without retrying.
 // module_control: an automatic session ended because Module control is no longer App (or its file cannot be read).
 // run_mode: the Live/Test mode was switched (or the execution guard's answer for a profile changed), so the session
 // restarts with or without actions.
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control' | 'run_mode';
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'profile_saved' | 'module_control' | 'run_mode';
 // Set for the whole life of a session the session manager started on its own (Module control App): a dry run on the
 // 15-key module or the dial when the app opened, when the module was connected, or when Module control was switched to
 // App with the module connected. Absent for a user's Start.
@@ -186,6 +187,11 @@ export interface FocusChangedPayload { bundle_id: string | null; rule_id: string
 export interface SwitchedProfile extends StoredProfile { profile_generation: number }
 // session_profile: the profile a paused session holds for profile_generation, exactly as resume_session restarts it.
 export interface HeldProfile { profile_id: string | null; profile_generation: number; profile: Profile }
+// apply_saved_profile: one session the save applied to. A session with an error keeps running its previous profile;
+// paused marks an executing session that will wait in needs_confirmation for the saved content.
+export interface AppliedSession { session_id: string; profile_generation: number; paused: boolean; error?: string }
+// apply_saved_profile result: the saved profile and every session it applies to.
+export interface AppliedSavedProfile extends StoredProfile { sessions: AppliedSession[] }
 // The last app other than OpenStreamHub that was frontmost. supported is false off macOS.
 export interface FocusCurrentApp { supported: boolean; bundle_id: string | null }
 

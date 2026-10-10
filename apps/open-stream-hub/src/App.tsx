@@ -91,6 +91,12 @@ export default function App() {
   const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
+  // A save applies the saved profile to the running sessions that hold it,
+  // through the run store that knows them.
+  useEffect(() => {
+    session.setApplySaved(id => runner.applySavedProfile(id));
+    return () => session.setApplySaved(null);
+  }, [session, runner]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
   // The getting-started guide opens only on request: from Help in the sidebar,
   // from Settings, or from the starter chooser. The starter chooser is the

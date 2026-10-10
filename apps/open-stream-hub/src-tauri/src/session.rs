@@ -4228,12 +4228,10 @@ mod tests {
 
     const APP_CONTROL: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
-        dial_content: crate::display::DialContent::Clock,
         auto_execute: false,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        dial_content: crate::display::DialContent::Clock,
         auto_execute: false,
     };
 
@@ -5018,9 +5016,10 @@ mod tests {
             assert_eq!(started.display.unwrap().settings, APP_CONTROL);
             assert!(display::app_controls(started.display.unwrap().module));
         }
+        // The blank profile has nothing on the dial: the idle analog clock.
         assert_eq!(
             spawned_args(&mut driver, 0),
-            ["--display-sync", "--dial-content", "clock"]
+            ["--display-sync", "--dial-content", "analog-clock"]
         );
         // The blank (flat) profile is drawn as one empty page on the keys.
         assert_eq!(spawned_args(&mut driver, 1), ["--display-sync"]);

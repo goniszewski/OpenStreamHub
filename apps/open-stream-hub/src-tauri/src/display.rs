@@ -4,20 +4,25 @@
 //! dial while a profile runs: `App` (the default) puts them in software mode
 //! and keeps their displays in sync (`--software-mode --display-sync`, plus
 //! `--dial-content` for the dial); `BuiltInAnimation` leaves them in the
-//! module's own mode, exactly as before this setting existed. The M131E dial
-//! content is kept beside it. Other modules never get software mode or display
-//! flags. The settings live in `<app data>/display-settings.json`, beside the
+//! module's own mode, exactly as before this setting existed. What the dial
+//! screen shows is each profile's own `dial_display` setting, not a global
+//! one; `display_args` derives the `--dial-content` value from the running
+//! profile. Other modules never get software mode or display flags. The
+//! settings live in `<app data>/display-settings.json`, beside the
 //! profiles and never inside one, with the same bounded, symlink-safe read and
 //! atomic 0600 write as the profile store and `focus-rules.json`. A missing
 //! file means `App`.
 //!
-//! The file of the earlier experimental toggle (`{"enabled":…,
-//! "dial_content":…}`) is still read: `enabled: true` is `App`, an explicit
-//! `enabled: false` is `BuiltInAnimation`. The next save writes the current
-//! shape. A damaged or unreadable file is never overwritten, and a session
-//! started meanwhile uses `ModuleControl::Unreadable`: no software mode for
-//! any module, nothing drawn on a display, and a schema-2 keypad profile is
-//! refused with a message that names the damaged file.
+//! The two earlier file shapes are still read: the experimental toggle's
+//! `{"enabled":…,"dial_content":…}` (`enabled: true` is `App`, an explicit
+//! `enabled: false` is `BuiltInAnimation`) and the shape that kept a global
+//! dial content choice beside module control (`dial_content` is ignored;
+//! profiles carry their own since the choice moved into them). The next save
+//! writes the current shape. A damaged or unreadable file is never
+//! overwritten, and a session started meanwhile uses
+//! `ModuleControl::Unreadable`: no software mode for any module, nothing
+//! drawn on a display, and a schema-2 keypad profile is refused with a
+//! message that names the damaged file.
 //!
 //! The settings are read once when a managed session starts (a user's Start,
 //! or an automatic start, which happens only under `App`; see `startup.rs`)
@@ -32,7 +37,8 @@
 //! `docs/masterhub-display-sync.md` and `docs/masterhub-session-manager.md`.
 
 use crate::{service::StartRequest, store};
-use cooltek_sdk_service::{Profile, ServiceModule};
+use cooltek_sdk_service::{DialDisplayContent, Profile, ServiceModule};
+use serde::de::IgnoredAny;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -43,43 +49,17 @@ use std::{
 const MAX_FILE_BYTES: usize = 4 * 1024;
 const FILE_NAME: &str = "display-settings.json";
 
-/// What the M131E dial screen shows while display images are on.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DialContent {
-    /// Nothing is drawn on the dial.
-    Off,
-    /// The active dial function's name (the profile name without functions).
-    #[default]
-    Function,
-    /// A digital clock.
-    Clock,
-    /// An analog clock.
-    AnalogClock,
-    /// The machine's CPU usage in percent (macOS only; `--` elsewhere).
-    Cpu,
-}
-
-impl DialContent {
-    /// Every value, in the service's `--dial-content` order.
-    #[cfg(test)]
-    pub const ALL: [Self; 5] = [
-        Self::Off,
-        Self::Function,
-        Self::Clock,
-        Self::AnalogClock,
-        Self::Cpu,
-    ];
-
-    /// The `masterhub-service --dial-content` value.
-    pub fn arg(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Function => "function",
-            Self::Clock => "clock",
-            Self::AnalogClock => "analog-clock",
-            Self::Cpu => "cpu",
-        }
+/// The `masterhub-service --dial-content` spelling of a profile's dial
+/// display content; a parity test keeps this in step with the service's own
+/// values.
+fn dial_arg(content: DialDisplayContent) -> &'static str {
+    match content {
+        DialDisplayContent::Off => "off",
+        DialDisplayContent::Function => "function",
+        DialDisplayContent::Clock => "clock",
+        DialDisplayContent::AnalogClock => "analog-clock",
+        DialDisplayContent::Cpu => "cpu",
+        DialDisplayContent::Image => "image",
     }
 }
 
@@ -100,13 +80,13 @@ pub enum ModuleControl {
     Unreadable,
 }
 
-/// The stored settings. `App`, the dial function name and dry-run automatic
-/// sessions by default.
+/// The stored settings. `App` control and dry-run automatic sessions by
+/// default. The dial screen content is a profile setting (`Profile`'s
+/// `dial_display`) and is no longer stored here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredSettings")]
 pub struct DisplaySettings {
     pub module_control: ModuleControl,
-    pub dial_content: DialContent,
     /// "Run actions automatically": sessions the session manager starts on
     /// its own execute actions instead of a dry run. Off unless the user
     /// turns it on; a file written before it existed reads as off.
@@ -119,16 +99,17 @@ impl DisplaySettings {
     /// either.
     pub const UNREADABLE: Self = Self {
         module_control: ModuleControl::Unreadable,
-        dial_content: DialContent::Function,
         auto_execute: false,
     };
 }
 
-/// The current file shape, or the earlier experimental toggle's.
+/// The current file shape, or one of the two earlier shapes: the setting
+/// beside the removed dial content choice, and the experimental toggle's.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum StoredSettings {
     Current(CurrentSettings),
+    WithDialContent(WithDialContentSettings),
     Legacy(LegacySettings),
 }
 
@@ -136,10 +117,22 @@ enum StoredSettings {
 #[serde(deny_unknown_fields)]
 struct CurrentSettings {
     module_control: ModuleControl,
-    dial_content: DialContent,
     /// Missing in files written before the setting existed: off.
     #[serde(default)]
     auto_execute: bool,
+}
+
+/// `{"module_control":…,"dial_content":…,"auto_execute":…}`, written while
+/// the dial screen content was a global setting. The choice is ignored: every
+/// profile now carries its own (`Profile`'s `dial_display`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithDialContentSettings {
+    module_control: ModuleControl,
+    /// Missing in files written before the setting existed: off.
+    #[serde(default)]
+    auto_execute: bool,
+    dial_content: IgnoredAny,
 }
 
 /// `{"enabled":…,"dial_content":…}`, written by the experimental toggle.
@@ -147,7 +140,7 @@ struct CurrentSettings {
 #[serde(deny_unknown_fields)]
 struct LegacySettings {
     enabled: bool,
-    dial_content: DialContent,
+    dial_content: IgnoredAny,
 }
 
 impl From<StoredSettings> for DisplaySettings {
@@ -155,23 +148,22 @@ impl From<StoredSettings> for DisplaySettings {
         match stored {
             StoredSettings::Current(CurrentSettings {
                 module_control,
-                dial_content,
                 auto_execute,
+            })
+            | StoredSettings::WithDialContent(WithDialContentSettings {
+                module_control,
+                auto_execute,
+                ..
             }) => Self {
                 module_control,
-                dial_content,
                 auto_execute,
             },
-            StoredSettings::Legacy(LegacySettings {
-                enabled,
-                dial_content,
-            }) => Self {
+            StoredSettings::Legacy(LegacySettings { enabled, .. }) => Self {
                 module_control: if enabled {
                     ModuleControl::App
                 } else {
                     ModuleControl::BuiltInAnimation
                 },
-                dial_content,
                 auto_execute: false,
             },
         }
@@ -249,15 +241,20 @@ fn binds_dial(profile: &Profile) -> bool {
             .any(|binding| binding.module == ServiceModule::M131E)
 }
 
-/// What the dial shows for `profile`. With the default "function" content a
+/// What the dial shows for `profile`: the profile's own `dial_display`
+/// choice, defaulting to the active function's name. With that default, a
 /// profile that binds nothing on the dial (such as the blank startup profile)
 /// has no function to name, so the dial shows the calm analog clock face
 /// instead of a profile name; every other choice is kept as set.
-fn dial_content(settings: DisplaySettings, profile: &Profile) -> DialContent {
-    if settings.dial_content == DialContent::Function && !binds_dial(profile) {
-        DialContent::AnalogClock
+fn dial_content(profile: &Profile) -> DialDisplayContent {
+    let content = profile
+        .dial_display
+        .as_ref()
+        .map_or(DialDisplayContent::Function, |display| display.content);
+    if content == DialDisplayContent::Function && !binds_dial(profile) {
+        DialDisplayContent::AnalogClock
     } else {
-        settings.dial_content
+        content
     }
 }
 
@@ -269,9 +266,9 @@ fn dial_content(settings: DisplaySettings, profile: &Profile) -> DialContent {
 /// only for a schema-2 keypad profile (`spawn_display` first turns a flat
 /// profile into one page), so a profile switch between flat and keypad
 /// profiles follows the profile of each spawn; an M131E gets
-/// `--display-sync --dial-content` unless the dial content is off (see
-/// `dial_content` for a profile with nothing on the dial). Every other module
-/// runs with exactly the arguments it had without the setting.
+/// `--display-sync --dial-content` for the profile's dial display choice,
+/// unless that choice is off (see `dial_content` for the default). Every
+/// other module runs with exactly the arguments it had without the setting.
 pub fn display_args(
     launch: Option<&DisplayLaunch>,
     software_mode: bool,
@@ -287,10 +284,10 @@ pub fn display_args(
         ServiceModule::M4315 if profile.schema_version == 2 && profile.keypad.is_some() => {
             vec!["--display-sync".into()]
         }
-        ServiceModule::M131E if launch.settings.dial_content != DialContent::Off => vec![
+        ServiceModule::M131E if dial_content(profile) != DialDisplayContent::Off => vec![
             "--display-sync".into(),
             "--dial-content".into(),
-            dial_content(launch.settings, profile).arg().into(),
+            dial_arg(dial_content(profile)).into(),
         ],
         _ => Vec::new(),
     }
@@ -383,7 +380,7 @@ impl SettingsFile {
             if error.is_data() {
                 // The untagged reader's own message names no field.
                 format!(
-                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"dial_content\": \"function\", \"clock\", \"analog_clock\", \"cpu\" or \"off\"}}); fix the file or delete it to go back to the defaults",
+                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"auto_execute\": true or false}}); fix the file or delete it to go back to the defaults",
                     self.path().display()
                 )
             } else {
@@ -472,12 +469,10 @@ mod tests {
 
     const APP: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
-        dial_content: DialContent::Clock,
         auto_execute: false,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        dial_content: DialContent::Clock,
         auto_execute: false,
     };
 
@@ -502,58 +497,65 @@ mod tests {
             DisplaySettings::default(),
             DisplaySettings {
                 module_control: ModuleControl::App,
-                dial_content: DialContent::Function,
                 auto_execute: false,
             }
         );
-        let parsed = parse(r#"{"module_control":"app","dial_content":"analog_clock"}"#).unwrap();
-        assert_eq!(parsed.dial_content, DialContent::AnalogClock);
+        let parsed = parse(r#"{"module_control":"app"}"#).unwrap();
+        assert_eq!(parsed, DisplaySettings::default());
         let parsed =
-            parse(r#"{"module_control":"built_in_animation","dial_content":"cpu"}"#).unwrap();
+            parse(r#"{"module_control":"built_in_animation","auto_execute":true}"#).unwrap();
         assert_eq!(
             parsed,
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
-                dial_content: DialContent::Cpu,
-                auto_execute: false,
+                auto_execute: true,
             }
         );
         // Always written in the current shape.
         assert_eq!(
             serde_json::to_value(BUILT_IN).unwrap(),
-            serde_json::json!({"module_control":"built_in_animation","dial_content":"clock","auto_execute":false})
+            serde_json::json!({"module_control":"built_in_animation","auto_execute":false})
         );
         for bad in [
-            r#"{"module_control":"app"}"#,
-            r#"{"module_control":"App","dial_content":"clock"}"#,
-            r#"{"module_control":"builtin","dial_content":"clock"}"#,
-            r#"{"module_control":"app","dial_content":"Clock"}"#,
-            r#"{"module_control":"app","dial_content":"analog-clock"}"#,
-            r#"{"module_control":"app","dial_content":"clock","extra":1}"#,
-            r#"{"module_control":"app","enabled":true,"dial_content":"clock"}"#,
+            r#"{"module_control":"app","extra":1}"#,
+            r#"{"module_control":"App","auto_execute":false}"#,
+            r#"{"module_control":"builtin"}"#,
+            r#"{"module_control":"app","auto_execute":"yes"}"#,
+            r#"{"module_control":"app","enabled":true}"#,
             r#"{"enabled":true}"#,
-            r#"{"enabled":"yes","dial_content":"clock"}"#,
-            r#"{"enabled":true,"dial_content":"gpu"}"#,
-            r#"{"enabled":true,"dial_content":"clock","extra":1}"#,
+            r#"{"enabled":"yes"}"#,
+            r#"{"enabled":true,"extra":1}"#,
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
     }
 
     #[test]
-    fn the_experimental_toggle_file_migrates_on_read() {
-        // An explicit "off" keeps the module's own mode; "on" is App control.
+    fn the_earlier_file_shapes_migrate_on_read() {
+        // The experimental toggle: an explicit "off" keeps the module's own
+        // mode; "on" is App control. Its dial content choice is dropped.
         assert_eq!(
             parse(r#"{"enabled":false,"dial_content":"function"}"#).unwrap(),
-            DisplaySettings {
-                module_control: ModuleControl::BuiltInAnimation,
-                dial_content: DialContent::Function,
-                auto_execute: false,
-            }
+            BUILT_IN
         );
         assert_eq!(
             parse(r#"{"enabled":true,"dial_content":"clock"}"#).unwrap(),
             APP
+        );
+        // The three-field shape that stored a global dial content choice
+        // beside module control: the choice is ignored, module control and
+        // "Run actions automatically" are kept.
+        assert_eq!(
+            parse(r#"{"module_control":"app","dial_content":"analog_clock"}"#).unwrap(),
+            APP
+        );
+        assert_eq!(
+            parse(r#"{"module_control":"built_in_animation","dial_content":"cpu","auto_execute":true}"#)
+                .unwrap(),
+            DisplaySettings {
+                module_control: ModuleControl::BuiltInAnimation,
+                auto_execute: true,
+            }
         );
         // The file is rewritten in the current shape at the next save only.
         let directory = tempfile::tempdir().unwrap();
@@ -573,13 +575,13 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"module_control":"app","dial_content":"clock","auto_execute":false})
+            serde_json::json!({"module_control":"app","auto_execute":false})
         );
     }
 
     #[test]
     fn the_unreadable_value_is_never_stored_or_parsed() {
-        assert!(parse(r#"{"module_control":"unreadable","dial_content":"clock"}"#).is_err());
+        assert!(parse(r#"{"module_control":"unreadable"}"#).is_err());
         assert!(serde_json::to_vec(&DisplaySettings::UNREADABLE).is_err());
         let directory = tempfile::tempdir().unwrap();
         let state = DisplayState::open(Ok(directory.path()));
@@ -636,12 +638,18 @@ mod tests {
 
     #[test]
     fn dial_content_arguments_match_the_service() {
-        let ours: Vec<&str> = DialContent::ALL.into_iter().map(DialContent::arg).collect();
-        let service: Vec<&str> = cooltek_sdk_cli::dial_artwork::DialContent::ALL
-            .into_iter()
-            .map(|content| content.as_str())
-            .collect();
-        assert_eq!(ours, service);
+        use cooltek_sdk_cli::dial_artwork::DialContent as ServiceArg;
+        for content in cooltek_sdk_service::DialDisplayContent::ALL {
+            let service = match content {
+                DialDisplayContent::Off => ServiceArg::Off,
+                DialDisplayContent::Function => ServiceArg::Function,
+                DialDisplayContent::Clock => ServiceArg::Clock,
+                DialDisplayContent::AnalogClock => ServiceArg::AnalogClock,
+                DialDisplayContent::Cpu => ServiceArg::Cpu,
+                DialDisplayContent::Image => ServiceArg::Image,
+            };
+            assert_eq!(dial_arg(content), service.as_str(), "{content:?}");
+        }
     }
 
     #[test]
@@ -671,25 +679,36 @@ mod tests {
             display_args(Some(&launch(ServiceModule::M4315, APP)), true, &flat()),
             none
         );
+        // A profile with nothing on the dial falls back to the analog clock;
+        // a dial binding keeps the default function name, and an explicit
+        // clock choice is kept either way.
         assert_eq!(
             display_args(Some(&launch(ServiceModule::M131E, APP)), true, &flat()),
-            ["--display-sync", "--dial-content", "clock"]
+            ["--display-sync", "--dial-content", "analog-clock"]
         );
-        // The default dial content is the active function's name.
         assert_eq!(
             display_args(
-                Some(&launch(ServiceModule::M131E, DisplaySettings::default())),
+                Some(&launch(ServiceModule::M131E, APP)),
                 true,
                 &with_dial_binding(flat())
             ),
             ["--display-sync", "--dial-content", "function"]
         );
-        let dial_off = DisplaySettings {
-            dial_content: DialContent::Off,
-            ..APP
-        };
         assert_eq!(
-            display_args(Some(&launch(ServiceModule::M131E, dial_off)), true, &flat()),
+            display_args(
+                Some(&launch(ServiceModule::M131E, APP)),
+                true,
+                &with_dial_display(flat(), DialDisplayContent::Clock)
+            ),
+            ["--display-sync", "--dial-content", "clock"]
+        );
+        // A profile whose dial display is off: no display flags at all.
+        assert_eq!(
+            display_args(
+                Some(&launch(ServiceModule::M131E, APP)),
+                true,
+                &with_dial_display(flat(), DialDisplayContent::Off)
+            ),
             none
         );
         // Knobs, faders and rollers never get display flags, whatever the
@@ -887,41 +906,68 @@ mod tests {
 
     #[test]
     fn the_dial_shows_an_idle_face_for_a_profile_with_nothing_on_it() {
-        let dial = |settings| launch(ServiceModule::M131E, settings);
-        let function = DisplaySettings::default();
+        let dial = launch(ServiceModule::M131E, APP);
         let blank = crate::startup::blank_profile();
-        // Nothing bound on the dial: the analog clock instead of a name.
+        // Without the profile setting and nothing bound on the dial: the
+        // analog clock instead of a name.
         for profile in [&blank, &flat(), &test_profiles::folders()] {
             assert_eq!(
-                display_args(Some(&dial(function)), true, profile),
+                display_args(Some(&dial), true, profile),
                 ["--display-sync", "--dial-content", "analog-clock"]
             );
         }
-        // A dial binding or dial functions keep the function name.
+        // A dial binding or dial functions keep the default function name.
         assert_eq!(
-            display_args(Some(&dial(function)), true, &with_dial_binding(flat()))[2],
+            display_args(Some(&dial), true, &with_dial_binding(flat()))[2],
+            "function"
+        );
+        // Dial functions count as binding the dial, so an explicit default
+        // keeps the function name there too.
+        let with_functions = {
+            let mut json = serde_json::json!({
+                "schema_version": 1, "name": "Fn", "bindings": [],
+                "dial_functions": [{"name": "Volume", "bindings": []}]
+            });
+            json["dial_display"] = serde_json::json!({"content": "function"});
+            Profile::from_json(serde_json::to_vec(&json).unwrap().as_slice()).unwrap()
+        };
+        assert_eq!(
+            display_args(Some(&dial), true, &with_functions)[2],
             "function"
         );
         // Every explicit choice is kept, and off stays off.
         for content in [
-            DialContent::Clock,
-            DialContent::Cpu,
-            DialContent::AnalogClock,
+            DialDisplayContent::Clock,
+            DialDisplayContent::Cpu,
+            DialDisplayContent::AnalogClock,
+            DialDisplayContent::Image,
         ] {
-            let settings = DisplaySettings {
-                dial_content: content,
-                ..APP
-            };
             assert_eq!(
-                display_args(Some(&dial(settings)), true, &blank)[2],
-                content.arg()
+                display_args(
+                    Some(&dial),
+                    true,
+                    &with_dial_display(blank.clone(), content)
+                )[2],
+                dial_arg(content)
             );
         }
-        let off = DisplaySettings {
-            dial_content: DialContent::Off,
-            ..APP
-        };
-        assert!(display_args(Some(&dial(off)), true, &blank).is_empty());
+        assert!(
+            display_args(
+                Some(&dial),
+                true,
+                &with_dial_display(blank, DialDisplayContent::Off)
+            )
+            .is_empty()
+        );
+    }
+
+    /// `profile` with its dial display content set (no image).
+    fn with_dial_display(mut profile: Profile, content: DialDisplayContent) -> Profile {
+        profile.dial_display = Some(cooltek_sdk_service::DialDisplay {
+            content,
+            image: None,
+        });
+        profile
     }
 
     #[test]

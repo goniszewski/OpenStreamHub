@@ -45,6 +45,100 @@ pub struct DialFunctionNavigation {
     pub count: usize,
 }
 
+/// What the M131E dial screen shows while a profile runs, when the app drives
+/// the display. Absent means the default: the active dial function's name, or
+/// the calm analog clock for a profile with nothing on the dial.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialDisplay {
+    /// The face the dial screen shows.
+    pub content: DialDisplayContent,
+    /// The custom face for [`DialDisplayContent::Image`]: a 240×240 baseline
+    /// JPEG, base64-encoded, at most [`Self::MAX_IMAGE_BYTES`] decoded.
+    /// Refused with any other content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+impl DialDisplay {
+    /// Maximum decoded size of a custom dial image (2× a key artwork frame).
+    pub const MAX_IMAGE_BYTES: usize = 64 * 1024;
+}
+
+/// The face the M131E dial screen shows. The values match the
+/// `masterhub-service --dial-content` spellings, with `-` for `_`
+/// (`analog_clock` is `analog-clock`); a parity test in the app keeps the two
+/// lists in step.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DialDisplayContent {
+    /// Nothing is drawn on the dial.
+    Off,
+    /// The active dial function's name, or the profile name without functions.
+    #[default]
+    Function,
+    /// A digital `HH:MM` clock in local time.
+    Clock,
+    /// An analog clock in local time.
+    AnalogClock,
+    /// Whole-machine CPU usage in percent (macOS only; `--` elsewhere).
+    Cpu,
+    /// The picture stored in [`DialDisplay::image`].
+    Image,
+}
+
+impl DialDisplayContent {
+    /// Every value, in the `--dial-content` command-line order.
+    pub const ALL: [Self; 6] = [
+        Self::Off,
+        Self::Function,
+        Self::Clock,
+        Self::AnalogClock,
+        Self::Cpu,
+        Self::Image,
+    ];
+}
+
+/// Checks the profile's optional dial display setting.
+pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
+    match (display.content, display.image.as_deref()) {
+        (DialDisplayContent::Image, Some(image)) => validate_display_image(image),
+        (DialDisplayContent::Image, None) => {
+            Err("dial_display: image content requires the image field".into())
+        }
+        (_, Some(_)) => Err("dial_display: only image content carries an image".into()),
+        (_, None) => Ok(()),
+    }
+}
+
+/// Longest base64 text that can decode to [`DialDisplay::MAX_IMAGE_BYTES`]
+/// bytes, checked before any decoding.
+const MAX_IMAGE_BASE64_LEN: usize = DialDisplay::MAX_IMAGE_BYTES.div_ceil(3) * 4;
+
+fn validate_display_image(image: &str) -> Result<(), String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    if image.is_empty() {
+        return Err("dial_display: the image must not be empty".into());
+    }
+    if image.len() > MAX_IMAGE_BASE64_LEN {
+        return Err(format!(
+            "dial_display: the image exceeds {} KiB",
+            DialDisplay::MAX_IMAGE_BYTES / 1024
+        ));
+    }
+    let jpeg = STANDARD
+        .decode(image)
+        .map_err(|_| "dial_display: the image is not valid base64".to_string())?;
+    if jpeg.len() > DialDisplay::MAX_IMAGE_BYTES {
+        return Err(format!(
+            "dial_display: the image exceeds {} KiB",
+            DialDisplay::MAX_IMAGE_BYTES / 1024
+        ));
+    }
+    cooltek_sdk_masterhub::dial::validate_jpeg(&jpeg)
+        .map_err(|error| format!("dial_display: {error}"))
+}
+
 /// Checks the bounded, unambiguous dial function list of a profile.
 pub(crate) fn validate(functions: &[DialFunction]) -> Result<(), String> {
     if functions.is_empty() || functions.len() > DialFunction::MAX_FUNCTIONS {

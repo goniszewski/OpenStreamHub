@@ -46,6 +46,7 @@ pub fn blank_profile() -> Profile {
         bindings: Vec::new(),
         keypad: None,
         dial_functions: None,
+        dial_display: None,
     }
 }
 

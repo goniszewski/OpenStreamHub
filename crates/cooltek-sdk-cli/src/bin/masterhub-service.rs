@@ -96,10 +96,11 @@ enum Command {
         display_sync: bool,
         /// Experimental, hardware-unverified: what the M131E dial screen shows
         /// with --display-sync: the active dial function's name (`function`), a
-        /// digital clock (`clock`), an analog clock (`analog-clock`), or the
-        /// machine's CPU usage (`cpu`; macOS only, `--` elsewhere). Redrawn only
-        /// when it changes, at most once a second. `off` (the default) draws
-        /// nothing; any other value requires --display-sync and an M131E.
+        /// digital clock (`clock`), an analog clock (`analog-clock`), the
+        /// machine's CPU usage (`cpu`; macOS only, `--` elsewhere), or the
+        /// picture in the profile's `dial_display` setting (`image`). Redrawn
+        /// only when it changes, at most once a second. `off` (the default)
+        /// draws nothing; any other value requires --display-sync and an M131E.
         #[arg(long, value_enum, default_value_t = DialContent::Off)]
         dial_content: DialContent,
         /// Report `profile` (next/previous) actions as `profile_switch_requested`
@@ -745,6 +746,7 @@ mod tests {
             ("clock", DialContent::Clock),
             ("analog-clock", DialContent::AnalogClock),
             ("cpu", DialContent::Cpu),
+            ("image", DialContent::Image),
         ] {
             assert_eq!(parse(&["--dial-content", value]).unwrap(), content);
         }

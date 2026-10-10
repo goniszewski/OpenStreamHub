@@ -19,7 +19,9 @@ pub mod macos;
 pub mod obs;
 
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
-pub use dial::{DialBinding, DialFunction, DialFunctionNavigation};
+pub use dial::{
+    DialBinding, DialDisplay, DialDisplayContent, DialFunction, DialFunctionNavigation,
+};
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use key_artwork::{KeyArtwork, KeyArtworkDesign, KeyArtworkFrame, KeyArtworkTextAlign};
 pub use keypad::{

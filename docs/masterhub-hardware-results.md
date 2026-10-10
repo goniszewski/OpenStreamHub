@@ -148,6 +148,7 @@ The scene/source/filter/collection/profile listings behind the editor pickers (s
 
 ## Not tested
 
+- The dial's `image` face and the per-profile `dial_display` setting (10 October 2026): a run with `--dial-content image` serving the picture stored in a profile, and the app's dial inspector Display tab driving a live dial. The four generated faces and the function cycling behind the app were verified on 8 October 2026 (above); the image face and the app-side edit-and-run flow of the new setting were not, and stay pending for the next hardware session.
 - The M005S faders (not connected).
 - Lighting writes of any kind.
 - Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session exercised an app crash (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A later [app dial dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026) verified the App-controlled display path, live dial preview and normal Stop. The later [app keypad dry-run](#desktop-app-keypad-dry-run-m4315-8-october-2026) verified two-level folder redraws, L1/L2 badges, live keypad preview and normal Stop. App-driven dial function cycling, other modules' live previews and switching the Module control setting remain untested.

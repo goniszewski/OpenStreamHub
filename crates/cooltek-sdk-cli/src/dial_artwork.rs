@@ -84,16 +84,19 @@ pub enum DialContent {
     /// Whole-machine CPU usage in percent with a ring gauge (macOS only;
     /// elsewhere, or while no sample is available, `--`).
     Cpu,
+    /// The picture the profile carries in its `dial_display` setting.
+    Image,
 }
 
 impl DialContent {
     /// Every value, in command-line order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Off,
         Self::Function,
         Self::Clock,
         Self::AnalogClock,
         Self::Cpu,
+        Self::Image,
     ];
 
     /// The command-line spelling.
@@ -104,6 +107,7 @@ impl DialContent {
             Self::Clock => "clock",
             Self::AnalogClock => "analog-clock",
             Self::Cpu => "cpu",
+            Self::Image => "image",
         }
     }
 }
@@ -349,6 +353,8 @@ pub struct DialArtwork {
     /// Only for [`DialContent::Function`].
     profile_face: Option<Vec<u8>>,
     functions: Vec<Vec<u8>>,
+    /// Only for [`DialContent::Image`]: the profile's validated dial picture.
+    image: Option<Vec<u8>>,
     clock: Box<dyn Clock>,
     /// Only for [`DialContent::Cpu`].
     /// Boxed: inline, it makes `DialArtwork` large enough to trip clippy's
@@ -384,6 +390,11 @@ impl DialArtwork {
         if content == DialContent::Off {
             return Err("dial artwork needs dial content other than off".into());
         }
+        let image = if content == DialContent::Image {
+            Some(decode_profile_dial_image(profile)?)
+        } else {
+            None
+        };
         let names: Vec<&str> = profile
             .dial_functions
             .iter()
@@ -407,6 +418,7 @@ impl DialArtwork {
                 .then(|| encode(&draw_profile(&profile.name)))
                 .transpose()?,
             functions,
+            image,
             clock,
             cpu: (content == DialContent::Cpu)
                 .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
@@ -414,7 +426,7 @@ impl DialArtwork {
         };
         // A clock or CPU face cannot be prepared in advance; prove the path works.
         match content {
-            DialContent::Off | DialContent::Function => {}
+            DialContent::Off | DialContent::Function | DialContent::Image => {}
             DialContent::Cpu => {
                 encode(&draw_cpu(Some(100)))?;
             }
@@ -453,6 +465,7 @@ impl DialArtwork {
                     None => "profile".into(),
                 })
             }
+            DialContent::Image => Some("image".into()),
             DialContent::Cpu => Some(match self.cpu_percent(Instant::now()) {
                 Some(percent) => format!("cpu:{percent}"),
                 None => "cpu:--".into(),
@@ -545,6 +558,9 @@ fn parse_time(text: &str) -> Option<WallTime> {
 impl DialImageProvider for DialArtwork {
     fn dial_image(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
         let face = request.function.as_deref()?;
+        if face == "image" && self.content == DialContent::Image {
+            return self.image.clone();
+        }
         if face == "profile" && self.content == DialContent::Function {
             return self.profile_face.clone();
         }
@@ -569,6 +585,24 @@ impl DialImageProvider for DialArtwork {
         let time = parse_time(value)?;
         self.timed_face(face, || draw_clock(time, content))
     }
+}
+
+/// The profile's dial picture for [`DialContent::Image`], decoded and
+/// re-checked: profile validation already ran, but a run still refuses to
+/// start on anything the dial would reject.
+fn decode_profile_dial_image(profile: &Profile) -> Result<Vec<u8>, String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let text = profile
+        .dial_display
+        .as_ref()
+        .and_then(|display| display.image.as_deref())
+        .ok_or("dial image content requires a profile dial_display image")?;
+    let jpeg = STANDARD
+        .decode(text)
+        .map_err(|_| "the profile's dial image is not valid base64".to_string())?;
+    dial::validate_jpeg(&jpeg)
+        .map_err(|error| format!("the profile's dial image is not a valid dial image: {error}"))?;
+    Ok(jpeg)
 }
 
 /// Encodes through the shared preparation path, then validates explicitly.
@@ -989,6 +1023,71 @@ mod tests {
             assert!(DialContent::from_str(bad, false).is_err(), "{bad:?}");
         }
         assert_eq!(DialContent::default(), DialContent::Off);
+    }
+
+    #[test]
+    fn image_content_serves_the_profile_picture_and_requires_one() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        // A dial-valid JPEG, produced by the same path generated faces use.
+        let source = image::RgbImage::from_pixel(240, 240, image::Rgb([90, 40, 200]));
+        let mut png = Vec::new();
+        source
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        let jpeg = prepare_image(
+            &png,
+            PrepareOptions {
+                quality: QUALITY,
+                ..PrepareOptions::default()
+            },
+        )
+        .unwrap();
+        let text = STANDARD.encode(&jpeg);
+        let profile = |dial_display: serde_json::Value| {
+            let mut json = serde_json::json!({
+                "schema_version": 1, "name": "Pictures", "bindings": []
+            });
+            json["dial_display"] = dial_display;
+            Profile::from_json(serde_json::to_vec(&json).unwrap().as_slice()).unwrap()
+        };
+        // The exact stored bytes are served under the static "image" key,
+        // whichever function is current.
+        let art = DialArtwork::prepare(
+            DialContent::Image,
+            &profile(serde_json::json!({"content": "image", "image": text})),
+            Box::new(clock(9, 41)),
+        )
+        .unwrap();
+        assert_eq!(art.request(Some(1)).function.as_deref(), Some("image"));
+        for request in [art.request(None), art.request(Some(1))] {
+            assert_eq!(art.dial_image(&request).as_deref(), Some(jpeg.as_slice()));
+        }
+        // Nothing else serves bytes, and the other accessors stay empty.
+        assert_eq!(
+            art.dial_image(&DialImageRequest {
+                profile: "Pictures".into(),
+                function: Some("clock:09:41".into())
+            }),
+            None
+        );
+        assert_eq!(art.profile_face(), None);
+        // Image content without the profile picture refuses to start: one
+        // profile with the setting but no picture, and one without the
+        // setting at all. The struct bypasses profile validation on purpose —
+        // prepare must still refuse what it is handed.
+        let without_setting = profile(serde_json::Value::Null);
+        let unpictured = cooltek_sdk_service::Profile {
+            dial_display: Some(cooltek_sdk_service::DialDisplay {
+                content: cooltek_sdk_service::DialDisplayContent::Image,
+                image: None,
+            }),
+            ..profile(serde_json::Value::Null)
+        };
+        for bad in [&without_setting, &unpictured] {
+            assert!(DialArtwork::prepare(DialContent::Image, bad, Box::new(clock(0, 0))).is_err());
+        }
+        // The same profiles start fine with the content they declare.
+        DialArtwork::prepare(DialContent::Clock, &without_setting, Box::new(clock(9, 41))).unwrap();
     }
 
     #[test]

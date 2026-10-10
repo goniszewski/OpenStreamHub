@@ -2509,6 +2509,7 @@ mod tests {
             bindings: Vec::new(),
             keypad: None,
             dial_functions: None,
+            dial_display: None,
         };
         let saved = save(&state, None, &blank, None).unwrap();
         assert!(!flagged(&state, &saved.id));

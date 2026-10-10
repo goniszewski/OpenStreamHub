@@ -16,6 +16,7 @@ name = "masterhub-service"
 path = "src/bin/masterhub-service.rs"
 
 [dependencies]
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 cooltek-sdk-masterhub = { path = "../cooltek-sdk-masterhub" }
 cooltek-sdk-service = { path = "../cooltek-sdk-service" }
@@ -28,5 +29,4 @@ image = { version = "=0.25.10", default-features = false, features = ["jpeg", "p
 libc = "0.2"
 
 [dev-dependencies]
-base64 = "0.22"
 gif = "=0.14.2"

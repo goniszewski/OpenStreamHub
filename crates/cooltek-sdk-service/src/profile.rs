@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::{DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
+use crate::{DialDisplay, DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
 
 /// Modules whose input is supported by the binding service.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
@@ -992,6 +992,12 @@ pub struct Profile {
     /// profiles serialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dial_functions: Option<Vec<DialFunction>>,
+    /// What the M131E dial screen shows while this profile runs (schema 1 or
+    /// 2). Absent means the default: the active function's name, or the analog
+    /// clock for a profile with nothing on the dial. Omitted when absent, so
+    /// existing profiles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial_display: Option<DialDisplay>,
 }
 
 impl Profile {
@@ -1046,6 +1052,9 @@ impl Profile {
         }
         if let Some(functions) = &self.dial_functions {
             crate::dial::validate(functions)?;
+        }
+        if let Some(display) = &self.dial_display {
+            crate::dial::validate_display(display)?;
         }
         if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
@@ -1174,6 +1183,7 @@ mod tests {
             }],
             keypad: None,
             dial_functions: None,
+            dial_display: None,
         }
     }
 
@@ -1191,6 +1201,118 @@ mod tests {
         ] {
             assert!(Profile::from_json(json).is_err());
         }
+    }
+
+    /// A valid 240×240 baseline JFIF JPEG, as the dial display accepts.
+    fn dial_jpeg() -> String {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let image = image::RgbImage::from_pixel(240, 240, image::Rgb([10, 20, 30]));
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image)
+            .unwrap();
+        STANDARD.encode(jpeg)
+    }
+
+    #[test]
+    fn dial_display_is_optional_and_parses_strictly() {
+        // Absent: parses, and serializes without the field.
+        let plain =
+            Profile::from_json(br#"{"schema_version":1,"name":"Desk","bindings":[]}"#).unwrap();
+        assert_eq!(plain.dial_display, None);
+        assert!(
+            !serde_json::to_vec(&plain)
+                .unwrap()
+                .windows(12)
+                .any(|window| window == b"dial_display")
+        );
+        // Every content value is spelled exactly once, and only image may
+        // carry the picture.
+        let image = dial_jpeg();
+        for (content, with_image) in [
+            ("off", false),
+            ("function", false),
+            ("clock", false),
+            ("analog_clock", false),
+            ("cpu", false),
+            ("image", true),
+        ] {
+            let image_field = if with_image {
+                format!(r#","image":"{image}""#)
+            } else {
+                String::new()
+            };
+            let display = format!(r#"{{"content":"{content}"{image_field}}}"#);
+            let json = format!(
+                r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{display}}}"#
+            );
+            let profile = Profile::from_json(json.as_bytes()).unwrap();
+            let parsed = profile.dial_display.clone().unwrap();
+            assert_eq!(parsed.image.is_some(), with_image, "content {content}");
+            // The exact bytes round-trip.
+            assert_eq!(
+                serde_json::to_value(&profile).unwrap()["dial_display"],
+                serde_json::from_str::<serde_json::Value>(&display).unwrap()
+            );
+        }
+        for bad in [
+            // Unknown content and wrong spelling.
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"gpu"}}"#,
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"analog-clock"}}"#,
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"Image"}}"#,
+            // Image content without the picture, and the picture elsewhere.
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"image"}}"#,
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"clock","image":"AAAA"}}"#,
+            // Unknown fields, on the setting and beside the image.
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"clock","style":"bold"}}"#,
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{"content":"image","image":"AAAA","fit":"cover"}}"#,
+            r#"{"schema_version":1,"name":"Desk","bindings":[],"dial_display":"clock"}"#,
+        ] {
+            assert!(
+                Profile::from_json(bad.as_bytes()).is_err(),
+                "accepted {bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dial_display_image_must_be_a_bounded_valid_dial_jpeg() {
+        use base64::Engine as _;
+        let image = dial_jpeg();
+        let with_image = |image: &str| {
+            format!(
+                r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"image","image":"{image}"}}}}"#
+            )
+        };
+        Profile::from_json(with_image(&image).as_bytes()).unwrap();
+        for (label, image) in [
+            ("not base64", "not base64!"),
+            ("empty", ""),
+            (
+                "wrong device bytes",
+                &base64::engine::general_purpose::STANDARD.encode(b"at least it decodes"),
+            ),
+        ] {
+            assert!(
+                Profile::from_json(with_image(image).as_bytes()).is_err(),
+                "accepted {label}"
+            );
+        }
+        // Over the decoded cap, by exactly two bytes: the text passes the
+        // pre-check, so the refusal names the decoded size.
+        let oversized = "A".repeat(DialDisplay::MAX_IMAGE_BYTES.div_ceil(3) * 4);
+        let error = Profile::from_json(with_image(&oversized).as_bytes()).unwrap_err();
+        assert!(error.contains("64 KiB"), "{error}");
+        // The real cap accepts a full encoder; one byte more of decoded JPEG
+        // is refused. Build a JPEG just over the cap by appending noise is not
+        // possible (it must stay valid), so a padded base64 of a valid JPEG
+        // over the text cap is the same refusal path.
+        let padded = format!("{image}{}", "A".repeat(4));
+        assert!(
+            Profile::from_json(with_image(&padded).as_bytes())
+                .unwrap_err()
+                .contains("not valid base64")
+        );
     }
 
     #[test]

@@ -677,10 +677,10 @@ fn dial_function_preview_matches_the_shared_fixture() {
 
 #[test]
 fn display_settings_payloads_match_the_shared_fixture() {
-    use crate::display::{DialContent, DisplaySettings, ModuleControl};
+    use crate::display::{DisplaySettings, ModuleControl};
+    use cooltek_sdk_service::DialDisplayContent;
     let chosen = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        dial_content: DialContent::AnalogClock,
         auto_execute: true,
     };
     let args = json!({ "settings": chosen });
@@ -693,7 +693,17 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "display_settings_default": DisplaySettings::default(),
             "set_display_settings_args": args,
             "set_display_settings_result": chosen,
-            "dial_contents": DialContent::ALL,
+            "dial_contents": DialDisplayContent::ALL,
+            // The profile's dial display setting as Rust serializes it, so the
+            // frontend pins the exact field names (image beside image content).
+            "dial_display_sample": cooltek_sdk_service::DialDisplay {
+                content: DialDisplayContent::Image,
+                image: Some("AAAA".into()),
+            },
+            "dial_display_function_json": cooltek_sdk_service::DialDisplay {
+                content: DialDisplayContent::Function,
+                image: None,
+            },
             "module_controls": [ModuleControl::App, ModuleControl::BuiltInAnimation],
             // The global default profile for automatic starts. Tauri maps
             // snake_case command arguments to camelCase.

@@ -212,6 +212,7 @@ mod tests {
             bindings,
             keypad: None,
             dial_functions: None,
+            dial_display: None,
         })
         .unwrap()
     }
@@ -314,6 +315,7 @@ mod tests {
             bindings: vec![binding(None, 0)],
             keypad: None,
             dial_functions: None,
+            dial_display: None,
         };
         assert!(BindingEngine::new(invalid).is_err());
     }

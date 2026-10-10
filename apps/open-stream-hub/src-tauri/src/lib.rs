@@ -8,6 +8,7 @@ mod export;
 mod feed;
 mod focus;
 mod import_flags;
+mod lighting;
 mod mhz;
 mod migration;
 mod obs;
@@ -811,6 +812,31 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
     state.feeds.stop(&feed_id)
 }
 
+// Lighting writes (the Lighting page) go straight to the dials through the
+// app's own HID handle, like the CLI's dial commands: a feature-report write
+// needs no service session. A run that owns a dial refuses the write, so a
+// live display run is never fought over the dial's mode.
+#[tauri::command(async)]
+fn set_dial_lighting(
+    state: State<'_, AppState>,
+    targets: Vec<String>,
+    backlight: u8,
+    colour: [u8; 3],
+) -> Result<usize, String> {
+    service::check_lighting_allowed(&state.services, &targets)?;
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    lighting::apply_dial_lighting(&registry, &targets, backlight, colour)
+}
+
+#[tauri::command(async)]
+fn reset_dial_lighting(state: State<'_, AppState>, targets: Vec<String>) -> Result<usize, String> {
+    service::check_lighting_allowed(&state.services, &targets)?;
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    lighting::reset_dial_lighting(&registry, &targets)
+}
+
 // Profile actions run only in a supervised `masterhub-service` child process,
 // never in the app. A read-only feed on the same interface is stopped first
 // so the service owns the device. The run is wrapped in a sleep/wake and
@@ -1482,6 +1508,8 @@ pub fn run() {
             list_live_devices,
             start_feed,
             stop_feed,
+            set_dial_lighting,
+            reset_dial_lighting,
             start_service,
             stop_service,
             resume_session,

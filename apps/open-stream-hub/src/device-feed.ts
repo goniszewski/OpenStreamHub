@@ -189,6 +189,11 @@ export class DeviceFeed {
   startDemo(demo: ReplayKind) { return this.start({ kind: 'demo', demo }); }
   startLive(pathHex: string) { return this.start({ kind: 'live', path_hex: pathHex }); }
 
+  // Browser-preview QA only (never set in the desktop app): the preview cannot reach Tauri, so
+  // captures seed a fake inventory (window.__oshLightingSeed). Its automatic feeds no-op because
+  // the preview is not desktop.
+  seedPreview(devices: LiveDevice[]) { this.applyInventory(devices); }
+
   private async start(source: FeedSource, auto = false) {
     if (!this.state.desktop) return;
     if (source.kind === 'live' && this.isBlocked(source.path_hex, this.state.devices.find(device => device.path_hex === source.path_hex))) { if (!auto) this.set({ error: 'Stop the running profile on this device before reading live input.' }); return; }

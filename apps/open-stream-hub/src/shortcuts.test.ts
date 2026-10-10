@@ -9,14 +9,15 @@ describe('shortcutAction', () => {
     expect(shortcutAction(key('s', { metaKey: true }), true)).toEqual({ type: 'save' });
     expect(shortcutAction(key('S', { metaKey: true }), true)).toEqual({ type: 'save' });
     expect(shortcutAction(key('d', { metaKey: true }), true)).toEqual({ type: 'duplicate' });
-    expect(shortcutAction(key('3', { metaKey: true }), true)).toEqual({ type: 'page', page: 'compatibility' });
+    expect(shortcutAction(key('3', { metaKey: true }), true)).toEqual({ type: 'page', page: 'lighting' });
     expect(shortcutAction(key('s', { ctrlKey: true }), false)).toEqual({ type: 'save' });
     expect(shortcutAction(key('1', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'workspace' });
     expect(shortcutAction(key('2', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'artwork' });
-    expect(shortcutAction(key('4', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'settings' });
+    expect(shortcutAction(key('4', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'compatibility' });
+    expect(shortcutAction(key('5', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'settings' });
   });
 
-  it('ignores the wrong modifier, extra modifiers, other keys and 5+', () => {
+  it('ignores the wrong modifier, extra modifiers, other keys and 6+', () => {
     expect(shortcutAction(key('s', { ctrlKey: true }), true)).toBeNull();
     expect(shortcutAction(key('s', { metaKey: true }), false)).toBeNull();
     expect(shortcutAction(key('s'), true)).toBeNull();
@@ -24,7 +25,7 @@ describe('shortcutAction', () => {
     expect(shortcutAction(key('s', { metaKey: true, altKey: true }), true)).toBeNull();
     expect(shortcutAction(key('s', { metaKey: true, ctrlKey: true }), true)).toBeNull();
     expect(shortcutAction(key('q', { metaKey: true }), true)).toBeNull();
-    expect(shortcutAction(key('5', { metaKey: true }), true)).toBeNull();
+    expect(shortcutAction(key('6', { metaKey: true }), true)).toBeNull();
     expect(shortcutAction(key('Escape'), true)).toBeNull();
   });
 
@@ -57,7 +58,7 @@ describe('handleShortcut', () => {
   it('respects disabled pages and open modals', () => {
     const h = handlers();
     const preventDefault = vi.fn();
-    handleShortcut({ ...key('4', { metaKey: true }), preventDefault }, h, false);
+    handleShortcut({ ...key('5', { metaKey: true }), preventDefault }, h, false);
     expect(h.setPage).not.toHaveBeenCalled();
     expect(handleShortcut({ ...key('s', { metaKey: true }), preventDefault }, h, true)).toBe(false);
     expect(h.save).not.toHaveBeenCalled();

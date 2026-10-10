@@ -11,7 +11,7 @@ export interface KeyEventLike {
   target?: unknown;
 }
 
-export const shortcutPages: readonly Page[] = ['workspace', 'artwork', 'compatibility', 'settings'];
+export const shortcutPages: readonly Page[] = ['workspace', 'artwork', 'lighting', 'compatibility', 'settings'];
 
 export function isMacPlatform(navigatorLike: { platform?: string; userAgent?: string } | undefined) {
   return /mac/i.test(navigatorLike?.platform || navigatorLike?.userAgent || '');
@@ -50,7 +50,7 @@ export function shortcutAction(event: KeyEventLike, mac: boolean, options: { mod
   if (key === 's') return { type: 'save' };
   if (key === 'f') return { type: 'find' };
   if (key === 'd') return event.repeat ? null : { type: 'duplicate' };
-  const index = ['1', '2', '3', '4'].indexOf(key);
+  const index = ['1', '2', '3', '4', '5'].indexOf(key);
   return index >= 0 ? { type: 'page', page: shortcutPages[index] } : null;
 }
 
@@ -69,8 +69,9 @@ export const shortcutList: { keys: string; label: string }[] = [
   { keys: 'F', label: 'Search bindings (opens the bindings drawer)' },
   { keys: '1', label: 'Workspace' },
   { keys: '2', label: 'Display artwork' },
-  { keys: '3', label: 'Compatibility' },
-  { keys: '4', label: 'Settings' },
+  { keys: '3', label: 'Lighting' },
+  { keys: '4', label: 'Compatibility' },
+  { keys: '5', label: 'Settings' },
 ];
 
 export interface ShortcutHandlers {

@@ -25,6 +25,8 @@
     "allow-list-live-devices",
     "allow-start-feed",
     "allow-stop-feed",
+    "allow-set-dial-lighting",
+    "allow-reset-dial-lighting",
     "allow-start-service",
     "allow-stop-service",
     "allow-resume-session",

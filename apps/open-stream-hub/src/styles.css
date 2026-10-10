@@ -538,3 +538,32 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .version-list { list-style:none; margin:12px 0 0; padding:0; }
 .version-list li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; }
 .version-list li:first-child { border-top:0; padding-top:0; }
+
+/* Lighting page (task 09, phase 1): dial backlight and colour, applied live. */
+.lighting-page { max-width:720px; }
+.lighting-panel { display:grid; gap:18px; justify-items:start; }
+.lighting-scope { display:flex; gap:5px; }
+.lighting-scope button { min-height:38px; padding:8px 14px; border:1px solid var(--line); border-radius:9px; background:var(--control); font-size:13px; }
+.lighting-scope button.active { background:var(--selected); border-color:var(--accent); font-weight:600; }
+.lighting-module { width:100%; max-width:340px; }
+.lighting-module label { font-size:12px; }
+.lighting-controls { display:grid; gap:16px; width:100%; }
+.lighting-controls:disabled { opacity:.6; }
+.lighting-row { display:grid; grid-template-columns:96px minmax(0,1fr); gap:14px; align-items:center; }
+.lighting-row>label { margin:0; font-size:12px; }
+.lighting-backlight { display:flex; align-items:center; gap:12px; }
+.lighting-backlight input[type="range"] { flex:1; min-width:0; padding:0; border:0; background:transparent; accent-color:var(--accent); }
+.lighting-value { min-width:34px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
+.lighting-colour { display:flex; align-items:center; gap:10px; }
+.lighting-colour input[type="color"] { width:52px; min-height:38px; flex:none; padding:3px; cursor:pointer; }
+.lighting-favourites { display:flex; flex-wrap:wrap; gap:8px; }
+.lighting-favourite { position:relative; display:inline-flex; }
+.lighting-favourite .swatch { width:34px; height:34px; padding:0; border:1px solid var(--line); border-radius:8px; }
+.lighting-favourite .swatch:hover:enabled { border-color:var(--accent); }
+.lighting-favourite .remove { position:absolute; top:-7px; right:-7px; width:18px; height:18px; min-height:0; display:flex; align-items:center; justify-content:center; padding:0; border:1px solid var(--line); border-radius:50%; background:var(--panel); color:var(--muted); }
+.lighting-favourite .remove:hover:enabled { color:var(--red); border-color:var(--red); }
+.lighting-actions { display:flex; gap:10px; }
+.lighting-reason { margin:0; }
+.lighting-panel .learn-more { justify-self:stretch; }
+.lighting-panel .learn-more summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }
+.lighting-panel .learn-more p { margin:9px 0 0; font-size:12px; }

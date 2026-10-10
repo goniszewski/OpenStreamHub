@@ -19,6 +19,8 @@ fn main() {
             "list_live_devices",
             "start_feed",
             "stop_feed",
+            "set_dial_lighting",
+            "reset_dial_lighting",
             "start_service",
             "stop_service",
             "resume_session",

@@ -1024,6 +1024,21 @@ pub fn check_feed_allowed(services: &Services, source: &feed::FeedSource) -> Res
     Ok(())
 }
 
+/// Lighting writes may not open an interface a service owns either: a run
+/// holds its module in software mode and draws on it, and a lighting write
+/// would fight the run's own mode changes.
+pub fn check_lighting_allowed(services: &Services, targets: &[String]) -> Result<(), String> {
+    for path_hex in targets {
+        let service_id = service_id(path_hex)?;
+        if services.is_running(&service_id) {
+            return Err(format!(
+                "service {service_id} is using this device; stop it before changing its lighting"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1972,5 +1987,26 @@ mod tests {
             .stop("service:4a", Duration::from_millis(200))
             .unwrap();
         assert!(check_feed_allowed(&services, &live("4A")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lighting_writes_are_refused_while_a_service_owns_the_interface() {
+        use process::*;
+        let services = Services::default();
+        assert!(check_lighting_allowed(&services, &["4a".into(), "4b".into()]).is_ok());
+        let (emit, _) = collector();
+        start_script(&services, "service:4a", "exec sleep 30", None, emit).unwrap();
+        let error = check_lighting_allowed(&services, &["4a".into()]).unwrap_err();
+        assert!(error.contains("service:4a"), "{error}");
+        assert!(error.contains("lighting"), "{error}");
+        // Any target owned by a run refuses the whole write: a partial apply
+        // would light some dials and leave others untouched.
+        let error = check_lighting_allowed(&services, &["4b".into(), "4a".into()]).unwrap_err();
+        assert!(error.contains("service:4a"), "{error}");
+        services
+            .stop("service:4a", Duration::from_millis(200))
+            .unwrap();
+        assert!(check_lighting_allowed(&services, &["4a".into()]).is_ok());
     }
 }

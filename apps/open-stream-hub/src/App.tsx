@@ -10,7 +10,6 @@ import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
-import type { KeyArtwork, ObsCatalogNames } from './contracts';
 import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
@@ -19,11 +18,12 @@ import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
-import type { ReplayKind } from './contracts';
+import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
+import type { KeyArtwork, LiveDevice, ObsCatalogNames, ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
+import { LightingPage } from './LightingPage';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { CompatibilityPage, SettingsPage } from './InfoPages';
@@ -51,6 +51,7 @@ declare global {
     __oshKeyMenuSeed?: (control: number, x: number, y: number) => void;
     __oshKeyCopySeed?: (control: number) => void;
     __oshKeySampleSeed?: () => void;
+    __oshLightingSeed?: (devices: LiveDevice[]) => void;
   }
 }
 function webStorage(): Storage | null {
@@ -178,6 +179,8 @@ export default function App() {
         next = editKeypadBinding(next, ['root'], 3, 'pressed', '', { type: 'timer', seconds: 300, label: 'Break' }, 'Break');
         return editKeypadBinding(next, ['root'], 4, 'pressed', '', { type: 'media', command: 'play_pause' }, 'Play');
       });
+      // Lighting captures likewise: the preview has no device inventory, so captures seed one.
+      window.__oshLightingSeed = devices => feed.seedPreview(devices);
     }
   }, [session, obsCatalog]);
 
@@ -281,6 +284,7 @@ export default function App() {
         <nav aria-label="Primary navigation">
           <button className={page === 'workspace' ? 'active' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><Grid2X2 size={22} />Workspace</button>
           <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
+          <button className={page === 'lighting' ? 'active' : ''} aria-current={page === 'lighting' ? 'page' : undefined} title="Dial backlight and colour" onClick={() => setPage('lighting')}><Lightbulb size={22} />Lighting</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
         <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
@@ -306,6 +310,7 @@ export default function App() {
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
         </div>}
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
+        {page === 'lighting' && <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} feed={feed} runner={runner} storage={webStorage()} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>

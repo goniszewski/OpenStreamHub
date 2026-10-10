@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2d3a"/><stop offset="1" stop-color="#14151c"/></linearGradient></defs>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
+  <g transform="translate(115.2 112.1) scale(3.1)" fill="none" stroke="#f2f4f8" stroke-width="3.8" stroke-linecap="round" stroke-linejoin="round">
+<!-- Main button panel -->
+  <rect x="46" y="17" width="164" height="123" rx="10"/>
+
+  <!-- 5 × 3 button grid -->
+  <g>
+    <rect x="64"  y="35" width="22" height="22" rx="4"/>
+    <rect x="90"  y="35" width="22" height="22" rx="4"/>
+    <rect x="116" y="35" width="22" height="22" rx="4"/>
+    <rect x="142" y="35" width="22" height="22" rx="4"/>
+    <rect x="168" y="35" width="22" height="22" rx="4"/>
+
+    <rect x="64"  y="62" width="22" height="22" rx="4"/>
+    <rect x="90"  y="62" width="22" height="22" rx="4"/>
+    <rect x="116" y="62" width="22" height="22" rx="4"/>
+    <rect x="142" y="62" width="22" height="22" rx="4"/>
+    <rect x="168" y="62" width="22" height="22" rx="4"/>
+
+    <rect x="64"  y="89" width="22" height="22" rx="4"/>
+    <rect x="90"  y="89" width="22" height="22" rx="4"/>
+    <rect x="116" y="89" width="22" height="22" rx="4"/>
+    <rect x="142" y="89" width="22" height="22" rx="4"/>
+    <rect x="168" y="89" width="22" height="22" rx="4"/>
+  </g>
+
+  <!-- Touch strip -->
+  <rect x="64" y="119" width="126" height="9" rx="3"/>
+
+  <!-- Middle module -->
+  <rect x="46" y="144" width="164" height="22" rx="6"/>
+
+  <!-- Horizontal controls -->
+  <path d="M62 155h52"/>
+  <rect x="120" y="151" width="16" height="8" rx="2"/>
+  <path d="M142 155h52"/>
+
+  <!-- Lower mixer -->
+  <rect x="46" y="170" width="164" height="71" rx="10"/>
+
+  <!-- Fader tracks -->
+  <path d="M74 185v42"/>
+  <path d="M101 185v42"/>
+  <path d="M128 185v42"/>
+  <path d="M155 185v42"/>
+  <path d="M182 185v42"/>
+
+  <!-- Fader knobs -->
+  <g fill="none">
+    <rect x="67"  y="212" width="14" height="10" rx="3"/>
+    <rect x="94"  y="194" width="14" height="10" rx="3"/>
+    <rect x="121" y="212" width="14" height="10" rx="3"/>
+    <rect x="148" y="200" width="14" height="10" rx="3"/>
+    <rect x="175" y="188" width="14" height="10" rx="3"/>
+  </g>
+  </g>
+</svg>

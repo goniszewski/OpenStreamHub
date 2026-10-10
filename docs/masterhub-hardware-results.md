@@ -94,64 +94,48 @@ Interpreting the product-name dimensions as module footprints, they total 24 cel
 
 ## Desktop app dial dry-run (M131E, 8 October 2026)
 
-Tested on `feat/app-owned-modules` at `3689c3a`, with a refreshed release sidecar and a local debug app rebuilt using `npx tauri build --debug --bundles app`.
+Tested at `3689c3a` with the Everyday profile, Dry run, and Settings > Module control set to **App**. Software mode was set automatically, and no `--execute` was used.
 
-- **Setup.** The Run panel used the **Everyday** profile and M131E serial `MHDD01FAKE0843`, with **Dry run** selected and Settings > Module control set to **App**. The software-mode checkbox was automatically checked and locked; no toggle was changed. The observed sidecar flags included `--exit-on-stdin-eof --software-mode --display-sync --dial-content function`, with no `--execute`.
-- **Start and input.** The panel showed **Running**, a `Service started on m131e` dry-run message and an initial display-sync record. The initial inspected snapshot after interaction showed **16 events, 12 planned actions, 0 executed, 0 failed**: five right turns planned volume +5 each, five left turns planned volume -5 each, and two press/release pairs produced a short press planning mute toggle and a long press planning Open Finder. A later settled panel snapshot after Stop showed **139 events, 129 planned actions, 0 executed, 0 failed**. These were plans only; neither action execution nor the long-press timing threshold was measured.
-- **Visual acceptance.** The user confirmed the physical display looked correct and the live preview needle reacted and stayed inside the screen. This accepts the display and needle behavior for this run on this unit; no timing measurement or raw display-failure count was obtained.
-- **Normal Stop.** Stop changed the panel to **Stopped**, with service end reason `interrupted` and a session-stopped-by-user message. A process check found no remaining `masterhub-service`. The user confirmed the built-in animation returned.
-- **Remaining app gates.** Everyday has no `dial_functions`, so this run did not test app-driven function cycling. Other Module control settings, normal Quit, reconnect, sleep/wake and a crash during startup remain untested by this run. The later keypad test is recorded below.
+- **Input.** Only plans were checked: 16 events in the first snapshot and 139 after Stop, all planned, none executed, none failed. Action execution and long-press timing were not measured.
+- **Display.** The user confirmed the physical display and the live preview needle, which stayed inside the screen.
+- **Stop.** The panel showed Stopped, no sidecar process remained, and the built-in animation returned (user-confirmed).
+- **Not covered.** Function cycling (Everyday has no `dial_functions`), normal Quit, reconnect, sleep and wake.
 
 ## Desktop app keypad dry-run (M4315, 8 October 2026)
 
-Tested with the same rebuilt app and sidecar code at `3689c3a` (documentation HEAD `25ca474`), on M4315 serial `MHKD15FAKE0002`.
+Tested at `3689c3a` on the M4315 with temporary, unsaved two-level folders in Everyday. Dry run, App mode, no `--execute`.
 
-- **Temporary profile.** Everyday had an empty schema-2 root. Two unsaved folders were added with Create folder: one at root wire index 0 (UI Key 1), and a nested folder at L1 wire index 1 (UI Key 2). No action bindings were added or saved. The root preview was selected before starting.
-- **Start and navigation.** Under Module control **App**, with **Dry run** selected and the software-mode checkbox automatically checked and locked, no toggle was changed. The observed sidecar flags included `--exit-on-stdin-eof --software-mode --display-sync`, without `--execute`. The panel showed **Running** and `Service started on m4315` in dry run. The user navigated root → L1 → L2 → L1 → root twice. The panel showed **16 events, 0 planned actions, 0 executed, 0 failed**: eight navigation presses (UI controls 1, 2, 1, 1, repeated) and eight releases. There were nine display-sync records: the initial page plus eight navigation redraws. Raw completeness and display-failure counters were not obtained; latency was not measured, and this does not establish all 15 key positions.
-- **Visual acceptance and Stop.** The user confirmed the physical keys redrew, the L1 and L2 badges were visible, the preview reacted and the built-in animation returned after Stop: “All looked good, I saw L1 and L2.” Stop showed **Stopped**, service end reason `interrupted` and stopped by user; no `masterhub-service` process remained.
-- **Cleanup and limits.** Undo twice restored the original empty root, with no unsaved changes and Save disabled. This verifies the temporary two-level app navigation and normal Stop on this unit. Real actions, other Module control settings, normal Quit, keypad crash recovery, reconnect and sleep/wake remain separate gates.
+- **Navigation.** Root, L1, L2, L1, root, twice: 16 events, no planned or executed actions, nine display-sync redraws. Raw completeness was not counted, and latency was not measured.
+- **Display.** The user confirmed the keys redrew, the L1 and L2 badges showed, the preview responded, and the built-in animation returned after Stop.
+- **Cleanup.** Undo restored the original empty root.
+- **Not covered.** Real actions, other Module control settings, Quit, crash recovery, reconnect, sleep and wake, and all 15 key positions beyond the ones pressed.
 
 ## Desktop app dial replug (M131E, 8 October 2026)
 
-Tested with rebuilt app/sidecar code `3689c3a` (documentation HEAD `9e95826`), using Everyday on M131E serial `MHDD01FAKE0843` in dry run. Flags included `--exit-on-stdin-eof --software-mode --display-sync --dial-content function`, without `--execute`.
-
-- **Removal and UI mismatch.** Initial sidecar PID was `72216`, on path hex `4465765372767349443a34323936323535353439`. After unplugging for about five seconds and reconnecting, the user reported “Done, error appeared and profile stopped”. The panel had selected knobs serial `MHKB03FAKE0003` and showed Stopped, while backend PID `72302` was running the same dial serial on new path hex `4465765372767349443a34323936323632313034`. Reselecting the dial showed Running. This exposed a Run-panel selection defect: a disappeared selected path fell back to the first inventory module, hiding the dial session.
-- **Backend recovery.** Logs showed an input-read failure (`hidapi/hid_read_timeout`, waiting for more data), a hardware-mode restore failure (`Device disconnected`), Waiting for M131E reconnect, then a dry-run service start on M131E and display sync. The counters were zero, so recovered input was not verified. This is one observed dry-run process recovery with a changed path, not acceptance of the full reconnect experience.
-- **Stop and pending observation.** Stop then showed Stopped, and a process check found no remaining sidecar. Physical display and animation acceptance after this replug/Stop were still pending when this evidence was recorded. Sleep/wake and executing-session confirmation were not exercised.
-
-### Repeat after the Run-panel selection fix (`0a4162c`)
-
-The user explicitly authorized a repeat dry-run replug on the same dial and then reported Done. Initial sidecar PID `79026` used path hex `4465765372767349443a34323936323632313034`; after replug PID `79354` used new path hex `4465765372767349443a34323936323632373836`, with the same M131E serial `MHDD01FAKE0843` and the same software-mode/display-sync flags above, without `--execute`.
-
-- **Recovery and selected session.** The post-Done Run panel showed **Running** with the dial still selected. Logs showed the disconnect read timeout and restore failure (`DeviceDisconnected`), Reconnecting attempt 1/5, Waiting, Reconnected, a dry-run `service_start` and `display_sync`. The intermediate disconnected UI was not inspected live; this verifies the recovered selection, rather than every intermediate state.
-- **Recovered input.** The panel recorded **11 events, 11 planned actions, 0 executed, 0 failed**: five right turns planning volume +5 and six left turns planning volume -5. No press was observed.
-- **Stop and visual acceptance.** Stop showed **Stopped** and service end reason `interrupted`; a process check found no remaining sidecar. The user answered “Yes and yes” to confirm the app display returned after reconnect and the built-in animation returned after Stop. This accepts the repeat dry-run reconnect and normal Stop on this dial; sleep/wake and executing-session confirmation remain untested.
+- **First replug.** After unplugging and reconnecting, the Run panel fell back to another module and showed Stopped while the dial session was running. This selection defect was fixed in `0a4162c`.
+- **Repeat after the fix.** The dial stayed selected and showed Running after reconnect. Recovered input was 11 events, all planned, none executed, none failed. The user confirmed the app display and the built-in animation after Stop.
+- **Not covered.** The intermediate disconnected UI, sleep and wake, and executing-session reconnect.
 
 ## Crash safety: stdin watchdog (M131E dial, 8 October 2026)
 
-`masterhub-service run --exit-on-stdin-eof` (the app always passes it) ends the run as a signal would when its stdin closes, which restores hardware mode.
+`masterhub-service run --exit-on-stdin-eof` (which the app always passes) exits as a signal would when its stdin closes, restoring hardware mode.
 
-- **Standalone.** The service ran in software mode on the dial with the clock face, fed from a pipe that was closed after 18 s. The pipe closed at 14:59:21.037 and the service exited at 14:59:21.086 (49 ms later) with reason `stdin_closed` and no error. No service process was left. The user saw the clock face (14:59) during the run. A first attempt failed because the log was redirected to a file, which the service refuses (it needs a terminal or pipe): that was a test setup error, not a device result.
-- **Real crash.** With the desktop app running a dry-run, software-mode session on the dial (the sidecar was a child of the app, in its own process group, started with `--exit-on-stdin-eof --software-mode`), the app was killed with `kill -9`. The sidecar was gone about 120 ms later, and the user reported that the dial's built-in animation returned within milliseconds, well under a second.
-- **Not tested.** The same crash on the M4315 keypad; with an OBS password set; a normal Quit in the app after this change; a crash while a session is still starting; sleep and wake. Dry-run dial replug and recovered input were observed in the [replug record](#desktop-app-dial-replug-m131e-8-october-2026). Normal app Stop on the dial was verified in the [app dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026).
+- **Standalone.** With the service in software mode on the dial and its stdin closed, it exited 49 ms later with reason `stdin_closed` and no error.
+- **App crash.** With a dry-run, software-mode session running, the app was killed with `kill -9`. The sidecar exited about 120 ms later, and the dial's animation returned within about a second (user-reported).
+- **Not covered.** The same crash on the M4315, a crash during session start, an OBS password set, and sleep and wake.
 
 ## OBS editor listings against the fake obs-websocket server (9 October 2026)
 
-The scene/source/filter/collection/profile listings behind the editor pickers (see [the editor's OBS listings](masterhub-actions.md#the-editors-obs-listings)) were verified against the scripted fake obs-websocket server in `crates/cooltek-sdk-service/src/obs.rs`; no real OBS took part.
+The editor's OBS pickers were checked against the scripted fake server in `crates/cooltek-sdk-service/src/obs.rs`. No real OBS was involved.
 
-- **Catalog.** One connection, four requests in order (`GetSceneList`, `GetInputList`, `GetSceneCollectionList`, `GetProfileList`), no request data, one close frame; the reply's four name lists come back verbatim. Reply shapes follow the obs-websocket v5 protocol (checked against `docs/generated/protocol.md` in obsproject/obs-websocket): scenes and inputs are object arrays (`sceneName`, `inputName`), while scene collections and profiles are **bare string arrays** — an earlier draft of the fake server had those two as object arrays, which a real OBS would have rejected; the fake and the parser now carry the spec shapes. A reply missing a list key is an error, not a partial catalog.
-- **Per-source and per-scene lists.** `GetSourceFilterList` carries `{"sourceName":…}` and `GetSceneItemList` `{"sceneName":…}`, names with quotes and emoji included, sent only as JSON string values. A refused listing (status 600) reports "no such source" or "no such scene" and never echoes the name it was given.
-- **Bounds.** Names beyond the profile's 128-byte limit are dropped from a list (they can never be referenced by a profile, and one long name never fails the rest), a name-less or non-string entry is an error, and a list beyond 1000 entries is refused: the editor never shows a silently partial list, and it applies the same 128-byte rule, so every offered name is savable.
-- **App side.** While OBS is off in Settings, the listing commands refuse without connecting ("OBS is off in OpenStreamHub Settings") and the editor keeps plain inputs; the endpoint and in-memory password come from the same `ObsState` as a run's (`for_listing`).
-- **Browser evidence.** The picker behavior (open on click or ArrowDown, case-insensitive narrowing, pick fills the exact name, the inline "OBS does not list this scene right now" cross-check, the Refresh row) is captured in `apps/open-stream-hub/qa/obs-listing-dark.png` and `qa/obs-warning-dark.png` (browser preview with sample listings; the real app reaches OBS through the commands above).
-- **Still pending: real OBS.** This Mac has no OBS install. The manual check against OBS 28+ — listings appearing for a running OBS with its WebSocket server on, the password-required path, a refresh after renaming a scene in OBS — remains for the next hardware session with OBS installed.
+- **Catalog.** Four requests in order over one connection. Scene collections and profiles are bare string arrays, matching the obs-websocket v5 spec. A reply missing a list is an error, not a partial list.
+- **Bounds.** Names over the profile's 128-byte limit are dropped. More than 1000 entries are refused.
+- **Off.** While OBS is off in Settings, listing commands refuse without connecting.
+- **Still pending.** A check against a real OBS 28+ install, including the password-required path and refresh after a scene rename.
 
 ## Not tested
 
-- The dial's `image` face and the per-profile `dial_display` setting (10 October 2026): a run with `--dial-content image` serving the picture stored in a profile, and the app's dial inspector Display tab driving a live dial. The four generated faces and the function cycling behind the app were verified on 8 October 2026 (above); the image face and the app-side edit-and-run flow of the new setting were not, and stay pending for the next hardware session.
-- The M005S faders (not connected).
-- Lighting writes of any kind.
-- Most of the desktop app against real hardware. On 8 October 2026 a dry-run, software-mode dial session exercised an app crash (see [crash safety](#crash-safety-stdin-watchdog-m131e-dial-8-october-2026)). A later [app dial dry-run](#desktop-app-dial-dry-run-m131e-8-october-2026) verified the App-controlled display path, live dial preview and normal Stop. The later [app keypad dry-run](#desktop-app-keypad-dry-run-m4315-8-october-2026) verified two-level folder redraws, L1/L2 badges, live keypad preview and normal Stop. App-driven dial function cycling, other modules' live previews and switching the Module control setting remain untested.
-- `shortcut`, `launch_app` and every `obs_*` action.
-- Every `obs_*` action and listing against a real OBS (no OBS install on this Mac). The listings are verified against the fake obs-websocket server (see [the record above](#obs-editor-listings-against-the-fake-obs-websocket-server-9-october-2026)); the real-OBS manual check remains for the next session with OBS installed.
-- Sleep/wake, executing-session reconnect confirmation, reconnect on other modules and the intermediate disconnected UI. A repeated dry-run dial replug recovered the selected session and rotation input after the initial UI selection defect was fixed; the user confirmed the app display returned after reconnect and the built-in animation returned after Stop. See the [replug record](#desktop-app-dial-replug-m131e-8-october-2026).
+- The dial's `image` face and the per-profile `dial_display` setting in the app.
+- The M005S faders (not connected) and all lighting writes beyond the dial backlight and color.
+- Most of the desktop app against real hardware, and every `obs_*` action against a real OBS.
+- Sleep and wake, executing-session reconnect, and reconnect on other modules.

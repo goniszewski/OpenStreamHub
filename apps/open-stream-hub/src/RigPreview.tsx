@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, X } from 'lucide-rea
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import type { ModuleLive } from './live-state';
-import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
+import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { useKnobOrientation } from './knob-orientation';
 import { knobControls, moduleArtwork, moduleImage } from './module-controls';
@@ -134,7 +134,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
         return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
           <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${module.name} in rig`}>
             <img {...moduleImage(module, knobOrientation)} alt="" draggable={false} />
-            {item.module === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={controlAction(profile, 'm131e', 0)} /></div>}
+            {item.module === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><DialFace profile={profile} /></div>}
             {controls.map(area => {
               const action = controlAction(profile, item.module, area.control);
               const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };

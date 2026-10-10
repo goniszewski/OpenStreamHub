@@ -73,7 +73,7 @@ const render = (props: Partial<RunSessionOptions> = {}) => {
 };
 // The idle Run panel for `device` with Module control `control` (loaded unless `state` says otherwise).
 function loadedSettings() {
-  const settings: DisplaySettings = { module_control: 'app', dial_content: 'function', auto_execute: false };
+  const settings: DisplaySettings = { module_control: 'app', auto_execute: false };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
   return displaySettings;
@@ -82,7 +82,7 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
   const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
   const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-  const settings: DisplaySettings = { module_control: control, dial_content: 'function', auto_execute: false };
+  const settings: DisplaySettings = { module_control: control, auto_execute: false };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
   return render({ feed, runner, profile, displaySettings });

@@ -1,8 +1,8 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { X } from 'lucide-react';
-import type { DialContent, ModuleControl } from './contracts';
+import type { ModuleControl } from './contracts';
 import { SelectField } from './controls';
-import { dialContentOptions, idleDisplaySettingsState, moduleControlOptions } from './display-settings';
+import { idleDisplaySettingsState, moduleControlOptions } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
 import { idleServiceState, isActiveRun } from './service-runner';
 import type { ServiceStoreState } from './service-runner';
@@ -13,7 +13,7 @@ const idleRunner = () => idleServiceState;
 
 // What each Module control value does, shown under the choice.
 export const moduleControlNotes: Record<ModuleControl, string> = {
-  app: 'OpenStreamHub drives the 15-key module, the encoder dial and the knobs whenever it is open: when the app opens and whenever one of them is connected, it starts a run on it with the default profile below (otherwise the profile last run on that module, or a blank one). The 15-key module and the dial switch to software mode and go back to their built-in mode when the run stops normally or you quit; the knobs only have their input read, and nothing is written to them. That run is a dry run unless Run actions automatically is on; to run actions without that, stop it and choose Run with Execute actions. Stopping it leaves the module alone until it is connected again or the app is opened again. Switching this setting to App starts the modules that are connected; switching away from App stops the runs that started by themselves. On the 15-key module, Stop, Quit, a force-quit during a run, sleep and wake, and unplugging and replugging (the run reconnects) have been checked on hardware; on the dial, a force-quit, a normal Stop and unplugging and replugging have. A normal Quit and sleep and wake on the dial have not been checked. On the 15-key module it draws placeholder key images and folder pages; a flat (older) 15-key profile is drawn as one page, which has not been checked on hardware. The dial screen shows the content below (redrawn at most about once a second); with "Active dial function name", a profile with nothing on the dial shows the analog clock. Other modules are not affected.',
+  app: 'OpenStreamHub drives the 15-key module, the encoder dial and the knobs whenever it is open: when the app opens and whenever one of them is connected, it starts a run on it with the default profile below (otherwise the profile last run on that module, or a blank one). The 15-key module and the dial switch to software mode and go back to their built-in mode when the run stops normally or you quit; the knobs only have their input read, and nothing is written to them. That run is a dry run unless Run actions automatically is on; to run actions without that, stop it and choose Run with Execute actions. Stopping it leaves the module alone until it is connected again or the app is opened again. Switching this setting to App starts the modules that are connected; switching away from App stops the runs that started by themselves. On the 15-key module, Stop, Quit, a force-quit during a run, sleep and wake, and unplugging and replugging (the run reconnects) have been checked on hardware; on the dial, a force-quit, a normal Stop and unplugging and replugging have. A normal Quit and sleep and wake on the dial have not been checked. On the 15-key module it draws placeholder key images and folder pages; a flat (older) 15-key profile is drawn as one page, which has not been checked on hardware. The dial screen shows what the running profile picks in its dial editor: by default the active function name, or the analog clock for a profile with nothing on the dial (redrawn at most about once a second). Other modules are not affected.',
   built_in_animation: 'The 15-key module and the dial keep their built-in animation, and nothing starts on them by itself. On this setting their keys and dial send no input unless you tick "Request device software mode" in the Run panel, nothing is drawn on their displays, and profiles with 15-key pages (folders) cannot run live.',
 };
 // The honest limits of what was tested on hardware (docs/masterhub-hardware-results.md).
@@ -43,7 +43,7 @@ export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?:
   const chosen = state.defaultProfile;
   useEffect(() => { if (store && state.desktop && !chosen.loaded && !chosen.busy && !chosen.error) void store.loadDefaultProfile(); }, [store, state.desktop, chosen.loaded, chosen.busy, chosen.error]);
   const off = !store || !state.desktop || state.busy || !state.loaded;
-  const { module_control: moduleControl, dial_content: dialContent, auto_execute: autoExecute } = state.settings;
+  const { module_control: moduleControl, auto_execute: autoExecute } = state.settings;
   const missingDefault = chosen.profileId !== null && !profiles.some(profile => profile.id === chosen.profileId);
 
   return <section className="panel display-settings-panel" aria-labelledby="display-settings-title">
@@ -53,10 +53,6 @@ export function DisplaySettingsPanel({ store, runner, profiles = [] }: { store?:
       {moduleControlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
     </SelectField>
     <p id="display-module-control-note" className="fine-print">{moduleControlNotes[moduleControl]}</p>
-    <label htmlFor="display-dial-content">Dial screen shows</label>
-    <SelectField id="display-dial-content" value={dialContent} disabled={off || moduleControl !== 'app'} onChange={event => { void store?.setDialContent(event.target.value as DialContent); }}>
-      {dialContentOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-    </SelectField>
     <label className="setting-toggle"><input type="checkbox" checked={autoExecute} disabled={off || moduleControl !== 'app'} aria-describedby="display-auto-execute-disclosure display-auto-execute-note" onChange={event => { void store?.setAutoExecute(event.target.checked); }} />Run actions automatically</label>
     <p id="display-auto-execute-disclosure" className="fine-print auto-execute-disclosure"><strong>{autoExecuteDisclosure}</strong></p>
     <p id="display-auto-execute-note" className="fine-print">{autoExecuteNote}</p>

@@ -1,5 +1,7 @@
+import { useState } from 'react';
 import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Play, Trash2 } from 'lucide-react';
-import type { Gesture } from './contracts';
+import type { Gesture, Profile } from './contracts';
+import { DialDisplayPanel } from './DialDisplayPanel';
 import { ActionFields } from './ActionFields';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
@@ -13,6 +15,7 @@ import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
 import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
+
 
 export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
@@ -28,6 +31,8 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   const selectorKey = `${selection.module}:${keypadPath.join('/')}:${selection.control}:${selection.gesture}:${selection.serial}`;
   // OBS's current listings for the name fields; asked once per app session, refreshed on demand.
   const catalog = useObsCatalog(catalogStore);
+  // Which tab of the dial editor (functions or dial screen) is open; view state only.
+  const [dialTab, setDialTab] = useState<'functions' | 'display'>('functions');
   return <aside className="inspector" aria-label="Selected control settings">
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? `Folder · L${keypadDepth(keypadPath)}` : 'Root page'}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />Delete folder</button>}<div className="inspector-divider" /></>}
@@ -36,7 +41,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
         excludeKinds={dialFunctionsActive ? ['dial-flat-conflict'] : undefined} />
       {isKeypad && !isBack && <KeyArtworkEditor key={`${state.draftGeneration}:${currentKeypadPage.id}:${selection.control}`} session={session} path={keypadPath} control={selection.control} artwork={currentKeypadPage.artwork?.[String(selection.control)]} action={keypadSlot?.type === 'action' ? keypadSlot.bindings[0]?.action : null} initialText={keypadSlot?.type === 'action' ? keypadSlot.label : ''} disabled={disabled} invoke={invoke} />}
       {isKeypad && <>{isBack ? <p className="fine-print">The reserved Back key returns one level. Its badge shows the current nesting level.</p> : folderPage ? <><button className="button" onClick={() => editor.navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />Open {folderPage.name}</button><button className="button" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={17} />Delete folder</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">Key label</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} aria-describedby="keypad-label-error" onChange={event => session.edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value), `key-label:${keypadPath.join('/')}:${selection.control}`)} /><LabelError id="keypad-label-error" value={keypadSlot.label} field="Key label" /><button className="button compact" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={16} />Clear key</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={editor.createFolder}><Folder size={17} />Create folder</button>}</>}</>}
-      {dialFunctionsActive ? <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} />
+      {dialFunctionsActive ? <DialEditorTabs tab={dialTab} onTab={setDialTab} profile={profile} session={session} state={state} disabled={disabled} invoke={invoke} setPage={setPage} catalog={catalogStore} />
       : !(isKeypad && (isBack || folderPage)) && <>
       <label htmlFor="binding-gesture">Gesture</label><SelectField id="binding-gesture" disabled={!editorGestures(profile, selection.module).length} value={selection.gesture} onChange={event => editor.changeSelection({ ...selection, gesture: event.target.value as Gesture })}>
         {editorGestures(profile, selection.module).map(gesture => <option key={gesture} value={gesture}>{gestureLabels[gesture]}</option>)}
@@ -62,9 +67,26 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       {/* The dial functions editor always lives here: while functions are off it offers to add
           them (flat bindings keep working until then), and with functions on it is the only
           editor, since every encoder binding then belongs to a function. */}
-      {!dialFunctionsActive && selection.module === 'm131e' && <DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} />}
+      {!dialFunctionsActive && selection.module === 'm131e' && <DialEditorTabs tab={dialTab} onTab={setDialTab} profile={profile} session={session} state={state} disabled={disabled} invoke={invoke} setPage={setPage} catalog={catalogStore} />}
     </> : <><h2>{selected.name}</h2><div className="status offline"><span className="status-dot" />Not available yet</div><p className="inspector-note">Binding editing is available for the encoder and three-knob modules. See Compatibility for what this module supports.</p></>}
   </aside>;
+}
+
+// The dial editor's two tabs. Functions is the dial functions editor (or its
+// offer to add them); Display sets what the dial screen shows for this
+// profile. The tab choice is view state; it survives nothing.
+export function DialEditorTabs({ tab, onTab, profile, session, state, disabled, invoke, setPage, catalog: catalogStore }: {
+  tab: 'functions' | 'display'; onTab(tab: 'functions' | 'display'): void; profile: Profile; session: ProfileSession; state: SessionState; disabled: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore;
+}) {
+  return <section className="dial-editor" aria-label="Dial editor">
+    <div role="tablist" aria-label="Dial editor sections" className="dial-tabs">
+      <button type="button" role="tab" id="dial-tab-functions" aria-selected={tab === 'functions'} aria-controls="dial-panel-functions" className={tab === 'functions' ? 'active' : ''} onClick={() => onTab('functions')}>Functions</button>
+      <button type="button" role="tab" id="dial-tab-display" aria-selected={tab === 'display'} aria-controls="dial-panel-display" className={tab === 'display' ? 'active' : ''} onClick={() => onTab('display')}>Display</button>
+    </div>
+    {tab === 'functions'
+      ? <div role="tabpanel" id="dial-panel-functions" aria-labelledby="dial-tab-functions"><DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} /></div>
+      : <div role="tabpanel" id="dial-panel-display" aria-labelledby="dial-tab-display"><DialDisplayPanel profile={profile} session={session} disabled={disabled} invoke={invoke} /></div>}
+  </section>;
 }
 
 // The one-line result of the inspector's Test button, for a gesture, a fader position or a key click.

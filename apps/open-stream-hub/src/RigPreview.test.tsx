@@ -16,7 +16,10 @@ describe('RigPreview', () => {
     const state = session.getState();
     const editor = { selection: { module: 'm003k', control: 0, gesture: 'clockwise', serial: '' }, faderPosition: 50, keypadPath: [keypadRoot], currentKeypadPage: state.draft.profile.keypad!.pages[0] } as unknown as DeviceEditor;
     const markup = renderToStaticMarkup(<RigPreview editor={editor} state={state} />);
-    expect(markup).toContain('Volume +5');
+    // The dial screen shows the profile's dial display face (drawn on a
+    // canvas like the device's), not the encoder binding's label.
+    expect(markup).toContain('<canvas width="240" height="240" class="dial-face"');
+    expect(markup).not.toContain('Volume +5');
     expect(markup).toContain('1 bound');
     expect(markup).toContain('Select Knob 1 in rig');
     expect(markup).toContain('aria-pressed="true"');

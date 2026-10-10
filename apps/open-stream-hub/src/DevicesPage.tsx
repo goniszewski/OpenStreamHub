@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
 import { ContextMenu } from './controls';
-import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
+import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
 import type { Profile, ServiceModule } from './contracts';
@@ -116,7 +116,7 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
   return <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
       <div className={`module-image${isKnob ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
         <img {...moduleImage(selected, knobOrientation)} alt="" draggable={false} />
-        {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><EncoderDisplayContent action={binding?.action} /></div>}
+        {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><DialFace profile={profile} /></div>}
         {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control, true)}</span>)}
         {selected.supported && controlCounts[selected.id] > 1 && controls.map(area => <button key={area.control} type="button"

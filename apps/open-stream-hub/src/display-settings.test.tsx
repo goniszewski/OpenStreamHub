@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import fixture from '../fixtures/display-settings.json';
-import type { DialContent, DisplaySettings, Profile } from './contracts';
+import type { DisplaySettings, Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { appControls, defaultDisplaySettings, dialContentOptions, displayFlags, DisplaySettingsStore, isDisplaySettings, moduleControlOptions } from './display-settings';
+import { appControls, defaultDisplaySettings, displayFlags, DisplaySettingsStore, isDisplaySettings, moduleControlOptions } from './display-settings';
+import { dialDisplayArgs, dialDisplayOptions } from './dial-display-model';
 import type { DisplaySettingsState } from './display-settings';
 import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes } from './DisplaySettingsPanel';
 import { emptyCounters } from './service-runner';
@@ -13,9 +14,14 @@ const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
 root.slots[1] = { type: 'folder', page_id: 'sub' };
 const nested: Profile = { schema_version: 2, name: 'Nested', bindings: [], keypad: { pages: [root, emptyKeypadPage('sub', 'Sub')] } };
-const app: DisplaySettings = { module_control: 'app', dial_content: 'clock', auto_execute: false };
-const builtIn: DisplaySettings = { module_control: 'built_in_animation', dial_content: 'clock', auto_execute: false };
+const app: DisplaySettings = { module_control: 'app', auto_execute: false };
+const builtIn: DisplaySettings = { module_control: 'built_in_animation', auto_execute: false };
 const otherModules = ['m003k', 'm005s', 'm032le'] as const;
+
+// The dial screen choice is a profile setting; these stand in for profiles
+// that picked a face in the dial editor.
+const withDialDisplay = (profile: Profile, content: string, image?: string): Profile =>
+  ({ ...profile, dial_display: { content, ...(image ? { image } : {}) } } as Profile);
 
 describe('display settings contract', () => {
   it('matches the Rust fixture', () => {
@@ -29,18 +35,24 @@ describe('display settings contract', () => {
     expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(fixture.default_profile_none).toEqual({ profile_id: null });
     expect(Object.keys(fixture.set_display_settings_args)).toEqual(['settings']);
-    expect(dialContentOptions.map(option => option.value).sort()).toEqual([...fixture.dial_contents].sort());
+    // The dial screen values match the service's --dial-content spellings.
+    expect(dialDisplayOptions.map(option => option.value).sort()).toEqual([...fixture.dial_contents].sort());
+    expect(Object.keys(dialDisplayArgs).sort()).toEqual([...fixture.dial_contents].sort());
+    // The profile's dial display setting serializes exactly these fields.
+    expect(fixture.dial_display_sample).toEqual({ content: 'image', image: 'AAAA' });
+    expect(fixture.dial_display_function_json).toEqual({ content: 'function' });
     expect(moduleControlOptions.map(option => option.value)).toEqual(fixture.module_controls);
     expect(moduleControlOptions.map(option => option.label)).toEqual(['App', 'Built-in animation']);
   });
   it('accepts only the exact settings shape', () => {
-    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function', auto_execute: false })).toBe(true);
-    expect(isDisplaySettings({ module_control: 'built_in_animation', dial_content: 'cpu', auto_execute: true })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'app', auto_execute: false })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'built_in_animation', auto_execute: true })).toBe(true);
     // Run actions automatically is required and strictly a boolean.
-    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', dial_content: 'function', auto_execute: 'yes' })).toBe(false);
-    // The old toggle's shape is migrated by Rust and never reaches the frontend.
-    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', dial_content: 'clock' }, { module_control: 'app', dial_content: 'analog-clock' }, { module_control: 'app', dial_content: 'gpu' }, { module_control: 'app', dial_content: 'clock', extra: 1 }]) {
+    expect(isDisplaySettings({ module_control: 'app' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', auto_execute: 'yes' })).toBe(false);
+    // The earlier shapes (the toggle, the file with a global dial choice) are
+    // migrated by Rust and never reach the frontend.
+    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', auto_execute: false }, { module_control: 'app', dial_content: 'clock', auto_execute: false }, { module_control: 'app', auto_execute: false, extra: 1 }]) {
       expect(isDisplaySettings(bad)).toBe(false);
     }
   });
@@ -56,15 +68,22 @@ describe('display flags and software mode', () => {
     expect(displayFlags(app, 'm4315', true, nested)).toEqual(['--display-sync']);
     // A flat 15-key profile is written as one page, so it is drawn too.
     expect(displayFlags(app, 'm4315', true, flat)).toEqual(['--display-sync']);
-    expect(displayFlags(app, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'clock']);
-    // The function name needs something on the dial; otherwise the dial shows the analog clock.
+  });
+  it('take the dial content from the profile, with the idle fallback', () => {
+    // The default is the function name, which needs something on the dial;
+    // otherwise the dial shows the analog clock.
     const dialBound: Profile = { ...flat, bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 2 } }] };
-    expect(displayFlags(defaultDisplaySettings, 'm131e', true, dialBound)).toEqual(['--display-sync', '--dial-content', 'function']);
-    expect(displayFlags(defaultDisplaySettings, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
-    expect(displayFlags({ ...app, dial_content: 'analog_clock' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
-    expect(displayFlags({ ...app, dial_content: 'cpu' }, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'cpu']);
-    expect(displayFlags({ ...app, dial_content: 'cpu' }, 'm4315', true, flat)).toEqual(['--display-sync']);
-    expect(displayFlags({ ...app, dial_content: 'off' }, 'm131e', true, flat)).toEqual([]);
+    expect(displayFlags(app, 'm131e', true, flat)).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
+    expect(displayFlags(app, 'm131e', true, dialBound)).toEqual(['--display-sync', '--dial-content', 'function']);
+    // An explicit choice in the profile is kept, whatever it is.
+    expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'analog_clock'))).toEqual(['--display-sync', '--dial-content', 'analog-clock']);
+    expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'clock'))).toEqual(['--display-sync', '--dial-content', 'clock']);
+    expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'cpu'))).toEqual(['--display-sync', '--dial-content', 'cpu']);
+    expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'image', 'AAAA'))).toEqual(['--display-sync', '--dial-content', 'image']);
+    // A profile whose dial display is off: no display flags at all.
+    expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'off'))).toEqual([]);
+    // The keypad ignores the dial setting, the dial ignores the keypad pages.
+    expect(displayFlags(app, 'm4315', true, withDialDisplay(flat, 'cpu'))).toEqual(['--display-sync']);
   });
   it('App control covers the keypad and dial only and never gives other modules flags', () => {
     for (const module of ['m4315', 'm131e'] as const) expect(appControls(module)).toBe(true);
@@ -80,7 +99,7 @@ describe('display flags and software mode', () => {
 describe('DisplaySettingsStore', () => {
   it('loads, saves and shows App until the backend answers', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', dial_content: 'function', auto_execute: false };
+    let stored: DisplaySettings = { module_control: 'app', auto_execute: false };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -90,12 +109,10 @@ describe('DisplaySettingsStore', () => {
     expect(store.getState().settings.module_control).toBe('app');
     expect(await store.load()).toBe(true);
     expect(await store.setModuleControl('built_in_animation')).toBe(true);
-    expect(await store.setDialContent('analog_clock' as DialContent)).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', dial_content: 'analog_clock', auto_execute: false });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', auto_execute: false });
     expect(calls).toEqual([
       ['display_settings', undefined],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'function', auto_execute: false } }],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', dial_content: 'analog_clock', auto_execute: false } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', auto_execute: false } }],
     ]);
   });
   it('reports errors and unexpected replies', async () => {
@@ -126,7 +143,7 @@ function runnerWith(count: number) {
 }
 
 describe('DisplaySettingsPanel markup', () => {
-  it('shows the display control set to App by default, with the honest caveats and the dial choice', () => {
+  it('shows the display control set to App by default, with the honest caveats', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} />);
     expect(markup).toContain('<h2 id="display-settings-title">Let OpenStreamHub drive the display</h2>');
     expect(markup).toContain('<option value="app" selected="">App</option>');
@@ -137,18 +154,15 @@ describe('DisplaySettingsPanel markup', () => {
     expect(moduleControlCaveat).toContain('first three keys');
     expect(moduleControlCaveat).toContain('latency has not been measured');
     expect(markup).toContain(moduleControlCaveat);
-    expect(markup).toContain('<label for="display-dial-content">Dial screen shows</label>');
-    expect(markup).toMatch(/<select id="display-dial-content">/);
-    expect(markup).toContain('>Digital clock (HH:MM)</option>');
-    expect(markup).toContain('>Analog clock</option>');
-    expect(markup).toContain('<option value="cpu">CPU usage (%, macOS only)</option>');
+    // The dial screen choice moved into the profile's dial editor.
+    expect(markup).not.toContain('display-dial-content');
+    expect(moduleControlNotes.app).toContain('dial editor');
     expect(markup).toContain('Changes apply the next time you start a profile.');
   });
-  it('Built-in animation explains what it gives up and locks the dial choice', () => {
+  it('Built-in animation explains what it gives up', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: builtIn })} />);
     expect(markup).toContain('<option value="built_in_animation" selected="">Built-in animation</option>');
     expect(markup).toContain(moduleControlNotes.built_in_animation.replace(/"/g, '&quot;'));
-    expect(markup).toMatch(/<select id="display-dial-content" disabled="">/);
   });
   it('says running profiles keep their setting and are never restarted', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: app })} runner={runnerWith(2)} />);

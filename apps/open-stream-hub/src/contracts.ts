@@ -75,8 +75,14 @@ export interface KeypadPage { id: string; name: string; slots: KeypadSlot[]; art
 // Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
 export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }
 export interface DialFunction { name: string; bindings: DialBinding[] }
-// dial_functions is edited in the dial functions editor of the inspector or imported; edit paths that do not touch it must carry it through untouched.
-export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[] }
+// What the M131E dial screen shows while the profile runs and the app drives the display. The values match the
+// masterhub-service --dial-content spellings; 'image' shows the picture in DialDisplay.image. Absent means the
+// default: the active function's name, or the analog clock for a profile with nothing on the dial.
+export type DialDisplayContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu' | 'image';
+export interface DialDisplay { content: DialDisplayContent; image?: string }
+// dial_functions and dial_display are edited in the dial editor of the inspector or imported; edit paths that do not
+// touch them must carry them through untouched.
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay }
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }
@@ -185,11 +191,10 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // Module control (display_settings / set_display_settings; stored in <app data>/display-settings.json). 'app' (the
 // default) runs the 15-key module and the dial in software mode with their displays in sync; 'built_in_animation'
 // leaves them in the module's own mode. Read once when a profile is started, so a change applies at the next start.
-// dial_content is what the M131E dial shows under 'app'.
-export type DialContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu';
+// What the dial shows under 'app' is the running profile's dial_display setting, not a global one.
 export type ModuleControl = 'app' | 'built_in_animation';
 // auto_execute: 'Run actions automatically' for sessions the session manager starts on its own. Off unless the user turns it on.
-export interface DisplaySettings { module_control: ModuleControl; dial_content: DialContent; auto_execute: boolean }
+export interface DisplaySettings { module_control: ModuleControl; auto_execute: boolean }
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.

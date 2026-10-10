@@ -224,21 +224,21 @@ describe('automatic actions', () => {
   });
   it('turn Run actions automatically off with one click, never saving settings it has not read', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', dial_content: 'cpu', auto_execute: true };
+    let stored: DisplaySettings = { module_control: 'app', auto_execute: true };
     const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
       return stored as T;
     }, true);
     expect(await store.stopAutomaticActions()).toBe(true);
-    expect(calls).toEqual([['display_settings', undefined], ['set_display_settings', { settings: { module_control: 'app', dial_content: 'cpu', auto_execute: false } }]]);
+    expect(calls).toEqual([['display_settings', undefined], ['set_display_settings', { settings: { module_control: 'app', auto_execute: false } }]]);
     // Unreadable settings: nothing is saved (the backend already stopped automatic runs).
     const broken = new DisplaySettingsStore(async () => { throw 'unreadable'; }, true);
     expect(await broken.stopAutomaticActions()).toBe(false);
   });
   it('offer the toggle with its disclosure and a default profile picker in Settings', async () => {
     const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) =>
-      (command === 'default_profile' ? { profile_id: 'p-1' } : command === 'set_default_profile' ? { profile_id: args!.profileId as string | null } : { module_control: 'app', dial_content: 'function', auto_execute: false }) as T, true);
+      (command === 'default_profile' ? { profile_id: 'p-1' } : command === 'set_default_profile' ? { profile_id: args!.profileId as string | null } : { module_control: 'app', auto_execute: false }) as T, true);
     await store.load();
     await store.loadDefaultProfile();
     expect(store.getState().defaultProfile).toMatchObject({ loaded: true, profileId: 'p-1' });

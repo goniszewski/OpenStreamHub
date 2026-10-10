@@ -19,7 +19,7 @@ import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
-import type { KeyArtwork, LiveDevice, ObsCatalogNames, ReplayKind } from './contracts';
+import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, ReplayKind } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
@@ -52,6 +52,7 @@ declare global {
     __oshKeyCopySeed?: (control: number) => void;
     __oshKeySampleSeed?: () => void;
     __oshLightingSeed?: (devices: LiveDevice[]) => void;
+    __oshDialDisplaySeed?: (content: DialDisplayContent, image?: string) => void;
   }
 }
 function webStorage(): Storage | null {
@@ -181,6 +182,9 @@ export default function App() {
       });
       // Lighting captures likewise: the preview has no device inventory, so captures seed one.
       window.__oshLightingSeed = devices => feed.seedPreview(devices);
+      // The dial's Display tab: the mode picker works in the preview, but an
+      // uploaded picture needs the desktop prepare pipeline, so captures seed one.
+      window.__oshDialDisplaySeed = (content, image) => session.update(latest => ({ ...latest, dial_display: image ? { content, image } : { content } }));
     }
   }, [session, obsCatalog]);
 

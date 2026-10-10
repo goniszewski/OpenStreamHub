@@ -483,6 +483,18 @@ input[aria-invalid="true"] { border-color:var(--red); }
 
 /* Dial functions: editor panel, function list, preview and replay switch rows. */
 .dial-functions { margin-top:22px; }.dial-functions h3 { display:flex; align-items:center; gap:10px; }.dial-functions h4 { margin:0 0 10px; font-size:13px; }
+/* The dial editor's Functions | Display tab bar and the Display tab's face
+   preview: a small round screen drawn by the same painter the device gets. */
+.dial-editor { margin-top:22px; }
+.dial-tabs { display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:14px; }
+.dial-tabs button { appearance:none; border:1px solid transparent; border-bottom:none; background:none; color:var(--muted); font:inherit; font-size:13px; font-weight:600; padding:8px 14px; border-radius:9px 9px 0 0; cursor:pointer; }
+.dial-tabs button:hover { color:var(--text); }
+.dial-tabs button.active { color:var(--text); border-color:var(--line); background:var(--panel); margin-bottom:-1px; }
+.dial-display h3 { display:flex; align-items:center; gap:10px; }
+.dial-face-preview { position:relative; width:180px; aspect-ratio:1; border-radius:50%; overflow:hidden; margin-top:14px; background:#000; border:2px solid var(--line); }
+.dial-face { display:block; width:100%; height:100%; border-radius:50%; object-fit:cover; }
+.dial-display-image { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.dial-display-image img { width:56px; height:56px; border-radius:50%; object-fit:cover; border:1px solid var(--line); }
 .dial-function-list { list-style:none; margin:14px 0; padding:0; display:grid; gap:10px; }
 .dial-function-list>li { border:1px solid var(--line); border-radius:9px; background:var(--panel); padding:12px; }
 .dial-function-list>li.selected { border-color:var(--accent); background:var(--selected); }

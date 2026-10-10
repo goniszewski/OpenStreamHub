@@ -4,7 +4,7 @@ import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import {
-  addColourFavourite, appliedStatus, applyDelayMs, applyLighting, clampBacklight, defaultBacklight, defaultColour,
+  addColourFavourite, appliedStatus, applyDelayMs, applyLighting, clampBacklight, createApplyQueue, defaultBacklight, defaultColour,
   lightingBlockReason, lightingDeviceLabel, lightingScopeLabels, lightingTargets, readColourFavourites,
   removeColourFavourite, resetLighting, resetStatus, writeColourFavourites,
 } from './lighting-model';
@@ -40,32 +40,33 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const targets = lightingTargets(devices, scope, selected?.path_hex ?? null);
   const runOwned = targets.some(device => runner?.isActivePath(device.path_hex, device) ?? false);
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
-  // The debounced apply reads the latest values and gate from this ref, not
-  // from a render closure; a new change replaces the pending one.
+  // The apply queue reads the latest values and gate from this ref, not from
+  // a render closure; a trailing apply runs after the state that scheduled it.
   const latest = useRef({ invoke, reason, targets, backlight, colour });
   latest.current = { invoke, reason, targets, backlight, colour };
-  const timer = useRef<number | null>(null);
-  const inFlight = useRef(false);
-
-  useEffect(() => () => { if (timer.current !== null) window.clearTimeout(timer.current); }, []);
+  // One write at a time, and a change landing during a write re-applies once
+  // with the latest values, so a dragged slider is never silently dropped —
+  // even while a slow Whole kit write is running. Recreated per mount cycle:
+  // StrictMode's effect/cleanup/effect must always leave a live queue.
+  const applyRef = useRef<ReturnType<typeof createApplyQueue> | null>(null);
+  useEffect(() => {
+    const queue = createApplyQueue(async () => {
+      const current = latest.current;
+      if (current.reason !== null || !current.invoke || current.targets.length === 0) return;
+      setError(null);
+      try {
+        const written = await applyLighting(current.invoke, {
+          targets: current.targets.map(device => device.path_hex), backlight: current.backlight, colour: current.colour,
+        });
+        setStatus(appliedStatus(written));
+      } catch (reason) { setError(errorMessage(reason)); }
+    }, applyDelayMs);
+    applyRef.current = queue;
+    return () => { applyRef.current = null; queue.dispose(); };
+  }, []);
 
   function scheduleApply() {
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => { timer.current = null; void applyNow(); }, applyDelayMs);
-  }
-
-  async function applyNow() {
-    const current = latest.current;
-    if (current.reason !== null || !current.invoke || current.targets.length === 0 || inFlight.current) return;
-    inFlight.current = true;
-    setError(null);
-    try {
-      const written = await applyLighting(current.invoke, {
-        targets: current.targets.map(device => device.path_hex), backlight: current.backlight, colour: current.colour,
-      });
-      setStatus(appliedStatus(written));
-    } catch (reason) { setError(errorMessage(reason)); }
-    inFlight.current = false;
+    applyRef.current?.schedule();
   }
 
   async function reset() {
@@ -158,7 +159,7 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. A dial that a run is driving is left out; stop the run to light it. Knob rings, base edge and fader lighting are not available yet.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob rings, base edge and fader lighting are not available yet.</p>
       </details>
     </div>
   </section>;

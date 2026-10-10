@@ -65,6 +65,12 @@ describe('LightingPage', () => {
     expect(markup).toContain('<fieldset class="lighting-controls" disabled="">');
   });
 
+  it('does not claim a run-owned dial is skipped — the page locks instead', () => {
+    const markup = render({ feed: feedWith([dial('aa')]) });
+    expect(markup).toContain('While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting.');
+    expect(markup).not.toContain('is left out');
+  });
+
   it('renders saved favourites from storage with use and remove labels', () => {
     const storage = new FakeStorage();
     storage.setItem(favouritesStorageKey, JSON.stringify(['#ff0000', '#00ff00']));

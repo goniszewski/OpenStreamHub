@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveDevice } from './contracts';
 import { FakeStorage } from './fake-storage';
 import {
-  addColourFavourite, appliedStatus, applyLighting, clampBacklight, colourChannels, defaultColour,
+  addColourFavourite, appliedStatus, applyDelayMs, applyLighting, clampBacklight, colourChannels, createApplyQueue, defaultColour,
   favouritesStorageKey, lightingBlockReason, lightingDeviceLabel, lightingTargets, maxColourFavourites,
   normaliseHexColour, readColourFavourites, removeColourFavourite, resetLighting, resetStatus,
   writeColourFavourites,
@@ -144,5 +144,62 @@ describe('colour favourites', () => {
 describe('defaultColour', () => {
   it('is a valid white the picker and the backend accept', () => {
     expect(normaliseHexColour(defaultColour)).toBe('#ffffff');
+  });
+});
+
+describe('createApplyQueue', () => {
+  it('sends the last value when a change lands during a slow write', async () => {
+    const sent: string[] = [];
+    let value = 'first';
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queue = createApplyQueue(async () => { sent.push(value); await gate; }, applyDelayMs);
+    const first = queue.fire();
+    // The slider moves while the first write is still running.
+    value = 'second';
+    await queue.fire();
+    expect(sent).toEqual(['first']);
+    release();
+    await first;
+    queue.dispose();
+    expect(sent).toEqual(['first', 'second']);
+  });
+
+  it('coalesces several mid-flight changes into one trailing apply', async () => {
+    const sent: string[] = [];
+    let value = 'a';
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const queue = createApplyQueue(async () => { sent.push(value); await gate; }, applyDelayMs);
+    const first = queue.fire();
+    value = 'b';
+    await queue.fire();
+    value = 'c';
+    await queue.fire();
+    release();
+    await first;
+    queue.dispose();
+    expect(sent).toEqual(['a', 'c']);
+  });
+
+  it('debounces a burst into one apply', async () => {
+    const sent: string[] = [];
+    const queue = createApplyQueue(async () => { sent.push('ran'); }, 15);
+    queue.schedule();
+    queue.schedule();
+    queue.schedule();
+    await new Promise(resolve => setTimeout(resolve, 60));
+    queue.dispose();
+    expect(sent).toEqual(['ran']);
+  });
+
+  it('stops scheduling and firing after dispose', async () => {
+    const sent: string[] = [];
+    const queue = createApplyQueue(async () => { sent.push('ran'); }, 5);
+    queue.dispose();
+    queue.schedule();
+    await queue.fire();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    expect(sent).toEqual([]);
   });
 });

@@ -100,6 +100,48 @@ export function resetLighting(invoke: Invoke, targets: string[]): Promise<number
   return invoke('reset_dial_lighting', { targets }) as Promise<number>;
 }
 
+// Serialises the live applies: writes run one at a time, debounced, and a
+// change that lands while a write is running (a dragged slider during a slow
+// Whole kit write) marks exactly one trailing apply, so the last control
+// values always ship instead of being dropped. `run` reads the caller's
+// latest state itself and re-checks its gate, because a trailing apply runs
+// after the state that scheduled it.
+export function createApplyQueue(run: () => Promise<void>, delayMs: number) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight = false;
+  let pending = false;
+  let disposed = false;
+  const fire = async (): Promise<void> => {
+    if (disposed) return;
+    if (inFlight) {
+      pending = true;
+      return;
+    }
+    inFlight = true;
+    try {
+      await run();
+    } finally {
+      inFlight = false;
+      if (pending && !disposed) {
+        pending = false;
+        await fire();
+      }
+    }
+  };
+  return {
+    schedule() {
+      if (disposed) return;
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void fire(); }, delayMs);
+    },
+    fire,
+    dispose() {
+      disposed = true;
+      if (timer !== null) clearTimeout(timer);
+    },
+  };
+}
+
 export function appliedStatus(count: number): string {
   return count === 1 ? 'Applied to 1 dial.' : `Applied to ${count} dials.`;
 }

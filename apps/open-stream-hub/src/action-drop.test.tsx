@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 import { actionDragMime } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
 import { controlDropHandlers } from './DevicesPage';
+import { keyDragMime } from './key-drag';
 import { KeypadScreen } from './KeypadScreen';
-import { createKeypadFolder, emptyKeypadPage, keypadRoot } from './keypad-model';
+import { createKeypadFolder, editKeypadBinding, emptyKeypadPage, keypadRoot } from './keypad-model';
+import { keyMenuItems } from './useDeviceEditor';
 import { dropNoticeText, dropProfileEdit, dropTargetState } from './useDeviceEditor';
 import type { Binding, Profile } from './contracts';
 
@@ -120,9 +122,15 @@ describe('keypad tile drops', () => {
     if (!isValidElement(node)) return [];
     return [node as ReactElement, ...walk((node.props as { children?: ReactNode }).children)];
   };
-  type TileProps = { className?: string; 'aria-label'?: string; onDragOver?: unknown; onDrop?: unknown };
-  const tiles = (path: string[], onDropAction?: (control: number, type: PickerActionType) => void) =>
-    walk(KeypadScreen({ pages: path.length > 1 ? [root, withFolder.keypad!.pages.at(-1)!] : [root], allPages: withFolder.keypad!.pages, path, selected: 1, onSelect: () => {}, onNavigate: () => {}, onDropAction }))
+  type TileProps = { className?: string; 'aria-label'?: string; onDragOver?: unknown; onDrop?: unknown; draggable?: boolean; onDragStart?: unknown; onContextMenu?: unknown };
+  const tiles = (path: string[], onDropAction?: (control: number, type: PickerActionType) => void, rearrange?: {
+    move?: (source: { path: string[]; control: number }, to: { path: string[]; control: number }, copy: boolean) => void;
+    context?: (control: number, at: { x: number; y: number }) => void;
+  }) =>
+    walk(KeypadScreen({
+      pages: path.length > 1 ? [root, withFolder.keypad!.pages.at(-1)!] : [root], allPages: withFolder.keypad!.pages, path, selected: 1,
+      onSelect: () => {}, onNavigate: () => {}, onDropAction, onMoveKey: rearrange?.move, onKeyContext: rearrange?.context,
+    }))
       .filter(element => element.type === 'button' && String((element.props as TileProps).className).includes('keypad-tile'))
       .map(element => element.props as TileProps);
 
@@ -135,6 +143,7 @@ describe('keypad tile drops', () => {
     expect(inFolder[0]['aria-label']).toBe('Back one level, L1');
     expect(inFolder[0].onDragOver).toBeUndefined();
     expect(inFolder[0].onDrop).toBeUndefined();
+    expect(inFolder[0].onContextMenu).toBeUndefined();
     expect(inFolder[1]['aria-label']).toBe('Select Key 2, empty');
     expect(typeof inFolder[1].onDrop).toBe('function');
   });
@@ -154,5 +163,70 @@ describe('keypad tile drops', () => {
       expect(tile.onDragOver).toBeUndefined();
       expect(tile.onDrop).toBeUndefined();
     }
+  });
+
+  it('drags occupied keys only, carrying their source', () => {
+    const data = new Map<string, string>();
+    const occupied = tiles(['root'], undefined, { move: () => {} })[2];
+    expect(occupied.draggable).toBe(true);
+    expect(typeof occupied.onDragStart).toBe('function');
+    (occupied as { onDragStart(event: unknown): void }).onDragStart({ dataTransfer: { setData: (name: string, value: string) => { data.set(name, value); }, effectAllowed: '' } });
+    expect(data.get(keyDragMime)).toBe(JSON.stringify({ path: ['root'], control: 2 }));
+    // Empty keys and the Back key cannot start a drag.
+    expect(tiles(['root'], undefined, { move: () => {} })[4].draggable).toBeUndefined();
+    expect(tiles(['root', 'fx'], undefined, { move: () => {} })[0].draggable).toBeUndefined();
+    // Without a move handler nothing is draggable.
+    expect(tiles(['root'])[2].draggable).toBeUndefined();
+  });
+
+  it('drops a dragged key as a move, a swap or an Alt copy, and falls through to action drops', () => {
+    const moves: [string[], number, number, boolean][] = [];
+    const key5 = tiles(['root'], undefined, { move: (source, to, copy) => { moves.push([source.path, source.control, to.control, copy]); } })[4];
+    const keyDrop = (alt: boolean) => ({
+      altKey: alt,
+      dataTransfer: { types: [keyDragMime], getData: (name: string) => name === keyDragMime ? JSON.stringify({ path: ['root'], control: 2 }) : '' },
+      preventDefault: () => {},
+    });
+    (key5 as { onDrop(event: unknown): void }).onDrop(keyDrop(false));
+    expect(moves).toEqual([[['root'], 2, 4, false]]);
+    (key5 as { onDrop(event: unknown): void }).onDrop(keyDrop(true));
+    expect(moves).toEqual([[['root'], 2, 4, false], [['root'], 2, 4, true]]);
+    // An action payload still assigns the action.
+    (key5 as { onDrop(event: unknown): void }).onDrop(dropped({ [actionDragMime]: 'set_volume' }));
+    expect(moves).toHaveLength(2);
+    // A foreign key payload is ignored entirely.
+    (key5 as { onDrop(event: unknown): void }).onDrop({ altKey: false, dataTransfer: { types: [keyDragMime], getData: () => 'junk' }, preventDefault: () => {} });
+    expect(moves).toHaveLength(2);
+  });
+
+  it('right-clicks a key into the Copy/Paste/Clear menu, never on the Back key', () => {
+    const contexts: [number, number, number][] = [];
+    const key5 = tiles(['root'], undefined, { context: (control, at) => { contexts.push([control, at.x, at.y]); } })[4];
+    expect(typeof key5.onContextMenu).toBe('function');
+    (key5 as { onContextMenu(event: unknown): void }).onContextMenu({ preventDefault: () => {}, clientX: 30, clientY: 40 });
+    expect(contexts).toEqual([[4, 30, 40]]);
+    // Without a context handler the tile does not prevent the browser menu.
+    expect(tiles(['root'])[4].onContextMenu).toBeUndefined();
+  });
+});
+
+describe('key tile context menu items', () => {
+  type Stub = Parameters<typeof keyMenuItems>[0];
+  const stub = (slot: unknown, clipboard: unknown): Stub => ({
+    keyMenu: { control: 4, x: 10, y: 12 }, currentKeypadPage: { id: 'root', name: 'Root', slots: root.slots.map((entry, at) => at === 4 ? slot : entry) },
+    clipboard, copyKey: () => {}, pasteKey: () => {}, clearKey: () => {},
+  } as unknown as Stub);
+  const copiedKey = { kind: 'key', key: { type: 'action', slot: { type: 'action', label: 'Clip', bindings: [] } } };
+  const items = (tile: unknown, clipboard: unknown) => Object.fromEntries(keyMenuItems(stub(tile, clipboard), true).map(item => [item.label, item]));
+
+  it('enables Copy and Clear only for occupied keys, Paste only for an empty key with a copied key', () => {
+    expect(items({ type: 'action', label: 'Clip', bindings: [] }, copiedKey)).toMatchObject({ Copy: { disabled: false }, Paste: { disabled: true }, 'Clear key': { disabled: false } });
+    expect(items(null, copiedKey)).toMatchObject({ Copy: { disabled: true }, Paste: { disabled: false }, 'Clear key': { disabled: true } });
+    expect(items(null, undefined).Paste.disabled).toBe(true);
+    // A copied binding cannot paste onto a key.
+    expect(items(null, { kind: 'binding' }).Paste.disabled).toBe(true);
+    // A folder reads Delete folder; shortcuts follow the platform hint format.
+    expect(items({ type: 'folder', page_id: 'fx' }, undefined)['Delete folder']).toBeTruthy();
+    expect(keyMenuItems(stub({ type: 'action', label: 'Clip', bindings: [] }, copiedKey), true).map(item => item.hint)).toEqual(['⌘C', '⌘V', undefined]);
   });
 });

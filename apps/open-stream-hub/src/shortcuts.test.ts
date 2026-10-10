@@ -40,7 +40,7 @@ describe('shortcutAction', () => {
 });
 
 describe('handleShortcut', () => {
-  const handlers = () => ({ mac: true, isPageEnabled: vi.fn((page: string) => page !== 'settings'), setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => true) });
+  const handlers = () => ({ mac: true, isPageEnabled: vi.fn((page: string) => page !== 'settings'), setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => true), copy: vi.fn(() => true), paste: vi.fn(() => true), delete: vi.fn(() => true) });
 
   it('prevents the default and runs the action, including from inputs', () => {
     const h = handlers();
@@ -73,7 +73,7 @@ describe('installShortcuts', () => {
       querySelector: vi.fn(() => dialogOpen ? {} : null),
     };
     const save = vi.fn();
-    const remove = installShortcuts(target as never, () => ({ mac: false, isPageEnabled: () => true, setPage: vi.fn(), save, duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: () => true }));
+    const remove = installShortcuts(target as never, () => ({ mac: false, isPageEnabled: () => true, setPage: vi.fn(), save, duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: () => true, copy: () => true, paste: () => true, delete: () => true }));
     const event = { ...key('s', { ctrlKey: true }), preventDefault: vi.fn() };
     listener!(event as unknown as Event);
     expect(save).toHaveBeenCalledOnce();
@@ -141,7 +141,7 @@ describe('undo, redo and find', () => {
   });
 
   it('handleShortcut runs undo/redo and only prevents default when it acts', () => {
-    const handlers = { mac: true, isPageEnabled: () => true, setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => false) };
+    const handlers = { mac: true, isPageEnabled: () => true, setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: vi.fn(() => false), copy: vi.fn(() => true), paste: vi.fn(() => true), delete: vi.fn(() => true) };
     const preventDefault = vi.fn();
     expect(handleShortcut({ ...key('z', { metaKey: true }), preventDefault }, handlers, false)).toBe(true);
     expect(handlers.undo).toHaveBeenCalledOnce();
@@ -165,6 +165,40 @@ describe('undo, redo and find', () => {
     expect(withHint('Undo', 'Z', false)).toBe('Undo (Ctrl+Z)');
     expect(redoHint(true)).toBe('⌘⇧Z');
     expect(redoHint(false)).toBe('Ctrl+Y');
-    expect(shortcutList.map(item => item.keys)).toEqual(expect.arrayContaining(['Z', 'Shift+Z', 'F']));
+    expect(shortcutList.map(item => item.keys)).toEqual(expect.arrayContaining(['Z', 'Shift+Z', 'F', 'C', 'V', '⌫']));
+  });
+});
+
+describe('copy, paste and clear', () => {
+  it('maps Cmd+C / Cmd+V / Backspace and Delete', () => {
+    expect(shortcutAction(key('c', { metaKey: true }), true)).toEqual({ type: 'copy' });
+    expect(shortcutAction(key('c', { ctrlKey: true }), false)).toEqual({ type: 'copy' });
+    expect(shortcutAction(key('v', { metaKey: true }), true)).toEqual({ type: 'paste' });
+    expect(shortcutAction(key('v', { ctrlKey: true }), false)).toEqual({ type: 'paste' });
+    expect(shortcutAction(key('Backspace', { metaKey: true }), true)).toEqual({ type: 'delete' });
+    expect(shortcutAction(key('Delete', { metaKey: true }), true)).toEqual({ type: 'delete' });
+  });
+
+  it('leaves copy, paste and backspace to the browser inside a text field, and ignores repeats', () => {
+    const input = { tagName: 'INPUT', type: 'text' };
+    expect(shortcutAction(key('c', { metaKey: true, target: input }), true)).toBeNull();
+    expect(shortcutAction(key('v', { metaKey: true, target: input }), true)).toBeNull();
+    expect(shortcutAction(key('Backspace', { metaKey: true, target: input }), true)).toBeNull();
+    expect(shortcutAction(key('c', { metaKey: true, target: { tagName: 'BUTTON' } }), true)).toEqual({ type: 'copy' });
+    expect(shortcutAction(key('Backspace', { metaKey: true, repeat: true }), true)).toBeNull();
+    expect(shortcutAction(key('c', { metaKey: true, shiftKey: true }), true)).toBeNull();
+  });
+
+  it('only prevents the default when copy or delete act, and always acts on paste', () => {
+    const handlers = { mac: true, isPageEnabled: () => true, setPage: vi.fn(), save: vi.fn(), duplicate: vi.fn(), undo: vi.fn(), redo: vi.fn(), find: () => true, copy: vi.fn(() => false), paste: vi.fn(() => true), delete: vi.fn(() => true) };
+    const preventDefault = vi.fn();
+    expect(handleShortcut({ ...key('c', { metaKey: true }), preventDefault }, handlers, false)).toBe(false);
+    expect(handlers.copy).toHaveBeenCalledOnce();
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(handleShortcut({ ...key('v', { metaKey: true }), preventDefault }, handlers, false)).toBe(true);
+    expect(handlers.paste).toHaveBeenCalledOnce();
+    expect(handleShortcut({ ...key('Backspace', { metaKey: true }), preventDefault }, handlers, false)).toBe(true);
+    expect(handlers.delete).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledTimes(2);
   });
 });

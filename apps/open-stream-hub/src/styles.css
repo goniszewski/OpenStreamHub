@@ -238,6 +238,12 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:32px; letter-spacing:-.9px; line-hei
 .keypad-tile-label { font-size: 11px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .keypad-empty-mark { color: var(--muted); font-size: 24px; }
 .keypad-tile:focus-visible, .keypad-breadcrumbs button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.keypad-tile[draggable="true"] { cursor: grab; }
+.context-menu { position: fixed; z-index: 90; min-width: 190px; display: grid; padding: 6px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); box-shadow: var(--shadow); outline: none; }
+.context-menu button { display: flex; align-items: center; justify-content: space-between; gap: 18px; border: 0; background: transparent; color: var(--text); border-radius: 7px; padding: 8px 10px; font-size: 13px; text-align: left; }
+.context-menu button:hover:not(:disabled), .context-menu button:focus-visible { background: var(--selected); color: var(--accent); outline: none; }
+.context-menu button.danger { color: var(--red); }
+.context-menu kbd { font: inherit; font-size: 11px; color: var(--muted); }
 
 /* Screen content stays opaque; only the glass highlight is translucent. */
 .hero.keypad-art { height:auto; min-height:0; margin:12px auto; }

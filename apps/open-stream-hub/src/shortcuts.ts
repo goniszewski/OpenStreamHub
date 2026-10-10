@@ -2,7 +2,8 @@
 // App installs it with `installShortcuts`.
 import type { Page } from './ui-model';
 
-export type ShortcutAction = { type: 'save' } | { type: 'duplicate' } | { type: 'undo' } | { type: 'redo' } | { type: 'find' } | { type: 'page'; page: Page };
+export type ShortcutAction = { type: 'save' } | { type: 'duplicate' } | { type: 'undo' } | { type: 'redo' } | { type: 'find' } | { type: 'page'; page: Page }
+  | { type: 'copy' } | { type: 'paste' } | { type: 'delete' };
 
 export interface KeyEventLike {
   key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; isComposing?: boolean; keyCode?: number; repeat?: boolean;
@@ -40,6 +41,12 @@ export function shortcutAction(event: KeyEventLike, mac: boolean, options: { mod
   if (key === 'z') return isTextEntryTarget(event.target) ? null : { type: event.shiftKey ? 'redo' : 'undo' };
   if (key === 'y' && !mac && !event.shiftKey) return isTextEntryTarget(event.target) ? null : { type: 'redo' };
   if (event.shiftKey) return null;
+  // Copy, paste and clear act on the selected key or binding. Inside a text
+  // field they stay with the browser, like a backspace that edits the text.
+  const textEntry = isTextEntryTarget(event.target);
+  if (key === 'c' && !textEntry) return { type: 'copy' };
+  if (key === 'v' && !textEntry) return { type: 'paste' };
+  if ((key === 'backspace' || key === 'delete') && !textEntry && !event.repeat) return { type: 'delete' };
   if (key === 's') return { type: 'save' };
   if (key === 'f') return { type: 'find' };
   if (key === 'd') return event.repeat ? null : { type: 'duplicate' };
@@ -56,6 +63,9 @@ export const shortcutList: { keys: string; label: string }[] = [
   { keys: 'D', label: 'Duplicate profile' },
   { keys: 'Z', label: 'Undo your last change (not while typing in a field)' },
   { keys: 'Shift+Z', label: 'Redo your last change (Ctrl+Y also works on Windows and Linux)' },
+  { keys: 'C', label: 'Copy the selected key or binding' },
+  { keys: 'V', label: 'Paste the copied key or binding onto the selection' },
+  { keys: '⌫', label: 'Clear the selected key or remove the selected binding (a folder asks first)' },
   { keys: 'F', label: 'Search bindings (opens the bindings drawer)' },
   { keys: '1', label: 'Workspace' },
   { keys: '2', label: 'Display artwork' },
@@ -73,6 +83,11 @@ export interface ShortcutHandlers {
   redo(): void;
   // Returns false when search is not available (the bindings drawer is on the workspace).
   find(): boolean;
+  // Copy and delete return false when there is nothing of ours to act on, so
+  // the browser keeps the key; paste always acts (it says when nothing is copied).
+  copy(): boolean;
+  paste(): boolean;
+  delete(): boolean;
 }
 
 // Returns true when the event was handled (and its default prevented).
@@ -80,12 +95,15 @@ export function handleShortcut(event: KeyEventLike & { preventDefault(): void },
   const action = shortcutAction(event, handlers.mac, { modalOpen });
   if (!action) return false;
   if (action.type === 'find' && !handlers.find()) return false;
+  if (action.type === 'copy' && !handlers.copy()) return false;
+  if (action.type === 'paste' && !handlers.paste()) return false;
+  if (action.type === 'delete' && !handlers.delete()) return false;
   event.preventDefault();
   if (action.type === 'save') handlers.save();
   else if (action.type === 'undo') handlers.undo();
   else if (action.type === 'redo') handlers.redo();
   else if (action.type === 'duplicate') handlers.duplicate();
-  else if (action.type === 'find') { /* handled above */ }
+  else if (action.type === 'find' || action.type === 'copy' || action.type === 'paste' || action.type === 'delete') { /* handled above */ }
   else if (handlers.isPageEnabled(action.page)) handlers.setPage(action.page);
   return true;
 }

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
+import { ContextMenu } from './controls';
 import { EncoderDisplayContent, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
@@ -21,6 +22,7 @@ import type { DeviceFeed } from './device-feed';
 import type { ProfileSession, SessionState } from './profile-session';
 import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
+import { keyMenuItems } from './useDeviceEditor';
 import type { DeviceEditor } from './useDeviceEditor';
 
 export function ModuleCatalog({ editor, feed }: { editor: DeviceEditor; feed?: DeviceFeed }) {
@@ -62,7 +64,7 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
 // The middle column: the module image with its live input, the control pickers, then the run section.
 // Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
 // lives in the header Run control.
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void }) {
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const knobOrientation = useKnobOrientation();
@@ -74,13 +76,15 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
     {isKnob && <KnobOrientationControl orientation={knobOrientation} onRotate={knobOrientationStore.rotate} />}
     {selected.supported ? <>
       {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad}
-        onDropAction={disabled ? undefined : (control, type) => editor.dropAction('m4315', control, type)} />}
+        onDropAction={disabled ? undefined : (control, type) => editor.dropAction('m4315', control, type)}
+        onMoveKey={disabled ? undefined : editor.moveKey} onKeyContext={disabled ? undefined : editor.openKeyMenu} />}
       {!isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
         {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => editor.changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
       </div>}
       <p className="hero-note">{moduleNote(selection.module)}</p>
     </> : <div className="planned-panel"><h2>Not available yet</h2><p>{selected.name} is in the module catalog, but this app cannot yet read its input or edit its bindings. See Compatibility for what it supports.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
     <ServicePanel run={run} />
+    {editor.keyMenu && <ContextMenu x={editor.keyMenu.x} y={editor.keyMenu.y} label={`Key ${editor.keyMenu.control + 1} menu`} items={keyMenuItems(editor, mac)} onClose={editor.closeKeyMenu} />}
   </section>;
 }
 

@@ -50,6 +50,20 @@ export function ModalDialog({ open, labelledBy, describedBy, onCancel, className
     onCancel={event => { event.preventDefault(); onCancel(); }}>{children}</dialog>;
 }
 
+// A small right-click menu, positioned at the pointer. It takes the focus when it opens, so
+// Escape closes it and a click anywhere else moves the focus away and closes it — no listeners.
+export interface ContextMenuItem { label: string; hint?: string; disabled?: boolean; danger?: boolean; onSelect(): void }
+
+export function ContextMenu({ x, y, label, items, onClose }: { x: number; y: number; label: string; items: ContextMenuItem[]; onClose(): void }) {
+  return <div className="context-menu" role="menu" aria-label={label} style={{ left: x, top: y }} tabIndex={-1} autoFocus
+    onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onClose(); } }}
+    onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onClose(); }}
+    onContextMenu={event => event.preventDefault()}>
+    {items.map(item => <button key={item.label} type="button" role="menuitem" disabled={item.disabled} className={item.danger ? 'danger' : undefined}
+      onClick={() => { onClose(); item.onSelect(); }}>{item.label}{item.hint && <kbd>{item.hint}</kbd>}</button>)}
+  </div>;
+}
+
 export function CrashScreen({ error }: { error: Error }) {
   return <div className="crash-screen" role="alert">
     <CircleHelp size={28} />

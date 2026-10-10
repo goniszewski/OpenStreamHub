@@ -1,12 +1,23 @@
 import { useState } from 'react';
-import type { Action, Binding, BindingAction, KeypadBinding, Profile, ServiceModule } from './contracts';
+import type { Action, Binding, BindingAction, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
 import { defaultBindingAction, isValidForControl, pickerEntryLabel, pickerWebStorage, recordRecentAction } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
+import type { ContextMenuItem } from './controls';
 import { clampUtf8 } from './draft-model';
-import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot } from './keypad-model';
+import { clearKeypadSlot, copyKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot, moveKeypadSlot, pasteKeypadSlot } from './keypad-model';
+import type { KeyClipboard } from './keypad-model';
+import { hint } from './shortcuts';
 import type { ProfileSession, SessionState } from './profile-session';
-import { actionLabel, controlLabel, editBinding, errorMessage, gestures, modules, sameSelector } from './ui-model';
+import { actionLabel, controlLabel, editBinding, errorMessage, gestureLabels, gestures, modules, sameSelector } from './ui-model';
 import type { BindingSelection, ModuleId } from './ui-model';
+
+// What a Copy holds until a Paste: a whole key (label, bindings, artwork, folder subtree) or one
+// flat control binding. Keys paste onto keys, bindings onto controls.
+export type EditorClipboard =
+  | { kind: 'key'; key: KeyClipboard }
+  | { kind: 'binding'; module: ServiceModule; gesture: Gesture; serial?: string; action: BindingAction };
+
+const newPageId = () => `page-${crypto.randomUUID()}`;
 
 export interface ConfirmRequest { title: string; description: string; confirmLabel: string; run: () => void }
 export type SerialScope = 'any' | 'exact';
@@ -69,6 +80,9 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
   const [serialScope, setSerialScope] = useState<SerialScope>('any');
   const [faderPosition, setFaderPosition] = useState(50);
   const [keypad, setKeypad] = useState({ generation: state.draftGeneration, path: [keypadRoot] });
+  // The Copy/Paste clipboard (a key or a binding) and the open right-click menu of a keypad tile.
+  const [clipboard, setClipboard] = useState<EditorClipboard | null>(null);
+  const [keyMenu, setKeyMenu] = useState<{ control: number; x: number; y: number } | null>(null);
   const synced = syncKeypad(state, keypad);
   // Adjusting state during render (React's derived-state pattern); it settles in one extra render.
   if (synced !== keypad) setKeypad(synced);
@@ -120,6 +134,96 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     changeSelection({ module, control, gesture: gestures[module][0], serial: '' });
   }
 
+  // Copying a key keeps its label, bindings, artwork and folder subtree; copying a binding keeps
+  // its action with its selector. The clipboard is not a draft edit, so Undo does not restore it.
+  function copyKeypadKey(pageId = currentKeypadPage.id, control = selection.control) {
+    try {
+      const path = keypadPathToPage(profile, pageId);
+      const slot = keypadPagesAtPath(profile, path).at(-1)!.slots[control];
+      if (!slot) return;
+      setClipboard({ kind: 'key', key: copyKeypadSlot(profile, path, control) });
+      const name = slot.type === 'folder' ? `folder “${profile.keypad!.pages.find(page => page.id === slot.page_id)?.name ?? slot.page_id}”` : controlLabel('m4315', control);
+      session.setNotice(`Copied ${name}.`);
+    } catch (reason) { session.setError(errorMessage(reason)); }
+  }
+
+  function copyBinding(binding: Binding) {
+    setClipboard({ kind: 'binding', module: binding.module, gesture: binding.gesture, ...(binding.serial_number ? { serial: binding.serial_number } : {}), action: structuredClone(binding.action) });
+    session.setNotice(`Copied the ${gestureLabels[binding.gesture].toLowerCase()} binding of ${controlLabel(binding.module, binding.control)}.`);
+  }
+
+  function pasteKey(control = selection.control, path = keypadPath) {
+    if (!clipboard) { session.setNotice('Nothing is copied yet. Copy a key or a binding first.'); return; }
+    if (clipboard.kind !== 'key') { session.setError('The clipboard holds a binding. Select a control to paste it, or copy a key first.'); return; }
+    try {
+      session.update(latest => pasteKeypadSlot(latest, path, control, clipboard.key, newPageId));
+      const name = clipboard.key.type === 'folder' ? `folder “${clipboard.key.pages[0].name}”` : 'key';
+      session.setNotice(`Pasted ${name} onto ${controlLabel('m4315', control)}.`);
+    } catch (reason) { session.setError(errorMessage(reason)); }
+  }
+
+  // Dropping one tile on another: a move, a swap when the target holds content, or with Alt a
+  // copy onto an empty target. Every result is one undo step.
+  function moveKey(from: { path: string[]; control: number }, to: { path: string[]; control: number }, copy: boolean) {
+    const sameKey = from.control === to.control && from.path.length === to.path.length && from.path.every((id, at) => id === to.path[at]);
+    if (sameKey) return;
+    try {
+      if (copy) {
+        const key = copyKeypadSlot(profile, from.path, from.control);
+        session.update(latest => pasteKeypadSlot(latest, to.path, to.control, key, newPageId));
+        session.setNotice(`Copied ${controlLabel('m4315', from.control)} to ${controlLabel('m4315', to.control)}.`);
+      } else {
+        const swapped = !!keypadPagesAtPath(profile, to.path).at(-1)!.slots[to.control];
+        session.update(latest => moveKeypadSlot(latest, from.path, from.control, to.path, to.control));
+        const fromName = controlLabel('m4315', from.control);
+        session.setNotice(swapped ? `Swapped ${fromName} and ${controlLabel('m4315', to.control)}.` : `Moved ${fromName} to ${controlLabel('m4315', to.control)}.`);
+      }
+      changeSelection({ ...selection, module: 'm4315', control: to.control, gesture: 'pressed', serial: '' });
+    } catch (reason) { session.setError(errorMessage(reason)); }
+  }
+
+  // ⌘C/⌘V/⌫ on the current selection: the selected key, or the selected control's binding.
+  // Copy and delete return false when there is nothing of ours to act on, so the browser keeps
+  // the key (copying selected text, for example).
+  function copySelection(): boolean {
+    if (isKeypad) { if (isBack || !keypadSlot) return false; copyKeypadKey(currentKeypadPage.id, selection.control); return true; }
+    if (!binding || !('module' in binding)) return false;
+    copyBinding(binding);
+    return true;
+  }
+
+  function pasteSelection(): boolean {
+    if (isKeypad) { if (!isBack) pasteKey(selection.control, keypadPath); return true; }
+    if (!clipboard) { session.setNotice('Nothing is copied yet. Copy a key or a binding first.'); return true; }
+    if (clipboard.kind === 'key') { session.setError('The clipboard holds a key. Select a key of the 15-key module to paste it.'); return true; }
+    if (clipboard.action.type === 'volume_from_position' && selection.module !== 'm005s') { session.setError('This action is available only for faders.'); return true; }
+    if (selection.module === 'm005s') { session.setError('Faders take only “Output volume follows position”.'); return true; }
+    if (selection.module === 'm131e' && profile.dial_functions) { session.setError('This profile uses dial functions, so encoder bindings are edited in the dial functions editor of the inspector.'); return true; }
+    try {
+      const replaced = profile.bindings.some(item => sameSelector(item, selection));
+      session.update(latest => editBinding(latest, selection, clipboard.action));
+      session.setNotice(`${replaced ? 'Replaced' : 'Added'} ${actionLabel(clipboard.action)} on ${controlLabel(selection.module, selection.control)}.`);
+    } catch (reason) { session.setError(errorMessage(reason)); }
+    return true;
+  }
+
+  function deleteSelection(): boolean {
+    if (isKeypad) { if (isBack) return false; clearKey(); return true; }
+    const index = profile.bindings.findIndex(item => sameSelector(item, selection));
+    if (index < 0) return false;
+    session.update(latest => ({ ...latest, bindings: latest.bindings.filter((_, at) => at !== index) }));
+    session.setNotice(`Removed the ${gestureLabels[selection.gesture].toLowerCase()} binding of ${controlLabel(selection.module, selection.control)}.`);
+    return true;
+  }
+
+  // Right-clicking a tile selects it and opens the menu at the pointer.
+  function openKeyMenu(control: number, at: { x: number; y: number }) {
+    setKeyMenu({ control, x: at.x, y: at.y });
+    if (selection.module !== 'm4315' || selection.control !== control) changeSelection({ ...selection, module: 'm4315', control, gesture: 'pressed', serial: '' });
+  }
+
+  function closeKeyMenu() { setKeyMenu(null); }
+
   function chooseModule(id: ModuleId) {
     setSelectedModule(id);
     session.clearPreview();
@@ -158,7 +262,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
 
   function createFolder() {
     try {
-      const id = `page-${crypto.randomUUID()}`;
+      const id = newPageId();
       session.edit(createKeypadFolder(profile, keypadPath, selection.control, id));
       setKeypadPath([...keypadPath, id]);
       setSelection(previous => ({ ...previous, control: 1, gesture: 'pressed', serial: '' })); setSerialScope('any');
@@ -212,10 +316,25 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
 
   return {
     selectedModule, selected, selection, serialScope, faderPosition, keypadPath, keypadPages, currentKeypadPage,
-    isKeypad, isBack, keypadSlot, folderPage, binding,
+    isKeypad, isBack, keypadSlot, folderPage, binding, clipboard, keyMenu,
     mutateAction, changeSelection, chooseModule, selectBinding, navigateKeypad, selectKeypadBinding, removeKeypadBinding,
     createFolder, clearKey, deleteCurrentFolder, changeFaderPosition, changeSerialScope, testKeypad, testBinding, dropAction,
+    openKeyMenu, closeKeyMenu, copyKey: (control?: number) => copyKeypadKey(undefined, control), pasteKey, moveKey, copyKeypadKey, copyBinding,
+    copySelection, pasteSelection, deleteSelection,
   };
 }
 
 export type DeviceEditor = ReturnType<typeof useDeviceEditor>;
+
+// The right-click menu of a keypad tile, built from the editor: Copy and Paste work like the
+// shortcuts, Clear key deletes (a folder asks first, as the Clear key button does).
+export function keyMenuItems(editor: DeviceEditor, mac: boolean): ContextMenuItem[] {
+  const menu = editor.keyMenu;
+  if (!menu) return [];
+  const slot = editor.currentKeypadPage.slots[menu.control];
+  return [
+    { label: 'Copy', hint: hint('C', mac), disabled: !slot, onSelect: () => editor.copyKey(menu.control) },
+    { label: 'Paste', hint: hint('V', mac), disabled: !!slot || editor.clipboard?.kind !== 'key', onSelect: () => editor.pasteKey(menu.control) },
+    { label: slot?.type === 'folder' ? 'Delete folder' : 'Clear key', danger: true, disabled: !slot, onSelect: () => editor.clearKey(menu.control) },
+  ];
+}

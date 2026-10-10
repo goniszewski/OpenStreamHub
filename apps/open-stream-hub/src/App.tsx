@@ -34,6 +34,7 @@ import { ProfileManagerSheet, SampleTestPanel } from './ProfileManager';
 import { useImportDrop } from './ProfileTransfer';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
+import { editKeypadBinding } from './keypad-model';
 import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, writeAutosaveSetting } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
@@ -47,6 +48,9 @@ declare global {
   interface Window {
     __oshObsCatalogSeed?: (names: ObsCatalogNames) => void;
     __oshKeyArtworkSeed?: (control: number, artwork: KeyArtwork) => void;
+    __oshKeyMenuSeed?: (control: number, x: number, y: number) => void;
+    __oshKeyCopySeed?: (control: number) => void;
+    __oshKeySampleSeed?: () => void;
   }
 }
 function webStorage(): Storage | null {
@@ -99,6 +103,9 @@ export default function App() {
   const [replayKind, setReplayKind] = useState<ReplayKind>('knobs');
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const editor = useDeviceEditor(session, state, setConfirmation);
+  // The shortcuts read the editor of the current render (the closure below would go stale).
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
   // The profile manager sheet from the header switcher, the bindings drawer under the canvas and
   // the confirmation that lets an imported profile execute actions (opened from the sheet).
   const [managerOpen, setManagerOpen] = useState(false);
@@ -162,6 +169,15 @@ export default function App() {
       // Key artwork captures likewise: a saved design cannot be applied in the
       // browser, so seeding one exercises the reopen path directly.
       window.__oshKeyArtworkSeed = (control, artwork) => session.edit(setKeyArtwork(session.getState().draft.profile, ['root'], control, artwork));
+      // The key Copy/Paste menu is wired only for the editable desktop app; captures open it
+      // through the editor ref, and can seed the clipboard by copying a key.
+      window.__oshKeyMenuSeed = (control, x, y) => editorRef.current.openKeyMenu(control, { x, y });
+      window.__oshKeyCopySeed = control => editorRef.current.copyKey(control);
+      window.__oshKeySampleSeed = () => session.update(latest => {
+        let next = editKeypadBinding(latest, ['root'], 2, 'pressed', '', { type: 'toggle_mute' }, 'Mute');
+        next = editKeypadBinding(next, ['root'], 3, 'pressed', '', { type: 'timer', seconds: 300, label: 'Break' }, 'Break');
+        return editKeypadBinding(next, ['root'], 4, 'pressed', '', { type: 'media', command: 'play_pause' }, 'Play');
+      });
     }
   }, [session, obsCatalog]);
 
@@ -185,6 +201,10 @@ export default function App() {
     duplicate: () => { if (!latest.current.desktop) session.setNotice('Duplicating needs the desktop app.'); else session.requestDuplicate(); },
     undo: () => { session.undo(); },
     redo: () => { session.redo(); },
+    // Copy, paste and clear act on the workspace selection (the current render's editor).
+    copy: () => latest.current.page === 'workspace' && editorRef.current.copySelection(),
+    paste: () => { if (latest.current.page !== 'workspace') return false; editorRef.current.pasteSelection(); return true; },
+    delete: () => latest.current.page === 'workspace' && editorRef.current.deleteSelection(),
     // Search opens the bindings drawer on the workspace; elsewhere the browser keeps Cmd/Ctrl+F.
     find: () => {
       if (latest.current.page !== 'workspace') return false;
@@ -279,7 +299,7 @@ export default function App() {
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <ModuleCatalog editor={editor} feed={feed} />
           <div className="workspace-column">
-            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} />
+            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
             <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
           </div>

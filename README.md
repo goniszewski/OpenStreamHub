@@ -1,4 +1,5 @@
 <div align="center">
+  <img src="apps/open-stream-hub/src-tauri/icons/icon.svg" alt="OpenStreamHub logo" width="128" height="128">
   <h1>OpenStreamHub</h1>
   <p>Unofficial macOS support for Cooler Master MasterHUB.</p>
   <p>
@@ -156,7 +157,7 @@ OpenStreamHub builds on [CoolTEK SDK by projectzero7](https://github.com/project
 
 ## Generative AI disclosure
 
-Generative AI tools were used during reverse engineering, development and testing of this project. Treat their output as unverified unless the project's tests or its [hardware results](docs/masterhub-hardware-results.md) say otherwise.
+Generative AI tools were used during reverse engineering, development and testing of this project. The maintainer reviews and tests every change. Hardware behaviour is claimed only where it was tested on a real device, as recorded in the [hardware results](docs/masterhub-hardware-results.md).
 
 ## License
 

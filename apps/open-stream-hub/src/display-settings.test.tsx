@@ -14,8 +14,8 @@ const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
 root.slots[1] = { type: 'folder', page_id: 'sub' };
 const nested: Profile = { schema_version: 2, name: 'Nested', bindings: [], keypad: { pages: [root, emptyKeypadPage('sub', 'Sub')] } };
-const app: DisplaySettings = { module_control: 'app', run_mode: 'test' };
-const builtIn: DisplaySettings = { module_control: 'built_in_animation', run_mode: 'test' };
+const app: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
+const builtIn: DisplaySettings = { module_control: 'built_in_animation', run_mode: 'test', live_offered: true };
 const otherModules = ['m003k', 'm005s', 'm032le'] as const;
 
 // The dial screen choice is a profile setting; these stand in for profiles
@@ -27,11 +27,15 @@ describe('display settings contract', () => {
   it('matches the Rust fixture', () => {
     expect(fixture.display_settings_default).toEqual(defaultDisplaySettings);
     expect(defaultDisplaySettings.module_control).toBe('app');
-    expect(defaultDisplaySettings.run_mode).toBe('test');
+    // A fresh install reads Live, with the one-time confirmation still owed.
+    expect(defaultDisplaySettings.run_mode).toBe('live');
+    expect(defaultDisplaySettings.live_offered).toBe(false);
     expect(isDisplaySettings(fixture.set_display_settings_result)).toBe(true);
     // Test unless the user switches the header badge to Live.
-    expect(fixture.display_settings_default.run_mode).toBe('test');
+    expect(fixture.display_settings_default.run_mode).toBe('live');
+    expect(fixture.display_settings_default.live_offered).toBe(false);
     expect(fixture.set_display_settings_result.run_mode).toBe('live');
+    expect(fixture.set_display_settings_result.live_offered).toBe(true);
     expect(Object.keys(fixture.set_default_profile_args)).toEqual(['profileId']);
     expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(fixture.default_profile_none).toEqual({ profile_id: null });
@@ -46,15 +50,17 @@ describe('display settings contract', () => {
     expect(moduleControlOptions.map(option => option.label)).toEqual(['App', 'Built-in animation']);
   });
   it('accepts only the exact settings shape', () => {
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test' })).toBe(true);
-    expect(isDisplaySettings({ module_control: 'built_in_animation', run_mode: 'live' })).toBe(true);
-    // The run mode is required and strictly one of the two values.
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'built_in_animation', run_mode: 'live', live_offered: false })).toBe(true);
+    // All three fields are required and strict about their values.
     expect(isDisplaySettings({ module_control: 'app' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes', live_offered: true })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live', live_offered: true })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: 'yes' })).toBe(false);
     // The earlier shapes (the toggle, the file with a global dial choice) are
     // migrated by Rust and never reach the frontend.
-    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test' }, { module_control: 'app', dial_content: 'clock', run_mode: 'test' }, { module_control: 'app', run_mode: 'test', extra: 1 }, { module_control: 'app', auto_execute: true }]) {
+    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test', live_offered: true }, { module_control: 'app', dial_content: 'clock', run_mode: 'test', live_offered: true }, { module_control: 'app', run_mode: 'test', live_offered: true, extra: 1 }, { module_control: 'app', auto_execute: true }]) {
       expect(isDisplaySettings(bad)).toBe(false);
     }
   });
@@ -101,7 +107,7 @@ describe('display flags and software mode', () => {
 describe('DisplaySettingsStore', () => {
   it('loads, saves and shows App until the backend answers', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -111,13 +117,13 @@ describe('DisplaySettingsStore', () => {
     expect(store.getState().settings.module_control).toBe('app');
     expect(await store.load()).toBe(true);
     expect(await store.setModuleControl('built_in_animation')).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'test' });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'test', live_offered: true });
     expect(await store.setRunMode('live')).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'live' });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'live', live_offered: true });
     expect(calls).toEqual([
       ['display_settings', undefined],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'test' } }],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'live' } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'test', live_offered: true } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'live', live_offered: true } }],
     ]);
   });
   it('reports errors and unexpected replies', async () => {
@@ -133,13 +139,32 @@ describe('DisplaySettingsStore', () => {
     expect(await preview.setModuleControl('built_in_animation')).toBe(false);
     expect(await preview.setRunMode('live')).toBe(false);
   });
+  it('records the one-time confirmation whichever way it is answered', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false };
+    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+      calls.push([command, args]);
+      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
+      return stored as T;
+    }, true);
+    (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings: stored };
+    // Confirming lifts the hold and keeps Live.
+    expect(await store.confirmLive()).toBe(true);
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true });
+    // Declining saves Test, once, so the offer never nags again.
+    expect(await store.declineLiveOffer()).toBe(true);
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    // A confirmed Run with actions is a confirmation of the mode too.
+    expect(await store.markLiveConfirmed()).toBe(true);
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+  });
   it('seeds the browser preview for captures and never the desktop app', () => {
     const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);
-    preview.seedPreview({ module_control: 'app', run_mode: 'live' });
+    preview.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true });
     expect(preview.getState().loaded).toBe(true);
     expect(preview.getState().settings.run_mode).toBe('live');
     const desktop = new DisplaySettingsStore(async <T,>() => defaultDisplaySettings as T, true);
-    desktop.seedPreview({ module_control: 'app', run_mode: 'live' });
+    desktop.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true });
     expect(desktop.getState().loaded).toBe(false);
   });
 });

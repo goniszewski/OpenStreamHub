@@ -343,10 +343,15 @@ fn automatic_session_payloads_match_the_shared_fixture() {
     use crate::{display, session};
     use cooltek_sdk_service::ServiceModule;
     use session::fake::{FakeRunner, device};
-    // Module control App: the dial was connected when the app opened, the
-    // keypad was connected later. `list_sessions` returns the same states.
+    // Module control App, the run mode Live and confirmed (the steady state
+    // after the first-launch confirmation): the dial was connected when the
+    // app opened, the keypad was connected later. `list_sessions` returns
+    // the same states.
     let mut driver = session::Driver::new(FakeRunner {
-        display: display::DisplaySettings::default(),
+        display: display::DisplaySettings {
+            live_offered: true,
+            ..display::DisplaySettings::default()
+        },
         auto_start: true,
         ..FakeRunner::default()
     });
@@ -701,6 +706,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
     let chosen = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: display::RunMode::Live,
+        live_offered: true,
     };
     let args = json!({ "settings": chosen });
     // `set_display_settings` arguments as the frontend sends them parse back.

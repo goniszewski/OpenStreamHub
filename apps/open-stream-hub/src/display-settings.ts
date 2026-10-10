@@ -11,7 +11,9 @@ import { errorMessage } from './ui-model';
 // screen shows is each profile's own dial_display setting, so it is not
 // stored here.
 
-export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+// A fresh install (no settings file): Live, with the one-time what-will-run
+// confirmation still owed. Mirrors DisplaySettings::default() in Rust.
+export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false };
 
 export const moduleControlOptions: readonly { value: ModuleControl; label: string }[] = [
   { value: 'app', label: 'App' },
@@ -41,9 +43,10 @@ export function displayFlags(settings: DisplaySettings, module: ServiceModule, s
 export function isDisplaySettings(value: unknown): value is DisplaySettings {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).length === 2
+  return Object.keys(record).length === 3
     && moduleControlOptions.some(option => option.value === record.module_control)
-    && (record.run_mode === 'live' || record.run_mode === 'test');
+    && (record.run_mode === 'live' || record.run_mode === 'test')
+    && typeof record.live_offered === 'boolean';
 }
 
 const isDefaultProfile = (value: unknown): value is DefaultProfile => !!value && typeof value === 'object'
@@ -94,8 +97,17 @@ export class DisplaySettingsStore {
   setModuleControl(moduleControl: ModuleControl) { return this.save({ ...this.state.settings, module_control: moduleControl }); }
   // Switching the run mode applies it to every running module: the backend
   // restarts the sessions that change, a running dry one executing only
-  // after the caller confirmed the switch (the header dialog).
-  setRunMode(runMode: RunMode) { return this.save({ ...this.state.settings, run_mode: runMode }); }
+  // after the caller confirmed the switch (the header dialog). Switching is
+  // itself the one-time confirmation, whichever way it goes.
+  setRunMode(runMode: RunMode) { return this.save({ ...this.state.settings, run_mode: runMode, live_offered: true }); }
+  // The one-time confirmation: Live stays (or becomes) the mode and the
+  // fresh-install hold is lifted, so automatic sessions start executing.
+  confirmLive() { return this.save({ ...this.state.settings, run_mode: 'live', live_offered: true }); }
+  // Declined once: Test stands and the offer never nags again (the header
+  // switch is always there).
+  declineLiveOffer() { return this.save({ ...this.state.settings, run_mode: 'test', live_offered: true }); }
+  // A confirmed Run with actions is a confirmation of the mode too.
+  markLiveConfirmed() { return this.save({ ...this.state.settings, live_offered: true }); }
   dismissError() { this.set({ error: null }); }
 
   private async runDefault(command: string, args?: Record<string, unknown>): Promise<boolean> {

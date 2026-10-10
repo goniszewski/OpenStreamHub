@@ -147,11 +147,13 @@ export function dialogCopy(kind: 'start' | 'resume', runs: Record<string, Servic
   return kind === 'resume' ? resumeCopy(runs, resumeId) : startCopy;
 }
 
-// The header badge for the run mode. An imported profile not yet allowed to
-// execute reads as Test whatever the mode is: with that profile open, a press
-// will not run actions, so the badge must never claim Live.
-export const runModeBadge = (runMode: RunMode, dryRunOnly: boolean): string =>
-  runMode === 'live' && !dryRunOnly ? 'Live' : dryRunOnly ? 'Test (imported profile)' : 'Test';
+// The header badge for the run mode. Two holds read as Test whatever the
+// mode is, because with either in place a press will not run actions: an
+// imported profile not yet allowed to execute, and the one-time confirmation
+// still owed on a fresh install (automatic sessions run dry until it).
+export const runModeBadge = (runMode: RunMode, dryRunOnly: boolean, liveConfirmed = true): string =>
+  runMode === 'live' && !dryRunOnly && liveConfirmed ? 'Live'
+    : dryRunOnly ? 'Test (imported profile)' : 'Test';
 
 // The copy of the run-mode switch to Live: one dialog for every running
 // session that would start executing. A profile whose body the frontend does
@@ -361,15 +363,20 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   // A start that settles the draft first must use the settled identity, not
   // the values captured when this closure was created (an automatic save can
   // save the draft while it waits, and the run then carries the profile id).
-  const latest = useRef({ runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device });
-  latest.current = { runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device };
+  const latest = useRef({ runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings });
+  latest.current = { runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings };
   const begin = async () => {
     let settled: SettledDraft | void = undefined;
     try { settled = await beforeStart?.(); } catch { /* the start uses the draft as it is */ }
     const atStart = settled ?? latest.current;
     const current = latest.current;
     if (!current.runner || !current.device) return;
-    const confirmExecute = current.executeSelected ? () => new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); }) : undefined;
+    const confirmExecute = current.executeSelected ? async () => {
+      const ok = await new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); });
+      // Running actions once confirms the mode on a fresh install.
+      if (ok && current.displaySettings && !current.displaySettings.getState().settings.live_offered) void current.displaySettings.markLiveConfirmed();
+      return ok;
+    } : undefined;
     void current.runner.start({
       profile: atStart.profile, profileId: atStart.profileId, sourceProfileId: atStart.sourceProfileId,
       pathHex: current.device.path_hex, execute: current.executeSelected, softwareMode: current.box.requested,
@@ -435,9 +442,10 @@ const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315:
 export function ModeControl({ run }: { run: RunSession }) {
   const { runMode, setRunMode, display, enabled, mac, dryRunOnly } = run;
   const live = runMode === 'live';
+  const confirmed = display.settings.live_offered;
   const busy = display.busy || !display.loaded;
   return <div className="mode-control" role="group" aria-label="Run mode">
-    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly)}</span>
+    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly, confirmed)}</span>
     <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy}
       title="Switch to Test mode: presses are logged only, nothing happens on the Mac" onClick={() => setRunMode('test')}>Test</button>
     <button type="button" className="mode-choice" aria-pressed={live} disabled={!enabled || busy || !mac}

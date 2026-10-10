@@ -66,14 +66,26 @@ const setRun = (runner: ServiceRunner, patch: Record<string, unknown>) => {
 const render = (props: Partial<RunSessionOptions> = {}) => {
   // The header Run control, its blocker strip and the panel share the hook, as in the app.
   const View = () => {
-    const run = useRunSession({ profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, ...props });
+    const run = useRunSession({ profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, displaySettings: props.displaySettings ?? testSettings(), ...props });
     return <><RunHeaderControl run={run} /><RunBlockerNotice run={run} /><ServicePanel run={run} /></>;
   };
   return renderToStaticMarkup(<View />);
 };
+// A loaded store in Test mode (offered): what tests that only exercise other
+// behaviour pin, so the Live default does not leak into them.
+function testSettings() {
+  const settings: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
+  const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
+  (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
+  return displaySettings;
+}
+// A store whose file cannot be read: the pre-load state every Run is blocked by.
+function unloadedSettings() {
+  return new DisplaySettingsStore(async () => { throw 'unreadable'; }, true);
+}
 // The idle Run panel for `device` with Module control `control` (loaded unless `state` says otherwise).
 function loadedSettings() {
-  const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+  const settings: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
   return displaySettings;
@@ -81,7 +93,7 @@ function loadedSettings() {
 
 // The loaded store with the mode preset, for the header switch and Run button.
 function loadedSettingsWith(mode: 'live' | 'test') {
-  const settings: DisplaySettings = { module_control: 'app', run_mode: mode };
+  const settings: DisplaySettings = { module_control: 'app', run_mode: mode, live_offered: true };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
   return displaySettings;
@@ -90,7 +102,7 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
   const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
   const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-  const settings: DisplaySettings = { module_control: control, run_mode: 'test' };
+  const settings: DisplaySettings = { module_control: control, run_mode: 'test', live_offered: true };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
   return render({ feed, runner, profile, displaySettings });
@@ -111,6 +123,7 @@ describe('settling the draft before a start', () => {
     const View = () => {
       run = useRunSession({
         runner, feed, profile: flat, profileId: null, desktop: true, unsaved: true, platform: mac, now: 2000,
+        displaySettings: testSettings(),
         beforeStart: async () => ({ profile: { ...flat, name: 'Saved' }, profileId: 'saved-1', sourceProfileId: 'saved-1', unsaved: false }),
       });
       return null;
@@ -138,7 +151,7 @@ describe('settling the draft before a start', () => {
       (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
       let run: ReturnType<typeof useRunSession> | null = null;
       const View = () => {
-        run = useRunSession({ runner, feed, profile: flat, profileId: null, desktop: true, unsaved: true, platform: mac, now: 2000, beforeStart });
+        run = useRunSession({ runner, feed, profile: flat, profileId: null, desktop: true, unsaved: true, platform: mac, now: 2000, displaySettings: testSettings(), beforeStart });
         return null;
       };
       renderToStaticMarkup(<View />);
@@ -302,10 +315,10 @@ describe('ServicePanel markup', () => {
       expect(failed).toMatch(runDisabled);
       expect(failed).not.toContain(appControlNote);
     }
-    // No settings store at all (never loaded): Run stays off too.
+    // Without readable settings (no store, or an unreadable one): Run stays off.
     const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
     (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [dial] };
-    expect(render({ feed, runner: new ServiceRunner(async () => undefined as never, async () => () => {}, true) })).toMatch(runDisabled);
+    expect(render({ feed, runner: new ServiceRunner(async () => undefined as never, async () => () => {}, true), displaySettings: unloadedSettings() })).toMatch(runDisabled);
     expect(runBlocker({ desktop: true, device: dial, profile: flat, settingsLoaded: false, settingsError: null })).toBe(settingsLoadingBlocker);
     expect(runBlocker({ desktop: true, device: dial, profile: flat, settingsLoaded: true, moduleControl: 'app' })).toBeNull();
   });
@@ -410,6 +423,10 @@ describe('the run mode', () => {
     expect(runModeBadge('test', true)).toBe('Test (imported profile)');
     // With the imported profile open, Live would not run its actions.
     expect(runModeBadge('live', true)).toBe('Test (imported profile)');
+    // The one-time confirmation still owed: automatic sessions run dry, so
+    // the badge never claims Live before it is answered.
+    expect(runModeBadge('live', false, false)).toBe('Test');
+    expect(runModeBadge('test', false, false)).toBe('Test');
   });
   it('builds the switch-to-Live copy from every running profile; one that cannot be read is high risk', () => {
     const single = modeSwitchCopy([named('Everyday')], [flat]);
@@ -424,7 +441,7 @@ describe('the run mode', () => {
   });
   it('saves Test at once and asks once for Live while a dry run is active', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
     const store = new DisplaySettingsStore(async (command, args) => {
       calls.push([command, args]);
       return settings as never;
@@ -450,14 +467,14 @@ describe('the run mode', () => {
     // Confirming answers the dialog with one save of the new mode.
     run!.answer(true);
     await tick();
-    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live' } }]]);
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }]]);
     // The dialog answered, another confirm saves nothing by itself.
     run!.answer(true);
     expect(calls).toHaveLength(1);
   });
   it('switches to Live without a dialog while nothing runs', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
     const store = new DisplaySettingsStore(async (command, args) => {
       calls.push([command, args]);
       return settings as never;
@@ -472,7 +489,7 @@ describe('the run mode', () => {
     run!.setRunMode('live');
     await tick();
     expect(run!.dialogOpen).toBe(false);
-    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live' } }]]);
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live', live_offered: true } }]]);
   });
 });
 

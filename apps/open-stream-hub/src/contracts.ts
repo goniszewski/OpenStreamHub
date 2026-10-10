@@ -194,11 +194,14 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // leaves them in the module's own mode. Read once when a profile is started, so a change applies at the next start.
 // What the dial shows under 'app' is the running profile's dial_display setting, not a global one.
 export type ModuleControl = 'app' | 'built_in_animation';
-// run_mode: one mode for the whole app, shown by the header badge. 'live': a press runs its action (macOS only, behind
-// the per-profile confirmations). 'test' (the default): presses are logged only, nothing happens on the Mac. Switching
-// it applies to every running module; a profile imported from .mhz stays Test until it is allowed to execute.
+// run_mode: one mode for the whole app, shown by the header badge. 'live' (the default for a fresh install): a press
+// runs its action (macOS only, behind the confirmations). 'test': presses are logged only, nothing happens on the Mac.
+// Switching it applies to every running module; a profile imported from .mhz stays Test until it is allowed to execute.
+// live_offered: whether the one-time what-will-run confirmation has been answered. False only on a fresh install, where
+// automatic sessions stay dry (auto_dry_run_reason says so) until the app confirms the mode; files from before the
+// field read as true, so existing users are never asked again.
 export type RunMode = 'live' | 'test';
-export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode }
+export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode; live_offered: boolean }
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.

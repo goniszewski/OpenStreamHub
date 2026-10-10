@@ -3,7 +3,7 @@
     {
       "attempt": 0,
       "auto_start": "app_opened",
-      "execute": false,
+      "execute": true,
       "module": "m131e",
       "phase": "running",
       "profile_generation": 0,
@@ -17,7 +17,7 @@
     {
       "attempt": 0,
       "auto_start": "module_connected",
-      "execute": false,
+      "execute": true,
       "module": "m4315",
       "phase": "running",
       "profile_generation": 0,
@@ -33,7 +33,7 @@
     {
       "attempt": 0,
       "auto_start": "app_opened",
-      "execute": false,
+      "execute": true,
       "module": "m131e",
       "phase": "running",
       "profile_generation": 0,
@@ -47,7 +47,7 @@
     {
       "attempt": 0,
       "auto_start": "module_connected",
-      "execute": false,
+      "execute": true,
       "module": "m4315",
       "phase": "running",
       "profile_generation": 0,

@@ -1828,6 +1828,9 @@ impl<R: Runner> Driver<R> {
         if settings.run_mode != RunMode::Live {
             return (false, None);
         }
+        if !settings.live_offered {
+            return (false, Some(display::LIVE_UNCONFIRMED.into()));
+        }
         if let Err(error) = service::check_execute_supported(true) {
             return (false, Some(error));
         }
@@ -4299,14 +4302,17 @@ mod tests {
     const APP_CONTROL: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: crate::display::RunMode::Test,
+        live_offered: true,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: crate::display::RunMode::Test,
+        live_offered: true,
     };
     const APP_CONTROL_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: crate::display::RunMode::Live,
+        live_offered: true,
     };
 
     fn launched(driver: &mut Driver<FakeRunner>, index: usize) -> Option<DisplayLaunch> {
@@ -5721,6 +5727,58 @@ mod tests {
             driver.inventory(rig(), 0);
             assert_eq!(starts(&mut driver), 0);
         }
+    }
+
+    #[test]
+    fn a_fresh_installs_sessions_run_dry_until_the_mode_is_confirmed() {
+        // No settings file yet: the mode is Live but the one-time
+        // confirmation has not answered, so every automatic session starts,
+        // as a dry run with the reason.
+        let fresh = DisplaySettings {
+            live_offered: false,
+            ..APP_CONTROL_LIVE
+        };
+        let mut driver = auto_driver(fresh);
+        driver.inventory(rig(), 0);
+        assert_eq!(
+            auto_runs(&mut driver),
+            [
+                (DIAL, false, true),
+                (ServiceModule::M4315, false, true),
+                (ServiceModule::M003K, false, false),
+            ]
+        );
+        assert!(
+            driver
+                .states()
+                .iter()
+                .all(|state| state.auto_dry_run_reason.as_deref()
+                    == Some(crate::display::LIVE_UNCONFIRMED))
+        );
+        // The frontend confirmed the mode (one save): the sessions restart
+        // executing, without waiting for anything else.
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(10);
+        if !CAN_EXECUTE {
+            return;
+        }
+        let ids: Vec<String> = driver
+            .states()
+            .iter()
+            .map(|state| state.session_id.clone())
+            .collect();
+        for id in &ids {
+            exit(&mut driver, id, "", 11);
+        }
+        let restarted = &driver.runner().starts[3..];
+        assert_eq!(restarted.len(), 3);
+        assert!(restarted.iter().all(|start| start.execute));
+        assert!(
+            driver
+                .states()
+                .iter()
+                .all(|state| state.execute && state.auto_dry_run_reason.is_none())
+        );
     }
 
     #[test]

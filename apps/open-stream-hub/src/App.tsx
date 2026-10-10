@@ -15,6 +15,7 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
+import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
@@ -99,6 +100,8 @@ export default function App() {
   // The starter chooser: the first run (fresh, empty profile storage), the
   // profile manager, and a module that was connected after launch.
   const [starter, setStarter] = useState<{ entry: StarterEntry; module: ServiceModule | null } | null>(null);
+  const [liveOfferOpen, setLiveOfferOpen] = useState(false);
+  const [liveOfferAck, setLiveOfferAck] = useState(false);
   // The one-time Module control notice: shown once the setting is known to be App and the guide no longer covers it, and
   // recorded as shown only then.
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
@@ -106,7 +109,14 @@ export default function App() {
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
   useEffect(() => {
     if (previewRunModeSeed === null) return;
-    displaySettings.seedPreview({ ...defaultDisplaySettings, run_mode: previewRunModeSeed.includes('live') ? 'live' : 'test' });
+    // 'offer' renders the one-time confirmation over an unconfirmed Live
+    // store; 'live'/'test' seed confirmed modes.
+    if (previewRunModeSeed === 'offer') {
+      displaySettings.seedPreview({ ...defaultDisplaySettings, run_mode: 'live', live_offered: false });
+      setLiveOfferOpen(true);
+      return;
+    }
+    displaySettings.seedPreview({ ...defaultDisplaySettings, run_mode: previewRunModeSeed.includes('live') ? 'live' : 'test', live_offered: true });
     // The seed is read from the address once; the store is stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -114,6 +124,15 @@ export default function App() {
   const showControlNotice = moduleControlNoticeVisible({ pending: controlNotice, guideOpen: guide.open, loaded: display.loaded, moduleControl: display.settings.module_control });
   useEffect(() => { if (showControlNotice) markModuleControlNoticeShown(webStorage()); }, [showControlNotice]);
   const state = useSyncExternalStore(session.subscribe, session.getState);
+  // The one-time Live offer: a fresh install (no settings file) reads as Live
+  // with the confirmation still owed; after the starter chooser is done, the
+  // what-will-run dialog asks once. Until it is answered, the automatic
+  // sessions run dry (the backend holds them, with the reason shown).
+  useEffect(() => {
+    if (!desktop || !state.ready || !display.loaded || starter !== null) return;
+    if (display.settings.run_mode !== 'live' || display.settings.live_offered) return;
+    setLiveOfferOpen(true);
+  }, [desktop, state.ready, display.loaded, display.settings.run_mode, display.settings.live_offered, starter]);
   const [page, setPage] = useState<Page>('workspace');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
@@ -386,6 +405,9 @@ export default function App() {
     <AllowExecutionDialog target={allowExecutionOpen && flaggedProfile && !unsaved ? { name: flaggedProfile.name, profile } : null}
       onCancel={() => setAllowExecutionOpen(false)}
       onConfirm={() => { setAllowExecutionOpen(false); if (flaggedProfile && contentHash) void session.allowExecution(flaggedProfile.id, flaggedProfile.name, contentHash); }} />
+    <LiveOfferDialog open={liveOfferOpen} profile={profile} acknowledged={liveOfferAck} setAcknowledged={setLiveOfferAck}
+      onConfirm={() => { setLiveOfferOpen(false); setLiveOfferAck(false); void displaySettings.confirmLive(); }}
+      onDecline={() => { setLiveOfferOpen(false); setLiveOfferAck(false); void displaySettings.declineLiveOffer(); }} />
     <OnboardingDialog open={guide.open} step={guide.step} mac={mac} onStep={step => setGuide({ open: true, step })} onSkip={closeGuide} onDone={closeGuide} />
     <StarterDialog open={starter !== null} entry={starter?.entry ?? 'first-run'} module={starter?.module ?? null}
       onPick={profile => {

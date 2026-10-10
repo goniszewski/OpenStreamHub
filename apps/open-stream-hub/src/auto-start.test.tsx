@@ -41,13 +41,13 @@ describe('automatically started sessions', () => {
     t.state(keypadState);
     const dial = t.runner.getState().runs[dialState.session_id];
     expect(dial.session?.autoStart).toBe('app_opened');
-    expect(dial.execute).toBe(false);
+    expect(dial.execute).toBe(true);
     expect(dial.profileName).toBe('Blank (built-in)');
-    expect(dial.entries[0].text).toBe('Started automatically (Test mode) when the app opened.');
+    expect(dial.entries[0].text).toBe('Started automatically (Live mode) when the app opened.');
     expect(isStale(dial, draft)).toBe(false);
     const keypad = t.runner.getState().runs[keypadState.session_id];
     expect(keypad.session?.autoStart).toBe('module_connected');
-    expect(keypad.entries[0].text).toBe(`${autoStartLabel('module_connected', false)}.`);
+    expect(keypad.entries[0].text).toBe(`${autoStartLabel('module_connected', true)}.`);
     // A session the user started carries no label.
     const { auto_start: _, ...manual } = { ...dialState, session_id: 'service:ccdd', service_id: 'service:ccdd' };
     t.state(manual);
@@ -72,6 +72,7 @@ describe('automatically started sessions', () => {
   });
   it('are shown as started automatically in the Run panel', async () => {
     expect(autoStartNote('app_opened')).toBe('Started automatically (Test mode) when the app opened. Stop it to run another profile on this module.');
+    expect(autoStartNote('app_opened', true)).toBe('Started automatically (Live mode) when the app opened. Actions run without asking. Stop it, or switch the header mode to Test, to end them.');
     expect(autoStartNote(undefined)).toBeNull();
     const device: LiveDevice = { path_hex: dialState.service_id!.replace('service:', ''), module: 'm131e', serial_number: dialState.serial_number };
     const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
@@ -79,8 +80,8 @@ describe('automatically started sessions', () => {
     const t = setup(); t.runner.connect(); await tick();
     t.state(dialState);
     const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
-    expect(markup).toContain(autoStartNote('app_opened'));
-    expect(markup).toContain('Dry run: actions are logged only');
+    expect(markup).toContain(autoStartNote('app_opened', true));
+    expect(markup).toContain('Actions are running on this Mac');
     expect(markup).not.toContain('Profile changed since start');
     expect(markup).toContain('>Stop<');
   });
@@ -110,9 +111,9 @@ describe('automatically started sessions', () => {
     expect(t.calls).toEqual(['start_service', 'list_sessions']);
     expect(t.runner.getState().error).toBe(deviceTakenError);
     const run = t.runner.getState().runs[keypadState.session_id];
-    expect(run).toMatchObject({ profileName: 'Blank (built-in)', state: 'running', execute: false });
+    expect(run).toMatchObject({ profileName: 'Blank (built-in)', state: 'running', execute: true });
     expect(run.session?.autoStart).toBe('module_connected');
-    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('module_connected', false)}.`]);
+    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('module_connected', true)}.`]);
     // Its event arrives while the refused Run waits for its reply: the user's run is replaced, not merged into.
     const late = setup([], () => { late.state(keypadState); throw new Error(refusal); });
     late.runner.connect(); await tick();
@@ -125,11 +126,11 @@ describe('automatically started sessions', () => {
   });
   it('label a run that its process status created before the session event, keeping its log', async () => {
     const t = setup(); t.runner.connect(); await tick();
-    t.handlers['service://status']({ payload: { service_id: dialState.service_id, state: 'running', execute: false } });
+    t.handlers['service://status']({ payload: { service_id: dialState.service_id, state: 'running', execute: true } });
     t.handlers['service://record']({ payload: { service_id: dialState.service_id, record: { type: 'profile_valid' } } });
     t.state(dialState);
     const run = t.runner.getState().runs[dialState.session_id];
-    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('app_opened', false)}.`, 'Profile validated.']);
+    expect(run.entries.map(entry => entry.text)).toEqual([`${autoStartLabel('app_opened', true)}.`, 'Profile validated.']);
     expect(run.entries.map(entry => entry.seq)).toEqual([0, 1]);
     expect(isStale(run, draft)).toBe(false);
   });
@@ -138,7 +139,7 @@ describe('automatically started sessions', () => {
     t.state({ ...keypadState, auto_start: 'module_control_set' });
     const run = t.runner.getState().runs[keypadState.session_id];
     expect(run.session?.autoStart).toBe('module_control_set');
-    expect(run.entries[0].text).toBe('Started automatically (Test mode) when OpenStreamHub started driving the display.');
+    expect(run.entries[0].text).toBe('Started automatically (Live mode) when OpenStreamHub started driving the display.');
     expect(autoStartNote('module_control_set')).toContain('when OpenStreamHub started driving the display. Stop it');
   });
   it('keep an automatic live feed on the same module quiet', () => {
@@ -203,7 +204,7 @@ describe('automatic actions', () => {
   });
   it('keep the default profile picker in Settings, with no run-mode toggle', async () => {
     const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) =>
-      (command === 'default_profile' ? { profile_id: 'p-1' } : command === 'set_default_profile' ? { profile_id: args!.profileId as string | null } : { module_control: 'app', run_mode: 'test' }) as T, true);
+      (command === 'default_profile' ? { profile_id: 'p-1' } : command === 'set_default_profile' ? { profile_id: args!.profileId as string | null } : { module_control: 'app', run_mode: 'test', live_offered: true }) as T, true);
     await store.load();
     await store.loadDefaultProfile();
     expect(store.getState().defaultProfile).toMatchObject({ loaded: true, profileId: 'p-1' });

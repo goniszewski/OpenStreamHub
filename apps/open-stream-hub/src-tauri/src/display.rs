@@ -83,39 +83,49 @@ pub enum ModuleControl {
 /// What a key press does when its profile runs: every action executes, or
 /// everything is only logged. One mode for the whole app (the header badge),
 /// held by the stored settings so it survives a restart and is read by the
-/// session manager itself.
+/// session manager itself. The default is Live: a fresh install becomes live
+/// at its first-launch confirmation, and until that confirmation nothing
+/// executes (`live_offered` gates it, so the mode is never silently on).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunMode {
     /// Presses run their actions (macOS only, behind the per-profile
     /// confirmations).
+    #[default]
     Live,
     /// Presses are logged only ("Would run: …"); nothing happens on the Mac.
-    #[default]
     Test,
 }
 
-/// The stored settings. `App` control and Test mode by default. The dial
-/// screen content is a profile setting (`Profile`'s `dial_display`) and is no
-/// longer stored here.
+/// The stored settings. `App` control by default; the run mode defaults to
+/// Live with the confirmation still owed (`live_offered: false` — a missing
+/// settings file is a fresh install, which the frontend greets with the
+/// what-will-run dialog once). The dial screen content is a profile setting
+/// (`Profile`'s `dial_display`) and is no longer stored here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredSettings")]
 pub struct DisplaySettings {
     pub module_control: ModuleControl,
-    /// What a press does in every run: Live executes, Test logs only.
-    /// `Test` unless the user switched the header badge to Live; a file
+    /// What a press does in every run: Live executes, Test logs only. A file
     /// written before the mode existed reads as Test, and one written while
     /// "Run actions automatically" was on reads as Live.
     pub run_mode: RunMode,
+    /// Whether the one-time Live confirmation has been answered. False only
+    /// for a fresh install (no settings file): automatic sessions then stay
+    /// dry with the reason shown until the frontend confirms the mode, so a
+    /// new user's first presses never act silently. Files from before the
+    /// field existed read as true: their user has seen the mode already.
+    pub live_offered: bool,
 }
 
 impl DisplaySettings {
     /// What a session uses when the stored settings cannot be read: no
-    /// software mode and no display writes, so a damaged file never starts
-    /// either.
+    /// software mode, no display writes and no execution, so a damaged file
+    /// never starts either.
     pub const UNREADABLE: Self = Self {
         module_control: ModuleControl::Unreadable,
         run_mode: RunMode::Test,
+        live_offered: true,
     };
 }
 
@@ -135,9 +145,24 @@ enum StoredSettings {
 #[serde(deny_unknown_fields)]
 struct CurrentSettings {
     module_control: ModuleControl,
-    /// Missing in files written before the mode existed: Test.
-    #[serde(default)]
+    /// Missing in files written before the mode existed: Test (the mode's
+    /// own default is Live, so the fallback is spelled out).
+    #[serde(default = "run_mode_test")]
     run_mode: RunMode,
+    /// Missing in the first files that stored a run mode: their user has
+    /// used the switch already, so the one-time confirmation is not owed.
+    #[serde(default = "live_offered_default")]
+    live_offered: bool,
+}
+
+/// The field default for files that predate `live_offered`.
+fn live_offered_default() -> bool {
+    true
+}
+
+/// The field default for files that predate the run mode.
+fn run_mode_test() -> RunMode {
+    RunMode::Test
 }
 
 /// `{"module_control":…,"auto_execute":…}`, written while "Run actions
@@ -189,9 +214,11 @@ impl From<StoredSettings> for DisplaySettings {
             StoredSettings::Current(CurrentSettings {
                 module_control,
                 run_mode,
+                live_offered,
             }) => Self {
                 module_control,
                 run_mode,
+                live_offered,
             },
             StoredSettings::WithAutoExecute(WithAutoExecuteSettings {
                 module_control,
@@ -204,6 +231,8 @@ impl From<StoredSettings> for DisplaySettings {
             }) => Self {
                 module_control,
                 run_mode: run_mode(auto_execute),
+                // Their user predates the one-time confirmation.
+                live_offered: true,
             },
             StoredSettings::Legacy(LegacySettings { enabled, .. }) => Self {
                 module_control: if enabled {
@@ -212,10 +241,18 @@ impl From<StoredSettings> for DisplaySettings {
                     ModuleControl::BuiltInAnimation
                 },
                 run_mode: RunMode::Test,
+                live_offered: true,
             },
         }
     }
 }
+
+/// Why an automatic session on a fresh install runs dry: the run mode
+/// defaults to Live, but the one-time what-will-run confirmation has not
+/// answered yet, so nothing acts until the frontend confirms (or the user's
+/// first confirmed Run does).
+pub const LIVE_UNCONFIRMED: &str =
+    "Live mode is not confirmed yet; confirm it in OpenStreamHub to run actions";
 
 /// The modules `ModuleControl::App` drives in software mode.
 pub fn app_controls(module: ServiceModule) -> bool {
@@ -427,7 +464,7 @@ impl SettingsFile {
             if error.is_data() {
                 // The untagged reader's own message names no field.
                 format!(
-                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"run_mode\": \"live\" or \"test\"}}); fix the file or delete it to go back to the defaults",
+                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"run_mode\": \"live\" or \"test\", \"live_offered\": true or false}}); fix the file or delete it to go back to the defaults",
                     self.path().display()
                 )
             } else {
@@ -517,14 +554,23 @@ mod tests {
     const APP: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: RunMode::Test,
+        live_offered: true,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: RunMode::Test,
+        live_offered: true,
     };
     const APP_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: RunMode::Live,
+        live_offered: true,
+    };
+    /// A fresh install: Live, with the one-time confirmation still owed.
+    const FRESH: DisplaySettings = DisplaySettings {
+        module_control: ModuleControl::App,
+        run_mode: RunMode::Live,
+        live_offered: false,
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
@@ -544,33 +590,46 @@ mod tests {
 
     #[test]
     fn settings_default_to_app_control_and_parse_strictly() {
+        // No file (a fresh install): Live, with the confirmation still owed.
+        assert_eq!(DisplaySettings::default(), FRESH);
+        let parsed = parse(r#"{"module_control":"app"}"#).unwrap();
         assert_eq!(
-            DisplaySettings::default(),
+            parsed,
             DisplaySettings {
                 module_control: ModuleControl::App,
                 run_mode: RunMode::Test,
+                live_offered: true,
             }
         );
-        let parsed = parse(r#"{"module_control":"app"}"#).unwrap();
-        assert_eq!(parsed, DisplaySettings::default());
         let parsed = parse(r#"{"module_control":"built_in_animation","run_mode":"live"}"#).unwrap();
         assert_eq!(
             parsed,
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
                 run_mode: RunMode::Live,
+                live_offered: true,
             }
         );
-        // Always written in the current shape.
+        // Files that already stored a run mode predate the confirmation.
+        assert_eq!(
+            parse(r#"{"module_control":"app","run_mode":"live","live_offered":false}"#).unwrap(),
+            DisplaySettings {
+                module_control: ModuleControl::App,
+                run_mode: RunMode::Live,
+                live_offered: false,
+            }
+        );
+        // Always written in the current shape, confirmation included.
         assert_eq!(
             serde_json::to_value(BUILT_IN).unwrap(),
-            serde_json::json!({"module_control":"built_in_animation","run_mode":"test"})
+            serde_json::json!({"module_control":"built_in_animation","run_mode":"test","live_offered":true})
         );
         for bad in [
             r#"{"module_control":"app","extra":1}"#,
             r#"{"module_control":"App","run_mode":"test"}"#,
             r#"{"module_control":"builtin"}"#,
             r#"{"module_control":"app","run_mode":"yes"}"#,
+            r#"{"module_control":"app","live_offered":"yes"}"#,
             r#"{"module_control":"app","enabled":true}"#,
             r#"{"enabled":true}"#,
             r#"{"enabled":"yes"}"#,
@@ -605,7 +664,15 @@ mod tests {
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
                 run_mode: RunMode::Live,
+                live_offered: true,
             }
+        );
+        // Every earlier shape reads as offered: their user predates the
+        // one-time confirmation, which must never nag them.
+        assert!(
+            parse(r#"{"module_control":"app","run_mode":"test"}"#)
+                .unwrap()
+                .live_offered
         );
         // The "Run actions automatically" shape: on was Live, off is Test.
         assert_eq!(
@@ -638,7 +705,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"module_control":"app","run_mode":"test"})
+            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true})
         );
     }
 
@@ -1129,10 +1196,13 @@ mod tests {
     }
 
     #[test]
-    fn the_run_mode_is_test_unless_stored_live() {
-        // Files written before the mode existed, and the default: Test.
-        assert_eq!(DisplaySettings::default().run_mode, RunMode::Test);
+    fn the_run_mode_is_live_for_a_fresh_install_and_test_without_a_stored_mode() {
+        // No file (a fresh install): Live, with the confirmation still owed.
+        assert_eq!(DisplaySettings::default().run_mode, RunMode::Live);
+        assert!(!DisplaySettings::default().live_offered);
+        // A damaged or unreadable file never acts, whatever the mode.
         assert_eq!(DisplaySettings::UNREADABLE.run_mode, RunMode::Test);
+        const { assert!(DisplaySettings::UNREADABLE.live_offered) }
         assert_eq!(
             parse(r#"{"module_control":"app","dial_content":"clock"}"#)
                 .unwrap()
@@ -1174,14 +1244,18 @@ mod tests {
         ] {
             assert!(parse(bad).is_err(), "{bad}");
         }
-        // Round trip through the file.
+        // The unconfirmed shape round-trips through the file.
         let directory = tempfile::tempdir().unwrap();
         let state = DisplayState::open(Ok(directory.path()));
+        state.set(FRESH).unwrap();
+        assert_eq!(state.get().unwrap(), FRESH);
+        assert_eq!(state.for_new_session(), FRESH);
         state.set(APP_LIVE).unwrap();
         assert_eq!(state.get().unwrap(), APP_LIVE);
         // A damaged file never turns it on.
         std::fs::write(directory.path().join(FILE_NAME), b"{").unwrap();
         assert_eq!(state.for_new_session().run_mode, RunMode::Test);
+        assert!(state.for_new_session().live_offered);
     }
 
     #[test]

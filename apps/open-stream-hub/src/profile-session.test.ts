@@ -38,6 +38,10 @@ const listing = (...items: StoredProfile[]): ProfileListing => ({ profiles: item
 const bootstrapValue = (item: StoredProfile | null, extra: Partial<AppBootstrap> = {}): AppBootstrap =>
   ({ profile: item, profiles: item ? [summary(item)] : [], unreadable: [], storage_path: '/store/profiles', desktop: true, ...extra });
 
+// A minimal schema-2 starter profile (valid enough for upgradeKeypadProfile).
+const starterProfile = (name: string): Profile =>
+  ({ schema_version: 2, name, bindings: [], keypad: { pages: [{ id: 'root', name: 'Root', slots: Array.from({ length: 15 }, () => null) }] } });
+
 async function ready(profile = stored('a', 'Alpha')) {
   const test = harness();
   const started = test.session.bootstrap();
@@ -550,6 +554,42 @@ describe('saving and deleting', () => {
     expect(state.draft.modifiedAtMs).toBe(2000);
     expect(state.profiles.map(item => item.id)).toEqual(['n', 'a']);
     expect(session.unsaved).toBe(false);
+  });
+
+  it('saves a starter as a new saved profile with its own name and opens it', async () => {
+    const { session, take } = await ready();
+    const created = session.createFromTemplate(starterProfile('Mac basics'));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Alpha')));
+    await flush();
+    const save = take('save_profile');
+    expect(save.args).toEqual({ request: expect.objectContaining({ id: null, expectedModifiedAtMs: null, sourceProfileId: null }) });
+    expect((save.args!.request as { profile: Profile }).profile.name).toBe('Mac basics');
+    save.resolve(stored('n', 'Mac basics', 2000));
+    await flush();
+    take('list_profiles').resolve(listing(stored('n', 'Mac basics'), stored('a', 'Alpha')));
+    await created;
+    const state = session.getState();
+    expect(state.draft.profileId).toBe('n');
+    expect(state.draft.profile.name).toBe('Mac basics');
+    expect(state.notice).toContain('Mac basics');
+    expect(session.unsaved).toBe(false);
+  });
+
+  it('numbers a starter whose name is already taken, and reports a failure without changing the draft', async () => {
+    const { session, take } = await ready(stored('a', 'Mac basics'));
+    const created = session.createFromTemplate(starterProfile('Mac basics'));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Mac basics')));
+    await flush();
+    const save = take('save_profile');
+    expect((save.args!.request as { profile: Profile }).profile.name).toBe('Mac basics 2');
+    save.reject('profile storage is read-only');
+    expect(await created).toBe('profile storage is read-only');
+    const state = session.getState();
+    expect(state.draft.profileId).toBe('a');
+    expect(state.draft.profile.name).toBe('Mac basics');
+    expect(state.busy).toBeNull();
   });
 
   it('keeps a deleted open profile as unsaved changes', async () => {

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, History, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert, X } from 'lucide-react';
+import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, History, LayoutTemplate, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { ProfileSummary, ReplayKind } from './contracts';
 import { LabelError, SelectField } from './controls';
 import { isUnsaved } from './profile-session';
@@ -14,9 +14,9 @@ import type { FocusRulesStore } from './focus-rules';
 // profile switcher). It holds the saved profile list, import/export, the open profile's name,
 // validation, earlier versions, the dry-run flag and the focused-app rules. The workspace stays
 // on screen behind it.
-export function ProfileManagerSheet({ session, state, desktop, disabled, confirm, mac = false, focusRules, onAllow, onClose }: {
+export function ProfileManagerSheet({ session, state, desktop, disabled, confirm, mac = false, focusRules, onAllow, onStarters, onClose }: {
   session: ProfileSession; state: SessionState; desktop: boolean; disabled: boolean; confirm(request: ConfirmRequest): void; mac?: boolean;
-  focusRules?: FocusRulesStore; onAllow(): void; onClose(): void;
+  focusRules?: FocusRulesStore; onAllow(): void; onStarters?(): void; onClose(): void;
 }) {
   const { profile, profileId } = state.draft;
   const unsaved = isUnsaved(state.draft);
@@ -57,7 +57,8 @@ export function ProfileManagerSheet({ session, state, desktop, disabled, confirm
     </div></div>}
 
     <h3>Saved profiles</h3>
-    <div className="profile-actions manager-actions"><button className="button" disabled={disabled} onClick={() => session.guard('create a new profile', () => { session.newProfile(); })}><Plus size={18} />New profile</button></div>
+    <div className="profile-actions manager-actions"><button className="button" disabled={disabled} onClick={() => session.guard('create a new profile', () => { session.newProfile(); })}><Plus size={18} />New profile</button>
+      {onStarters && <button className="button" disabled={disabled} onClick={onStarters}><LayoutTemplate size={18} />New from a starter…</button>}</div>
     {state.profiles.length ? state.profiles.map(item => <div key={item.id} className="saved-profile-row">
       <button className={`saved-profile ${item.id === profileId ? 'active' : ''}`} disabled={disabled} aria-pressed={item.id === profileId} onClick={() => session.guard('switch profiles', () => { void session.load(item.id); })}><FileText size={20} /><span><strong>{item.name}</strong><small>{item.binding_count} bindings</small>{item.dry_run_only && <small className="dry-run-badge" title="Imported from a MasterHUB .mhz file. It runs only as a dry run until you allow actions.">Imported · dry run only</small>}</span><ChevronRight size={16} /></button>
       <button className="icon-button" disabled={disabled} aria-label={`Delete profile ${item.name}`} title="Delete profile" onClick={() => deleteProfile(item)}><Trash2 size={17} /></button>

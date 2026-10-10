@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { FakeStorage } from './fake-storage';
 import { OnboardingDialog } from './OnboardingDialog';
+import { clampStep, lastOnboardingStep, onboardingStepIds } from './onboarding-model';
 import { SettingsPage } from './InfoPages';
-import { clampStep, lastOnboardingStep, markOnboardingDone, onboardingStepIds, onboardingStorageKey, shouldAutoOpenOnboarding } from './onboarding-model';
 
 const render = (step: number, mac = true) => renderToStaticMarkup(<OnboardingDialog open step={step} mac={mac} onStep={() => {}} onSkip={() => {}} onDone={() => {}} />);
-const headings = ['Try it without hardware', 'Edit and save a profile', 'Connect modules', 'Safety and privacy'];
+const headings = ['Start from a starter profile', 'Edit, test and save a profile', 'Connect modules', 'Safety and privacy'];
 
 describe('onboarding steps', () => {
   it('renders each step heading with an accessible step indicator', () => {
@@ -29,6 +28,23 @@ describe('onboarding steps', () => {
     expect(last).not.toContain('>Next<');
     expect(last).not.toContain('>Skip guide<');
   });
+  it('describes the starter flow on the first step', () => {
+    const markup = render(0);
+    expect(markup).toContain('Mac basics, Streaming (OBS) and Editing and media');
+    expect(markup).toContain('offers the starters that use it');
+    expect(markup).toContain('New from a starter');
+    expect(markup).toContain('Nothing is typed into apps, and no app or web page is opened');
+    expect(markup).toContain('executing actions always asks for confirmation first');
+    expect(markup).toContain('Only run profiles you wrote or reviewed.');
+  });
+  it('merges editing, testing and saving on the second step', () => {
+    const markup = render(1);
+    expect(markup).toContain('saved automatically a moment after you stop typing');
+    expect(markup).toContain('“Test with sample input”');
+    expect(markup).toContain('Nothing is executed on your Mac.');
+    expect(markup).toContain('offered back the next time you open it');
+    expect(render(1, false)).toContain('Ctrl+Z');
+  });
   it('states the permission and privacy facts', () => {
     expect(render(2)).toContain('Accessibility or Automation');
     expect(render(2)).toContain('app-started sessions can run actions without a prompt');
@@ -37,32 +53,10 @@ describe('onboarding steps', () => {
     expect(render(2)).toContain('Only run profiles you wrote or reviewed.');
     expect(render(3)).toContain('Nothing is uploaded');
     expect(render(3)).toContain('set “Let OpenStreamHub drive the display” to Built-in animation in Settings');
-    expect(render(1, false)).toContain('Ctrl+S');
   });
   it('keeps step numbers in range', () => {
     expect(onboardingStepIds).toHaveLength(4);
     expect([clampStep(-3), clampStep(2), clampStep(9), clampStep(NaN)]).toEqual([0, 2, 3, 0]);
-  });
-});
-
-describe('onboarding persistence', () => {
-  it('opens on first launch, and not again once Done or Skip stored the flag', () => {
-    const storage = new FakeStorage();
-    expect(shouldAutoOpenOnboarding(storage, true)).toBe(true);
-    expect(shouldAutoOpenOnboarding(storage, true)).toBe(true); // merely viewing does not store anything
-    markOnboardingDone(storage);
-    expect(storage.getItem(onboardingStorageKey)).toBe('done');
-    expect(shouldAutoOpenOnboarding(storage, true)).toBe(false);
-  });
-  it('never opens by itself in the browser preview', () => {
-    expect(shouldAutoOpenOnboarding(new FakeStorage(), false)).toBe(false);
-  });
-  it('does not auto-open or throw when storage is unavailable', () => {
-    const broken = { getItem() { throw new Error('blocked'); }, setItem() { throw new Error('blocked'); } };
-    expect(shouldAutoOpenOnboarding(broken, true)).toBe(false);
-    expect(shouldAutoOpenOnboarding(null, true)).toBe(false);
-    expect(() => markOnboardingDone(broken)).not.toThrow();
-    expect(() => markOnboardingDone(null)).not.toThrow();
   });
 });
 

@@ -4,18 +4,18 @@ import { lastOnboardingStep, onboardingStepIds } from './onboarding-model';
 import type { OnboardingStepId } from './onboarding-model';
 
 const steps = (mod: string): Record<OnboardingStepId, { title: string; body: ReactNode }> => ({
-  try: {
-    title: 'Try it without hardware',
+  starters: {
+    title: 'Start from a starter profile',
     body: <>
-      <p id="onboarding-body">You do not need a module to look around. In the workspace, the rig preview shows your modules and the profile's bindings, and the inspector's Test button shows what a binding would do. "Test with sample input" under the module canvas runs a built-in sample through the profile.</p>
-      <ul><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>Pick a module in the catalog and select a control on its image to edit what it does.</li><li>Profiles, import and export live in the profile manager: the Manage profiles button next to the profile switcher in the header.</li></ul>
+      <p id="onboarding-body">The first launch offers starter profiles — Mac basics, Streaming (OBS) and Editing and media. Picking one creates a saved profile with working controls; starting with an empty profile is fine too.</p>
+      <ul><li>When a module is connected later, OpenStreamHub offers the starters that use it. “New from a starter” in the profile manager (Manage profiles, next to the profile switcher) opens the same chooser any time.</li><li>Starters only set volume and playback, take screenshots, run a timer and drive OBS. Nothing is typed into apps, and no app or web page is opened.</li><li>A run starts as a dry run that only logs what would happen; executing actions always asks for confirmation first.</li><li>Profiles from someone else can do much more than the starters. Only run profiles you wrote or reviewed.</li></ul>
     </>,
   },
-  profile: {
-    title: 'Edit and save a profile',
+  test: {
+    title: 'Edit, test and save a profile',
     body: <>
-      <p id="onboarding-body">Your changes stay unsaved until you press Save profile; the saved profile on disk is not touched before that.</p>
-      <ul><li>Save with {mod}+S, undo with {mod}+Z and redo with Shift+{mod}+Z.</li><li>If the app quits unexpectedly, your unsaved changes are offered back the next time you open it. That recovery copy stays on this Mac.</li><li>Switching profiles or quitting with unsaved changes asks first.</li></ul>
+      <p id="onboarding-body">Pick a module in the catalog and select a control on its image to edit what it does. Your changes stay unsaved until the profile is saved; the saved file is not touched before that.</p>
+      <ul><li>Changes are saved automatically a moment after you stop typing, and each saved version is kept so you can restore one from the profile manager. Undo with {mod}+Z, redo with Shift+{mod}+Z.</li><li>The inspector's Test button shows what one binding would do. “Test with sample input” under the module canvas runs a built-in sample through the profile.</li><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>If the app quits unexpectedly, your unsaved changes are offered back the next time you open it. That recovery copy stays on this Mac.</li></ul>
     </>,
   },
   connect: {

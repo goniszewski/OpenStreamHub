@@ -14,12 +14,14 @@ import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
-import { markOnboardingDone, shouldAutoOpenOnboarding } from './onboarding-model';
+import { StarterDialog } from './StarterDialog';
+import type { StarterEntry } from './StarterDialog';
+import { markStartersOffered, nextModulePrompt, shouldOfferStarters } from './starter-model';
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
-import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, ReplayKind } from './contracts';
+import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
@@ -53,6 +55,7 @@ declare global {
     __oshKeySampleSeed?: () => void;
     __oshLightingSeed?: (devices: LiveDevice[]) => void;
     __oshDialDisplaySeed?: (content: DialDisplayContent, image?: string) => void;
+    __oshStarterSeed?: (entry: StarterEntry, module?: ServiceModule) => void;
   }
 }
 function webStorage(): Storage | null {
@@ -87,9 +90,14 @@ export default function App() {
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   const noticesEnabled = useSyncExternalStore(notices.subscribe, () => notices.getState().enabled);
-  // The first-run guide opens itself once in the desktop app. Elsewhere it opens only on request.
-  const [guide, setGuide] = useState<{ open: boolean; step: number }>(() => ({ open: shouldAutoOpenOnboarding(webStorage(), desktop), step: 0 }));
-  const closeGuide = () => { markOnboardingDone(webStorage()); setGuide({ open: false, step: 0 }); };
+  // The getting-started guide opens only on request: from Help in the sidebar,
+  // from Settings, or from the starter chooser. The starter chooser is the
+  // first-run experience instead.
+  const [guide, setGuide] = useState(() => ({ open: false, step: 0 }));
+  const closeGuide = () => setGuide({ open: false, step: 0 });
+  // The starter chooser: the first run (fresh, empty profile storage), the
+  // profile manager, and a module that was connected after launch.
+  const [starter, setStarter] = useState<{ entry: StarterEntry; module: ServiceModule | null } | null>(null);
   // The one-time Module control notice: shown once the setting is known to be App and the guide no longer covers it, and
   // recorded as shown only then.
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
@@ -161,6 +169,29 @@ export default function App() {
   // Automatic saving is on by default; the stored choice applies as soon as
   // the session exists, and the toggle keeps both in step.
   useEffect(() => { session.setAutosave(readAutosaveSetting(webStorage())); }, [session]);
+  // The first-run chooser opens once profile storage turns out to be fresh
+  // and empty. The flag is written when it opens, so a crash while the dialog
+  // is up still offers it again next launch; an unreadable store never nags.
+  const startersDecided = useRef(false);
+  useEffect(() => {
+    if (!desktop || !state.ready || startersDecided.current) return;
+    startersDecided.current = true;
+    if (state.profiles.length || state.unreadable.length) return;
+    if (shouldOfferStarters(webStorage(), desktop)) { markStartersOffered(webStorage()); setStarter(current => current ?? { entry: 'first-run', module: null }); }
+  }, [desktop, state.ready, state.profiles.length, state.unreadable.length]);
+  // A module that appears after the first inventory snapshot is offered a
+  // starter once per appearance. The snapshot itself is the baseline: modules
+  // connected at launch are not asked about. While profile storage is still
+  // opening, the snapshot is held back so the prompt is not raced by the
+  // bootstrap.
+  const previousDevices = useRef<LiveDevice[] | null>(null);
+  useEffect(() => {
+    if (!deviceFeedState.inventoryLoaded || !state.ready) return;
+    const previous = previousDevices.current;
+    previousDevices.current = deviceFeedState.devices;
+    const module = nextModulePrompt(previous, deviceFeedState.devices);
+    if (module !== null) setStarter(current => current ?? { entry: 'module', module });
+  }, [deviceFeedState.inventoryLoaded, deviceFeedState.devices, state.ready]);
   // Browser-preview QA hook (dev only): the preview cannot reach Tauri, so design captures seed
   // sample OBS listings through window.__oshObsCatalogSeed. The effect, not the store
   // initializer, points the hook at the store that is actually mounted (StrictMode safe).
@@ -185,6 +216,9 @@ export default function App() {
       // The dial's Display tab: the mode picker works in the preview, but an
       // uploaded picture needs the desktop prepare pipeline, so captures seed one.
       window.__oshDialDisplaySeed = (content, image) => session.update(latest => ({ ...latest, dial_display: image ? { content, image } : { content } }));
+      // The starter chooser never opens by itself in the preview (no desktop
+      // storage), so captures open it directly.
+      window.__oshStarterSeed = (entry, module) => setStarter({ entry, module: module ?? null });
     }
   }, [session, obsCatalog]);
 
@@ -270,7 +304,7 @@ export default function App() {
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
           <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label="Manage profiles" title="Manage profiles" onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
-          {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onClose={() => setManagerOpen(false)} />}
+          {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
           <RunHeaderControl run={runSession} />
@@ -325,6 +359,17 @@ export default function App() {
       onCancel={() => setAllowExecutionOpen(false)}
       onConfirm={() => { setAllowExecutionOpen(false); if (flaggedProfile && contentHash) void session.allowExecution(flaggedProfile.id, flaggedProfile.name, contentHash); }} />
     <OnboardingDialog open={guide.open} step={guide.step} mac={mac} onStep={step => setGuide({ open: true, step })} onSkip={closeGuide} onDone={closeGuide} />
+    <StarterDialog open={starter !== null} entry={starter?.entry ?? 'first-run'} module={starter?.module ?? null}
+      onPick={profile => {
+        session.guard('switch to the starter profile', () => {
+          void session.createFromTemplate(profile).then(failure => {
+            if (failure) session.setError(`Could not create the starter profile: ${failure}`);
+            else setStarter(null);
+          });
+        });
+      }}
+      onClose={() => setStarter(null)}
+      onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>

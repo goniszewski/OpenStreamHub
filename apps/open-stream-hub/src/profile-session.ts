@@ -4,7 +4,7 @@ import { emptyHistory, recordEdit, redoStep, undoStep } from './edit-history';
 import type { History } from './edit-history';
 import { newDraftKey, restoreDecision, timeoutSchedule } from './draft-store';
 import type { Cancel, DraftPersister, Schedule, StoredDraft } from './draft-store';
-import { copyName, ImportError, importName, parseImportedProfile, withName } from './profile-library';
+import { copyName, ImportError, importName, parseImportedProfile, starterName, withName } from './profile-library';
 import { keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
 import { errorMessage, faderMaximum, replayLabels, versionTimeLabel } from './ui-model';
 
@@ -572,6 +572,13 @@ export class ProfileSession {
     const read = async () => source === 'saved' && profileId ? upgradeKeypadProfile((await this.invoke<StoredProfile>('load_profile', { id: profileId })).profile) : profile;
     const failure = await this.createProfile(read, 'Duplicating profile', copyName, name => `Created ${name}. It is now the open profile.`, this.state.draft.sourceId ?? profileId);
     if (failure) this.set({ error: `Could not duplicate profile: ${failure}` });
+  }
+
+  // Saves a shipped starter profile as a NEW saved profile (never overwriting
+  // one) and switches to it. The guard decides whether unsaved changes must
+  // settle first.
+  async createFromTemplate(profile: Profile): Promise<string | null> {
+    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`);
   }
 
   setImportError(importError: string | null) { this.set({ importError }); }

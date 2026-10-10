@@ -42,6 +42,17 @@ function* importSuffixes() {
   for (let count = 2; count < 10_000; count += 1) yield ` (imported ${count})`;
 }
 
+function* starterSuffixes() {
+  yield '';
+  for (let count = 2; count < 10_000; count += 1) yield ` ${count}`;
+}
+
+// `<name>`, then `<name> 2`, `<name> 3`, ... for a starter profile created
+// next to an existing one of the same name.
+export function starterName(name: string, existing: readonly string[]) {
+  return firstFree(name, existing, starterSuffixes());
+}
+
 export function withName(profile: Profile, name: string): Profile {
   return { ...profile, name };
 }

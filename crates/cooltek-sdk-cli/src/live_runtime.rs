@@ -4959,21 +4959,27 @@ mod tests {
         )
         .unwrap();
         counts.set(Arc::clone(&display.counts)).ok().unwrap();
+        // (first, last) write time of each animation sync; tag 1 is the page draw.
+        let sync_windows = |writes: Vec<(u64, Instant)>| {
+            let mut syncs: Vec<(u64, Instant, Instant)> = Vec::new();
+            for (sync, time) in writes.into_iter().filter(|(sync, _)| *sync > 1) {
+                match syncs.last_mut() {
+                    Some(last) if last.0 == sync => last.2 = time,
+                    _ => syncs.push((sync, time, time)),
+                }
+            }
+            syncs
+        };
         display.request(&session, "software_mode");
+        // Wait for syncs that actually wrote: the started-sync counter also
+        // counts syncs with nothing to draw, so on a slow runner it can reach
+        // its target while fewer than four syncs have written anything.
         assert!(
-            wait_until(|| display.counts.syncs.load(Ordering::SeqCst) >= 7),
+            wait_until(|| sync_windows(writes.lock().unwrap().clone()).len() >= 5),
             "animation syncs"
         );
         assert!(display.finish(Duration::from_secs(2)));
-        let writes = writes.lock().unwrap().clone();
-        // (first, last) write time of each animation sync; tag 1 is the page draw.
-        let mut syncs: Vec<(u64, Instant, Instant)> = Vec::new();
-        for (sync, time) in writes.into_iter().filter(|(sync, _)| *sync > 1) {
-            match syncs.last_mut() {
-                Some(last) if last.0 == sync => last.2 = time,
-                _ => syncs.push((sync, time, time)),
-            }
-        }
+        let syncs = sync_windows(writes.lock().unwrap().clone());
         assert!(syncs.len() >= 4, "{}", syncs.len());
         for pair in syncs.windows(2) {
             let gap = pair[1].1 - pair[0].2;

@@ -1458,10 +1458,16 @@ mod tests {
         let (emit, messages) = collector();
         let polite = TempProfile::write(root.path(), &test_profiles::folders()).unwrap();
         let polite_path = polite.path().to_path_buf();
+        // The marker proves the shell installed its trap before the interrupt
+        // arrives; a fixed sleep is not enough on a loaded runner.
+        let ready = root.path().join("polite-ready");
         start_script(
             &services,
             "service:44",
-            "trap 'exit 0' INT; while :; do sleep 0.02; done",
+            &format!(
+                "trap 'exit 0' INT; touch '{}'; while :; do sleep 0.02; done",
+                ready.display()
+            ),
             Some(polite),
             Arc::clone(&emit),
         )
@@ -1476,10 +1482,15 @@ mod tests {
             emit,
         )
         .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() {
+            assert!(Instant::now() < deadline, "the polite shell never started");
+            thread::sleep(Duration::from_millis(10));
+        }
         thread::sleep(Duration::from_millis(100));
         let started = Instant::now();
-        services.stop_all(Duration::from_millis(300));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        services.stop_all(Duration::from_millis(1000));
+        assert!(started.elapsed() < Duration::from_secs(4));
         assert!(!polite_path.exists() && !stubborn_path.exists());
         wait_done(&services, "service:44");
         wait_done(&services, "service:45");

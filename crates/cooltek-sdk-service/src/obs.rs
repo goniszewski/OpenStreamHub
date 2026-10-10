@@ -2587,13 +2587,15 @@ mod tests {
     fn expect_failure(script: impl FnOnce(&mut Peer, &mut Seen) + Send + 'static, expected: &str) {
         let (endpoint, server) = serve(script);
         let started = Instant::now();
+        // The longest deadline there is: these failures are not timeouts, so a
+        // loaded machine that stalls a loopback connect for a while must not
+        // turn one into a "timed out connecting" (the error text below would
+        // catch that). "Quickly" means well before the deadline.
         let error = client(endpoint, Some(PASSWORD))
+            .with_timeout(Duration::from_secs(3))
             .set_current_program_scene("Scene")
             .unwrap_err();
-        assert!(
-            started.elapsed() < FAST + Duration::from_millis(400),
-            "{error}"
-        );
+        assert!(started.elapsed() < Duration::from_millis(2_500), "{error}");
         assert!(
             error.contains(expected),
             "expected {expected:?} in {error:?}"

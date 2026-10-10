@@ -133,6 +133,14 @@ The editor's OBS pickers were checked against the scripted fake server in `crate
 - **Off.** While OBS is off in Settings, listing commands refuse without connecting.
 - **Still pending.** A check against a real OBS 28+ install, including the password-required path and refresh after a scene rename.
 
+## Run mode and applied saves: press checks (pending, 10 October 2026)
+
+Both checks need a module running a profile with actions, and are for the next hardware session.
+
+- **Run mode.** With the header mode Live, a press runs its action on the Mac; switched to Test, the same press is only logged ("Would run: …") and nothing happens. The badge matches what a press does in both states.
+- **Applied save.** With a run active, edit a binding of the running profile and save: the run swaps in place (same session, no stop or restart by the user), the display redraws from the saved profile, and a press runs the new action in Live and only logs it in Test. A save that adds a new kind of action in Live pauses the run once, and the resume dialog lists the additions.
+- **Watch.** An applied save restarts the run's process, so the module's display redraws briefly. The automatic save fires about a second after an edit settles; if a running profile is edited in bursts, check the redraw is not disruptive.
+
 ## Not tested
 
 - The dial's `image` face and the per-profile `dial_display` setting in the app.

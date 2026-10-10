@@ -9,6 +9,7 @@ import {
 } from './key-artwork-design';
 import type { DesignStorage, KeyArtworkDesign, KeyTextMeasure } from './key-artwork-design';
 import { keyIconById } from './key-icons';
+import { applyAutoArtwork, planAutoArtwork, planKey } from './auto-key-artwork';
 import type { Invoke, ProfileSession } from './profile-session';
 import { errorMessage } from './ui-model';
 
@@ -17,6 +18,18 @@ export interface AppIconResult { png_base64: string }
 // The app icon of one bundle id costs one LaunchServices lookup; the editor
 // remounts on every profile edit, so the result is cached module-wide.
 const appIconCache = new Map<string, string>();
+
+// Typing a bundle id must settle before the automatic drawing looks it up.
+export const autoArtworkDelayMs = 500;
+
+/** The icon of an installed application, cached for the session. */
+async function loadAppIcon(invoke: Invoke, bundleId: string): Promise<string> {
+  const cached = appIconCache.get(bundleId);
+  if (cached) return cached;
+  const result = await invoke<AppIconResult>('app_icon', { request: { bundle_id: bundleId } });
+  appIconCache.set(bundleId, result.png_base64);
+  return result.png_base64;
+}
 
 // Recently used icons live beside the action picker's recents. A failed read
 // or write must never block assigning artwork.
@@ -223,7 +236,9 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   const touched = useRef(false);
   const editDesign = (next: KeyArtworkDesign) => { touched.current = true; setDesign(next); };
   useEffect(() => {
-    if (!touched.current && !artwork?.design) setDesign(initialKeyArtworkDesign(action, initialText ?? ''));
+    if (touched.current) return;
+    // An automatic drawing lands as saved artwork with a design: the studio follows it.
+    setDesign((artwork?.design && keyDesignFromSpec(artwork.design, action)) || initialKeyArtworkDesign(action, initialText ?? ''));
   }, [action, initialText, artwork]);
   const [query, setQuery] = useState('');
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -252,6 +267,30 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       .catch(() => { if (!cancelled) setAppIconFailed(true); });
     return () => { cancelled = true; };
   }, [action, invoke]);
+  // Assigning an application or a URL draws the key's artwork (see
+  // auto-key-artwork); only an assignment made while this editor is open does,
+  // never merely selecting a key. Removing the artwork declines it for that
+  // assignment, and anything the user designed is never replaced.
+  const plan = planAutoArtwork(action);
+  const planId = planKey(plan);
+  const latest = useRef({ planId, artwork });
+  latest.current = { planId, artwork };
+  const previousPlan = useRef(planId);
+  const declined = useRef<string | null>(null);
+  useEffect(() => {
+    if (previousPlan.current === planId) return;
+    previousPlan.current = planId;
+    if (!plan || !invoke || disabled || declined.current === planId) return;
+    // The application field is typed into: settle before looking anything up.
+    const timer = setTimeout(() => {
+      const id = ++requestId.current;
+      void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
+        planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current,
+      });
+    }, autoArtworkDelayMs);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planId]);
   async function choose(file: File) {
     const id = ++requestId.current;
     const before = session.getState();
@@ -310,7 +349,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     }} />
     {busy && <p role="status">Preparing key artwork…</p>}
     {error && <p className="field-error" role="alert">{error}</p>}
-    {artwork && <><KeyArtworkPreview artwork={artwork} /><p className="fine-print">{artwork.frames.length > 1 ? `${artwork.frames.length} frames · ${artwork.loop_count === 0 ? 'loops continuously' : `${artwork.loop_count} play(s)`}` : 'Static image'}</p><button className="button compact" disabled={disabled || busy} onClick={() => session.edit(setKeyArtwork(session.getState().draft.profile, path, control, null))}>Remove artwork</button></>}
+    {artwork && <><KeyArtworkPreview artwork={artwork} /><p className="fine-print">{artwork.frames.length > 1 ? `${artwork.frames.length} frames · ${artwork.loop_count === 0 ? 'loops continuously' : `${artwork.loop_count} play(s)`}` : 'Static image'}</p><button className="button compact" disabled={disabled || busy} onClick={() => { declined.current = planId; session.edit(setKeyArtwork(session.getState().draft.profile, path, control, null)); }}>Remove artwork</button></>}
     <p className="fine-print">The preview above shows the design; the key receives the same picture prepared as a 72×72 JPEG. PNG, JPEG or GIF · up to 8 MiB. GIFs: up to 512×512 and 120 frames, at most 10 FPS. Artwork is saved with the profile and sent while OpenStreamHub drives the display.</p>
     {!invoke && <p className="fine-print">Preparing key artwork needs the desktop app.</p>}
   </section>;

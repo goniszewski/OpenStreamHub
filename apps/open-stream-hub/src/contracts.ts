@@ -155,8 +155,9 @@ export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'rec
 // profile_switch: a focused-app rule replaced the profile; profile_action: a profile key (next/previous) did.
 // start_refused: the service exited with an error before it reported service_start; the session stops without retrying.
 // module_control: an automatic session ended because Module control is no longer App (or its file cannot be read).
-// auto_actions: 'Run actions automatically' was turned on or off, so an automatic session restarts with or without actions.
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control' | 'auto_actions';
+// run_mode: the Live/Test mode was switched (or the execution guard's answer for a profile changed), so the session
+// restarts with or without actions.
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'module_control' | 'run_mode';
 // Set for the whole life of a session the session manager started on its own (Module control App): a dry run on the
 // 15-key module or the dial when the app opened, when the module was connected, or when Module control was switched to
 // App with the module connected. Absent for a user's Start.
@@ -170,7 +171,7 @@ export interface SessionStatePayload {
   // still runs the profile it was started with), profile_name its name. The runner resyncs its confirmation copy from them.
   profile_id: string | null; profile_name: string;
   detail?: string; next_attempt_in_ms?: number; auto_start?: SessionAutoStart;
-  // Why an automatic session runs as a dry run although 'Run actions automatically' is on (the execution guard's refusal).
+  // Why this session runs as a dry run although the run mode is Live (the execution guard's refusal).
   auto_dry_run_reason?: string;
 }
 
@@ -193,8 +194,11 @@ export interface FocusCurrentApp { supported: boolean; bundle_id: string | null 
 // leaves them in the module's own mode. Read once when a profile is started, so a change applies at the next start.
 // What the dial shows under 'app' is the running profile's dial_display setting, not a global one.
 export type ModuleControl = 'app' | 'built_in_animation';
-// auto_execute: 'Run actions automatically' for sessions the session manager starts on its own. Off unless the user turns it on.
-export interface DisplaySettings { module_control: ModuleControl; auto_execute: boolean }
+// run_mode: one mode for the whole app, shown by the header badge. 'live': a press runs its action (macOS only, behind
+// the per-profile confirmations). 'test' (the default): presses are logged only, nothing happens on the Mac. Switching
+// it applies to every running module; a profile imported from .mhz stays Test until it is allowed to execute.
+export type RunMode = 'live' | 'test';
+export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode }
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.

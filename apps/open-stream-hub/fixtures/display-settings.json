@@ -21,8 +21,8 @@
     "image": "AAAA"
   },
   "display_settings_default": {
-    "auto_execute": false,
-    "module_control": "app"
+    "module_control": "app",
+    "run_mode": "test"
   },
   "module_controls": [
     "app",
@@ -33,12 +33,12 @@
   },
   "set_display_settings_args": {
     "settings": {
-      "auto_execute": true,
-      "module_control": "built_in_animation"
+      "module_control": "built_in_animation",
+      "run_mode": "live"
     }
   },
   "set_display_settings_result": {
-    "auto_execute": true,
-    "module_control": "built_in_animation"
+    "module_control": "built_in_animation",
+    "run_mode": "live"
   }
 }

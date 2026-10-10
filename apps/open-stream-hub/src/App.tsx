@@ -17,11 +17,10 @@ import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
 import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
-import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Info, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
-import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, ServiceModule } from './contracts';
+import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
@@ -32,6 +31,7 @@ import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
+import { defaultDisplaySettings } from './display-settings';
 import { ProfileManagerSheet, SampleTestPanel } from './ProfileManager';
 import { useImportDrop } from './ProfileTransfer';
 import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
@@ -56,6 +56,7 @@ declare global {
     __oshLightingSeed?: (devices: LiveDevice[]) => void;
     __oshDialDisplaySeed?: (content: DialDisplayContent, image?: string) => void;
     __oshStarterSeed?: (entry: StarterEntry, module?: ServiceModule) => void;
+    __oshRunModeSeed?: (runMode: RunMode, imported?: boolean) => void;
   }
 }
 function webStorage(): Storage | null {
@@ -103,6 +104,12 @@ export default function App() {
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
   const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
+  useEffect(() => {
+    if (previewRunModeSeed === null) return;
+    displaySettings.seedPreview({ ...defaultDisplaySettings, run_mode: previewRunModeSeed.includes('live') ? 'live' : 'test' });
+    // The seed is read from the address once; the store is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const service = useSyncExternalStore(runner.subscribe, runner.getState);
   const showControlNotice = moduleControlNoticeVisible({ pending: controlNotice, guideOpen: guide.open, loaded: display.loaded, moduleControl: display.settings.module_control });
   useEffect(() => { if (showControlNotice) markModuleControlNoticeShown(webStorage()); }, [showControlNotice]);
@@ -132,7 +139,16 @@ export default function App() {
   // Profile files can be dropped anywhere on the workspace to import them.
   const drop = useImportDrop(session, disabled);
   // One run session for the whole app: the header Run control and the Devices-page panel share it.
-  const dryRunBlock = draftRunBlock(state);
+  // The second arm is the capture seed below (never set in the desktop app): the browser
+  // preview has no import flags, so captures can still show the flagged-profile badge.
+  // Browser-preview QA only (never set in the desktop app): captures open the
+  // preview with ?run-mode=live[,imported] so the header badge and switch show
+  // a state the read-only preview cannot reach on its own.
+  const previewRunModeSeed = !desktop && import.meta.env.DEV
+    ? new URLSearchParams(window.location.search).get('run-mode')
+    : null;
+  const [previewDryRunOnly, setPreviewDryRunOnly] = useState(() => previewRunModeSeed?.includes('imported') ?? false);
+  const dryRunBlock = draftRunBlock(state) ?? (previewDryRunOnly ? 'imported' : null);
   // A start settles the pending automatic save first and runs the saved
   // profile it produced (the session is the truth, not the last render).
   const runSession = useRunSession({
@@ -224,6 +240,13 @@ export default function App() {
       // The starter chooser never opens by itself in the preview (no desktop
       // storage), so captures open it directly.
       window.__oshStarterSeed = (entry, module) => setStarter({ entry, module: module ?? null });
+      // The header's run-mode badge and switch likewise: the preview has no
+      // display settings to load, so captures seed the shown mode (the URL
+      // parameter above is the path captures actually use).
+      window.__oshRunModeSeed = (runMode, imported) => {
+        displaySettings.seedPreview({ ...defaultDisplaySettings, run_mode: runMode });
+        setPreviewDryRunOnly(imported === true);
+      };
     }
   }, [session, obsCatalog]);
 
@@ -340,8 +363,7 @@ export default function App() {
           <button className="button compact" disabled={busy !== null} onClick={() => { void session.bootstrap(); }}><RotateCcw size={16} />Retry</button></div>}
         {error && <div className="alert error" role="alert"><CircleHelp size={19} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => session.setError(null)}><X size={17} /></button></div>}
         {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span>{noticeAction && <button className="button compact" onClick={() => { const action = noticeAction; session.setNotice(null); action.run(); }}>{noticeAction.label}</button>}<button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
-        <AutoActionsIndicator runs={service.runs} busy={display.busy} onStop={() => { void displaySettings.stopAutomaticActions(); }} />
-        {showControlNotice && <ModuleControlNotice autoExecute={display.settings.auto_execute} onDismiss={() => setControlNotice(false)} />}
+        {showControlNotice && <ModuleControlNotice runMode={display.settings.run_mode} onDismiss={() => setControlNotice(false)} />}
 
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <ModuleCatalog editor={editor} feed={feed} />

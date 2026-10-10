@@ -21,7 +21,7 @@ export interface SessionInfo {
   profileGeneration?: number;
   // Set when the session manager started this session on its own.
   autoStart?: SessionAutoStart;
-  // Why such a session is a dry run although 'Run actions automatically' is on.
+  // Why such a session is a dry run although the run mode is Live.
   autoDryRunReason?: string;
 }
 export interface ServiceRun {
@@ -72,7 +72,7 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', auto_actions: 'Run actions automatically was turned on or off' };
+export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' };
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action';
 // How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
 // for a Start by the user.
@@ -82,7 +82,7 @@ const autoStartWhen: Record<SessionAutoStart, string> = {
   module_control_set: 'when OpenStreamHub started driving the display',
 };
 export const autoStartLabel = (autoStart: SessionAutoStart, execute: boolean) =>
-  `Started automatically (${execute ? 'actions run' : 'dry run'}) ${autoStartWhen[autoStart]}`;
+  `Started automatically (${execute ? 'Live' : 'Test'} mode) ${autoStartWhen[autoStart]}`;
 // start_service's refusals for a module a session already owns (session::Driver::start).
 export const deviceTaken = /^(service \S+ is already running|session \S+ already runs this device)$/;
 export const deviceTakenError = 'This module already has a running session (it may have started automatically). Stop it in the Run panel, then run again.';
@@ -116,7 +116,7 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
   switch (next.phase) {
     case 'suspended': return info(next.reason === 'sleep' || next.reason === null ? 'Mac went to sleep — actions paused' : `Paused: ${reasonLabels[next.reason]}`);
     case 'waiting_for_device': return info(`Waiting for ${next.module} to reconnect`);
-    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'auto_actions' ? 'Restarting: Run actions automatically was turned on or off' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
+    case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'run_mode' ? 'Restarting: the run mode was switched' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
       const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
@@ -203,7 +203,7 @@ function describeEvent(event: unknown): string {
 
 // Turns one service JSONL record into a log line. Returns null for records that are only noise
 // (every raw HID report). Unknown shapes degrade to 'raw' or 'info'.
-export function summarizeRecord(record: unknown, at: number): ActivityEntry | null {
+export function summarizeRecord(record: unknown, at: number, execute = true): ActivityEntry | null {
   if (!isObject(record)) return { kind: 'raw', text: clip(typeof record === 'string' ? record : JSON.stringify(record) ?? String(record)), at };
   const entry = (kind: ActivityKind, text: string): ActivityEntry => ({ kind, text, at });
   switch (record.type) {
@@ -224,7 +224,8 @@ export function summarizeRecord(record: unknown, at: number): ActivityEntry | nu
           const change = isObject(record.navigation) ? record.navigation : {};
           return entry('event', `Dial function: ${str(change.from_function) ?? '?'} → ${str(change.to_function) ?? '?'} (${typeof change.index === 'number' ? change.index + 1 : '?'}/${String(change.count ?? '?')})`);
         }
-        case 'planned': return entry('action', `${text}: planned ${describeAction(record.action)}`);
+        // A dry run logs the press the way the counters name it.
+        case 'planned': return entry('action', execute ? `${text}: planned ${describeAction(record.action)}` : `Would run: ${describeAction(record.action)} (${text})`);
         case 'navigation': return entry('event', `${text}: folder navigation`);
         case 'unbound': return entry('event', `${text}: no action bound`);
         default: return entry('event', text);
@@ -424,7 +425,7 @@ export class ServiceRunner {
     }
     const at = this.now();
     this.update(id, run => {
-      const entry = summarizeRecord(payload.record, at);
+      const entry = summarizeRecord(payload.record, at, run.execute);
       return { ...run, entries: appendEntry(run.entries, entry), counters: countRecord(run.counters, payload.record, run.execute) };
     }, false);
   }
@@ -659,12 +660,23 @@ export class ServiceRunner {
     catch (reason) { this.set({ error: errorMessage(reason) }); }
   }
 
-  // Restarts a paused run with its stored request, including execute. Never without a confirmation that resolves true.
-  // The confirmation is tied to the profile generation the dialog showed: when a switch replaces the profile while the
-  // dialog is open, the user is asked again for the new profile, and the backend refuses a stale generation too.
+  // Restarts a paused run with its stored request. An executing resume never
+  // happens without a confirmation that resolves true; a dry one (the run
+  // mode is Test, or the profile may not execute) needs none. The
+  // confirmation is tied to the profile generation the dialog showed: when a
+  // switch replaces the profile while the dialog is open, the user is asked
+  // again for the new profile, and the backend refuses a stale generation
+  // too.
   async resumeSession(sessionId: string, confirm?: ConfirmExecute): Promise<boolean> {
     if (!this.state.desktop) return false;
     if (this.runs()[sessionId]?.session?.phase !== 'needs_confirmation') return false;
+    if (this.runs()[sessionId]?.execute !== true) {
+      await this.switchQueues.get(sessionId)?.done;
+      const run = this.runs()[sessionId];
+      if (run?.session?.phase !== 'needs_confirmation') return false;
+      try { await this.invoke<void>('resume_session', { sessionId, profileGeneration: run.profileGeneration ?? 0 }); return true; }
+      catch (reason) { this.set({ error: errorMessage(reason) }); return false; }
+    }
     if (!confirm) { this.set({ error: 'Resuming actions needs confirmation.' }); return false; }
     for (let attempt = 0; attempt < 3; attempt += 1) {
       // A switch reply still on its way would leave profileName behind the backend's generation.
@@ -702,6 +714,15 @@ export class ServiceRunner {
     }
     this.set({ error: 'The profile of this run kept changing. Review it and resume again.' });
     return false;
+  }
+
+  // The profile a session holds for a generation, or null when it cannot be
+  // read (the session is gone, or the reply failed). The run-mode switch
+  // dialog lists what would start executing and treats a null as unknown
+  // contents, never skips it.
+  async heldProfile(sessionId: string, profileGeneration: number): Promise<HeldProfile | null> {
+    try { return await this.invoke<HeldProfile>('session_profile', { sessionId, profileGeneration }); }
+    catch { return null; }
   }
 
   // After PROFILE_CHANGED the backend has already re-sent its state, but a Tauri event can arrive after the command's

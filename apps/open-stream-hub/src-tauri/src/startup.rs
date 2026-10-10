@@ -13,9 +13,9 @@
 //! The default and the last profile per serial number live in
 //! `<app data>/module-profiles.json`, beside `display-settings.json`, with the
 //! same bounded, symlink-safe read and atomic 0600 write. It holds saved
-//! profile ids only, never a profile body or an execute flag: whether an
-//! automatic session executes is the separate "Run actions automatically"
-//! setting (`display::DisplaySettings::auto_execute`). Only modules the
+//! profile ids only, never a profile body or an execute flag: whether a
+//! session executes is the run mode (`display::DisplaySettings::run_mode`,
+//! the header badge). Only modules the
 //! session manager takes over with a nonblank serial number are remembered.
 //! A missing file means no default and no last profiles. A damaged or
 //! unreadable file fails closed: every automatic start uses the blank

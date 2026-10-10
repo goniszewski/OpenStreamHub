@@ -34,7 +34,7 @@ describe('onboarding steps', () => {
     expect(markup).toContain('offers the starters that use it');
     expect(markup).toContain('New from a starter');
     expect(markup).toContain('Nothing is typed into apps, and no app or web page is opened');
-    expect(markup).toContain('executing actions always asks for confirmation first');
+    expect(markup).toContain('The app starts in Test mode: presses are only logged');
     expect(markup).toContain('Only run profiles you wrote or reviewed.');
   });
   it('merges editing, testing and saving on the second step', () => {
@@ -47,8 +47,8 @@ describe('onboarding steps', () => {
   });
   it('states the permission and privacy facts', () => {
     expect(render(2)).toContain('Accessibility or Automation');
-    expect(render(2)).toContain('app-started sessions can run actions without a prompt');
-    expect(render(2)).toContain('this option is off by default');
+    expect(render(2)).toContain('The first switch to Live asks you to confirm and lists what the profile will do');
+    expect(render(2)).toContain('every Run still asks before it starts');
     expect(render(2)).toContain('pastes text into the focused app (and can press Return after it)');
     expect(render(2)).toContain('Only run profiles you wrote or reviewed.');
     expect(render(3)).toContain('Nothing is uploaded');

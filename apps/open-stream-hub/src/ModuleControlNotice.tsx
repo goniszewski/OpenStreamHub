@@ -1,11 +1,11 @@
 import { Info, X } from 'lucide-react';
-import type { ModuleControl } from './contracts';
+import type { ModuleControl, RunMode } from './contracts';
 
 // One non-blocking notice, shown once per user, that says the app drives the 15-key module and the dial (Module control
-// App, the default): the session manager starts a dry run unless automatic actions are enabled in Settings.
+// App, the default): what a press does on those runs is the run mode in the header.
 export const moduleControlNoticeText = 'OpenStreamHub drives the 15-key module and the encoder dial whenever it is open; their built-in animation returns when you quit. Change this in Settings, under “Let OpenStreamHub drive the display”.';
-// Added only while "Run actions automatically" is on.
-export const autoActionsNoticeText = 'Actions run automatically; turn that off in Settings.';
+// Added only while the run mode is Live.
+export const autoActionsNoticeText = 'Actions run right now; switch the badge in the header to Test to stop them.';
 export const moduleControlNoticeStorageKey = 'open-stream-hub.module-control-notice-shown';
 
 // True until the notice was shown once. If storage cannot be read the answer is unknown, so the notice stays hidden
@@ -26,9 +26,9 @@ export function markModuleControlNoticeShown(storage: Pick<Storage, 'setItem'> |
   try { storage?.setItem(moduleControlNoticeStorageKey, 'shown'); } catch { /* Shown again next launch if storage is blocked. */ }
 }
 
-export function ModuleControlNotice({ autoExecute = false, onDismiss }: { autoExecute?: boolean; onDismiss(): void }) {
+export function ModuleControlNotice({ runMode = 'test', onDismiss }: { runMode?: RunMode; onDismiss(): void }) {
   return <div className="alert notice module-control-notice" role="status">
-    <Info size={18} aria-hidden="true" /><span>{autoExecute ? `${moduleControlNoticeText} ${autoActionsNoticeText}` : moduleControlNoticeText}</span>
+    <Info size={18} aria-hidden="true" /><span>{runMode === 'live' ? `${moduleControlNoticeText} ${autoActionsNoticeText}` : moduleControlNoticeText}</span>
     <button aria-label="Dismiss module control notice" onClick={onDismiss}><X size={17} /></button>
   </div>;
 }

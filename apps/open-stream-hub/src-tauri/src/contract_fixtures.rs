@@ -1,7 +1,7 @@
 //! Shared fixtures that pin the Rust/TypeScript boundary. The frontend tests
 //! read the same files. Regenerate with `UPDATE_FIXTURES=1 cargo test`.
 
-use crate::{artwork, diagnostics, feed, replay, service, store, test_profiles};
+use crate::{artwork, diagnostics, display, feed, replay, service, store, test_profiles};
 use cooltek_sdk_service::Profile;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf};
@@ -236,7 +236,14 @@ fn session_payloads_match_the_shared_fixtures() {
     use session::fake::{FakeRunner, device, exit, request};
     let dial = |path: &str| device(ServiceModule::M131E, Some("ABCDEF123456"), path);
     let start = |execute| {
-        let mut driver = session::Driver::new(FakeRunner::default());
+        // A user's Start with actions needs the saved mode Live.
+        let mut driver = session::Driver::new(FakeRunner {
+            display: crate::display::DisplaySettings {
+                run_mode: crate::display::RunMode::Live,
+                ..crate::display::DisplaySettings::default()
+            },
+            ..FakeRunner::default()
+        });
         driver.inventory(vec![dial("/dev/hidraw-0202")], 0);
         let id = driver
             .start(request(&dial("/dev/hidraw-0202"), execute), 0)
@@ -568,7 +575,13 @@ fn focus_rule_payloads_match_the_shared_fixtures() {
         Some("ABCDEF123456"),
         "/dev/hidraw-0202",
     );
-    let mut driver = session::Driver::new(FakeRunner::default());
+    let mut driver = session::Driver::new(FakeRunner {
+        display: crate::display::DisplaySettings {
+            run_mode: crate::display::RunMode::Live,
+            ..crate::display::DisplaySettings::default()
+        },
+        ..FakeRunner::default()
+    });
     driver.inventory(vec![dial.clone()], 0);
     let id = driver.start(request(&dial, true), 0).unwrap();
     let profile_generation = driver
@@ -606,7 +619,13 @@ fn profile_action_payloads_match_the_shared_fixtures() {
         Some("ABCDEF123456"),
         "/dev/hidraw-0202",
     );
-    let mut driver = session::Driver::new(FakeRunner::default());
+    let mut driver = session::Driver::new(FakeRunner {
+        display: crate::display::DisplaySettings {
+            run_mode: crate::display::RunMode::Live,
+            ..crate::display::DisplaySettings::default()
+        },
+        ..FakeRunner::default()
+    });
     driver.inventory(vec![dial.clone()], 0);
     let id = driver.start(request(&dial, true), 0).unwrap();
     let mut streaming = test_profiles::folders();
@@ -681,7 +700,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
     use cooltek_sdk_service::DialDisplayContent;
     let chosen = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        auto_execute: true,
+        run_mode: display::RunMode::Live,
     };
     let args = json!({ "settings": chosen });
     // `set_display_settings` arguments as the frontend sends them parse back.

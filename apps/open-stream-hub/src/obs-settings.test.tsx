@@ -102,7 +102,7 @@ describe('ObsSettingsPanel markup', () => {
     expect(markup).toContain(obsPasswordNote);
     expect(obsPasswordNote).toContain('enter it again after you restart the app');
     expect(markup).toContain('No password is set');
-    expect(markup).toContain('Changes apply the next time you start a profile.');
+    expect(markup).toContain('Changes apply the next time a profile starts.');
   });
   it('says when a password is held and never shows it', () => {
     const markup = renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: { enabled: true, host: '::1', port: 4456, password_set: true } })} />);

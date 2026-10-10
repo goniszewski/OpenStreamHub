@@ -4,11 +4,12 @@ import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } 
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor } from './service-runner';
+import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, unknownSnapshot } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';
 import type { RiskLevel } from './profile-capabilities';
+import type { RunMode } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
 
@@ -49,14 +50,14 @@ export const settingsErrorBlocker = (error: string) => `The display settings cou
 // The feed never reads a path a run owns; the live preview shows that module's input from the run's own records instead.
 export const runPreviewNote = 'The live preview shows the input this run reads from the module (read-only).';
 // The label of a run the session manager started on its own, so it is never taken for a Start by the user. It runs actions
-// only while "Run actions automatically" is on; otherwise, running another profile or executing actions needs Stop and then
-// the user's own Run. A dry run that should have executed says why.
+// only while the header mode is Live; in Test mode, running another profile needs Stop and then the user's own Run. A dry
+// run that should have executed says why.
 export function autoStartNote(autoStart: NonNullable<ServiceRun['session']>['autoStart'], execute = false, dryRunReason?: string) {
   if (!autoStart) return null;
   const label = `${autoStartLabel(autoStart, execute)}.`;
-  if (execute) return `${label} Actions run without asking. Stop it, or turn off Run actions automatically in Settings, to end them.`;
+  if (execute) return `${label} Actions run without asking. Stop it, or switch the header mode to Test, to end them.`;
   const why = dryRunReason ? ` Actions are off for this run: ${dryRunReason}` : '';
-  return `${label}${why} Stop it to run another profile on this module or to execute actions.`;
+  return `${label}${why} Stop it to run another profile on this module.`;
 }
 // Why the software mode box is ticked and locked for the 15-key module and the dial.
 export const appControlNote = '“Let OpenStreamHub drive the display” is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
@@ -89,7 +90,7 @@ export const runStatePill = (run: ServiceRun | undefined) => {
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
-const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', auto_actions: 'Run actions automatically was turned on or off' } as const;
+const stoppedReason = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'you stopped it', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched' } as const;
 // The first 8 characters of a saved profile id, enough to tell two profiles of the same name apart.
 const shortId = (id: string) => id.length > 8 ? `${id.slice(0, 8)}…` : id;
 // Who switched the run, as one phrase for the banner and the Resume dialog.
@@ -144,6 +145,39 @@ export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string |
 // answers false and closes the dialog instead of showing start-a-run text for a resume.
 export function dialogCopy(kind: 'start' | 'resume', runs: Record<string, ServiceRun>, resumeId: string | null, startCopy: ReturnType<typeof confirmCopy>) {
   return kind === 'resume' ? resumeCopy(runs, resumeId) : startCopy;
+}
+
+// The header badge for the run mode. An imported profile not yet allowed to
+// execute reads as Test whatever the mode is: with that profile open, a press
+// will not run actions, so the badge must never claim Live.
+export const runModeBadge = (runMode: RunMode, dryRunOnly: boolean): string =>
+  runMode === 'live' && !dryRunOnly ? 'Live' : dryRunOnly ? 'Test (imported profile)' : 'Test';
+
+// The copy of the run-mode switch to Live: one dialog for every running
+// session that would start executing. A profile whose body the frontend does
+// not hold (or that could not be fetched) counts as unknown contents, which
+// is high risk — a confirmation never covers what it could not show.
+export function modeSwitchCopy(runs: ServiceRun[], bodies: (Profile | null)[]): ConfirmCopy {
+  const entries = runs.map((item, index) => ({ name: item.profileName, body: bodies[index] ?? null }));
+  const capabilities = entries.map(entry => ({ name: entry.name, caps: entry.body ? profileCapabilities(entry.body) : null }));
+  const checked = capabilities.filter(entry => entry.caps !== null).map(entry => entry.caps!);
+  const unknown = capabilities.length - checked.length;
+  const risk: RiskLevel = unknown > 0 || checked.some(caps => caps.risk === 'high') ? 'high' : 'elevated';
+  const names = entries.map(entry => `"${entry.name}"`).join(', ');
+  const subject = entries.length === 1 ? `the running profile ${names}` : `the running profiles ${names}`;
+  const lines = [...new Set(checked.flatMap(caps => capabilityLines(caps)))];
+  const reasons = checked.filter(caps => caps.risk === 'high').flatMap(caps => caps.riskReasons);
+  return {
+    title: 'Switch the mode to Live?',
+    confirm: 'Switch to Live',
+    message: `In Live mode, everything in ${subject} runs on this Mac whenever the module is used, without asking again.`,
+    risk,
+    lines: lines.length ? lines : [unknownContents],
+    snippets: checked.flatMap(caps => caps.texts.map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter }))),
+    sequences: checked.flatMap(caps => caps.sequences.map(steps => steps.map(stepLabel))),
+    warning: risk === 'high' ? `High risk.${unknown > 0 ? ` ${unknown === 1 ? 'One profile' : `${unknown} profiles`} could not be checked here and may do anything.` : reasons.length ? ` ${reasons.join(' ')}` : ''} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote these profiles or reviewed every snippet and step below and trust where they came from.` : null,
+    acknowledge: risk === 'high' ? 'I reviewed these profiles and trust their sources' : null,
+  };
 }
 
 export function relativeTime(at: number, now: number): string {
@@ -238,7 +272,7 @@ export const runBlockNotes = {
 export interface RunSessionOptions {
   runner?: ServiceRunner; feed?: DeviceFeed; profile: Profile; profileId?: string | null; sourceProfileId?: string | null;
   desktop: boolean; unsaved: boolean; displaySettings?: DisplaySettingsStore; dryRunOnly?: boolean; dryRunNote?: string;
-  platform?: PlatformInfo; now?: number; initialExecute?: boolean;
+  platform?: PlatformInfo; now?: number;
   // Settles the draft before a start (the pending automatic save), so the run
   // uses the last saved version. It returns the draft identity to start with;
   // without a result the start uses the values this hook was rendered with.
@@ -252,16 +286,22 @@ export interface SettledDraft { profile: Profile; profileId: string | null; sour
 
 // All state and behaviour of starting, stopping and resuming a run. Lives once in App, so the header
 // Run control works on every page and shares its selection and mode with the Devices-page panel.
-export function useRunSession({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow, initialExecute = false, beforeStart }: RunSessionOptions) {
+export function useRunSession({ runner, feed, profile, profileId = null, sourceProfileId = null, desktop, unsaved, displaySettings, dryRunOnly = false, dryRunNote = dryRunOnlyRunNote, platform = typeof navigator === 'undefined' ? undefined : navigator, now: fixedNow, beforeStart }: RunSessionOptions) {
   const service = useSyncExternalStore(runner?.subscribe ?? noopSubscribe, runner?.getState ?? idleRunner, runner?.getState ?? idleRunner);
   const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleFeed, feed?.getState ?? idleFeed).devices;
   const display = useSyncExternalStore(displaySettings?.subscribe ?? noopSubscribe, displaySettings?.getState ?? idleDisplay, displaySettings?.getState ?? idleDisplay);
   useEffect(() => { if (displaySettings && display.desktop && !display.loaded) void displaySettings.load(); }, [displaySettings, display.desktop, display.loaded]);
   const [chosen, setChosen] = useState<ServiceSelection | null>(null);
-  const [execute, setExecute] = useState(initialExecute);
   const [softwareMode, setSoftwareMode] = useState(false);
   const [confirm, setConfirm] = useState<((ok: boolean) => void) | null>(null);
   const [confirmKind, setConfirmKind] = useState<'start' | 'resume'>('start');
+  // The run-mode switch to Live with running sessions: the dialog lists what
+  // they would start doing; null while Test needs no confirmation. The ref
+  // carries the open copy to the answer, which may run from a closure made
+  // before the dialog opened (the same reason pendingConfirm exists).
+  const [modeCopy, setModeCopyState] = useState<ConfirmCopy | null>(null);
+  const modeCopyRef = useRef<ConfirmCopy | null>(null);
+  const setModeCopy = (copy: ConfirmCopy | null) => { modeCopyRef.current = copy; setModeCopyState(copy); };
   // The run being resumed. The dialog names it, not whatever run the device selection shows by the time it renders.
   const [resumeId, setResumeId] = useState<string | null>(null);
   // The high-risk acknowledgement. Cleared with every answer, so each confirmation asks again.
@@ -285,7 +325,27 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   const box = softwareModeBox({ module: device?.module, loaded: display.loaded, moduleControl: display.settings.module_control, ticked: softwareMode });
   const stale = isStale(run, profile);
   const now = fixedNow ?? clock;
-  const executeSelected = execute && mac && !dryRunOnly;
+  // The one mode decides what a press does: the badge, the Run button and the
+  // banners all read it. An imported profile not yet allowed keeps the badge
+  // on Test for the open profile whatever the mode is.
+  const runMode: RunMode = display.settings.run_mode;
+  const executeSelected = runMode === 'live' && mac && !dryRunOnly;
+  // The switch saves the mode; the backend applies it to every running
+  // module. Test needs no confirmation. Live with running sessions that
+  // would start executing asks once, listing their profiles; Live with
+  // nothing running just saves (a later Run still confirms, as always).
+  const modeBusy = display.busy || !display.loaded;
+  const switchMode = (next: RunMode) => {
+    if (!displaySettings || modeBusy || next === runMode) return;
+    if (next === 'test') { void displaySettings.setRunMode('test'); return; }
+    const switching = Object.values(service.runs).filter(item => isActiveRun(item) && !item.execute);
+    if (!switching.length) { void displaySettings.setRunMode('live'); return; }
+    void Promise.all(switching.map(async item => {
+      if (item.snapshot !== unknownSnapshot) return snapshotProfile(item.snapshot);
+      const held = await runner?.heldProfile(item.serviceId, item.profileGeneration ?? 0);
+      return held?.profile ?? null;
+    })).then(bodies => setModeCopy(modeSwitchCopy(switching, bodies)));
+  };
 
   useEffect(() => {
     if (fixedNow !== undefined || !run?.entries.length) return;
@@ -321,7 +381,17 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     const sessionId = run.serviceId;
     void runner.resumeSession(sessionId, () => new Promise<boolean>(resolve => { setConfirmKind('resume'); setResumeId(sessionId); setConfirm(() => resolve); }));
   };
-  const answer = (ok: boolean) => { confirm?.(ok); setConfirm(null); setAcknowledged(false); };
+  const answer = (ok: boolean) => {
+    if (modeCopyRef.current !== null) {
+      setModeCopy(null);
+      setAcknowledged(false);
+      if (ok && displaySettings) void displaySettings.setRunMode('live');
+      return;
+    }
+    confirm?.(ok);
+    setConfirm(null);
+    setAcknowledged(false);
+  };
 
   const startCopy = confirmCopy('start', profile.name, device ? deviceName(device) : 'the selected module', false, profile);
   const dialog = dialogCopy(confirmKind, service.runs, resumeId, startCopy);
@@ -329,12 +399,12 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   useEffect(() => { if (resumeGone) answer(false); });
 
   return {
-    service, devices, display, mac, enabled, dryRunOnly, dryRunNote, chosen, selection, setExecute, setSoftwareMode, softwareMode,
+    service, devices, display, mac, enabled, dryRunOnly, dryRunNote, chosen, selection, runMode, setRunMode: switchMode, setSoftwareMode, softwareMode,
     chooseDevice: (next: LiveDevice) => setChosen({ device: next }),
     device, run, session, phase, active, blocker, box, stale, now, executeSelected,
     begin, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
     confirm, confirmKind, resumeGone, acknowledged, setAcknowledged, answer,
-    copy: dialog ?? startCopy, dialogOpen: confirm !== null && !resumeGone,
+    copy: modeCopy ?? dialog ?? startCopy, dialogOpen: modeCopy !== null || (confirm !== null && !resumeGone),
   };
 }
 
@@ -345,7 +415,7 @@ const noop = () => {};
 // everything is stopped and Run stays disabled with the desktop-app blocker.
 export const idleRunSession: RunSession = {
   service: idleServiceState, devices: [], display: idleDisplaySettingsState, mac: false, enabled: false,
-  dryRunOnly: false, dryRunNote: dryRunOnlyRunNote, chosen: null, selection: null, setExecute: noop, setSoftwareMode: noop, softwareMode: false,
+  dryRunOnly: false, dryRunNote: dryRunOnlyRunNote, chosen: null, selection: null, runMode: 'test', setRunMode: noop, setSoftwareMode: noop, softwareMode: false,
   chooseDevice: noop,
   device: undefined, run: undefined, session: undefined, phase: undefined, active: false,
   blocker: runBlocker({ desktop: false, device: undefined, profile: { schema_version: 1, name: '', bindings: [] } }),
@@ -359,10 +429,27 @@ export const idleRunSession: RunSession = {
 // Compact module names for the header Run button ("Run on 15-key"); the tooltip carries the full device name.
 const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315: '15-key', m003k: 'knobs', m005s: 'faders', m032le: 'rollers' };
 
-// The header Run control: the run state (Stopped / Dry run / Executing / Paused / …) next to the one
-// primary action — Run, Stop, or, for a paused run, Resume. The button names the module a start would
-// use and turns danger when it would run with actions. The Execute confirmation lives here too, so
-// Run works from every page.
+// The one run-mode badge and its switch: the only place that shows and
+// changes what a press does. The switch saves the mode; with running sessions
+// that would start executing, Live asks first (the dialog below).
+export function ModeControl({ run }: { run: RunSession }) {
+  const { runMode, setRunMode, display, enabled, mac, dryRunOnly } = run;
+  const live = runMode === 'live';
+  const busy = display.busy || !display.loaded;
+  return <div className="mode-control" role="group" aria-label="Run mode">
+    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly)}</span>
+    <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy}
+      title="Switch to Test mode: presses are logged only, nothing happens on the Mac" onClick={() => setRunMode('test')}>Test</button>
+    <button type="button" className="mode-choice" aria-pressed={live} disabled={!enabled || busy || !mac}
+      title={mac ? 'Switch to Live mode: presses run their actions on this Mac' : 'Actions run only on macOS'}
+      onClick={() => setRunMode('live')}>Live</button>
+  </div>;
+}
+
+// The header Run control: the run state (Stopped / Dry run / Executing / Paused / …), the run-mode
+// badge and switch, then the one primary action — Run, Stop, or, for a paused run, Resume. The
+// button names the module a start would use and turns danger when the mode would run with actions.
+// The confirmations live here too, so Run and the mode switch work from every page.
 export function RunHeaderControl({ run }: { run: RunSession }) {
   const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device, dialogOpen, copy, answer, acknowledged, setAcknowledged } = run;
   const pill = runStatePill(activeRun);
@@ -373,6 +460,7 @@ export function RunHeaderControl({ run }: { run: RunSession }) {
   const runTitle = blocker ?? `${executeSelected ? 'Run with actions' : 'Dry run'}${device ? ` on ${deviceName(device)}` : ''}`;
   return <div className="run-control" role="group" aria-label="Run control">
     <span className={`mode-pill run-state-pill ${pill.className}`} role="status">{pill.label}</span>
+    <ModeControl run={run} />
     {needsConfirmation ? <>
       <button type="button" className="button compact danger" title="Resume actions on this Mac" onClick={resume}>Resume…</button>
       <button type="button" className="button compact" title="Stop without resuming" disabled={stopping} onClick={stop}>Stop</button>
@@ -422,7 +510,7 @@ export function ExecuteDialog({ run }: { run: RunSession }) {
 // The Devices-page run section: which device and mode the header Run control uses, plus the live
 // banners, counters and activity of the selected run. Run and Stop live in the header.
 export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
-  const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setExecute, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume } = run;
+  const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume } = run;
   const log = useRef<HTMLOListElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [activeRun?.entries.length]);
   const pill = runStatePill(activeRun);
@@ -447,15 +535,12 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
         {selection && !device && <option value={disconnectedServiceValue}>{deviceName(selection.device)} (disconnected)</option>}
         {devices.length === 0 && !selection ? <option value="">No module connected</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
       </SelectField>
-      <div className="mode-toggle" role="group" aria-label="Run mode">
-        <button type="button" aria-pressed={!executeSelected} disabled={!enabled || active} onClick={() => setExecute(false)}>Dry run (default)</button>
-        <button type="button" aria-pressed={executeSelected} disabled={!enabled || active || !mac || dryRunOnly} onClick={() => setExecute(true)}>Execute actions</button>
-      </div>
+      <p className="fine-print service-mode-note">What a press does — {executeSelected ? 'Live' : 'Test'} — is shown and switched by the badge in the header.</p>
     </div>
     <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
-    {!mac && enabled && <p className="fine-print">Executing actions is only available on macOS. Dry runs log what would happen.</p>}
+    {!mac && enabled && <p className="fine-print">Running actions is only available on macOS. Test mode logs what would happen.</p>}
     {activeRun && <p className="fine-print">Profile "{activeRun.profileName}" ({activeRun.draftUnsaved ? 'unsaved changes' : 'the saved version'}) was used when this run started.</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />Profile changed since start. Restart to apply.</p>}
     {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? 'The run failed.'}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}

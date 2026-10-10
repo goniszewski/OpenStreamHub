@@ -83,6 +83,16 @@ describe('summarizeRecord timers', () => {
       .toMatchObject({ kind: 'info', text: 'Countdown alert warning (timer 5:00): timer notification may not have been shown: x' });
   });
 
+  it('a dry run logs a planned press as "Would run", a live one keeps the plan wording', () => {
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action }, 1, false)?.text)
+      .toBe('Would run: timer 5:00 (control 3 pressed)');
+    expect(summarizeRecord({ type: 'event', status: 'planned', event: { module: 'm4315', control: 0, gesture: 'pressed' }, action: { type: 'toggle_mute' } }, 2, false)?.text)
+      .toBe('Would run: toggle mute (m4315 control 1 pressed)');
+    // Executing runs keep the plan line next to the Executed line.
+    expect(summarizeRecord({ type: 'event', status: 'planned', event, action }, 3, true)?.text)
+      .toBe('control 3 pressed: planned timer 5:00');
+  });
+
   it('counts timer presses as executed and failed alerts on their own, never as failed actions', () => {
     const zero = { events: 0, planned: 0, executed: 0, failed: 0, timerAlertsFailed: 0 };
     const records = [
@@ -408,6 +418,16 @@ describe('session manager', () => {
     expect(resumes()).toHaveLength(0);
     expect(await t.runner.resumeSession(t.id, async () => true)).toBe(true);
     expect(resumes()).toEqual([{ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 0 } }]);
+  });
+  it('resumes a dry run without a confirmation, and an executing one never without one', async () => {
+    const t = await started(false);
+    session(t, 'needs_confirmation', { service_id: null, execute: false });
+    expect(await t.runner.resumeSession(t.id)).toBe(true);
+    expect(t.calls.at(-1)).toEqual({ command: 'resume_session', args: { sessionId: t.id, profileGeneration: 0 } });
+    // The backend refusing the dry resume is an error, never a dialog.
+    t.failures.resume_session = 'unknown session x';
+    expect(await t.runner.resumeSession(t.id)).toBe(false);
+    expect(t.runner.getState().error).toBe('unknown session x');
   });
   it('resume arguments and the stale-profile refusal match the Rust fixtures', () => {
     expect(Object.keys(sessionArgs.resume_session).sort()).toEqual(['profileGeneration', 'sessionId']);

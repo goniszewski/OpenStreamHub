@@ -80,17 +80,33 @@ pub enum ModuleControl {
     Unreadable,
 }
 
-/// The stored settings. `App` control and dry-run automatic sessions by
-/// default. The dial screen content is a profile setting (`Profile`'s
-/// `dial_display`) and is no longer stored here.
+/// What a key press does when its profile runs: every action executes, or
+/// everything is only logged. One mode for the whole app (the header badge),
+/// held by the stored settings so it survives a restart and is read by the
+/// session manager itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunMode {
+    /// Presses run their actions (macOS only, behind the per-profile
+    /// confirmations).
+    Live,
+    /// Presses are logged only ("Would run: …"); nothing happens on the Mac.
+    #[default]
+    Test,
+}
+
+/// The stored settings. `App` control and Test mode by default. The dial
+/// screen content is a profile setting (`Profile`'s `dial_display`) and is no
+/// longer stored here.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredSettings")]
 pub struct DisplaySettings {
     pub module_control: ModuleControl,
-    /// "Run actions automatically": sessions the session manager starts on
-    /// its own execute actions instead of a dry run. Off unless the user
-    /// turns it on; a file written before it existed reads as off.
-    pub auto_execute: bool,
+    /// What a press does in every run: Live executes, Test logs only.
+    /// `Test` unless the user switched the header badge to Live; a file
+    /// written before the mode existed reads as Test, and one written while
+    /// "Run actions automatically" was on reads as Live.
+    pub run_mode: RunMode,
 }
 
 impl DisplaySettings {
@@ -99,16 +115,18 @@ impl DisplaySettings {
     /// either.
     pub const UNREADABLE: Self = Self {
         module_control: ModuleControl::Unreadable,
-        auto_execute: false,
+        run_mode: RunMode::Test,
     };
 }
 
-/// The current file shape, or one of the two earlier shapes: the setting
+/// The current file shape, or one of the earlier shapes: with the removed
+/// `auto_execute` toggle (whose value becomes the run mode), that toggle
 /// beside the removed dial content choice, and the experimental toggle's.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum StoredSettings {
     Current(CurrentSettings),
+    WithAutoExecute(WithAutoExecuteSettings),
     WithDialContent(WithDialContentSettings),
     Legacy(LegacySettings),
 }
@@ -117,7 +135,18 @@ enum StoredSettings {
 #[serde(deny_unknown_fields)]
 struct CurrentSettings {
     module_control: ModuleControl,
-    /// Missing in files written before the setting existed: off.
+    /// Missing in files written before the mode existed: Test.
+    #[serde(default)]
+    run_mode: RunMode,
+}
+
+/// `{"module_control":…,"auto_execute":…}`, written while "Run actions
+/// automatically" was the setting. The toggle becomes the run mode: on is
+/// Live, off is Test.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WithAutoExecuteSettings {
+    module_control: ModuleControl,
     #[serde(default)]
     auto_execute: bool,
 }
@@ -149,8 +178,22 @@ struct LegacySettings {
 
 impl From<StoredSettings> for DisplaySettings {
     fn from(stored: StoredSettings) -> Self {
+        let run_mode = |auto_execute: bool| {
+            if auto_execute {
+                RunMode::Live
+            } else {
+                RunMode::Test
+            }
+        };
         match stored {
             StoredSettings::Current(CurrentSettings {
+                module_control,
+                run_mode,
+            }) => Self {
+                module_control,
+                run_mode,
+            },
+            StoredSettings::WithAutoExecute(WithAutoExecuteSettings {
                 module_control,
                 auto_execute,
             })
@@ -160,7 +203,7 @@ impl From<StoredSettings> for DisplaySettings {
                 ..
             }) => Self {
                 module_control,
-                auto_execute,
+                run_mode: run_mode(auto_execute),
             },
             StoredSettings::Legacy(LegacySettings { enabled, .. }) => Self {
                 module_control: if enabled {
@@ -168,7 +211,7 @@ impl From<StoredSettings> for DisplaySettings {
                 } else {
                     ModuleControl::BuiltInAnimation
                 },
-                auto_execute: false,
+                run_mode: RunMode::Test,
             },
         }
     }
@@ -384,7 +427,7 @@ impl SettingsFile {
             if error.is_data() {
                 // The untagged reader's own message names no field.
                 format!(
-                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"auto_execute\": true or false}}); fix the file or delete it to go back to the defaults",
+                    "the Module control settings in {} have an unexpected shape (expected {{\"module_control\": \"app\" or \"built_in_animation\", \"run_mode\": \"live\" or \"test\"}}); fix the file or delete it to go back to the defaults",
                     self.path().display()
                 )
             } else {
@@ -473,11 +516,15 @@ mod tests {
 
     const APP: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
-        auto_execute: false,
+        run_mode: RunMode::Test,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        auto_execute: false,
+        run_mode: RunMode::Test,
+    };
+    const APP_LIVE: DisplaySettings = DisplaySettings {
+        module_control: ModuleControl::App,
+        run_mode: RunMode::Live,
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
@@ -501,30 +548,29 @@ mod tests {
             DisplaySettings::default(),
             DisplaySettings {
                 module_control: ModuleControl::App,
-                auto_execute: false,
+                run_mode: RunMode::Test,
             }
         );
         let parsed = parse(r#"{"module_control":"app"}"#).unwrap();
         assert_eq!(parsed, DisplaySettings::default());
-        let parsed =
-            parse(r#"{"module_control":"built_in_animation","auto_execute":true}"#).unwrap();
+        let parsed = parse(r#"{"module_control":"built_in_animation","run_mode":"live"}"#).unwrap();
         assert_eq!(
             parsed,
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
-                auto_execute: true,
+                run_mode: RunMode::Live,
             }
         );
         // Always written in the current shape.
         assert_eq!(
             serde_json::to_value(BUILT_IN).unwrap(),
-            serde_json::json!({"module_control":"built_in_animation","auto_execute":false})
+            serde_json::json!({"module_control":"built_in_animation","run_mode":"test"})
         );
         for bad in [
             r#"{"module_control":"app","extra":1}"#,
-            r#"{"module_control":"App","auto_execute":false}"#,
+            r#"{"module_control":"App","run_mode":"test"}"#,
             r#"{"module_control":"builtin"}"#,
-            r#"{"module_control":"app","auto_execute":"yes"}"#,
+            r#"{"module_control":"app","run_mode":"yes"}"#,
             r#"{"module_control":"app","enabled":true}"#,
             r#"{"enabled":true}"#,
             r#"{"enabled":"yes"}"#,
@@ -547,8 +593,8 @@ mod tests {
             APP
         );
         // The three-field shape that stored a global dial content choice
-        // beside module control: the choice is ignored, module control and
-        // "Run actions automatically" are kept.
+        // beside module control: the choice is ignored, module control is
+        // kept, no "Run actions automatically" reads as Test.
         assert_eq!(
             parse(r#"{"module_control":"app","dial_content":"analog_clock"}"#).unwrap(),
             APP
@@ -558,8 +604,21 @@ mod tests {
                 .unwrap(),
             DisplaySettings {
                 module_control: ModuleControl::BuiltInAnimation,
-                auto_execute: true,
+                run_mode: RunMode::Live,
             }
+        );
+        // The "Run actions automatically" shape: on was Live, off is Test.
+        assert_eq!(
+            parse(r#"{"module_control":"app","auto_execute":true}"#).unwrap(),
+            APP_LIVE
+        );
+        assert_eq!(
+            parse(r#"{"module_control":"app","auto_execute":false}"#).unwrap(),
+            APP
+        );
+        assert_eq!(
+            parse(r#"{"module_control":"built_in_animation"}"#).unwrap(),
+            BUILT_IN
         );
         // The file is rewritten in the current shape at the next save only.
         let directory = tempfile::tempdir().unwrap();
@@ -579,7 +638,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"module_control":"app","auto_execute":false})
+            serde_json::json!({"module_control":"app","run_mode":"test"})
         );
     }
 
@@ -1070,27 +1129,47 @@ mod tests {
     }
 
     #[test]
-    fn running_actions_automatically_is_off_unless_stored_on() {
-        // Files written before the setting existed, and the default: off.
-        assert!(!DisplaySettings::default().auto_execute);
-        const { assert!(!DisplaySettings::UNREADABLE.auto_execute) };
-        assert!(
-            !parse(r#"{"module_control":"app","dial_content":"clock"}"#)
+    fn the_run_mode_is_test_unless_stored_live() {
+        // Files written before the mode existed, and the default: Test.
+        assert_eq!(DisplaySettings::default().run_mode, RunMode::Test);
+        assert_eq!(DisplaySettings::UNREADABLE.run_mode, RunMode::Test);
+        assert_eq!(
+            parse(r#"{"module_control":"app","dial_content":"clock"}"#)
                 .unwrap()
-                .auto_execute
+                .run_mode,
+            RunMode::Test
         );
-        assert!(
-            !parse(r#"{"enabled":true,"dial_content":"clock"}"#)
+        assert_eq!(
+            parse(r#"{"enabled":true,"dial_content":"clock"}"#)
                 .unwrap()
-                .auto_execute
+                .run_mode,
+            RunMode::Test
         );
-        let on = parse(r#"{"module_control":"app","dial_content":"clock","auto_execute":true}"#)
-            .unwrap();
-        assert!(on.auto_execute);
-        // Strict: no other spelling or type, never through the old shape.
+        // The "Run actions automatically" shapes: on was Live, off is Test.
+        assert_eq!(
+            parse(r#"{"module_control":"app","dial_content":"clock","auto_execute":true}"#)
+                .unwrap()
+                .run_mode,
+            RunMode::Live
+        );
+        assert_eq!(
+            parse(r#"{"module_control":"app","auto_execute":true}"#)
+                .unwrap()
+                .run_mode,
+            RunMode::Live
+        );
+        assert_eq!(
+            parse(r#"{"module_control":"app","auto_execute":false}"#)
+                .unwrap()
+                .run_mode,
+            RunMode::Test
+        );
+        // Strict: no other spelling or type, never through an old shape.
         for bad in [
             r#"{"module_control":"app","dial_content":"clock","auto_execute":"yes"}"#,
             r#"{"module_control":"app","dial_content":"clock","auto_execute":1}"#,
+            r#"{"module_control":"app","dial_content":"clock","run_mode":"Live"}"#,
+            r#"{"module_control":"app","run_mode":"dry"}"#,
             r#"{"enabled":true,"dial_content":"clock","auto_execute":true}"#,
         ] {
             assert!(parse(bad).is_err(), "{bad}");
@@ -1098,11 +1177,11 @@ mod tests {
         // Round trip through the file.
         let directory = tempfile::tempdir().unwrap();
         let state = DisplayState::open(Ok(directory.path()));
-        state.set(on).unwrap();
-        assert_eq!(state.get().unwrap(), on);
+        state.set(APP_LIVE).unwrap();
+        assert_eq!(state.get().unwrap(), APP_LIVE);
         // A damaged file never turns it on.
         std::fs::write(directory.path().join(FILE_NAME), b"{").unwrap();
-        assert!(!state.for_new_session().auto_execute);
+        assert_eq!(state.for_new_session().run_mode, RunMode::Test);
     }
 
     #[test]
@@ -1112,11 +1191,11 @@ mod tests {
         for module in [ServiceModule::M005S, ServiceModule::M032LE] {
             assert!(!auto_takes_over(module));
         }
-        let auto_on = DisplaySettings {
-            auto_execute: true,
+        let live = DisplaySettings {
+            run_mode: RunMode::Live,
             ..APP
         };
-        for settings in [APP, auto_on] {
+        for settings in [APP, live] {
             assert!(!software_mode(settings, ServiceModule::M003K, true));
             // Even a request that claims software mode gets nothing.
             let request = StartRequest {

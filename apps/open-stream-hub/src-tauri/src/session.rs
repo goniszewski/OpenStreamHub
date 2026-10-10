@@ -37,15 +37,15 @@
 //! refused; a profile key skips it). An executing session restarts its
 //! process only through `resume_session` (or its first Start), so every
 //! restart with actions is checked. Dry runs are unaffected.
-//! The one exception is an automatic session while "Run actions
-//! automatically" is on (`DisplaySettings::auto_execute`, which the user
-//! turned on for exactly this): it restarts executing by itself after wake,
-//! reconnect, a crash or a profile switch, and every such respawn is checked
-//! again first (`Driver::auto_veto`): module control still `App`, the setting
-//! still on and the profile not refused by the execution guard; otherwise it
-//! ends or restarts as a dry run. Each restart is a new service process that
-//! opens the module afresh, so no input read before the interruption is
-//! delivered to it.
+//! The one exception is an automatic session while the run mode is Live
+//! (`DisplaySettings::run_mode`, the header switch the user turned on for
+//! exactly this): it restarts executing by itself after wake, reconnect, a
+//! crash or a profile switch, and every such respawn is checked again first
+//! (`Driver::auto_veto`): module control still `App`, the mode still Live and
+//! the profile not refused by the execution guard; otherwise it ends or
+//! restarts as a dry run. Each restart is a new service process that opens
+//! the module afresh, so no input read before the interruption is delivered
+//! to it.
 //! Crashes of a process that had started back off and retry (1, 2, 4, 8,
 //! 8 s, then stop). A setup refusal does not: a process that exits with a
 //! nonzero code before it wrote `service_start` (bad profile, refused flag
@@ -62,16 +62,16 @@
 //! mode and no display writes. Such a session runs the startup profile
 //! (`startup.rs`: the default profile, else the serial's last one, else a
 //! blank one) and is marked `auto_start` so the Run panel can tell it from a
-//! user's Start. It is a dry run unless the user turned on "Run actions
-//! automatically", and even then a dry run (with the reason shown) when the
-//! execution guard refuses its profile (`Driver::auto_execution`). A module
+//! user's Start. It is a dry run unless the run mode (the header badge) is
+//! Live, and even then a dry run (with the reason shown) when the execution
+//! guard refuses its profile (`Driver::mode_execution`). A module
 //! whose session the user stopped stays stopped until it is connected again
 //! or the app opens again.
 //! See `docs/masterhub-session-manager.md`, `docs/masterhub-focus-rules.md`
 //! and `docs/masterhub-actions.md`.
 
 use crate::{
-    display::{self, DisplayLaunch, DisplaySettings, ModuleControl},
+    display::{self, DisplayLaunch, DisplaySettings, ModuleControl, RunMode},
     feed::LiveDevice,
     import_flags::ExecutionGuard,
     power::PowerEvent,
@@ -185,10 +185,10 @@ pub enum Reason {
     /// Module control is no longer `App` (changed in Settings, or the
     /// settings file cannot be read), so an automatic session ended.
     ModuleControl,
-    /// "Run actions automatically" was turned on or off (or the execution
-    /// guard now refuses the profile), so an automatic session restarts
-    /// executing or as a dry run.
-    AutoActions,
+    /// The run mode (the header badge) was switched, or the execution guard
+    /// now refuses a profile it allowed, so a session restarts executing or
+    /// as a dry run.
+    RunMode,
 }
 
 /// Why the session manager started a session on its own (module control
@@ -232,9 +232,9 @@ pub struct SessionState {
     /// its own; omitted for a user's Start.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_start: Option<AutoStart>,
-    /// Why an automatic session runs as a dry run although "Run actions
-    /// automatically" is on (the execution guard's refusal, or no action
-    /// support on this platform). Omitted otherwise.
+    /// Why a session runs as a dry run although the run mode is Live (the
+    /// execution guard's refusal, or no action support on this platform).
+    /// Omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auto_dry_run_reason: Option<String>,
 }
@@ -264,11 +264,18 @@ pub enum Event {
     /// An automatic session is no longer allowed: module control is not
     /// `App` any more. Ends it like a user stop, with its own reason.
     ModuleControlOff,
-    /// An automatic session is to execute or not from now on; a live
-    /// process restarts so the change takes effect (`Reason::AutoActions`).
-    AutoActionsChanged {
+    /// A session is to execute or not from now on: the run mode (the header
+    /// badge) switched, or the execution guard's answer for its profile
+    /// changed. A live process restarts so the change takes effect
+    /// (`Reason::RunMode`). `confirmed` is set when the switch comes from a
+    /// saved run mode, which the frontend only reaches through its
+    /// confirmation: the session then respawns executing without pausing in
+    /// `needs_confirmation`. An interruption still clears that, so an
+    /// executing session never resumes on its own.
+    RunModeChanged {
         execute: bool,
         dry_run_reason: Option<String>,
+        confirmed: bool,
     },
     /// The stored request now carries another profile; the current process
     /// stops and the session restarts it under the usual safety rule.
@@ -328,6 +335,12 @@ pub struct Session {
     retry_at: Option<u64>,
     /// The user confirmed resuming an executing session.
     confirmed: bool,
+    /// A confirmation carried by a run-mode switch, not yet used: the switch
+    /// restarts the process, and that restart is an interruption too, so
+    /// `confirmed` alone would be cleared before it mattered. Consumed by
+    /// the next respawn, which then starts executing; an interruption after
+    /// that asks again.
+    pending_confirm: bool,
     /// Number of profile switches so far.
     profile_generation: u64,
     profile_id: Option<String>,
@@ -467,6 +480,7 @@ impl Session {
             settle_until: None,
             retry_at: None,
             confirmed: false,
+            pending_confirm: false,
             profile_generation: 0,
             profile_id: None,
             profile_name,
@@ -665,11 +679,13 @@ impl Session {
                 self.retry_at = None;
                 self.stop_process(actions);
             }
-            Event::AutoActionsChanged {
+            Event::RunModeChanged {
                 execute,
                 dry_run_reason,
+                confirmed,
             } if !stopped => {
                 self.auto_dry_run_reason = dry_run_reason;
+                self.pending_confirm = confirmed && execute;
                 if self.execute != execute {
                     self.execute = execute;
                     if self
@@ -677,7 +693,7 @@ impl Session {
                         .as_ref()
                         .is_some_and(|process| !process.stopping)
                     {
-                        self.interrupt(Reason::AutoActions);
+                        self.interrupt(Reason::RunMode);
                         self.stop_process(actions);
                     }
                 }
@@ -720,7 +736,7 @@ impl Session {
             | Event::UserStop
             | Event::UserResume
             | Event::ModuleControlOff
-            | Event::AutoActionsChanged { .. }
+            | Event::RunModeChanged { .. }
             | Event::ProfileSwitched { .. } => {}
         }
     }
@@ -779,6 +795,10 @@ impl Session {
                         }
                         // An automatic session restarts by itself; its
                         // respawn is checked by `Driver::auto_veto`.
+                        if self.pending_confirm {
+                            self.confirmed = true;
+                            self.pending_confirm = false;
+                        }
                         if self.execute && !self.confirmed && self.auto_start.is_none() {
                             self.phase = Phase::NeedsConfirmation;
                         } else if let Some(at) = self.retry_at.filter(|at| now_ms < *at) {
@@ -1207,12 +1227,23 @@ impl<R: Runner> Driver<R> {
         if self.is_closed() {
             return Err(service::SHUTTING_DOWN.into());
         }
-        // An automatic session executes only when "Run actions
-        // automatically" is on and nothing refuses it; otherwise it is a dry
-        // run, with the reason shown when the setting is on.
+        // A user's Start may execute only while the saved run mode is Live:
+        // the mode, not a per-run choice, decides what a press does, and the
+        // frontend's word is never the only check. An automatic session
+        // executes only when the mode is Live and nothing refuses it;
+        // otherwise it is a dry run, with the reason shown when the mode is
+        // Live.
+        if auto.is_none() && request.execute {
+            let settings = self.runner.display_settings();
+            if settings.run_mode != RunMode::Live {
+                return Err(
+                    "The run mode in the header is Test: switch it to Live to run actions.".into(),
+                );
+            }
+        }
         let mut auto_dry_run_reason = None;
         if let Some((settings, _)) = auto {
-            (request.execute, auto_dry_run_reason) = self.auto_execution(settings, &request);
+            (request.execute, auto_dry_run_reason) = self.mode_execution(settings, &request);
         }
         let woke = auto.is_none() && self.missed_wake(now_ms);
         let deferred = self.asleep || woke;
@@ -1782,17 +1813,19 @@ impl<R: Runner> Driver<R> {
             .push((module, serial, now_ms + AUTO_RETRY_COOLDOWN_MS));
     }
 
-    /// Whether an automatic session on `request`'s profile executes under
-    /// `settings`, and when "Run actions automatically" is on but it may not,
-    /// why: this platform runs no actions, or the execution guard refuses
-    /// the profile (an imported profile not yet allowed, a copy of one, or
-    /// an unreadable flag list). Never an error: such a session runs dry.
-    fn auto_execution(
+    /// Whether a session on `request`'s profile executes under the run mode
+    /// in `settings`, and when the mode is Live but it may not, why: this
+    /// platform runs no actions, or the execution guard refuses the profile
+    /// (an imported profile not yet allowed, a copy of one, or an unreadable
+    /// flag list). Never an error: such a session runs dry. Module control is
+    /// not checked here: automatic sessions are only started under `App`
+    /// anyway, and a user's Start may execute under built-in animation.
+    fn mode_execution(
         &mut self,
         settings: DisplaySettings,
         request: &StartRequest,
     ) -> (bool, Option<String>) {
-        if settings.module_control != ModuleControl::App || !settings.auto_execute {
+        if settings.run_mode != RunMode::Live {
             return (false, None);
         }
         if let Err(error) = service::check_execute_supported(true) {
@@ -1810,7 +1843,7 @@ impl<R: Runner> Driver<R> {
 
     /// The check before an automatic session's respawn: `ModuleControlOff`
     /// unless module control is still `App`, and for an executing respawn a
-    /// switch to a dry run unless `auto_execution` still allows it. `None`
+    /// switch to a dry run unless `mode_execution` still allows it. `None`
     /// for any other session, which keeps the rules it has.
     fn auto_veto(&mut self, index: usize, execute: bool) -> Option<Event> {
         self.sessions[index].session.auto_start?;
@@ -1822,30 +1855,36 @@ impl<R: Runner> Driver<R> {
             return None;
         }
         let request = self.sessions[index].request.clone();
-        match self.auto_execution(settings, &request) {
+        match self.mode_execution(settings, &request) {
             (true, _) => None,
             (false, dry_run_reason) => {
                 self.sessions[index].request.execute = false;
-                Some(Event::AutoActionsChanged {
+                Some(Event::RunModeChanged {
                     execute: false,
                     dry_run_reason,
+                    confirmed: false,
                 })
             }
         }
     }
 
-    /// Brings every live automatic session in line with "Run actions
-    /// automatically" under `settings` (module control `App`): one that
+    /// Brings every live session in line with the saved run mode: one that
     /// should now execute, or no longer may, restarts that way, its process
-    /// stopped first (all of them in one parallel batch). Turning the setting
-    /// off therefore ends execution at once; turning it on never upgrades a
-    /// running dry run in place, it restarts it through the same checks.
-    fn sync_auto_execution(&mut self, settings: DisplaySettings, now_ms: u64) {
+    /// stopped first (all of them in one parallel batch). Switching the mode
+    /// therefore ends execution at once, and switching to Live never upgrades
+    /// a running dry run in place, it restarts it through the same checks.
+    /// `confirmed` marks the sessions that may respawn executing without
+    /// pausing in `needs_confirmation`: set only when the stored mode itself
+    /// turned Live, which the frontend only reaches through its confirmation
+    /// (an interruption later still asks again). Automatic sessions answer to
+    /// `auto_veto` besides, at every respawn.
+    ///
+    /// Runs after Settings saved (or were found unreadable), so a mode change
+    /// applies to every running module without the user stopping anything,
+    /// and automatic sessions re-check module control the same way.
+    fn sync_run_mode(&mut self, settings: DisplaySettings, now_ms: u64) {
         let live: Vec<usize> = (0..self.sessions.len())
-            .filter(|index| {
-                let session = &self.sessions[*index].session;
-                session.auto_start.is_some() && session.phase != Phase::Stopped
-            })
+            .filter(|index| self.sessions[*index].session.phase != Phase::Stopped)
             .collect();
         if live.is_empty() {
             return;
@@ -1853,13 +1892,14 @@ impl<R: Runner> Driver<R> {
         self.deferred_stops = Some(Vec::new());
         for index in live {
             let request = self.sessions[index].request.clone();
-            let (execute, dry_run_reason) = self.auto_execution(settings, &request);
+            let (execute, dry_run_reason) = self.mode_execution(settings, &request);
             let session = &self.sessions[index].session;
             if session.execute != execute || session.auto_dry_run_reason != dry_run_reason {
                 self.sessions[index].request.execute = execute;
-                let event = Event::AutoActionsChanged {
+                let event = Event::RunModeChanged {
                     execute,
                     dry_run_reason,
+                    confirmed: execute,
                 };
                 self.apply(index, event, now_ms);
             }
@@ -1875,18 +1915,19 @@ impl<R: Runner> Driver<R> {
     /// unreadable: every automatic session the current setting no longer
     /// allows (anything but `App`) ends with reason `module_control`, its
     /// process stopped in one parallel batch, which restores the module's
-    /// built-in mode. Sessions the user started keep the setting they
-    /// started with, as before. Called after Settings saved or failed to
-    /// read the setting; a reconnecting automatic session also checks it
-    /// before every respawn (`execute`).
+    /// built-in mode. The saved run mode is applied to every live session the
+    /// same way (`sync_run_mode`), so a mode switch reaches running modules
+    /// without the user stopping anything. Called after Settings saved or
+    /// failed to read the setting; a reconnecting automatic session also
+    /// checks it before every respawn (`execute`).
     ///
     /// A switch to `App` from another setting starts the connected modules
     /// nobody runs, as when the app opens (reason `module_control_set`).
-    pub fn module_control_changed(&mut self, now_ms: u64) {
+    pub fn display_settings_changed(&mut self, now_ms: u64) {
         let settings = self.runner.display_settings();
         let before = self.last_control.replace(settings.module_control);
         if settings.module_control == ModuleControl::App {
-            self.sync_auto_execution(settings, now_ms);
+            self.sync_run_mode(settings, now_ms);
             if before.is_some_and(|before| before != ModuleControl::App) {
                 let devices = self.inventory.clone().unwrap_or_default();
                 let why = AutoStart::ModuleControlSet;
@@ -1938,7 +1979,7 @@ impl<R: Runner> Driver<R> {
         // respawn: a cheap locked read at most every few seconds.
         if self.automatic_live() && now_ms >= self.control_check_at {
             self.control_check_at = now_ms + MODULE_CONTROL_CHECK_MS;
-            self.module_control_changed(now_ms);
+            self.display_settings_changed(now_ms);
         }
     }
 
@@ -2088,9 +2129,9 @@ pub enum Input {
     SessionProfile(String, u64, Sender<Result<HeldProfile, String>>),
     /// Every session's current state (`Driver::states`).
     Sessions(Sender<Vec<SessionState>>),
-    /// Module control was saved or could not be read
-    /// (`Driver::module_control_changed`).
-    ModuleControlChanged,
+    /// The display settings were saved or could not be read
+    /// (`Driver::display_settings_changed`).
+    DisplaySettingsChanged,
     /// A service process reported `profile_switch_requested` (a profile key).
     ProfileStep {
         service_id: String,
@@ -2139,7 +2180,7 @@ impl<R: Runner> Driver<R> {
             Input::Sessions(reply) => {
                 let _ = reply.send(self.states());
             }
-            Input::ModuleControlChanged => self.module_control_changed(now_ms),
+            Input::DisplaySettingsChanged => self.display_settings_changed(now_ms),
             Input::ProfileStep {
                 service_id,
                 direction,
@@ -2397,12 +2438,13 @@ impl Manager {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    /// Tells the driver that module control was saved or could not be read,
-    /// so it ends automatic sessions the setting no longer allows. Does not
-    /// wait: nothing here can start a process.
-    pub fn module_control_changed(&self) {
+    /// Tells the driver that the display settings were saved or could not be
+    /// read, so it ends automatic sessions the setting no longer allows and
+    /// applies the saved run mode to every live session. Does not wait:
+    /// nothing here can start a process.
+    pub fn display_settings_changed(&self) {
         if self.running.load(Ordering::SeqCst) {
-            let _ = self.inputs.send(Input::ModuleControlChanged);
+            let _ = self.inputs.send(Input::DisplaySettingsChanged);
         }
     }
 
@@ -2627,7 +2669,16 @@ mod tests {
 
     /// A driver with one session running on `dial("/a")`.
     fn running(execute: bool) -> (Driver<FakeRunner>, String) {
-        let mut driver = Driver::new(FakeRunner::default());
+        // A user's Start with actions needs the saved mode Live; the tests
+        // below hold sessions of both kinds under the same driver.
+        let mut driver = Driver::new(FakeRunner {
+            display: if execute {
+                APP_CONTROL_LIVE
+            } else {
+                APP_CONTROL
+            },
+            ..FakeRunner::default()
+        });
         driver.inventory(vec![dial("/a")], 0);
         let id = driver.start(request(&dial("/a"), execute), 0).unwrap();
         (driver, id)
@@ -3036,6 +3087,7 @@ mod tests {
     #[test]
     fn app_exit_stops_every_session_without_restarting() {
         let (mut driver, id) = running(false);
+        driver.runner().display = APP_CONTROL_LIVE;
         driver.handle(
             Input::Inventory(vec![
                 dial("/a"),
@@ -3381,6 +3433,7 @@ mod tests {
     #[test]
     fn switches_for_several_sessions_stop_in_one_parallel_batch() {
         let (mut driver, first) = running(false);
+        driver.runner().display = APP_CONTROL_LIVE;
         let keys = device(ServiceModule::M003K, Some("K"), "/k");
         driver.inventory(vec![dial("/a"), keys.clone()], 1);
         let second = driver.start(request(&keys, true), 1).unwrap();
@@ -3905,7 +3958,14 @@ mod tests {
     #[test]
     fn a_start_while_asleep_spawns_nothing_until_wake() {
         for execute in [false, true] {
-            let mut driver = Driver::new(FakeRunner::default());
+            let mut driver = Driver::new(FakeRunner {
+                display: if execute {
+                    APP_CONTROL_LIVE
+                } else {
+                    APP_CONTROL
+                },
+                ..FakeRunner::default()
+            });
             driver.inventory(vec![dial("/a")], 0);
             driver.power(PowerEvent::Suspend, 10);
             let id = driver.start(request(&dial("/a"), execute), 20).unwrap();
@@ -3959,7 +4019,10 @@ mod tests {
 
     #[test]
     fn a_start_queued_behind_suspend_waits_for_wake() {
-        let mut driver = Driver::new(FakeRunner::default());
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL_LIVE,
+            ..FakeRunner::default()
+        });
         driver.inventory(vec![dial("/a")], 0);
         let (inputs, receiver) = mpsc::channel();
         let (reply, answer) = mpsc::channel();
@@ -4124,7 +4187,14 @@ mod tests {
     #[test]
     fn a_start_long_after_suspend_clears_a_missed_wake_but_still_settles() {
         for execute in [false, true] {
-            let mut driver = Driver::new(FakeRunner::default());
+            let mut driver = Driver::new(FakeRunner {
+                display: if execute {
+                    APP_CONTROL_LIVE
+                } else {
+                    APP_CONTROL
+                },
+                ..FakeRunner::default()
+            });
             driver.inventory(vec![dial("/a")], 0);
             driver.power(PowerEvent::Suspend, 0);
             let id = driver
@@ -4228,11 +4298,15 @@ mod tests {
 
     const APP_CONTROL: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
-        auto_execute: false,
+        run_mode: crate::display::RunMode::Test,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
-        auto_execute: false,
+        run_mode: crate::display::RunMode::Test,
+    };
+    const APP_CONTROL_LIVE: DisplaySettings = DisplaySettings {
+        module_control: ModuleControl::App,
+        run_mode: crate::display::RunMode::Live,
     };
 
     fn launched(driver: &mut Driver<FakeRunner>, index: usize) -> Option<DisplayLaunch> {
@@ -4312,7 +4386,7 @@ mod tests {
     #[test]
     fn a_display_change_never_resumes_an_executing_session() {
         let mut driver = Driver::new(FakeRunner {
-            display: APP_CONTROL,
+            display: APP_CONTROL_LIVE,
             ..FakeRunner::default()
         });
         driver.inventory(vec![dial("/a")], 0);
@@ -4329,7 +4403,7 @@ mod tests {
         assert_eq!(starts(&mut driver), 2);
         assert!(driver.runner().starts[1].execute);
         // Confirmation restarts with the value the session started with.
-        assert_eq!(launched(&mut driver, 1).unwrap().settings, APP_CONTROL);
+        assert_eq!(launched(&mut driver, 1).unwrap().settings, APP_CONTROL_LIVE);
     }
 
     #[test]
@@ -4582,7 +4656,14 @@ mod tests {
     #[test]
     fn a_setup_refusal_ends_the_session_at_once_without_reconnecting() {
         for execute in [false, true] {
-            let mut driver = Driver::new(FakeRunner::default());
+            let mut driver = Driver::new(FakeRunner {
+                display: if execute {
+                    APP_CONTROL_LIVE
+                } else {
+                    APP_CONTROL
+                },
+                ..FakeRunner::default()
+            });
             driver.inventory(vec![keypad("/k")], 0);
             let id = driver.start(request(&keypad("/k"), execute), 0).unwrap();
             refuse(&mut driver, &id, &nested_refusal_stderr(), 50);
@@ -4794,7 +4875,14 @@ mod tests {
 
     /// A running session started from the saved profile `profile_id`.
     fn running_saved(execute: bool, profile_id: &str) -> (Driver<FakeRunner>, String) {
-        let mut driver = Driver::new(FakeRunner::default());
+        let mut driver = Driver::new(FakeRunner {
+            display: if execute {
+                APP_CONTROL_LIVE
+            } else {
+                APP_CONTROL
+            },
+            ..FakeRunner::default()
+        });
         driver.inventory(vec![dial("/a")], 0);
         let mut start = request(&dial("/a"), execute);
         start.profile_id = Some(profile_id.into());
@@ -4804,7 +4892,10 @@ mod tests {
 
     #[test]
     fn an_imported_dry_run_only_profile_never_starts_with_actions() {
-        let mut driver = Driver::new(FakeRunner::default());
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL_LIVE,
+            ..FakeRunner::default()
+        });
         driver.runner().dry_run_only.insert(IMPORTED.into());
         driver.inventory(vec![dial("/a")], 0);
         let mut start = request(&dial("/a"), true);
@@ -4928,7 +5019,10 @@ mod tests {
 
     #[test]
     fn an_edited_draft_of_a_dry_run_only_profile_is_refused_through_its_source() {
-        let mut driver = Driver::new(FakeRunner::default());
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL_LIVE,
+            ..FakeRunner::default()
+        });
         driver.runner().dry_run_only.insert(IMPORTED.into());
         driver.inventory(vec![dial("/a")], 0);
         // An unsaved, edited draft: no profile_id, but the source it was opened from.
@@ -5153,6 +5247,9 @@ mod tests {
         exit(&mut driver, &auto_id, "", 3);
         let mut executing = request(&keypad("/k"), true);
         executing.profile_id = Some(SAVED_ID.into());
+        // A user's Start with actions needs the saved mode Live; the second
+        // half of the test runs with it back on Test.
+        driver.runner().display = APP_CONTROL_LIVE;
         let id = driver.start(executing, 4).unwrap();
         assert!(driver.runner().starts[1].execute);
         assert_eq!(
@@ -5161,6 +5258,7 @@ mod tests {
         );
         driver.stop(&id, true, 5);
         exit(&mut driver, &id, "", 6);
+        driver.runner().display = APP_CONTROL;
         // Reconnected: the remembered profile starts, as a dry run.
         driver.runner().last_profiles.insert(
             "KEY-1".into(),
@@ -5263,7 +5361,14 @@ mod tests {
             "masterhub-service: hidapi error: Selected interface is absent"
         ));
         for execute in [false, true] {
-            let mut driver = Driver::new(FakeRunner::default());
+            let mut driver = Driver::new(FakeRunner {
+                display: if execute {
+                    APP_CONTROL_LIVE
+                } else {
+                    APP_CONTROL
+                },
+                ..FakeRunner::default()
+            });
             driver.inventory(vec![keypad("/k")], 0);
             let id = driver.start(request(&keypad("/k"), execute), 0).unwrap();
             refuse(&mut driver, &id, EXCLUSIVE, 10);
@@ -5342,11 +5447,11 @@ mod tests {
         exit(&mut driver, &dial_id, "", 3);
         let user_id = driver.start(request(&dial("/a"), false), 4).unwrap();
         // Still App: nothing changes.
-        driver.module_control_changed(5);
+        driver.display_settings_changed(5);
         assert!(driver.runner().stops.len() == 1);
         // Settings switched to built-in animation with the keypad connected.
         driver.runner().display = BUILT_IN;
-        driver.module_control_changed(10);
+        driver.display_settings_changed(10);
         assert_eq!(driver.runner().batches, [vec![auto_id.clone()]]);
         let state = last(&mut driver);
         assert_eq!(
@@ -5374,7 +5479,7 @@ mod tests {
         let mut driver = auto_driver(APP_CONTROL);
         driver.inventory(vec![dial("/a")], 0);
         driver.runner().display = DisplaySettings::UNREADABLE;
-        driver.module_control_changed(1);
+        driver.display_settings_changed(1);
         assert_eq!(last(&mut driver).reason, Some(Reason::ModuleControl));
     }
 
@@ -5503,10 +5608,10 @@ mod tests {
         // The user runs the dial by hand meanwhile; it is left alone.
         let user_id = driver.start(request(&dial("/a"), false), 1).unwrap();
         // Built-in again: nothing changes.
-        driver.module_control_changed(2);
+        driver.display_settings_changed(2);
         assert_eq!(starts(&mut driver), 1);
         driver.runner().display = APP_CONTROL;
-        driver.module_control_changed(3);
+        driver.display_settings_changed(3);
         assert_eq!(starts(&mut driver), 2);
         let started = driver.runner().starts[1].clone();
         assert!(!started.execute && started.software_mode);
@@ -5527,24 +5632,20 @@ mod tests {
         let keypad_id = last(&mut driver).session_id;
         driver.stop(&keypad_id, true, 4);
         exit(&mut driver, &keypad_id, "", 5);
-        driver.module_control_changed(6);
+        driver.display_settings_changed(6);
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), 2);
         assert!(driver.session(&user_id).is_some());
         // Unreadable settings that are fixed again count as a switch to App.
         driver.runner().display = DisplaySettings::UNREADABLE;
-        driver.module_control_changed(1_000_001);
+        driver.display_settings_changed(1_000_001);
         driver.runner().display = APP_CONTROL;
-        driver.module_control_changed(1_000_002);
+        driver.display_settings_changed(1_000_002);
         assert_eq!(starts(&mut driver), 3);
     }
 
-    // "Run actions automatically".
-
-    const AUTO_ON: DisplaySettings = DisplaySettings {
-        auto_execute: true,
-        ..APP_CONTROL
-    };
+    // The run mode Live.
+    const AUTO_ON: DisplaySettings = APP_CONTROL_LIVE;
     /// Actions execute only on macOS; elsewhere an automatic session stays a
     /// dry run with the platform's reason.
     const CAN_EXECUTE: bool = cfg!(target_os = "macos");
@@ -5565,7 +5666,7 @@ mod tests {
     }
 
     #[test]
-    fn running_actions_automatically_decides_execute_for_every_automatic_module() {
+    fn the_run_mode_decides_execute_for_every_automatic_module() {
         // Off (the default): dry runs for all three.
         let mut driver = auto_driver(APP_CONTROL);
         driver.inventory(rig(), 0);
@@ -5608,11 +5709,11 @@ mod tests {
         // with the setting stored on.
         for settings in [
             DisplaySettings {
-                auto_execute: true,
+                run_mode: crate::display::RunMode::Live,
                 ..DisplaySettings::UNREADABLE
             },
             DisplaySettings {
-                auto_execute: true,
+                run_mode: crate::display::RunMode::Live,
                 ..BUILT_IN
             },
         ] {
@@ -5655,10 +5756,11 @@ mod tests {
     }
 
     #[test]
-    fn turning_automatic_actions_off_stops_them_at_once_and_restarts_dry_runs() {
+    fn switching_the_run_mode_to_test_stops_every_executing_run_at_once() {
         let mut driver = auto_driver(AUTO_ON);
         driver.inventory(vec![keypad("/k"), knob("/n")], 0);
-        // A run the user started with actions is not touched.
+        // A run the user started with actions is switched the same way: one
+        // mode for every running module.
         driver.inventory(vec![keypad("/k"), knob("/n"), dial("/a")], 1);
         let dial_id = driver.states()[2].session_id.clone();
         driver.stop(&dial_id, true, 2);
@@ -5670,48 +5772,106 @@ mod tests {
             .collect();
         driver.runner().stops.clear();
         driver.runner().display = APP_CONTROL;
-        driver.module_control_changed(10);
+        driver.display_settings_changed(10);
         if !CAN_EXECUTE {
             // Nothing executed, so nothing needed to restart.
             assert!(driver.runner().stops.is_empty());
             return;
         }
-        // Both executing automatic processes stop together, at once.
-        assert_eq!(driver.runner().batches.last().unwrap(), &ids);
+        // Every executing process stops together, at once, the user's too.
+        let mut batch = ids.clone();
+        batch.push(user_id.clone());
+        assert_eq!(driver.runner().batches.last().unwrap(), &batch);
         assert_eq!(
             driver.session(&ids[0]).unwrap().phase(),
             Phase::Running,
             "waits for the process to end"
         );
-        for id in &ids {
+        for id in &batch {
             exit(&mut driver, id, "", 11);
         }
         // They come back as dry runs, by themselves, without a confirmation.
         let starts_so_far = driver.runner().starts.clone();
-        let restarted = &starts_so_far[starts_so_far.len() - 2..];
+        let restarted = &starts_so_far[starts_so_far.len() - batch.len()..];
         assert!(restarted.iter().all(|start| !start.execute));
-        for id in &ids {
+        for id in &batch {
             let session = driver.session(id).unwrap();
             assert_eq!(session.phase(), Phase::Running);
+            assert!(!driver.session(id).unwrap().execute);
         }
         assert!(
             driver
                 .runner()
                 .emitted
                 .iter()
-                .any(|state| state.reason == Some(Reason::AutoActions))
+                .any(|state| state.reason == Some(Reason::RunMode))
         );
-        // The user's executing run keeps running.
-        assert!(driver.session(&user_id).unwrap().execute);
         // Read again: nothing more restarts.
         let count = starts(&mut driver);
-        driver.module_control_changed(12);
+        driver.display_settings_changed(12);
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), count);
     }
 
     #[test]
-    fn turning_automatic_actions_on_restarts_dry_runs_through_the_same_checks() {
+    fn switching_the_run_mode_to_live_restarts_a_users_dry_run_executing_without_asking_again() {
+        if !CAN_EXECUTE {
+            return;
+        }
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.inventory(vec![keypad("/k")], 0);
+        // The user's own dry run: the session the manager started is stopped,
+        // and the user starts one without actions.
+        let auto_id = last(&mut driver).session_id;
+        driver.stop(&auto_id, true, 5);
+        exit(&mut driver, &auto_id, "", 6);
+        let id = driver.start(request(&keypad("/k"), false), 7).unwrap();
+        // Executing respawns of a user's session ask for confirmation after
+        // an interruption, but the saved mode itself was confirmed in the
+        // header, so the switch goes straight back to executing.
+        driver.runner().stops.clear();
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(10);
+        assert_eq!(driver.runner().batches.last().unwrap(), &vec![id.clone()]);
+        exit(&mut driver, &id, "", 11);
+        assert!(driver.runner().starts.last().unwrap().execute);
+        assert_eq!(driver.session(&id).unwrap().phase(), Phase::Running);
+        // After an interruption the old safety rule holds: the session waits
+        // for its confirmation instead of executing on its own.
+        driver.power(PowerEvent::Suspend, 20);
+        exit(&mut driver, &id, "", 21);
+        driver.power(PowerEvent::Resume, 22);
+        driver.tick(22 + SETTLE_DELAY_MS);
+        assert_eq!(
+            driver.session(&id).unwrap().phase(),
+            Phase::NeedsConfirmation
+        );
+        // And back: Test ends the actions at once, even while the session
+        // waits for that confirmation; it restarts as a dry run instead.
+        driver.runner().display = APP_CONTROL;
+        driver.display_settings_changed(30);
+        assert_eq!(driver.session(&id).unwrap().phase(), Phase::Running);
+        assert!(!driver.session(&id).unwrap().execute);
+    }
+
+    #[test]
+    fn a_user_start_with_actions_is_refused_while_the_run_mode_is_test() {
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        let error = driver.start(request(&dial("/a"), true), 10).unwrap_err();
+        assert!(error.contains("Test") && error.contains("Live"), "{error}");
+        assert_eq!(starts(&mut driver), 0);
+        // The same start in Live mode runs with actions.
+        driver.runner().display = APP_CONTROL_LIVE;
+        let id = driver.start(request(&dial("/a"), true), 11).unwrap();
+        assert!(driver.session(&id).unwrap().execute);
+    }
+
+    #[test]
+    fn switching_the_run_mode_to_live_restarts_dry_runs_through_the_same_checks() {
         let mut driver = auto_driver(APP_CONTROL);
         driver.runner().last_profiles.insert(
             "KNB-1".into(),
@@ -5725,7 +5885,7 @@ mod tests {
             .map(|state| state.session_id.clone())
             .collect();
         driver.runner().display = AUTO_ON;
-        driver.module_control_changed(10);
+        driver.display_settings_changed(10);
         // The running dry run is never turned into an executing one in
         // place: it is stopped and restarted.
         assert!(driver.session(&ids[0]).unwrap().phase() == Phase::Running);

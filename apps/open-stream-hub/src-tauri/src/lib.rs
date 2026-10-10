@@ -1238,7 +1238,7 @@ fn set_focus_rules_enabled(
 fn display_settings(state: State<'_, AppState>) -> Result<display::DisplaySettings, String> {
     let settings = state.display.get();
     if settings.is_err() {
-        state.sessions.module_control_changed();
+        state.sessions.display_settings_changed();
     }
     settings
 }
@@ -1249,7 +1249,7 @@ fn set_display_settings(
     settings: display::DisplaySettings,
 ) -> Result<display::DisplaySettings, String> {
     let saved = state.display.set(settings);
-    state.sessions.module_control_changed();
+    state.sessions.display_settings_changed();
     saved
 }
 

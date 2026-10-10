@@ -274,9 +274,10 @@ describe('import UI', () => {
       return renderToStaticMarkup(<View />);
     };
     expect(html(true)).toContain(dryRunOnlyRunNote);
-    expect(html(true)).toMatch(/disabled="">Execute actions<\/button>/);
+    // The badge never claims Live for the flagged profile, whatever the mode.
+    expect(html(true)).toMatch(/run-mode-pill test" role="status">Test \(imported profile\)</);
     expect(html(false)).not.toContain(dryRunOnlyRunNote);
-    expect(html(false)).toMatch(/aria-pressed="false">Execute actions<\/button>/);
+    expect(html(false)).toMatch(/run-mode-pill test" role="status">Test</);
   });
 });
 

@@ -14,8 +14,8 @@ const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
 root.slots[1] = { type: 'folder', page_id: 'sub' };
 const nested: Profile = { schema_version: 2, name: 'Nested', bindings: [], keypad: { pages: [root, emptyKeypadPage('sub', 'Sub')] } };
-const app: DisplaySettings = { module_control: 'app', auto_execute: false };
-const builtIn: DisplaySettings = { module_control: 'built_in_animation', auto_execute: false };
+const app: DisplaySettings = { module_control: 'app', run_mode: 'test' };
+const builtIn: DisplaySettings = { module_control: 'built_in_animation', run_mode: 'test' };
 const otherModules = ['m003k', 'm005s', 'm032le'] as const;
 
 // The dial screen choice is a profile setting; these stand in for profiles
@@ -27,10 +27,11 @@ describe('display settings contract', () => {
   it('matches the Rust fixture', () => {
     expect(fixture.display_settings_default).toEqual(defaultDisplaySettings);
     expect(defaultDisplaySettings.module_control).toBe('app');
+    expect(defaultDisplaySettings.run_mode).toBe('test');
     expect(isDisplaySettings(fixture.set_display_settings_result)).toBe(true);
-    // Off unless the user turns it on.
-    expect(fixture.display_settings_default.auto_execute).toBe(false);
-    expect(fixture.set_display_settings_result.auto_execute).toBe(true);
+    // Test unless the user switches the header badge to Live.
+    expect(fixture.display_settings_default.run_mode).toBe('test');
+    expect(fixture.set_display_settings_result.run_mode).toBe('live');
     expect(Object.keys(fixture.set_default_profile_args)).toEqual(['profileId']);
     expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(fixture.default_profile_none).toEqual({ profile_id: null });
@@ -45,14 +46,15 @@ describe('display settings contract', () => {
     expect(moduleControlOptions.map(option => option.label)).toEqual(['App', 'Built-in animation']);
   });
   it('accepts only the exact settings shape', () => {
-    expect(isDisplaySettings({ module_control: 'app', auto_execute: false })).toBe(true);
-    expect(isDisplaySettings({ module_control: 'built_in_animation', auto_execute: true })).toBe(true);
-    // Run actions automatically is required and strictly a boolean.
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test' })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'built_in_animation', run_mode: 'live' })).toBe(true);
+    // The run mode is required and strictly one of the two values.
     expect(isDisplaySettings({ module_control: 'app' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', auto_execute: 'yes' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live' })).toBe(false);
     // The earlier shapes (the toggle, the file with a global dial choice) are
     // migrated by Rust and never reach the frontend.
-    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', auto_execute: false }, { module_control: 'app', dial_content: 'clock', auto_execute: false }, { module_control: 'app', auto_execute: false, extra: 1 }]) {
+    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test' }, { module_control: 'app', dial_content: 'clock', run_mode: 'test' }, { module_control: 'app', run_mode: 'test', extra: 1 }, { module_control: 'app', auto_execute: true }]) {
       expect(isDisplaySettings(bad)).toBe(false);
     }
   });
@@ -99,7 +101,7 @@ describe('display flags and software mode', () => {
 describe('DisplaySettingsStore', () => {
   it('loads, saves and shows App until the backend answers', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', auto_execute: false };
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test' };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -109,10 +111,13 @@ describe('DisplaySettingsStore', () => {
     expect(store.getState().settings.module_control).toBe('app');
     expect(await store.load()).toBe(true);
     expect(await store.setModuleControl('built_in_animation')).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', auto_execute: false });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'test' });
+    expect(await store.setRunMode('live')).toBe(true);
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'live' });
     expect(calls).toEqual([
       ['display_settings', undefined],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', auto_execute: false } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'test' } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'live' } }],
     ]);
   });
   it('reports errors and unexpected replies', async () => {
@@ -126,6 +131,16 @@ describe('DisplaySettingsStore', () => {
     // The browser preview never calls the backend.
     const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);
     expect(await preview.setModuleControl('built_in_animation')).toBe(false);
+    expect(await preview.setRunMode('live')).toBe(false);
+  });
+  it('seeds the browser preview for captures and never the desktop app', () => {
+    const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);
+    preview.seedPreview({ module_control: 'app', run_mode: 'live' });
+    expect(preview.getState().loaded).toBe(true);
+    expect(preview.getState().settings.run_mode).toBe('live');
+    const desktop = new DisplaySettingsStore(async <T,>() => defaultDisplaySettings as T, true);
+    desktop.seedPreview({ module_control: 'app', run_mode: 'live' });
+    expect(desktop.getState().loaded).toBe(false);
   });
 });
 
@@ -157,7 +172,10 @@ describe('DisplaySettingsPanel markup', () => {
     // The dial screen choice moved into the profile's dial editor.
     expect(markup).not.toContain('display-dial-content');
     expect(moduleControlNotes.app).toContain('dial editor');
-    expect(markup).toContain('Changes apply the next time you start a profile.');
+    expect(markup).toContain('Changes apply the next time a profile starts.');
+    // The mode is the header badge's business; the panel has no toggle for it.
+    expect(markup).not.toContain('Run actions automatically');
+    expect(markup).not.toContain('setting-toggle');
   });
   it('Built-in animation explains what it gives up', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: builtIn })} />);
@@ -169,7 +187,7 @@ describe('DisplaySettingsPanel markup', () => {
     expect(markup).toContain('The 2 running profiles keep the setting each started with');
     expect(appliesNote(1)).toContain('The running profile keeps');
     expect(appliesNote(1)).toContain('nothing is restarted for you');
-    expect(appliesNote(0)).toBe('Changes apply the next time you start a profile.');
+    expect(appliesNote(0)).toBe('Changes apply the next time a profile starts.');
   });
   it('is disabled until loaded and in the browser preview', () => {
     const loading = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ loaded: false })} />);

@@ -13,6 +13,23 @@ The [manifest](masterhub-1.0.0.113-manifest.json) records these installed binari
 
 Both are installed under `resources/build/Release/`. Renderer and `background.js` hashes are pinned in the original report. Native RVAs below are relative to each DLL's image base.
 
+## LED commands (knobs, faders, base)
+
+Recovered by disassembling the M0 SDK DLL (`CoolTEK_SDK_CM_M0_V01.05.00.dll`, the exports `Adjust_LED_Color_CM_M0`, `Adjust_LED_Brightness_CM_M0`, `Adjust_LED_Mode_CM_M0`, `Adjust_LED_Speed_CM_M0`) and the call sites in the native addon `stackaddon.node`. Nothing was run; every byte below is static analysis and unverified on hardware.
+
+Each command is an output report with ID `02`, sent with the length the interface's descriptor declares (`63` payload bytes on a captured M003K), zero padded:
+
+| Command | Bytes after `02` | Validation seen in the DLL |
+| --- | --- | --- |
+| Colour | `2d type index a b c d` | Type and index checked as below. The four value bytes are probably red, green, blue and a save-to-firmware flag, from the order of the application's `(r, g, b, saveFw)` call; not confirmed |
+| Brightness | `2e type index value` | Type and index checked as below; no range check on the value was recovered (the dial uses 0 to 100) |
+| Mode | `2c type index mode save` | Mode at most `9`; type and index checked as below |
+| Speed | `30 value` | Value at most `100`; no type or index |
+
+Type and index: type `0` is the base (index `0` only), type `1` the knob module (index `0` to `4`, or `ff` for every LED), type `2` the fader module (index `0` to `2`, or `ff`). Any other type or index is refused before a write. The mode numbers are the nine effects of the official Lighting tab plus off (see the probe project's lighting modes list).
+
+The official application only ever addresses a whole module: its addon calls the colour function once per index (`0` to `4` for knobs, `0` to `2` for faders, `0` for the base) with the same colour and never `ff`. So the protocol can colour each LED separately, but the application does not use that. Open questions: what each index drives (the knob module has three knobs but five indexes, so they may be rings plus something else, or segments), the colour channel order, whether `save` persists across a replug, and what the fader module's three indexes light. The addon imports a `V02.05.00` copy of the DLL while the installer ships `V01.05.00`, so the layout could differ on newer firmware.
+
 ## Discovery
 
 The official application's `startBaseDeviceCheck` accepts both PID generations with VID `2516`. The SDK's discovery and typed module handles now recognize them.

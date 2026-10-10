@@ -15,6 +15,7 @@ use cooltek_sdk_masterhub::{
     DeviceRegistry, InputReader, ModuleIdentity, ModuleKind, ReportTransport, descriptor, dial,
     hidapi::{HidDevice, MAX_REPORT_DESCRIPTOR_SIZE},
     keypad,
+    lighting::{self, LedModule, LedTarget},
 };
 use cooltek_sdk_service::{Gesture, InputEvent, InputSession, InputUpdate, ServiceModule};
 use serde_json::{Value, json};
@@ -129,6 +130,94 @@ enum Command {
     Keypad {
         #[command(subcommand)]
         command: KeypadCommand,
+    },
+    /// Preview software-derived per-LED lighting commands for the knob, fader and
+    /// base modules, or explicitly send them to one selected module.
+    Led {
+        #[command(subcommand)]
+        command: LedCommand,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum LedModuleArg {
+    Knob,
+    Slider,
+    Base,
+}
+
+impl LedModuleArg {
+    fn module(self) -> LedModule {
+        match self {
+            Self::Knob => LedModule::Knob,
+            Self::Slider => LedModule::Slider,
+            Self::Base => LedModule::Base,
+        }
+    }
+
+    fn kind(self) -> ModuleKind {
+        match self {
+            Self::Knob => ModuleKind::M003K,
+            Self::Slider => ModuleKind::M005S,
+            Self::Base => ModuleKind::M0064,
+        }
+    }
+}
+
+#[derive(Args)]
+struct LedTargetArgs {
+    /// Which module's LEDs: the knob module (indexes 0-4), the fader module (0-2) or the base (0).
+    #[arg(long, value_enum)]
+    module: LedModuleArg,
+    /// LED index, or `all` (not accepted for the base).
+    #[arg(long, value_parser = parse_led_target, default_value = "all")]
+    index: LedTarget,
+    /// Exact module path from `list`; without it the report is only previewed.
+    #[arg(long, value_parser = parse_path)]
+    path_hex: Option<DevicePath>,
+}
+
+#[derive(Subcommand)]
+enum LedCommand {
+    /// Preview or send a colour: three raw channels in the official app's order (six hex digits).
+    Color {
+        #[arg(value_parser = parse_color)]
+        channels: [u8; 3],
+        /// Ask the firmware to keep the colour (the official app sends false while editing).
+        #[arg(long)]
+        save: bool,
+        #[command(flatten)]
+        target: LedTargetArgs,
+    },
+    /// Preview or send a brightness from 0 through 100.
+    Brightness {
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=100))]
+        value: u8,
+        #[command(flatten)]
+        target: LedTargetArgs,
+    },
+    /// Preview or send an effect number from 0 (off) through 9.
+    Mode {
+        #[arg(value_parser = clap::value_parser!(u8).range(0..=9))]
+        mode: u8,
+        #[arg(long)]
+        save: bool,
+        #[command(flatten)]
+        target: LedTargetArgs,
+    },
+    /// Light each LED index of one module in turn (all others off) to learn what each index drives.
+    Sweep {
+        #[arg(long, value_enum)]
+        module: LedModuleArg,
+        /// Exact module path from `list`.
+        #[arg(long, value_parser = parse_path)]
+        path_hex: DevicePath,
+        /// Colour used for the lit LED (six hex digits).
+        #[arg(long, default_value = "ff0000", value_parser = parse_color)]
+        color: [u8; 3],
+        /// How long each index stays lit (200 to 10000 ms).
+        #[arg(long, default_value_t = 2000, value_parser = clap::value_parser!(u64).range(200..=10000))]
+        hold_ms: u64,
     },
 }
 
@@ -300,6 +389,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
         Command::Replay { file } => replay(file),
         Command::Dial { command } => dial_command(command),
         Command::Keypad { command } => keypad_command(command),
+        Command::Led { command } => led_command(command),
     }
 }
 
@@ -307,6 +397,123 @@ fn parse_color(raw: &str) -> Result<[u8; 3], String> {
     decode_hex(raw, 3)?
         .try_into()
         .map_err(|_| "color must contain exactly six hexadecimal digits".into())
+}
+
+fn parse_led_target(raw: &str) -> Result<LedTarget, String> {
+    if raw.eq_ignore_ascii_case("all") {
+        return Ok(LedTarget::All);
+    }
+    raw.parse()
+        .map(LedTarget::Index)
+        .map_err(|_| "LED index must be a number from 0 to 254, or `all`".into())
+}
+
+fn open_led_module(module: LedModuleArg, path: &[u8]) -> Result<HidDevice, Box<dyn Error>> {
+    let registry = DeviceRegistry::new()?;
+    let devices = registry.devices();
+    let selected = select_device(&devices, path, false)?;
+    if ModuleKind::from_ids(selected.vendor_id, selected.product_id) != Some(module.kind()) {
+        return Err(format!(
+            "--module {} needs a {:?} path; this path is a different module",
+            match module {
+                LedModuleArg::Knob => "knob",
+                LedModuleArg::Slider => "slider",
+                LedModuleArg::Base => "base",
+            },
+            module.kind()
+        )
+        .into());
+    }
+    Ok(registry.open(selected)?)
+}
+
+/// Previews at the 64-byte output length of the captured knob module, or sends
+/// at the length the selected interface's own descriptor declares.
+fn led_send(
+    target: &LedTargetArgs,
+    build: impl Fn(usize) -> Result<Vec<u8>, cooltek_sdk_masterhub::hidapi::HidError>,
+    send: impl Fn(&HidDevice) -> Result<(), cooltek_sdk_masterhub::hidapi::HidError>,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(path) = &target.path_hex {
+        let device = open_led_module(target.module, path)?;
+        let length =
+            cooltek_sdk_masterhub::output_report_length(&device, lighting::OUTPUT_REPORT_ID)?;
+        let report = build(length)?;
+        send(&device)?;
+        return print_json(&json!({
+            "type": "led_sent", "source": "software_derived",
+            "output_report_length": length, "raw_hex": encode_hex(&report),
+        }));
+    }
+    print_json(&json!({
+        "type": "led_preview", "source": "software_derived",
+        "preview_length": 64, "raw_hex": encode_hex(&build(64)?),
+    }))
+}
+
+fn led_command(command: LedCommand) -> Result<(), Box<dyn Error>> {
+    match command {
+        LedCommand::Color {
+            channels,
+            save,
+            target,
+        } => {
+            let (module, index) = (target.module.module(), target.index);
+            led_send(
+                &target,
+                |length| lighting::color_report(module, index, channels, save, length),
+                |device| lighting::set_color(device, module, index, channels, save),
+            )
+        }
+        LedCommand::Brightness { value, target } => {
+            let (module, index) = (target.module.module(), target.index);
+            led_send(
+                &target,
+                |length| lighting::brightness_report(module, index, value, length),
+                |device| lighting::set_brightness(device, module, index, value),
+            )
+        }
+        LedCommand::Mode { mode, save, target } => {
+            let (module, index) = (target.module.module(), target.index);
+            led_send(
+                &target,
+                |length| lighting::mode_report(module, index, mode, save, length),
+                |device| lighting::set_mode(device, module, index, mode, save),
+            )
+        }
+        LedCommand::Sweep {
+            module: module_arg,
+            path_hex,
+            color,
+            hold_ms,
+        } => {
+            let module = module_arg.module();
+            let device = open_led_module(module_arg, &path_hex)?;
+            let hold = Duration::from_millis(hold_ms);
+            let off = [0, 0, 0];
+            let result = (|| -> Result<(), Box<dyn Error>> {
+                lighting::set_color(&device, module, all_or_first(module), off, false)?;
+                for index in 0..module.led_count() {
+                    lighting::set_color(&device, module, LedTarget::Index(index), color, false)?;
+                    print_json(&json!({"type": "led_sweep", "index": index, "lit": true}))?;
+                    thread::sleep(hold);
+                    lighting::set_color(&device, module, LedTarget::Index(index), off, false)?;
+                }
+                Ok(())
+            })();
+            // Leave the module dark rather than half-lit, whatever happened above.
+            let _ = lighting::set_color(&device, module, all_or_first(module), off, false);
+            result
+        }
+    }
+}
+
+fn all_or_first(module: LedModule) -> LedTarget {
+    if module == LedModule::Base {
+        LedTarget::Index(0)
+    } else {
+        LedTarget::All
+    }
 }
 
 fn parse_report_id(raw: &str) -> Result<u8, String> {
@@ -1152,6 +1359,42 @@ mod tests {
             assert_eq!(path.0, vec![0x61, 0xff]);
         }
         assert!(Cli::try_parse_from(["masterhub-diag", "dial", "info"]).is_err());
+    }
+
+    #[test]
+    fn led_commands_preview_without_a_path_and_validate_arguments() {
+        let parse = |arguments: &[&str]| {
+            Cli::try_parse_from(
+                ["masterhub-diag", "led"]
+                    .into_iter()
+                    .chain(arguments.iter().copied()),
+            )
+        };
+        assert!(parse(&["color", "ff8800", "--module", "knob", "--index", "3"]).is_ok());
+        assert!(parse(&["color", "ff8800", "--module", "slider"]).is_ok());
+        assert!(parse(&["brightness", "100", "--module", "base", "--index", "0"]).is_ok());
+        assert!(parse(&["mode", "9", "--module", "knob", "--save"]).is_ok());
+        assert!(parse(&["brightness", "101", "--module", "knob"]).is_err());
+        assert!(parse(&["mode", "10", "--module", "knob"]).is_err());
+        assert!(parse(&["color", "ff88", "--module", "knob"]).is_err());
+        assert!(parse(&["color", "ff8800"]).is_err());
+        assert!(parse(&["sweep", "--module", "knob"]).is_err());
+        assert!(
+            parse(&[
+                "sweep",
+                "--module",
+                "knob",
+                "--path-hex",
+                "61ff",
+                "--hold-ms",
+                "10"
+            ])
+            .is_err()
+        );
+        assert!(parse(&["sweep", "--module", "knob", "--path-hex", "61ff"]).is_ok());
+        assert_eq!(parse_led_target("ALL").unwrap(), LedTarget::All);
+        assert_eq!(parse_led_target("4").unwrap(), LedTarget::Index(4));
+        assert!(parse_led_target("x").is_err());
     }
 
     enum Read {

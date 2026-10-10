@@ -158,6 +158,28 @@ cargo run -p cooltek-sdk-cli --locked -- dial jpeg prepared-240x240.jpg \
 
 The live path reads the selected interface's descriptor, validates the image and packet sizes before the first output write, and stops on a short write or transport failure. It does not automatically enter software mode, retry, wait for a protocol acknowledgement, or guess a fixed report size. Hardware captures must establish the correct interface, mode, byte 6, image acceptance/orientation, and any required pacing.
 
+## Per-LED lighting commands (knobs, faders, base)
+
+The knob module, fader module and base each have LEDs the official application lights through output report `02` (commands recovered statically; see the [protocol notes](research/masterhub-additional-modules-1.0.0.113.md#led-commands-knobs-faders-base)). Without `--path-hex` these commands only print the report:
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- led color ff8800 --module knob --index 3
+cargo run -p cooltek-sdk-cli --locked -- led brightness 60 --module slider --index all
+cargo run -p cooltek-sdk-cli --locked -- led mode 1 --module knob
+```
+
+`--module` is `knob` (indexes 0 to 4), `slider` (0 to 2) or `base` (index 0 only); `--index` is a number or `all` (the default, refused for the base). Colour takes three raw channels in the official app's order (red, green, blue is the assumption, not verified), brightness 0 to 100, mode 0 (off) to 9. `--save` asks the firmware to keep a colour or mode; leave it off while experimenting. The preview uses a 64-byte report.
+
+Add `--path-hex PATH_FROM_INVENTORY` to send. The path must name exactly one inventory entry of the matching module (a knob path with `--module slider` is refused before anything is written), the report length comes from that interface's descriptor, and a short write is an error. Nothing is read back, there is no acknowledgement, and no software mode is involved. macOS opens the interface exclusively, so stop `masterhub-service` and the app first.
+
+To learn what each index drives, sweep one module:
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- led sweep --module knob --path-hex PATH_FROM_INVENTORY
+```
+
+It turns every LED off, lights each index in turn for `--hold-ms` (default 2000, red by default through `--color`), prints one `led_sweep` line per index, and leaves the module dark. Watch the hardware and note which part lights for each index. Without `--save` nothing is written to firmware, so unplugging and replugging the module restores its own lighting.
+
 ## Offline keypad image preparation and plans
 
 The 15-key IPS module uses a separate per-key header and 72×72 images. Prepare static PNG/JPEG artwork with the same fit, matte, rotation, source limits, and no-overwrite rules as dial preparation:

@@ -12,6 +12,7 @@ mod hid;
 pub mod input;
 mod jpeg;
 pub mod keypad;
+pub mod lighting;
 mod macros;
 mod module;
 pub mod modules;

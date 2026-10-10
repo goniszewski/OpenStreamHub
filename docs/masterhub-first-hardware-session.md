@@ -166,7 +166,7 @@ Files: each roller one step up, one down, several steps up quickly; simultaneous
 
 #### M0064 base
 
-The base exposes no controls in the evidence. Record 10 s with `--label base-idle`. Expected: no input reports. Any report is a new finding; keep the raw file. Check whether the base's lighting or status LEDs react to module insertion (note only; base lighting is not implemented).
+The base exposes no controls in the evidence. Record 10 s with `--label base-idle`. Expected: no input reports. Any report is a new finding; keep the raw file. Check whether the base's lighting or status LEDs react to module insertion (note only; base lighting is tried in step 6e).
 
 ### Step 4. Service replay of real captures (READ, no hardware)
 
@@ -319,6 +319,40 @@ In the function run, short-click the dial several times, slowly and then quickly
 | Short writes | Any `failed.short_write: true`? The same face is not resent; the next minute or click redraws | No-retry policy on hardware. |
 
 The desktop app passes the same flags by default: with Settings → **Module control** set to **App** (the default), choose the dial content and start a profile on the module; software mode is requested automatically. The setting applies at the next Start only.
+
+#### 6e. Knob, fader and base LEDs (WRITE, no software mode)
+
+Needs the knob module, ideally also the faders and the base. These commands come from disassembling the official SDK and have never been sent to hardware, so run them one at a time, never with `--save`, and stop at the first surprise. Stop the app and `masterhub-service` first. Get each module's `path_hex` from `list` (the interface that declares output report `02`).
+
+```sh
+# What does each index drive? Watch the module while this runs, note each step.
+cargo run -p cooltek-sdk-cli --locked -- led sweep --module knob   --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led sweep --module slider --path-hex SLIDER_PATH
+cargo run -p cooltek-sdk-cli --locked -- led color ff0000 --module base --index 0 --path-hex BASE_PATH
+
+# Channel order, one LED at a time (expect red, green, blue).
+cargo run -p cooltek-sdk-cli --locked -- led color ff0000 --module knob --index 0 --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led color 00ff00 --module knob --index 0 --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led color 0000ff --module knob --index 0 --path-hex KNOB_PATH
+
+# Different colours at once, then brightness, then whole module.
+cargo run -p cooltek-sdk-cli --locked -- led color ff0000 --module knob --index 0 --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led color 00ff00 --module knob --index 1 --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led brightness 20 --module knob --index all --path-hex KNOB_PATH
+cargo run -p cooltek-sdk-cli --locked -- led color 0000ff --module knob --index all --path-hex KNOB_PATH
+```
+
+| Question | Expected observable | Confirms or refutes |
+| --- | --- | --- |
+| Index to LED | The sweep lights one part per index; the knob module has five indexes for three knobs | Which index drives which ring, segment or other LED |
+| Per-LED colour | Two indexes hold different colours at the same time | The protocol colours LEDs separately, which the official app never shows |
+| Channel order | `ff0000`, `00ff00`, `0000ff` show red, green, blue | The assumed R, G, B order |
+| Brightness | `20` is visibly dimmer than the default; check whether it applies per LED or to the module | Brightness byte layout |
+| Faders and base | Three indexes on the faders, one on the base, each lights something | Type bytes `2` and `0` |
+| Persistence | Replug the module: it returns to its own lighting (no `--save` was used) | That unsaved writes do not stick; optionally try one `--save` colour and note whether it survives a replug |
+| Interaction | Whether a colour write needs the module in any mode, and whether input still works while LEDs are set | Mode dependency |
+
+Record each observation with the index, the colour and a photograph.
 
 ### Step 7. Live service on real input (READ, plan-only)
 
@@ -496,6 +530,11 @@ Copy to a new file in `captures/hardware/` and fill it in. Use `confirmed`, `ref
 | T6.8 | 6c | dial | Pacing under back-to-back upload | | | | | |
 | T6.9 | 6c | keys | Real output report length from descriptor | | | | | |
 | T6.10 | 6d | dial | Clock, function and CPU faces appear; once-a-second redraws are stable | | | | | |
+| T6.11 | 6e | knobs | Index 0 to 4 to LED (five indexes, three knobs) | `led sweep --module knob` | | | | |
+| T6.12 | 6e | knobs | Per-LED colour and channel order | `led color` | | | | |
+| T6.13 | 6e | faders | Index 0 to 2 to LED; colour and brightness | `led sweep --module slider` | | | | |
+| T6.14 | 6e | base | Index 0 lights the edge strip; brightness | `led color ... --module base` | | | | |
+| T6.15 | 6e | all | Unsaved writes do not survive a replug | | | | | |
 | T7.1 | 7 | all | Service plan matches physical gestures | | | | | |
 | T7.2 | 7a | knobs | `obs_scene` against a real OBS 28+ | | | | | |
 | T7.3 | 7b | knobs | Timer notification and sound on a real Mac | | | | | |

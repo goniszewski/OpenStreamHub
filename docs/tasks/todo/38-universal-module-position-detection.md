@@ -9,7 +9,7 @@ Today a module is placed only if its exact (module, USB port chain) pair is hard
 ## What the official app does (1.0.0.113, `app-analysis/sources/src`)
 - Not a formula: a lookup table. `App.vue` `arrayContainsSerialNumber` finds the base's own hub among the USB devices, drops that hub's port-path prefix from each module's `portNumbers` and joins the rest into a string (`portNumber`, e.g. `23`, `43`, `134`). That string identifies the base connector slot, independent of module type.
 - `Baseboard.vue` (`rollerPos`, `m4315Pos`, `sliderPos`, `knobx1Pos`, `knobx3Pos`) turns it into a CSS class `pos<portNumber>`; the stylesheet (about lines 2460–2900) holds `top`/`left` and a rotation per module class and slot. Pitch is about 129 px per cell; columns at 25 and 283 px, rows at 25, 154, 283, 412, 541, 670.
-- Orientation is a separate per-base value (`M00x64Direction`, vertical or horizontal) that rotates the whole layout.
+- Orientation is a separate per-base value (see [37](37-orientation-check.md) for deriving each module's orientation from it, with a per-module override) (`M00x64Direction`, vertical or horizontal) that rotates the whole layout.
 - Observed chains here match its strings once the base prefix `1.1` is removed: dial `43`, knobs `34`, keys now `23`; `pos23`, `pos43` and `pos34` all exist in its CSS.
 
 ## Scope

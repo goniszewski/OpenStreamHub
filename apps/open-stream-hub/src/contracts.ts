@@ -61,8 +61,16 @@ export interface Binding {
 export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
 export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
 export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
+// The icon-and-label design a key's artwork was prepared from, stored so the studio reopens
+// with it (absent for uploaded images). Pure metadata: nothing drawn reads it. icon_id is a
+// catalog id or `app:<bundle id>`, absent or null for text only; text_colour, icon_colour and
+// background are hex as typed (`#rgb`/`rgb`/`#rrggbb`/`rrggbb`).
+export interface KeyArtworkDesignSpec {
+  icon_id?: string | null; text: string; text_size: number; align: 'top' | 'middle' | 'bottom';
+  text_colour: string; icon_colour: string; background: string;
+}
 /** loop_count: zero is infinite; positive values are total plays. */
-export interface KeyArtwork { frames: KeyArtworkFrame[]; loop_count: number }
+export interface KeyArtwork { frames: KeyArtworkFrame[]; loop_count: number; design?: KeyArtworkDesignSpec }
 export interface KeypadPage { id: string; name: string; slots: KeypadSlot[]; artwork?: Record<string, KeyArtwork> }
 // Dial function bindings (m131e only): short press cycles functions, so only these gestures are bound.
 export interface DialBinding { gesture: 'right' | 'left' | 'long_press'; serial_number?: string; action: Action }

@@ -946,7 +946,7 @@ mod tests {
     }
     #[test]
     fn artwork_round_trips_and_is_omitted_when_absent() {
-        use crate::key_artwork::tests::{artwork, frame, jpeg};
+        use crate::key_artwork::tests::{artwork, design, frame, jpeg};
         let plain = fixture();
         let value = serde_json::to_value(&plain).unwrap();
         for page in value["keypad"]["pages"].as_array().unwrap() {
@@ -960,5 +960,20 @@ mod tests {
         let profile = with_artwork(1, &[("4", animated)]);
         let json = serde_json::to_vec(&profile).unwrap();
         assert_eq!(Profile::from_json(&json).unwrap(), profile);
+
+        // A saved design reopens the studio with it and survives the profile
+        // round trip; the drawn frames are untouched by it.
+        let mut designed = artwork(vec![frame(&jpeg(72, 40), 100)]);
+        designed.design = Some(design());
+        let profile = with_artwork(0, &[("2", designed)]);
+        let value = serde_json::to_value(&profile).unwrap();
+        assert_eq!(
+            value["keypad"]["pages"][0]["artwork"]["2"]["design"]["text"],
+            json!("Mute")
+        );
+        assert_eq!(
+            Profile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap(),
+            profile
+        );
     }
 }

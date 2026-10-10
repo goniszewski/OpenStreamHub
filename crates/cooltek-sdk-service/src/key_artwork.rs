@@ -16,6 +16,41 @@ pub struct KeyArtworkFrame {
     pub delay_ms: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// Vertical placement of the label text inside one studio design.
+pub enum KeyArtworkTextAlign {
+    /// The label sits under the top padding, the icon below it.
+    Top,
+    /// The label block is centred vertically.
+    Middle,
+    /// The label sits above the bottom padding, the icon above it.
+    Bottom,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// The icon-and-label design one key's artwork was prepared from. Pure
+/// metadata: nothing drawn reads it, and the studio reopens with it. Absent
+/// for artwork prepared from an uploaded file.
+pub struct KeyArtworkDesign {
+    /// Catalog icon id or an `app:<bundle id>` suggestion; absent for text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_id: Option<String>,
+    /// Label text of at most 128 bytes, possibly empty.
+    pub text: String,
+    /// Studio text size, 0 (small) through 3 (extra large).
+    pub text_size: u8,
+    /// Where the label sits relative to the icon.
+    pub align: KeyArtworkTextAlign,
+    /// Label colour as typed: `#rgb`, `rgb`, `#rrggbb`, or `rrggbb`.
+    pub text_colour: String,
+    /// Icon colour in the same bounded hex forms.
+    pub icon_colour: String,
+    /// Background colour in the same bounded hex forms.
+    pub background: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// Independently timed artwork for one key on one page.
@@ -24,6 +59,9 @@ pub struct KeyArtwork {
     pub frames: Vec<KeyArtworkFrame>,
     /// Zero loops forever; positive values count total plays, then hold the last frame.
     pub loop_count: u32,
+    /// The studio design this artwork was prepared from, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub design: Option<KeyArtworkDesign>,
 }
 
 impl KeyArtworkFrame {
@@ -54,6 +92,59 @@ impl KeyArtworkFrame {
     }
 }
 
+impl KeyArtworkDesign {
+    /// Longest stored icon id: a catalog id, or `app:` plus a bundle id.
+    pub const MAX_ICON_ID_BYTES: usize = 128;
+    /// Longest stored label text, matching the key label limit.
+    pub const MAX_TEXT_BYTES: usize = 128;
+    /// Highest text size index; the studio offers four sizes.
+    pub const MAX_TEXT_SIZE: u8 = 3;
+
+    /// Checks byte bounds, the closed text-size range, and the hex colour
+    /// shapes the studio's parser accepts.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(icon_id) = &self.icon_id
+            && (icon_id.is_empty()
+                || icon_id.len() > Self::MAX_ICON_ID_BYTES
+                || icon_id.chars().any(char::is_control))
+        {
+            return Err(
+                "key artwork icon id must be 1 through 128 bytes without control characters".into(),
+            );
+        }
+        if self.text.len() > Self::MAX_TEXT_BYTES || self.text.chars().any(char::is_control) {
+            return Err(
+                "key artwork design text must be at most 128 bytes without control characters"
+                    .into(),
+            );
+        }
+        if self.text_size > Self::MAX_TEXT_SIZE {
+            return Err("key artwork text size must be 0 through 3".into());
+        }
+        for (field, colour) in [
+            ("text colour", &self.text_colour),
+            ("icon colour", &self.icon_colour),
+            ("background", &self.background),
+        ] {
+            validate_hex_colour(colour).map_err(|_| {
+                format!("key artwork design {field} must be a hex colour such as #000000 or #fff")
+            })?;
+        }
+        Ok(())
+    }
+}
+
+/// `#rgb`, `rgb`, `#rrggbb`, or `rrggbb` — the shapes the studio stores.
+fn validate_hex_colour(colour: &str) -> Result<(), ()> {
+    let digits = colour.strip_prefix('#').unwrap_or(colour);
+    if (digits.len() != 3 && digits.len() != 6)
+        || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(());
+    }
+    Ok(())
+}
+
 impl KeyArtwork {
     /// Maximum frames in one artwork.
     pub const MAX_FRAMES: usize = 120;
@@ -71,6 +162,9 @@ impl KeyArtwork {
 
     /// Returns the total decoded JPEG byte count after validating every frame.
     pub fn validate(&self) -> Result<usize, String> {
+        if let Some(design) = &self.design {
+            design.validate()?;
+        }
         if self.frames.is_empty() || self.frames.len() > Self::MAX_FRAMES {
             return Err("key artwork requires 1 through 120 frames".into());
         }
@@ -140,6 +234,7 @@ pub(crate) mod tests {
         KeyArtwork {
             frames,
             loop_count: 0,
+            design: None,
         }
     }
 
@@ -260,5 +355,110 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+    }
+
+    pub(crate) fn design() -> KeyArtworkDesign {
+        KeyArtworkDesign {
+            icon_id: Some("volume-2".into()),
+            text: "Mute".into(),
+            text_size: 1,
+            align: KeyArtworkTextAlign::Bottom,
+            text_colour: "#ffffff".into(),
+            icon_colour: "#fff".into(),
+            background: "204060".into(),
+        }
+    }
+
+    #[test]
+    fn design_metadata_is_optional_and_round_trips() {
+        let frame_json = json!({"jpeg_base64": STANDARD.encode(jpeg(72, 40)), "delay_ms": 100});
+        let old = json!({"frames": [frame_json], "loop_count": 0});
+        let parsed: KeyArtwork = serde_json::from_value(old.clone()).unwrap();
+        assert!(parsed.design.is_none());
+        // Profiles without a design serialize exactly as before, so the field
+        // is invisible until a design exists.
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), old);
+
+        let designed = KeyArtwork {
+            frames: vec![frame(&jpeg(72, 40), 100)],
+            loop_count: 0,
+            design: Some(design()),
+        };
+        let value = serde_json::to_value(&designed).unwrap();
+        assert_eq!(
+            value["design"],
+            json!({
+                "icon_id": "volume-2", "text": "Mute", "text_size": 1, "align": "bottom",
+                "text_colour": "#ffffff", "icon_colour": "#fff", "background": "204060",
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<KeyArtwork>(value).unwrap(),
+            designed
+        );
+        // A text-only design drops the absent icon id instead of writing null.
+        let text_only = KeyArtwork {
+            frames: vec![frame(&jpeg(72, 40), 100)],
+            loop_count: 0,
+            design: Some(KeyArtworkDesign {
+                icon_id: None,
+                ..design()
+            }),
+        };
+        let value = serde_json::to_value(&text_only).unwrap();
+        assert!(value["design"].get("icon_id").is_none());
+        assert_eq!(
+            serde_json::from_value::<KeyArtwork>(value).unwrap(),
+            text_only
+        );
+        assert_eq!(designed.validate(), Ok(jpeg(72, 40).len()));
+    }
+
+    #[test]
+    fn design_metadata_is_bounded_and_shape_checked() {
+        design().validate().unwrap();
+        let mut extra = serde_json::to_value(design()).unwrap();
+        extra["fps"] = json!(10);
+        assert!(serde_json::from_value::<KeyArtworkDesign>(extra).is_err());
+        let mut sideways = serde_json::to_value(design()).unwrap();
+        sideways["align"] = json!("sideways");
+        assert!(serde_json::from_value::<KeyArtworkDesign>(sideways).is_err());
+
+        let mut text = design();
+        text.text = "x".repeat(KeyArtworkDesign::MAX_TEXT_BYTES + 1);
+        assert!(text.validate().unwrap_err().contains("128"));
+        let mut control = design();
+        control.text.push('\u{7}');
+        assert!(control.validate().unwrap_err().contains("control"));
+        let mut sized = design();
+        sized.text_size = KeyArtworkDesign::MAX_TEXT_SIZE + 1;
+        assert!(sized.validate().unwrap_err().contains("0 through 3"));
+        for colour in ["", "#", "#12", "12345", "#12345", "gggggg"] {
+            let mut shaded = design();
+            shaded.background = colour.into();
+            assert!(shaded.validate().unwrap_err().contains("hex colour"));
+        }
+        let mut icon = design();
+        icon.icon_id = Some(String::new());
+        assert!(icon.validate().unwrap_err().contains("icon id"));
+        let mut long_icon = design();
+        long_icon.icon_id = Some(format!(
+            "app:{}",
+            "x".repeat(KeyArtworkDesign::MAX_ICON_ID_BYTES)
+        ));
+        assert!(long_icon.validate().unwrap_err().contains("icon id"));
+        let mut unresolvable = design();
+        unresolvable.icon_id = Some("renamed-icon".into());
+        // Resolution is the studio's concern: an unknown but well-formed id
+        // validates, and the studio degrades to its defaults instead.
+        unresolvable.validate().unwrap();
+
+        // The design is validated wherever the artwork is.
+        let mut broken = artwork(vec![frame(&jpeg(72, 40), 100)]);
+        broken.design = Some(KeyArtworkDesign {
+            text_size: 9,
+            ..design()
+        });
+        assert!(broken.validate().unwrap_err().contains("0 through 3"));
     }
 }

@@ -10,7 +10,10 @@ import { clearKeypadSlot, createKeypadFolder, editKeypadBinding, emptyKeypadPage
 import { KeyDisplayContent } from './DisplayContent';
 import type { ProfileSession } from './profile-session';
 
-const artwork: KeyArtwork = { frames: [{ jpeg_base64: 'AAAA', delay_ms: 100 }, { jpeg_base64: 'BBBB', delay_ms: 200 }], loop_count: 0 };
+const artwork: KeyArtwork = {
+  frames: [{ jpeg_base64: 'AAAA', delay_ms: 100 }, { jpeg_base64: 'BBBB', delay_ms: 200 }], loop_count: 0,
+  design: { icon_id: 'clapperboard', text: 'Desk', text_size: 2, align: 'top', text_colour: '#ff8000', icon_colour: '#0af', background: '#123456' },
+};
 const profile = (): Profile => ({ schema_version: 2, name: 'Art', bindings: [], keypad: { pages: [emptyKeypadPage()] } });
 
 describe('per-key artwork', () => {
@@ -63,6 +66,37 @@ describe('per-key artwork', () => {
     expect(markup).toContain('Remove artwork');
     expect(markup).toMatch(/type="file"[^>]*disabled/);
     expect(markup).toContain('needs the desktop app');
+  });
+
+  it('reopens the studio with the stored design instead of the defaults', () => {
+    const markup = renderToStaticMarkup(<KeyArtworkEditor session={{} as ProfileSession} path={['root']} control={0} artwork={artwork} disabled={false} />);
+    expect(markup).toContain('value="Desk"');
+    // Large text size and top alignment carry the stored active states, and
+    // the colours reopen exactly as applied.
+    expect(markup).toMatch(/class="active">Large</);
+    expect(markup).toMatch(/class="active">Top</);
+    expect(markup).toContain('value="#ff8000"');
+    expect(markup).toContain('value="#0af"');
+    expect(markup).toContain('value="#123456"');
+    expect(markup).toMatch(/class="key-icon active"[^>]*aria-label="OBS scene"/);
+  });
+
+  it('degrades an unresolvable stored icon to the default suggestion', () => {
+    const stale: KeyArtwork = { ...artwork, design: { ...artwork.design!, icon_id: 'renamed-away' } };
+    const markup = renderToStaticMarkup(<KeyArtworkEditor session={{} as ProfileSession} path={['root']} control={0} artwork={stale} disabled={false} />);
+    // Text and colours survive; no icon button carries the broken choice.
+    expect(markup).toContain('value="Desk"');
+    expect(markup).not.toMatch(/class="key-icon active"/);
+  });
+
+  it('clears a stored design when an uploaded file replaces the artwork', () => {
+    let draft = setKeyArtwork(profile(), ['root'], 0, artwork);
+    expect(draft.keypad!.pages[0].artwork!['0'].design).toBeDefined();
+    // prepare_key_artwork answers uploads with design-less frames (asserted in
+    // the Tauri crate), so the stored design goes with the replaced artwork.
+    const uploaded: KeyArtwork = { frames: artwork.frames, loop_count: artwork.loop_count };
+    draft = setKeyArtwork(draft, ['root'], 0, uploaded);
+    expect(draft.keypad!.pages[0].artwork!['0'].design).toBeUndefined();
   });
 });
 

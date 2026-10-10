@@ -10,7 +10,8 @@ import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
-import type { ObsCatalogNames } from './contracts';
+import type { KeyArtwork, ObsCatalogNames } from './contracts';
+import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
@@ -43,7 +44,10 @@ const invokeCommand = <T,>(command: string, args?: Record<string, unknown>) => i
 // Browser-preview QA only (never set in the desktop app): design captures seed sample OBS
 // listings, because the preview cannot reach Tauri. See ObsCatalogStore.seedPreview.
 declare global {
-  interface Window { __oshObsCatalogSeed?: (names: ObsCatalogNames) => void }
+  interface Window {
+    __oshObsCatalogSeed?: (names: ObsCatalogNames) => void;
+    __oshKeyArtworkSeed?: (control: number, artwork: KeyArtwork) => void;
+  }
 }
 function webStorage(): Storage | null {
   try { return localStorage; } catch { return null; }
@@ -155,8 +159,11 @@ export default function App() {
     if (!desktop && import.meta.env.DEV) {
       exposePreviewSeeding(obsCatalog);
       window.__oshObsCatalogSeed = seedPreviewCatalog;
+      // Key artwork captures likewise: a saved design cannot be applied in the
+      // browser, so seeding one exercises the reopen path directly.
+      window.__oshKeyArtworkSeed = (control, artwork) => session.edit(setKeyArtwork(session.getState().draft.profile, ['root'], control, artwork));
     }
-  }, [obsCatalog]);
+  }, [session, obsCatalog]);
 
   // Write any pending crash-recovery copy before the page goes away.
   useEffect(() => {

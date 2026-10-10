@@ -190,6 +190,9 @@ pub fn prepare_key_artwork(
             })
             .collect(),
         loop_count: prepared.loop_count,
+        // Prepared images carry no studio design; the editor attaches one for
+        // designs so reopening restores them (an upload clears it).
+        design: None,
     };
     // The same check a saved profile gets, so the editor never holds artwork
     // that the profile would then refuse.
@@ -482,7 +485,7 @@ mod tests {
     fn keypad_artwork_is_lowered_to_fit_the_frame_budget() {
         let noisy = RgbImage::from_fn(256, 256, |x, y| {
             Rgb([
-                (x * 37 ^ y * 11) as u8,
+                ((x * 37) ^ (y * 11)) as u8,
                 (y * 91 + x * 7) as u8,
                 (x * y % 251) as u8,
             ])

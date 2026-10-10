@@ -4,8 +4,8 @@ import { dataUrl, formatHexColour, parseHexColour, readSourceFile } from './artw
 import { keyArtworkFrame, setKeyArtwork } from './key-artwork';
 import {
   appIconPrefix, buildKeyArtworkDesignRequest, designTextIssue, initialKeyArtworkDesign, isAppIconId,
-  keyCanvasSize, keyTextAlignLabels, keyTextAligns, keyTextSizes, keyDesignLayout,
-  readRecentKeyIcons, recordRecentKeyIcon, searchKeyIcons, suggestedIconIds,
+  keyCanvasSize, keyDesignFromSpec, keyTextAlignLabels, keyTextAligns, keyTextSizes, keyDesignLayout,
+  readRecentKeyIcons, recordRecentKeyIcon, searchKeyIcons, storedKeyArtworkDesign, suggestedIconIds,
 } from './key-artwork-design';
 import type { DesignStorage, KeyArtworkDesign, KeyTextMeasure } from './key-artwork-design';
 import { keyIconById } from './key-icons';
@@ -211,15 +211,20 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   /** The key's current label, offered as the starting point for the label text. */
   initialText?: string; disabled: boolean; invoke?: Invoke;
 }) {
-  const [design, setDesign] = useState<KeyArtworkDesign>(() => initialKeyArtworkDesign(action, initialText ?? ''));
-  // Until the user touches the studio, the design follows the key: an action
-  // assigned after selection (the editor does not remount for ordinary edits)
-  // still preselects its suggestion, and a renamed label updates the text.
+  // A key with a saved design reopens the studio with it; without one the
+  // studio starts from the key's label and the action's suggestion.
+  const [design, setDesign] = useState<KeyArtworkDesign>(() =>
+    keyDesignFromSpec(artwork?.design, action) ?? initialKeyArtworkDesign(action, initialText ?? ''));
+  // Until the user touches the studio, a key without a saved design follows
+  // the key: an action assigned after selection (the editor does not remount
+  // for ordinary edits) still preselects its suggestion, and a renamed label
+  // updates the text. A saved design is sticky — it survives label and action
+  // edits, and removing the artwork returns the studio to the fresh state.
   const touched = useRef(false);
   const editDesign = (next: KeyArtworkDesign) => { touched.current = true; setDesign(next); };
   useEffect(() => {
-    if (!touched.current) setDesign(initialKeyArtworkDesign(action, initialText ?? ''));
-  }, [action, initialText]);
+    if (!touched.current && !artwork?.design) setDesign(initialKeyArtworkDesign(action, initialText ?? ''));
+  }, [action, initialText, artwork]);
   const [query, setQuery] = useState('');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [recents, setRecents] = useState(() => readRecentKeyIcons(keyDesignStorage));
@@ -263,6 +268,8 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
         setError('The profile changed while preparing artwork. Choose the file again.'); return;
       }
+      // The prepared artwork carries no design, so an upload clears a stored
+      // one: the file, not the studio, is now what the key shows.
       session.edit(setKeyArtwork(current.draft.profile, path, control, prepared));
     } catch (reason) { if (id === requestId.current) setError(errorMessage(reason)); }
     finally { if (id === requestId.current) setBusy(false); }
@@ -281,7 +288,9 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
         setError('The profile changed while preparing artwork. Apply again.'); return;
       }
-      session.edit(setKeyArtwork(current.draft.profile, path, control, prepared));
+      // Store the design beside the frames so reopening restores the studio.
+      // An uploaded file (choose) prepares design-less artwork, which clears it.
+      session.edit(setKeyArtwork(current.draft.profile, path, control, { ...prepared, design: storedKeyArtworkDesign(design) }));
       if (design.iconId) {
         recordRecentKeyIcon(keyDesignStorage, design.iconId);
         setRecents(readRecentKeyIcons(keyDesignStorage));

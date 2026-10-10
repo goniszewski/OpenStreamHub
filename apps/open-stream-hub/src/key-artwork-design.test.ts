@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { BindingAction } from './contracts';
 import {
   appIconId, buildKeyArtworkDesignRequest, defaultKeyArtworkDesign, designTextIssue, isAppIconId,
-  keyDesignLayout, keyTextMaxLines, keyTextSizes, readRecentKeyIcons,
-  recentKeyIconsLimit, recordRecentKeyIcon, searchKeyIcons, suggestedIconIds, wrapKeyText,
+  keyDesignFromSpec, keyDesignLayout, keyTextMaxLines, keyTextSizes, readRecentKeyIcons,
+  recentKeyIconsLimit, recordRecentKeyIcon, searchKeyIcons, storedKeyArtworkDesign, suggestedIconIds, wrapKeyText,
 } from './key-artwork-design';
 import type { KeyArtworkDesign } from './key-artwork-design';
+import type { KeyArtworkDesignSpec } from './contracts';
 import { keyIcons } from './key-icons';
 import { FakeStorage } from './fake-storage';
 
@@ -122,6 +123,56 @@ describe('prepared-image requests', () => {
     }
     expect(buildKeyArtworkDesignRequest(design({ background: 'nope' }), 'QUJD')).toMatchObject({ ok: false });
     expect(buildKeyArtworkDesignRequest(design(), '').ok).toBe(false);
+  });
+});
+
+describe('stored designs', () => {
+  const spec: KeyArtworkDesignSpec = {
+    icon_id: 'volume-2', text: 'Mute', text_size: 2, align: 'top',
+    text_colour: '#ff8000', icon_colour: '0af', background: '#123456',
+  };
+  const designed: KeyArtworkDesign = {
+    ...defaultKeyArtworkDesign, iconId: 'volume-2', text: 'Mute', textSize: 2, align: 'top',
+    textColour: '#ff8000', iconColour: '0af', background: '#123456',
+  };
+
+  it('stores a design as the wire shape and reopens it unchanged', () => {
+    expect(storedKeyArtworkDesign(designed)).toEqual(spec);
+    expect(keyDesignFromSpec(spec)).toEqual(designed);
+    // A design that reopens losslessly prepares the same request again.
+    const first = buildKeyArtworkDesignRequest(designed, 'QUJD');
+    const again = buildKeyArtworkDesignRequest(keyDesignFromSpec(spec)!, 'QUJD');
+    expect(again).toEqual(first);
+  });
+
+  it('reopens text-only designs with a null or absent icon id', () => {
+    const textOnly: KeyArtworkDesign = { ...defaultKeyArtworkDesign, text: 'Mic' };
+    expect(keyDesignFromSpec(storedKeyArtworkDesign(textOnly))).toEqual(textOnly);
+    // The backend omits a null icon id entirely when it rewrites the profile.
+    expect(keyDesignFromSpec({ ...storedKeyArtworkDesign(textOnly), icon_id: undefined })).toEqual(textOnly);
+    expect(keyDesignFromSpec(undefined)).toBeNull();
+  });
+
+  it('degrades an icon id that no longer resolves and keeps the rest', () => {
+    // A renamed catalog entry falls back to the action's default suggestion.
+    const mute = keyDesignFromSpec({ ...spec, icon_id: 'renamed-away' }, { type: 'toggle_mute' })!;
+    expect(mute.iconId).toBe('volume-x');
+    expect(mute.text).toBe('Mute');
+    expect(mute.background).toBe('#123456');
+    // Without a fitting suggestion the icon clears instead of erroring.
+    expect(keyDesignFromSpec({ ...spec, icon_id: 'renamed-away' })!.iconId).toBeNull();
+    // An app icon survives only while the same launch_app action is bound.
+    const finder = appIconId('com.apple.finder');
+    expect(keyDesignFromSpec({ ...spec, icon_id: finder }, { type: 'launch_app', bundle_id: 'com.apple.finder' })!.iconId).toBe(finder);
+    expect(keyDesignFromSpec({ ...spec, icon_id: finder }, { type: 'launch_app', bundle_id: 'com.apple.other' })!.iconId).toBe('app-window');
+  });
+
+  it('falls back to defaults for fields the stored form cannot shape', () => {
+    expect(keyDesignFromSpec({
+      icon_id: 'play', text: 'ok\u0000', text_size: 9, align: 'diagonal' as KeyArtworkDesignSpec['align'],
+      text_colour: 'zz', icon_colour: '', background: '#102030',
+    })).toEqual({ ...defaultKeyArtworkDesign, iconId: 'play', background: '#102030' });
+    expect(keyDesignFromSpec({ ...spec, text_size: 1.5 })!.textSize).toBe(defaultKeyArtworkDesign.textSize);
   });
 });
 

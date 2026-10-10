@@ -445,6 +445,7 @@ pub(crate) mod tests {
                 })
                 .collect(),
             loop_count,
+            design: None,
         }
     }
 

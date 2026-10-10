@@ -3,7 +3,7 @@
 // same backend command as uploaded images (prepare_key_artwork), so what the
 // editor shows is the same JPEG the key receives. Nothing here talks to a
 // device or the network.
-import type { BindingAction } from './contracts';
+import type { BindingAction, KeyArtworkDesignSpec } from './contracts';
 import { parseHexColour, type PrepareRequest } from './artwork-model';
 import { keyIconById } from './key-icons';
 
@@ -55,6 +55,45 @@ export const defaultKeyArtworkDesign: KeyArtworkDesign = {
     first, so it is offered as a chip instead of preselected). */
 export function initialKeyArtworkDesign(action?: BindingAction | null, label = ''): KeyArtworkDesign {
   return { ...defaultKeyArtworkDesign, text: label, iconId: suggestedIconIds(action).find(id => !isAppIconId(id)) ?? null };
+}
+
+/** The stored form of a design, written beside the prepared frames when a
+    design is applied. Colours are stored exactly as typed; applying is gated
+    on valid hex. */
+export function storedKeyArtworkDesign(design: KeyArtworkDesign): KeyArtworkDesignSpec {
+  return {
+    icon_id: design.iconId, text: design.text, text_size: design.textSize, align: design.align,
+    text_colour: design.textColour, icon_colour: design.iconColour, background: design.background,
+  };
+}
+
+/** Whether a stored icon id still names a bundled catalog entry or the bound
+    application. A renamed entry or a different app degrades to the default
+    suggestion instead of erroring. */
+function storedIconResolves(iconId: string, action?: BindingAction | null): boolean {
+  return keyIconById.has(iconId)
+    || (isAppIconId(iconId) && action?.type === 'launch_app' && action.bundle_id === iconId.slice(appIconPrefix.length));
+}
+
+/** The studio design a saved artwork reopens with, or null when the artwork
+    carries no design (an uploaded image). The backend validates the stored
+    form, so a field that still cannot shape itself falls back to its default. */
+export function keyDesignFromSpec(spec: KeyArtworkDesignSpec | undefined, action?: BindingAction | null): KeyArtworkDesign | null {
+  if (!spec) return null;
+  let iconId = spec.icon_id ?? null;
+  if (iconId !== null && !storedIconResolves(iconId, action)) {
+    iconId = suggestedIconIds(action).find(id => !isAppIconId(id)) ?? null;
+  }
+  const size = spec.text_size;
+  return {
+    iconId,
+    text: designTextIssue(spec.text) === null ? spec.text : defaultKeyArtworkDesign.text,
+    textSize: Number.isInteger(size) && size >= 0 && size < keyTextSizes.length ? size as KeyArtworkDesign['textSize'] : defaultKeyArtworkDesign.textSize,
+    align: (keyTextAligns as readonly string[]).includes(spec.align) ? spec.align : defaultKeyArtworkDesign.align,
+    textColour: parseHexColour(spec.text_colour) !== null ? spec.text_colour : defaultKeyArtworkDesign.textColour,
+    iconColour: parseHexColour(spec.icon_colour) !== null ? spec.icon_colour : defaultKeyArtworkDesign.iconColour,
+    background: parseHexColour(spec.background) !== null ? spec.background : defaultKeyArtworkDesign.background,
+  };
 }
 
 // Geometry of the 72×72 key: content padding, the icon/text gap and the largest

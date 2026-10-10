@@ -154,6 +154,10 @@ Contributions are welcome. Keep changes focused, add relevant tests and document
 
 OpenStreamHub builds on [CoolTEK SDK by projectzero7](https://github.com/projectzero7/cooltek-sdk). Thanks to the original author and contributors for the foundation. This independently maintained project preserves that history and licensing while developing its own MasterHUB app and macOS support.
 
+## Generative AI disclosure
+
+Generative AI tools were used during reverse engineering, development and testing of this project. Treat their output as unverified unless the project's tests or its [hardware results](docs/masterhub-hardware-results.md) say otherwise.
+
 ## License
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option. Unless explicitly stated otherwise, contributions are provided under the same terms.

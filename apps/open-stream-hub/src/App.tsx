@@ -20,7 +20,7 @@ import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStart
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Info, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
 import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
@@ -28,7 +28,7 @@ import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
-import { CompatibilityPage, SettingsPage } from './InfoPages';
+import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
@@ -330,7 +330,7 @@ export default function App() {
           <button className={page === 'lighting' ? 'active' : ''} aria-current={page === 'lighting' ? 'page' : undefined} title="Dial backlight and colour" onClick={() => setPage('lighting')}><Lightbulb size={22} />Lighting</button>
           <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
         </nav>
-        <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
+        <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`help-link ${page === 'about' ? 'active' : ''}`} aria-current={page === 'about' ? 'page' : undefined} onClick={() => setPage('about')}><Info size={22} />About</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
       </aside>
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and sample tests run in the native app.</span></div></div>}
@@ -355,6 +355,7 @@ export default function App() {
         {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
         {page === 'lighting' && <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} feed={feed} runner={runner} storage={webStorage()} />}
         {page === 'compatibility' && <CompatibilityPage />}
+        {page === 'about' && <AboutPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>

@@ -103,9 +103,11 @@ const editing: StarterTemplate = {
 
 export const starters: StarterTemplate[] = [macBasics, streaming, editing];
 
-// The modules a starter sets up: every module with a flat binding, plus the
-// 15-key module when its keypad page holds any tile.
-export function starterModules(profile: Profile): ServiceModule[] {
+// The modules a profile sets up: every module with a flat binding, plus the
+// 15-key module when its keypad page holds any tile. Used both for the
+// shipped starters and for the open profile, which decides whether a freshly
+// connected module is offered a starter at all.
+export function profileModules(profile: Profile): ServiceModule[] {
   const found = new Set<ServiceModule>(profile.bindings.map(binding => binding.module));
   if (profile.keypad?.pages.some(page => page.slots.some(slot => slot !== null))) found.add('m4315');
   return [...found];
@@ -114,16 +116,18 @@ export function starterModules(profile: Profile): ServiceModule[] {
 // The starters offered for a freshly connected module: only ones that set it
 // up, so a fader prompt never offers a starter without fader bindings.
 export function startersForModule(module: ServiceModule): StarterTemplate[] {
-  return starters.filter(item => starterModules(item.profile).includes(module));
+  return starters.filter(item => profileModules(item.profile).includes(module));
 }
 
 // The module to offer starters for after an inventory change, or null. The
 // first snapshot is the baseline: modules connected at launch are not asked
-// about, and neither are removals or swaps without an addition.
-export function nextModulePrompt(previous: LiveDevice[] | null, next: LiveDevice[]): ServiceModule | null {
+// about, and neither are removals or swaps without an addition. `skip`
+// leaves out modules that should not be asked — one the open profile already
+// covers, or one dismissed for this session.
+export function nextModulePrompt(previous: LiveDevice[] | null, next: LiveDevice[], skip: (module: ServiceModule) => boolean = () => false): ServiceModule | null {
   if (previous === null) return null;
   const { added } = diffDevices(previous, next);
-  return added.length ? added[0].module : null;
+  return added.find(device => !skip(device.module))?.module ?? null;
 }
 
 // The first-run chooser opens once, when storage is fresh and empty. Like the

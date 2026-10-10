@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action, LiveDevice, Profile } from './contracts';
 import { labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
-import { markStartersOffered, nextModulePrompt, shouldOfferStarters, starterIssue, starterModules, starters, startersForModule, startersStorageKey } from './starter-model';
+import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, startersForModule, startersStorageKey } from './starter-model';
 import { controlCounts, gestures, modules } from './ui-model';
 
 const device = (path: string, module: LiveDevice['module']): LiveDevice => ({ path_hex: path, module, serial_number: null });
@@ -56,11 +56,11 @@ describe('shipped starters', () => {
     }
   });
   it('cover every module together, so a connected module is always offered something', () => {
-    const covered = new Set(starters.flatMap(item => starterModules(item.profile)));
+    const covered = new Set(starters.flatMap(item => profileModules(item.profile)));
     expect([...covered].sort()).toEqual(modules.map(item => item.id).sort());
   });
   it('derive their covered modules from the bindings and the keypad tiles', () => {
-    expect(starterModules(starters[0].profile)).toEqual(['m003k', 'm131e', 'm005s', 'm032le', 'm4315']);
+    expect(profileModules(starters[0].profile)).toEqual(['m003k', 'm131e', 'm005s', 'm032le', 'm4315']);
     expect(startersForModule('m032le')).toEqual([starters[0]]);
     expect(startersForModule('m4315')).toEqual(starters);
   });
@@ -79,6 +79,16 @@ describe('hot-plug prompt from a simulated inventory', () => {
     expect(nextModulePrompt(baseline, [device('aa', 'm4315'), device('bb2', 'm005s')])).toBe('m005s');
     // An unchanged inventory names nobody.
     expect(nextModulePrompt(baseline, [...baseline])).toBeNull();
+  });
+  it('skips modules the open profile covers or that were dismissed this session', () => {
+    const baseline = [device('aa', 'm4315')];
+    const skip = (module: string) => module === 'm003k' || module === 'm131e';
+    // The first addition is skipped, so the next one is offered.
+    expect(nextModulePrompt(baseline, [...baseline, device('bb', 'm003k'), device('cc', 'm131e')], skip)).toBeNull();
+    expect(nextModulePrompt(baseline, [...baseline, device('bb', 'm003k'), device('cc', 'm005s')], skip)).toBe('m005s');
+    // A replug of a skipped module stays quiet.
+    const after = [...baseline, device('bb', 'm003k')];
+    expect(nextModulePrompt(after, [device('aa', 'm4315')], skip)).toBeNull();
   });
 });
 

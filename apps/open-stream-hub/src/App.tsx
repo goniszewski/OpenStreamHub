@@ -16,7 +16,7 @@ import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, use
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
 import type { StarterEntry } from './StarterDialog';
-import { markStartersOffered, nextModulePrompt, shouldOfferStarters } from './starter-model';
+import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { AutoActionsIndicator } from './AutoActionsIndicator';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -183,15 +183,20 @@ export default function App() {
   // starter once per appearance. The snapshot itself is the baseline: modules
   // connected at launch are not asked about. While profile storage is still
   // opening, the snapshot is held back so the prompt is not raced by the
-  // bootstrap.
+  // bootstrap. Modules the open profile already uses are skipped (the user
+  // has that module set up), as are modules dismissed with "Not now" this
+  // session, so a flaky cable does not keep asking.
   const previousDevices = useRef<LiveDevice[] | null>(null);
+  const startersDismissed = useRef(new Set<ServiceModule>());
+  const draftProfile = state.draft.profile;
   useEffect(() => {
     if (!deviceFeedState.inventoryLoaded || !state.ready) return;
     const previous = previousDevices.current;
     previousDevices.current = deviceFeedState.devices;
-    const module = nextModulePrompt(previous, deviceFeedState.devices);
+    const module = nextModulePrompt(previous, deviceFeedState.devices,
+      module => startersDismissed.current.has(module) || profileModules(draftProfile).includes(module));
     if (module !== null) setStarter(current => current ?? { entry: 'module', module });
-  }, [deviceFeedState.inventoryLoaded, deviceFeedState.devices, state.ready]);
+  }, [deviceFeedState.inventoryLoaded, deviceFeedState.devices, state.ready, draftProfile]);
   // Browser-preview QA hook (dev only): the preview cannot reach Tauri, so design captures seed
   // sample OBS listings through window.__oshObsCatalogSeed. The effect, not the store
   // initializer, points the hook at the store that is actually mounted (StrictMode safe).
@@ -368,7 +373,10 @@ export default function App() {
           });
         });
       }}
-      onClose={() => setStarter(null)}
+      onClose={() => {
+        if (starter?.entry === 'module' && starter.module) startersDismissed.current.add(starter.module);
+        setStarter(null);
+      }}
       onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>

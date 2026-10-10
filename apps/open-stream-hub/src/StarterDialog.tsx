@@ -1,6 +1,6 @@
 import type { Profile, ServiceModule } from './contracts';
 import { ModalDialog } from './controls';
-import { starterModules, starters, startersForModule } from './starter-model';
+import { profileModules, starters, startersForModule } from './starter-model';
 import { modules } from './ui-model';
 
 export type StarterEntry = 'first-run' | 'manager' | 'module';
@@ -36,7 +36,7 @@ export function StarterDialog({ open, entry, module, onPick, onClose, onGuide }:
       {offered.map(item => <button key={item.id} type="button" className="starter-card" data-starter={item.id} onClick={() => onPick(item.profile)}>
         <strong>{item.name}</strong>
         <span>{item.description}</span>
-        <small>Sets up: {starterModules(item.profile).map(id => modules.find(candidate => candidate.id === id)?.shortName ?? id).join(', ')}</small>
+        <small>Sets up: {profileModules(item.profile).map(id => modules.find(candidate => candidate.id === id)?.shortName ?? id).join(', ')}</small>
       </button>)}
     </div>
     <p className="fine-print">Starters hold nothing that types into apps, opens programs or web pages. A run starts as a dry run that only logs what would happen; executing actions always asks for confirmation first.</p>

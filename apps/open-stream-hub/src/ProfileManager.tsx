@@ -4,7 +4,7 @@ import type { ProfileSummary, ReplayKind } from './contracts';
 import { LabelError, SelectField } from './controls';
 import { isUnsaved } from './profile-session';
 import type { ProfileSession, ReplaySession, SessionState } from './profile-session';
-import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels, versionTimeLabel } from './ui-model';
+import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels, versionSummary, versionTimeLabel } from './ui-model';
 import type { ConfirmRequest } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { FocusRulesPanel } from './FocusRulesPanel';
@@ -93,18 +93,20 @@ export function SampleTestPanel({ session, state, disabled, replayKind, setRepla
 export function VersionHistory({ session, state, disabled, now }: { session: ProfileSession; state: SessionState; disabled: boolean; now: number }) {
   const { profileId } = state.draft;
   const listed = profileId !== null && state.versionsId === profileId ? state.versions : null;
+  // What the versions are compared with: the saved profile, not the unsaved draft on top of it.
+  const saved = state.profiles.find(item => item.id === profileId);
   const toggle = (event: { currentTarget: { open: boolean } }) => {
     if (event.currentTarget.open && profileId && !disabled) void session.loadVersions(profileId);
   };
   return <details className="panel version-history" data-testid="version-history" onToggle={toggle}>
     <summary><History size={17} />Earlier versions</summary>
-    <p className="fine-print">Each time this profile is saved — by you or automatically — the previous version is kept here. Restoring makes the profile exactly as it was at that moment; the version being replaced is kept in this list first.</p>
+    <p className="fine-print">When this profile is saved — by you or automatically — the version it replaces is kept here, at most one every few minutes while you edit, so the list reaches back past a burst of edits. The first save after the app starts always keeps one. Restoring makes the profile exactly as it was at that moment; the version being replaced is kept in this list first, so a restore can be undone by restoring it back. Only the newest versions are kept, within a size limit.</p>
     {state.versionsError && <p className="fine-print" role="alert">{state.versionsError}</p>}
     {listed === null && !state.versionsError && <p className="fine-print" role="status">Open this list to load the kept versions.</p>}
     {listed && listed.length === 0 && <p className="fine-print" role="status">No earlier versions yet. They are kept from now on, each time the profile is saved.</p>}
     {listed && listed.length > 0 && <ul className="version-list">
       {listed.map(version => <li key={version.modified_at_ms}>
-        <span>Saved at {versionTimeLabel(version.modified_at_ms, now)}</span>
+        <span>Saved at {versionTimeLabel(version.modified_at_ms, now)}<small>{versionSummary(version, { name: saved?.name ?? state.draft.profile.name, bindingCount: saved?.binding_count ?? state.draft.profile.bindings.length })}</small></span>
         <button className="button compact" disabled={disabled} onClick={() => { void session.restoreVersion(version.modified_at_ms); }}>Restore</button>
       </li>)}
     </ul>}

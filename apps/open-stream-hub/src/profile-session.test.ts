@@ -374,7 +374,7 @@ describe('earlier versions', () => {
     load.resolve({ id: 'a', modified_at_ms: 500, profile: upgradeKeypadProfile({ schema_version: 1, name: 'Earlier', bindings: [] }) });
     await Promise.resolve();
     const save = take('save_profile');
-    expect(save.args).toEqual({ request: expect.objectContaining({ id: 'a', expectedModifiedAtMs: 1234, sourceProfileId: 'a' }) });
+    expect(save.args).toEqual({ request: expect.objectContaining({ id: 'a', expectedModifiedAtMs: 1234, sourceProfileId: 'a', keepVersion: true }) });
     save.resolve(stored('a', 'Earlier', 3000));
     await Promise.resolve(); await new Promise(resolve => setTimeout(resolve, 0));
     take('list_profiles').resolve(listing(stored('a', 'Earlier')));

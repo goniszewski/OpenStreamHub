@@ -66,11 +66,12 @@ describe('error boundary', () => {
 describe('earlier versions panel', () => {
   it('lists the kept versions with restore buttons once loaded', () => {
     const { session } = recordedSession();
-    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 1_700_000_000_000 }], versionsId: 'a', versionsError: null };
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 1_700_000_000_000, name: 'Everyday', binding_count: 6 }], versionsId: 'a', versionsError: null };
     const markup = renderToStaticMarkup(<VersionHistory session={session} state={state} disabled={false} now={1_700_000_100_000} />);
     expect(markup).toContain('Earlier versions');
     expect(markup).toContain('Saved at');
     expect(markup).toContain('>Restore</button>');
+    expect(markup).toMatch(/6 bindings \([^)]*than now\)|6 bindings \(same as now\)/);
     // Closed by default; nothing fetched during render.
     expect(markup).toContain('<details class="panel version-history"');
   });
@@ -90,7 +91,7 @@ describe('earlier versions panel', () => {
     const boot = session.bootstrap();
     calls[0].resolve({ profile: { id: 'a', modified_at_ms: 1000, profile: upgradeKeypadProfile(browserProfile) }, profiles: [{ id: 'a', name: 'Everyday', binding_count: 4, modified_at_ms: 1000, dry_run_only: false }], unreadable: [], storage_path: '/s', desktop: true });
     await boot;
-    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 500 }], versionsId: 'a', versionsError: null };
+    const state = { ...session.getState(), draft: { ...session.getState().draft, profileId: 'a' }, versions: [{ modified_at_ms: 500, name: null, binding_count: null }], versionsId: 'a', versionsError: null };
     const panel = VersionHistory({ session, state, disabled: false, now: 1_000 });
     // Walk the returned element tree to the row's Restore handler.
     const list = panel.props.children.find((child: { props?: { className?: string } }) => child?.props?.className === 'version-list');
@@ -109,7 +110,7 @@ describe('earlier versions panel', () => {
     toggle({ currentTarget: { open: true } });
     expect(calls.map(call => call.command)).toEqual(['profile_versions']);
     // Opening again asks again, so versions kept while it was closed appear.
-    const listed = { ...state, versions: [{ modified_at_ms: 1 }], versionsId: 'a' };
+    const listed = { ...state, versions: [{ modified_at_ms: 1, name: null, binding_count: null }], versionsId: 'a' };
     VersionHistory({ session, state: listed, disabled: false, now: 0 }).props.onToggle({ currentTarget: { open: true } });
     expect(calls).toHaveLength(2);
     // Closing does not fetch.

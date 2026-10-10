@@ -512,14 +512,14 @@ export class ProfileSession {
 
   // Puts one earlier version back: it is loaded from the version history and
   // then saved as the profile, so the current version is kept first (as a new
-  // history entry) and a change on disk since loading still refuses.
+  // history entry, whatever the spacing between kept versions) and a change on disk since loading still refuses.
   async restoreVersion(modifiedAtMs: number) {
     const { profileId, modifiedAtMs: loadedAt, sourceId } = this.state.draft;
     if (!profileId || !this.state.ready || this.state.busy !== null) return;
     this.set({ busy: 'Restoring version', error: null, notice: null });
     try {
       const version = await this.invoke<StoredProfile>('load_profile_version', { id: profileId, modifiedAtMs });
-      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: version.profile, expectedModifiedAtMs: loadedAt, sourceProfileId: sourceId ?? null } });
+      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: profileId, profile: version.profile, expectedModifiedAtMs: loadedAt, sourceProfileId: sourceId ?? null, keepVersion: true } });
       const tail = await this.savedRunTail(stored.id);
       this.set({ ...this.adopt(stored), draftGeneration: this.state.draftGeneration, validation: 'valid', versions: null, versionsId: null, notice: `Restored the version from ${versionTimeLabel(version.modified_at_ms, this.now())}.${tail ?? ''}` });
       await this.refreshAfterChange('Version restored');

@@ -205,6 +205,7 @@ impl AppState {
             profile,
             expected_modified_at_ms,
             source_profile_id,
+            keep_version,
         } = request;
         self.with_store(|store| {
             let hash = import_flags::content_hash(&profile);
@@ -246,7 +247,7 @@ impl AppState {
                                 .is_some_and(|hash| records.flagged_hashes.contains_key(hash))
                     });
             if !flagged {
-                return store.save(id.as_deref(), profile, expected_modified_at_ms);
+                return store.save_with(id.as_deref(), profile, expected_modified_at_ms, keep_version);
             }
             let target = match &id {
                 Some(id) => {
@@ -270,7 +271,7 @@ impl AppState {
                 Ok(())
             })?;
             let saved = match id {
-                Some(id) => store.save(Some(&id), profile, expected_modified_at_ms),
+                Some(id) => store.save_with(Some(&id), profile, expected_modified_at_ms, keep_version),
                 None => store.create(&target, profile),
             };
             // A save can fail after the file was replaced (the folder flush):
@@ -584,6 +585,10 @@ struct SaveProfileRequest {
     /// The saved profile the draft was opened from, also after edits.
     #[serde(default)]
     source_profile_id: Option<String>,
+    /// Keep the version this save replaces whatever the history spacing rule
+    /// says (restoring an earlier version asks for it).
+    #[serde(default)]
+    keep_version: bool,
 }
 
 /// `export_profile` arguments.
@@ -1751,6 +1756,7 @@ mod tests {
             profile: profile.clone(),
             expected_modified_at_ms: None,
             source_profile_id: source.map(str::to_owned),
+            keep_version: false,
         })
     }
 
@@ -2129,6 +2135,7 @@ mod tests {
                 profile: imported.profile.clone(),
                 expected_modified_at_ms: Some(other.modified_at_ms + 1),
                 source_profile_id: Some(other.id.clone()),
+                keep_version: false,
             })
             .unwrap_err();
         assert_eq!(error, store::CONFLICT_ERROR);

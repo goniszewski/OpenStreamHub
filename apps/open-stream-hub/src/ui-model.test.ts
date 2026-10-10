@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
-import { editBinding, readAppearance } from './ui-model';
+import { editBinding, readAppearance, versionSummary } from './ui-model';
 
 const profile: Profile = {
   schema_version: 1, name: 'Selectors', bindings: [
@@ -44,5 +44,18 @@ describe('appearance preference migration', () => {
 
   it('keeps an explicitly chosen system appearance instead of restoring the old dark preference', () => {
     expect(readAppearance(preferences({ 'masterhub.appearance': 'dark', 'open-stream-hub.appearance': 'system' }))).toBe('system');
+  });
+});
+
+describe('versionSummary', () => {
+  const current = { name: 'Everyday', bindingCount: 8 };
+  it('says how the kept version compares with the saved profile', () => {
+    expect(versionSummary({ name: 'Everyday', binding_count: 8 }, current)).toBe('8 bindings (same as now)');
+    expect(versionSummary({ name: 'Everyday', binding_count: 10 }, current)).toBe('10 bindings (2 more than now)');
+    expect(versionSummary({ name: 'Everyday', binding_count: 1 }, current)).toBe('1 binding (7 fewer than now)');
+  });
+  it('names the version when its name differs, and says when it cannot be read', () => {
+    expect(versionSummary({ name: 'Old name', binding_count: 8 }, current)).toBe('“Old name” · 8 bindings (same as now)');
+    expect(versionSummary({ name: null, binding_count: null }, current)).toBe('Cannot be read as a profile');
   });
 });

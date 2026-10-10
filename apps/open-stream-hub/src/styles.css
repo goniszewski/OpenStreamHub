@@ -561,6 +561,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .version-list { list-style:none; margin:12px 0 0; padding:0; }
 .version-list li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; }
 .version-list li:first-child { border-top:0; padding-top:0; }
+.version-list li small { display:block; margin-top:2px; color:var(--muted); font-size:12px; }
 
 /* Lighting page (first phase): dial backlight and colour, applied live. */
 .lighting-page { max-width:720px; }

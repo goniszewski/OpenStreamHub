@@ -50,6 +50,18 @@ export function versionTimeLabel(modifiedAtMs: number, now = Date.now()): string
   return `${day} ${month}, ${time(saved)}`;
 }
 
+// What a kept earlier version holds, against the open profile: its binding count with the difference, and its name when that
+// differs ("12 bindings (2 more than now)", "Everyday · 9 bindings (same as now)"). A file that cannot be read says so.
+export function versionSummary(version: { name: string | null; binding_count: number | null }, current: { name: string; bindingCount: number }): string {
+  if (version.binding_count === null) return 'Cannot be read as a profile';
+  const count = version.binding_count;
+  const plural = (value: number) => `${value} ${value === 1 ? 'binding' : 'bindings'}`;
+  const gap = count - current.bindingCount;
+  const against = gap === 0 ? 'same as now' : `${Math.abs(gap)} ${gap > 0 ? 'more' : 'fewer'} than now`;
+  const named = version.name !== null && version.name !== current.name ? `“${version.name}” · ` : '';
+  return `${named}${plural(count)} (${against})`;
+}
+
 export const modules: { id: ModuleId; name: string; shortName: string; art: string; supported: boolean; input: string }[] = [
   { id: 'm131e', name: 'Encoder with IPS Display', shortName: 'Encoder IPS display', art: 'encoder', supported: true, input: 'Rotate · Press · Release' },
   { id: 'm4315', name: '15x Key IPS Display', shortName: '15-key IPS display', art: 'keys', supported: true, input: 'Press · Release' },

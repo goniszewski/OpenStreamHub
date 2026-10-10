@@ -20,6 +20,7 @@ The following maps the read-only macOS `ioreg` location IDs to the user's report
 | Module | `locationID` path | Reported base position | Product footprint |
 | --- | --- | --- | --- |
 | M4315 15-key | `1.1.2.2` | Top-left | 4x3 |
+| M4315 15-key, second arrangement (10 October 2026) | `1.1.2.3` | Bottom-left, with the rollers above it | 4x3 |
 | M032LE 2x roller | `1.1.1.1.4` | Bottom-left, below the keypad | 4x1 |
 | M131E dial | `1.1.1.4.3` | Top-right | 2x2 |
 | M003K knobs | `1.1.1.3.4` | Bottom-right, below the dial | 2x2 |

@@ -44,4 +44,10 @@ describe('the restore rule', () => {
     expect(restoreNeedsConfirm(wereExecuting, [{ serviceId: 's1' }, { serviceId: 'new' }])).toBe(true);
     expect(restoreNeedsConfirm(new Set(), [{ serviceId: 'new' }])).toBe(true);
   });
+  it('never asks for a hold that arrived from storage, which saw nothing execute here', () => {
+    // The launch after a quit or crash mid-edit: the stored Live goes back
+    // whatever is running dry — this session has no snapshot to argue with.
+    expect(restoreNeedsConfirm(null, [])).toBe(false);
+    expect(restoreNeedsConfirm(null, [{ serviceId: 'any' }])).toBe(false);
+  });
 });

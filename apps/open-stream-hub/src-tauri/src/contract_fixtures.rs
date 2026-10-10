@@ -707,8 +707,17 @@ fn display_settings_payloads_match_the_shared_fixture() {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: display::RunMode::Live,
         live_offered: true,
+        held_from: None,
     };
     let args = json!({ "settings": chosen });
+    // The editing hold stored beside the mode ("Switch to Test mode while
+    // editing"), so the frontend pins the exact field name and values.
+    let held = DisplaySettings {
+        module_control: ModuleControl::App,
+        run_mode: display::RunMode::Test,
+        live_offered: true,
+        held_from: Some(display::RunMode::Live),
+    };
     // `set_display_settings` arguments as the frontend sends them parse back.
     let parsed: DisplaySettings = serde_json::from_value(args["settings"].clone()).unwrap();
     assert_eq!(parsed, chosen);
@@ -718,6 +727,7 @@ fn display_settings_payloads_match_the_shared_fixture() {
             "display_settings_default": DisplaySettings::default(),
             "set_display_settings_args": args,
             "set_display_settings_result": chosen,
+            "held_settings": held,
             "dial_contents": DialDisplayContent::ALL,
             // The profile's dial display setting as Rust serializes it, so the
             // frontend pins the exact field names (image beside image content).

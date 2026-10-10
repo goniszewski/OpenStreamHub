@@ -36,6 +36,10 @@ describe('display settings contract', () => {
     expect(fixture.display_settings_default.live_offered).toBe(false);
     expect(fixture.set_display_settings_result.run_mode).toBe('live');
     expect(fixture.set_display_settings_result.live_offered).toBe(true);
+    // The editing hold's stored shape: the held Test names the Live to restore.
+    expect(fixture.held_settings).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' });
+    // Without a hold the marker is absent, never null.
+    expect(Object.keys(fixture.display_settings_default)).toHaveLength(3);
     expect(Object.keys(fixture.set_default_profile_args)).toEqual(['profileId']);
     expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(fixture.default_profile_none).toEqual({ profile_id: null });
@@ -58,6 +62,11 @@ describe('display settings contract', () => {
     expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes', live_offered: true })).toBe(false);
     expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live', live_offered: true })).toBe(false);
     expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: 'yes' })).toBe(false);
+    // The editing hold's marker: "live" beside the held Test, or absent.
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' })).toBe(true);
+    expect(isDisplaySettings(fixture.held_settings)).toBe(true);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'test' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: null })).toBe(false);
     // The earlier shapes (the toggle, the file with a global dial choice) are
     // migrated by Rust and never reach the frontend.
     for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test', live_offered: true }, { module_control: 'app', dial_content: 'clock', run_mode: 'test', live_offered: true }, { module_control: 'app', run_mode: 'test', live_offered: true, extra: 1 }, { module_control: 'app', auto_execute: true }]) {
@@ -161,36 +170,56 @@ describe('DisplaySettingsStore', () => {
   it('holds the mode for editing without answering the confirmation, and a switch ends the hold', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
     let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: true };
-    const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
+    const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
       return stored as T;
-    }, true);
+    };
+    const store = new DisplaySettingsStore(invoke, true);
     (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings: stored };
-    // The first edit holds Test over the user's Live and remembers what was
-    // executing (the runs the restore may return to Live in silence).
+    // The first edit holds Test over the user's Live, with the restore target
+    // stored beside it, and remembers what was executing (the runs the
+    // restore may return to Live in silence).
     expect(store.beginEditingHold(true, ['s1', 's2'])).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(store.editingHeld).toBe(true);
     expect(store.editingSnapshotRuns).toEqual(new Set(['s1', 's2']));
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' });
     // Already held, or the setting off, or the mode already Test: nothing.
     expect(store.beginEditingHold(true, [])).toBe(false);
     expect(store.beginEditingHold(false, [])).toBe(false);
     // A fresh install's owed confirmation is never answered by the hold.
-    const fresh = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
-      calls.push([command, args]);
-      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
-      return stored as T;
-    }, true);
+    const fresh = new DisplaySettingsStore(invoke, true);
     (fresh as unknown as { state: unknown }).state = { ...fresh.getState(), loaded: true, settings: { module_control: 'app', run_mode: 'live', live_offered: false } };
     fresh.beginEditingHold(true, []);
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: false });
-    // The user's own switch during the hold ends it: their choice stands.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: false, held_from: 'live' });
+    // A hold read back from storage (the launch after a quit or crash
+    // mid-edit) holds without any begin, with no snapshot: this session has
+    // seen nothing execute, so its restore never asks.
+    const held: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' };
+    const fromDisk = new DisplaySettingsStore(invoke, true);
+    (fromDisk as unknown as { state: unknown }).state = { ...fromDisk.getState(), loaded: true, settings: held };
+    expect(fromDisk.editingHeld).toBe(true);
+    expect(fromDisk.editingSnapshotRuns).toBeNull();
+    // Its first observation as editing seeds the snapshot, without a save.
+    expect(fromDisk.beginEditingHold(true, ['s9'])).toBe(false);
+    expect(fromDisk.editingSnapshotRuns).toEqual(new Set(['s9']));
+    expect(fromDisk.getState().settings).toEqual(held);
+    // Dropping the hold keeps the mode but stores the marker as absent.
+    expect(fromDisk.dropEditingHold()).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    expect(fromDisk.editingHeld).toBe(false);
+    // Dropping a hold that is not on does nothing.
+    expect(fromDisk.dropEditingHold()).toBe(false);
+    // The user's own switch during a hold ends it: the marker goes with the
+    // save, so nothing is restored underneath them later.
+    expect(store.editingHeld).toBe(true);
     await store.setRunMode('live');
     expect(store.editingHeld).toBe(false);
-    // Dropping a hold that is not on does nothing.
-    expect(store.dropEditingHold()).toBe(false);
-    expect(store.editingHeld).toBe(false);
+    expect(store.editingSnapshotRuns).toBeNull();
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true });
   });
   it('seeds the browser preview for captures and never the desktop app', () => {
     const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);

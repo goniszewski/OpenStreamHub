@@ -355,9 +355,10 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   // The one mode decides what a press does: the badge, the Run button and the
   // banners all read it. An imported profile not yet allowed keeps the badge
   // on Test for the open profile whatever the mode is, and the editing hold
-  // keeps it on "Test (editing)" for as long as the user edits.
+  // keeps it on "Test (editing)" for as long as the user edits — including
+  // at the launch after a quit or crash mid-edit, until the restore runs.
   const runMode: RunMode = display.settings.run_mode;
-  const editingHeld = display.heldByEditing;
+  const editingHeld = display.settings.held_from === 'live';
   const executeSelected = runMode === 'live' && !editingHeld && mac && !dryRunOnly;
   // The switch saves the mode; the backend applies it to every running
   // module. Test needs no confirmation. Live with running sessions that
@@ -387,8 +388,10 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   // own mode. Restoring asks through the same dialog as a manual switch only
   // when a dry run started during the hold would begin executing; the runs
   // the hold itself turned dry were running with actions before it, so the
-  // user's mode goes back to them in silence. Both saves keep live_offered
-  // as it is: the hold never answers the one-time confirmation.
+  // user's mode goes back to them in silence — as does the launch after a
+  // quit or crash mid-edit, which restores the stored Live without this
+  // session having seen anything execute. Both saves keep live_offered as it
+  // is: the hold never answers the one-time confirmation.
   const applyEditingHold = (editing: boolean, whileEditing: boolean) => {
     if (!displaySettings || !display.loaded) return;
     if (editing && whileEditing) {
@@ -397,9 +400,9 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     }
     const step = endEditingHold(displaySettings.editingHeld);
     if (!step.save) return;
-    displaySettings.dropEditingHold();
     const switching = Object.values(service.runs).filter(item => isActiveRun(item) && !item.execute && item.session);
-    if (!restoreNeedsConfirm(displaySettings.editingSnapshotRuns, switching)) { void displaySettings.setHeldMode(step.save); return; }
+    if (!restoreNeedsConfirm(displaySettings.editingSnapshotRuns, switching)) { void displaySettings.setHeldMode(step.save, null); return; }
+    displaySettings.dropEditingHold();
     askLive(switching);
   };
 

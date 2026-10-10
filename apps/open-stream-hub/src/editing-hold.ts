@@ -37,7 +37,10 @@ export function endEditingHold(held: boolean): EditingStep {
 // True when returning to Live at edit end must ask first: some dry run that
 // would start executing was not executing when the hold began (one started
 // during the hold, whose profile was never confirmed for Live), so the same
-// dialog as a manual switch to Live names it before anything runs.
-export function restoreNeedsConfirm(wereExecuting: ReadonlySet<string>, dryNow: readonly { serviceId: string }[]): boolean {
-  return dryNow.some(item => !wereExecuting.has(item.serviceId));
+// dialog as a manual switch to Live names it before anything runs. A null
+// snapshot is a hold restored from storage — the app quit or crashed mid-edit
+// and this session never saw anything execute — so the user's own stored Live
+// goes back in silence.
+export function restoreNeedsConfirm(wereExecuting: ReadonlySet<string> | null, dryNow: readonly { serviceId: string }[]): boolean {
+  return wereExecuting !== null && dryNow.some(item => !wereExecuting.has(item.serviceId));
 }

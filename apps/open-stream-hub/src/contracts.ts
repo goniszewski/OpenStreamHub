@@ -206,8 +206,10 @@ export type ModuleControl = 'app' | 'built_in_animation';
 // live_offered: whether the one-time what-will-run confirmation has been answered. False only on a fresh install, where
 // automatic sessions stay dry (auto_dry_run_reason says so) until the app confirms the mode; files from before the
 // field read as true, so existing users are never asked again.
+// held_from: set only while the editing hold ("Switch to Test mode while editing") has Test stored on the user's behalf,
+// naming the Live to restore when the editing ends — or at the next launch, when the app quit or crashed mid-edit.
 export type RunMode = 'live' | 'test';
-export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode; live_offered: boolean }
+export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode; live_offered: boolean; held_from?: 'live' }
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.

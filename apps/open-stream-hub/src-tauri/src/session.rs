@@ -4643,16 +4643,19 @@ mod tests {
         module_control: ModuleControl::App,
         run_mode: crate::display::RunMode::Test,
         live_offered: true,
+        held_from: None,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: crate::display::RunMode::Test,
         live_offered: true,
+        held_from: None,
     };
     const APP_CONTROL_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: crate::display::RunMode::Live,
         live_offered: true,
+        held_from: None,
     };
 
     fn launched(driver: &mut Driver<FakeRunner>, index: usize) -> Option<DisplayLaunch> {

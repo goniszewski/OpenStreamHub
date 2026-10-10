@@ -193,14 +193,18 @@ export default function App() {
   // "Switch to Test mode while editing": while a binding is being edited (an
   // open action picker, the bindings drawer, or unsaved changes) and the
   // setting is on, the mode is held to Test; ending the edit restores it.
+  // Once the settings load, a hold left over from a quit or crash mid-edit
+  // (the stored held_from marker) restores here too, since no editing is in
+  // progress — unless a restored draft makes editing true, and the hold
+  // simply continues.
   const pickerOpenCount = useSyncExternalStore(subscribeOpenPickers, readOpenPickers);
   const editing = isEditing({ unsavedChanges: unsaved, pickerOpen: pickerOpenCount > 0, drawerOpen: bindingsOpen });
   useEffect(() => {
     runSession.applyEditingHold(editing, testWhileEditing);
     // The hold reads the current stores through the hook's own closures; only
-    // the two inputs decide when it runs.
+    // the two inputs and the settings load decide when it runs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editing, testWhileEditing]);
+  }, [editing, testWhileEditing, display.loaded]);
   const connectedModules = deviceFeedState.devices.length;
   const deviceStatus = !desktop ? 'Browser preview'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'

@@ -116,6 +116,15 @@ pub struct DisplaySettings {
     /// new user's first presses never act silently. Files from before the
     /// field existed read as true: their user has seen the mode already.
     pub live_offered: bool,
+    /// Set only while the frontend's editing hold ("Switch to Test mode while
+    /// editing") has Test stored on the user's behalf: the Live it must
+    /// restore when the editing ends — or at the next launch, when the app
+    /// quit or crashed mid-edit and the hold never ended. The session manager
+    /// reads `run_mode` alone and never interprets this; absent (and written
+    /// as absent) whenever no hold is up, so files from before the field
+    /// existed and files written outside a hold are byte-identical either way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_from: Option<RunMode>,
 }
 
 impl DisplaySettings {
@@ -126,6 +135,7 @@ impl DisplaySettings {
         module_control: ModuleControl::Unreadable,
         run_mode: RunMode::Test,
         live_offered: true,
+        held_from: None,
     };
 }
 
@@ -153,6 +163,9 @@ struct CurrentSettings {
     /// used the switch already, so the one-time confirmation is not owed.
     #[serde(default = "live_offered_default")]
     live_offered: bool,
+    /// Missing unless the file was written while the editing hold was up.
+    #[serde(default)]
+    held_from: Option<RunMode>,
 }
 
 /// The field default for files that predate `live_offered`.
@@ -215,10 +228,12 @@ impl From<StoredSettings> for DisplaySettings {
                 module_control,
                 run_mode,
                 live_offered,
+                held_from,
             }) => Self {
                 module_control,
                 run_mode,
                 live_offered,
+                held_from,
             },
             StoredSettings::WithAutoExecute(WithAutoExecuteSettings {
                 module_control,
@@ -233,6 +248,7 @@ impl From<StoredSettings> for DisplaySettings {
                 run_mode: run_mode(auto_execute),
                 // Their user predates the one-time confirmation.
                 live_offered: true,
+                held_from: None,
             },
             StoredSettings::Legacy(LegacySettings { enabled, .. }) => Self {
                 module_control: if enabled {
@@ -242,6 +258,7 @@ impl From<StoredSettings> for DisplaySettings {
                 },
                 run_mode: RunMode::Test,
                 live_offered: true,
+                held_from: None,
             },
         }
     }
@@ -555,22 +572,26 @@ mod tests {
         module_control: ModuleControl::App,
         run_mode: RunMode::Test,
         live_offered: true,
+        held_from: None,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: RunMode::Test,
         live_offered: true,
+        held_from: None,
     };
     const APP_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: RunMode::Live,
         live_offered: true,
+        held_from: None,
     };
     /// A fresh install: Live, with the one-time confirmation still owed.
     const FRESH: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: RunMode::Live,
         live_offered: false,
+        held_from: None,
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
@@ -599,6 +620,7 @@ mod tests {
                 module_control: ModuleControl::App,
                 run_mode: RunMode::Test,
                 live_offered: true,
+                held_from: None,
             }
         );
         let parsed = parse(r#"{"module_control":"built_in_animation","run_mode":"live"}"#).unwrap();
@@ -608,6 +630,7 @@ mod tests {
                 module_control: ModuleControl::BuiltInAnimation,
                 run_mode: RunMode::Live,
                 live_offered: true,
+                held_from: None,
             }
         );
         // Files that already stored a run mode predate the confirmation.
@@ -617,6 +640,7 @@ mod tests {
                 module_control: ModuleControl::App,
                 run_mode: RunMode::Live,
                 live_offered: false,
+                held_from: None,
             }
         );
         // Always written in the current shape, confirmation included.
@@ -665,6 +689,7 @@ mod tests {
                 module_control: ModuleControl::BuiltInAnimation,
                 run_mode: RunMode::Live,
                 live_offered: true,
+                held_from: None,
             }
         );
         // Every earlier shape reads as offered: their user predates the
@@ -1256,6 +1281,57 @@ mod tests {
         std::fs::write(directory.path().join(FILE_NAME), b"{").unwrap();
         assert_eq!(state.for_new_session().run_mode, RunMode::Test);
         assert!(state.for_new_session().live_offered);
+    }
+
+    #[test]
+    fn the_editing_hold_is_stored_beside_the_mode_and_restores_as_absent() {
+        // The held shape: Test stored on the user's behalf, with the Live to
+        // restore beside it.
+        let held = parse(
+            r#"{"module_control":"app","run_mode":"test","live_offered":true,"held_from":"live"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            held,
+            DisplaySettings {
+                module_control: ModuleControl::App,
+                run_mode: RunMode::Test,
+                live_offered: true,
+                held_from: Some(RunMode::Live),
+            }
+        );
+        // Written back exactly as parsed, and the no-hold shape stays
+        // byte-identical to the shape before the field existed.
+        assert_eq!(
+            serde_json::to_value(held).unwrap(),
+            serde_json::json!({
+                "module_control": "app", "run_mode": "test",
+                "live_offered": true, "held_from": "live"
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(APP).unwrap(),
+            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true})
+        );
+        // Strict about the value.
+        assert!(parse(
+            r#"{"module_control":"app","run_mode":"test","live_offered":true,"held_from":"dry"}"#
+        )
+        .is_err());
+        // The hold survives a save and a reload, and restoring clears it.
+        let directory = tempfile::tempdir().unwrap();
+        let state = DisplayState::open(Ok(directory.path()));
+        state.set(held).unwrap();
+        assert_eq!(state.get().unwrap(), held);
+        assert_eq!(state.for_new_session(), held);
+        let restored = DisplaySettings {
+            run_mode: RunMode::Live,
+            ..APP
+        };
+        assert_ne!(restored, held);
+        state.set(restored).unwrap();
+        assert_eq!(state.get().unwrap(), restored);
+        assert_eq!(state.for_new_session().held_from, None);
     }
 
     #[test]

@@ -25,6 +25,12 @@
     "module_control": "app",
     "run_mode": "live"
   },
+  "held_settings": {
+    "held_from": "live",
+    "live_offered": true,
+    "module_control": "app",
+    "run_mode": "test"
+  },
   "module_controls": [
     "app",
     "built_in_animation"

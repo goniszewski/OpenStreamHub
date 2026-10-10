@@ -7,11 +7,13 @@ import { errorMessage } from './ui-model';
 // The "Module control" setting and the one run mode. Rust stores both
 // (src-tauri/src/display.rs, in <app data>/display-settings.json, which also
 // migrates the earlier shapes) and the session manager reads them when a
-// profile is started. This store shows and edits them, and keeps the editing
-// hold ("Switch to Test mode while editing"): the flag and the snapshot of
-// executing runs behind the "Test (editing)" badge. Saving a new run mode
-// lets the backend apply it to every running module. What the dial screen
-// shows is each profile's own dial_display setting, so it is not stored here.
+// profile is started. This store shows and edits them, and owns the editing
+// hold ("Switch to Test mode while editing"): the hold reads the stored
+// `held_from` marker, so it survives a quit or crash, and keeps the snapshot
+// of executing runs behind the silent-or-dialog restore. Saving a new run
+// mode lets the backend apply it to every running module. What the dial
+// screen shows is each profile's own dial_display setting, so it is not
+// stored here.
 
 // A fresh install (no settings file): Live, with the one-time what-will-run
 // confirmation still owed. Mirrors DisplaySettings::default() in Rust.
@@ -45,10 +47,15 @@ export function displayFlags(settings: DisplaySettings, module: ServiceModule, s
 export function isDisplaySettings(value: unknown): value is DisplaySettings {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return Object.keys(record).length === 3
+  // `held_from` is either "live" or absent; a save echo can carry the key
+  // with an undefined value (the cleared hold), which counts as absent.
+  const held = record.held_from === undefined ? 0 : 1;
+  const keys = Object.keys(record).filter(key => record[key] !== undefined);
+  return keys.length === 3 + held
     && moduleControlOptions.some(option => option.value === record.module_control)
     && (record.run_mode === 'live' || record.run_mode === 'test')
-    && typeof record.live_offered === 'boolean';
+    && typeof record.live_offered === 'boolean'
+    && (held === 0 || record.held_from === 'live');
 }
 
 const isDefaultProfile = (value: unknown): value is DefaultProfile => !!value && typeof value === 'object'
@@ -58,21 +65,19 @@ const isDefaultProfile = (value: unknown): value is DefaultProfile => !!value &&
 // file shows its error and means no default.
 export interface DisplaySettingsState {
   desktop: boolean; loaded: boolean; busy: boolean; error: string | null; settings: DisplaySettings;
-  // The editing hold ("Switch to Test mode while editing"): true while the
-  // hold keeps the mode at Test on the user's behalf, so the badge can say
-  // why. The user's own switch (setRunMode) clears it.
-  heldByEditing: boolean;
   defaultProfile: { loaded: boolean; busy: boolean; error: string | null; profileId: string | null };
 }
 export const idleDisplaySettingsState: DisplaySettingsState = { desktop: false, loaded: false, busy: false, error: null, settings: defaultDisplaySettings,
-  heldByEditing: false, defaultProfile: { loaded: false, busy: false, error: null, profileId: null } };
+  defaultProfile: { loaded: false, busy: false, error: null, profileId: null } };
 
 export class DisplaySettingsStore {
   private state: DisplaySettingsState;
   // The run keys that were executing when the editing hold began: the restore
-  // may return exactly these to Live without asking again. Only the hold's
-  // callers read it, so it stays untyped beyond its keys.
-  private editingSnapshot: ReadonlySet<string> = new Set();
+  // may return exactly these to Live without asking again. Null until a begin
+  // in this app session set it — a hold that arrived from storage (the app
+  // quit or crashed mid-edit) has none, so its restore never asks. Only the
+  // hold's callers read the keys.
+  private editingSnapshot: ReadonlySet<string> | null = null;
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly invoke: Invoke, desktop: boolean) {
@@ -109,38 +114,52 @@ export class DisplaySettingsStore {
   // restarts the sessions that change, a running dry one executing only
   // after the caller confirmed the switch (the header dialog). Switching is
   // itself the one-time confirmation, whichever way it goes. A switch during
-  // the editing hold is the user's own: the hold ends, so nothing is
-  // restored underneath them when the editing ends.
+  // the editing hold is the user's own: the hold ends (the stored marker
+  // goes with the save), so nothing is restored underneath them when the
+  // editing ends.
   setRunMode(runMode: RunMode) {
-    if (this.state.heldByEditing) this.set({ heldByEditing: false });
-    return this.save({ ...this.state.settings, run_mode: runMode, live_offered: true });
+    if (this.editingHeld) this.editingSnapshot = null;
+    return this.save({ ...this.state.settings, run_mode: runMode, live_offered: true, held_from: undefined });
   }
-  // The editing hold's saves ("Switch to Test mode while editing"): they
-  // change the mode alone and never answer the one-time confirmation, which
-  // stays owed exactly as it was.
-  setHeldMode(runMode: RunMode) { return this.save({ ...this.state.settings, run_mode: runMode }); }
-  // Begins the editing hold: the mode is saved Test (reaching the backend, so
-  // a press on any module is logged, never run) and the badge says why.
-  // `executing` names the runs that were executing right now — the snapshot
-  // the restore may return to Live without asking again. False when there is
-  // nothing to do: the hold is on, the setting is off, or the mode is Test.
+  // The editing hold's saves ("Switch to Test mode while editing"): the mode
+  // and the stored marker move together, and the one-time confirmation is
+  // never answered — it stays owed exactly as it was.
+  setHeldMode(runMode: RunMode, heldFrom: 'live' | null) {
+    return this.save({ ...this.state.settings, run_mode: runMode, ...(heldFrom ? { held_from: heldFrom } : { held_from: undefined }) });
+  }
+  // Begins the editing hold: the mode is saved Test with the marker naming
+  // the Live to restore (reaching the backend, so a press on any module is
+  // logged, never run) and the badge says why. `executing` names the runs
+  // that were executing right now — the snapshot the restore may return to
+  // Live without asking again. False when there is nothing to do: the hold
+  // is on, the setting is off, or the mode is Test. A hold that arrived from
+  // storage (a quit or crash mid-edit) takes its snapshot at this session's
+  // first observation instead, so a restored draft keeps holding with the
+  // ordinary restore rules.
   beginEditingHold(whileEditing: boolean, executing: readonly string[]): boolean {
-    const step = beginEditingHoldStep(this.state.heldByEditing, this.state.settings.run_mode, whileEditing);
-    if (!step.save) return false;
+    const step = beginEditingHoldStep(this.editingHeld, this.state.settings.run_mode, whileEditing);
+    if (!step.save) {
+      if (this.editingHeld && this.editingSnapshot === null) this.editingSnapshot = new Set(executing);
+      return false;
+    }
     this.editingSnapshot = new Set(executing);
-    this.set({ heldByEditing: true });
-    void this.setHeldMode(step.save);
+    void this.setHeldMode(step.save, 'live');
     return true;
   }
-  // Ends the hold without restoring (the caller decides whether the restore
-  // needs the switch-to-Live dialog first). False when no hold was on.
+  // Ends the hold without restoring (the caller asks first when a dry run
+  // started during the hold would begin executing): the stored marker is
+  // dropped and the badge reads plain Test. False when no hold was on.
   dropEditingHold(): boolean {
-    if (!this.state.heldByEditing) return false;
-    this.set({ heldByEditing: false });
+    if (!this.editingHeld) return false;
+    this.editingSnapshot = null;
+    void this.save({ ...this.state.settings, held_from: undefined });
     return true;
   }
-  get editingHeld(): boolean { return this.state.heldByEditing; }
-  get editingSnapshotRuns(): ReadonlySet<string> { return this.editingSnapshot; }
+  // The hold reads the stored marker itself, so it survives a quit or a
+  // crash: the next launch finds the mode Test with the Live to restore
+  // beside it, and restores when no editing is in progress.
+  get editingHeld(): boolean { return this.state.settings.held_from === 'live'; }
+  get editingSnapshotRuns(): ReadonlySet<string> | null { return this.editingSnapshot; }
   // The one-time confirmation: Live stays (or becomes) the mode and the
   // fresh-install hold is lifted, so automatic sessions start executing.
   confirmLive() { return this.save({ ...this.state.settings, run_mode: 'live', live_offered: true }); }

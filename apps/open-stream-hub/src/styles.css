@@ -551,7 +551,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .version-list li { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 0; border-top:1px solid var(--line); font-size:13px; }
 .version-list li:first-child { border-top:0; padding-top:0; }
 
-/* Lighting page (task 09, phase 1): dial backlight and colour, applied live. */
+/* Lighting page (first phase): dial backlight and colour, applied live. */
 .lighting-page { max-width:720px; }
 .lighting-panel { display:grid; gap:18px; justify-items:start; }
 .lighting-scope { display:flex; gap:5px; }

@@ -16,7 +16,7 @@ import type { ServiceRunner } from './service-runner';
 const noopSubscribe = () => () => {};
 const idleState = () => idleFeedState;
 
-// The Lighting page (task 09, phase 1): the encoder dial's backlight and one
+// The Lighting page (first phase): the encoder dial's backlight and one
 // solid colour, applied to the hardware as the controls move. Everything that
 // decides — targets, gating, favourites, request shaping — lives in
 // lighting-model; this component only holds the controls and debounces.

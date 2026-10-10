@@ -4,7 +4,7 @@ import { modules } from './ui-model';
 import type { Invoke } from './profile-session';
 
 // Phase 1 lights the encoder dial only: knob rings, base edge and fader
-// lighting wait for their protocol (task 09, phase 2).
+// lighting wait for their protocol (a later phase).
 const lightingModule: ServiceModule = 'm131e';
 
 // Where a lighting change lands: the picked module, or every connected dial.

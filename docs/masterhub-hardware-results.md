@@ -154,6 +154,17 @@ Needs the desktop app, not a module. The drawing logic is covered by unit tests 
 ## Not tested
 
 - The dial's `image` face and the per-profile `dial_display` setting in the app.
-- The M005S faders (not connected) and all lighting writes beyond the dial backlight and color.
+- All lighting writes beyond the dial backlight and color, except the base, tested below.
 - Most of the desktop app against real hardware, and every `obs_*` action against a real OBS.
 - Sleep and wake, executing-session reconnect, and reconnect on other modules.
+
+## Knob, fader and base LEDs (11 October 2026)
+
+Unit with the M0064 base (firmware `02.00.04.00`), M003K knobs (`01.00.05.00`), M005S faders, M032LE, M131E and an M4315 that was not in the inventory. The app and its services were closed. Everything was sent with `masterhub-diag led`, no `--save` unless stated, with the user watching the hardware.
+
+- **Base: works.** `led mode 1 --module base --index 0` then `led color ff0000 --module base --index 0` over the base's own path turned the edge strip solid red (it had been cycling colours). `ff0000` shows red, which fits R first; green and blue were not tried. The effect stayed after the program exited. Neither command changed the base's `0x34` mode (9) or `0x32` brightness (100) readbacks, so those report stored state, not what is lit.
+- **Knobs: no effect.** The `led sweep` (red, each index 0 to 4, 2 s each) wrote without errors and lit nothing; the knobs kept fading through colours. The same held for Static (mode 1) plus a colour on all LEDs and on each index 0 to 4; Disable (mode 0) on all LEDs and each index; the same writes over the base's interface (`--via-base` experiment, not kept); and one saved write (`led mode 0 --save`), which was then undone with `led mode 9 --save`. The module's own `0x34` readback stayed `03 09 09 09` throughout, one entry per knob, three entries, not five.
+- **Faders: no effect.** `led sweep --module slider` (indexes 0 to 2) wrote without errors, lit nothing, and the faders kept cycling. Disable over the base's interface also changed nothing. Not tried further: colour with Static mode, per-index writes beyond the sweep.
+- **SET FEATURE:** a feature `0x34` write (`34 03 00 09 09`) to the knob module failed with an I/O timeout from `IOHIDDeviceSetReport`; the readback did not change. `0x32` was not tried.
+- **Static analysis agrees with what was sent.** The official app's main process connects with `Connect_Device_CM_M0` (reads feature `0x31` and the firmware, writes nothing) and then calls `Adjust_LED_*_CM_M0` once per index with type 1 for knobs and 2 for faders, the same bytes as these reports. So the knob and fader modules refuse the same writes the base accepts. Candidates: different firmware behaviour (knobs `01.00.05.00`), a command the app sends only in some flow, or the modules' own animation taking priority. Next step: capture the official app on Windows (USBPcap) changing one knob's colour.
+- **Not tried:** colour channel order beyond red, base brightness and the other effect numbers, `--save` on the base.

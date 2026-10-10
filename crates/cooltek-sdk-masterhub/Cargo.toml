@@ -1,7 +1,7 @@
 [package]
 name = "cooltek-sdk-masterhub"
 version = "0.1.0"
-authors = ["Josiah Egner <projectzero7@gmail.com>"]
+authors = ["Josiah Egner <projectzero7@gmail.com>", "Robert Goniszewski <robert@goniszewski.com>"]
 categories = []
 description = "An unofficial SDK for the MasterHUB by Cooler Master."
 edition = "2024"

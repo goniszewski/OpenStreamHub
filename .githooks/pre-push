@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Full Rust test suites before a push, so a push (which starts CI) is unlikely
+# to fail on something that fails locally too.
+# Skip in an emergency: git push --no-verify
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+changed=$(git diff --name-only "@{upstream}...HEAD" 2>/dev/null || git diff --name-only HEAD~1 2>/dev/null || true)
+if [ -n "$changed" ] && ! printf '%s\n' "$changed" | grep -Eq '\.rs$|(^|/)Cargo\.(toml|lock)$|^apps/open-stream-hub/fixtures/'; then
+  echo "pre-push: no Rust changes, skipping cargo test"
+  exit 0
+fi
+
+echo "pre-push: cargo test (root workspace)"
+cargo test --workspace --locked
+if ls apps/open-stream-hub/src-tauri/binaries/masterhub-service-* >/dev/null 2>&1; then
+  echo "pre-push: cargo test (src-tauri)"
+  (cd apps/open-stream-hub/src-tauri && cargo test)
+else
+  echo "pre-push: skipping src-tauri tests (no sidecar; run: npm run sidecar in apps/open-stream-hub)"
+fi

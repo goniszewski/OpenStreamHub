@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Fast checks that mirror CI, run only for the kinds of files being committed.
+# Enable once per clone:  git config core.hooksPath .githooks
+# Skip in an emergency:   git commit --no-verify
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+has() { printf '%s\n' "$staged" | grep -Eq "$1"; }
+
+if has '\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)rust-toolchain\.toml$'; then
+  echo "pre-commit: cargo fmt --check"
+  cargo fmt --check
+  (cd apps/open-stream-hub/src-tauri && cargo fmt --check)
+
+  echo "pre-commit: cargo clippy (root workspace)"
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  # The app crate needs the sidecar file to exist (npm run sidecar).
+  if ls apps/open-stream-hub/src-tauri/binaries/masterhub-service-* >/dev/null 2>&1; then
+    echo "pre-commit: cargo clippy (src-tauri)"
+    (cd apps/open-stream-hub/src-tauri && cargo clippy --all-targets -- -D warnings)
+  else
+    echo "pre-commit: skipping src-tauri clippy (no sidecar; run: npm run sidecar in apps/open-stream-hub)"
+  fi
+fi
+
+if has '^apps/open-stream-hub/(src|fixtures)/|^apps/open-stream-hub/(package(-lock)?\.json|tsconfig.*\.json|vite.*\.ts)$'; then
+  echo "pre-commit: tsc"
+  (cd apps/open-stream-hub && npx tsc --noEmit)
+  echo "pre-commit: vitest"
+  (cd apps/open-stream-hub && npx vitest run --reporter=dot)
+fi

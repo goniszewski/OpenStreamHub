@@ -27,6 +27,7 @@
     "allow-stop-feed",
     "allow-set-dial-lighting",
     "allow-set-led-lighting",
+    "allow-list-base-modules",
     "allow-reset-dial-lighting",
     "allow-start-service",
     "allow-stop-service",

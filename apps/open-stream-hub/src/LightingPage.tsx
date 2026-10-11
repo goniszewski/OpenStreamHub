@@ -2,16 +2,15 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Grid2X2, Lightbulb, RotateCcw, Star, X } from 'lucide-react';
 import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
-import { moduleImage } from './module-controls';
-import { modules } from './ui-model';
+import { useBaseModules } from './base-modules';
 import type { DeviceFeed } from './device-feed';
 import {
   addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, clampBacklight, createApplyQueue,
-  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingCapability, lightingDeviceLabel, lightingEffects, lightingKind,
+  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingCapability, lightingDeviceLabel, lightingModuleInfo, lightingEffects, lightingKind,
   lightingScopeLabels, lightingTargets, readColourFavourites,
   removeColourFavourite, resetLighting, resetStatus, writeColourFavourites,
 } from './lighting-model';
-import type { LightingScope } from './lighting-model';
+import type { LightingDevice, LightingScope } from './lighting-model';
 import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
 import type { ServiceRunner } from './service-runner';
@@ -28,7 +27,10 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   desktop: boolean; invoke?: Invoke; feed?: DeviceFeed; runner?: ServiceRunner;
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
 }) {
-  const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).devices;
+  const feedDevices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).devices;
+  const bases = useBaseModules(invoke, feedDevices.map(device => device.path_hex).join(','));
+  // The base first: it is the foundation the modules sit on.
+  const devices: LightingDevice[] = [...bases, ...feedDevices];
   const [scope, setScope] = useState<LightingScope>('module');
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [backlight, setBacklight] = useState(defaultBacklight);
@@ -48,7 +50,8 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const leds = selected ? ledCount(selected.module) : 0;
   // A LED pick only means something for the module it was made on, and only per module.
   const led = kind === 'led' && scope === 'module' && ledIndex !== null && ledIndex < leds ? ledIndex : null;
-  const runOwned = targets.some(device => runner?.isActivePath(device.path_hex, device) ?? false);
+  // A base takes no input, so no run can own it.
+  const runOwned = targets.some(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
   // The apply queue reads the latest values and gate from this ref, not from
   // a render closure; a trailing apply runs after the state that scheduled it.
@@ -143,15 +146,15 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
       <div className="lighting-modules" role="group" aria-label="Module to light">
         {devices.length === 0 && <p className="fine-print">No modules are connected.</p>}
         {devices.map(device => {
-          const info = modules.find(item => item.id === device.module);
+          const info = lightingModuleInfo(device.module);
           const picked = device.path_hex === selected?.path_hex;
           const included = scope === 'kit' && targets.some(target => target.path_hex === device.path_hex);
           const lit = lightingKind(device.module) !== null;
           return <button key={device.path_hex} type="button" aria-pressed={picked} aria-label={lightingDeviceLabel(device)}
             className={`lighting-tile${picked ? ' picked' : ''}${included ? ' included' : ''}${lit ? '' : ' unlit'}`}
             onClick={() => setSelectedPath(device.path_hex)}>
-            <span className="lighting-tile-photo">{info && <img {...moduleImage(info)} alt="" draggable={false} />}</span>
-            <span className="lighting-tile-name">{info?.shortName ?? device.module}</span>
+            <span className="lighting-tile-photo">{info.image && <img {...info.image} alt="" draggable={false} />}</span>
+            <span className="lighting-tile-name">{info.name}</span>
             {device.serial_number && <span className="lighting-tile-serial">…{device.serial_number.slice(-4)}</span>}
             <span className="lighting-tile-capability">{included ? 'Included in Whole kit' : lightingCapability(device.module)}</span>
           </button>;
@@ -164,7 +167,7 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
             {lightingEffects.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
           </SelectField>
         </div>}
-        {kind === 'led' && scope === 'module' && <div className="lighting-row">
+        {kind === 'led' && scope === 'module' && leds > 1 && <div className="lighting-row">
           <label htmlFor="lighting-led">LED</label>
           <SelectField id="lighting-led" value={led === null ? 'all' : String(led)}
             onChange={event => setLedValue(event.target.value === 'all' ? null : Number(event.target.value))}>

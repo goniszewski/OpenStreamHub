@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveDevice } from './contracts';
 import { FakeStorage } from './fake-storage';
 import {
-  addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, ledCount, lightingEffects, lightingKind, clampBacklight, colourChannels, createApplyQueue, defaultColour,
+  addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, ledCount, lightingCapability, lightingEffects, lightingKind, lightingModuleInfo, clampBacklight, colourChannels, createApplyQueue, defaultColour,
   favouritesStorageKey, lightingBlockReason, lightingDeviceLabel, lightingTargets, maxColourFavourites,
   normaliseHexColour, readColourFavourites, removeColourFavourite, resetLighting, resetStatus,
   writeColourFavourites,
 } from './lighting-model';
 import type { Invoke } from './profile-session';
+import { parseBaseModules } from './base-modules';
+import type { LightingDevice } from './lighting-model';
 
 const invokeRecording = (reply: number) => vi.fn(() => Promise.resolve(reply)) as unknown as Invoke;
 
@@ -234,5 +236,29 @@ describe('knob and fader lighting', () => {
   it('words the status for modules', () => {
     expect(appliedLedStatus(1)).toBe('Applied to 1 module.');
     expect(appliedLedStatus(3)).toBe('Applied to 3 modules.');
+  });
+});
+
+describe('the base', () => {
+  const base: LightingDevice = { path_hex: 'bs', module: 'm0064', serial_number: 'MHBS01AA461251601980' };
+  const fader: LiveDevice = { path_hex: 'fd', module: 'm005s', serial_number: null };
+
+  it('takes per-LED lighting with one LED and its own name and photo', () => {
+    expect(lightingKind('m0064')).toBe('led');
+    expect(ledCount('m0064')).toBe(1);
+    expect(lightingCapability('m0064')).toBe('Colour, effect and brightness · 1 LED');
+    expect(lightingModuleInfo('m0064')).toEqual({ name: 'MasterHUB base', image: { src: '/modules/base.svg' } });
+    expect(lightingDeviceLabel(base)).toBe('MasterHUB base · …1980');
+  });
+  it('is reached by Whole kit together with the knobs and faders, and lit on its own', () => {
+    const all = [base, knobs(), fader, dial('aa')];
+    expect(lightingTargets(all, 'module', 'bs').map(device => device.path_hex)).toEqual(['bs']);
+    expect(lightingTargets(all, 'kit', 'bs').map(device => device.path_hex)).toEqual(['bs', 'kn', 'fd']);
+    expect(lightingBlockReason({ desktop: true, runOwnedTargets: false, scope: 'module', selected: base, devices: [base] })).toBeNull();
+  });
+  it('parses the base listing and ignores malformed entries', () => {
+    expect(parseBaseModules([{ path_hex: 'bs', module: 'm0064', serial_number: 'S1' }, { path_hex: 'b2' }, null, { serial_number: 'x' }]))
+      .toEqual([{ path_hex: 'bs', module: 'm0064', serial_number: 'S1' }, { path_hex: 'b2', module: 'm0064', serial_number: null }]);
+    expect(parseBaseModules('nope')).toEqual([]);
   });
 });

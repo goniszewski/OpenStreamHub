@@ -857,6 +857,15 @@ fn set_led_lighting(
     lighting::apply_led_lighting(&registry, &targets, led, look)
 }
 
+// The connected bases for the Lighting page. The base takes lighting but no
+// input, so the input feed's inventory never lists it.
+#[tauri::command(async)]
+fn list_base_modules() -> Result<Vec<lighting::BaseModule>, String> {
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    Ok(lighting::base_modules(&registry.devices()))
+}
+
 #[tauri::command(async)]
 fn reset_dial_lighting(state: State<'_, AppState>, targets: Vec<String>) -> Result<usize, String> {
     service::check_lighting_allowed(&state.services, &targets)?;
@@ -1590,6 +1599,7 @@ pub fn run() {
             stop_feed,
             set_dial_lighting,
             set_led_lighting,
+            list_base_modules,
             reset_dial_lighting,
             start_service,
             stop_service,

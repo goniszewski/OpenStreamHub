@@ -1,7 +1,14 @@
-import type { LiveDevice, ServiceModule } from './contracts';
+import type { ServiceModule } from './contracts';
 import { formatHexColour, parseHexColour } from './artwork-model';
 import { modules } from './ui-model';
+import { moduleImage } from './module-controls';
 import type { Invoke } from './profile-session';
+
+// The modules the Lighting page can pick: everything the input feed lists,
+// plus the base, which takes lighting but no input and has its own listing.
+export type LightingModule = ServiceModule | 'm0064';
+export interface LightingDevice { path_hex: string; module: LightingModule; serial_number: string | null }
+
 
 // What lights a module: the dial has a backlight and one colour (feature
 // reports); knobs and faders have a colour, an effect and a brightness per
@@ -9,14 +16,14 @@ import type { Invoke } from './profile-session';
 // lit yet.
 export type LightingKind = 'dial' | 'led';
 
-export function lightingKind(module: ServiceModule): LightingKind | null {
+export function lightingKind(module: LightingModule): LightingKind | null {
   if (module === 'm131e') return 'dial';
-  return module === 'm003k' || module === 'm005s' ? 'led' : null;
+  return module === 'm003k' || module === 'm005s' || module === 'm0064' ? 'led' : null;
 }
 
 // How many LEDs the module has, as the protocol counts them.
-export function ledCount(module: ServiceModule): number {
-  return module === 'm003k' ? 3 : module === 'm005s' ? 5 : 0;
+export function ledCount(module: LightingModule): number {
+  return module === 'm003k' ? 3 : module === 'm005s' ? 5 : module === 'm0064' ? 1 : 0;
 }
 
 // The effects the hardware accepted (checked on knobs and faders, 11 October
@@ -53,7 +60,7 @@ export const favouritesStorageKey = 'open-stream-hub.lighting-favourites';
 // reason instead (the backend re-checks the module kind on every write).
 // Whole kit reaches every module of the picked module's kind (every dial, or
 // every knob and fader module); with nothing lit-able picked it reaches the dials.
-export function lightingTargets(devices: LiveDevice[], scope: LightingScope, selectedPath: string | null): LiveDevice[] {
+export function lightingTargets(devices: LightingDevice[], scope: LightingScope, selectedPath: string | null): LightingDevice[] {
   const selected = devices.find(device => device.path_hex === selectedPath);
   const selectedKind = selected ? lightingKind(selected.module) : null;
   if (scope === 'module') return selected && selectedKind ? [selected] : [];
@@ -66,8 +73,8 @@ export interface LightingGate {
   // True when one of the current targets is held by a running profile.
   runOwnedTargets: boolean;
   scope: LightingScope;
-  selected: LiveDevice | undefined;
-  devices: LiveDevice[];
+  selected: LightingDevice | undefined;
+  devices: LightingDevice[];
 }
 
 // Why the lighting controls are disabled right now, or null when they are
@@ -89,23 +96,30 @@ export function lightingBlockReason({ desktop, runOwnedTargets, scope, selected,
     : null;
 }
 
-function moduleShortName(module: ServiceModule): string {
-  return modules.find(item => item.id === module)?.shortName ?? 'This module';
+function moduleShortName(module: LightingModule): string {
+  return lightingModuleInfo(module).name;
+}
+
+// The name and photo the pickers show for a module.
+export function lightingModuleInfo(module: LightingModule): { name: string; image: { src: string; style?: { transform: string } } | null } {
+  if (module === 'm0064') return { name: 'MasterHUB base', image: { src: '/modules/base.svg' } };
+  const info = modules.find(item => item.id === module);
+  return { name: info?.shortName ?? 'This module', image: info ? moduleImage(info) : null };
 }
 
 // The picker's option label: the module name, with a serial tail when the kit
 // has several of a kind. Full serials appear where they matter (run targets).
-export function lightingDeviceLabel(device: LiveDevice): string {
-  const name = modules.find(item => item.id === device.module)?.shortName ?? device.module;
+export function lightingDeviceLabel(device: LightingDevice): string {
+  const name = lightingModuleInfo(device.module).name;
   const serial = device.serial_number;
   return serial ? `${name} · …${serial.slice(-4)}` : name;
 }
 
 // What lighting a module takes, for the picker tiles: a short capability line.
-export function lightingCapability(module: ServiceModule): string {
+export function lightingCapability(module: LightingModule): string {
   const kind = lightingKind(module);
   if (kind === 'dial') return 'Backlight and colour';
-  return kind === 'led' ? `Colour, effect and brightness · ${ledCount(module)} LEDs` : 'Not lit yet';
+  return kind === 'led' ? `Colour, effect and brightness · ${ledCount(module) === 1 ? '1 LED' : `${ledCount(module)} LEDs`}` : 'Not lit yet';
 }
 
 // Accepts #rgb, rgb, #rrggbb and rrggbb; a valid colour is stored as #rrggbb

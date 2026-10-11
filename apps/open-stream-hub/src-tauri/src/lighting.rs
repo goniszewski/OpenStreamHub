@@ -8,7 +8,10 @@
 //! animation stops and the screen stays dark until a run draws on it — and
 //! the reset command leaves software mode, which returns the animation.
 
-use cooltek_sdk_cli::device::{parse_path, select_device};
+use cooltek_sdk_cli::{
+    capture::encode_hex,
+    device::{parse_path, select_device},
+};
 use cooltek_sdk_masterhub::lighting::{self as led, LedModule, LedTarget};
 use cooltek_sdk_masterhub::{DeviceRegistry, ModuleIdentity, ModuleKind, ReportTransport, dial};
 
@@ -125,12 +128,13 @@ pub struct LedLook {
     pub brightness: u8,
 }
 
-/// The LED module a module kind is, or `None` for kinds the app cannot light
-/// per LED yet (the dial has its own feature-report lighting).
+/// The LED module a module kind is (knobs, faders and the base), or `None` for
+/// kinds the app cannot light per LED (the dial has its own feature-report lighting).
 pub fn led_module(kind: Option<ModuleKind>) -> Option<LedModule> {
     match kind? {
         ModuleKind::M003K => Some(LedModule::Knob),
         ModuleKind::M005S => Some(LedModule::Slider),
+        ModuleKind::M0064 => Some(LedModule::Base),
         _ => None,
     }
 }
@@ -179,7 +183,7 @@ pub fn write_led_lighting<T: ReportTransport + ?Sized>(
     Ok(())
 }
 
-/// The one inventory entry an LED target must name: a knob or fader module.
+/// The one inventory entry an LED target must name: a knob or fader module, or the base.
 pub fn select_led_identity<'a>(
     devices: &'a [ModuleIdentity],
     path: &[u8],
@@ -194,8 +198,38 @@ pub fn select_led_identity<'a>(
         selected.vendor_id,
         selected.product_id,
     ))
-    .ok_or("per-LED lighting works on knob and fader modules only")?;
+    .ok_or("per-LED lighting works on knob and fader modules and the base only")?;
     Ok((selected, module))
+}
+
+/// A connected MasterHUB base: it takes lighting but no input, so it is not in
+/// the input feed's inventory and is listed separately for the Lighting page.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct BaseModule {
+    pub path_hex: String,
+    pub module: &'static str,
+    pub serial_number: Option<String>,
+}
+
+/// Every connected base, one entry per HID path, in path order.
+pub fn base_modules(devices: &[ModuleIdentity]) -> Vec<BaseModule> {
+    let mut listed: Vec<BaseModule> = Vec::new();
+    for device in devices {
+        if ModuleKind::from_ids(device.vendor_id, device.product_id) != Some(ModuleKind::M0064) {
+            continue;
+        }
+        let path_hex = encode_hex(device.path.as_bytes());
+        if listed.iter().any(|entry| entry.path_hex == path_hex) {
+            continue;
+        }
+        listed.push(BaseModule {
+            path_hex,
+            module: "m0064",
+            serial_number: device.serial_number.clone(),
+        });
+    }
+    listed.sort_by(|a, b| a.path_hex.cmp(&b.path_hex));
+    listed
 }
 
 /// Applies one look to every target knob or fader module, in order, stopping at
@@ -532,7 +566,23 @@ mod tests {
     }
 
     #[test]
-    fn led_selection_accepts_knobs_and_faders_only() {
+    fn bases_are_listed_once_per_path_and_nothing_else() {
+        let devices = [
+            identity("kn", 0x0202, Some("MHKB03")),
+            identity("bs", 0x01f6, Some("MHBS01")),
+            identity("bs", 0x01f6, Some("MHBS01")),
+            identity("b2", 0x9999, None),
+        ];
+        let bases = base_modules(&devices);
+        assert_eq!(bases.len(), 2);
+        assert!(bases.iter().all(|base| base.module == "m0064"));
+        assert_eq!(bases[0].path_hex, encode_hex(b"b2"));
+        assert_eq!(bases[1].serial_number.as_deref(), Some("MHBS01"));
+        assert!(base_modules(&devices[..1]).is_empty());
+    }
+
+    #[test]
+    fn led_selection_accepts_knobs_faders_and_the_base_only() {
         let devices = [
             identity("kn", 0x0202, Some("MHKB03")),
             identity("fd", 0x0200, None),

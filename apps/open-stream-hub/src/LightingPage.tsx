@@ -220,8 +220,9 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
         <div className="lighting-row">
           <label htmlFor="lighting-colour">Colour</label>
           <div className="lighting-colour">
-            <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue} />
-            <button type="button" className="button compact" onClick={saveFavourite}><Star size={15} />Save colour</button>
+            <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue}>
+              <button type="button" className="button compact" onClick={saveFavourite}><Star size={15} />Save colour</button>
+            </ColourPicker>
           </div>
         </div>
         {favourites.length > 0 && <div className="lighting-favourites" role="group" aria-label="Favourite colours">

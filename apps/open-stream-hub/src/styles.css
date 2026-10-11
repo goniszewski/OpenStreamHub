@@ -605,16 +605,19 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .lighting-backlight { display:flex; align-items:center; gap:12px; }
 .lighting-backlight input[type="range"] { flex:1; min-width:0; padding:0; border:0; background:transparent; accent-color:var(--accent); }
 .lighting-value { min-width:34px; text-align:right; font-variant-numeric:tabular-nums; font-size:13px; }
-.lighting-colour { display:flex; align-items:flex-start; gap:14px; flex-wrap:wrap; }
-.colour-picker { display:flex; flex-direction:column; gap:10px; width:220px; }
-.colour-square { position:relative; height:130px; border-radius:9px; cursor:crosshair; touch-action:none; border:1px solid var(--line); }
+.lighting-row:has(.colour-picker) { align-items:start; }
+.lighting-row:has(.colour-picker)>label { padding-top:10px; }
+.lighting-colour { display:block; max-width:320px; }
+.colour-picker { display:flex; flex-direction:column; gap:12px; width:100%; }
+.colour-square { position:relative; height:150px; border-radius:9px; cursor:crosshair; touch-action:none; border:1px solid var(--line); }
 .colour-handle { position:absolute; width:16px; height:16px; margin:-8px 0 0 -8px; border-radius:50%; border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.5); pointer-events:none; }
 .colour-hue { width:100%; height:12px; border-radius:6px; appearance:none; background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); }
 .colour-hue::-webkit-slider-thumb { appearance:none; width:16px; height:16px; border-radius:50%; background:#fff; border:2px solid rgba(0,0,0,.45); }
-.colour-presets { display:flex; flex-wrap:wrap; gap:6px; }
-.colour-presets .swatch { width:20px; height:20px; border-radius:6px; border:1px solid var(--line); padding:0; cursor:pointer; }
-.colour-hex { width:100%; font-family:ui-monospace,monospace; text-transform:lowercase; }
-.lighting-favourites { display:flex; flex-wrap:wrap; gap:8px; }
+.colour-presets { display:grid; grid-template-columns:repeat(9,minmax(0,1fr)); gap:6px; }
+.colour-presets .swatch { width:100%; aspect-ratio:1; border-radius:7px; border:1px solid var(--line); padding:0; cursor:pointer; }
+.colour-footer { display:flex; align-items:center; gap:10px; }
+.colour-hex { flex:1; min-width:0; width:auto; font-family:ui-monospace,monospace; text-transform:lowercase; }
+.lighting-favourites { display:flex; flex-wrap:wrap; gap:8px; margin-left:110px; }
 .lighting-favourite { position:relative; display:inline-flex; }
 .lighting-favourite .swatch { width:34px; height:34px; padding:0; border:1px solid var(--line); border-radius:8px; }
 .lighting-favourite .swatch:hover:enabled { border-color:var(--accent); }

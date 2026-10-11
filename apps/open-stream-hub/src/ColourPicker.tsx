@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { PointerEvent } from 'react';
+import type { PointerEvent, ReactNode } from 'react';
 import { normaliseHexColour } from './lighting-model';
 import { colourPresets, hexToHsv, hsvToHex } from './colour-math';
 
 // An inline picker with exact values: a saturation/brightness square, a hue slider, a hex field and
 // preset swatches. The system picker's swatches are not pure channels (its red is #ff2600).
-export function ColourPicker({ id, value, disabled, onChange }: { id: string; value: string; disabled?: boolean; onChange(hex: string): void }) {
+export function ColourPicker({ id, value, disabled, onChange, children }: { id: string; value: string; disabled?: boolean; onChange(hex: string): void; children?: ReactNode }) {
   // The hue is kept apart from the hex, which loses it for greys and black.
   const [hsv, setHsv] = useState(() => hexToHsv(value));
   const [text, setText] = useState(value);
@@ -46,7 +46,10 @@ export function ColourPicker({ id, value, disabled, onChange }: { id: string; va
       {colourPresets.map(preset => <button key={preset.hex} type="button" className="swatch" style={{ background: preset.hex }} title={`${preset.name} ${preset.hex}`}
         aria-label={`Use ${preset.name.toLowerCase()} ${preset.hex}`} disabled={disabled} onClick={() => { setHsv(hexToHsv(preset.hex)); setText(preset.hex); if (preset.hex !== value) onChange(preset.hex); }} />)}
     </div>
-    <input id={id} className="colour-hex" type="text" inputMode="text" spellCheck={false} maxLength={7} aria-label="Colour as hex" value={text} disabled={disabled}
+    <div className="colour-footer">
+      <input id={id} className="colour-hex" type="text" inputMode="text" spellCheck={false} maxLength={7} aria-label="Colour as hex" value={text} disabled={disabled}
       onChange={event => typed(event.target.value)} onBlur={() => setText(value)} />
+      {children}
+    </div>
   </div>;
 }

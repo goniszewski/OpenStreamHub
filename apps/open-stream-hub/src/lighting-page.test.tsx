@@ -72,6 +72,28 @@ describe('LightingPage', () => {
     expect(markup).not.toContain('lucide-rotate-ccw');
   });
 
+  it('picks the module from tiles with a photo, name, serial and what lighting it takes', () => {
+    const faders: LiveDevice = { path_hex: 'fd', module: 'm005s', serial_number: 'MHFD05AA421251601744' };
+    const keypad: LiveDevice = { path_hex: 'ke', module: 'm4315', serial_number: null };
+    const markup = render({ feed: feedWith([dial('aa'), knobs(), faders, keypad]) });
+    expect(markup).toContain('aria-label="Module to light"');
+    expect(markup).toContain('src="/modules/encoder.png"');
+    expect(markup).toContain('src="/modules/faders.png"');
+    expect(markup).toContain('<span class="lighting-tile-serial">…1744</span>');
+    expect(markup).toContain('Backlight and colour');
+    expect(markup).toContain('Colour, effect and brightness · 5 LEDs');
+    expect(markup).toContain('Not lit yet');
+    // The first dial is picked by default; the keypad tile is dimmed but reachable.
+    expect(markup).toMatch(/aria-pressed="true"[^>]*class="lighting-tile picked"/);
+    expect(markup).toMatch(/class="lighting-tile unlit"/);
+    expect(markup).not.toContain('<select id="lighting-module"');
+  });
+
+  it('marks no tile as included while a single module is picked', () => {
+    const markup = render({ feed: feedWith([dial('aa'), knobs()]) });
+    expect(markup).not.toContain('Included in Whole kit');
+  });
+
   it('lists five LEDs for a fader module and keeps the dial controls free of effects', () => {
     const faders: LiveDevice = { path_hex: 'fd', module: 'm005s', serial_number: null };
     const fadersMarkup = render({ feed: feedWith([faders]) });

@@ -101,6 +101,13 @@ export function lightingDeviceLabel(device: LiveDevice): string {
   return serial ? `${name} · …${serial.slice(-4)}` : name;
 }
 
+// What lighting a module takes, for the picker tiles: a short capability line.
+export function lightingCapability(module: ServiceModule): string {
+  const kind = lightingKind(module);
+  if (kind === 'dial') return 'Backlight and colour';
+  return kind === 'led' ? `Colour, effect and brightness · ${ledCount(module)} LEDs` : 'Not lit yet';
+}
+
 // Accepts #rgb, rgb, #rrggbb and rrggbb; a valid colour is stored as #rrggbb
 // (the native picker's own format).
 export function normaliseHexColour(text: string): string | null {

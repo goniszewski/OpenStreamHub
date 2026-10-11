@@ -36,7 +36,7 @@ export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 10
   let glowIndex = 0;
   const lit = glows ? moved.replace(/fill="#8a3cff" opacity="0"/g, () => {
     const colour = glows[glowIndex++];
-    if (colour === 'unknown') return 'fill="#8a8a99" opacity=".28"';
+    if (colour === 'unknown') return 'fill="#a4a4b6" opacity=".5"';
     return colour ? `fill="${colour}" opacity="1"` : 'fill="#8a3cff" opacity="0"';
   }) : moved;
   if (!idPrefix) return lit;

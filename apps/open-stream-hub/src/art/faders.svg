@@ -22,7 +22,7 @@
     <g id="fader-0" transform="translate(310 0)">
       <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
       <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
-      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
       <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
         <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
         <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
@@ -38,7 +38,7 @@
     <g id="fader-1" transform="translate(603 0)">
       <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
       <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
-      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
       <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
         <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
         <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
@@ -54,7 +54,7 @@
     <g id="fader-2" transform="translate(895 0)">
       <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
       <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
-      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
       <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
         <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
         <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
@@ -70,7 +70,7 @@
     <g id="fader-3" transform="translate(1188 0)">
       <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
       <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
-      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
       <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
         <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
         <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
@@ -86,7 +86,7 @@
     <g id="fader-4" transform="translate(1481 0)">
       <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
       <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
-      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
       <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
         <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
         <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>

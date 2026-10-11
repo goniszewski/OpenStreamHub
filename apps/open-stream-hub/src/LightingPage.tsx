@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Grid2X2, Lightbulb, LightbulbOff, Palette, RotateCcw, Star, X } from 'lucide-react';
 import { SelectField } from './controls';
+import { ColourPicker } from './ColourPicker';
 import { idleFeedState } from './device-feed';
 import { resolveSelected } from './module-selection';
 import type { ModuleSelection } from './module-selection';
@@ -219,7 +220,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
         <div className="lighting-row">
           <label htmlFor="lighting-colour">Colour</label>
           <div className="lighting-colour">
-            <input id="lighting-colour" type="color" value={colour} onChange={event => setColourValue(event.target.value)} />
+            <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue} />
             <button type="button" className="button compact" onClick={saveFavourite}><Star size={15} />Save colour</button>
           </div>
         </div>

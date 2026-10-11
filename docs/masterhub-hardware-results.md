@@ -219,4 +219,5 @@ On the 15-key module with the desktop app (Module control App, "Dim a key while 
 
 `masterhub-service run --software-mode --display-sync --dial-content image` on the M131E with a profile whose `dial_display` held a prepared 240×240 JPEG (7 KB, `dial prepare-image` at quality 85): a test card of four coloured quadrants, a white cross and a black tab in the top-left corner. The app and its helpers were closed first. Two runs of 25 and 45 seconds: the service reported one display sync with the face `image`, written, no failures, and ended on schedule. The user saw the card on the dial, upright; the black tab sat just outside the round border, as expected for a corner of a square picture on a round screen. After each run the dial returned to its built-in animation.
 
-- **Not done:** a picture through the app's own Display tab and a normal app run; fit, rotation and background on the dial; a profile with a kept source picture.
+- **Through the app (11 October 2026):** the same test card, chosen on the dial's Display tab ("Custom image") and drawn by a normal app run, showed on the dial (user-observed).
+- **Not checked:** the effect of fit, rotation and background on the dial; reopening the app to find the kept source picture and its controls.

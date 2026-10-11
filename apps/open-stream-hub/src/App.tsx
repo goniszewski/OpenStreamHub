@@ -26,7 +26,6 @@ import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Load
 import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
-import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
 import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
@@ -204,7 +203,7 @@ export default function App() {
   // The module drawer: one picker for the pages that act on a module. Workspace picks a module kind
   // (bindings belong to a kind), Lighting and Artwork a unit; both read the one shared pick, so a
   // pick made on one page is the pick on the next.
-  const drawerPage: DrawerPage | null = page === 'workspace' || page === 'artwork' || page === 'lighting' ? page : null;
+  const drawerPage: DrawerPage | null = page === 'workspace' || page === 'lighting' ? page : null;
   const [navCollapsed, setNavCollapsed] = useState(() => readNavCollapsed(webStorage()));
   const [drawerOpen, setDrawerOpen] = useState(() => readDrawerOpen(webStorage()));
   const tiles = drawerPage ? drawerTiles({ page: drawerPage, devices: pickableModules, selectedPath: pick.path, markedPaths: pick.marked, editorKind: editor.selectedModule }) : [];
@@ -527,9 +526,6 @@ export default function App() {
           </div>
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
         </div>}
-        {page === 'artwork' && <>
-          <ArtworkPage desktop={desktop} invoke={invokeCommand} selection={moduleSelection} devices={pickableModules} />
-        </>}
         {page === 'lighting' && <>
           <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} lighting={lightingState} />
         </>}

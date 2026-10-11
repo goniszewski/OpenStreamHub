@@ -9,10 +9,10 @@ describe('shortcutAction', () => {
     expect(shortcutAction(key('s', { metaKey: true }), true)).toEqual({ type: 'save' });
     expect(shortcutAction(key('S', { metaKey: true }), true)).toEqual({ type: 'save' });
     expect(shortcutAction(key('d', { metaKey: true }), true)).toEqual({ type: 'duplicate' });
-    expect(shortcutAction(key('3', { metaKey: true }), true)).toEqual({ type: 'page', page: 'lighting' });
+    expect(shortcutAction(key('2', { metaKey: true }), true)).toEqual({ type: 'page', page: 'lighting' });
     expect(shortcutAction(key('s', { ctrlKey: true }), false)).toEqual({ type: 'save' });
     expect(shortcutAction(key('1', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'workspace' });
-    expect(shortcutAction(key('2', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'artwork' });
+    expect(shortcutAction(key('3', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'demos' });
     expect(shortcutAction(key('4', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'compatibility' });
     expect(shortcutAction(key('5', { ctrlKey: true }), false)).toEqual({ type: 'page', page: 'settings' });
   });
@@ -52,7 +52,7 @@ describe('handleShortcut', () => {
     handleShortcut({ ...key('d', { metaKey: true }), preventDefault }, h, false);
     expect(h.duplicate).toHaveBeenCalledOnce();
     handleShortcut({ ...key('2', { metaKey: true }), preventDefault }, h, false);
-    expect(h.setPage).toHaveBeenCalledWith('artwork');
+    expect(h.setPage).toHaveBeenCalledWith('lighting');
   });
 
   it('respects disabled pages and open modals', () => {

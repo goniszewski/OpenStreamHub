@@ -10,7 +10,7 @@ const render = (collapsed: boolean, page: Page = 'lighting') => renderToStaticMa
 describe('SidebarNav', () => {
   it('expanded, shows every label, the appearance picker and a Collapse button, with no tooltips', () => {
     const markup = render(false);
-    for (const label of ['Workspace', 'Display artwork', 'Lighting', 'Compatibility', 'Getting started', 'About', 'Settings']) {
+    for (const label of ['Workspace', 'Lighting', 'Compatibility', 'Getting started', 'About', 'Settings']) {
       expect(markup).toContain(`<span class="nav-label">${label}</span>`);
     }
     expect(markup).toContain('class="theme-picker"');
@@ -20,14 +20,14 @@ describe('SidebarNav', () => {
     expect(markup).not.toContain('data-tip="Workspace"');
     // The visible label already names the button; a tooltip below it would spill out of the scrolling sidebar.
     expect(markup).not.toContain('data-tip="Collapse sidebar"');
-    expect(markup).toContain('title="Prepare images for module displays offline"');
+    expect(markup).toContain('title="Small games and experiments that play on a module"');
   });
   it('collapsed, keeps each page reachable as an icon named by its tooltip and accessible label', () => {
     const markup = render(true);
     expect(markup).toContain('class="sidebar collapsed"');
     expect(markup).not.toContain('nav-label');
     expect(markup).not.toContain('class="theme-picker"');
-    for (const label of ['Workspace', 'Display artwork', 'Lighting', 'Compatibility', 'Getting started', 'About', 'Settings']) {
+    for (const label of ['Workspace', 'Lighting', 'Compatibility', 'Getting started', 'About', 'Settings']) {
       expect(markup).toContain(`data-tip="${label}" aria-label="${label}"`);
     }
     expect(markup).toContain('aria-label="Expand sidebar" data-tip="Expand sidebar"');

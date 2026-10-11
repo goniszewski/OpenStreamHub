@@ -1,4 +1,3 @@
-import { moduleAcceptsDisplayArtwork, moduleArtworkCaption } from './artwork-model';
 import type { ModuleId } from './ui-model';
 import { lightingCapability, lightingKind } from './lighting-model';
 import type { LightingDevice, LightingModule } from './lighting-model';
@@ -6,7 +5,7 @@ import { resolveSelected } from './module-selection';
 import { modules } from './ui-model';
 
 // The pages the module drawer sits above, each listing the modules it can act on.
-export type DrawerPage = 'workspace' | 'artwork' | 'lighting';
+export type DrawerPage = 'workspace' | 'lighting';
 
 export interface DrawerTile {
   key: string;
@@ -32,7 +31,7 @@ interface DrawerInput {
   editorKind: ModuleId;
 }
 
-// The tiles for one page. Lighting and Artwork list the connected units, one tile each, and pick the
+// The tiles for one page. Lighting lists the connected units, one tile each, and pick the
 // shared selection. Workspace lists every module kind (several units of a kind get a tile each; a
 // kind with none is one "Not connected" tile) and picks by the editor's kind, so the shared pick wins
 // only when it is a unit of that kind.
@@ -41,10 +40,10 @@ export function drawerTiles({ page, devices, selectedPath, markedPaths, editorKi
   if (page !== 'workspace') {
     return devices.map(device => ({
       key: device.path_hex, module: device.module, path: device.path_hex, serial: device.serial_number,
-      caption: page === 'artwork' ? moduleArtworkCaption(device) : lightingCapability(device.module),
+      caption: lightingCapability(device.module),
       picked: device.path_hex === selected?.path_hex,
       marked: markedPaths.includes(device.path_hex),
-      dimmed: page === 'artwork' ? !moduleAcceptsDisplayArtwork(device) : lightingKind(device.module) === null,
+      dimmed: lightingKind(device.module) === null,
     }));
   }
   const tiles: DrawerTile[] = [];

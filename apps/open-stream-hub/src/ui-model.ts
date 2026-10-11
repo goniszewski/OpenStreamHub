@@ -3,7 +3,7 @@ import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOp
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
-export type Page = 'workspace' | 'artwork' | 'lighting' | 'demos' | 'compatibility' | 'settings' | 'about';
+export type Page = 'workspace' | 'lighting' | 'demos' | 'compatibility' | 'settings' | 'about';
 
 export const appearanceStorageKey = 'open-stream-hub.appearance';
 

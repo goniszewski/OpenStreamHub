@@ -27,12 +27,6 @@ describe('drawerTiles', () => {
     expect(keys(drawerTiles(input({ selectedPath: 'fd', markedPaths: ['k1', 'fd'] })), 'marked')).toEqual(['k1', 'fd']);
     expect(keys(drawerTiles(input({ selectedPath: 'fd' })), 'picked')).toEqual(['fd']);
   });
-  it('Artwork captions the displays and dims the modules without one', () => {
-    const tiles = drawerTiles(input({ page: 'artwork' }));
-    expect(tiles.find(tile => tile.key === 'dl')?.caption).toBe('Round display, 240 px');
-    expect(tiles.find(tile => tile.key === 'ke')?.caption).toBe('Key displays, 72 px');
-    expect(keys(tiles, 'dimmed')).toEqual(['bs', 'k1', 'fd']);
-  });
   it('Workspace lists every module kind once per unit, "Not connected" for the rest, and never the base', () => {
     const tiles = drawerTiles(input({ page: 'workspace', devices: [base, dial, knob1, knob2] }));
     expect(tiles.map(tile => tile.key)).toEqual(['dl', 'm4315', 'k1', 'k2', 'm005s', 'm032le']);

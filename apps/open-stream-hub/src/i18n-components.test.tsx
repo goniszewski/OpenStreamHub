@@ -23,9 +23,9 @@ describe('components in Polish', () => {
     expect(nav()).toContain('Workspace');
     i18n.setLanguage('pl');
     const polish = nav();
-    for (const word of ['Obszar roboczy', 'Grafiki wyświetlaczy', 'Podświetlenie', 'Zgodność', 'Pierwsze kroki', 'O programie', 'Ustawienia', 'Zwiń']) expect(polish).toContain(word);
+    for (const word of ['Obszar roboczy', 'Podświetlenie', 'Zgodność', 'Pierwsze kroki', 'O programie', 'Ustawienia', 'Zwiń']) expect(polish).toContain(word);
     expect(polish).toContain('aria-label="Nawigacja główna"');
-    expect(polish).toContain('title="Przygotuj obrazy dla wyświetlaczy modułów bez połączenia"');
+    expect(polish).toContain('title="Małe gry i eksperymenty na module"');
     expect(polish).not.toContain('Workspace');
     i18n.setLanguage('en');
     expect(nav()).toContain('Workspace');

@@ -11,7 +11,7 @@ export interface KeyEventLike {
   target?: unknown;
 }
 
-export const shortcutPages: readonly Page[] = ['workspace', 'artwork', 'lighting', 'compatibility', 'settings'];
+export const shortcutPages: readonly Page[] = ['workspace', 'lighting', 'demos', 'compatibility', 'settings'];
 
 export function isMacPlatform(navigatorLike: { platform?: string; userAgent?: string } | undefined) {
   return /mac/i.test(navigatorLike?.platform || navigatorLike?.userAgent || '');
@@ -68,8 +68,8 @@ export const shortcutList: { keys: string; label: string }[] = [
   { keys: '⌫', label: 'Clear the selected key or remove the selected binding (a folder asks first)' },
   { keys: 'F', label: 'Search bindings (opens the bindings drawer)' },
   { keys: '1', label: 'Workspace' },
-  { keys: '2', label: 'Display artwork' },
-  { keys: '3', label: 'Lighting' },
+  { keys: '2', label: 'Lighting' },
+  { keys: '3', label: 'Demos' },
   { keys: '4', label: 'Compatibility' },
   { keys: '5', label: 'Settings' },
 ];

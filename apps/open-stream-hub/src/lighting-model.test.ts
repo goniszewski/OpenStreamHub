@@ -247,7 +247,7 @@ describe('the base', () => {
     expect(lightingKind('m0064')).toBe('led');
     expect(ledCount('m0064')).toBe(1);
     expect(lightingCapability('m0064')).toBe('Colour, effect and brightness · 1 LED');
-    expect(lightingModuleInfo('m0064')).toEqual({ name: 'MasterHUB base', image: { src: '/modules/base.svg' } });
+    expect(lightingModuleInfo('m0064')).toEqual({ name: 'MasterHUB base', image: { src: '/modules/base-topdown.svg' } });
     expect(lightingDeviceLabel(base)).toBe('MasterHUB base · …1980');
   });
   it('is reached by Whole kit together with the knobs and faders, and lit on its own', () => {

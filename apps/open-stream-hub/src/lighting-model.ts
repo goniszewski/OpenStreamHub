@@ -102,7 +102,7 @@ function moduleShortName(module: LightingModule): string {
 
 // The name and photo the pickers show for a module.
 export function lightingModuleInfo(module: LightingModule): { name: string; image: { src: string; style?: { transform: string } } | null } {
-  if (module === 'm0064') return { name: 'MasterHUB base', image: { src: '/modules/base.svg' } };
+  if (module === 'm0064') return { name: 'MasterHUB base', image: { src: '/modules/base-topdown.svg' } };
   const info = modules.find(item => item.id === module);
   return { name: info?.shortName ?? 'This module', image: info ? moduleImage(info) : null };
 }

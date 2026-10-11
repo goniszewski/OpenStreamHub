@@ -1,0 +1,54 @@
+import fadersSource from './art/faders.svg?raw';
+
+// The module artwork is SVG. The 15-key and encoder art is drawn in two layers: the module itself
+// (`/modules/keys.svg`, `/modules/encoder.svg`) and a transparent glass layer (`*-glass.svg`). A stage puts the
+// display content between the two, so pictures sit "under the glass". The 5-fader art is rendered from source
+// here because its caps move with the fader values.
+
+// Art units of faders.svg (1774 x 887): a cap centre runs from `faderCapBottom` (value 0) up to `faderCapTop`
+// (maximum), inside a slot that is `faderSlot` tall.
+const faderCapBottom = 675;
+const faderCapTop = 305;
+const faderSlot = { top: 205, bottom: 775 };
+const faderRestingCap = 490;
+
+export const faderArtAspect = 2;
+// How far in from the slot's ends the cap centre stops, as a fraction of the slot. A hit area that spans the
+// slot maps the pointer onto the cap centre's range with this inset at both ends.
+export const faderTrackInset = (faderCapTop - faderSlot.top) / (faderSlot.bottom - faderSlot.top);
+
+export const defaultFaderValues: readonly number[] = [50, 50, 50, 50, 50];
+
+export function faderCapCentre(value: number, maximum = 100): number {
+  const ratio = Math.min(Math.max(value / maximum, 0), 1);
+  return faderCapBottom - ratio * (faderCapBottom - faderCapTop);
+}
+
+// The fader art with each cap at its value. `idPrefix` keeps gradient ids unique when several are inline on one page.
+export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 100): string {
+  let index = 0;
+  const moved = fadersSource.replace(new RegExp(`class="cap" transform="translate\\(0 ${faderRestingCap}\\)`, 'g'), () => {
+    const value = values[index++] ?? defaultFaderValues[0];
+    return `class="cap" transform="translate(0 ${Math.round(faderCapCentre(value, maximum) * 10) / 10})`;
+  });
+  if (!idPrefix) return moved;
+  return moved.replace(/\bid="([^"]+)"/g, `id="${idPrefix}$1"`).replace(/url\(#([^)]+)\)/g, `url(#${idPrefix}$1)`);
+}
+
+const dataUrls = new Map<string, string>();
+// A standalone image of the fader art, for places that show a module as a plain picture.
+export function fadersDataUrl(values: readonly number[]): string {
+  const key = values.join(',');
+  let url = dataUrls.get(key);
+  if (!url) {
+    url = `data:image/svg+xml,${encodeURIComponent(fadersSvg(values))}`;
+    dataUrls.set(key, url);
+    if (dataUrls.size > 64) dataUrls.delete(dataUrls.keys().next().value!);
+  }
+  return url;
+}
+
+// The glass layer that goes over a display module's display content, or undefined for modules without displays.
+export function moduleGlass(id: string): string | undefined {
+  return id === 'm4315' ? '/modules/keys-glass.svg' : id === 'm131e' ? '/modules/encoder-glass.svg' : undefined;
+}

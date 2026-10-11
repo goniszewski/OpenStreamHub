@@ -2761,7 +2761,7 @@ pub mod fake {
             path_hex: encode_hex(path.as_bytes()),
             module,
             serial_number: serial.map(str::to_owned),
-            base_position: None,
+            base_cell: None,
         }
     }
 

@@ -7,7 +7,8 @@ import {
 } from './artwork-model';
 import type { ArtworkFit, ArtworkOptions, ArtworkTarget, PrepareResult, SaveResult } from './artwork-model';
 import { formatBytes } from './diagnostics';
-import { moduleArtwork } from './module-controls';
+import { ModuleGlass } from './ModuleArt';
+import { dialScreen, moduleArtwork } from './module-controls';
 import { resolveSelected } from './module-selection';
 import type { ModuleSelection } from './module-selection';
 import type { LightingDevice } from './lighting-model';
@@ -17,9 +18,8 @@ import { copyText } from './ProfileTransfer';
 export interface ArtworkSource { name: string; base64: string; mime: string; size: number }
 
 // The encoder screen has the same two-level geometry as the main hero in
-// DevicesPage: the single-display box (20/14/60/56 of the artwork), and inside it
-// the round screen from `.encoder-display` in styles.css (17/16/65/63).
-const encoderBox = { left: 20, top: 14, width: 60, height: 56 };
+// The encoder's round screen on encoder.svg, the same box the Devices page puts the dial face in.
+const encoderBox = dialScreen;
 
 // The prepared JPEG fills the display area (cover, clipped to the round screen
 // for the dial); the stage only scales it.
@@ -33,8 +33,9 @@ function ArtworkStage({ target, src, busy }: { target: ArtworkTarget; src: strin
   </div>;
   return <div className={`artwork-stage ${dial ? 'dial' : 'keypad'}`} style={{ '--art-aspect': dial ? 1 : moduleArtwork.m4315.aspect } as CSSProperties}
     role="img" aria-label={dial ? 'Prepared image on the encoder display' : 'Prepared image on key 1 of the 15-key display'}>
-    <img className="artwork-module" src={`/modules/${dial ? 'encoder' : 'keys'}.png`} alt="" draggable={false} />
+    <img className="artwork-module" src={`/modules/${dial ? 'encoder' : 'keys'}.svg`} alt="" draggable={false} />
     {dial ? <div className="artwork-dial-box" style={style}>{display}</div> : display}
+    <ModuleGlass module={dial ? 'm131e' : 'm4315'} />
   </div>;
 }
 

@@ -93,19 +93,23 @@ pub struct LiveDevice {
     pub module: ServiceModule,
     pub serial_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub base_position: Option<BasePosition>,
+    pub base_cell: Option<BaseCell>,
 }
 
-/// Physical quadrant on the 4x6 MasterHUB base, oriented with its USB-C edges
-/// at the top and left. These locations are recognized from the observed
-/// macOS USB port paths for this base layout.
+/// Top-left cell a module occupies on the 4x6 MasterHUB base, counted from the
+/// base's top-left corner with its USB-C edges at the top and left (`col` 0 to
+/// 5, `row` 0 to 3). The module's footprint extends right and down from here. A
+/// negative `row` or `col` means the module starts beyond that edge, so part of
+/// it hangs outside the base. These cells are recognized from the observed
+/// macOS USB port paths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BasePosition {
-    TopLeft,
-    BottomLeft,
-    TopRight,
-    BottomRight,
+pub struct BaseCell {
+    pub col: i8,
+    pub row: i8,
+}
+
+const fn cell(col: i8, row: i8) -> Option<BaseCell> {
+    Some(BaseCell { col, row })
 }
 
 /// Payload of `device://inventory`: every input-capable device, sorted.
@@ -163,23 +167,26 @@ fn live_devices_with_locations(
             path_hex,
             module: *module,
             serial_number: device.serial_number.clone(),
-            base_position: location_ids
+            base_cell: location_ids
                 .get(device.path.as_bytes())
-                .and_then(|location_id| base_position(*module, *location_id)),
+                .and_then(|location_id| base_cell(*module, *location_id)),
         });
     }
     sort_devices(&mut listed);
     listed
 }
 
-/// Resolves the currently documented MasterHUB USB topology to a base
-/// quadrant. The high location-ID byte identifies the host bus; the trailing
-/// port chain is stable across bus-number changes. The observed suffixes are
-/// M4315 `[1,2,2]` (top-left) and `[1,1,2,3]` (bottom-left, 10 October 2026
-/// arrangement with the rollers above it), M032LE `[1,1,1,4]`, M005S `[1,1,2,3]`, M131E `[1,1,4,3]`
-/// and M003K `[1,1,3,4]`. The faders and the rollers both fill the bottom-left
-/// strip. Unknown chains stay unset.
-pub fn base_position(module: ServiceModule, location_id: u32) -> Option<BasePosition> {
+/// Resolves the currently documented MasterHUB USB topology to the cell a
+/// module starts at. The high location-ID byte identifies the host bus; the
+/// trailing port chain is stable across bus-number changes. Footprints are
+/// M4315 4x3, M005S 4x2, M032LE 4x1, M131E and M003K 2x2 (columns by rows
+/// here, as in the product names). Observed suffixes: M4315 `[1,2,2]` (top-left),
+/// `[1,1,1,1,1]` (top-left with its top row 1 cell above the base, 11 October
+/// 2026, the keys and faders together being 5 rows tall) and `[1,1,2,3]`
+/// (bottom-left, 10 October 2026 arrangement with the rollers above it);
+/// M032LE `[1,1,1,4]`; M005S `[1,1,2,3]`; M131E `[1,1,4,3]`; M003K `[1,1,3,4]`.
+/// Unknown chains stay unset.
+pub fn base_cell(module: ServiceModule, location_id: u32) -> Option<BaseCell> {
     let mut ports: Vec<u8> = (0..6)
         .map(|index| ((location_id >> (20 - 4 * index)) & 0x0f) as u8)
         .collect();
@@ -189,12 +196,13 @@ pub fn base_position(module: ServiceModule, location_id: u32) -> Option<BasePosi
 
     let ends_with = |suffix: &[u8]| ports.ends_with(suffix);
     match module {
-        ServiceModule::M4315 if ends_with(&[1, 2, 2]) => Some(BasePosition::TopLeft),
-        ServiceModule::M4315 if ends_with(&[1, 1, 2, 3]) => Some(BasePosition::BottomLeft),
-        ServiceModule::M032LE if ends_with(&[1, 1, 1, 4]) => Some(BasePosition::BottomLeft),
-        ServiceModule::M005S if ends_with(&[1, 1, 2, 3]) => Some(BasePosition::BottomLeft),
-        ServiceModule::M131E if ends_with(&[1, 1, 4, 3]) => Some(BasePosition::TopRight),
-        ServiceModule::M003K if ends_with(&[1, 1, 3, 4]) => Some(BasePosition::BottomRight),
+        ServiceModule::M4315 if ends_with(&[1, 2, 2]) => cell(0, 0),
+        ServiceModule::M4315 if ends_with(&[1, 1, 1, 1, 1]) => cell(0, -1),
+        ServiceModule::M4315 if ends_with(&[1, 1, 2, 3]) => cell(0, 1),
+        ServiceModule::M032LE if ends_with(&[1, 1, 1, 4]) => cell(0, 3),
+        ServiceModule::M005S if ends_with(&[1, 1, 2, 3]) => cell(0, 2),
+        ServiceModule::M131E if ends_with(&[1, 1, 4, 3]) => cell(4, 0),
+        ServiceModule::M003K if ends_with(&[1, 1, 3, 4]) => cell(4, 2),
         _ => None,
     }
 }
@@ -723,21 +731,28 @@ mod tests {
     fn faders_on_the_observed_port_chain_sit_bottom_left() {
         // macOS location ID 0x02112300, read from a connected 5-fader module.
         assert_eq!(
-            super::base_position(ServiceModule::M005S, 0x0211_2300),
-            Some(BasePosition::BottomLeft)
+            super::base_cell(ServiceModule::M005S, 0x0211_2300),
+            super::cell(0, 2)
         );
-        assert_eq!(
-            super::base_position(ServiceModule::M005S, 0x0211_1340),
-            None
-        );
+        assert_eq!(super::base_cell(ServiceModule::M005S, 0x0211_1340), None);
     }
 
     #[test]
     fn keys_on_the_bottom_left_port_chain_sit_bottom_left() {
         // macOS location ID 0x02112300, read from a connected 15-key module.
         assert_eq!(
-            super::base_position(ServiceModule::M4315, 0x0211_2300),
-            Some(BasePosition::BottomLeft)
+            super::base_cell(ServiceModule::M4315, 0x0211_2300),
+            super::cell(0, 1)
+        );
+    }
+
+    #[test]
+    fn keys_overhanging_the_top_edge_start_above_the_base() {
+        // macOS location ID 0x02111110, read from a connected 15-key module
+        // whose top row hangs off the base above the five-fader module.
+        assert_eq!(
+            super::base_cell(ServiceModule::M4315, 0x0211_1110),
+            super::cell(0, -1)
         );
     }
 
@@ -1132,7 +1147,7 @@ mod tests {
             path_hex: encode_hex(path.as_bytes()),
             module,
             serial_number: serial.map(str::to_owned),
-            base_position: None,
+            base_cell: None,
         }
     }
 
@@ -1292,19 +1307,19 @@ mod tests {
                     path_hex: encode_hex(b"knobs-vendor"),
                     module: ServiceModule::M003K,
                     serial_number: Some("K1".into()),
-                    base_position: None,
+                    base_cell: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"faders"),
                     module: ServiceModule::M005S,
                     serial_number: None,
-                    base_position: None,
+                    base_cell: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"keys"),
                     module: ServiceModule::M4315,
                     serial_number: Some("K2".into()),
-                    base_position: None,
+                    base_cell: None,
                 },
             ]
         );

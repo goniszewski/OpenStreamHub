@@ -142,8 +142,9 @@ export interface LiveInputEvent { timestamp_micros: number; control: number; ges
 export interface DeviceInputPayload { feed_id: string; module: ServiceModule; serial_number: string | null; event: LiveInputEvent }
 export type FeedState = 'running' | 'finished' | 'stopped' | 'failed';
 export interface DeviceStatusPayload { feed_id: string; state: FeedState; source: 'demo' | 'live'; module: ServiceModule | null; error?: string }
-export type BasePosition = 'top_left' | 'bottom_left' | 'top_right' | 'bottom_right';
-export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null; base_position?: BasePosition }
+// Top-left cell of a module on the 6 × 4 base; negative when the module starts beyond the top or left edge.
+export interface BaseCell { col: number; row: number }
+export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null; base_cell?: BaseCell }
 export interface DeviceInventoryPayload { devices: LiveDevice[] }
 export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };
 

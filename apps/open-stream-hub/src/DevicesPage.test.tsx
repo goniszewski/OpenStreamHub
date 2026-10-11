@@ -55,11 +55,11 @@ describe('3-knob module orientation', () => {
 
   it('rotates the hero and rig art through all four orientations and wraps', () => {
     const steps: { label: string; rotation: number; single: { left: number; top: number }; first: { left: number; top: number } }[] = [
-      { label: 'Single knob on top', rotation: 0, single: { left: 39, top: 22 }, first: { left: 22, top: 55 } },
-      { label: 'Single knob on the right', rotation: 90, single: { left: 56, top: 39 }, first: { left: 23, top: 22 } },
-      { label: 'Single knob at the bottom', rotation: 180, single: { left: 39, top: 56 }, first: { left: 56, top: 23 } },
-      { label: 'Single knob on the left', rotation: 270, single: { left: 22, top: 39 }, first: { left: 55, top: 56 } },
-      { label: 'Single knob on top', rotation: 0, single: { left: 39, top: 22 }, first: { left: 22, top: 55 } },
+      { label: 'Single knob on top', rotation: 0, single: { left: 38.5, top: 26.5 }, first: { left: 22.5, top: 45.5 } },
+      { label: 'Single knob on the right', rotation: 90, single: { left: 50.5, top: 38.5 }, first: { left: 31.5, top: 22.5 } },
+      { label: 'Single knob at the bottom', rotation: 180, single: { left: 38.5, top: 50.5 }, first: { left: 54.5, top: 31.5 } },
+      { label: 'Single knob on the left', rotation: 270, single: { left: 26.5, top: 38.5 }, first: { left: 45.5, top: 54.5 } },
+      { label: 'Single knob on top', rotation: 0, single: { left: 38.5, top: 26.5 }, first: { left: 22.5, top: 45.5 } },
     ];
     steps.forEach((step, index) => {
       if (index) clickRotate();
@@ -67,7 +67,7 @@ describe('3-knob module orientation', () => {
       expect(markup).toContain(`aria-live="polite">${step.label}</span>`);
       expect(markup).toContain('aria-label="Rotate module 90 degrees clockwise"');
       // Both the hero and the rig tile use the top-down art with the same rotation.
-      const images = markup.match(/<img src="\/modules\/knob-top\.svg"[^>]*>/g) ?? [];
+      const images = markup.match(/<img src="\/modules\/knob\.svg"[^>]*>/g) ?? [];
       expect(images).toHaveLength(2);
       for (const image of images) expect(image).toContain(`transform:rotate(${step.rotation}deg)`);
       expect(markup).not.toContain('/modules/knob.png" alt="" draggable');
@@ -84,18 +84,20 @@ describe('3-knob module orientation', () => {
   it('keeps the other modules on their photos without the orientation control', () => {
     const faders = { ...editor, selectedModule: 'm005s', selected: modules.find(module => module.id === 'm005s')!, selection: { module: 'm005s', control: 0, gesture: 'moved', serial: '' } } as unknown as DeviceEditor;
     const markup = renderToStaticMarkup(<DeviceWorkspace editor={faders} state={state} desktop={false} disabled={false} setPage={() => {}} />);
-    expect(markup).toContain('src="/modules/faders.png"');
+    // The fader art is drawn inline so its caps can move.
+    expect(markup).toContain('class="module-art-inline"');
+    expect(markup).not.toContain('faders.png');
     expect(markup).not.toContain('Rotate module');
   });
 
   it('shows the canonical top-down art, unrotated, in the catalog and the compatibility table', () => {
     knobOrientationStore.set('single-left');
     const catalog = renderToStaticMarkup(<ModuleDrawer tiles={drawerTiles({ page: 'workspace', devices: [], selectedPath: null, markedPaths: [], editorKind: 'm003k' })} open onToggle={() => {}} onPick={() => {}} />);
-    expect(catalog).toContain('src="/modules/knob-top.svg"');
+    expect(catalog).toContain('src="/modules/knob.svg"');
     expect(catalog).not.toContain('knob.png');
-    expect(catalog).not.toMatch(/knob-top\.svg"[^>]*transform/);
+    expect(catalog).not.toMatch(/knob\.svg"[^>]*transform/);
     const table = renderToStaticMarkup(<CompatibilityPage />);
-    expect(table).toMatch(/<img src="\/modules\/knob-top\.svg" alt=""\/>/);
+    expect(table).toMatch(/<img src="\/modules\/knob\.svg" alt=""\/>/);
     expect(table).not.toContain('knob.png');
   });
 });
@@ -134,7 +136,7 @@ describe('hero live input', () => {
     expect(knob3).not.toMatch(/class="[^"]*pressed/);
     expect(heroButton(markup, 'Select Knob 1 on module image')).toMatch(/class="image-control round selected pressed"/);
     // The needle sits inside an unrotated hit area, positioned by the computed percentages.
-    expect(knob3).toContain('style="left:39%;top:22%');
+    expect(knob3).toContain('style="left:38.5%;top:26.5%');
   });
 
   it('shows the live encoder needle and press on the hero without making it a control', async () => {
@@ -170,15 +172,18 @@ describe('hero live input', () => {
     expect(roller.find(button => button.includes('live-pulse up'))).toContain('lucide-chevron-up');
   });
 
-  it('shows the live fader thumb on the hero only where a live value exists', async () => {
+  it('moves the fader caps on the hero to their values, live where there is one', async () => {
     const { feed, send } = await liveFeed();
     send('m005s', 3, 'position_changed', { type: 'position', raw: 30, maximum: 100 });
     const markup = hero(renderToStaticMarkup(<DeviceWorkspace editor={forModule('m005s')} state={state} feed={feed} desktop disabled={false} setPage={() => {}} />), '5x Fader Precision');
     const faders = markup.match(/<button[^>]*aria-label="Select [^"]+ on module image"[^>]*>.*?<\/button>/g) ?? [];
     expect(faders).toHaveLength(5);
-    expect(faders.filter(button => button.includes('fader-thumb'))).toHaveLength(1);
     expect(faders[3]).toMatch(/class="image-control live"/);
-    expect(faders[3]).toContain('<span class="fader-thumb" style="bottom:30%"></span>');
+    expect(faders.filter(button => button.includes('live'))).toHaveLength(1);
+    expect(markup).not.toContain('fader-thumb');
+    // Cap centres run from y=675 (0) to y=305 (100): the live fader at 30 sits at 564, the rest rest at 50 (490).
+    const caps = [...markup.matchAll(/class="cap" transform="translate\(0 ([\d.]+)\)/g)].map(match => Number(match[1]));
+    expect(caps).toEqual([490, 490, 490, 564, 490]);
   });
 
   it('keeps the feed subscription out of the surrounding workspace', () => {

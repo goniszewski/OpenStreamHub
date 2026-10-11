@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1254 1254" role="img" aria-label="Encoder IPS display">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b2c30"/><stop offset=".5" stop-color="#17181b"/><stop offset="1" stop-color="#0b0b0d"/></linearGradient>
+    <linearGradient id="shellRim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5c63"/><stop offset=".15" stop-color="#2a2b2f"/><stop offset="1" stop-color="#0d0d0f"/></linearGradient>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1e1f22"/><stop offset="1" stop-color="#141517"/></linearGradient>
+    <radialGradient id="knurl" cx="50%" cy="40%" r="60%"><stop offset="0" stop-color="#3e3e44"/><stop offset="1" stop-color="#26262a"/></radialGradient>
+    <linearGradient id="bezel" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5a5a62"/><stop offset=".5" stop-color="#2c2c31"/><stop offset="1" stop-color="#17171a"/></linearGradient>
+    <radialGradient id="glass" cx="50%" cy="45%" r="60%"><stop offset="0" stop-color="#16161b"/><stop offset="1" stop-color="#040405"/></radialGradient>
+    <radialGradient id="screen" cx="50%" cy="45%" r="60%"><stop offset="0" stop-color="#171a2a"/><stop offset=".7" stop-color="#0d0f19"/><stop offset="1" stop-color="#07080e"/></radialGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".12"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="tooth" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4a51"/><stop offset="1" stop-color="#2c2c31"/></linearGradient>
+    <filter id="drop" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="22"/></filter>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="10"/></filter>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5"/></filter>
+  </defs>
+  <g transform="translate(0 100)">
+  <rect x="148" y="85" width="960" height="960" rx="96" fill="#000" opacity=".5" filter="url(#drop)"/>
+  <g id="base">
+    <rect x="148" y="47" width="960" height="960" rx="96" fill="url(#shell)" stroke="url(#shellRim)" stroke-width="5"/>
+    <rect x="162" y="61" width="932" height="932" rx="84" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>
+    <rect x="236" y="135" width="784" height="784" rx="62" fill="#0c0c0e" stroke="#3a3c42" stroke-width="2"/>
+    <rect x="248" y="147" width="760" height="760" rx="52" fill="url(#plate)" stroke="#050506" stroke-width="3"/>
+  </g>
+  <g id="encoder" transform="translate(628 527)">
+    <circle r="388" fill="#000" opacity=".55" filter="url(#soft)"/>
+    <g id="knob">
+      <circle r="378" fill="#0a0a0c" stroke="#050506" stroke-width="4"/>
+      <circle r="372" fill="url(#knurl)"/>
+      <g fill="url(#tooth)" stroke="#08080a" stroke-width="2.5"><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(0.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(7.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(15.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(22.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(30.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(37.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(45.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(52.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(60.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(67.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(75.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(82.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(90.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(97.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(105.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(112.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(120.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(127.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(135.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(142.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(150.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(157.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(165.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(172.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(180.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(187.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(195.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(202.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(210.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(217.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(225.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(232.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(240.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(247.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(255.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(262.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(270.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(277.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(285.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(292.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(300.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(307.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(315.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(322.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(330.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(337.5)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(345.0)"/><rect x="-13" y="-376" width="26" height="42" rx="5" transform="rotate(352.5)"/></g>
+            <circle r="340" fill="url(#bezel)" stroke="#050506" stroke-width="4"/>
+      <circle r="318" fill="#0a0a0c" stroke="#26262a" stroke-width="2"/>
+      <circle r="304" fill="url(#glass)" stroke="#050506" stroke-width="3"/>
+      <path d="M-210 -214 A300 300 0 0 1 214 -210" fill="none" stroke="#fff" stroke-opacity=".12" stroke-width="5" stroke-linecap="round"/>
+      <circle id="screen" r="250" fill="url(#screen)" stroke="#050506" stroke-width="3"/>
+      <circle r="250" fill="url(#sheen)"/>
+    </g>
+    <g id="glyph" fill="none" stroke="#d8d4ff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M-80 28 L-38 -22 L0 25 M-14 -8 L2 -32 L66 28 H-80" filter="url(#glow)" opacity=".55"/>
+      <path d="M-80 28 L-38 -22 L0 25 M-14 -8 L2 -32 L66 28 H-80"/>
+    </g>
+  </g>
+  </g>
+</svg>

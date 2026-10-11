@@ -13,7 +13,8 @@ import { keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
-import { knobControls, moduleArtwork, moduleImage } from './module-controls';
+import { ModuleArtImage, ModuleGlass } from './ModuleArt';
+import { dialScreen, knobControls, moduleArtwork } from './module-controls';
 import { livePointer, livePressed, livePulse, RigPreview } from './RigPreview';
 import { ServicePanel } from './ServicePanel';
 import type { RunSession } from './ServicePanel';
@@ -22,6 +23,7 @@ import type { DeviceFeed } from './device-feed';
 import type { ProfileSession, SessionState } from './profile-session';
 import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
+import { defaultFaderPosition } from './rig-model';
 import { keyMenuItems } from './useDeviceEditor';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -102,10 +104,12 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
   const live = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).live[selected.id];
   const isKnob = selected.id === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : moduleArtwork[selected.id].controls;
+  // Each cap shows its live value, else the value being tried in the editor for the selected fader.
+  const faderValues = selected.id === 'm005s' ? controls.map(area => live?.faders[area.control] ?? (selection.control === area.control ? editor.faderPosition : defaultFaderPosition)) : undefined;
   return <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
       <div className={`module-image${isKnob ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
-        <img {...moduleImage(selected, knobOrientation)} alt="" draggable={false} />
-        {selected.id === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><DialFace profile={profile} /></div>}
+        <ModuleArtImage module={selected} orientation={knobOrientation} faders={faderValues} />
+        {selected.id === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
         {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control, true)}</span>)}
         {selected.supported && controlCounts[selected.id] > 1 && controls.map(area => <button key={area.control} type="button"
@@ -116,9 +120,9 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
           onClick={() => editor.changeSelection({ ...selection, control: area.control })}
           {...controlDropHandlers(selected.id, area.control, disabled ? undefined : type => editor.dropAction(selected.id, area.control, type))}>
           {isKeypad && <KeyDisplayContent key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
-          {selected.id === 'm005s' && live?.faders[area.control] !== undefined && <span className="fader-thumb" style={{ bottom: `${live.faders[area.control]}%` }} />}
           {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}
         </button>)}
+        <ModuleGlass module={selected.id} />
       </div>
     </div>;
 }

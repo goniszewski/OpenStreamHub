@@ -5,14 +5,17 @@ import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import type { ModuleLive } from './live-state';
 import { DialFace, KeyDisplayContent } from './DisplayContent';
+import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
 import { keypadDepth, keypadIsBack } from './keypad-model';
 import { useKnobOrientation } from './knob-orientation';
-import { knobControls, moduleArtwork, moduleImage } from './module-controls';
+import { ModuleArtImage, ModuleGlass } from './ModuleArt';
+import { faderTrackInset } from './module-art';
+import { dialScreen, knobControls, moduleArtwork, moduleImage } from './module-controls';
 import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, faderFromKey, faderFromPointer, isDeviceItem, moveRigModule, readRig, removeRigModule, syncDeviceRig, writeRig } from './rig-model';
 import type { RigItem } from './rig-model';
 import type { SessionState } from './profile-session';
 import { controlLabel, faderMaximum, gestures, modules, replayLabels } from './ui-model';
-import type { BasePosition, LiveDevice, ReplayKind } from './contracts';
+import type { LiveDevice, ReplayKind } from './contracts';
 import type { ModuleId } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -23,11 +26,11 @@ const demoKinds = Object.keys(replayLabels) as ReplayKind[];
 const webStorage = { getItem: (key: string) => globalThis.localStorage?.getItem(key) ?? null, setItem: (key: string, value: string) => globalThis.localStorage?.setItem(key, value) };
 
 const noDevices: LiveDevice[] = [];
-const basePositionLabel: Record<BasePosition, string> = {
-  top_left: 'Top-left', bottom_left: 'Bottom-left', top_right: 'Top-right', bottom_right: 'Bottom-right',
-};
-const basePositionClass: Record<BasePosition, string> = {
-  top_left: 'top-left', bottom_left: 'bottom-left', top_right: 'top-right', bottom_right: 'bottom-right',
+const devicePlacement = (device: LiveDevice) => placementOf(device.module, device.base_cell!);
+const deviceLocation = (device: LiveDevice) => {
+  const placement = devicePlacement(device);
+  const overhang = overhangLabel(overhangOf(placement));
+  return `${placementLabel(placement)}${overhang ? ` (${overhang})` : ''}`;
 };
 
 function ConnectedBaseLayout({ devices, knobOrientation, selectedModule, onSelectModule }: {
@@ -37,17 +40,22 @@ function ConnectedBaseLayout({ devices, knobOrientation, selectedModule, onSelec
   onSelectModule(module: ModuleId): void;
 }) {
   if (devices.length === 0) return null;
-  const positioned = devices.filter(device => device.base_position);
-  const unpositioned = devices.filter(device => !device.base_position);
+  const positioned = devices.filter(device => device.base_cell);
+  const unpositioned = devices.filter(device => !device.base_cell);
+  const extent = layoutExtent(positioned.map(devicePlacement));
+  const gridStyle = { '--cols': extent.cols, '--rows': extent.rows } as CSSProperties;
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
-    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left</p></div><span>6 × 4 cells</span></div>
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left</p></div><span>{baseColumns} × {baseRows} cells</span></div>
     <div className="base-layout-frame">
-      <div className="base-layout-grid" role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${basePositionLabel[device.base_position!]}`).join(', ') || 'module positions not detected'}`}>
+      <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ') || 'module positions not detected'}`}>
+        <div className="base-layout-base" aria-hidden="true" style={{ gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
         {positioned.map(device => {
           const module = modules.find(entry => entry.id === device.module)!;
+          const placement = devicePlacement(device);
+          const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
           const image = moduleImage(module, device.module === 'm003k' ? knobOrientation : undefined);
-          return <button key={device.path_hex} type="button" className={`base-layout-module ${basePositionClass[device.base_position!]}${selectedModule === device.module ? ' selected' : ''}`} aria-label={`Select ${module.shortName}, ${basePositionLabel[device.base_position!]} on base`} aria-pressed={selectedModule === device.module} onClick={() => onSelectModule(device.module)}>
+          return <button key={device.path_hex} type="button" className={`base-layout-module${overhangs ? ' overhangs' : ''}${selectedModule === device.module ? ' selected' : ''}`} style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }} aria-label={`Select ${module.shortName}, ${deviceLocation(device)} on base`} aria-pressed={selectedModule === device.module} onClick={() => onSelectModule(device.module)}>
             <img src={image.src} style={image.style} alt="" draggable={false} />
             <span>{module.shortName}</span>
           </button>;
@@ -100,7 +108,9 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
   function dragFader(item: RigItem, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    const value = faderFromPointer(event.clientY - rect.top, rect.height, faderMaximum);
+    // The hit area spans the whole slot; a cap's centre only travels the part between its stops.
+    const inset = rect.height * faderTrackInset;
+    const value = faderFromPointer(event.clientY - rect.top - inset, rect.height - 2 * inset, faderMaximum);
     setFaders(current => ({ ...current, [`${item.id}:${control}`]: value }));
     if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(item, control); }
     if (active === item.id || event.type === 'pointerdown') editor.changeFaderPosition(value);
@@ -108,7 +118,7 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
 
   const faderValue = (item: RigItem, control: number) =>
     feedState.live[item.module]?.faders[control] ?? (item.id === active && selection.control === control ? editor.faderPosition : faders[`${item.id}:${control}`] ?? defaultFaderPosition);
-  const showConnectedLayout = feedState.devices.some(device => device.base_position !== undefined);
+  const showConnectedLayout = feedState.devices.some(device => device.base_cell !== undefined);
 
   return <section className="rig" aria-label="Module rig">
     {!showConnectedLayout && <div className="rig-heading"><h2>Rig</h2>
@@ -133,8 +143,8 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
         const live = feedState.live[item.module];
         return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
           <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${module.name} in rig`}>
-            <img {...moduleImage(module, knobOrientation)} alt="" draggable={false} />
-            {item.module === 'm131e' && <div className="single-display" style={{ left: '20%', top: '14%', width: '60%', height: '56%' }}><DialFace profile={profile} /></div>}
+            <ModuleArtImage module={module} orientation={knobOrientation} faders={item.module === 'm005s' ? [0, 1, 2, 3, 4].map(control => faderValue(item, control)) : undefined} />
+            {item.module === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
             {controls.map(area => {
               const action = controlAction(profile, item.module, area.control);
               const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
@@ -153,7 +163,6 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
                   aria-label={controlLabel(item.module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value}
                   onPointerDown={event => dragFader(item, area.control, event)} onPointerMove={event => dragFader(item, area.control, event)}
                   onKeyDown={event => { const next = faderFromKey(event.key, value, faderMaximum); if (next !== null) { event.preventDefault(); select(item, area.control); editor.changeFaderPosition(next); } }}>
-                  <span className="fader-thumb" style={{ bottom: `${value}%` }} />
                 </div>;
               }
               return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
@@ -161,8 +170,9 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
                 {livePulse(live, area.control)}
               </button>;
             })}
+            <ModuleGlass module={item.module} />
           </div>
-          <div className="rig-caption"><span title={module.shortName}>{module.shortName}</span><small>{connectedDevice?.base_position ? `${basePositionLabel[connectedDevice.base_position]} on base · ` : ''}{bound ? `${bound} bound` : 'No bindings'}{isDeviceItem(item) ? ' · connected' : ''}</small></div>
+          <div className="rig-caption"><span title={module.shortName}>{module.shortName}</span><small>{connectedDevice?.base_cell ? `${deviceLocation(connectedDevice)} on base · ` : ''}{bound ? `${bound} bound` : 'No bindings'}{isDeviceItem(item) ? ' · connected' : ''}</small></div>
           <div className="rig-tools">
             <button type="button" className="icon-button" aria-label={`Move ${module.shortName} left`} disabled={index === 0} onClick={() => move(item.id, -1)}><ChevronLeft size={14} /></button>
             <button type="button" className="icon-button" aria-label={`Move ${module.shortName} right`} disabled={index === rig.length - 1} onClick={() => move(item.id, 1)}><ChevronRight size={14} /></button>
@@ -203,7 +213,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
       {demoKinds.map(kind => <option key={kind} value={`demo:${kind}`}>Demo: {replayLabels[kind]}</option>)}
       {feedState.devices.map(device => {
         const short = modules.find(entry => entry.id === device.module)?.shortName ?? device.module;
-        const position = device.base_position ? ` · ${basePositionLabel[device.base_position]} on base` : '';
+        const position = device.base_cell ? ` · ${deviceLocation(device)} on base` : '';
         return <option key={device.path_hex} value={`live:${device.path_hex}`}>{short}{position} {device.serial_number ?? device.path_hex.slice(-6)}</option>;
       })}
     </select>

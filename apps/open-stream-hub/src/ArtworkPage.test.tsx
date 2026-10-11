@@ -48,8 +48,8 @@ describe('ArtworkPage', () => {
     const jpeg = `data:image/jpeg;base64,${prepareResult.prepare_artwork.jpeg_base64}`;
     expect(html.split(jpeg).length - 1).toBe(2);
     expect(html).toContain('artwork-stage keypad');
-    expect(html).toContain('/modules/keys.png');
-    expect(html).toContain('left:13%;top:20%;width:12.2%;height:16%');
+    expect(html).toContain('/modules/keys.svg');
+    expect(html).toContain('left:13.9%;top:21.2%;width:10.7%;height:14.5%');
     expect(html).toContain('width="72" height="72"');
     expect(html).toContain('Prepared size: 1.6 KiB');
     expect(html).toContain('JPEG exported');
@@ -61,11 +61,13 @@ describe('ArtworkPage', () => {
 
   it('uses the encoder display rectangle for the dial target', () => {
     const html = render({ initialSource: source, initialResult: { ...prepareResult.prepare_artwork, width: 240, height: 240 } });
-    expect(html).toContain('/modules/encoder.png');
+    expect(html).toContain('/modules/encoder.svg');
+    // The glass layer is over the picture, so the picture sits under it.
+    expect(html.indexOf('artwork-display round')).toBeLessThan(html.indexOf('/modules/encoder-glass.svg" alt'));
     expect(html).toContain('artwork-display round');
-    expect(html).toContain('left:20%;top:14%;width:60%;height:56%');
-    // Same two-level geometry as the hero: the box, then the round screen inside it (styles.css).
-    expect(html).toMatch(/artwork-dial-box" style="left:20%[^>]*><div class="artwork-display round"/);
+    expect(html).toContain('left:30.1%;top:30.1%;width:39.9%;height:39.9%');
+    // Same geometry as the hero: the box, then the round screen inside it (styles.css).
+    expect(html).toMatch(/artwork-dial-box" style="left:30.1%[^>]*><div class="artwork-display round"/);
     expect(html).toContain('width="240" height="240"');
   });
 

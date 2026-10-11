@@ -123,7 +123,7 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:32px; letter-spacing:-.9px; line-hei
 .hero.art-faders { --hero-height:230px; min-height:230px; }
 .hero.art-rollers { --hero-height:180px; min-height:180px; }
 .image-control { position:absolute; padding:0; border:2px solid transparent; border-radius:9px; background:transparent; }
-.single-display { position:absolute; pointer-events:none; }
+.single-display { position:absolute; overflow:hidden; border-radius:50%; pointer-events:none; }
 .image-control.round { border-radius:50%; }
 .image-control:hover { border-color:#b6a1ff; background:#a284ff20; }
 .image-control.selected { border-color:#b6a1ff; box-shadow:0 0 0 1px #211630,0 0 12px #a284ff70; background:#a284ff0d; }
@@ -242,7 +242,7 @@ h1,h2,h3,p { margin-top:0; } h1 { font-size:32px; letter-spacing:-.9px; line-hei
 /* Screen content stays opaque; only the glass highlight is translucent. */
 .hero.keypad-art { height:auto; min-height:0; margin:12px auto; }
 .hero.keypad-art .module-image { width:100%; max-width:520px; }
-.key-display { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; color:#f5f1ff; background:linear-gradient(145deg,#8473c14d,#171323d9); border:1px solid #bda8ed40; border-radius:6px; overflow:hidden; box-shadow:inset 0 1px 2px #ffffff30,inset 0 -2px 3px #00000080; }
+.key-display { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; color:#f5f1ff; background:linear-gradient(145deg,#8473c14d,#171323d9); border:1px solid #bda8ed40; border-radius:9% / 10%; overflow:hidden; box-shadow:inset 0 1px 2px #ffffff30,inset 0 -2px 3px #00000080; }
 .key-display:hover,.key-display.selected { background:linear-gradient(145deg,#a893ee70,#211733e6); }
 .key-display:active { box-shadow:inset 0 2px 5px #00000090; }
 .key-display svg { width:42%; height:42%; flex:none; filter:drop-shadow(0 1px 2px #000); }
@@ -294,14 +294,12 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .base-layout-heading p { margin:2px 0 0; color:var(--muted); font-size:10px; }
 .base-layout-heading>span { color:var(--muted); font-size:10px; white-space:nowrap; }
 .base-layout-frame { padding:8px; border:1px solid var(--line); border-radius:12px; background:var(--surface-2,#16161a); box-shadow:0 8px 20px #0003; }
-.base-layout-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); grid-template-rows:repeat(4,minmax(0,1fr)); gap:5px; width:100%; aspect-ratio:6/4; overflow:hidden; border-radius:8px; background:#0e0e11; }
+.base-layout-grid { position:relative; display:grid; grid-template-columns:repeat(var(--cols,6),minmax(0,1fr)); grid-template-rows:repeat(var(--rows,4),minmax(0,1fr)); gap:5px; width:100%; aspect-ratio:var(--cols,6)/var(--rows,4); }
+.base-layout-base { border-radius:8px; background:#0e0e11; box-shadow:0 0 0 1px var(--line); pointer-events:none; }
 .base-layout-module { position:relative; display:flex; min-width:0; min-height:0; align-items:center; justify-content:center; overflow:hidden; padding:0; border:1px solid var(--line); border-radius:8px; background:linear-gradient(145deg,#242428,#17171a); color:inherit; font:inherit; text-align:inherit; cursor:pointer; }
 .base-layout-module:hover,.base-layout-module:focus-visible { border-color:#b6a1ff; outline:none; }
+.base-layout-module.overhangs { border-style:dashed; }
 .base-layout-module.selected { border-color:#b6a1ff; box-shadow:inset 0 0 0 1px #b6a1ff; }
-.base-layout-module.top-left { grid-column:1/5; grid-row:1/4; }
-.base-layout-module.bottom-left { grid-column:1/5; grid-row:4/5; }
-.base-layout-module.top-right { grid-column:5/7; grid-row:1/3; }
-.base-layout-module.bottom-right { grid-column:5/7; grid-row:3/5; }
 .base-layout-module img { display:block; width:100%; height:100%; padding:4px; object-fit:contain; pointer-events:none; user-select:none; }
 .base-layout-module span { position:absolute; right:4px; bottom:4px; left:4px; overflow:hidden; padding:3px 5px; border:1px solid #ffffff12; border-radius:4px; background:#101014d9; color:var(--text); font-size:9px; text-align:center; text-overflow:ellipsis; white-space:nowrap; }
 .base-layout-unknown { margin:7px 2px 0; color:var(--muted); font-size:10px; }
@@ -401,7 +399,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .artwork-module { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none; }
 .artwork-display { position:absolute; overflow:hidden; background:#000; transition:opacity .15s; }
 .artwork-dial-box { position:absolute; pointer-events:none; }
-.artwork-display.round { border-radius:50%; left:17%; top:16%; width:65%; height:63%; }
+.artwork-display.round { border-radius:50%; left:0; top:0; width:100%; height:100%; }
 .artwork-display:not(.round) { border-radius:4px; }
 .artwork-display.busy { opacity:.55; }
 .artwork-display img { display:block; width:100%; height:100%; object-fit:cover; }
@@ -623,11 +621,19 @@ input[aria-invalid="true"] { border-color:var(--red); }
 
 .obs-status-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:10px 0 0; }
 .obs-chip { padding:2px 9px; border-radius:999px; border:1px solid var(--line); font-size:12px; font-weight:600; }
+.obs-chip-connected { border-color:var(--green, #2e7d32); color:var(--green, #2e7d32); }
+.obs-chip-not_running, .obs-chip-websocket_off, .obs-chip-wrong_port, .obs-chip-password_needed, .obs-chip-wrong_password, .obs-chip-failed { border-color:var(--red); color:var(--red); }
 
 /* Tooltips for icon controls: the same quick, styled tip everywhere (the title attribute waits a second and cannot be themed). */
 [data-tip] { position:relative; }
 [data-tip]:hover::after,[data-tip]:focus-visible::after { content:attr(data-tip); position:absolute; top:calc(100% + 8px); left:50%; transform:translateX(-50%); z-index:60; width:max-content; max-width:260px; padding:6px 9px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); box-shadow:0 6px 20px rgba(0,0,0,.3); font-size:12px; font-weight:500; line-height:1.35; letter-spacing:0; white-space:normal; text-align:left; pointer-events:none; animation:tip-in .12s ease .35s both; }
 .header-actions>[data-tip]:last-child::after,.header-actions [data-tip]:last-child::after { left:auto; right:0; transform:none; }
 @keyframes tip-in { from { opacity:0; } to { opacity:1; } }
-.obs-chip-connected { border-color:var(--green, #2e7d32); color:var(--green, #2e7d32); }
-.obs-chip-not_running, .obs-chip-websocket_off, .obs-chip-wrong_port, .obs-chip-password_needed, .obs-chip-wrong_password, .obs-chip-failed { border-color:var(--red); color:var(--red); }
+
+/* SVG module art: the fader art is inline so its caps can move; the glass layer sits over display content. */
+.module-art-inline { display:block; width:100%; pointer-events:none; user-select:none; }
+.module-art-inline svg { display:block; width:100%; height:100%; }
+.module-image .module-art-inline { aspect-ratio:var(--art-aspect); }
+.rig-stage .module-art-inline { height:100%; }
+.module-glass { position:absolute; left:0; top:0; width:100%; height:100%; pointer-events:none; user-select:none; }
+.module-image img.module-glass, .rig-stage img.module-glass, .artwork-stage img.module-glass { position:absolute; width:100%; height:100%; object-fit:contain; }

@@ -70,8 +70,8 @@ describe('ModuleDrawer', () => {
     const markup = renderToStaticMarkup(<ModuleDrawer tiles={tiles} open onToggle={() => {}} onPick={() => {}} />);
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain('5 connected');
-    expect(markup).toContain('src="/modules/base.svg"');
-    expect(markup).toContain('src="/modules/faders.png"');
+    expect(markup).toContain('src="/modules/base-topdown.svg"');
+    expect(markup).toContain('src="data:image/svg+xml,');
     expect(markup).toContain('<span class="module-tile-serial">…1744</span>');
     expect(markup).toMatch(/aria-label="5-fader precision module · …1744" class="module-tile picked marked"/);
     expect(markup).toMatch(/aria-label="MasterHUB base · …1980" class="module-tile marked"/);

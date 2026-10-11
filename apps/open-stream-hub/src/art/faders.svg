@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1774 887" role="img" aria-label="5-fader precision module">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2b2c30"/><stop offset=".5" stop-color="#17181b"/><stop offset="1" stop-color="#0b0b0d"/></linearGradient>
+    <linearGradient id="shellRim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5a5c63"/><stop offset=".15" stop-color="#2a2b2f"/><stop offset="1" stop-color="#0d0d0f"/></linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1b1c1f"/><stop offset="1" stop-color="#121316"/></linearGradient>
+    <linearGradient id="padTop" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a2f"/><stop offset="1" stop-color="#111113"/></linearGradient>
+    <linearGradient id="padBot" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1a1a1d"/><stop offset="1" stop-color="#2c2c31"/></linearGradient>
+    <linearGradient id="scoopH" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#0e0e10"/><stop offset=".2" stop-color="#3b3b41"/><stop offset=".5" stop-color="#2a2a2f"/><stop offset=".85" stop-color="#3a3a40"/><stop offset="1" stop-color="#0e0e10"/></linearGradient>
+    <linearGradient id="scoopV" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000" stop-opacity=".55"/><stop offset=".4" stop-color="#000" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".3"/></linearGradient>
+    <pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(-62)"><rect width="9" height="9" fill="none"/><rect width="3.5" height="9" fill="#000" opacity=".55"/><rect x="3.5" width="1.2" height="9" fill="#fff" opacity=".1"/></pattern>
+    <filter id="bloom" x="-300%" y="-5%" width="700%" height="110%"><feGaussianBlur stdDeviation="4"/></filter>
+    <filter id="soft" x="-20%" y="-30%" width="140%" height="160%"><feGaussianBlur stdDeviation="9"/></filter>
+    <filter id="drop" x="-10%" y="-10%" width="120%" height="140%"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+  <rect x="42" y="41" width="1690" height="829" rx="85" fill="#000" opacity=".5" filter="url(#drop)"/>
+  <!-- chassis, flat top-down view -->
+  <rect x="42" y="21" width="1690" height="829" rx="85" fill="url(#shell)" stroke="url(#shellRim)" stroke-width="4"/>
+  <rect x="54" y="33" width="1666" height="805" rx="73" fill="none" stroke="#fff" stroke-opacity=".08" stroke-width="2"/>
+  <rect x="68" y="52" width="1638" height="766" rx="58" fill="#0c0c0e" stroke="#34343a" stroke-width="2"/>
+  <rect x="93" y="116" width="1588" height="680" rx="44" fill="url(#panel)" stroke="#050506" stroke-width="3"/>
+  <g id="faders">
+    <g id="fader-0" transform="translate(310 0)">
+      <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
+      <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
+      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
+        <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
+        <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#padTop)"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#hatch)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopH)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopV)"/>
+        <path d="M-58 -24 Q0 -6 58 -24" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#padBot)"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#hatch)"/>
+      </g>
+    </g>
+    <g id="fader-1" transform="translate(603 0)">
+      <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
+      <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
+      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
+        <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
+        <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#padTop)"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#hatch)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopH)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopV)"/>
+        <path d="M-58 -24 Q0 -6 58 -24" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#padBot)"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#hatch)"/>
+      </g>
+    </g>
+    <g id="fader-2" transform="translate(895 0)">
+      <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
+      <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
+      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
+        <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
+        <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#padTop)"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#hatch)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopH)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopV)"/>
+        <path d="M-58 -24 Q0 -6 58 -24" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#padBot)"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#hatch)"/>
+      </g>
+    </g>
+    <g id="fader-3" transform="translate(1188 0)">
+      <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
+      <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
+      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
+        <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
+        <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#padTop)"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#hatch)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopH)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopV)"/>
+        <path d="M-58 -24 Q0 -6 58 -24" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#padBot)"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#hatch)"/>
+      </g>
+    </g>
+    <g id="fader-4" transform="translate(1481 0)">
+      <rect x="-18" y="203" width="36" height="574" rx="10" fill="#020203" stroke="#000" stroke-width="3"/>
+      <rect x="-14" y="207" width="28" height="566" rx="8" fill="none" stroke="#fff" stroke-opacity=".07" stroke-width="2"/>
+      <rect class="glow" x="-5" y="215" width="10" height="550" rx="5" fill="#8a3cff" opacity="0" filter="url(#bloom)"/>
+      <g class="cap" transform="translate(0 490) scale(1.43 1.09)">
+        <rect x="-84" y="-70" width="168" height="170" rx="30" fill="#000" opacity=".55" filter="url(#soft)"/>
+        <path d="M-80 -66 Q-80 -92 -54 -92 H54 Q80 -92 80 -66 V62 Q80 90 52 90 H-52 Q-80 90 -80 62 Z" fill="#111113" stroke="#050506" stroke-width="3.5"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#padTop)"/>
+        <path d="M-72 -62 Q-72 -86 -48 -86 H48 Q72 -86 72 -62 V-36 Q0 -14 -72 -36 Z" fill="url(#hatch)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopH)"/>
+        <path d="M-72 -34 Q0 -12 72 -34 V46 Q0 28 -72 46 Z" fill="url(#scoopV)"/>
+        <path d="M-58 -24 Q0 -6 58 -24" fill="none" stroke="#fff" stroke-opacity=".22" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#padBot)"/>
+        <path d="M-72 50 Q0 32 72 50 V62 Q72 84 48 84 H-48 Q-72 84 -72 62 Z" fill="url(#hatch)"/>
+      </g>
+    </g>
+  </g>
+</svg>

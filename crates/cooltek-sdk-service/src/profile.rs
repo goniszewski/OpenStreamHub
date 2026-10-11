@@ -31,9 +31,9 @@ pub enum Gesture {
     Pressed,
     /// Button changed from pressed to released.
     Released,
-    /// M131E application RIGHT label; physical orientation is unverified.
+    /// M131E application RIGHT label; verified on hardware as clockwise.
     Right,
-    /// M131E application LEFT label; physical orientation is unverified.
+    /// M131E application LEFT label; verified on hardware as counter-clockwise.
     Left,
     /// M131E release after a known press shorter than 600 ms.
     ShortPress,

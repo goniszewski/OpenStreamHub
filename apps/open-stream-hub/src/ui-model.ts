@@ -96,8 +96,8 @@ export function moduleNote(module: ServiceModule) {
     case 'm003k': return 'Knob order verified on hardware: with the single knob on top, Knob 3 is on top, Knob 1 bottom-left and Knob 2 bottom-right.';
     case 'm4315': return 'Key order verified on hardware: 5 columns by 3 rows, numbered row by row from the top left.';
     case 'm005s': return 'Fader input verified on hardware: all five faders report 0 at the bottom to 100 at the top, in order from fader 1.';
-    case 'm131e': return 'Physical Right/Left rotation will be checked with the device.';
-    case 'm032le': return 'Roller order and physical Up/Down direction will be checked with the device.';
+    case 'm131e': return 'Rotation verified on hardware: Right is clockwise and Left is counter-clockwise.';
+    case 'm032le': return 'Roller input is not verified on macOS yet: the module sends no input there, so order and Up/Down direction are unconfirmed.';
   }
 }
 

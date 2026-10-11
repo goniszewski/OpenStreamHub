@@ -1,4 +1,4 @@
-import type { ObsHost, ObsSettings, ObsSettingsView } from './contracts';
+import type { ObsConnectionState, ObsConnectionView, ObsHost, ObsSettings, ObsSettingsView } from './contracts';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
@@ -36,8 +36,19 @@ export function isObsSettingsView(value: unknown): value is ObsSettingsView {
     && Number.isInteger(record.port) && (record.port as number) >= 1 && (record.port as number) <= 65535;
 }
 
-export interface ObsSettingsState { desktop: boolean; loaded: boolean; busy: boolean; error: string | null; settings: ObsSettingsView }
-export const idleObsSettingsState: ObsSettingsState = { desktop: false, loaded: false, busy: false, error: null, settings: defaultObsSettings };
+export const obsConnectionLabels: Record<ObsConnectionState, string> = {
+  off: 'Off', connected: 'Connected', not_running: 'Not running', websocket_off: 'WebSocket off', wrong_port: 'Wrong port',
+  password_needed: 'Password needed', wrong_password: 'Wrong password', failed: 'Not connected',
+};
+
+export function isObsConnectionView(value: unknown): value is ObsConnectionView {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).length === 2 && typeof record.message === 'string' && typeof record.state === 'string' && record.state in obsConnectionLabels;
+}
+
+export interface ObsSettingsState { desktop: boolean; loaded: boolean; busy: boolean; error: string | null; settings: ObsSettingsView; connection: ObsConnectionView | null; testing: boolean }
+export const idleObsSettingsState: ObsSettingsState = { desktop: false, loaded: false, busy: false, error: null, settings: defaultObsSettings, connection: null, testing: false };
 
 export class ObsSettingsStore {
   private state: ObsSettingsState;
@@ -62,7 +73,8 @@ export class ObsSettingsStore {
     try {
       const settings = await this.invoke<unknown>(command, args);
       if (!isObsSettingsView(settings)) throw new Error('The OBS settings reply was not understood.');
-      this.set({ busy: false, loaded: true, error: null, settings });
+      // A changed endpoint, switch or password makes the last test stale.
+      this.set({ busy: false, loaded: true, error: null, settings, connection: null });
       return true;
     } catch (reason) {
       this.set({ busy: false, error: errorMessage(reason) });
@@ -83,5 +95,20 @@ export class ObsSettingsStore {
   // The password is passed through and never kept here. An empty entry clears it.
   setPassword(password: string) { return this.run('set_obs_password', { password: password === '' ? null : password }); }
   clearPassword() { return this.run('set_obs_password', { password: null }); }
+  // Probes the saved endpoint; the backend sends no OBS request and returns a state with a fix hint. A failed probe
+  // leaves the previous result in place.
+  async testConnection(): Promise<boolean> {
+    if (!this.state.desktop || this.state.testing) return false;
+    this.set({ testing: true });
+    try {
+      const connection = await this.invoke<unknown>('obs_status');
+      if (!isObsConnectionView(connection)) throw new Error('The OBS connection reply was not understood.');
+      this.set({ testing: false, connection });
+      return true;
+    } catch (reason) {
+      this.set({ testing: false, error: errorMessage(reason) });
+      return false;
+    }
+  }
   dismissError() { this.set({ error: null }); }
 }

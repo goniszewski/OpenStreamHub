@@ -224,6 +224,9 @@ export interface DefaultProfile { profile_id: string | null }
 export type ObsHost = '127.0.0.1' | '::1' | 'localhost';
 export interface ObsSettings { enabled: boolean; host: ObsHost; port: number }
 export interface ObsSettingsView extends ObsSettings { password_set: boolean }
+// The obs_status reply: what "Test connection" found, with one line on what to do.
+export type ObsConnectionState = 'off' | 'connected' | 'not_running' | 'websocket_off' | 'wrong_port' | 'password_needed' | 'wrong_password' | 'failed';
+export interface ObsConnectionView { state: ObsConnectionState; message: string }
 // The OBS listings (obs_catalog, obs_source_filters, obs_scene_sources): what the editor pickers
 // offer. Names are exact, in OBS's own order (the store sorts them for display only).
 export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }

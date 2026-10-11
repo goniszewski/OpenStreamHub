@@ -1324,6 +1324,27 @@ fn set_obs_password(
 // name arguments are data: they travel only as JSON strings to OBS. The
 // name bound is the profile's own limit, like the listings.
 
+// "Test connection": probes the saved endpoint with the in-memory password and
+// names the result. Sends no OBS request.
+#[tauri::command(async)]
+fn obs_status(state: State<'_, AppState>) -> Result<obs::ObsConnection, String> {
+    let settings = state.obs.get()?;
+    if !settings.settings.enabled {
+        return Ok(obs::ObsConnection::describe(
+            None,
+            false,
+            settings.settings.port,
+        ));
+    }
+    let launch = state.obs.for_listing()?;
+    let status = ObsClient::new(launch.endpoint, launch.password).probe();
+    Ok(obs::ObsConnection::describe(
+        Some(status),
+        obs::obs_process_running(),
+        settings.settings.port,
+    ))
+}
+
 #[tauri::command(async)]
 fn obs_catalog(state: State<'_, AppState>) -> Result<ObsCatalog, String> {
     let launch = state.obs.for_listing()?;
@@ -1564,6 +1585,7 @@ pub fn run() {
             obs_settings,
             set_obs_settings,
             set_obs_password,
+            obs_status,
             obs_catalog,
             obs_source_filters,
             obs_scene_sources,

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import fixture from '../fixtures/obs-settings.json';
 import type { ObsSettings, ObsSettingsView } from './contracts';
-import { defaultObsSettings, isObsSettingsView, obsEndpoint, obsFlags, obsHostOptions, ObsSettingsStore } from './obs-settings';
+import { defaultObsSettings, isObsConnectionView, isObsSettingsView, obsConnectionLabels, obsEndpoint, obsFlags, obsHostOptions, ObsSettingsStore } from './obs-settings';
 import type { ObsSettingsState } from './obs-settings';
 import { obsPasswordNote, ObsSettingsPanel } from './ObsSettingsPanel';
 import { summarizeRecord } from './service-runner';
@@ -115,6 +115,48 @@ describe('ObsSettingsPanel markup', () => {
     expect(renderToStaticMarkup(<ObsSettingsPanel />)).toContain('OBS needs the desktop app.');
     const failed = renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ error: 'OBS settings are unreadable' })} />);
     expect(failed).toContain('role="alert"><span>OBS settings are unreadable</span>');
+  });
+});
+
+describe('OBS connection test', () => {
+  const reply = { state: 'wrong_password', message: 'OBS refused the password.' };
+  it('stores the backend verdict, replaces it on the next test and drops it when a setting changes', async () => {
+    let answer: unknown = reply;
+    const invoke = async <T,>(command: string) => (command === 'obs_status' ? answer : { ...defaultObsSettings, enabled: true }) as T;
+    const store = new ObsSettingsStore(invoke, true);
+    expect(await store.testConnection()).toBe(true);
+    expect(store.getState().connection).toEqual(reply);
+    answer = { state: 'connected', message: 'Connected to OBS.' };
+    await store.testConnection();
+    expect(store.getState().connection?.state).toBe('connected');
+    await store.setPort(4456);
+    expect(store.getState().connection).toBeNull();
+  });
+  it('keeps the old verdict and shows an error when the probe fails or is unreadable', async () => {
+    const failing = new ObsSettingsStore(async () => { throw new Error('probe broke'); }, true);
+    expect(await failing.testConnection()).toBe(false);
+    expect(failing.getState().error).toContain('probe broke');
+    expect(failing.getState().testing).toBe(false);
+    const odd = new ObsSettingsStore(async <T,>() => ({ state: 'fine', message: 'x' }) as T, true);
+    expect(await odd.testConnection()).toBe(false);
+    expect(odd.getState().connection).toBeNull();
+    expect(await new ObsSettingsStore(async () => { throw new Error('no'); }, false).testConnection()).toBe(false);
+  });
+  it('accepts exactly the states the backend names, each with its own chip label', () => {
+    const labels = Object.values(obsConnectionLabels);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(isObsConnectionView(reply)).toBe(true);
+    for (const bad of [null, {}, { state: 'connected' }, { ...reply, extra: 1 }, { ...reply, state: 'other' }]) expect(isObsConnectionView(bad)).toBe(false);
+  });
+  it('shows the chip, the fix line and a test button only while OBS is on', () => {
+    const on = { enabled: true, host: '127.0.0.1' as const, port: 4455, password_set: false };
+    const off = renderToStaticMarkup(<ObsSettingsPanel store={storeWith({})} />);
+    expect(off).not.toContain('obs-chip');
+    const shown = renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: on, connection: { state: 'websocket_off', message: 'Tick Enable WebSocket server.' } })} />);
+    expect(shown).toContain('obs-chip-websocket_off">WebSocket off</span>');
+    expect(shown).toContain('Tick Enable WebSocket server.');
+    expect(shown).toContain('Test connection</button>');
+    expect(renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: on })} />)).toContain('Checking…');
   });
 });
 

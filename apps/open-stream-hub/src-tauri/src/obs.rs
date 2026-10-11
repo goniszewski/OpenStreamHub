@@ -27,7 +27,7 @@
 //! never stops or restarts anything. See `docs/masterhub-actions.md`.
 
 use crate::store;
-use cooltek_sdk_service::obs::{ObsEndpoint, ObsPassword};
+use cooltek_sdk_service::obs::{ObsEndpoint, ObsPassword, ObsStatus};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -262,6 +262,62 @@ impl ObsState {
     }
 }
 
+/// The result of "Test connection": a state the Settings chip names and one
+/// line saying what to do about it. Never carries text from OBS.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ObsConnection {
+    pub state: &'static str,
+    pub message: String,
+}
+
+impl ObsConnection {
+    /// `status` is `None` while OBS is switched off in Settings.
+    /// `obs_running` tells a closed OBS from one whose WebSocket server is off.
+    pub fn describe(status: Option<ObsStatus>, obs_running: bool, port: u16) -> Self {
+        let (state, message) = match status {
+            None => ("off", "OBS is off in OpenStreamHub Settings. Turn it on to use the OBS actions.".to_string()),
+            Some(ObsStatus::Connected) => ("connected", "Connected to OBS.".to_string()),
+            Some(ObsStatus::Unreachable) if obs_running => (
+                "websocket_off",
+                format!("OBS is running but nothing answers on port {port}. In OBS open Tools › WebSocket Server Settings, tick Enable WebSocket server and check the port."),
+            ),
+            Some(ObsStatus::Unreachable) => (
+                "not_running",
+                "OBS is not running. Start OBS, then test again.".to_string(),
+            ),
+            Some(ObsStatus::NotObs) => (
+                "wrong_port",
+                format!("Something other than OBS answers on port {port}. Use the port shown in OBS under Tools › WebSocket Server Settings (4455 by default)."),
+            ),
+            Some(ObsStatus::PasswordNeeded) => (
+                "password_needed",
+                "OBS asks for a password. Enter the one from OBS under Tools › WebSocket Server Settings.".to_string(),
+            ),
+            Some(ObsStatus::WrongPassword) => (
+                "wrong_password",
+                "OBS refused the password. Copy it again from OBS under Tools › WebSocket Server Settings.".to_string(),
+            ),
+            Some(ObsStatus::Failed) => (
+                "failed",
+                "OBS answered but the connection did not complete. OBS 28 or later is needed; update OBS and test again.".to_string(),
+            ),
+        };
+        Self { state, message }
+    }
+}
+
+/// Whether an OBS Studio process is running for this user. A failed lookup
+/// counts as not running.
+pub fn obs_process_running() -> bool {
+    std::process::Command::new("pgrep")
+        .args(["-xi", "obs"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +337,45 @@ mod tests {
             endpoint: ObsEndpoint::parse("127.0.0.1:4455").unwrap(),
             password: password.map(|password| ObsPassword::new(password.into()).unwrap()),
         }
+    }
+
+    #[test]
+    fn each_status_has_its_own_state_and_a_fix_hint() {
+        let describe = |status, running| ObsConnection::describe(status, running, 4455);
+        let states: Vec<_> = [
+            describe(None, false),
+            describe(Some(ObsStatus::Connected), true),
+            describe(Some(ObsStatus::Unreachable), false),
+            describe(Some(ObsStatus::Unreachable), true),
+            describe(Some(ObsStatus::NotObs), true),
+            describe(Some(ObsStatus::PasswordNeeded), true),
+            describe(Some(ObsStatus::WrongPassword), true),
+            describe(Some(ObsStatus::Failed), true),
+        ]
+        .into_iter()
+        .map(|connection| {
+            assert!(!connection.message.is_empty() && !connection.message.contains('\n'));
+            connection.state
+        })
+        .collect();
+        assert_eq!(
+            states,
+            [
+                "off",
+                "connected",
+                "not_running",
+                "websocket_off",
+                "wrong_port",
+                "password_needed",
+                "wrong_password",
+                "failed"
+            ]
+        );
+        assert!(
+            describe(Some(ObsStatus::NotObs), true)
+                .message
+                .contains("4455")
+        );
     }
 
     #[test]

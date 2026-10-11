@@ -257,6 +257,22 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - The Execute confirmation lists the input by name with the level, or says the volume follows the fader. It is a local OBS effect and does not raise the risk level.
 - Tested against the scripted fake obs-websocket server only; no real OBS has been used, and the fader's range and jitter on hardware are unrecorded. Each position change sends one request, but a backlog of queued movements on the same input is coalesced to the latest level, like `set_volume`. There is no deadband yet.
 
+## OBS connection test
+
+Settings › OBS Studio has a **Test connection** button and a status chip, refreshed every ten seconds while the panel is open and OBS is switched on. The test opens one short loopback connection, goes as far as the `Identified` reply and closes; it sends no OBS request and shows no text that OBS sent. The chip is one of:
+
+| Chip | Meaning |
+| --- | --- |
+| Connected | Handshake and password accepted. |
+| Not running | Nothing answers and no OBS process is running. |
+| WebSocket off | Nothing answers but OBS is running: its WebSocket server is off or on another port. |
+| Wrong port | Something answers that is not an obs-websocket v5 server. |
+| Password needed | OBS asks for a password and none is set in the app. |
+| Wrong password | OBS rejected the password. |
+| Not connected | OBS answered but the handshake failed another way (OBS older than 28). |
+
+Each state shows a one-line fix. OBS being a running process is found with `pgrep`; a failed lookup counts as not running. The password is still held in memory only.
+
 ## OBS scene (`obs_scene`)
 
 This is the first of the official app's OBS integrations ([app features](research/masterhub-1.0.0.113-app-features.md), "Integrations: OBS", about 18 actions over obs-websocket). Only switching the program scene is implemented; the rest are listed under [Not implemented](#not-implemented).

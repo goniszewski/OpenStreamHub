@@ -3,11 +3,12 @@ import { X } from 'lucide-react';
 import type { ObsHost } from './contracts';
 import { IntegerField, SelectField } from './controls';
 import { appliesNote } from './DisplaySettingsPanel';
-import { idleObsSettingsState, obsEndpoint, obsHostOptions } from './obs-settings';
+import { idleObsSettingsState, obsConnectionLabels, obsEndpoint, obsHostOptions } from './obs-settings';
 import type { ObsSettingsStore } from './obs-settings';
 import { idleServiceState, isActiveRun } from './service-runner';
 import type { ServiceStoreState } from './service-runner';
 
+export const obsStatusIntervalMs = 10_000;
 const noopSubscribe = () => () => {};
 const idle = () => idleObsSettingsState;
 const idleRunner = () => idleServiceState;
@@ -22,6 +23,13 @@ export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; 
   // Only the field's own text; cleared as soon as it is handed to the backend.
   const [password, setPassword] = useState('');
   useEffect(() => { if (store && state.desktop && !state.loaded) void store.load(); }, [store, state.desktop, state.loaded]);
+  // Re-test while the panel is open so the chip follows OBS starting and stopping.
+  useEffect(() => {
+    if (!store || !state.desktop || !state.loaded || !state.settings.enabled) return;
+    void store.testConnection();
+    const timer = setInterval(() => { void store.testConnection(); }, obsStatusIntervalMs);
+    return () => clearInterval(timer);
+  }, [store, state.desktop, state.loaded, state.settings]);
   const off = !store || !state.desktop || state.busy || !state.loaded;
   const { enabled, host, port, password_set: passwordSet } = state.settings;
   const submit = () => {
@@ -51,6 +59,11 @@ export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; 
       </div>
       <p id="obs-password-note" className="fine-print" role="note">{passwordSet ? 'A password is set. ' : 'No password is set; leave it unset if OBS has authentication turned off. '}{obsPasswordNote}</p>
     </form>
+    {enabled && <div className="obs-connection" role="status">
+      <span className={`obs-chip obs-chip-${state.connection?.state ?? 'unknown'}`}>{state.connection ? obsConnectionLabels[state.connection.state] : 'Checking…'}</span>
+      <span className="fine-print">{state.connection?.message ?? ''}</span>
+      <button type="button" className="button compact" disabled={off || state.testing} onClick={() => { void store?.testConnection(); }}>{state.testing ? 'Testing…' : 'Test connection'}</button>
+    </div>}
     <p id="obs-settings-applies" className="fine-print" role="status">{appliesNote(activeRuns)}</p>
     {!state.desktop && <p className="fine-print">OBS needs the desktop app.</p>}
     {state.error && <div className="service-failure" role="alert"><span>{state.error}</span><button type="button" className="icon-button" aria-label="Dismiss OBS settings error" onClick={() => store?.dismissError()}><X size={15} /></button></div>}

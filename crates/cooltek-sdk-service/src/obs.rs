@@ -358,6 +358,53 @@ impl ObsClient {
         format!("OBS at {}: {detail}", self.endpoint)
     }
 
+    /// Opens one connection, goes as far as `Identified` and closes, to say
+    /// why OBS can or cannot be used. Sends no request. The text OBS sends is
+    /// never part of the result.
+    pub fn probe(&self) -> ObsStatus {
+        let deadline = Instant::now() + self.timeout;
+        let Ok(mut connection) =
+            Connection::open(self.endpoint, deadline, self.cancellation.clone())
+        else {
+            return ObsStatus::Unreachable;
+        };
+        let status = self.probe_connection(&mut connection);
+        connection.close();
+        status
+    }
+
+    fn probe_connection(&self, connection: &mut Connection) -> ObsStatus {
+        if connection.handshake(&self.endpoint.to_string()).is_err() {
+            return ObsStatus::NotObs;
+        }
+        let Ok(hello) = connection.read_message() else {
+            return ObsStatus::NotObs;
+        };
+        let authentication = match identify_authentication(&hello, self.password.as_ref()) {
+            Ok(authentication) => authentication,
+            Err(_) if hello.op != OP_HELLO => return ObsStatus::NotObs,
+            Err(error) if error.contains("requires a WebSocket password") => {
+                return ObsStatus::PasswordNeeded;
+            }
+            Err(_) => return ObsStatus::Failed,
+        };
+        let mut identify = json!({"rpcVersion":RPC_VERSION, "eventSubscriptions":0});
+        if let Some(authentication) = authentication {
+            identify["authentication"] = json!(authentication);
+        }
+        if connection
+            .send_message(&json!({"op":OP_IDENTIFY, "d":identify}))
+            .is_err()
+        {
+            return ObsStatus::Failed;
+        }
+        match connection.read_message() {
+            Ok(identified) if check_identified(&identified).is_ok() => ObsStatus::Connected,
+            Err(error) if error == AUTH_FAILED => ObsStatus::WrongPassword,
+            _ => ObsStatus::Failed,
+        }
+    }
+
     fn identify(&self, connection: &mut Connection) -> Result<(), String> {
         connection.handshake(&self.endpoint.to_string())?;
         let hello = connection.read_message()?;
@@ -370,6 +417,24 @@ impl ObsClient {
         let identified = connection.read_message()?;
         check_identified(&identified)
     }
+}
+
+/// What [`ObsClient::probe`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObsStatus {
+    /// Handshake and authentication succeeded.
+    Connected,
+    /// Nothing accepted the connection (OBS closed, its WebSocket server off,
+    /// or another port).
+    Unreachable,
+    /// Something accepted the connection but is not an obs-websocket v5 server.
+    NotObs,
+    /// OBS asks for a password and none is set in this app.
+    PasswordNeeded,
+    /// OBS rejected the password.
+    WrongPassword,
+    /// OBS answered, but the handshake failed in some other way.
+    Failed,
 }
 
 /// One obs-websocket request: a fixed request type and optional data.
@@ -872,12 +937,15 @@ fn sanitize(text: &str) -> String {
     cleaned
 }
 
+const AUTH_FAILED: &str =
+    "OBS rejected the password (authentication failed); check the OBS WebSocket password";
+
 /// Why OBS closed the connection, from the close code only (the close
 /// reason text is never shown).
 fn close_error(payload: &[u8]) -> String {
     match payload {
         [high, low, ..] => match u16::from_be_bytes([*high, *low]) {
-            4009 => "OBS rejected the password (authentication failed); check the OBS WebSocket password".into(),
+            4009 => AUTH_FAILED.into(),
             4010 => "OBS WebSocket does not support RPC version 1".into(),
             code => format!("OBS closed the connection (code {code})"),
         },
@@ -1759,6 +1827,59 @@ mod tests {
         for message in &seen.messages {
             assert_no_secret(&message.to_string());
         }
+    }
+
+    #[test]
+    fn a_probe_names_each_way_the_connection_can_fail() {
+        // Connected, with and without authentication.
+        let (endpoint, server) = serve(scripted_obs(vec![]));
+        assert_eq!(client(endpoint, None).probe(), ObsStatus::Connected);
+        let seen = server.join().unwrap();
+        // Identify only: the probe sends no request.
+        assert_eq!(seen.messages.len(), 1);
+        let (endpoint, server) = serve(|peer, _| {
+            peer.accept_upgrade();
+            peer.send_json(hello(Some((CHALLENGE, SALT))));
+            let identify = peer.read_json();
+            let expected = authentication_string(&ObsPassword(PASSWORD.into()), SALT, CHALLENGE);
+            assert_eq!(identify["d"]["authentication"], json!(expected));
+            peer.send_json(json!({"op":2,"d":{"negotiatedRpcVersion":1}}));
+            let _ = peer.read_frame_lenient();
+        });
+        assert_eq!(
+            client(endpoint, Some(PASSWORD)).probe(),
+            ObsStatus::Connected
+        );
+        server.join().unwrap();
+
+        // A wrong password, and a password OBS wants that was never set.
+        let (endpoint, server) = serve(obs_server(Some("the-real-one"), json!({"result":true})));
+        assert_eq!(
+            client(endpoint, Some(PASSWORD)).probe(),
+            ObsStatus::WrongPassword
+        );
+        server.join().unwrap();
+        let (endpoint, server) = serve(|peer, _| {
+            peer.accept_upgrade();
+            peer.send_json(hello(Some((CHALLENGE, SALT))));
+            let _ = peer.read_frame_lenient();
+        });
+        assert_eq!(client(endpoint, None).probe(), ObsStatus::PasswordNeeded);
+        server.join().unwrap();
+
+        // Another program on the port, and nothing on the port at all.
+        let (endpoint, server) = serve(|peer, _| {
+            let mut head = [0u8; 1];
+            let _ = peer.stream.read(&mut head);
+            peer.send_raw(b"HTTP/1.1 200 OK\r\n\r\n");
+        });
+        assert_eq!(client(endpoint, None).probe(), ObsStatus::NotObs);
+        server.join().unwrap();
+        let free = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = free.local_addr().unwrap().port();
+        drop(free);
+        let endpoint = ObsEndpoint::parse(&format!("127.0.0.1:{port}")).unwrap();
+        assert_eq!(client(endpoint, None).probe(), ObsStatus::Unreachable);
     }
 
     #[test]

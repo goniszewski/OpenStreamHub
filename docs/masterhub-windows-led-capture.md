@@ -82,7 +82,7 @@ The eight captures (`01` to `08`, the last one cycling every effect on the knob 
 
 - **Module types:** base `00` (index 0), faders `01` (indexes 0 to 4), knobs `02` (indexes 0 to 2). Each module is its own USB device, and the app sends one interrupt OUT report of 64 bytes per LED.
 - **Commands:** `02 2d <type> <index> R G B` colour, `02 2c <type> <index> <mode>` mode, `02 2e <type> <index> <0-100>` brightness. The bytes after the arguments (a version string such as `.00.05.00`) are residue and ignored.
-- **Effects** (knob module, capture 08, in the app's dropdown order): Off 0, Static 1, Breathing 2, Strobe 3, Cycling 5, Random 6, Wave 7, Water 8, Rainbow 9. Mode 4 never appears.
+- **Effects** (knob module, capture 08, in the app's dropdown order): Off 0, Static 1, Breathing 2, Strobe 3, Cycling 5, Random 6, Wave 7, Water 8, Rainbow 9. Mode 4 never appears in the capture; on the unit it is a fast strobe (about 3 to 4 times faster than mode 3), see the [hardware results](masterhub-hardware-results.md#knob-fader-and-base-leds-11-october-2026).
 - **Per change the app resends the module's state:** a colour change in Static sends colour, mode 1 and brightness for every LED of the module. After a replug (capture 07) it resends mode, brightness and colour for the knobs. The Lighting page should do the same.
 - **No setup report:** startup (capture 01) shows no output reports and only periodic feature report polling. Brightness (capture 03) is sent as a value from 0 to 100 per LED, one step per slider position.
 - **Whole kit** (capture 06) sends all three module types, per LED, in an order that varies between commands.

@@ -27,7 +27,7 @@ Feature parity is incomplete. The comparison below uses the official **MasterHUB
 | --- | --- |
 | Keypad, knob and dial input | Implemented and tested on hardware. See [module support](#hardware-support) for limits. |
 | Two-roller input | Decoder implemented. Windows input confirmed by capture; macOS receives no reports. Unresolved. |
-| Five-fader input | Decoder and binding editor implemented; physical hardware not tested. |
+| Five-fader input | Implemented and tested on hardware (all five faders, 0 at the bottom to 100 at the top). Jitter and the microphone-volume action are not yet checked. |
 | Profiles, bindings and keypad folders | Implemented, including nested folders, Back navigation and profile switching. Folder redraws tested on hardware. |
 | Key images and animations | Per-key static artwork and animation sequences implemented. Static artwork tested on hardware; animation playback still needs hardware acceptance. |
 | Dial display and function switching | Image uploads, function labels, clocks and CPU display implemented and tested on hardware. Full display parity is incomplete. |

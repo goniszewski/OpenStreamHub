@@ -763,3 +763,16 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .info-tip { position:fixed; z-index:200; transform:translate(-50%, calc(-100% - 6px)); padding:5px 8px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); font-size:11px; white-space:nowrap; pointer-events:none; box-shadow:0 6px 18px rgba(0,0,0,.35); }
 
 .keypad-tile .key-artwork-image { flex:1; min-height:0; width:100%; height:auto; }
+
+/* Settings: the panels in one column, a table of contents in the free space on the right. */
+@media (min-width: 1300px) {
+  .settings-page { max-width:none; display:grid; grid-template-columns:minmax(0,900px) 200px; column-gap:32px; align-content:start; }
+  .settings-page>* { grid-column:1; }
+  .settings-page>.settings-toc { grid-column:2; grid-row:1 / span 40; position:sticky; top:24px; align-self:start; padding-top:56px; }
+}
+.settings-toc { display:none; }
+@media (min-width: 1300px) { .settings-toc:not([hidden]) { display:block; } }
+.settings-toc ul { list-style:none; margin:0; padding:0 0 0 12px; border-left:1px solid var(--line); display:grid; gap:2px; }
+.settings-toc a { display:block; padding:5px 10px; border-radius:6px; color:var(--muted); font-size:12px; text-decoration:none; }
+.settings-toc a:hover { color:var(--text); background:var(--selected); }
+.settings-toc a.active { color:var(--accent); font-weight:600; }

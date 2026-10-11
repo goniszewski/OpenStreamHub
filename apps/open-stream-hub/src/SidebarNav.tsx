@@ -2,6 +2,8 @@ import type { ReactNode } from 'react';
 import { CircleHelp, Grid2X2, Info, Lightbulb, Link, Palette, PanelLeftClose, PanelLeftOpen, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Page } from './ui-model';
+import { useT } from './i18n-react';
+import type { MessageKey } from './locales/en';
 
 export const navStorageKey = 'open-stream-hub.sidebar';
 
@@ -14,11 +16,11 @@ export function writeNavCollapsed(storage: Pick<Storage, 'setItem'> | null, coll
   try { storage?.setItem(navStorageKey, collapsed ? 'collapsed' : 'expanded'); } catch { /* the sidebar stays as it is for this session */ }
 }
 
-const pages: { page: Page; label: string; icon: LucideIcon; hint?: string }[] = [
-  { page: 'workspace', label: 'Workspace', icon: Grid2X2 },
-  { page: 'artwork', label: 'Display artwork', icon: Palette, hint: 'Prepare images for module displays offline' },
-  { page: 'lighting', label: 'Lighting', icon: Lightbulb, hint: 'Dial backlight and colour, and knob, fader and base lighting' },
-  { page: 'compatibility', label: 'Compatibility', icon: Link },
+const pages: { page: Page; label: MessageKey; icon: LucideIcon; hint?: MessageKey }[] = [
+  { page: 'workspace', label: 'nav.workspace', icon: Grid2X2 },
+  { page: 'artwork', label: 'nav.artwork', icon: Palette, hint: 'nav.hint.artwork' },
+  { page: 'lighting', label: 'nav.lighting', icon: Lightbulb, hint: 'nav.hint.lighting' },
+  { page: 'compatibility', label: 'nav.compatibility', icon: Link },
 ];
 
 // The primary navigation. Collapsed, it shrinks to a column of icons whose names appear as tooltips
@@ -27,23 +29,24 @@ const pages: { page: Page; label: string; icon: LucideIcon; hint?: string }[] = 
 export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onToggle }: {
   page: Page; setPage(page: Page): void; onGuide(): void; themePicker: ReactNode; collapsed: boolean; onToggle(): void;
 }) {
+  const t = useT();
   // Expanded buttons show their label; collapsed ones carry it as the tooltip instead.
   const tip = (label: string) => collapsed ? { 'data-tip': label, 'aria-label': label } : {};
   const current = (target: Page) => ({ 'aria-current': page === target ? ('page' as const) : undefined });
   const labelOf = (text: string) => collapsed ? null : <span className="nav-label">{text}</span>;
   return <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
-    <nav aria-label="Primary navigation">
+    <nav aria-label={t('nav.primary')}>
       {pages.map(({ page: target, label, icon: Icon, hint }) => <button key={target} className={page === target ? 'active' : ''} {...current(target)}
-        {...tip(label)} title={collapsed ? undefined : hint} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(label)}</button>)}
+        {...tip(t(label))} title={collapsed || !hint ? undefined : t(hint)} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(t(label))}</button>)}
     </nav>
     <div className="sidebar-bottom">
-      <button className="help-link" {...tip('Getting started')} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf('Getting started')}</button>
-      <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip('About')} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf('About')}</button>
-      <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip('Settings')} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf('Settings')}</button>
+      <button className="help-link" {...tip(t('nav.guide'))} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf(t('nav.guide'))}</button>
+      <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip(t('nav.about'))} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf(t('nav.about'))}</button>
+      <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
       {!collapsed && themePicker}
-      <button type="button" className="nav-toggle" aria-expanded={!collapsed} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-        data-tip={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} onClick={onToggle}>
-        {collapsed ? <PanelLeftOpen size={20} aria-hidden="true" /> : <><PanelLeftClose size={20} aria-hidden="true" /><span className="nav-label">Collapse</span></>}
+      <button type="button" className="nav-toggle" aria-expanded={!collapsed} aria-label={collapsed ? t('nav.expandTip') : t('nav.collapseTip')}
+        data-tip={collapsed ? t('nav.expandTip') : t('nav.collapseTip')} onClick={onToggle}>
+        {collapsed ? <PanelLeftOpen size={20} aria-hidden="true" /> : <><PanelLeftClose size={20} aria-hidden="true" /><span className="nav-label">{t('nav.collapse')}</span></>}
       </button>
     </div>
   </aside>;

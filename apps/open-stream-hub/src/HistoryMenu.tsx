@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, History } from 'lucide-react';
+import { translateIn, useT } from './i18n-react';
+import type { Translate } from './i18n-react';
 
 export const historyTipStorageKey = 'open-stream-hub.history-tip';
 
@@ -15,24 +17,26 @@ export function markHistoryTipShown(storage: Pick<Storage, 'setItem'> | null): v
 
 // The list the popover shows: redo entries above the current state, undo entries below it, each the label of a change.
 // Picking an undo entry goes back to just before that change, a redo entry forward through it.
-export function HistoryList({ undo, redo, onUndo, onRedo, undoHint, redoHint, showTip }: {
+export function HistoryList({ undo, redo, onUndo, onRedo, undoHint, redoHint, showTip, t = translateIn('en') }: {
   undo: string[]; redo: string[]; onUndo(steps: number): void; onRedo(steps: number): void;
   undoHint: string; redoHint: string; showTip: boolean;
+  // Hook-free so tests can call it as a function; the menu passes its own translator.
+  t?: Translate;
 }) {
   return <div className="history-list">
-    {showTip && <p className="history-tip" role="note">Every change to the open profile is listed here. Pick one to go back to just before it, or forward through it. {undoHint} undoes the last change and {redoHint} repeats it.</p>}
+    {showTip && <p className="history-tip" role="note">{t('history.tip', { undoKey: undoHint, redoKey: redoHint })}</p>}
     {redo.length > 0 && <>
-      <h3>Redo</h3>
-      <ol className="history-entries redo" aria-label="Changes you can redo, nearest first">
+      <h3>{t('history.redo')}</h3>
+      <ol className="history-entries redo" aria-label={t('history.redoList')}>
         {redo.map((label, index) => <li key={`r${index}`}><button type="button" className="history-entry" onClick={() => onRedo(index + 1)}>{label}</button></li>)}
       </ol>
     </>}
-    <h3>Undo</h3>
+    <h3>{t('history.undo')}</h3>
     {undo.length > 0
-      ? <ol className="history-entries" aria-label="Changes you can undo, latest first">
+      ? <ol className="history-entries" aria-label={t('history.undoList')}>
         {undo.map((label, index) => <li key={`u${index}`}><button type="button" className="history-entry" onClick={() => onUndo(index + 1)}>{label}</button></li>)}
       </ol>
-      : <p className="fine-print">Nothing to undo yet.</p>}
+      : <p className="fine-print">{t('history.nothing')}</p>}
   </div>;
 }
 
@@ -42,6 +46,7 @@ export function HistoryMenu({ undo, redo, disabled, onUndo, onRedo, undoHint, re
   undo: string[]; redo: string[]; disabled: boolean; onUndo(steps: number): void; onRedo(steps: number): void;
   undoHint: string; redoHint: string; storage: (Pick<Storage, 'getItem'> & Pick<Storage, 'setItem'>) | null;
 }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [tip, setTip] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -61,12 +66,12 @@ export function HistoryMenu({ undo, redo, disabled, onUndo, onRedo, undoHint, re
   };
   const count = undo.length + redo.length;
   return <div className="history-menu" ref={root}>
-    <button type="button" className="icon-button" disabled={disabled} aria-label="Change history" aria-expanded={open} aria-haspopup="dialog"
-      data-tip={open ? undefined : count ? 'Change history: see and jump back through recent changes' : 'Change history (nothing to undo yet)'} onClick={toggle}>
+    <button type="button" className="icon-button" disabled={disabled} aria-label={t('history.button')} aria-expanded={open} aria-haspopup="dialog"
+      data-tip={open ? undefined : count ? t('history.buttonTip') : t('history.buttonTipEmpty')} onClick={toggle}>
       <History size={17} aria-hidden="true" /><ChevronDown size={11} aria-hidden="true" />
     </button>
-    {open && <div className="history-popover panel" role="dialog" aria-label="Change history">
-      <HistoryList undo={undo} redo={redo} undoHint={undoHint} redoHint={redoHint} showTip={tip}
+    {open && <div className="history-popover panel" role="dialog" aria-label={t('history.button')}>
+      <HistoryList undo={undo} redo={redo} undoHint={undoHint} redoHint={redoHint} showTip={tip} t={t}
         onUndo={steps => { onUndo(steps); setOpen(false); }} onRedo={steps => { onRedo(steps); setOpen(false); }} />
     </div>}
   </div>;

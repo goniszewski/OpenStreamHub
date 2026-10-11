@@ -31,6 +31,7 @@ import { LightingPage } from './LightingPage';
 import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
+import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
@@ -109,6 +110,7 @@ export default function App() {
   // inventory after a launch) is sent the same writes once more.
   const [lightingState] = useState(() => new LightingStateStore(webStorage()));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
+  const t = useT();
   const focusState = useSyncExternalStore(focusRules.subscribe, focusRules.getState);
   // The rules are read once at start so the header can say whether automatic switching is on.
   useEffect(() => { if (desktop) void focusRules.load(); }, [focusRules]);
@@ -277,10 +279,10 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, testWhileEditing, display.loaded]);
   const connectedModules = deviceFeedState.devices.length;
-  const deviceStatus = !desktop ? 'Browser preview'
-    : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'Device status unavailable' : 'Checking devices…'
-      : connectedModules === 0 ? 'No modules connected'
-        : `${connectedModules} module${connectedModules === 1 ? '' : 's'} connected`;
+  const deviceStatus = !desktop ? t('header.status.preview')
+    : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? t('header.status.unavailable') : t('header.status.checking')
+      : connectedModules === 0 ? t('header.status.none')
+        : t('header.status.connected', { count: connectedModules });
   const deviceStatusKind = !desktop ? 'browser'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'unavailable' : 'checking'
       : connectedModules > 0 ? 'connected' : 'disconnected';
@@ -466,11 +468,11 @@ export default function App() {
     return () => { disposed = true; unlisten?.(); };
   }, [session]);
 
-  const themePicker = <div className="theme-picker" role="group" aria-label="Appearance">
+  const themePicker = <div className="theme-picker" role="group" aria-label={t('theme.group')}>
     {(['system', 'light', 'dark'] as Appearance[]).map(value => <button key={value} aria-pressed={appearance === value}
       className={appearance === value ? 'active' : ''} onClick={() => setAppearance(value)}>
       {value === 'system' ? <Monitor size={15} /> : value === 'light' ? <Sun size={15} /> : <Moon size={15} />}
-      {value[0].toUpperCase() + value.slice(1)}
+      {t(`theme.${value}`)}
     </button>)}
   </div>;
 
@@ -487,19 +489,19 @@ export default function App() {
             {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
-          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label="Manage profiles" data-tip="Manage profiles" onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
+          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{connectedModules}</span>}<span className="sr-only">{deviceStatus}</span></span>
           {focusHeader && <button type="button" className="focus-status" aria-label={focusHeader.text} data-tip={focusHeader.text} onClick={() => setManagerOpen(true)}><AppWindow size={17} aria-hidden="true" />{focusHeader.matched && <span className="focus-status-name">{focusHeader.matched}</span>}</button>}
           <RunHeaderControl run={runSession} />
           <div className="history-buttons" role="group" aria-label="Change history">
-            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" data-tip={withHint(state.undoLabels[0] ? `Undo: ${state.undoLabels[0]}` : 'Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
-            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" data-tip={`${state.redoLabels[0] ? `Redo: ${state.redoLabels[0]}` : 'Redo'} (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label={t('header.undo')} data-tip={withHint(state.undoLabels[0] ? t('header.undoNamed', { change: state.undoLabels[0] }) : t('header.undo'), 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label={t('header.redo')} data-tip={`${state.redoLabels[0] ? t('header.redoNamed', { change: state.redoLabels[0] }) : t('header.redo')} (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
             <HistoryMenu undo={state.undoLabels} redo={state.redoLabels} disabled={disabled} onUndo={steps => { session.undoSteps(steps); }} onRedo={steps => { session.redoSteps(steps); }}
               undoHint={hint('Z', mac)} redoHint={redoHint(mac)} storage={webStorage()} />
           </div>
-          <button className="button" disabled={disabled || !unsaved} data-tip={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
+          <button className="button" disabled={disabled || !unsaved} data-tip={withHint(t('header.save'), 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? t('header.saving') : t('header.save')}</button>
         </div>
       </div>
       <RunBlockerNotice run={runSession} />

@@ -44,6 +44,7 @@
     "allow-obs-settings",
     "allow-set-obs-settings",
     "allow-set-obs-password",
+    "allow-obs-status",
     "allow-obs-catalog",
     "allow-obs-source-filters",
     "allow-obs-scene-sources",

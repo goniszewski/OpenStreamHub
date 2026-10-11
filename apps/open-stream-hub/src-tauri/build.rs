@@ -38,6 +38,7 @@ fn main() {
             "obs_settings",
             "set_obs_settings",
             "set_obs_password",
+            "obs_status",
             "obs_catalog",
             "obs_source_filters",
             "obs_scene_sources",

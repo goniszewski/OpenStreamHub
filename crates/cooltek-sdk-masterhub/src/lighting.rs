@@ -6,8 +6,10 @@
 //! command, followed by the LED module type and the LED index. The report length
 //! comes from the selected interface's HID descriptor; nothing is guessed.
 //!
-//! The official application only ever addresses every LED of a module with the
-//! same value, one call per index. Which LED an index lights is not yet known.
+//! A Windows capture of the official application confirmed the layout: type 0 is
+//! the base, 1 the faders (five LEDs), 2 the knobs (three LEDs). The application
+//! sends one report per index and never the `0xff` "all" index, so [`LedTarget::All`]
+//! is unverified on hardware. Which LED an index lights is not yet known.
 
 use hidapi::{HidError, HidResult};
 
@@ -33,9 +35,9 @@ pub const MIN_REPORT_LENGTH: usize = 8;
 pub enum LedModule {
     /// The MasterHUB base's edge strip (type 0, a single LED index).
     Base,
-    /// The three-knob module (type 1, indexes 0 through 4).
+    /// The three-knob module (type 2, indexes 0 through 2).
     Knob,
-    /// The five-fader module (type 2, indexes 0 through 2).
+    /// The five-fader module (type 1, indexes 0 through 4).
     Slider,
 }
 
@@ -44,8 +46,8 @@ impl LedModule {
     pub const fn code(self) -> u8 {
         match self {
             Self::Base => 0,
-            Self::Knob => 1,
-            Self::Slider => 2,
+            Self::Knob => 2,
+            Self::Slider => 1,
         }
     }
 
@@ -53,8 +55,8 @@ impl LedModule {
     pub const fn led_count(self) -> u8 {
         match self {
             Self::Base => 1,
-            Self::Knob => 5,
-            Self::Slider => 3,
+            Self::Knob => 3,
+            Self::Slider => 5,
         }
     }
 }
@@ -273,17 +275,17 @@ mod tests {
     fn color_report_matches_the_recovered_layout_and_pads_with_zeros() {
         let report = color_report(
             LedModule::Knob,
-            LedTarget::Index(3),
+            LedTarget::Index(2),
             [0x11, 0x22, 0x33],
             false,
             64,
         )
         .unwrap();
         assert_eq!(report.len(), 64);
-        assert_eq!(report[..8], [2, 0x2d, 1, 3, 0x11, 0x22, 0x33, 0]);
+        assert_eq!(report[..8], [2, 0x2d, 2, 2, 0x11, 0x22, 0x33, 0]);
         assert!(report[8..].iter().all(|byte| *byte == 0));
         let saved = color_report(LedModule::Slider, LedTarget::All, [1, 2, 3], true, 8).unwrap();
-        assert_eq!(saved, [2, 0x2d, 2, 0xff, 1, 2, 3, 1]);
+        assert_eq!(saved, [2, 0x2d, 1, 0xff, 1, 2, 3, 1]);
     }
 
     #[test]
@@ -291,16 +293,16 @@ mod tests {
         let brightness = brightness_report(LedModule::Base, LedTarget::Index(0), 100, 16).unwrap();
         assert_eq!(brightness[..5], [2, 0x2e, 0, 0, 100]);
         let mode = mode_report(LedModule::Knob, LedTarget::All, 9, true, 16).unwrap();
-        assert_eq!(mode[..6], [2, 0x2c, 1, 0xff, 9, 1]);
+        assert_eq!(mode[..6], [2, 0x2c, 2, 0xff, 9, 1]);
     }
 
     #[test]
     fn indexes_follow_each_modules_range() {
         let color = |module, target| color_report(module, target, [0; 3], false, 64);
-        assert!(color(LedModule::Knob, LedTarget::Index(4)).is_ok());
-        assert!(color(LedModule::Knob, LedTarget::Index(5)).is_err());
-        assert!(color(LedModule::Slider, LedTarget::Index(2)).is_ok());
-        assert!(color(LedModule::Slider, LedTarget::Index(3)).is_err());
+        assert!(color(LedModule::Knob, LedTarget::Index(2)).is_ok());
+        assert!(color(LedModule::Knob, LedTarget::Index(3)).is_err());
+        assert!(color(LedModule::Slider, LedTarget::Index(4)).is_ok());
+        assert!(color(LedModule::Slider, LedTarget::Index(5)).is_err());
         assert!(color(LedModule::Base, LedTarget::Index(0)).is_ok());
         assert!(color(LedModule::Base, LedTarget::Index(1)).is_err());
         assert!(color(LedModule::Base, LedTarget::All).is_err());
@@ -328,13 +330,13 @@ mod tests {
         let writes = fake.writes.borrow();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].len(), 64);
-        assert_eq!(writes[0][..8], [2, 0x2d, 1, 1, 9, 8, 7, 0]);
+        assert_eq!(writes[0][..8], [2, 0x2d, 2, 1, 9, 8, 7, 0]);
     }
 
     #[test]
     fn nothing_is_written_for_a_bad_target_or_a_missing_descriptor() {
         let fake = Fake::default();
-        assert!(set_brightness(&fake, LedModule::Slider, LedTarget::Index(3), 50).is_err());
+        assert!(set_brightness(&fake, LedModule::Slider, LedTarget::Index(5), 50).is_err());
         assert!(set_mode(&fake, LedModule::Base, LedTarget::All, 1, false).is_err());
         let blind = Fake {
             no_descriptor: true,

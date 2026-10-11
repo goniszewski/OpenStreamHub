@@ -166,7 +166,7 @@ impl LedModuleArg {
 
 #[derive(Args)]
 struct LedTargetArgs {
-    /// Which module's LEDs: the knob module (indexes 0-4), the fader module (0-2) or the base (0).
+    /// Which module's LEDs: the knob module (indexes 0-2), the fader module (0-4) or the base (0).
     #[arg(long, value_enum)]
     module: LedModuleArg,
     /// LED index, or `all` (not accepted for the base).

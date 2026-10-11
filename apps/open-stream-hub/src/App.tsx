@@ -39,6 +39,7 @@ import { useBaseModules } from './base-modules';
 import { createModuleSelection } from './module-selection';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
+import { DemosPage } from './DemosPage';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 import { readOpenPickers, subscribeOpenPickers } from './ActionPicker';
@@ -534,6 +535,7 @@ export default function App() {
         {page === 'lighting' && <>
           <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} lighting={lightingState} />
         </>}
+        {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}

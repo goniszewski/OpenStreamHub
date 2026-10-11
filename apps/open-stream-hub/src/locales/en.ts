@@ -8,12 +8,14 @@ export const en = {
   'nav.workspace': 'Workspace',
   'nav.artwork': 'Display artwork',
   'nav.lighting': 'Lighting',
+  'nav.demos': 'Demos',
   'nav.compatibility': 'Compatibility',
   'nav.guide': 'Getting started',
   'nav.about': 'About',
   'nav.settings': 'Settings',
   'nav.hint.artwork': 'Prepare images for module displays offline',
   'nav.hint.lighting': 'Dial backlight and colour, and knob, fader and base lighting',
+  'nav.hint.demos': 'Small games and experiments that play on a module',
   'nav.collapse': 'Collapse',
   'nav.collapseTip': 'Collapse sidebar',
   'nav.expandTip': 'Expand sidebar',
@@ -366,6 +368,18 @@ export const en = {
   'inspector.idle': 'Run a test to preview what the binding would do.',
   'inspector.needDesktop': 'Launch the desktop app to preview bindings.',
   'inspector.resolving': 'Resolving binding…',
+
+  // The Demos page.
+  'demos.title': 'Demos',
+  'demos.intro': 'Small experiments that show what the modules can do. A demo takes over one module while it runs.',
+  'demos.paused': 'Your profile’s actions are paused while a demo runs.',
+  'demos.needs': 'Needs the {module}',
+  'demos.needsMissing': 'Needs the {module}: none is connected.',
+  'demos.preview': 'The browser preview shows the demos but cannot play them. Open the desktop app with a module connected.',
+  'demos.ticTacToe.name': 'Tic-tac-toe',
+  'demos.ticTacToe.description': 'Three in a row on the keys, against the computer or a friend.',
+  'demos.play': 'Play',
+  'demos.module.keypad': '15-key module',
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { CircleHelp, Grid2X2, Info, Lightbulb, Link, Palette, PanelLeftClose, PanelLeftOpen, Settings } from 'lucide-react';
+import { CircleHelp, Grid2X2, Info, Gamepad2, Lightbulb, Link, Palette, PanelLeftClose, PanelLeftOpen, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Page } from './ui-model';
 import { useT } from './i18n-react';
@@ -20,6 +20,7 @@ const pages: { page: Page; label: MessageKey; icon: LucideIcon; hint?: MessageKe
   { page: 'workspace', label: 'nav.workspace', icon: Grid2X2 },
   { page: 'artwork', label: 'nav.artwork', icon: Palette, hint: 'nav.hint.artwork' },
   { page: 'lighting', label: 'nav.lighting', icon: Lightbulb, hint: 'nav.hint.lighting' },
+  { page: 'demos', label: 'nav.demos', icon: Gamepad2, hint: 'nav.hint.demos' },
   { page: 'compatibility', label: 'nav.compatibility', icon: Link },
 ];
 

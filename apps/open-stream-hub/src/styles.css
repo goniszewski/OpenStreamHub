@@ -237,8 +237,8 @@ html,body { overflow:clip; }
 .keypad-breadcrumbs { margin-bottom: 12px; }
 .keypad-breadcrumbs button { color: var(--muted); background: transparent; border: 0; padding: 4px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .keypad-breadcrumbs button[aria-current] { color: var(--text); }
-.keypad-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-width: 520px; }
-.keypad-tile { position: relative; min-width: 0; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 10px; background: var(--control); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 12px 4px 4px; }
+.keypad-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-width: 520px; margin: 0 auto; }
+.keypad-tile { position: relative; min-width: 0; min-height: 0; contain: size; overflow: hidden; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 10px; background: var(--control); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 12px 4px 4px; }
 .keypad-tile.selected { border-color: var(--accent); background: var(--selected); }
 .keypad-tile.folder, .keypad-tile.back { color: var(--accent); }
 .keypad-depth { position: absolute; top: 4px; right: 4px; font-size: 11px; font-weight: 700; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 1px 3px; }
@@ -761,3 +761,5 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 @media (prefers-reduced-motion: reduce) { .base-layout-base,.base-layout-module .rig-stage { animation:none !important; } }
 
 .info-tip { position:fixed; z-index:200; transform:translate(-50%, calc(-100% - 6px)); padding:5px 8px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); font-size:11px; white-space:nowrap; pointer-events:none; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+
+.keypad-tile .key-artwork-image { flex:1; min-height:0; width:100%; height:auto; }

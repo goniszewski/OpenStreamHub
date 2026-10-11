@@ -129,6 +129,9 @@ export default function App() {
     const previous = lightingSeen.current;
     lightingSeen.current = pickableKey.length === 0 ? [] : pickableKey.split(',');
     if (!desktop || !deviceFeedState.inventoryLoaded) return;
+    // A path that now answers as another kind of module can never take its old look again, so it is forgotten before
+    // anything is restored.
+    lightingState.forgetUnappliable(pickableModules);
     const appeared = appearedTargets(previous, pickableModules);
     if (appeared.length === 0) return;
     restoreChain.current = restoreChain.current

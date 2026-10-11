@@ -1,4 +1,4 @@
-import { clampBacklight, defaultColour, normaliseHexColour } from './lighting-model';
+import { clampBacklight, defaultColour, ledCount, lightingKind, normaliseHexColour } from './lighting-model';
 import type { LightingDevice } from './lighting-model';
 import type { Invoke } from './profile-session';
 import { applyLedLighting, applyLighting } from './lighting-model';
@@ -16,6 +16,25 @@ export type StoredLighting = StoredDial | StoredLedModule;
 export interface LightingSnapshot { records: Readonly<Record<string, StoredLighting>> }
 
 export const lightingStateStorageKey = 'open-stream-hub.lighting-state';
+
+// The most records kept. A kit has a handful of ports and a replug keeps its path, so this is generous; past it the
+// record written longest ago goes first. Write order is the record map's key order (a write moves its record to the
+// end), which survives the JSON round trip because a path is a long hex string, never an array index.
+export const maxLightingRecords = 64;
+
+// Whether a stored look can ever be applied to a module of this kind: a dial look to a dial, and an LED look to an LED
+// module with as many LEDs as the look holds. The backend refuses every other write, so such a record is dead weight.
+export function recordFits(record: StoredLighting, module: LightingDevice['module']): boolean {
+  if (record.kind === 'dial') return module === 'm131e';
+  return lightingKind(module) === 'led' && record.leds.length === ledCount(module);
+}
+
+// The newest `limit` records of an ordered map, oldest write dropped first.
+function newest(records: Record<string, StoredLighting>, limit = maxLightingRecords): Record<string, StoredLighting> {
+  const keys = Object.keys(records);
+  if (keys.length <= limit) return records;
+  return Object.fromEntries(keys.slice(keys.length - limit).map(key => [key, records[key]]));
+}
 
 // The look an apply writes: one dial look, or one LED look per target LED.
 export function withDialLook(_existing: StoredLighting | undefined, backlight: number, colour: string): StoredLighting {
@@ -137,13 +156,28 @@ export class LightingStateStore {
       const next = make(records[path]);
       if (next === undefined) { if (path in records) { delete records[path]; changed = true; } continue; }
       if (records[path] === next) continue;
+      // A write moves its record to the end, the newest place.
+      delete records[path];
       records[path] = next;
       changed = true;
     }
     if (!changed) return;
-    this.snapshot = { records };
+    this.snapshot = { records: newest(records) };
     writeLightingRecords(this.storage, this.snapshot.records);
     this.listeners.forEach(listener => listener());
+  }
+
+  // Forgets the records of units that are connected now as a module the record can never be applied to: the path
+  // answers as another kind (a module swapped on the same port) or an LED module of another size. A path that is not
+  // connected keeps its record (a replug on the same port finds its look), and so does a same-kind unit. Returns the
+  // paths forgotten.
+  forgetUnappliable(devices: LightingDevice[]): string[] {
+    const forgotten = devices.filter(device => {
+      const record = this.snapshot.records[device.path_hex];
+      return record !== undefined && !recordFits(record, device.module);
+    }).map(device => device.path_hex);
+    if (forgotten.length > 0) this.record(forgotten, () => undefined);
+    return forgotten;
   }
 }
 
@@ -160,7 +194,7 @@ export function readLightingRecords(storage: Pick<Storage, 'getItem'> | null): R
       const record = parseRecord(value);
       if (record) records[path] = record;
     }
-    return records;
+    return newest(records);
   } catch { return {}; }
 }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appearedTargets, controlsFromRecord, kindLighting, lightingStateStorageKey, litLedColours, LightingStateStore,
-  matchedModuleColour, readLightingRecords, restoreLighting, withDialLook, withLedLook,
+  matchedModuleColour, maxLightingRecords, readLightingRecords, recordFits, restoreLighting, withDialLook, withLedLook,
 } from './lighting-state';
 import type { StoredLighting } from './lighting-state';
 import { FakeStorage } from './fake-storage';
@@ -167,5 +167,81 @@ describe('lighting state', () => {
       ['set_led_lighting', { targets: ['kn'], led: 0, colour: [0xff, 0, 0], mode: 1, brightness: 80 }],
       ['set_led_lighting', { targets: ['kn'], led: 1, colour: [0, 0xff, 0], mode: 5, brightness: 40 }],
     ]);
+  });
+});
+
+describe('pruning the stored records', () => {
+  const dial: StoredLighting = { kind: 'dial', backlight: 50, colour: '#ffffff' };
+  const knobs: StoredLighting = { kind: 'led', leds: [knobLook, knobLook, knobLook] };
+  const faders: StoredLighting = { kind: 'led', leds: [knobLook, knobLook, knobLook, knobLook, knobLook] };
+  const base: StoredLighting = { kind: 'led', leds: [knobLook] };
+
+  it('knows which module a look can still be applied to', () => {
+    expect(recordFits(dial, 'm131e')).toBe(true);
+    expect(recordFits(dial, 'm003k')).toBe(false);
+    expect(recordFits(knobs, 'm003k')).toBe(true);
+    expect(recordFits(knobs, 'm005s')).toBe(false);
+    expect(recordFits(faders, 'm005s')).toBe(true);
+    expect(recordFits(faders, 'm003k')).toBe(false);
+    expect(recordFits(base, 'm0064')).toBe(true);
+    expect(recordFits(base, 'm003k')).toBe(false);
+    expect(recordFits(knobs, 'm131e')).toBe(false);
+    expect(recordFits(knobs, 'm4315')).toBe(false);
+  });
+
+  it('forgets a record whose path now answers as another kind, keeps same-kind units and units that are not connected', () => {
+    const storage = new FakeStorage();
+    const store = new LightingStateStore(storage);
+    store.record(['swapped'], () => dial);
+    store.record(['resized'], () => knobs);
+    store.record(['same'], () => faders);
+    store.record(['away'], () => dial);
+    let notified = 0;
+    store.subscribe(() => { notified += 1; });
+    const forgotten = store.forgetUnappliable([unit('swapped', 'm003k'), unit('resized', 'm005s'), unit('same', 'm005s'), unit('other', 'm131e')]);
+    expect(forgotten.sort()).toEqual(['resized', 'swapped']);
+    expect(Object.keys(store.getState().records)).toEqual(['same', 'away']);
+    expect(notified).toBe(1);
+    expect(Object.keys(readLightingRecords(storage))).toEqual(['same', 'away']);
+    // Nothing to forget: nothing written, nobody told.
+    expect(store.forgetUnappliable([unit('same', 'm005s')])).toEqual([]);
+    expect(notified).toBe(1);
+  });
+
+  it('keeps the newest records past the cap, dropping the one written longest ago', () => {
+    const storage = new FakeStorage();
+    const store = new LightingStateStore(storage);
+    for (let index = 0; index < maxLightingRecords; index += 1) store.record([`unit${index}`], () => dial);
+    expect(Object.keys(store.getState().records)).toHaveLength(maxLightingRecords);
+    // A rewrite makes the oldest record the newest, so the next one over the cap drops the second-oldest.
+    store.record(['unit0'], () => ({ kind: 'dial', backlight: 10, colour: '#ffffff' }));
+    store.record(['extra'], () => dial);
+    const kept = Object.keys(store.getState().records);
+    expect(kept).toHaveLength(maxLightingRecords);
+    expect(kept).not.toContain('unit1');
+    expect(kept.at(-2)).toBe('unit0');
+    expect(kept.at(-1)).toBe('extra');
+    // The order survives a restart.
+    expect(Object.keys(new LightingStateStore(storage).getState().records)).toEqual(kept);
+  });
+
+  it('trims an over-long stored list on read, newest kept', () => {
+    const storage = new FakeStorage();
+    const stored = Object.fromEntries(Array.from({ length: maxLightingRecords + 5 }, (_, index) => [`unit${index}`, dial]));
+    storage.setItem(lightingStateStorageKey, JSON.stringify(stored));
+    const records = Object.keys(readLightingRecords(storage));
+    expect(records).toHaveLength(maxLightingRecords);
+    expect(records[0]).toBe('unit5');
+    expect(records.at(-1)).toBe(`unit${maxLightingRecords + 4}`);
+  });
+
+  it('restores a same-kind replug exactly as before', async () => {
+    const store = new LightingStateStore(null);
+    store.record(['k'], () => knobs);
+    store.forgetUnappliable([unit('k', 'm003k')]);
+    const calls: string[] = [];
+    const restored = await restoreLighting(store, [unit('k', 'm003k')], (async (command: string) => { calls.push(command); return 1; }) as never, () => false);
+    expect(restored).toBe(1);
+    expect(calls).toEqual(['set_led_lighting', 'set_led_lighting', 'set_led_lighting']);
   });
 });

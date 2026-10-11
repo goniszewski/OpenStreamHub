@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
+  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
@@ -276,5 +276,31 @@ describe('obs operations', () => {
     // A carried name still passes the checks the editor shows.
     const switched = switchObsOperation({ type: 'obs_scene_collection', name: 'Stream deck' }, 'obs_profile');
     expect(obsNameIssue((switched as { name: string }).name, 'profile')).toBeNull();
+  });
+});
+
+describe('obs input volume', () => {
+  it('offers a step with a valid default and a label naming the input and level', () => {
+    expect(stepActionTypes.map(([type]) => type)).toContain('obs_set_input_volume');
+    const action = defaultStepAction('obs_set_input_volume') as { input: string; percent: number };
+    expect(obsNameIssue(action.input, 'input')).toBeNull();
+    expect(action.percent).toBe(100);
+    expect(actionLabel({ type: 'obs_set_input_volume', input: 'Mic', percent: 40 })).toBe('Set OBS input “Mic” to 40%');
+    expect(actionLabel({ type: 'obs_input_volume_from_position', input: 'Mic' })).toBe('Follow fader position for OBS input “Mic”');
+    expect(obsNameIssue('', 'input')).toContain('OBS input name');
+  });
+
+  it('keeps the input name when switching operation to another that has one', () => {
+    expect(switchObsOperation({ type: 'obs_set_input_volume', input: 'Desktop', percent: 20 }, 'obs_set_input_volume'))
+      .toEqual({ type: 'obs_set_input_volume', input: 'Desktop', percent: 100 });
+    expect(switchObsOperation({ type: 'obs_scene', scene: 'Live' }, 'obs_set_input_volume'))
+      .toEqual({ type: 'obs_set_input_volume', input: 'Mic/Aux', percent: 100 });
+  });
+
+  it('recognises both fader templates', () => {
+    expect(isFaderTemplate({ type: 'volume_from_position' })).toBe(true);
+    expect(isFaderTemplate({ type: 'obs_input_volume_from_position' })).toBe(true);
+    expect(isFaderTemplate({ type: 'obs_set_input_volume' })).toBe(false);
+    expect(isFaderTemplate(null)).toBe(false);
   });
 });

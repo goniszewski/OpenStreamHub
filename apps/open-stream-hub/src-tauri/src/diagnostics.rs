@@ -319,6 +319,7 @@ fn redact_action_payloads(
                 Some("obs_filter") => &["source", "filter"],
                 Some("obs_scene_collection" | "obs_profile") => &["name"],
                 Some("obs_source_visibility") => &["scene", "source"],
+                Some("obs_set_input_volume" | "obs_input_volume_from_position") => &["input"],
                 _ => &[],
             };
             for &field in fields {

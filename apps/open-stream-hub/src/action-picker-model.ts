@@ -3,8 +3,8 @@ import { defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTim
 import type { StepActionType } from './action-model';
 
 // Every type the picker can assign: the step actions plus the binding-only ones, and the one
-// OBS entry ('obs'), which stands in for the nine obs_* action types.
-export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'volume_from_position' | 'obs';
+// OBS entry ('obs'), which stands in for the ten obs_* step action types.
+export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'volume_from_position' | 'obs_input_volume_from_position' | 'obs';
 
 export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'navigation';
 
@@ -16,7 +16,8 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
 const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['profile', 'Switch profile'],
-  ['timer', 'Timer'], ['volume_from_position', 'Output volume follows position'], ['obs', 'OBS']]);
+  ['timer', 'Timer'], ['volume_from_position', 'Output volume follows position'],
+  ['obs_input_volume_from_position', 'OBS input volume follows position'], ['obs', 'OBS']]);
 
 export interface PickerEntry { type: PickerActionType; label: string; category: PickerCategory; keywords: string }
 
@@ -26,6 +27,7 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['set_volume', 'audio', 'percent level fixed'],
   ['toggle_mute', 'audio', 'mute unmute silence sound'],
   ['volume_from_position', 'audio', 'fader position volume follow'],
+  ['obs_input_volume_from_position', 'obs', 'fader position follow input volume level mixer mic audio'],
   ['shortcut', 'keyboard', 'hotkey key combination command press'],
   ['text', 'keyboard', 'type snippet clipboard string enter'],
   ['launch_app', 'apps', 'launch app program start bundle'],
@@ -59,24 +61,25 @@ export function pickerEntryLabel(type: PickerActionType): string {
 
 // Whether the catalogue entry is the one bound: the OBS entry matches every obs_* action.
 export function pickerEntryIsCurrent(entry: PickerActionType, action: PickerActionType | undefined): boolean {
-  return entry === action || (entry === 'obs' && !!action?.startsWith('obs_'));
+  return entry === action || (entry === 'obs' && !!action?.startsWith('obs_') && action !== 'obs_input_volume_from_position');
 }
 
-// Which catalogue the picker offers: faders take only the position-driven action, multi-action
-// steps cannot nest multi-actions, profiles or timers, and every other control offers all but the fader action.
+// Which catalogue the picker offers: faders take only the position-driven actions, multi-action
+// steps cannot nest multi-actions, profiles or timers, and every other control offers all but the fader actions.
 export type PickerScope = 'binding' | 'binding-fader' | 'step';
 
-const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'profile', 'timer', 'volume_from_position'];
+const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'obs_input_volume_from_position'];
+const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'profile', 'timer', ...faderTypes];
 
 export function entriesForScope(scope: PickerScope): ReadonlyArray<PickerEntry> {
-  if (scope === 'binding-fader') return pickerEntries.filter(entry => entry.type === 'volume_from_position');
+  if (scope === 'binding-fader') return pickerEntries.filter(entry => faderTypes.includes(entry.type));
   if (scope === 'step') return pickerEntries.filter(entry => !stepExcluded.includes(entry.type));
-  return pickerEntries.filter(entry => entry.type !== 'volume_from_position');
+  return pickerEntries.filter(entry => !faderTypes.includes(entry.type));
 }
 
 // Whether a type may be dropped on (or assigned to) a control of this module.
 export function isValidForControl(type: PickerActionType, module: ServiceModule): boolean {
-  return module === 'm005s' ? type === 'volume_from_position' : type !== 'volume_from_position';
+  return module === 'm005s' ? faderTypes.includes(type) : !faderTypes.includes(type);
 }
 
 // Case-insensitive; every whitespace-separated word of the query must appear in the label,
@@ -104,7 +107,7 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 // select's onChange built them. The OBS entry starts from the scene operation; the editor's
 // Operation dropdown changes it from there.
 export function defaultBindingAction(type: PickerActionType): BindingAction {
-  return type === 'volume_from_position' ? { type } : type === 'multi_action' ? defaultMultiAction()
+  return type === 'volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction()
     : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
     : type === 'obs' ? defaultStepAction('obs_scene') : defaultStepAction(type);
 }

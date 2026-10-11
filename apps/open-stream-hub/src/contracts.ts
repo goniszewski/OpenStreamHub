@@ -38,7 +38,9 @@ export type StepAction =
   | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp }
   // Switch the OBS scene collection or OBS profile by exact name. OBS reloads, which can interrupt a live output.
   | { type: 'obs_scene_collection'; name: string }
-  | { type: 'obs_profile'; name: string };
+  | { type: 'obs_profile'; name: string }
+  // Set an OBS input's volume to an absolute percentage (100 is unity gain, 0 dB). The input is an exact OBS name.
+  | { type: 'obs_set_input_volume'; input: string; percent: number };
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
@@ -49,8 +51,11 @@ export type BindingAction =
   | { type: 'profile'; direction: ProfileDirection }
   // A countdown in the running service; pressing the same binding again cancels it. Never a multi_action step.
   | { type: 'timer'; seconds: number; label?: string; sound?: TimerSound }
-  | { type: 'volume_from_position' };
-export type Action = Exclude<BindingAction, { type: 'volume_from_position' }>;
+  | { type: 'volume_from_position' }
+  // Fader-only: each position change sets the named OBS input's volume (obs_set_input_volume with the fader's percentage).
+  | { type: 'obs_input_volume_from_position'; input: string };
+export type FaderTemplate = Extract<BindingAction, { type: 'volume_from_position' | 'obs_input_volume_from_position' }>;
+export type Action = Exclude<BindingAction, FaderTemplate>;
 export interface Binding {
   module: ServiceModule;
   control: number;

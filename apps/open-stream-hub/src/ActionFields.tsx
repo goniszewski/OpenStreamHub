@@ -9,7 +9,7 @@ import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultStepAction, defaultTimerSound, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
+  defaultStepAction, defaultTimerSound, isFaderTemplate, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
   namedKeys, obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
@@ -173,9 +173,22 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       </SelectField>
       <Hint hint="Switches the run to the next or previous saved profile, in name order.">It wraps around at the ends. Only runs started from this app switch; nothing happens with a single saved profile or outside this app. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</Hint></div>}
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
-    {action && action.type !== 'volume_from_position' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
+    {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
+    {action && !isFaderTemplate(action) && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} />}
   </>;
+}
+
+// The fader's OBS input volume: each position change sets the named input's volume, from 0% (silent) to 100% (unity gain, 0 dB).
+function FaderObsInputFields({ action, onChange, onSetUpObs, catalog }: {
+  action: Extract<BindingAction, { type: 'obs_input_volume_from_position' }>; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView;
+}) {
+  return <div className="action-fields">
+    <ObsNameRow id="obs-input-volume-input" label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+      issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ type: 'obs_input_volume_from_position', input }, 'obs-input-volume-input')} />
+    <p className="fine-print">Each position change sets this OBS input's volume from 0% (silent) to 100% (unity gain, 0 dB), matched by exact name (up to {maxObsSceneBytes} bytes). It never boosts above 0 dB.</p>
+    <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />
+  </div>;
 }
 
 type TimerAction = Extract<BindingAction, { type: 'timer' }>;
@@ -263,7 +276,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog }:
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
     case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_studio_mode': case 'obs_transition':
-    case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile':
+    case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
@@ -343,6 +356,15 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
           entry={collection ? collections : profiles} what={collection ? 'scene collection' : 'profile'} issue={issue}
           onChange={name => onChange({ ...action, name }, 'obs-reload-name')} />
         <Hint hint={`Switches OBS to this ${collection ? 'scene collection' : 'profile'}, matched exactly (up to ${maxObsSceneBytes} bytes). ${obsReloadHint}`}>{obsReloadMore}</Hint></>;
+      break;
+    }
+    case 'obs_set_input_volume': {
+      fields = <>
+        <ObsNameRow id={id('obs-input-volume-input')} label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-input-volume-input')} />
+        <label className="spaced-label" htmlFor={id('obs-input-volume-percent')}>Volume (%)</label>
+        <IntegerField id={id('obs-input-volume-percent')} value={action.percent} minimum={0} maximum={100} onCommit={percent => onChange({ ...action, percent }, 'obs-input-volume-percent')} />
+        <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB). To follow a fader instead, bind a fader.</p></>;
       break;
     }
     case 'obs_scene': {

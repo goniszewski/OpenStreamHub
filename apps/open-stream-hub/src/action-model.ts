@@ -1,4 +1,4 @@
-import type { Action, MediaCommand, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, FaderTemplate, MediaCommand, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else.
@@ -51,6 +51,10 @@ export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...o
 
 export type StepActionType = StepAction['type'];
 
+// The fader-only templates: each position change resolves into an absolute action (Action::is_fader_template).
+export const isFaderTemplate = (action: { type: string } | null | undefined): action is FaderTemplate =>
+  action?.type === 'volume_from_position' || action?.type === 'obs_input_volume_from_position';
+
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
@@ -58,7 +62,7 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
-  ['obs_profile', 'Switch OBS profile'],
+  ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -81,6 +85,7 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
     case 'obs_scene_collection': return { type, name: 'Scene collection' };
     case 'obs_profile': return { type, name: 'Profile' };
+    case 'obs_set_input_volume': return { type, input: 'Mic/Aux', percent: 100 };
   }
 }
 
@@ -96,7 +101,7 @@ export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
 export const obsOperationLabels: Record<ObsStepType, string> = {
   obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer',
   obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
-  obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile',
+  obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
 };
 
 // Switching operation starts from the new operation's defaults and keeps the names the two
@@ -105,7 +110,7 @@ export const obsOperationLabels: Record<ObsStepType, string> = {
 export function switchObsOperation(action: ObsStepAction, next: ObsStepType): ObsStepAction {
   const target = { ...defaultStepAction(next) } as Record<string, unknown>;
   const previous = action as unknown as Record<string, unknown>;
-  for (const field of ['scene', 'source', 'filter', 'name'] as const) {
+  for (const field of ['scene', 'source', 'filter', 'name', 'input'] as const) {
     if (typeof previous[field] === 'string' && field in target) target[field] = previous[field];
   }
   return target as unknown as ObsStepAction;
@@ -154,7 +159,7 @@ export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
 // Mirrors the obs_scene rule in Action::validate (profile.rs): the keypad label rules plus the invisible-character rule
 // of text snippets, so the scene OBS receives is exactly the one reviewed.
 // The same rule applies to every OBS name (scene, source, filter, scene collection, profile): validate_obs_name in profile.rs.
-export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' | 'scene collection' | 'profile'): string | null {
+export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' | 'scene collection' | 'profile' | 'input'): string | null {
   if (!name.trim()) return `Enter the OBS ${what} name exactly as it appears in OBS.`;
   if (utf8.encode(name).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return 'Remove line breaks, tabs and other control characters.';

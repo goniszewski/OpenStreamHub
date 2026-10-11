@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Action, LiveDevice, Profile } from './contracts';
+import type { Action, FaderTemplate, LiveDevice, Profile } from './contracts';
 import { labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, startersForModule, startersStorageKey } from './starter-model';
@@ -8,7 +8,7 @@ import { controlCounts, gestures, modules } from './ui-model';
 const device = (path: string, module: LiveDevice['module']): LiveDevice => ({ path_hex: path, module, serial_number: null });
 
 // Walks every action in a starter profile, including the keypad tiles.
-function* actionsOf(profile: Profile): Generator<{ action: Action | { type: 'volume_from_position' }; where: string }> {
+function* actionsOf(profile: Profile): Generator<{ action: Action | FaderTemplate; where: string }> {
   for (const binding of profile.bindings) yield { action: binding.action, where: `${binding.module}/${binding.control}/${binding.gesture}` };
   for (const page of profile.keypad?.pages ?? []) for (const [index, slot] of page.slots.entries()) {
     if (slot?.type !== 'action') continue;

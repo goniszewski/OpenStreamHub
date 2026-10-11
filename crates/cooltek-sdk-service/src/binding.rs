@@ -98,18 +98,26 @@ impl BindingEngine {
         let Some(binding) = self.binding_for(device, event) else {
             return Ok(None);
         };
-        let action = match binding.action {
-            Action::VolumeFromPosition => {
+        let action = match &binding.action {
+            template @ (Action::VolumeFromPosition | Action::ObsInputVolumeFromPosition { .. }) => {
                 let Some(InputValue::Position { raw, maximum }) = event.value else {
-                    return Err("volume_from_position requires an absolute fader value".into());
+                    return Err(format!(
+                        "{} requires an absolute fader value",
+                        template.type_name()
+                    ));
                 };
                 // validate_for has rejected zero scale or out-of-range input.
-                let percent = (u32::from(raw) * 100 + u32::from(maximum) / 2) / u32::from(maximum);
-                Action::SetVolume {
-                    percent: percent as u8,
+                let percent =
+                    ((u32::from(raw) * 100 + u32::from(maximum) / 2) / u32::from(maximum)) as u8;
+                match template {
+                    Action::ObsInputVolumeFromPosition { input } => Action::ObsSetInputVolume {
+                        input: input.clone(),
+                        percent,
+                    },
+                    _ => Action::SetVolume { percent },
                 }
             }
-            _ => binding.action.clone(),
+            other => other.clone(),
         };
         action.validate_executable()?;
         Ok(Some(action))
@@ -361,6 +369,47 @@ mod tests {
                 Action::VolumeFromPosition
             );
         }
+    }
+
+    #[test]
+    fn obs_fader_binding_resolves_to_an_absolute_input_volume() {
+        let engine = engine(vec![Binding {
+            module: ServiceModule::M005S,
+            control: 0,
+            gesture: Gesture::PositionChanged,
+            serial_number: None,
+            action: Action::ObsInputVolumeFromPosition {
+                input: "Mic/Aux".into(),
+            },
+        }]);
+        let device = DeviceContext {
+            module: ServiceModule::M005S,
+            serial_number: None,
+        };
+        for raw in [0, 1, 50, 100] {
+            let input = InputEvent {
+                timestamp_micros: 0,
+                control: 0,
+                gesture: Gesture::PositionChanged,
+                value: Some(InputValue::Position { raw, maximum: 100 }),
+            };
+            assert_eq!(
+                engine.action_for(&device, &input).unwrap(),
+                Some(Action::ObsSetInputVolume {
+                    input: "Mic/Aux".into(),
+                    percent: raw as u8
+                })
+            );
+        }
+        let mut dispatcher = DryRunDispatcher::default();
+        assert!(
+            dispatcher
+                .dispatch(&Action::ObsInputVolumeFromPosition {
+                    input: "Mic/Aux".into()
+                })
+                .is_err()
+        );
+        assert!(dispatcher.actions.is_empty());
     }
 
     #[test]

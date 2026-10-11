@@ -487,7 +487,7 @@ impl MacOsDispatcher {
             Action::SetVolume { percent } => {
                 self.apple_script(format!("set volume output volume {percent}"))?;
             }
-            Action::VolumeFromPosition => {
+            Action::VolumeFromPosition | Action::ObsInputVolumeFromPosition { .. } => {
                 unreachable!("unresolved templates are rejected before host operations")
             }
             Action::ToggleMute => {
@@ -545,7 +545,8 @@ impl MacOsDispatcher {
             | Action::ObsFilter { .. }
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }
-            | Action::ObsProfile { .. } => self.obs_action(action, None)?,
+            | Action::ObsProfile { .. }
+            | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;

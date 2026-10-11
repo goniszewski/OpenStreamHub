@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Action, Binding, BindingAction, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
 import { defaultBindingAction, isValidForControl, pickerEntryLabel, pickerWebStorage, recordRecentAction } from './action-picker-model';
+import { isFaderTemplate } from './action-model';
 import type { PickerActionType } from './action-picker-model';
 import type { ContextMenuItem } from './controls';
 import { clampUtf8 } from './draft-model';
@@ -103,7 +104,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     const key = field && `${field}:${selection.module}:${keypadPath.join('/')}:${selection.control}:${selection.gesture}:${selection.serial}`;
     try {
       if (isKeypad) {
-        if (action?.type === 'volume_from_position') throw new Error('This action is available only for faders.');
+        if (isFaderTemplate(action)) throw new Error('This action is available only for faders.');
         session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(actionLabel(action))), key);
       } else session.edit(editBinding(profile, selection, action), key);
     } catch (reason) { session.setError(errorMessage(reason)); }
@@ -196,7 +197,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     if (isKeypad) { if (!isBack) pasteKey(selection.control, keypadPath); return true; }
     if (!clipboard) { session.setNotice('Nothing is copied yet. Copy a key or a binding first.'); return true; }
     if (clipboard.kind === 'key') { session.setError('The clipboard holds a key. Select a key of the 15-key module to paste it.'); return true; }
-    if (clipboard.action.type === 'volume_from_position' && selection.module !== 'm005s') { session.setError('This action is available only for faders.'); return true; }
+    if (isFaderTemplate(clipboard.action) && selection.module !== 'm005s') { session.setError('This action is available only for faders.'); return true; }
     if (selection.module === 'm005s') { session.setError('Faders take only “Output volume follows position”.'); return true; }
     if (selection.module === 'm131e' && profile.dial_functions) { session.setError('This profile uses dial functions, so encoder bindings are edited in the dial functions editor of the inspector.'); return true; }
     try {

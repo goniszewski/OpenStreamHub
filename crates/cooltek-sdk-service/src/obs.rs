@@ -477,6 +477,12 @@ fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), Strin
                 ))
                 .map(drop)
         }
+        Action::ObsSetInputVolume { input, percent } => session
+            .request(&ObsRequest::with_data(
+                "SetInputVolume",
+                json!({"inputName":input, "inputVolumeMul":f64::from(*percent) / 100.0}),
+            ))
+            .map(drop),
         other => {
             let request = ObsRequest::for_action(other)
                 .ok_or("this action does not talk to OBS; no action was taken")?;
@@ -820,6 +826,7 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
         ("SetCurrentProgramScene", 600) => "no scene with that name".into(),
         ("SetCurrentSceneCollection", 600) => "no scene collection with that name".into(),
         ("SetCurrentProfile", 600) => "no profile with that name".into(),
+        ("SetInputVolume", 600) => "no input with that name".into(),
         (_, 207) => "OBS is not ready yet".into(),
         (_, 500) => "the output is already running".into(),
         (_, 501) => "the output is not running".into(),
@@ -2445,6 +2452,44 @@ mod tests {
             assert!(error.contains(reason), "{error}");
             assert!(!error.contains("Secret"), "{error}");
         }
+    }
+
+    #[test]
+    fn an_input_volume_sets_the_multiplier_from_the_percentage() {
+        for (percent, mul) in [(0, 0.0), (25, 0.25), (100, 1.0)] {
+            let (endpoint, server) = serve(scripted_obs(vec![done()]));
+            client(endpoint, None)
+                .run(&Action::ObsSetInputVolume {
+                    input: "Mic \"1\"".into(),
+                    percent,
+                })
+                .unwrap();
+            let seen = server.join().unwrap();
+            assert_eq!(
+                requests(&seen),
+                [(
+                    "SetInputVolume".to_string(),
+                    json!({"inputName":"Mic \"1\"", "inputVolumeMul":mul})
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_input_reports_a_fixed_message_without_obs_text() {
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600,"comment":"No input was found called Secret"}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsSetInputVolume {
+                input: "Secret".into(),
+                percent: 10,
+            })
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("no input with that name"), "{error}");
+        assert!(!error.contains("Secret"), "{error}");
     }
 
     #[test]

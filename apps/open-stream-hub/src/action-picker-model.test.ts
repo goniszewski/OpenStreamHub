@@ -15,7 +15,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
-    const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'shortcut', 'text',
+    const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
       'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'profile'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
@@ -43,9 +43,13 @@ describe('picker catalogue', () => {
 });
 
 describe('scope filtering', () => {
-  it('offers faders only the position-driven action', () => {
-    expect(types(entriesForScope('binding-fader'))).toEqual(['volume_from_position']);
+  it('offers faders only the position-driven actions', () => {
+    expect(types(entriesForScope('binding-fader'))).toEqual(['volume_from_position', 'obs_input_volume_from_position']);
     expect(isValidForControl('volume_from_position', 'm005s')).toBe(true);
+    expect(isValidForControl('obs_input_volume_from_position', 'm005s')).toBe(true);
+    expect(isValidForControl('obs_input_volume_from_position', 'm003k')).toBe(false);
+    expect(types(entriesForScope('binding'))).not.toContain('obs_input_volume_from_position');
+    expect(types(entriesForScope('step'))).not.toContain('obs_input_volume_from_position');
     for (const type of ['open_url', 'timer', 'multi_action', 'profile', 'volume', 'obs'] as PickerActionType[]) expect(isValidForControl(type, 'm005s')).toBe(false);
   });
 
@@ -74,7 +78,7 @@ describe('scope filtering', () => {
     const groups = pickerGroups('', 'binding');
     expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Timers & sequences', 'Navigation']);
     expect(groups.find(group => group.category === 'obs')!.entries).toHaveLength(1);
-    expect(pickerGroups('', 'binding-fader').map(group => group.label)).toEqual(['Audio']);
+    expect(pickerGroups('', 'binding-fader').map(group => group.label)).toEqual(['Audio', 'OBS']);
   });
 });
 
@@ -111,6 +115,7 @@ describe('default actions', () => {
     expect(defaultBindingAction('profile')).toEqual({ type: 'profile', direction: 'next' });
     expect(defaultBindingAction('timer')).toEqual({ type: 'timer', seconds: 300 });
     expect(defaultBindingAction('volume_from_position')).toEqual({ type: 'volume_from_position' });
+    expect(defaultBindingAction('obs_input_volume_from_position')).toEqual({ type: 'obs_input_volume_from_position', input: 'Mic/Aux' });
     // The OBS entry starts from the scene operation, which the editor's Operation dropdown changes.
     expect(defaultBindingAction('obs')).toEqual({ type: 'obs_scene', scene: 'Scene' });
   });

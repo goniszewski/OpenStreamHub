@@ -190,6 +190,8 @@ function describeAction(action: unknown): string {
     // Names are user text: only their lengths are shown (the service logs *_chars; older records carry the names).
     case 'obs_studio_mode': return `OBS studio mode ${str(action.op) ?? '?'}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_set_input_volume': return `OBS input volume ${typeof action.percent === 'number' ? `${action.percent}%` : '?'} (${nameChars(action, 'input')} characters)`;
+    case 'obs_input_volume_from_position': return `OBS input volume follows the fader (${nameChars(action, 'input')} characters)`;
     case 'obs_filter': return `OBS filter ${str(action.op) ?? '?'} (${nameChars(action, 'source')} + ${nameChars(action, 'filter')} characters)`;
     case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
     case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;

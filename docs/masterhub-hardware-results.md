@@ -131,7 +131,7 @@ The editor's OBS pickers were checked against the scripted fake server in `crate
 - **Catalog.** Four requests in order over one connection. Scene collections and profiles are bare string arrays, matching the obs-websocket v5 spec. A reply missing a list is an error, not a partial list.
 - **Bounds.** Names over the profile's 128-byte limit are dropped. More than 1000 entries are refused.
 - **Off.** While OBS is off in Settings, listing commands refuse without connecting.
-- **Still pending.** A check against a real OBS 28+ install, including the password-required path and refresh after a scene rename.
+- **Still pending.** A check against a real OBS 28+ install, including the password-required path and refresh after a scene rename, and `obs_set_input_volume` / `obs_input_volume_from_position` (fader moving a real input's volume; fader range and jitter).
 
 ## Run mode and applied saves: press checks (pending, 10 October 2026)
 

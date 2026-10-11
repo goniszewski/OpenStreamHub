@@ -100,6 +100,9 @@ const quoted = (name: unknown) => `“${snippetPreview(String(name ?? '')).text}
 const obsItemLine = (action: Record<string, unknown>) => action.type === 'obs_filter'
   ? `OBS filter ${quoted(action.filter)} on ${quoted(action.source)}: ${opWord(action.op, 'obs_filter')}`
   : `OBS source ${quoted(action.source)} in scene ${quoted(action.scene)}: ${opWord(action.op, 'obs_source_visibility')}`;
+const obsInputVolumeLine = (action: Record<string, unknown>) => action.type === 'obs_set_input_volume'
+  ? `OBS input ${quoted(action.input)}: set volume to ${String(action.percent)}%`
+  : `OBS input ${quoted(action.input)}: volume follows the fader`;
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
@@ -167,6 +170,12 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
       case 'obs_source_visibility':
         obsItems.add(obsItemLine(action));
         for (const name of [action.scene, action.source, action.filter]) if (codePoints(String(name ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        break;
+      // A fader (or a fixed level) driving an OBS input's volume: a local OBS effect, shown by input name.
+      case 'obs_input_volume_from_position':
+      case 'obs_set_input_volume':
+        obsItems.add(obsInputVolumeLine(action));
+        if (codePoints(String(action.input ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'obs_scene_collection':
       case 'obs_profile':
@@ -275,6 +284,7 @@ export function stepLabel(step: StepAction): string {
     case 'obs_studio_mode': return `OBS studio mode: ${opWord(step.op, 'obs_studio_mode')}`;
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_filter': case 'obs_source_visibility': return obsItemLine(step);
+    case 'obs_set_input_volume': return obsInputVolumeLine(step);
     case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op, 'obs_virtual_camera')}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;

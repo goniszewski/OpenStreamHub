@@ -130,6 +130,14 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsProfile { name } => {
             set.insert(format!("obs_profile\0{name}"));
         }
+        // A fader-driven input volume names only the input; a fixed one also
+        // names its level, like `set_volume`.
+        Action::ObsInputVolumeFromPosition { input } => {
+            set.insert(format!("obs_input_volume\0{input}"));
+        }
+        Action::ObsSetInputVolume { input, percent } => {
+            set.insert(format!("obs_set_input_volume\0{input}\0{percent}"));
+        }
     }
 }
 

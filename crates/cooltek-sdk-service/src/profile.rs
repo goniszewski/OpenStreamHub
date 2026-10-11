@@ -459,6 +459,22 @@ pub enum Action {
         /// Exact profile name.
         name: String,
     },
+    /// Set an OBS input's volume to an absolute percentage (0 is silent, 100
+    /// is unity gain, 0 dB). Needs an OBS endpoint like `obs_scene`.
+    ObsSetInputVolume {
+        /// Exact input (source) name.
+        input: String,
+        /// Absolute volume percentage, between 0 and 100 inclusive.
+        percent: u8,
+    },
+    /// Resolve a fader's absolute position into an absolute OBS input volume.
+    ///
+    /// Like [`Action::VolumeFromPosition`] this is a binding template that
+    /// must be resolved into [`Action::ObsSetInputVolume`] before dispatch.
+    ObsInputVolumeFromPosition {
+        /// Exact input (source) name.
+        input: String,
+    },
 }
 
 /// Deserializes a present field as `Some`, so an explicit `null` is rejected
@@ -702,6 +718,13 @@ impl<'de> Deserialize<'de> for Action {
             ObsProfile {
                 name: String,
             },
+            ObsSetInputVolume {
+                input: String,
+                percent: u8,
+            },
+            ObsInputVolumeFromPosition {
+                input: String,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -736,6 +759,12 @@ impl<'de> Deserialize<'de> for Action {
             }
             Shape::ObsSceneCollection { name } => Self::ObsSceneCollection { name },
             Shape::ObsProfile { name } => Self::ObsProfile { name },
+            Shape::ObsSetInputVolume { input, percent } => {
+                Self::ObsSetInputVolume { input, percent }
+            }
+            Shape::ObsInputVolumeFromPosition { input } => {
+                Self::ObsInputVolumeFromPosition { input }
+            }
         })
     }
 }
@@ -785,6 +814,8 @@ impl Action {
             Self::ObsSourceVisibility { .. } => "obs_source_visibility",
             Self::ObsSceneCollection { .. } => "obs_scene_collection",
             Self::ObsProfile { .. } => "obs_profile",
+            Self::ObsSetInputVolume { .. } => "obs_set_input_volume",
+            Self::ObsInputVolumeFromPosition { .. } => "obs_input_volume_from_position",
         }
     }
 
@@ -799,7 +830,9 @@ impl Action {
             | Self::ObsFilter { .. }
             | Self::ObsSourceVisibility { .. }
             | Self::ObsSceneCollection { .. }
-            | Self::ObsProfile { .. } => true,
+            | Self::ObsProfile { .. }
+            | Self::ObsSetInputVolume { .. }
+            | Self::ObsInputVolumeFromPosition { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -859,6 +892,16 @@ impl Action {
                 validate_obs_name("obs_filter", "source", source)?;
                 validate_obs_name("obs_filter", "filter", filter)
             }
+            Self::ObsSetInputVolume { input, percent } => {
+                validate_obs_name("obs_set_input_volume", "input", input)?;
+                if *percent > 100 {
+                    return Err("absolute OBS input volume must be between 0 and 100".into());
+                }
+                Ok(())
+            }
+            Self::ObsInputVolumeFromPosition { input } => {
+                validate_obs_name("obs_input_volume_from_position", "input", input)
+            }
             Self::ObsSourceVisibility { scene, source, .. } => {
                 validate_obs_name("obs_source_visibility", "scene", scene)?;
                 validate_obs_name("obs_source_visibility", "source", source)
@@ -906,6 +949,7 @@ impl Action {
                         step,
                         Self::MultiAction { .. }
                             | Self::VolumeFromPosition
+                            | Self::ObsInputVolumeFromPosition { .. }
                             | Self::Profile { .. }
                             | Self::Timer { .. }
                     ) {
@@ -947,11 +991,23 @@ impl Action {
     /// Validates an operation and rejects templates lacking a resolved input value.
     pub fn validate_executable(&self) -> Result<(), String> {
         self.validate()?;
-        if matches!(self, Self::VolumeFromPosition) {
-            Err("volume_from_position must be resolved with a fader event before dispatch".into())
+        if self.is_fader_template() {
+            Err(format!(
+                "{} must be resolved with a fader event before dispatch",
+                self.type_name()
+            ))
         } else {
             Ok(())
         }
+    }
+
+    /// True for a binding template that follows a fader's absolute position
+    /// and must be resolved into an absolute action before dispatch.
+    pub fn is_fader_template(&self) -> bool {
+        matches!(
+            self,
+            Self::VolumeFromPosition | Self::ObsInputVolumeFromPosition { .. }
+        )
     }
 }
 
@@ -1075,11 +1131,9 @@ impl Profile {
                 .module
                 .validate_selector(binding.control, binding.gesture)
                 .map_err(|error| format!("binding {index}: {error}"))?;
-            if (binding.module == ServiceModule::M005S)
-                != matches!(binding.action, Action::VolumeFromPosition)
-            {
+            if (binding.module == ServiceModule::M005S) != binding.action.is_fader_template() {
                 return Err(format!(
-                    "binding {index}: fader bindings require volume_from_position, which is supported only for faders"
+                    "binding {index}: fader bindings require a fader action (volume_from_position or obs_input_volume_from_position), which are supported only for faders"
                 ));
             }
             validate_serial_number(binding.serial_number.as_deref())
@@ -1341,6 +1395,108 @@ mod tests {
         for serial in ["".to_string(), "x\0".into(), "x".repeat(257)] {
             profile.bindings[1].serial_number = Some(serial);
             assert!(profile.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn obs_input_volume_actions_validate_names_levels_and_fader_scope() {
+        let template = Action::ObsInputVolumeFromPosition {
+            input: "Mic/Aux".into(),
+        };
+        let fixed = Action::ObsSetInputVolume {
+            input: "Mic/Aux".into(),
+            percent: 100,
+        };
+        assert!(template.validate().is_ok() && fixed.validate().is_ok());
+        assert!(template.is_fader_template() && !fixed.is_fader_template());
+        assert!(template.uses_obs() && fixed.uses_obs());
+        // The template is not executable until a fader event resolves it.
+        assert!(
+            template
+                .validate_executable()
+                .unwrap_err()
+                .contains("obs_input_volume_from_position")
+        );
+        assert!(fixed.validate_executable().is_ok());
+        for bad in ["", "  ", "a\nb", "a\u{200b}b", &"x".repeat(129)] {
+            assert!(
+                Action::ObsSetInputVolume {
+                    input: bad.into(),
+                    percent: 5
+                }
+                .validate()
+                .is_err()
+            );
+            assert!(
+                Action::ObsInputVolumeFromPosition { input: bad.into() }
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(
+            Action::ObsSetInputVolume {
+                input: "Mic".into(),
+                percent: 101
+            }
+            .validate()
+            .is_err()
+        );
+
+        // Fader bindings take either template and nothing else; no other control takes one.
+        let mut profile = sample();
+        profile.bindings[0].module = ServiceModule::M005S;
+        profile.bindings[0].gesture = Gesture::PositionChanged;
+        profile.bindings[0].control = 1;
+        profile.bindings[0].action = template.clone();
+        assert!(profile.validate().is_ok());
+        profile.bindings[0].action = fixed.clone();
+        assert!(profile.validate().is_err());
+        profile.bindings[0].module = ServiceModule::M003K;
+        profile.bindings[0].control = 0;
+        profile.bindings[0].gesture = Gesture::Clockwise;
+        profile.bindings[0].action = template.clone();
+        assert!(profile.validate().is_err());
+
+        // Never a multi_action step.
+        assert!(
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, template]
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, fixed]
+            }
+            .validate()
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn obs_input_volume_json_is_strict() {
+        let parsed: Action =
+            serde_json::from_str(r#"{"type":"obs_set_input_volume","input":"Mic","percent":40}"#)
+                .unwrap();
+        assert_eq!(
+            parsed,
+            Action::ObsSetInputVolume {
+                input: "Mic".into(),
+                percent: 40
+            }
+        );
+        let parsed: Action =
+            serde_json::from_str(r#"{"type":"obs_input_volume_from_position","input":"Mic"}"#)
+                .unwrap();
+        assert_eq!(parsed.type_name(), "obs_input_volume_from_position");
+        for bad in [
+            r#"{"type":"obs_set_input_volume","input":"Mic"}"#,
+            r#"{"type":"obs_set_input_volume","input":"Mic","percent":-1}"#,
+            r#"{"type":"obs_input_volume_from_position","input":"Mic","percent":1}"#,
+            r#"{"type":"obs_input_volume_from_position"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(bad).is_err(), "{bad}");
         }
     }
 

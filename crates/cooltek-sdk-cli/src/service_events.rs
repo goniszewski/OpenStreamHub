@@ -461,6 +461,15 @@ pub fn loggable(action: &Action) -> Value {
         Action::ObsProfile { name } => {
             json!({"type":"obs_profile", "name_chars":name.chars().count()})
         }
+        Action::ObsSetInputVolume { input, percent } => json!({
+            "type":"obs_set_input_volume",
+            "input_chars":input.chars().count(),
+            "percent":percent,
+        }),
+        Action::ObsInputVolumeFromPosition { input } => json!({
+            "type":"obs_input_volume_from_position",
+            "input_chars":input.chars().count(),
+        }),
         other => json!(other),
     }
 }
@@ -1156,6 +1165,19 @@ mod tests {
                     name: "Work".into(),
                 },
                 json!({"type":"obs_profile","name_chars":4}),
+            ),
+            (
+                Action::ObsSetInputVolume {
+                    input: "Mic".into(),
+                    percent: 40,
+                },
+                json!({"type":"obs_set_input_volume","input_chars":3,"percent":40}),
+            ),
+            (
+                Action::ObsInputVolumeFromPosition {
+                    input: "Mic".into(),
+                },
+                json!({"type":"obs_input_volume_from_position","input_chars":3}),
             ),
             (
                 multi,

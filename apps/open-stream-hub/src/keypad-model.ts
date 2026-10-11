@@ -1,3 +1,4 @@
+import { isFaderTemplate } from './action-model';
 import type { Action, KeyArtwork, KeypadBinding, KeypadPage, KeypadSlot, Profile } from './contracts';
 
 export const keypadRoot = 'root';
@@ -18,7 +19,7 @@ export function upgradeKeypadProfile(profile: Profile): Profile {
   if (profile.schema_version !== 1) throw new Error('Unsupported profile version.');
   const root = emptyKeypadPage();
   for (const binding of profile.bindings.filter(item => item.module === 'm4315')) {
-    if (!Number.isInteger(binding.control) || binding.control < 0 || binding.control >= keypadSlotCount || !['pressed', 'released'].includes(binding.gesture) || binding.action.type === 'volume_from_position') {
+    if (!Number.isInteger(binding.control) || binding.control < 0 || binding.control >= keypadSlotCount || !['pressed', 'released'].includes(binding.gesture) || isFaderTemplate(binding.action)) {
       throw new Error('The profile contains an unsupported keypad binding.');
     }
     let slot = root.slots[binding.control];

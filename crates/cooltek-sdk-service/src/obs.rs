@@ -591,8 +591,10 @@ impl ObsRequest {
 
 /// What OBS currently has, for the app's editor pickers: the names of its
 /// scenes, inputs ("sources"), scene collections and profiles. One reply of
-/// [`ObsClient::catalog`]; every list is in OBS's own order and capped at
-/// [`MAX_LISTED_NAMES`] entries.
+/// [`ObsClient::catalog`]; every list is in OBS's own order, with over-long
+/// names dropped ([`MAX_LISTED_NAME_BYTES`]). A list beyond
+/// [`MAX_LISTED_NAMES`] entries is refused, not truncated: the refresh fails
+/// with the reason instead of offering a quietly incomplete list.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ObsCatalog {
     /// Scene names of the current scene collection.

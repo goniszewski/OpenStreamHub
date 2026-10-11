@@ -46,7 +46,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
       <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
       {!collapsed && themePicker}
       <button type="button" className="nav-toggle" aria-expanded={!collapsed} aria-label={collapsed ? t('nav.expandTip') : t('nav.collapseTip')}
-        data-tip={collapsed ? t('nav.expandTip') : t('nav.collapseTip')} onClick={onToggle}>
+        data-tip={collapsed ? t('nav.expandTip') : undefined} onClick={onToggle}>
         {collapsed ? <PanelLeftOpen size={20} aria-hidden="true" /> : <><PanelLeftClose size={20} aria-hidden="true" /><span className="nav-label">{t('nav.collapse')}</span></>}
       </button>
     </div>

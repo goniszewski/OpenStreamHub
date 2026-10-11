@@ -18,6 +18,8 @@ describe('SidebarNav', () => {
     expect(markup).toContain('aria-expanded="true"');
     expect(markup).not.toContain('class="sidebar collapsed"');
     expect(markup).not.toContain('data-tip="Workspace"');
+    // The visible label already names the button; a tooltip below it would spill out of the scrolling sidebar.
+    expect(markup).not.toContain('data-tip="Collapse sidebar"');
     expect(markup).toContain('title="Prepare images for module displays offline"');
   });
   it('collapsed, keeps each page reachable as an icon named by its tooltip and accessible label', () => {

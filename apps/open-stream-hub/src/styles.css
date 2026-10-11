@@ -86,11 +86,12 @@ html,body { overflow:clip; }
 .sidebar-help { display:flex; gap:4px; margin-bottom:6px; }
 .sidebar-help .help-link { flex:1; min-width:0; min-height:36px; padding:6px 8px; gap:8px; font-size:12px; font-weight:400; width:auto; }
 .sidebar-help .help-link svg { width:17px; height:17px; }
-.nav-toggle { display:flex; align-items:center; gap:12px; width:100%; min-height:34px; margin:0 0 12px; padding:6px 13px; border:0; border-radius:9px; background:transparent; color:var(--muted); font-size:12px; text-align:left; }
+.nav-toggle { display:flex; align-items:center; gap:8px; width:auto; align-self:flex-end; min-height:34px; margin:0 0 12px; padding:6px 13px; border:0; border-radius:9px; background:transparent; color:var(--muted); font-size:12px; text-align:left; }
 .nav-toggle:hover { color:var(--accent); background:var(--selected); }
 .sidebar { transition:width .15s ease; }
 .sidebar.collapsed .sidebar-scroll { overflow:visible; }
 .sidebar.collapsed { position:relative; z-index:30; width:68px; padding-left:8px; padding-right:8px; overflow:visible; }
+.sidebar.collapsed .nav-toggle { width:100%; align-self:stretch; }
 .sidebar.collapsed nav button,.sidebar.collapsed .help-link,.sidebar.collapsed .settings-link,.sidebar.collapsed .nav-toggle { justify-content:center; padding-left:0; padding-right:0; gap:0; }
 .sidebar.collapsed .settings-link { padding-top:8px; }
 .sidebar.collapsed .sidebar-help { flex-direction:column; }

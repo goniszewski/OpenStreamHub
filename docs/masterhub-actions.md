@@ -255,7 +255,7 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - **Fader template.** `obs_input_volume_from_position` can only be bound to a fader (module `m005s`), and a fader binding can only be one of the two fader templates. A fader position resolves to the nearest whole percentage and then into `obs_set_input_volume`, the same way `volume_from_position` resolves into `set_volume`. The template cannot run unresolved and cannot be a `multi_action` step; `obs_set_input_volume` can be a step and can be bound to any other control.
 - **Logging and redaction.** Records show `{"type":"obs_set_input_volume","input_chars":3,"percent":40}`; the activity panel shows the level and the name's length. Diagnostics bundles with redaction replace `input` with `<N chars>`.
 - The Execute confirmation lists the input by name with the level, or says the volume follows the fader. It is a local OBS effect and does not raise the risk level.
-- Tested against the scripted fake obs-websocket server only; no real OBS has been used, and the fader's range and jitter on hardware are unrecorded. Each position change sends one request, with no deadband yet.
+- Tested against the scripted fake obs-websocket server only; no real OBS has been used, and the fader's range and jitter on hardware are unrecorded. Each position change sends one request, but a backlog of queued movements on the same input is coalesced to the latest level, like `set_volume`. There is no deadband yet.
 
 ## OBS scene (`obs_scene`)
 

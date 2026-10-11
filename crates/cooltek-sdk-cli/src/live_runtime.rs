@@ -1578,6 +1578,20 @@ fn merge_event(earlier: &PlannedEvent, later: &PlannedEvent) -> Option<PlannedEv
                 dial_function: second_function,
             },
         ) if first_function == second_function => later.resolution.clone(),
+        // A fader backlog on one OBS input keeps only the latest level; different
+        // inputs never merge.
+        (
+            ProfileResolution::Action {
+                action: Action::ObsSetInputVolume { input: first, .. },
+                page_id: None,
+                dial_function: first_function,
+            },
+            ProfileResolution::Action {
+                action: Action::ObsSetInputVolume { input: second, .. },
+                page_id: None,
+                dial_function: second_function,
+            },
+        ) if first == second && first_function == second_function => later.resolution.clone(),
         (ProfileResolution::Unbound, ProfileResolution::Unbound) => later.resolution.clone(),
         _ => return None,
     };
@@ -3445,6 +3459,26 @@ mod tests {
                 .resolution,
             action(Action::SetVolume { percent: 70 })
         );
+        let obs = |input: &str, percent| {
+            planned(
+                1,
+                Gesture::PositionChanged,
+                action(Action::ObsSetInputVolume {
+                    input: input.into(),
+                    percent,
+                }),
+            )
+        };
+        assert_eq!(
+            merge_event(&obs("Mic", 10), &obs("Mic", 70))
+                .unwrap()
+                .resolution,
+            action(Action::ObsSetInputVolume {
+                input: "Mic".into(),
+                percent: 70
+            })
+        );
+        assert!(merge_event(&obs("Mic", 10), &obs("Desktop", 70)).is_none());
         let press = planned(0, Gesture::Pressed, action(Action::ToggleMute));
         assert!(merge_event(&press, &press).is_none());
         let counter = planned(

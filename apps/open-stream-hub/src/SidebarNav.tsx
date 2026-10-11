@@ -36,6 +36,11 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
   const current = (target: Page) => ({ 'aria-current': page === target ? ('page' as const) : undefined });
   const labelOf = (text: string) => collapsed ? null : <span className="nav-label">{text}</span>;
   return <aside className={`sidebar${collapsed ? ' collapsed' : ''}`}>
+    <button type="button" className="nav-toggle" aria-expanded={!collapsed} aria-label={collapsed ? t('nav.expandTip') : t('nav.collapseTip')}
+        data-tip={collapsed ? t('nav.expandTip') : undefined} onClick={onToggle}>
+        {collapsed ? <PanelLeftOpen size={20} aria-hidden="true" /> : <><PanelLeftClose size={20} aria-hidden="true" /><span className="nav-label">{t('nav.collapse')}</span></>}
+      </button>
+    <div className="sidebar-scroll">
     <nav aria-label={t('nav.primary')}>
       {pages.map(({ page: target, label, icon: Icon, hint }) => <button key={target} className={page === target ? 'active' : ''} {...current(target)}
         {...tip(t(label))} title={collapsed || !hint ? undefined : t(hint)} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(t(label))}</button>)}
@@ -45,10 +50,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
       <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip(t('nav.about'))} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf(t('nav.about'))}</button>
       <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
       {!collapsed && themePicker}
-      <button type="button" className="nav-toggle" aria-expanded={!collapsed} aria-label={collapsed ? t('nav.expandTip') : t('nav.collapseTip')}
-        data-tip={collapsed ? t('nav.expandTip') : undefined} onClick={onToggle}>
-        {collapsed ? <PanelLeftOpen size={20} aria-hidden="true" /> : <><PanelLeftClose size={20} aria-hidden="true" /><span className="nav-label">{t('nav.collapse')}</span></>}
-      </button>
+    </div>
     </div>
   </aside>;
 }

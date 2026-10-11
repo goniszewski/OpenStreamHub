@@ -280,7 +280,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage .fader { touch-action:none; cursor:ns-resize; }
 .fader-thumb { position:absolute; left:-25%; width:150%; height:6px; margin-bottom:-3px; border-radius:3px; background:#f5f1ff; box-shadow:0 0 6px #a284ff; pointer-events:none; }
 .base-layout { margin:4px auto 14px; max-width:780px; }
-.base-layout-module { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:0; min-height:0; overflow:hidden; padding:0 0 18px; border:1px solid var(--line); border-radius:8px; background:linear-gradient(145deg,#242428,#17171a); container-type:size; }
+.base-layout-module { cursor:pointer; position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; min-width:0; min-height:0; overflow:hidden; padding:0 0 18px; border:1px solid var(--line); border-radius:8px; background:linear-gradient(145deg,#242428,#17171a); container-type:size; }
 .base-layout-module.overhangs { border-style:dashed; }
 .base-layout-module.selected { border-color:#b6a1ff; box-shadow:inset 0 0 0 1px #b6a1ff; }
 /* The stage fits its cell whatever the cell's shape: as wide as the cell allows, and no taller than it leaves room for. */

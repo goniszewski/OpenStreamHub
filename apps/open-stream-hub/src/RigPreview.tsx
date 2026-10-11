@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, PointerEvent } from 'react';
+import type { CSSProperties, MouseEvent, PointerEvent } from 'react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import { emptyLightingState, kindLighting } from './lighting-state';
@@ -79,6 +79,11 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
       onSelect={control => select(device, control)} onFaderPointer={(control, event) => dragFader(device, control, event)}
       onFaderValue={(control, value) => editor.changeFaderPosition(value)} dropHandlers={dropHandlers && (control => dropHandlers(device.module, control))} />;
   };
+  // Clicking a module's tile (its art, caption or empty space) picks the unit; its own controls pick themselves.
+  const pickTile = (device: LiveDevice) => (event: MouseEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest('.image-control')) return;
+    select(device, device.path_hex === activePath ? selection.control : 0);
+  };
   const caption = (device: LiveDevice) => {
     const name = modules.find(module => module.id === device.module)?.shortName ?? device.module;
     return <button type="button" className="base-layout-name" aria-pressed={device.path_hex === activePath} title={device.serial_number ?? undefined}
@@ -86,14 +91,14 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   };
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
-    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left · pick a control on a module to edit it</p></div><span>{baseColumns} × {baseRows} cells</span></div>
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span></div>
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
         <div className="base-layout-base" aria-hidden="true" style={{ gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
         {positioned.map(device => {
           const placement = devicePlacement(device);
           const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
-          return <div key={device.path_hex} className={`base-layout-module${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`}
+          return <div key={device.path_hex} className={`base-layout-module${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
             style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
             {stage(device)}
             {caption(device)}
@@ -102,7 +107,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
       </div>
     </div>
     {unpositioned.length > 0 && <div className="base-layout-unknown"><p>Position not detected</p>
-      <div className="base-layout-extra">{unpositioned.map(device => <div key={device.path_hex} className={`base-layout-module loose${device.path_hex === activePath ? ' selected' : ''}`}>{stage(device)}{caption(device)}</div>)}</div>
+      <div className="base-layout-extra">{unpositioned.map(device => <div key={device.path_hex} className={`base-layout-module loose${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}>{stage(device)}{caption(device)}</div>)}</div>
     </div>}
   </section>;
 }

@@ -25,17 +25,6 @@ import type { Page } from './ui-model';
 import { keyMenuItems } from './useDeviceEditor';
 import type { DeviceEditor } from './useDeviceEditor';
 
-export function ModuleCatalog({ editor, feed }: { editor: DeviceEditor; feed?: DeviceFeed }) {
-  const connected = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
-  const connectedModules = new Set(connected.devices.map(device => device.module));
-  return <aside className="catalog" aria-label="Module catalog"><h2>Modules</h2>
-    {modules.map(module => <button key={module.id} className={`module-card ${editor.selectedModule === module.id ? 'selected' : ''}`} aria-pressed={editor.selectedModule === module.id} onClick={() => editor.chooseModule(module.id)}>
-      <span className="module-photo"><img className={module.art === 'encoder' || module.art === 'knob' ? 'art-square' : 'art-wide'} {...moduleImage(module)} alt="" /></span>
-      <span className="module-copy"><span className="module-name">{module.shortName}</span><small>{connectedModules.has(module.id) ? 'Connected' : 'Not connected'}</small></span>
-    </button>)}
-  </aside>;
-}
-
 const noopSubscribe = () => () => {};
 const idleState = () => idleFeedState;
 

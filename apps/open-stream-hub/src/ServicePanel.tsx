@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { CircleHelp, LoaderCircle, MoonStar, Play, Square, TriangleAlert } from 'lucide-react';
+import { CircleHelp, FlaskConical, LoaderCircle, MoonStar, Play, Square, TriangleAlert, Zap } from 'lucide-react';
 import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } from './contracts';
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
@@ -506,14 +506,15 @@ export function ModeControl({ run }: { run: RunSession }) {
   const live = runMode === 'live' && !editingHeld;
   const confirmed = display.settings.live_offered;
   const busy = display.busy || !display.loaded;
+  // The switch itself shows the mode; the badge text stays for screen readers, because three holds
+  // (imported profile, unconfirmed Live, editing) read as Test whatever the mode is.
   return <div className="mode-control" role="group" aria-label="Run mode">
-    <span className={`mode-pill run-mode-pill ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status"
-      title={editingHeld ? editingHoldNote : undefined}>{runModeBadge(runMode, dryRunOnly, confirmed, editingHeld)}</span>
-    <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy}
-      title="Switch to Test mode: presses are logged only, nothing happens on the Mac" onClick={() => setRunMode('test')}>Test</button>
-    <button type="button" className="mode-choice" aria-pressed={live} disabled={!enabled || busy || !mac}
-      title={mac ? 'Switch to Live mode: presses run their actions on this Mac' : 'Actions run only on macOS'}
-      onClick={() => setRunMode('live')}>Live</button>
+    <span className={`mode-pill run-mode-pill sr-only ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly, confirmed, editingHeld)}</span>
+    <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy} aria-label="Test mode"
+      data-tip={editingHeld ? editingHoldNote : 'Test mode: presses are logged only, nothing happens on the Mac'} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /></button>
+    <button type="button" className="mode-choice live" aria-pressed={live} disabled={!enabled || busy || !mac} aria-label="Live mode"
+      data-tip={mac ? 'Live mode: presses run their actions on this Mac' : 'Actions run only on macOS'}
+      onClick={() => setRunMode('live')}><Zap size={16} aria-hidden="true" /></button>
   </div>;
 }
 
@@ -522,22 +523,25 @@ export function ModeControl({ run }: { run: RunSession }) {
 // button names the module a start would use and turns danger when the mode would run with actions.
 // The confirmations live here too, so Run and the mode switch work from every page.
 export function RunHeaderControl({ run }: { run: RunSession }) {
-  const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device, dialogOpen, copy, answer, acknowledged, setAcknowledged } = run;
+  const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device } = run;
   const pill = runStatePill(activeRun);
   const needsConfirmation = phase === 'needs_confirmation';
   const stopping = activeRun?.state === 'stopping';
   const starting = activeRun?.state === 'starting';
   const target = device ? runTargetLabel[device.module] : null;
   const runTitle = blocker ?? `${executeSelected ? 'Run with actions' : 'Dry run'}${device ? ` on ${deviceName(device)}` : ''}`;
+  const runLabel = executeSelected ? target ? `Run with actions on ${target}` : 'Run with actions' : target ? `Run on ${target}` : 'Run';
+  // An idle run says nothing visually (the Run button is the state); anything else gets a chip.
+  const quiet = pill.label === 'Stopped';
   return <div className="run-control" role="group" aria-label="Run control">
-    <span className={`mode-pill run-state-pill ${pill.className}`} role="status">{pill.label}</span>
+    <span className={`mode-pill run-state-pill ${pill.className}${quiet ? ' sr-only' : ''}`} role="status">{pill.label}</span>
     <ModeControl run={run} />
     {needsConfirmation ? <>
-      <button type="button" className="button compact danger" title="Resume actions on this Mac" onClick={resume}>Resume…</button>
-      <button type="button" className="button compact" title="Stop without resuming" disabled={stopping} onClick={stop}>Stop</button>
+      <button type="button" className="button compact danger" data-tip="Resume actions on this Mac" onClick={resume}>Resume…</button>
+      <button type="button" className="button icon-run" aria-label="Stop" data-tip="Stop without resuming" disabled={stopping} onClick={stop}><Square size={16} aria-hidden="true" /></button>
     </> : active
-      ? <button type="button" className="button" disabled={stopping} onClick={stop}>{stopping ? 'Stopping…' : <><Square size={16} />Stop</>}</button>
-      : <button type="button" className={`button ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} title={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" /> : <Play size={16} />}{executeSelected ? target ? `Run with actions on ${target}` : 'Run with actions' : target ? `Run on ${target}` : 'Run'}</button>}
+      ? <button type="button" className="button icon-run" aria-label={stopping ? 'Stopping' : 'Stop'} data-tip={stopping ? 'Stopping…' : 'Stop the run'} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}</button>
+      : <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}</button>}
     <ExecuteDialog run={run} />
   </div>;
 }

@@ -20,16 +20,17 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Info, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Info, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
-import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
+import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
-import { ModuleStrip } from './ModuleStrip';
+import { ModuleDrawer } from './ModuleDrawer';
+import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
+import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
 import { createModuleSelection } from './module-selection';
-import { moduleAcceptsDisplayArtwork, moduleArtworkCaption } from './artwork-model';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
@@ -100,6 +101,7 @@ export default function App() {
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
   const pickableModules = [...bases, ...deviceFeedState.devices];
+  const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   // A save applies the saved profile to the running sessions that hold it,
   // through the run store that knows them.
@@ -158,6 +160,26 @@ export default function App() {
   // The shortcuts read the editor of the current render (the closure below would go stale).
   const editorRef = useRef(editor);
   editorRef.current = editor;
+  // The module drawer: one picker for the pages that act on a module. Workspace picks a module kind
+  // (bindings belong to a kind), Lighting and Artwork a unit; both read the one shared pick, so a
+  // pick made on one page is the pick on the next.
+  const drawerPage: DrawerPage | null = page === 'workspace' || page === 'artwork' || page === 'lighting' ? page : null;
+  const [drawerOpen, setDrawerOpen] = useState(() => readDrawerOpen(webStorage()));
+  const tiles = drawerPage ? drawerTiles({ page: drawerPage, devices: pickableModules, selectedPath: pick.path, markedPaths: pick.marked, editorKind: editor.selectedModule }) : [];
+  function pickModule(tile: DrawerTile) {
+    if (tile.path) moduleSelection.select(tile.path);
+    if (drawerPage === 'workspace' && tile.module !== 'm0064' && tile.module !== editor.selectedModule) editor.chooseModule(tile.module);
+  }
+  // The two picks follow each other after the first render: a unit picked elsewhere opens its kind in
+  // the editor, and a kind opened in the editor (rig preview, bindings list) moves the shared pick to
+  // a unit of that kind. Neither runs on mount, so the saved pick and the editor's start stay as they are.
+  const synced = useRef({ path: pick.path, kind: editor.selectedModule });
+  useEffect(() => {
+    const step = reconcilePicks({ previous: synced.current, pickPath: pick.path, editorKind: editor.selectedModule, devices: pickableModules });
+    synced.current = step.next;
+    if (step.act === 'editor') editorRef.current.chooseModule(step.kind);
+    else if (step.act === 'selection') moduleSelection.select(step.path);
+  }, [pick.path, editor.selectedModule, pickableModules, moduleSelection]);
   // The profile manager sheet from the header switcher, the bindings drawer under the canvas and
   // the confirmation that lets an imported profile execute actions (opened from the sheet).
   const [managerOpen, setManagerOpen] = useState(false);
@@ -384,16 +406,16 @@ export default function App() {
             {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
-          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label="Manage profiles" title="Manage profiles" onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
+          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label="Manage profiles" data-tip="Manage profiles" onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
-        <div className="header-actions"><span className={`mode-pill device-status-pill ${deviceStatusKind}`} role="status"><span className="device-status-dot" aria-hidden="true" />{deviceStatus}</span>
+        <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{connectedModules}</span>}<span className="sr-only">{deviceStatus}</span></span>
           <RunHeaderControl run={runSession} />
           <div className="history-buttons" role="group" aria-label="Change history">
-            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" title={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
-            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" title={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" data-tip={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" data-tip={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
           </div>
-          <button className="button" disabled={disabled || !unsaved} title={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
+          <button className="button" disabled={disabled || !unsaved} data-tip={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
         </div>
       </div>
       <RunBlockerNotice run={runSession} />
@@ -418,8 +440,8 @@ export default function App() {
         {notice && <div className="alert notice" role="status"><CheckCircle2 size={18} /><span>{notice}</span>{noticeAction && <button className="button compact" onClick={() => { const action = noticeAction; session.setNotice(null); action.run(); }}>{noticeAction.label}</button>}<button aria-label="Dismiss notification" onClick={() => session.setNotice(null)}><X size={17} /></button></div>}
         {showControlNotice && <ModuleControlNotice runMode={runSession.editingHeld ? 'test' : display.settings.run_mode} onDismiss={() => setControlNotice(false)} />}
 
+        {drawerPage && <ModuleDrawer tiles={tiles} open={drawerOpen} onToggle={() => setDrawerOpen(open => { writeDrawerOpen(webStorage(), !open); return !open; })} onPick={pickModule} />}
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
-          <ModuleCatalog editor={editor} feed={feed} />
           <div className="workspace-column">
             <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
@@ -428,11 +450,9 @@ export default function App() {
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
         </div>}
         {page === 'artwork' && <>
-          <ModuleStrip devices={pickableModules} selection={moduleSelection} caption={moduleArtworkCaption} usable={moduleAcceptsDisplayArtwork} />
           <ArtworkPage desktop={desktop} invoke={invokeCommand} selection={moduleSelection} devices={pickableModules} />
         </>}
         {page === 'lighting' && <>
-          <ModuleStrip devices={pickableModules} selection={moduleSelection} />
           <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} />
         </>}
         {page === 'compatibility' && <CompatibilityPage />}

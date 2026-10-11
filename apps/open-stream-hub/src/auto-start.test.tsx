@@ -83,7 +83,7 @@ describe('automatically started sessions', () => {
     expect(markup).toContain(autoStartNote('app_opened', true));
     expect(markup).toContain('Actions are running on this Mac');
     expect(markup).not.toContain('Profile changed since start');
-    expect(markup).toContain('>Stop<');
+    expect(markup).toContain('aria-label="Stop"');
   });
   it('hide the automatic-start line once the session stopped, with its own reason', async () => {
     const device: LiveDevice = { path_hex: dialState.service_id!.replace('service:', ''), module: 'm131e', serial_number: dialState.serial_number };

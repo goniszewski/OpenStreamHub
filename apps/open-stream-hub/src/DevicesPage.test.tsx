@@ -4,7 +4,10 @@ import type { ReactElement, ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
 import { DeviceFeed } from './device-feed';
-import { DeviceWorkspace, HeroImage, KnobOrientationControl, ModuleCatalog } from './DevicesPage';
+import { ModuleDrawer } from './ModuleDrawer';
+import { drawerTiles } from './module-drawer-model';
+import type { LightingDevice } from './lighting-model';
+import { DeviceWorkspace, HeroImage, KnobOrientationControl } from './DevicesPage';
 import { Inspector } from './Inspector';
 import { CompatibilityPage } from './InfoPages';
 import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
@@ -87,7 +90,7 @@ describe('3-knob module orientation', () => {
 
   it('shows the canonical top-down art, unrotated, in the catalog and the compatibility table', () => {
     knobOrientationStore.set('single-left');
-    const catalog = renderToStaticMarkup(<ModuleCatalog editor={editor} />);
+    const catalog = renderToStaticMarkup(<ModuleDrawer tiles={drawerTiles({ page: 'workspace', devices: [], selectedPath: null, markedPaths: [], editorKind: 'm003k' })} open onToggle={() => {}} onPick={() => {}} />);
     expect(catalog).toContain('src="/modules/knob-top.svg"');
     expect(catalog).not.toContain('knob.png');
     expect(catalog).not.toMatch(/knob-top\.svg"[^>]*transform/);
@@ -204,17 +207,17 @@ describe('hero live input', () => {
   });
 });
 
-describe('module catalog labels', () => {  it('marks connected modules and leaves the rest neutral, with no planned or pending labels', async () => {
-    const feed = new DeviceFeed((async () => []) as never, async () => () => {}, true, callback => callback());
-    feed.connect(); await new Promise(resolve => setTimeout(resolve, 0));
-    (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [{ path_hex: 'a1', module: 'm003k', serial_number: null }] };
-    const markup = renderToStaticMarkup(<ModuleCatalog editor={editor} feed={feed} />);
-    expect(markup).toContain('<small>Connected</small>');
-    expect(markup).toContain('<small>Not connected</small>');
+describe('module drawer labels on Workspace', () => {
+  const tilesFor = (devices: LightingDevice[]) => drawerTiles({ page: 'workspace', devices, selectedPath: null, markedPaths: [], editorKind: 'm003k' });
+  const html = (devices: LightingDevice[]) => renderToStaticMarkup(<ModuleDrawer tiles={tilesFor(devices)} open onToggle={() => {}} onPick={() => {}} />);
+
+  it('marks connected modules and leaves the rest neutral, with no planned or pending labels', () => {
+    const markup = html([{ path_hex: 'a1', module: 'm003k', serial_number: null }]);
+    expect(markup).toContain('<span class="module-tile-capability">Connected</span>');
+    expect(markup).toContain('<span class="module-tile-capability">Not connected</span>');
     expect(markup).not.toContain('Planned');
     expect(markup).not.toContain('pending');
-    const quiet = renderToStaticMarkup(<ModuleCatalog editor={editor} />);
-    expect(quiet.match(/<small>Not connected<\/small>/g)).toHaveLength(modules.length);
+    expect(html([]).match(/<span class="module-tile-capability">Not connected<\/span>/g)).toHaveLength(modules.length);
   });
 });
 

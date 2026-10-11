@@ -744,8 +744,8 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .dial-image-rotate { display:flex; align-items:center; gap:12px; }
 
 /* The base's edge strip: an outer glow in its colour. Knob and fader tiles move when their lit LEDs do. */
-.base-layout-frame { padding:16px; }
-.base-layout-base { --glow:transparent; --glow-strength:0; box-shadow:0 0 0 1px var(--line), 0 0 calc(10px + 22px * var(--glow-strength)) calc(2px + 5px * var(--glow-strength)) color-mix(in srgb, var(--glow) calc(75% * var(--glow-strength) + 15%), transparent); }
+.base-layout-frame { padding:12px; }
+.base-layout-base { --glow:transparent; --glow-strength:0; box-shadow:0 0 0 1px var(--line), 0 0 calc(4px + 9px * var(--glow-strength)) calc(1px + 1px * var(--glow-strength)) color-mix(in srgb, var(--glow) calc(75% * var(--glow-strength) + 15%), transparent); }
 .base-layout-base.fx-pulse { animation:fx-glow-pulse 3s ease-in-out infinite; }
 .base-layout-base.fx-blink { animation:fx-glow-blink 1s steps(1) infinite; }
 .base-layout-base.fx-cycle { animation:fx-hue 6s linear infinite; }

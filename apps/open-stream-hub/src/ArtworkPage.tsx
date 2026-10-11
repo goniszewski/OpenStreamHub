@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { Check, Copy, FileDown, ImageUp, LoaderCircle, TriangleAlert } from 'lucide-react';
 import {
-  artworkName, buildArtworkRequest, buildSaveRequest, createLatestRunner, dataUrl, debounceMs, defaultArtworkOptions, fitInfo,
+  artworkName, artworkTargetFor, buildArtworkRequest, buildSaveRequest, createLatestRunner, dataUrl, debounceMs, defaultArtworkOptions, fitInfo,
   formatHexColour, maxSourceBytes, offlineNote, parseHexColour, prepareArtwork, readSourceFile, rotationLabel, rotations, saveArtwork, targetInfo,
 } from './artwork-model';
 import type { ArtworkFit, ArtworkOptions, ArtworkTarget, PrepareResult, SaveResult } from './artwork-model';
 import { formatBytes } from './diagnostics';
 import { moduleArtwork } from './module-controls';
+import { resolveSelected } from './module-selection';
+import type { ModuleSelection } from './module-selection';
+import type { LightingDevice } from './lighting-model';
 import type { Invoke } from './profile-session';
 import { copyText } from './ProfileTransfer';
 
@@ -35,8 +38,14 @@ function ArtworkStage({ target, src, busy }: { target: ArtworkTarget; src: strin
   </div>;
 }
 
-export function ArtworkPage({ desktop, invoke, initialSource, initialResult, initialSaved, initialOptions }: {
-  desktop: boolean; invoke: Invoke; initialSource?: ArtworkSource; initialResult?: PrepareResult; initialSaved?: SaveResult; initialOptions?: Partial<ArtworkOptions>;
+const noSubscribe = () => () => {};
+const noSelection = { path: null, marked: [] as string[] };
+const noPath = () => noSelection;
+
+export function ArtworkPage({ desktop, invoke, selection, devices = [], initialSource, initialResult, initialSaved, initialOptions }: {
+  desktop: boolean; invoke: Invoke;
+  // The module picked on the shared strip: a display module sets the target, other modules leave it as it is.
+  selection?: ModuleSelection; devices?: LightingDevice[]; initialSource?: ArtworkSource; initialResult?: PrepareResult; initialSaved?: SaveResult; initialOptions?: Partial<ArtworkOptions>;
 }) {
   const [options, setOptions] = useState<ArtworkOptions>({ ...defaultArtworkOptions, ...initialOptions });
   const [source, setSource] = useState<ArtworkSource | null>(initialSource ?? null);
@@ -51,6 +60,9 @@ export function ArtworkPage({ desktop, invoke, initialSource, initialResult, ini
   const [dragging, setDragging] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const previews = useRef(createLatestRunner());
+  const pickedPath = useSyncExternalStore(selection?.subscribe ?? noSubscribe, selection?.getState ?? noPath, selection?.getState ?? noPath).path;
+  const pickedTarget = (() => { const picked = resolveSelected(devices, pickedPath); return picked ? artworkTargetFor(picked.module) : null; })();
+  useEffect(() => { if (pickedTarget) setOptions(current => current.target === pickedTarget ? current : { ...current, target: pickedTarget }); }, [pickedTarget]);
   const set = <K extends keyof ArtworkOptions>(key: K, value: ArtworkOptions[K]) => setOptions(current => ({ ...current, [key]: value }));
 
   const built = useMemo(() => buildArtworkRequest(source?.base64 ?? null, options), [source, options]);

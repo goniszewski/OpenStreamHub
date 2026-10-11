@@ -26,6 +26,10 @@ import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace, ModuleCatalog } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
+import { ModuleStrip } from './ModuleStrip';
+import { useBaseModules } from './base-modules';
+import { createModuleSelection } from './module-selection';
+import { moduleAcceptsDisplayArtwork, moduleArtworkCaption } from './artwork-model';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
@@ -92,6 +96,10 @@ export default function App() {
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
   const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
+  // The picked module, shared by every page that acts on one module.
+  const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
+  const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
+  const pickableModules = [...bases, ...deviceFeedState.devices];
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   // A save applies the saved profile to the running sessions that hold it,
   // through the run store that knows them.
@@ -419,8 +427,14 @@ export default function App() {
           </div>
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
         </div>}
-        {page === 'artwork' && <ArtworkPage desktop={desktop} invoke={invokeCommand} />}
-        {page === 'lighting' && <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} feed={feed} runner={runner} storage={webStorage()} />}
+        {page === 'artwork' && <>
+          <ModuleStrip devices={pickableModules} selection={moduleSelection} caption={moduleArtworkCaption} usable={moduleAcceptsDisplayArtwork} />
+          <ArtworkPage desktop={desktop} invoke={invokeCommand} selection={moduleSelection} devices={pickableModules} />
+        </>}
+        {page === 'lighting' && <>
+          <ModuleStrip devices={pickableModules} selection={moduleSelection} />
+          <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} />
+        </>}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}

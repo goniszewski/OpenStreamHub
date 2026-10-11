@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Grid2X2, Lightbulb, RotateCcw, Star, X } from 'lucide-react';
 import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
-import { useBaseModules } from './base-modules';
+import { resolveSelected } from './module-selection';
+import type { ModuleSelection } from './module-selection';
 import type { DeviceFeed } from './device-feed';
 import {
   addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, clampBacklight, createApplyQueue,
-  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingCapability, lightingDeviceLabel, lightingModuleInfo, lightingEffects, lightingKind,
+  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingEffects, lightingKind,
   lightingScopeLabels, lightingTargets, readColourFavourites,
   removeColourFavourite, resetLighting, resetStatus, writeColourFavourites,
 } from './lighting-model';
@@ -15,24 +16,17 @@ import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
 import type { ServiceRunner } from './service-runner';
 
-const noopSubscribe = () => () => {};
-const idleState = () => idleFeedState;
-
 // The Lighting page: the encoder dial's backlight and one solid colour, and
 // the knob and fader modules' colour, effect and brightness per LED, applied
 // to the hardware as the controls move. Everything that
 // decides — targets, gating, favourites, request shaping — lives in
 // lighting-model; this component only holds the controls and debounces.
-export function LightingPage({ desktop, invoke, feed, runner, storage = null }: {
-  desktop: boolean; invoke?: Invoke; feed?: DeviceFeed; runner?: ServiceRunner;
+export function LightingPage({ desktop, invoke, devices, selection, runner, storage = null }: {
+  desktop: boolean; invoke?: Invoke; devices: LightingDevice[]; selection: ModuleSelection; runner?: ServiceRunner;
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
 }) {
-  const feedDevices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).devices;
-  const bases = useBaseModules(invoke, feedDevices.map(device => device.path_hex).join(','));
-  // The base first: it is the foundation the modules sit on.
-  const devices: LightingDevice[] = [...bases, ...feedDevices];
+  const picked = useSyncExternalStore(selection.subscribe, selection.getState, selection.getState).path;
   const [scope, setScope] = useState<LightingScope>('module');
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [backlight, setBacklight] = useState(defaultBacklight);
   const [colour, setColour] = useState(defaultColour);
   const [effect, setEffect] = useState(defaultEffect);
@@ -43,9 +37,14 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const [status, setStatus] = useState<string | null>(null);
   // The picked module, falling back to the first dial and then the first
   // module, so a replug or a scope flip never leaves the picker empty-handed.
-  const selected = devices.find(device => device.path_hex === selectedPath)
-    ?? devices.find(device => device.module === 'm131e') ?? devices[0];
+  const selected = resolveSelected(devices, picked);
   const targets = lightingTargets(devices, scope, selected?.path_hex ?? null);
+  // Whole kit flags the modules it will reach on the shared strip.
+  const markedKey = scope === 'kit' ? targets.map(device => device.path_hex).join(',') : '';
+  useEffect(() => {
+    selection.mark(markedKey ? markedKey.split(',') : []);
+    return () => selection.mark([]);
+  }, [selection, markedKey]);
   const kind = selected ? lightingKind(selected.module) : 'dial';
   const leds = selected ? ledCount(selected.module) : 0;
   // A LED pick only means something for the module it was made on, and only per module.
@@ -142,23 +141,6 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
           aria-pressed={scope === value} className={scope === value ? 'active' : ''} onClick={() => setScope(value)}>
           {value === 'module' ? <Lightbulb size={15} /> : <Grid2X2 size={15} />}{lightingScopeLabels[value]}
         </button>)}
-      </div>
-      <div className="lighting-modules" role="group" aria-label="Module to light">
-        {devices.length === 0 && <p className="fine-print">No modules are connected.</p>}
-        {devices.map(device => {
-          const info = lightingModuleInfo(device.module);
-          const picked = device.path_hex === selected?.path_hex;
-          const included = scope === 'kit' && targets.some(target => target.path_hex === device.path_hex);
-          const lit = lightingKind(device.module) !== null;
-          return <button key={device.path_hex} type="button" aria-pressed={picked} aria-label={lightingDeviceLabel(device)}
-            className={`lighting-tile${picked ? ' picked' : ''}${included ? ' included' : ''}${lit ? '' : ' unlit'}`}
-            onClick={() => setSelectedPath(device.path_hex)}>
-            <span className="lighting-tile-photo">{info.image && <img {...info.image} alt="" draggable={false} />}</span>
-            <span className="lighting-tile-name">{info.name}</span>
-            {device.serial_number && <span className="lighting-tile-serial">…{device.serial_number.slice(-4)}</span>}
-            <span className="lighting-tile-capability">{included ? 'Included in Whole kit' : lightingCapability(device.module)}</span>
-          </button>;
-        })}
       </div>
       <fieldset className="lighting-controls" disabled={controlsLocked}>
         {kind === 'led' && <div className="lighting-row">

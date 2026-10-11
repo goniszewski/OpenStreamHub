@@ -4,6 +4,8 @@
 import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
 
+import type { LightingModule } from './lighting-model';
+
 export type ArtworkTarget = 'dial' | 'keypad';
 export type ArtworkFit = 'contain' | 'cover' | 'stretch';
 export type Rgb = [number, number, number];
@@ -15,6 +17,19 @@ export const targetInfo: Record<ArtworkTarget, { label: string; size: number }> 
   dial: { label: 'Encoder dial', size: 240 },
   keypad: { label: 'Key', size: 72 },
 };
+
+// Which artwork target a picked module takes: the encoder dial's round screen
+// or a 15-key module's key screens. Other modules have no display.
+export function artworkTargetFor(module: LightingModule): ArtworkTarget | null {
+  return module === 'm131e' ? 'dial' : module === 'm4315' ? 'keypad' : null;
+}
+
+export const moduleAcceptsDisplayArtwork = (device: { module: LightingModule }): boolean => artworkTargetFor(device.module) !== null;
+
+export function moduleArtworkCaption(device: { module: LightingModule }): string {
+  const target = artworkTargetFor(device.module);
+  return target === 'dial' ? 'Round display, 240 px' : target === 'keypad' ? 'Key displays, 72 px' : 'No display';
+}
 
 export const fitInfo: Record<ArtworkFit, { label: string; help: string }> = {
   contain: { label: 'Contain', help: 'Keep the whole image and fill the margins with the background colour.' },

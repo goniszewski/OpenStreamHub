@@ -214,3 +214,9 @@ On the 15-key module with the desktop app (Module control App, "Dim a key while 
 - **Full-range run:** all five faders were set to the middle (start values 54 to 60), then each in turn, 1 to 5, was pushed fully down and then fully up. 395 reports. Each fader reached 0 first and then 100, in that order, so 0 is the bottom and 100 the top. All five ended at 100.
 - **Not done:** the move was by hand and not timed; jitter and a fader's resolution at rest are not measured, and the microphone-volume behaviour is the separate pending check.
 - **Not asked of the module:** there is no read-on-demand for positions; a position becomes known with the first report after a fader moves, which carries all five.
+
+## Custom dial picture (11 October 2026)
+
+`masterhub-service run --software-mode --display-sync --dial-content image` on the M131E with a profile whose `dial_display` held a prepared 240×240 JPEG (7 KB, `dial prepare-image` at quality 85): a test card of four coloured quadrants, a white cross and a black tab in the top-left corner. The app and its helpers were closed first. Two runs of 25 and 45 seconds: the service reported one display sync with the face `image`, written, no failures, and ended on schedule. The user saw the card on the dial, upright; the black tab sat just outside the round border, as expected for a corner of a square picture on a round screen. After each run the dial returned to its built-in animation.
+
+- **Not done:** a picture through the app's own Display tab and a normal app run; fit, rotation and background on the dial; a profile with a kept source picture.

@@ -7,6 +7,7 @@ import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
+import { obsConnectionLabels } from './obs-settings';
 import { IntegerField, SelectField } from './controls';
 import {
   defaultStepAction, defaultTimerSound, isFaderTemplate, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
@@ -47,6 +48,7 @@ export function ObsConnection({ onSetUpObs, catalog }: { onSetUpObs?: () => void
       <button type="button" className="button compact" disabled={!catalog.desktop || catalog.status === 'loading'} onClick={catalog.refresh}>
         <RotateCcw size={15} />{catalog.status === 'loading' ? 'Listing…' : 'Refresh from OBS'}
       </button>
+      {catalog.connection && <span className={`obs-chip obs-chip-${catalog.connection.state}`} title={catalog.connection.message}>{obsConnectionLabels[catalog.connection.state]}</span>}
       {catalog.status === 'failed' && <p className="fine-print obs-catalog-error" role="note">{catalog.error}</p>}
     </div>}
     <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only. Without it, the press is logged as unavailable and nothing runs. Refresh asks OBS for its current scenes, sources, filters, scene collections and profiles, so the name fields can offer choices; typing a name always works too.</p></details>

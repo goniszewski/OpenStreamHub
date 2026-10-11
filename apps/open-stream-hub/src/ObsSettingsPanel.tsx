@@ -59,9 +59,10 @@ export function ObsSettingsPanel({ store, runner }: { store?: ObsSettingsStore; 
       </div>
       <p id="obs-password-note" className="fine-print" role="note">{passwordSet ? 'A password is set. ' : 'No password is set; leave it unset if OBS has authentication turned off. '}{obsPasswordNote}</p>
     </form>
-    {enabled && <div className="obs-connection" role="status">
+    {enabled && <div className="obs-status-row" role="status">
       <span className={`obs-chip obs-chip-${state.connection?.state ?? 'unknown'}`}>{state.connection ? obsConnectionLabels[state.connection.state] : 'Checking…'}</span>
       <span className="fine-print">{state.connection?.message ?? ''}</span>
+      {state.connection && ['wrong_port', 'websocket_off', 'not_running'].includes(state.connection.state) && port !== 4455 && <button type="button" className="button compact" disabled={off} onClick={() => { void store?.setPort(4455); }}>Use default port 4455</button>}
       <button type="button" className="button compact" disabled={off || state.testing} onClick={() => { void store?.testConnection(); }}>{state.testing ? 'Testing…' : 'Test connection'}</button>
     </div>}
     <p id="obs-settings-applies" className="fine-print" role="status">{appliesNote(activeRuns)}</p>

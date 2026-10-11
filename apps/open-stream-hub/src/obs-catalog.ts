@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from 'react';
 import { maxObsSceneBytes } from './action-model';
-import type { ObsCatalogNames, ObsNameList } from './contracts';
+import type { ObsCatalogNames, ObsConnectionView, ObsNameList } from './contracts';
+import { isObsConnectionView } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
@@ -36,9 +37,11 @@ export interface ObsCatalogState {
   error: string | null;
   // Per-name lists fetched on demand ("filters:Cam", "sceneSources:Live"), never prefetched.
   lists: Record<string, ObsNameList>;
+  // Why OBS can or cannot be used, from the last refresh: connected after a listing, else the backend's verdict.
+  connection: ObsConnectionView | null;
 }
 
-export const idleObsCatalogState: ObsCatalogState = { desktop: false, status: 'idle', names: null, error: null, lists: {} };
+export const idleObsCatalogState: ObsCatalogState = { desktop: false, status: 'idle', names: null, error: null, lists: {}, connection: null };
 
 export function isObsCatalogNames(value: unknown): value is ObsCatalogNames {
   if (!value || typeof value !== 'object') return false;
@@ -112,17 +115,26 @@ export class ObsCatalogStore {
   // why; a success drops every cached per-name list, which may be as stale as the catalog was.
   readonly refresh = async (): Promise<boolean> => {
     if (!this.state.desktop || this.state.status === 'loading') return false;
-    this.set({ status: 'loading', error: null });
+    this.set({ status: 'loading', error: null, connection: null });
     try {
       const names = await this.invoke<unknown>('obs_catalog');
       if (!isObsCatalogNames(names)) throw new Error('The OBS listing reply was not understood.');
-      this.set({ status: 'ready', names: sortedCatalog(names), error: null, lists: {} });
+      this.set({ status: 'ready', names: sortedCatalog(names), error: null, lists: {}, connection: { state: 'connected', message: 'Connected to OBS.' } });
       return true;
     } catch (reason) {
       this.set({ status: 'failed', error: errorMessage(reason) });
+      await this.diagnose();
       return false;
     }
   };
+
+  // After a failed listing, asks the backend which of the known states this is. Best effort: the error text stays.
+  private async diagnose(): Promise<void> {
+    try {
+      const connection = await this.invoke<unknown>('obs_status');
+      if (isObsConnectionView(connection)) this.set({ connection });
+    } catch { /* the listing error already says it failed */ }
+  }
 
   readonly list = (kind: ObsNameKind, name: string): ObsNameList | null => this.state.lists[listKey(kind, name)] ?? null;
 

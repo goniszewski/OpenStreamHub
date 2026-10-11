@@ -168,3 +168,7 @@ Unit with the M0064 base (firmware `02.00.04.00`), M003K knobs (`01.00.05.00`), 
 - **SET FEATURE:** a feature `0x34` write (`34 03 00 09 09`) to the knob module failed with an I/O timeout from `IOHIDDeviceSetReport`; the readback did not change. `0x32` was not tried.
 - **Static analysis agrees with what was sent.** The official app's main process connects with `Connect_Device_CM_M0` (reads feature `0x31` and the firmware, writes nothing) and then calls `Adjust_LED_*_CM_M0` once per index with type 1 for knobs and 2 for faders, the same bytes as these reports. So the knob and fader modules refuse the same writes the base accepts. Candidates: different firmware behaviour (knobs `01.00.05.00`), a command the app sends only in some flow, or the modules' own animation taking priority. Next step: capture the official app on Windows (USBPcap) changing one knob's colour, following the [Windows capture instructions](masterhub-windows-led-capture.md).
 - **Not tried:** colour channel order beyond red, base brightness and the other effect numbers, `--save` on the base.
+
+## OBS connection states (pending)
+
+With a real OBS 28+: check that Settings › OBS Studio shows Connected; Not running with OBS closed; WebSocket off with OBS open and its WebSocket server disabled; Wrong password and Password needed with authentication on; Wrong port with another server on the port. The first two depend on `pgrep -xi obs` matching the OBS process name.

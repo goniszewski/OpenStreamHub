@@ -285,7 +285,7 @@ describe('obs fields', () => {
 // refresh and on-demand fetches (the real view comes from useObsCatalog with the store).
 function catalogView(overrides?: Partial<ObsCatalogView>): ObsCatalogView {
   return {
-    desktop: true, status: 'ready', error: null, lists: {},
+    desktop: true, status: 'ready', error: null, lists: {}, connection: null,
     names: { scenes: ['Games', 'Live'], sources: ['Cam', 'Mic'], scene_collections: ['Show'], profiles: ['Streaming'] },
     refresh: () => {}, list: () => null, requestNames: () => {},
     ...overrides,
@@ -297,6 +297,15 @@ describe('obs name listings', () => {
     renderToStaticMarkup(ActionFields({
       action, fader: false, selectorKey: 'm4315:root:0:pressed:', onChange: () => {}, onSetUpObs: () => {}, catalog,
     }));
+
+  it('shows the connection chip in the editor only once a state is known', () => {
+    const action: BindingAction = { type: 'obs_scene', scene: 'Live' };
+    expect(renderAction(action, catalogView())).not.toContain('obs-chip');
+    const down = renderAction(action, catalogView({ status: 'failed', error: 'could not connect', connection: { state: 'not_running', message: 'OBS is not running.' } }));
+    expect(down).toContain('obs-chip-not_running" title="OBS is not running.">Not running</span>');
+    expect(down).toContain('could not connect');
+    expect(renderAction(action, catalogView({ connection: { state: 'connected', message: 'Connected to OBS.' } }))).toContain('>Connected</span>');
+  });
 
   it('turns the OBS name fields into comboboxes only while the list is there', () => {
     const plain = renderAction({ type: 'obs_scene', scene: 'Live' });

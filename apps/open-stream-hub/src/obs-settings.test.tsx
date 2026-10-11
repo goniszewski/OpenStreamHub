@@ -157,6 +157,11 @@ describe('OBS connection test', () => {
     expect(shown).toContain('Tick Enable WebSocket server.');
     expect(shown).toContain('Test connection</button>');
     expect(renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: on })} />)).toContain('Checking…');
+    // The default port is offered only when the saved one differs and a connection state is known.
+    const wrong = { state: 'wrong_port' as const, message: 'x' };
+    expect(shown).not.toContain('Use default port');
+    expect(renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: { ...on, port: 4456 }, connection: wrong })} />)).toContain('Use default port 4455');
+    expect(renderToStaticMarkup(<ObsSettingsPanel store={storeWith({ settings: on, connection: wrong })} />)).not.toContain('Use default port');
   });
 });
 

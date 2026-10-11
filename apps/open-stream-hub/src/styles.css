@@ -603,7 +603,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 
 .display-settings-subtitle { margin:17px 0 10px; }
 
-.obs-connection { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:10px 0 0; }
+.obs-status-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:10px 0 0; }
 .obs-chip { padding:2px 9px; border-radius:999px; border:1px solid var(--line); font-size:12px; font-weight:600; }
 .obs-chip-connected { border-color:var(--green, #2e7d32); color:var(--green, #2e7d32); }
 .obs-chip-not_running, .obs-chip-websocket_off, .obs-chip-wrong_port, .obs-chip-password_needed, .obs-chip-wrong_password, .obs-chip-failed { border-color:var(--red); color:var(--red); }

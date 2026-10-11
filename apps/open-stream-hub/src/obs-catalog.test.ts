@@ -59,6 +59,22 @@ describe('ObsCatalogStore', () => {
     return { store, calls };
   };
 
+  it('marks a good listing connected and asks the backend why a failed one failed', async () => {
+    const ok = storeWith(() => catalog);
+    await ok.store.refresh();
+    expect(ok.store.getState().connection).toEqual({ state: 'connected', message: 'Connected to OBS.' });
+    const verdict = { state: 'not_running', message: 'OBS is not running. Start OBS, then test again.' };
+    const down = storeWith(command => { if (command === 'obs_status') return verdict; throw new Error('OBS at 127.0.0.1:4455: could not connect'); });
+    expect(await down.store.refresh()).toBe(false);
+    expect(down.calls.map(call => call[0])).toEqual(['obs_catalog', 'obs_status']);
+    expect(down.store.getState()).toMatchObject({ status: 'failed', connection: verdict });
+    expect(down.store.getState().error).toContain('could not connect');
+    // An unanswered or unreadable diagnosis leaves the listing error alone.
+    const odd = storeWith(command => { if (command === 'obs_status') return { state: 'x' }; throw new Error('boom'); });
+    await odd.store.refresh();
+    expect(odd.store.getState()).toMatchObject({ status: 'failed', connection: null });
+  });
+
   it('asks once, sorts, de-duplicates and drops per-name lists on refresh', async () => {
     const { store, calls } = storeWith(() => catalog);
     expect(store.getState().status).toBe('idle');

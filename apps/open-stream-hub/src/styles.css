@@ -710,3 +710,4 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .pack-rejected { font-size:12px; }
 .pack-rejected summary { cursor:pointer; color:var(--muted); }
 .pack-rejected ul { margin:4px 0 8px 18px; padding:0; }
+.fader-readout { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; margin-top:10px; font-size:13px; }

@@ -201,7 +201,7 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 ## Microphone volume fader (pending)
 
-On a Mac with the 5-fader module: bind a fader to "Microphone volume follows position", start the profile in Live, move the fader and check the input level in System Settings > Sound > Input follows it from 0 to 100; try the built-in microphone and a USB one (some have no software gain and ignore it). In Test mode nothing changes and the run log reads "Would run: set microphone volume …". Record the fader's range and jitter while moving it (see the fader range checks in the parity doc).
+On a Mac with the 5-fader module: bind a fader to "Microphone volume follows position", start the profile in Live, move the fader and check the input level in System Settings > Sound > Input follows it from 0 to 100; try the built-in microphone and a USB one (some have no software gain and ignore it). In Test mode nothing changes and the run log reads "Would run: set microphone volume …". Record the fader's range and jitter from the inspector's "Fader now" readout (live position, range seen, changes, and one-point back-and-forth steps since Reset): sweep the fader end to end, then leave it resting and note whether the count of back-and-forth steps grows (see the fader range checks in the parity doc).
 
 ## Key press feedback (pending)
 

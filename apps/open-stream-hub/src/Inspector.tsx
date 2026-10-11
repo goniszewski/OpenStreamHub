@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Play, Trash2 } from 'lucide-react';
 import type { Gesture, Profile } from './contracts';
 import { DialDisplayPanel } from './DialDisplayPanel';
@@ -15,9 +15,11 @@ import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
 import { editorGestures } from './binding-model';
 import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
+import { emptyFaderStats, faderStatsText, recordFader } from './fader-readout';
+import type { FaderStats } from './fader-readout';
 
 
-export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore }) {
+export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore, liveFader }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore; liveFader?: number }) {
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   // While the profile uses dial functions, the encoder's inspector is the dial functions editor
@@ -33,6 +35,10 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   const catalog = useObsCatalog(catalogStore);
   // Which tab of the dial editor (functions or dial screen) is open; view state only.
   const [dialTab, setDialTab] = useState<'functions' | 'display'>('functions');
+  // The physical fader's range and jitter since the last reset, for the hardware notes; view state only.
+  const [faderStats, setFaderStats] = useState<FaderStats>(emptyFaderStats);
+  useEffect(() => { if (liveFader !== undefined) setFaderStats(stats => recordFader(stats, liveFader)); }, [liveFader]);
+  useEffect(() => { setFaderStats(emptyFaderStats); }, [selection.module, selection.control]);
   return <aside className="inspector" aria-label="Selected control settings">
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? `Folder · L${keypadDepth(keypadPath)}` : 'Root page'}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />Delete folder</button>}<div className="inspector-divider" /></>}
@@ -57,7 +63,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
         {serialScope === 'exact' && <><label className="spaced-label" htmlFor="serial-number">Serial number</label><input id="serial-number" value={selection.serial} spellCheck={false} onChange={event => editor.changeSelection({ ...selection, serial: event.target.value })} /><p className="fine-print">Matched exactly, including upper and lower case. Enter a serial before adding the binding.</p></>}
         <p className="fine-print">If you connect more than one module of the same type, a serial number keeps this binding on the one you chose.</p>
       </details>
-      {selection.module === 'm005s' && <div className="position-preview"><label htmlFor="fader-position">Simulated fader position</label><div className="position-inputs"><input id="fader-position" type="range" min={0} max={faderMaximum} step={1} value={editor.faderPosition} disabled={disabled || state.preview.status === 'running'} onChange={event => editor.changeFaderPosition(Number(event.target.value))} /><label className="sr-only" htmlFor="fader-position-value">Fader position value</label><IntegerField id="fader-position-value" value={editor.faderPosition} minimum={0} maximum={faderMaximum} disabled={disabled || state.preview.status === 'running'} onCommit={editor.changeFaderPosition} /></div><p className="fine-print">Position scale: 0–100. A test sets the volume for the position you choose; the physical fader's endpoints still need checking.</p></div>}
+      {selection.module === 'm005s' && <div className="position-preview"><label htmlFor="fader-position">Simulated fader position</label><div className="position-inputs"><input id="fader-position" type="range" min={0} max={faderMaximum} step={1} value={editor.faderPosition} disabled={disabled || state.preview.status === 'running'} onChange={event => editor.changeFaderPosition(Number(event.target.value))} /><label className="sr-only" htmlFor="fader-position-value">Fader position value</label><IntegerField id="fader-position-value" value={editor.faderPosition} minimum={0} maximum={faderMaximum} disabled={disabled || state.preview.status === 'running'} onCommit={editor.changeFaderPosition} /></div>{liveFader !== undefined && <div className="fader-readout" role="status"><strong>Fader now: {liveFader}</strong> <span>{faderStatsText(faderStats)}</span> <button type="button" className="button" onClick={() => setFaderStats(emptyFaderStats)}>Reset</button></div>}<p className="fine-print">Position scale: 0–100. A test sets the volume for the position you choose; the physical fader's endpoints still need checking.</p></div>}
       <div className="inspector-test">
         <button className="button compact" disabled={disabled || previewRunning || serialMissing} onClick={() => { void editor.testBinding(); }}><Play size={15} />{selection.module === 'm005s' ? 'Test position' : isKeypad ? 'Simulate key click' : 'Test gesture'}</button>
         <p className={`preview-line${resultDone ? ' done' : ''}`} role={resultFailed ? 'alert' : 'status'}><TestResult desktop={desktop} preview={state.preview} keypadPreview={state.keypadPreview} isKeypad={isKeypad} /></p>

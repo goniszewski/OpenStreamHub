@@ -274,6 +274,14 @@ describe('inspector test button and one-line result', () => {
     expect(markup).toContain('>Test position</button>');
   });
 
+  it('shows the physical fader\'s live position only while one is reporting', () => {
+    const faders = { ...editor, selectedModule: 'm005s', selected: modules.find(module => module.id === 'm005s')!, selection: { module: 'm005s', control: 0, gesture: 'moved', serial: '' }, faderPosition: 40 } as unknown as DeviceEditor;
+    expect(inspector(faders)).not.toContain('Fader now');
+    const live = renderToStaticMarkup(<Inspector editor={faders} session={session} state={session.getState()} disabled={false} liveFader={73} />);
+    expect(live).toContain('Fader now: 73');
+    expect(live).toContain('Move the fader to see its position.');
+  });
+
   it('says the desktop app is needed to preview in the browser', () => {
     const markup = renderToStaticMarkup(<Inspector editor={editor as unknown as DeviceEditor} session={session} state={session.getState()} disabled={false} />);
     expect(markup).toContain('Launch the desktop app to preview bindings.');

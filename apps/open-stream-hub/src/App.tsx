@@ -526,7 +526,7 @@ export default function App() {
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
             <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
           </div>
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
         </div>}
         {page === 'artwork' && <>
           <ArtworkPage desktop={desktop} invoke={invokeCommand} selection={moduleSelection} devices={pickableModules} />

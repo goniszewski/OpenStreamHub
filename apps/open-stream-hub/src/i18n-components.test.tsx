@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { SessionView } from './ProfileManager';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { i18n, translateIn } from './i18n-react';
@@ -62,10 +63,18 @@ describe('components in Polish', () => {
   });
 });
 
+describe('profile manager parts', () => {
+  it('draws the sample results in Polish when given the Polish translator', () => {
+    const idle = { status: 'idle' } as never;
+    expect(renderToStaticMarkup(<SessionView session={idle} t={translateIn('pl')} />)).toContain('Wyniki pojawią się tutaj');
+    expect(renderToStaticMarkup(<SessionView session={idle} />)).toContain('Results appear here');
+  });
+});
+
 // The files already moved to message keys must not grow new hard-coded text: English words in JSX text or in the
 // attributes a person reads or hears (labels, tooltips, titles, placeholders) fail here. Files are added as they are
 // converted; the rest of the app is still inline text.
-const converted = ['SidebarNav.tsx', 'ModuleDrawer.tsx', 'HistoryMenu.tsx'];
+const converted = ['SidebarNav.tsx', 'ModuleDrawer.tsx', 'HistoryMenu.tsx', 'ProfileManager.tsx'];
 const jsxText = /(?<![=-])>\s*([A-Za-z][^<>{}`]*[A-Za-z.…])\s*</g;
 const readableAttribute = /\b(?:aria-label|title|data-tip|placeholder|alt)="([^"{]*[A-Za-z]{2,}[^"]*)"/g;
 

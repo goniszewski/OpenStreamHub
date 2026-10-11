@@ -2,7 +2,7 @@ import { useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, MouseEvent, PointerEvent } from 'react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { emptyLightingState, kindLighting } from './lighting-state';
+import { baseGlow, emptyLightingState, kindLighting, lightMotion } from './lighting-state';
 import type { LightingSnapshot, LightingStateStore } from './lighting-state';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
 import { useKnobOrientation } from './knob-orientation';
@@ -33,7 +33,8 @@ const deviceLocation = (device: LiveDevice) => {
 // The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
 // hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
 // kind, the shared pick names the unit). A module without a detected position stays reachable in a row beside the base.
-function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, pickedPath, onPickUnit, dropHandlers }: {
+function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, pickedPath, basePath, onPickUnit, dropHandlers }: {
+  basePath: string | null;
   devices: LiveDevice[];
   editor: DeviceEditor;
   profile: Profile;
@@ -50,11 +51,15 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
   const extent = layoutExtent(positioned.map(devicePlacement));
+  const glow = baseGlow(basePath ? lightingRecords[basePath] : undefined);
+  const glowStyle = glow ? { '--glow': glow.colour, '--glow-strength': glow.brightness / 100 } as CSSProperties : {};
   const gridStyle = { '--cols': extent.cols, '--rows': extent.rows } as CSSProperties;
   // The unit being edited: the shared pick when it is a unit of the editor's kind, else the first unit of that kind.
   const ofKind = devices.filter(device => device.module === selection.module);
   const activePath = (ofKind.find(device => device.path_hex === pickedPath) ?? ofKind[0])?.path_hex ?? null;
 
+  const motionOf = (device: LiveDevice) => device.module === 'm003k' || device.module === 'm005s'
+    ? lightMotion(kindLighting(lightingRecords, devices, device.module), device.module === 'm003k' ? 3 : 5) : null;
   const select = (device: LiveDevice, control: number) => {
     onPickUnit(device.path_hex);
     editor.chooseModule(device.module);
@@ -87,18 +92,18 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const caption = (device: LiveDevice) => {
     const name = modules.find(module => module.id === device.module)?.shortName ?? device.module;
     return <button type="button" className="base-layout-name" aria-pressed={device.path_hex === activePath} title={device.serial_number ?? undefined}
-      onClick={() => select(device, device.path_hex === activePath ? selection.control : 0)}>{name}{device.serial_number ? ` …${device.serial_number.slice(-4)}` : ''}</button>;
+      onClick={() => select(device, device.path_hex === activePath ? selection.control : 0)}>{name}{device.serial_number ? ` …${device.serial_number.slice(-4)}` : ''}{device.module === 'm005s' && !feedState.live.m005s ? ' · positions not read' : ''}</button>;
   };
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span></div>
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
-        <div className="base-layout-base" aria-hidden="true" style={{ gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
+        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
         {positioned.map(device => {
           const placement = devicePlacement(device);
           const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
-          return <div key={device.path_hex} className={`base-layout-module${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
+          return <div key={device.path_hex} className={`base-layout-module${motionOf(device) ? ` fx-${motionOf(device)}` : ''}${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
             style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
             {stage(device)}
             {caption(device)}
@@ -114,9 +119,9 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
 
 // The live-input controls and the base layout. With `layout` off (the picked module is not connected, so the
 // standalone module view is showing) only the live controls remain.
-export function RigPreview({ editor, state, feed, lighting = emptyLightingState, layout = true, pickedPath = null, onPickUnit = () => {}, dropHandlers }: {
+export function RigPreview({ editor, state, feed, lighting = emptyLightingState, layout = true, pickedPath = null, basePath = null, onPickUnit = () => {}, dropHandlers }: {
   editor: DeviceEditor; state: SessionState; feed?: DeviceFeed; lighting?: LightingStateStore; layout?: boolean;
-  pickedPath?: string | null; onPickUnit?(path: string): void; dropHandlers?(module: ModuleId, control: number): DropHandlers;
+  pickedPath?: string | null; basePath?: string | null; onPickUnit?(path: string): void; dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
   const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
@@ -126,7 +131,7 @@ export function RigPreview({ editor, state, feed, lighting = emptyLightingState,
   return <section className="rig" aria-label="Module rig">
     <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
     {layout && <ConnectedBaseLayout devices={feedState.devices} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
-      knobOrientation={knobOrientation} pickedPath={pickedPath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
+      knobOrientation={knobOrientation} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
   </section>;
 }
 

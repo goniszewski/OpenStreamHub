@@ -58,7 +58,7 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
 // The middle column: the module image with its live input, the control pickers, then the run section.
 // Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
 // lives in the header Run control.
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState, pickedPath = null, onPickUnit = () => {} }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore;
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState, pickedPath = null, basePath = null, onPickUnit = () => {} }: { basePath?: string | null; editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore;
   // The unit the shared pick names, and how a pick on the canvas reports its unit back.
   pickedPath?: string | null; onPickUnit?(path: string): void }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope } = editor;
@@ -79,7 +79,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   };
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
-    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} layout={onBase} pickedPath={pickedPath} onPickUnit={onPickUnit}
+    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
       dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
     {!onBase && devices.length > 0 && <div className="standalone-bar" role="status">
       <button type="button" className="button compact" onClick={goBack}><ArrowLeft size={15} aria-hidden="true" />Go back to the base layout</button>

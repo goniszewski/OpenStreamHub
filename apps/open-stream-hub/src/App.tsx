@@ -521,7 +521,7 @@ export default function App() {
         {drawerPage && <ModuleDrawer tiles={tiles} open={drawerOpen} onToggle={() => setDrawerOpen(open => { writeDrawerOpen(webStorage(), !open); return !open; })} onPick={pickModule} />}
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <div className="workspace-column">
-            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} onPickUnit={path => moduleSelection.select(path)} />
+            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} basePath={bases[0]?.path_hex ?? null} onPickUnit={path => moduleSelection.select(path)} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
           </div>
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />

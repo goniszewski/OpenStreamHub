@@ -89,6 +89,25 @@ export function litLedColours(record: StoredLighting | undefined, count: number)
   });
 }
 
+// How a module's lit LEDs move, for the art: 'cycle' for the colour-shifting effects, 'blink' for the strobes,
+// 'pulse' for breathing, null when nothing lit moves. Static is still, Off is dark.
+export type LightMotion = 'cycle' | 'blink' | 'pulse';
+export function lightMotion(record: StoredLighting | undefined, count: number): LightMotion | null {
+  const effects = Array.from({ length: count }, (_, index) => record && record.kind === 'led' ? record.leds[index] : undefined)
+    .filter(led => led && led.effect !== 0 && led.brightness > 0).map(led => led!.effect);
+  if (effects.some(effect => effect >= 5)) return 'cycle';
+  if (effects.some(effect => effect === 3 || effect === 4)) return 'blink';
+  if (effects.includes(2)) return 'pulse';
+  return null;
+}
+
+// The base's edge-strip glow: its first LED's colour at its brightness, or null when it is off or unknown.
+export function baseGlow(record: StoredLighting | undefined): { colour: string; brightness: number; motion: LightMotion | null } | null {
+  const led = record && record.kind === 'led' ? record.leds[0] : undefined;
+  if (!led || led.effect === 0 || led.brightness <= 0) return null;
+  return { colour: led.colour, brightness: led.brightness, motion: lightMotion(record, 1) };
+}
+
 // The stored look the controls start from: a specific LED's own look, LED 0's
 // for "All LEDs", or the dial's backlight and colour.
 export function controlsFromRecord(record: StoredLighting | undefined, kind: 'dial' | 'led', led: number | null): { backlight: number; colour: string; effect: number } | null {

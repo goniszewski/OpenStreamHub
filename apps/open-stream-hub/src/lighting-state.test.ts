@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  baseGlow, lightMotion,
   appearedTargets, controlsFromRecord, kindLighting, lightingStateStorageKey, litLedColours, LightingStateStore,
   matchedModuleColour, maxLightingRecords, readLightingRecords, recordFits, restoreLighting, withDialLook, withLedLook,
 } from './lighting-state';
@@ -243,5 +244,25 @@ describe('pruning the stored records', () => {
     const restored = await restoreLighting(store, [unit('k', 'm003k')], (async (command: string) => { calls.push(command); return 1; }) as never, () => false);
     expect(restored).toBe(1);
     expect(calls).toEqual(['set_led_lighting', 'set_led_lighting', 'set_led_lighting']);
+  });
+});
+
+describe('light motion and the base glow', () => {
+  const led = (effect: number, brightness = 100, colour = '#ff0000') => ({ colour, effect, brightness });
+  const record = (...leds: ReturnType<typeof led>[]) => ({ kind: 'led' as const, leds });
+  it('names how lit LEDs move, ignoring off and dark ones', () => {
+    expect(lightMotion(undefined, 3)).toBeNull();
+    expect(lightMotion(record(led(1), led(1), led(1)), 3)).toBeNull();
+    expect(lightMotion(record(led(2), led(1), led(1)), 3)).toBe('pulse');
+    expect(lightMotion(record(led(2), led(4), led(1)), 3)).toBe('blink');
+    expect(lightMotion(record(led(1), led(9), led(1)), 3)).toBe('cycle');
+    expect(lightMotion(record(led(9, 0), led(0), led(1)), 3)).toBeNull();
+  });
+  it('glows with the base strip colour and brightness only while it is lit', () => {
+    expect(baseGlow(undefined)).toBeNull();
+    expect(baseGlow(record(led(0)))).toBeNull();
+    expect(baseGlow(record(led(1, 0)))).toBeNull();
+    expect(baseGlow(record(led(1, 60, '#00ff00')))).toEqual({ colour: '#00ff00', brightness: 60, motion: null });
+    expect(baseGlow(record(led(7)))?.motion).toBe('cycle');
   });
 });

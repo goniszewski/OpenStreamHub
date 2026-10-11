@@ -510,7 +510,7 @@ export default function App() {
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
-        {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and sample tests run in the native app.</span></div></div>}
+        {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
         {bootstrapError && <div className="alert error" role="alert"><CircleHelp size={19} /><span><strong>Could not open profile storage.</strong> {bootstrapError.message}
           <small className="alert-hint">Check that the profile storage folder exists, is a real folder rather than a link, and is readable by your account{bootstrapError.storagePath ? <>: <code>{bootstrapError.storagePath}</code></> : '.'} Files in it are never changed by a failed start.</small></span>

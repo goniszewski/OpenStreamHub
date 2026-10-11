@@ -136,4 +136,4 @@ export function createLatestRunner() {
 export const prepareArtwork = (invoke: Invoke, request: PrepareRequest) => invoke<PrepareResult>('prepare_artwork', { request });
 export const saveArtwork = (invoke: Invoke, request: SaveRequest) => invoke<SaveResult>('save_artwork', { request });
 
-export const offlineNote = 'Offline preparation only. Sending images to the display is not available until the display behaviour is verified on hardware.';
+export const offlineNote = 'This page prepares and previews artwork. To show an image on a key, assign it in the key artwork editor and start a run.';

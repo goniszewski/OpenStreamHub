@@ -28,7 +28,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
   safety: {
     title: 'Safety and privacy',
     body: <>
-      <p id="onboarding-body">OpenStreamHub is an unofficial app, not affiliated with Cooler Master. Behaviour on real hardware is not yet verified.</p>
+      <p id="onboarding-body">OpenStreamHub is an unofficial app, not affiliated with Cooler Master. It has been tested on one unit of each supported module; Compatibility lists what is verified.</p>
       <ul><li>Nothing is uploaded. The app sends no data over the network.</li><li>The diagnostic bundle in Settings is built locally. You decide whether to share it.</li><li>While the app is open it controls the 15-key module, the encoder dial and the knobs, and draws on the displays of the first two: a run starts on them by itself, and does what the header badge says — in Test it only logs, in Live it runs actions. When you quit, the app gives them back their built-in animation (so far checked on the 15-key module only). To keep their built-in animation instead, set “Let OpenStreamHub drive the display” to Built-in animation in Settings.</li></ul>
     </>,
   },

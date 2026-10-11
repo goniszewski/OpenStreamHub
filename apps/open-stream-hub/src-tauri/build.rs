@@ -22,6 +22,7 @@ fn main() {
             "stop_feed",
             "set_dial_lighting",
             "set_led_lighting",
+            "read_led_state",
             "list_base_modules",
             "reset_dial_lighting",
             "start_service",

@@ -26,7 +26,7 @@ export function faderCapCentre(value: number, maximum = 100): number {
 }
 
 // The fader art with each cap at its value and each glow strip lit in its LED's colour
-// (a null entry stays off). `idPrefix` keeps gradient ids unique when several are inline on one page.
+// (a null entry stays off, 'unknown' shows a pale grey placeholder). `idPrefix` keeps gradient ids unique when several are inline on one page.
 export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 100, glows?: readonly (string | null)[]): string {
   let index = 0;
   const moved = fadersSource.replace(new RegExp(`class="cap" transform="translate\\(0 ${faderRestingCap}\\)`, 'g'), () => {
@@ -36,6 +36,7 @@ export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 10
   let glowIndex = 0;
   const lit = glows ? moved.replace(/fill="#8a3cff" opacity="0"/g, () => {
     const colour = glows[glowIndex++];
+    if (colour === 'unknown') return 'fill="#8a8a99" opacity=".28"';
     return colour ? `fill="${colour}" opacity="1"` : 'fill="#8a3cff" opacity="0"';
   }) : moved;
   if (!idPrefix) return lit;
@@ -47,6 +48,7 @@ export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 10
 export function knobSvg(colours: readonly (string | null)[], idPrefix = ''): string {
   const lit = knobSource.replace(/<g id="knob-(\d)"/g, (match, index: string) => {
     const colour = colours[Number(index)];
+    if (colour === 'unknown') return `${match} color="#6b6b78"`;
     return colour ? `${match} color="${colour}"` : match;
   });
   if (!idPrefix) return lit;

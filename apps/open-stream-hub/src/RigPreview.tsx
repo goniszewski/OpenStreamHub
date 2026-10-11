@@ -124,7 +124,7 @@ export function RigPreview({ editor, state, feed, lighting = emptyLightingState,
   pickedPath?: string | null; basePath?: string | null; onPickUnit?(path: string): void; dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
-  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
+  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).shown;
   const [source, setSource] = useState('off');
   const knobOrientation = useKnobOrientation();
   if (!feed) return null;

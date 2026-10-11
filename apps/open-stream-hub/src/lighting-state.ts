@@ -1,3 +1,4 @@
+import { hexToHsv, hsvToHex } from './colour-math';
 import { clampBacklight, defaultColour, ledCount, lightingKind, normaliseHexColour } from './lighting-model';
 import type { LightingDevice } from './lighting-model';
 import type { Invoke } from './profile-session';
@@ -13,7 +14,38 @@ export interface StoredLed { colour: string; effect: number; brightness: number 
 export interface StoredLedModule { kind: 'led'; leds: (StoredLed | null)[] }
 export type StoredLighting = StoredDial | StoredLedModule;
 
-export interface LightingSnapshot { records: Readonly<Record<string, StoredLighting>> }
+// What a module itself reports about its LEDs (brightness and saved effect per LED, never a colour).
+export interface LedReadback { brightness: number[]; modes: number[] }
+// `records` is what this app wrote; `reported` what modules say about themselves; `shown` is what the art draws:
+// the records, with a unit that has none filled in from its report.
+export interface LightingSnapshot {
+  records: Readonly<Record<string, StoredLighting>>;
+  reported: Readonly<Record<string, LedReadback>>;
+  shown: Readonly<Record<string, StoredLighting>>;
+}
+
+// The colour a unit shows when it reports an effect but no colour: a base red for the colour-shifting effects, which
+// move through every hue anyway, and a neutral light for the rest.
+export const reportedCyclingColour = '#ff2d55';
+export const reportedNeutralColour = '#d8d8e0';
+
+export function lookFromReport(report: LedReadback, count: number): StoredLedModule {
+  const leds = Array.from({ length: count }, (_, index) => {
+    const effect = report.modes[index];
+    const brightness = report.brightness[index];
+    if (effect === undefined || brightness === undefined) return null;
+    return { colour: effect >= 5 ? reportedCyclingColour : reportedNeutralColour, effect, brightness };
+  });
+  return { kind: 'led', leds };
+}
+
+function snapshotOf(records: Record<string, StoredLighting>, reported: Record<string, LedReadback>): LightingSnapshot {
+  const shown = { ...records };
+  for (const [path, report] of Object.entries(reported)) {
+    if (!(path in shown)) shown[path] = lookFromReport(report, report.modes.length);
+  }
+  return { records, reported, shown };
+}
 
 export const lightingStateStorageKey = 'open-stream-hub.lighting-state';
 
@@ -60,7 +92,7 @@ export function withLedLook(existing: StoredLighting | undefined, led: number | 
 
 // The first connected unit of the module kind that has a stored look — the rig
 // and the hero image draw one tile per kind, so same-kind units share it.
-export function kindLighting(records: LightingSnapshot['records'], devices: LightingDevice[], module: string): StoredLighting | undefined {
+export function kindLighting(records: LightingSnapshot['shown'], devices: LightingDevice[], module: string): StoredLighting | undefined {
   return devices.filter(device => device.module === module).map(device => records[device.path_hex]).find(record => record !== undefined);
 }
 
@@ -79,14 +111,25 @@ export function matchedModuleColour(records: LightingSnapshot['records'], device
   return null;
 }
 
-// The colour each of the module's LEDs shows in the art (a knob's ring, a
-// fader's glow strip): the LED's colour when it is lit — an effect other than
-// Off, at a brightness above zero — else null for the art's resting look.
+// What the art draws for a LED nobody knows the look of.
+export const unknownLed = 'unknown';
+
+// The colour each of the module's LEDs shows in the art (a knob's ring, a fader's glow strip): the LED's colour when
+// it is lit — an effect other than Off, at a brightness above zero — null when it is off, and `unknownLed` when
+// there is neither a stored look nor a report. The spreading effects (wave, water, rainbow) start each LED at its
+// own hue, so the art's hue shift reads as colours travelling along the module.
 export function litLedColours(record: StoredLighting | undefined, count: number): (string | null)[] {
   return Array.from({ length: count }, (_, index) => {
     const led = record && record.kind === 'led' ? record.leds[index] : undefined;
-    return led && led.effect !== 0 && led.brightness > 0 ? led.colour : null;
+    if (!led) return unknownLed;
+    if (led.effect === 0 || led.brightness <= 0) return null;
+    return led.effect >= 7 ? turnHue(led.colour, (360 / count) * index) : led.colour;
   });
+}
+
+function turnHue(colour: string, degrees: number): string {
+  const hsv = hexToHsv(colour);
+  return hsvToHex({ ...hsv, h: (hsv.h + degrees) % 360 });
 }
 
 // How a module's lit LEDs move, for the art: 'cycle' for the colour-shifting effects, 'blink' for the strobes,
@@ -157,7 +200,7 @@ export class LightingStateStore {
   private readonly listeners = new Set<() => void>();
 
   constructor(private readonly storage: Pick<Storage, 'getItem' | 'setItem'> | null) {
-    this.snapshot = { records: readLightingRecords(storage) };
+    this.snapshot = snapshotOf(readLightingRecords(storage), {});
   }
 
   readonly subscribe = (listener: () => void) => {
@@ -181,8 +224,14 @@ export class LightingStateStore {
       changed = true;
     }
     if (!changed) return;
-    this.snapshot = { records: newest(records) };
+    this.snapshot = snapshotOf(newest(records), { ...this.snapshot.reported });
     writeLightingRecords(this.storage, this.snapshot.records);
+    this.listeners.forEach(listener => listener());
+  }
+
+  // Notes what a unit reports about its LEDs; the art uses it only where this app has stored nothing.
+  setReported(path: string, report: LedReadback) {
+    this.snapshot = snapshotOf({ ...this.snapshot.records }, { ...this.snapshot.reported, [path]: report });
     this.listeners.forEach(listener => listener());
   }
 

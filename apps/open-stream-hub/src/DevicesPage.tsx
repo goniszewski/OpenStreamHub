@@ -126,18 +126,20 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding } = editor;
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
   const live = feedState.live[selected.id];
-  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
+  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).shown;
   const isKnob = selected.id === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : moduleArtwork[selected.id].controls;
   // Each cap shows its live value, else the value being tried in the editor for the selected fader.
   const faderValues = selected.id === 'm005s' ? controls.map(area => live?.faders[area.control] ?? (selection.control === area.control ? editor.faderPosition : defaultFaderPosition)) : undefined;
   // One stored look per module kind lights the art: the first connected unit of the kind that has one.
   const stored = selected.id === 'm003k' || selected.id === 'm005s' ? kindLighting(lightingRecords, feedState.devices, selected.id) : undefined;
+  // A module that is not connected has no light to show, lit or unknown, so its art stays as it rests.
+  const connectedKind = feedState.devices.some(device => device.module === selected.id);
   return <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
       <div className={`module-image${isKnob ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
         <ModuleArtImage module={selected} orientation={knobOrientation} faders={faderValues}
-          knobs={isKnob ? litLedColours(stored, 3) : undefined}
-          glows={selected.id === 'm005s' ? litLedColours(stored, 5) : undefined} />
+          knobs={isKnob && connectedKind ? litLedColours(stored, 3) : undefined}
+          glows={selected.id === 'm005s' && connectedKind ? litLedColours(stored, 5) : undefined} />
         {selected.id === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
         {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control, true)}</span>)}

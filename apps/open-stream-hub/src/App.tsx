@@ -136,6 +136,12 @@ export default function App() {
     lightingState.forgetUnappliable(pickableModules);
     const appeared = appearedTargets(previous, pickableModules);
     if (appeared.length === 0) return;
+    // A knob or fader module this app has stored nothing for says what it can about its LEDs.
+    for (const device of appeared) {
+      if ((device.module !== 'm003k' && device.module !== 'm005s') || lightingState.getState().records[device.path_hex]) continue;
+      void invokeCommand<{ brightness: number[]; modes: number[] }>('read_led_state', { target: device.path_hex })
+        .then(report => lightingState.setReported(device.path_hex, report)).catch(() => {});
+    }
     restoreChain.current = restoreChain.current
       .then(() => restoreLighting(lightingState, appeared, invokeCommand, device =>
         device.module !== 'm0064' && runner.isActivePath(device.path_hex, { ...device, module: device.module } as LiveDevice)))

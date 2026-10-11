@@ -183,6 +183,61 @@ pub fn write_led_lighting<T: ReportTransport + ?Sized>(
     Ok(())
 }
 
+/// What a knob or fader module reports about its LEDs without being asked to
+/// change anything: the live brightness of each LED and the saved effect it
+/// starts with. The module reports no colour.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct LedReadback {
+    pub brightness: Vec<u8>,
+    pub modes: Vec<u8>,
+}
+
+const BRIGHTNESS_REPORT: u8 = 0x32;
+const MODE_REPORT: u8 = 0x34;
+
+fn read_led_values<T: ReportTransport + ?Sized>(
+    transport: &T,
+    id: u8,
+    count: usize,
+) -> Result<Vec<u8>, String> {
+    let mut buffer = [0u8; 32];
+    buffer[0] = id;
+    let read = transport
+        .get_feature_report(&mut buffer)
+        .map_err(|error| format!("could not read report {id:#04x}: {error}"))?;
+    if read < 2 || buffer[0] != id || usize::from(buffer[1]) < count || read < 2 + count {
+        return Err(format!("report {id:#04x} came back in an unknown shape"));
+    }
+    Ok(buffer[2..2 + count].to_vec())
+}
+
+/// Reads a knob or fader module's brightness and saved effect per LED, with
+/// feature reads only.
+pub fn read_led_state<T: ReportTransport + ?Sized>(
+    transport: &T,
+    module: LedModule,
+) -> Result<LedReadback, String> {
+    if module == LedModule::Base {
+        return Err("only knob and fader modules report their LEDs".into());
+    }
+    let count = usize::from(module.led_count());
+    Ok(LedReadback {
+        brightness: read_led_values(transport, BRIGHTNESS_REPORT, count)?,
+        modes: read_led_values(transport, MODE_REPORT, count)?,
+    })
+}
+
+/// Opens one knob or fader module and reads what it reports about its LEDs.
+pub fn read_led_module(registry: &DeviceRegistry, target: &str) -> Result<LedReadback, String> {
+    let inventory = registry.devices();
+    let path = parse_path(target)?;
+    let (selected, module) = select_led_identity(&inventory, &path)?;
+    let device = registry
+        .open(selected)
+        .map_err(|error| format!("could not open the module: {error}"))?;
+    read_led_state(&device, module)
+}
+
 /// The one inventory entry an LED target must name: a knob or fader module, or the base.
 pub fn select_led_identity<'a>(
     devices: &'a [ModuleIdentity],
@@ -334,6 +389,37 @@ mod tests {
 
     fn written(fake: &Fake) -> Vec<Vec<u8>> {
         fake.feature_writes.borrow().clone()
+    }
+
+    #[test]
+    fn led_state_is_read_from_the_brightness_and_mode_reports() {
+        struct Reports;
+        impl ReportTransport for Reports {
+            fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+                Ok(0)
+            }
+            fn get_feature_report(&self, buffer: &mut [u8]) -> HidResult<usize> {
+                let id = buffer[0];
+                buffer[1] = 5;
+                for (index, byte) in buffer[2..7].iter_mut().enumerate() {
+                    *byte = if id == 0x32 { 100 - index as u8 } else { 9 };
+                }
+                Ok(32)
+            }
+            fn send_feature_report(&self, _: &[u8]) -> HidResult<()> {
+                Ok(())
+            }
+            fn write_output(&self, _: &[u8]) -> HidResult<usize> {
+                Ok(0)
+            }
+            fn get_report_descriptor(&self, _: &mut [u8]) -> HidResult<usize> {
+                Ok(0)
+            }
+        }
+        let state = read_led_state(&Reports, LedModule::Slider).unwrap();
+        assert_eq!(state.brightness, vec![100, 99, 98, 97, 96]);
+        assert_eq!(state.modes, vec![9; 5]);
+        assert!(read_led_state(&Reports, LedModule::Base).is_err());
     }
 
     #[test]

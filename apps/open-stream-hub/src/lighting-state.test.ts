@@ -68,9 +68,9 @@ describe('lighting state', () => {
         null,
       ],
     };
-    expect(litLedColours(record, 4)).toEqual(['#ff0000', null, null, null]);
-    expect(litLedColours(undefined, 3)).toEqual([null, null, null]);
-    expect(litLedColours({ kind: 'dial', backlight: 50, colour: '#ffffff' }, 2)).toEqual([null, null]);
+    expect(litLedColours(record, 4)).toEqual(['#ff0000', null, null, 'unknown']);
+    expect(litLedColours(undefined, 3)).toEqual(['unknown', 'unknown', 'unknown']);
+    expect(litLedColours({ kind: 'dial', backlight: 50, colour: '#ffffff' }, 2)).toEqual(['unknown', 'unknown']);
   });
 
   it('starts the controls from the stored look of the picked LED', () => {
@@ -264,5 +264,23 @@ describe('light motion and the base glow', () => {
     expect(baseGlow(record(led(1, 0)))).toBeNull();
     expect(baseGlow(record(led(1, 60, '#00ff00')))).toEqual({ colour: '#00ff00', brightness: 60, motion: null });
     expect(baseGlow(record(led(7)))?.motion).toBe('cycle');
+  });
+});
+
+describe('what modules report about themselves', () => {
+  it('fills in a unit with no stored look, never overriding a stored one', () => {
+    const store = new LightingStateStore(null);
+    store.setReported('fd', { brightness: [100, 100, 100, 100, 100], modes: [9, 9, 9, 9, 9] });
+    store.setReported('kn', { brightness: [100, 100, 100], modes: [9, 9, 9] });
+    store.record(['kn'], () => ({ kind: 'led', leds: [{ colour: '#00ff00', effect: 1, brightness: 50 }, null, null] }));
+    expect(store.getState().records.fd).toBeUndefined();
+    expect(litLedColours(store.getState().shown.fd, 5).every(colour => colour !== null && colour !== 'unknown')).toBe(true);
+    expect(lightMotion(store.getState().shown.fd, 5)).toBe('cycle');
+    expect(store.getState().shown.kn).toBe(store.getState().records.kn);
+  });
+  it('spreads the hue of a rainbow along the LEDs', () => {
+    const colours = litLedColours({ kind: 'led', leds: Array.from({ length: 5 }, () => ({ colour: '#ff0000', effect: 9, brightness: 100 })) }, 5);
+    expect(new Set(colours).size).toBe(5);
+    expect(colours[0]).toBe('#ff0000');
   });
 });

@@ -908,6 +908,16 @@ fn set_led_lighting(
     lighting::apply_led_lighting(&registry, &targets, led, look)
 }
 
+// What a knob or fader module reports about its LEDs: live brightness and the
+// saved effect per LED, never a colour. Read only; the page uses it for a unit
+// it has no stored look for.
+#[tauri::command(async)]
+fn read_led_state(target: String) -> Result<lighting::LedReadback, String> {
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    lighting::read_led_module(&registry, &target)
+}
+
 // The connected bases for the Lighting page. The base takes lighting but no
 // input, so the input feed's inventory never lists it.
 #[tauri::command(async)]
@@ -1688,6 +1698,7 @@ pub fn run() {
             set_led_lighting,
             list_base_modules,
             reset_dial_lighting,
+            read_led_state,
             start_service,
             stop_service,
             resume_session,

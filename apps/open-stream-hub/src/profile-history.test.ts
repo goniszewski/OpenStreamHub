@@ -269,3 +269,40 @@ describe('keypad folder removed by undo', () => {
     expect(syncKeypad(session.getState(), keypad).path).toEqual([keypadRoot]);
   });
 });
+
+describe('the history list', () => {
+  it('names each step, most recent first, and moves a label across undo and redo', async () => {
+    const { session, advance } = await opened();
+    rename(session, 'B');
+    advance(5000);
+    session.update(profile => ({ ...profile, dial_display: { content: 'clock' } }));
+    expect(session.getState().undoLabels).toEqual(['Changed the dial display', 'Renamed the profile to “B”']);
+    expect(session.getState().redoLabels).toEqual([]);
+    session.undo();
+    expect(session.getState().undoLabels).toEqual(['Renamed the profile to “B”']);
+    expect(session.getState().redoLabels).toEqual(['Changed the dial display']);
+    session.redo();
+    expect(session.getState().undoLabels[0]).toBe('Changed the dial display');
+  });
+
+  it('goes back several steps at once and stops where the history ends', async () => {
+    const { session, advance } = await opened();
+    for (const name of ['B', 'C', 'D']) { rename(session, name); advance(5000); }
+    expect(session.undoSteps(2)).toBe(2);
+    expect(nameOf(session)).toBe('B');
+    expect(session.getState().redoLabels).toHaveLength(2);
+    expect(session.redoSteps(5)).toBe(2);
+    expect(nameOf(session)).toBe('D');
+    expect(session.undoSteps(10)).toBe(3);
+    expect(nameOf(session)).toBe('Alpha');
+    expect(session.getState()).toMatchObject({ canUndo: false, undoLabels: [] });
+  });
+
+  it('clears the list with the history when another profile is opened', async () => {
+    const { session } = await opened();
+    rename(session, 'B');
+    expect(session.getState().undoLabels).toHaveLength(1);
+    session.newProfile();
+    expect(session.getState()).toMatchObject({ undoLabels: [], redoLabels: [] });
+  });
+});

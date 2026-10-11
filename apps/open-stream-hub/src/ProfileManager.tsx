@@ -8,6 +8,7 @@ import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels
 import type { ConfirmRequest } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { FocusRulesPanel } from './FocusRulesPanel';
+import { AutoSwitchRow } from './AutoSwitchRow';
 import type { FocusRulesStore } from './focus-rules';
 
 // The profile manager: a sheet opened by the header's Manage profiles button (next to the
@@ -42,6 +43,7 @@ export function ProfileManagerSheet({ session, state, desktop, disabled, confirm
     <input id="profile-name" disabled={disabled} value={profile.name} aria-describedby="profile-name-error" onChange={event => session.edit({ ...profile, name: event.target.value }, 'profile-name')} /><LabelError id="profile-name-error" value={profile.name} field="Profile name" />
     <div className="profile-actions"><button className="button" disabled={disabled || state.validation === 'running'} onClick={() => { void session.validate(); }}>{state.validation === 'running' ? <LoaderCircle size={16} className="spinning" /> : <Check size={17} />}Validate changes</button><button className="button" disabled={disabled || !profileId} onClick={() => { if (profileId) session.guard('reload the saved profile', () => { void session.load(profileId); }); }}><ArrowDownToLine size={17} />Reload saved</button></div>
     {state.validation === 'valid' && <p className="validation-status"><CheckCircle2 size={17} />The current changes are valid.</p>}
+    <AutoSwitchRow store={focusRules} profileId={profileId} profileName={profile.name} disabled={disabled || !desktop || !state.ready} />
     <VersionHistory session={session} state={state} disabled={disabled} now={Date.now()} />
     {flagged && <div className="service-banner paused attention dry-run-notice" role="status"><ShieldAlert size={20} /><div>
       <strong>Imported profile: dry run only</strong>

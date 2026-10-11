@@ -45,11 +45,18 @@ The desktop app (`apps/open-stream-hub`) can switch the profile of a running ses
 | `delete_focus_rule` | `id` | `{enabled, rules}` |
 | `set_focus_rules_enabled` | `enabled` | `{enabled, rules}` |
 | `focus_current_app` | none | `{supported, bundle_id}`: the last app other than OpenStreamHub that was frontmost |
+| `list_running_apps` | none | `[{bundle_id, name}]`: the ordinary apps (with a Dock icon) running now, sorted by name, without OpenStreamHub itself, at most 200; empty off macOS. It feeds the app picker and reads no app's contents |
 | `switch_session_profile` | `sessionId`, `profileId` | the `StoredProfile` that the session now uses, plus `profile_generation`: the session's new generation |
 | `session_profile` | `sessionId`, `profileGeneration` | `{profile_id, profile_generation, profile}`: the profile `resume_session` would restart, or the error `session::PROFILE_CHANGED` |
 | `resume_session` | `sessionId`, `profileGeneration` | `null`, or the error `session::PROFILE_CHANGED` when the generation is no longer the session's |
 
 Event `focus://changed`: `{bundle_id, rule_id, profile_id}`. `rule_id` and `profile_id` are null unless the rules are enabled and a rule matched an existing profile. Session events (`session://state`) carry `profile_generation` and the profile of that generation: `profile_id` (the saved profile a switch put in place, `null` while the session still runs the profile it was started with) and `profile_name`. Shared contract fixtures are in `apps/open-stream-hub/fixtures/focus-*.json`, `session-switch-events.json` and `session-command-*.json`. Regenerate them with `UPDATE_FIXTURES=1 cargo test`.
+
+## Where the rules are edited and shown
+
+- **The open profile's row.** The profile manager's current-profile section has "Switch automatically when an app is in front": the apps that switch to this profile as removable chips, and a picker of the running apps that have no rule yet (or a typed bundle ID, with "Use current app"). It edits the same rules as the panel below it, shares its on/off switch (a note with a Turn it on link appears while it is off), and asks to save a new profile first.
+- **The header.** While automatic switching is on, an icon sits beside the connection icon; its tooltip says how many rules there are and which profile the app in front switches to (or that it has no rule). With a match the profile's name shows beside the icon. Clicking it opens the profile manager.
+- There is no file browser for an app that is not running: type its bundle ID.
 
 ## Switching a session, and the safety rule
 

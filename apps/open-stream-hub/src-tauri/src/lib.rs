@@ -1440,6 +1440,12 @@ fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
     state.focus.current_app()
 }
 
+// The apps running now, for the focused-app rule picker.
+#[tauri::command(async)]
+fn list_running_apps(app: tauri::AppHandle) -> Vec<focus::RunningApp> {
+    focus::running_apps(&app.config().identifier)
+}
+
 /// `switch_session_profile` result: the saved profile the session now uses
 /// and the session's new `profile_generation`, which a later
 /// `resume_session` must name.
@@ -1641,6 +1647,7 @@ pub fn run() {
             delete_focus_rule,
             set_focus_rules_enabled,
             focus_current_app,
+            list_running_apps,
             display_settings,
             set_display_settings,
             default_profile,

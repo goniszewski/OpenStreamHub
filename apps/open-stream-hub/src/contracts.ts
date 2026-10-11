@@ -195,6 +195,8 @@ export interface SessionStatePayload {
 // Focused-app profile rules (stored in <app data>/focus-rules.json, never inside a profile). Opt-in: enabled is false by default.
 export interface FocusRule { id: string; app_bundle_id: string; profile_id: string }
 export interface FocusRules { enabled: boolean; rules: FocusRule[] }
+// list_running_apps: an app with a Dock icon that is running now, by bundle id and display name.
+export interface RunningApp { bundle_id: string; name: string }
 // save_focus_rule argument: a null id adds a rule, an existing id edits it.
 export interface FocusRuleInput { id: string | null; app_bundle_id: string; profile_id: string }
 // focus://changed: rule_id and profile_id are set only when the rules are enabled and a rule matches an existing profile.

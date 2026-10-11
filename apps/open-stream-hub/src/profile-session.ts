@@ -1,6 +1,7 @@
 import type { AppBootstrap, BootstrapError, Gesture, KeypadPreviewResult, MhzImportResult, Profile, ProfileListing, ProfileSummary, ProfileVersion, ReplayEvent, ReplayKind, ReplayResult, ServiceModule, StoredProfile, UnreadableProfile } from './contracts';
 import { profileIssue, stableStringify } from './draft-model';
-import { emptyHistory, recordEdit, redoStep, undoStep } from './edit-history';
+import { emptyHistory, recentRedoLabels, recentUndoLabels, recordEdit, redoStep, undoStep } from './edit-history';
+import { describeEdit } from './edit-labels';
 import type { History } from './edit-history';
 import { newDraftKey, restoreDecision, timeoutSchedule } from './draft-store';
 import type { Cancel, DraftPersister, Schedule, StoredDraft } from './draft-store';
@@ -74,6 +75,9 @@ export interface SessionState {
   draftGeneration: number;
   // The bounded edit history has a step to undo or redo.
   canUndo: boolean;
+  // What the next undos would reverse and the next redos repeat, most recent first (at most ten), for the history list.
+  undoLabels: string[];
+  redoLabels: string[];
   canRedo: boolean;
   // The automatic-saving setting (default on; persisted in local storage by App).
   autosave: boolean;
@@ -188,7 +192,7 @@ export class ProfileSession {
       profiles: [], unreadable: [], storagePath: '', ready: !desktop, bootstrapError: null,
       busy: desktop ? 'Opening profiles' : null, error: null, notice: null, noticeAction: null, validation: 'idle',
       replay: { status: 'idle' }, preview: { status: 'idle' }, keypadPreview: { status: 'idle' }, pendingIntent: null,
-      duplicatePrompt: false, restorePrompt: null, importError: null, mhzImport: null, mhzReportOpen: false, importFlagsError: null, exportResult: null, canUndo: false, canRedo: false,
+      duplicatePrompt: false, restorePrompt: null, importError: null, mhzImport: null, mhzReportOpen: false, importFlagsError: null, exportResult: null, canUndo: false, canRedo: false, undoLabels: [], redoLabels: [],
       autosave: true, autosaveBlocked: false, versions: null, versionsId: null, versionsError: null,
     };
   }
@@ -332,9 +336,9 @@ export class ProfileSession {
 
   // A different profile, or a saved baseline, replaces the draft: the edit
   // history belongs to the old draft and is cleared.
-  private resetHistory(): Pick<SessionState, 'canUndo' | 'canRedo'> {
+  private resetHistory(): Pick<SessionState, 'canUndo' | 'canRedo' | 'undoLabels' | 'redoLabels'> {
     this.history = emptyHistory();
-    return { canUndo: false, canRedo: false };
+    return { canUndo: false, canRedo: false, undoLabels: [], redoLabels: [] };
   }
 
   private adopt(stored: StoredProfile): Partial<SessionState> {
@@ -348,20 +352,29 @@ export class ProfileSession {
   // from the old draft are discarded. An optional `key` names the edited field:
   // rapid consecutive edits with the same key become one undo step.
   edit(profile: Profile, key?: string) {
-    this.history = recordEdit(this.history, this.state.draft.profile, profile, { key, at: this.now() });
+    this.history = recordEdit(this.history, this.state.draft.profile, profile, { key, at: this.now() }, undefined, describeEdit);
     this.set({ ...this.invalidateResults(), ...this.historyFlags(), draft: { ...this.state.draft, profile } });
   }
 
   // Applies an edit to the latest draft, not to a value captured earlier.
   update(change: (profile: Profile) => Profile, key?: string) { this.edit(change(this.state.draft.profile), key); }
 
-  private historyFlags() { return { canUndo: this.history.past.length > 0, canRedo: this.history.future.length > 0 }; }
+  private historyFlags() {
+    return {
+      canUndo: this.history.past.length > 0, canRedo: this.history.future.length > 0,
+      undoLabels: recentUndoLabels(this.history), redoLabels: recentRedoLabels(this.history),
+    };
+  }
 
   // Undo and redo move only the draft. The saved profile and its file are never
   // touched, and the dirty state follows the draft (undoing back to the saved
   // profile makes it clean). They wait while a profile operation is running.
   undo(): boolean { return this.travel(undoStep(this.history, this.state.draft.profile)); }
   redo(): boolean { return this.travel(redoStep(this.history, this.state.draft.profile)); }
+  // Goes back (or forward) `count` steps in one go, as picking an entry in the history list does; stops where the
+  // history ends or a profile operation is running. Returns how many steps were taken.
+  undoSteps(count: number): number { let taken = 0; while (taken < count && this.undo()) taken += 1; return taken; }
+  redoSteps(count: number): number { let taken = 0; while (taken < count && this.redo()) taken += 1; return taken; }
 
   private travel(step: { history: History<Profile>; value: Profile } | null): boolean {
     if (!step || this.state.busy !== null) return false;

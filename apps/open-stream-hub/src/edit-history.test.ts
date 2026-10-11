@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coalesceWindowMs, emptyHistory, historyLimit, recordEdit, redoStep, shouldCoalesce, undoStep } from './edit-history';
+import { coalesceWindowMs, emptyHistory, historyLimit, noLabel, recentRedoLabels, recentUndoLabels, recordEdit, redoStep, shouldCoalesce, undoStep } from './edit-history';
 import type { History } from './edit-history';
 
 describe('shouldCoalesce', () => {
@@ -79,7 +79,7 @@ describe('history', () => {
     expect(h.past).toHaveLength(historyLimit);
     expect(h.past[0]).toBe(20);
     expect(h.past.at(-1)).toBe(historyLimit + 19);
-    const full: History<number> = { past: Array.from({ length: historyLimit }, (_, index) => index), future: [999], last: null };
+    const full: History<number> = { past: Array.from({ length: historyLimit }, (_, index) => index), future: [999], last: null, pastLabels: Array.from({ length: historyLimit }, (_, index) => `step ${index}`), futureLabels: ['later'] };
     expect(redoStep(full, -1)!.history.past).toHaveLength(historyLimit);
   });
 
@@ -99,5 +99,58 @@ describe('history', () => {
     expect(redoStep(r2.history, r2.value)).toBeNull();
     // After undo the next keyed edit must not merge into the pre-undo burst.
     expect(u1.history.last).toBeNull();
+  });
+});
+
+describe('history labels', () => {
+  const describe_ = (before: string, after: string) => `${before}→${after}`;
+
+  it('keeps one label per step and moves it between the undo and redo lists', () => {
+    let h: History<string> = emptyHistory();
+    h = recordEdit(h, 'a', 'b', { at: 0 }, undefined, describe_);
+    h = recordEdit(h, 'b', 'c', { at: 1 }, undefined, describe_);
+    expect(h.pastLabels).toEqual(['a→b', 'b→c']);
+    expect(recentUndoLabels(h)).toEqual(['b→c', 'a→b']);
+    const undone = undoStep(h, 'c')!;
+    expect(undone.history.pastLabels).toEqual(['a→b']);
+    expect(undone.history.futureLabels).toEqual(['b→c']);
+    expect(recentRedoLabels(undone.history)).toEqual(['b→c']);
+    const redone = redoStep(undone.history, undone.value)!;
+    expect(redone.history.pastLabels).toEqual(['a→b', 'b→c']);
+    expect(redone.history.futureLabels).toEqual([]);
+  });
+
+  it('describes a coalesced burst from the state before it, and drops the label with a burst that undid itself', () => {
+    let h: History<string> = emptyHistory();
+    let value = '';
+    let at = 0;
+    for (const letter of 'hi') { const before = value; value += letter; at += 100; h = recordEdit(h, before, value, { key: 'name', at }, undefined, describe_); }
+    expect(h.past).toEqual(['']);
+    expect(h.pastLabels).toEqual(['→hi']);
+    h = recordEdit(h, 'hi', '', { key: 'name', at: at + 100 }, undefined, describe_);
+    expect(h.past).toEqual([]);
+    expect(h.pastLabels).toEqual([]);
+  });
+
+  it('a new edit clears the redo labels, the limit trims the oldest label with its state, and a missing describer uses the plain phrase', () => {
+    let h: History<number> = emptyHistory();
+    h = recordEdit(h, 0, 1, { at: 0 });
+    expect(h.pastLabels).toEqual([noLabel]);
+    h = undoStep(h, 1)!.history;
+    expect(h.futureLabels).toHaveLength(1);
+    h = recordEdit(h, 0, 5, { at: 1 }, undefined, (before, after) => `${before}-${after}`);
+    expect(h.futureLabels).toEqual([]);
+    let full: History<number> = emptyHistory();
+    for (let value = 0; value < historyLimit + 5; value += 1) full = recordEdit(full, value, value + 1, { at: value }, undefined, (before) => `from ${before}`);
+    expect(full.pastLabels).toHaveLength(historyLimit);
+    expect(full.pastLabels[0]).toBe('from 5');
+    expect(full.pastLabels.at(-1)).toBe(`from ${historyLimit + 4}`);
+  });
+
+  it('lists at most ten labels, most recent first', () => {
+    let h: History<number> = emptyHistory();
+    for (let value = 0; value < 15; value += 1) h = recordEdit(h, value, value + 1, { at: value }, undefined, (before) => `step ${before}`);
+    expect(recentUndoLabels(h)).toHaveLength(10);
+    expect(recentUndoLabels(h)[0]).toBe('step 14');
   });
 });

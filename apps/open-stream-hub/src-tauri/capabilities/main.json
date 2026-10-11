@@ -39,6 +39,7 @@
     "allow-delete-focus-rule",
     "allow-set-focus-rules-enabled",
     "allow-focus-current-app",
+    "allow-list-running-apps",
     "allow-display-settings",
     "allow-set-display-settings",
     "allow-default-profile",

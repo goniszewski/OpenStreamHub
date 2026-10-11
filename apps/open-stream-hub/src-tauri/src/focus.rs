@@ -327,6 +327,44 @@ impl FocusState {
     }
 }
 
+/// An app that is running and can come to the front, for the rule editor's picker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RunningApp {
+    pub bundle_id: String,
+    pub name: String,
+}
+
+/// The most apps the picker is given; a Mac with more running ordinary apps than this is not a real case.
+const MAX_RUNNING_APPS: usize = 200;
+
+/// The picker's list: no OpenStreamHub itself (a rule for it could never match, since its own activations are
+/// skipped), no bundle id a rule would refuse, one entry per id, sorted by name.
+pub fn pickable_apps(apps: Vec<RunningApp>, own_bundle_id: &str) -> Vec<RunningApp> {
+    let mut seen = std::collections::HashSet::new();
+    let mut listed: Vec<RunningApp> = apps
+        .into_iter()
+        .filter(|app| !app.bundle_id.eq_ignore_ascii_case(own_bundle_id))
+        .filter(|app| normalize_bundle_id(&app.bundle_id).is_ok())
+        .filter(|app| seen.insert(app.bundle_id.to_ascii_lowercase()))
+        .map(|app| RunningApp {
+            name: if app.name.trim().is_empty() {
+                app.bundle_id.clone()
+            } else {
+                app.name.trim().to_owned()
+            },
+            ..app
+        })
+        .collect();
+    listed.sort_by_key(|app| (app.name.to_lowercase(), app.bundle_id.to_lowercase()));
+    listed.truncate(MAX_RUNNING_APPS);
+    listed
+}
+
+/// The ordinary apps running now (the ones with a Dock icon), for the rule editor's picker. Empty off macOS.
+pub fn running_apps(own_bundle_id: &str) -> Vec<RunningApp> {
+    pickable_apps(platform::running_apps(), own_bundle_id)
+}
+
 /// Receives the frontmost app's bundle id (`None` when it has none).
 pub type Sink = Arc<dyn Fn(Option<String>) + Send + Sync>;
 
@@ -366,9 +404,28 @@ pub fn watch(
 mod platform {
     use super::Sink;
     use block2::RcBlock;
-    use objc2_app_kit::{NSWorkspace, NSWorkspaceDidActivateApplicationNotification};
+    use objc2_app_kit::{
+        NSApplicationActivationPolicy, NSWorkspace, NSWorkspaceDidActivateApplicationNotification,
+    };
     use objc2_foundation::NSNotification;
     use std::ptr::NonNull;
+
+    /// Every running app that has a Dock icon, with its display name.
+    pub fn running_apps() -> Vec<super::RunningApp> {
+        NSWorkspace::sharedWorkspace()
+            .runningApplications()
+            .iter()
+            .filter(|app| app.activationPolicy() == NSApplicationActivationPolicy::Regular)
+            .filter_map(|app| {
+                let bundle_id = app.bundleIdentifier()?.to_string();
+                let name = app
+                    .localizedName()
+                    .map(|name| name.to_string())
+                    .unwrap_or_default();
+                Some(super::RunningApp { bundle_id, name })
+            })
+            .collect()
+    }
 
     fn frontmost() -> Option<String> {
         let workspace = NSWorkspace::sharedWorkspace();
@@ -407,6 +464,10 @@ mod platform {
     pub fn start(_sink: Sink) -> Result<(), String> {
         Err("focused-app rules need macOS; the rules can be edited but never match".into())
     }
+
+    pub fn running_apps() -> Vec<super::RunningApp> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +503,59 @@ mod tests {
             app_bundle_id: bundle.into(),
             profile_id: profile.into(),
         }
+    }
+
+    fn app(bundle_id: &str, name: &str) -> RunningApp {
+        RunningApp {
+            bundle_id: bundle_id.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn the_picker_lists_other_apps_once_sorted_by_name() {
+        let listed = pickable_apps(
+            vec![
+                app("com.apple.Safari", "Safari"),
+                app("com.example.zed", "Zed"),
+                app("com.apple.Notes", "notes"),
+                app("com.apple.safari", "Safari again"),
+                app("dev.openstreamhub.app", "OpenStreamHub"),
+                app("DEV.OPENSTREAMHUB.APP", "Self again"),
+            ],
+            "dev.openstreamhub.app",
+        );
+        let ids: Vec<&str> = listed.iter().map(|app| app.bundle_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["com.apple.Notes", "com.apple.Safari", "com.example.zed"]
+        );
+    }
+
+    #[test]
+    fn the_picker_drops_ids_a_rule_would_refuse_and_names_an_unnamed_app_by_its_id() {
+        let listed = pickable_apps(
+            vec![
+                app("not a bundle id", "Odd"),
+                app("", "Empty"),
+                app("com.example.quiet", "  "),
+            ],
+            "x.y",
+        );
+        assert_eq!(listed, vec![app("com.example.quiet", "com.example.quiet")]);
+    }
+
+    #[test]
+    fn the_picker_is_capped() {
+        let many = (0..MAX_RUNNING_APPS + 30)
+            .map(|index| {
+                app(
+                    &format!("com.example.app{index}"),
+                    &format!("App {index:04}"),
+                )
+            })
+            .collect();
+        assert_eq!(pickable_apps(many, "x.y").len(), MAX_RUNNING_APPS);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { FocusChangedPayload, FocusCurrentApp, FocusRuleInput, FocusRules } from './contracts';
+import type { FocusChangedPayload, FocusCurrentApp, FocusRule, FocusRuleInput, FocusRules, RunningApp } from './contracts';
 import type { Listen } from './device-feed';
 import type { Invoke } from './profile-session';
 import type { ServiceRun } from './service-runner';
@@ -28,6 +28,32 @@ export function sessionsToSwitch(runs: Record<string, ServiceRun>, profileId: st
     .filter(([, run]) => run.session !== undefined && run.session.phase !== 'stopped' && run.profileId !== profileId)
     .map(([key]) => key);
 }
+
+// What the header says about automatic switching, or null when it is off (or there is no desktop to watch focus).
+// `matched` is the saved profile the app in front is switched to, when a rule for it exists and its profile too.
+export interface FocusStatus { text: string; matched: string | null }
+export function focusStatus(state: Pick<FocusRulesState, 'desktop' | 'enabled' | 'rules' | 'focusedApp'>, profiles: { id: string; name: string }[]): FocusStatus | null {
+  if (!state.desktop || !state.enabled) return null;
+  const count = `${state.rules.length} rule${state.rules.length === 1 ? '' : 's'}`;
+  const app = state.focusedApp;
+  const rule = app ? state.rules.find(item => item.app_bundle_id.toLowerCase() === app.toLowerCase() && profiles.some(profile => profile.id === item.profile_id)) : undefined;
+  const matched = rule ? profiles.find(profile => profile.id === rule.profile_id)!.name : null;
+  if (matched) return { text: `Switching profiles automatically (${count}). ${app} is in front, so the profile is “${matched}”.`, matched };
+  return { text: `Switching profiles automatically (${count}). ${app ? `${app} is in front and has no rule.` : 'Waiting for another app to come to the front.'}`, matched: null };
+}
+
+// The rules that switch to one profile, in the order the rules are checked.
+export const rulesForProfile = (rules: FocusRule[], profileId: string | null): FocusRule[] => profileId === null ? [] : rules.filter(rule => rule.profile_id === profileId);
+
+// The apps the picker offers: running apps that have no rule yet (an app has one rule; the first match wins).
+export function appChoices(apps: RunningApp[], rules: FocusRule[]): RunningApp[] {
+  const ruled = new Set(rules.map(rule => rule.app_bundle_id.toLowerCase()));
+  return apps.filter(app => !ruled.has(app.bundle_id.toLowerCase()));
+}
+
+// An app by its name when it is running, else by its bundle id.
+export const appName = (bundleId: string, apps: RunningApp[]): string =>
+  apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? bundleId;
 
 export interface FocusRulesState {
   desktop: boolean; loaded: boolean; busy: boolean; error: string | null;
@@ -126,6 +152,16 @@ export class FocusRulesStore {
   save(rule: FocusRuleInput) { return this.change('save_focus_rule', { rule: { ...rule, app_bundle_id: rule.app_bundle_id.trim() } }); }
   remove(id: string) { return this.change('delete_focus_rule', { id }); }
   setEnabled(enabled: boolean) { return enabled ? this.run('set_focus_rules_enabled', { enabled }) : this.change('set_focus_rules_enabled', { enabled }); }
+
+  // The apps running now, for the picker; none (without an error) when the list cannot be read, since typing the
+  // bundle ID still works.
+  async runningApps(): Promise<RunningApp[]> {
+    if (!this.state.desktop) return [];
+    try {
+      const apps = await this.invoke<RunningApp[]>('list_running_apps');
+      return Array.isArray(apps) ? apps.filter(app => typeof app?.bundle_id === 'string' && typeof app?.name === 'string') : [];
+    } catch { return []; }
+  }
 
   // The last app other than OpenStreamHub that was frontmost, or null with an explanation in `error`.
   async currentApp(): Promise<string | null> {

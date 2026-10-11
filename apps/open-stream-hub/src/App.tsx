@@ -4,7 +4,7 @@ import { listen } from '@tauri-apps/api/event';
 import { DeviceFeed, readAutoDetect } from './device-feed';
 import { ServiceRunner } from './service-runner';
 import { NoticeStore } from './notices';
-import { FocusRulesStore } from './focus-rules';
+import { FocusRulesStore, focusStatus } from './focus-rules';
 import { DisplaySettingsStore } from './display-settings';
 import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
@@ -20,7 +20,7 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
+import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
@@ -28,6 +28,7 @@ import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
 import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
+import { HistoryMenu } from './HistoryMenu';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
@@ -45,7 +46,7 @@ import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { defaultDisplaySettings } from './display-settings';
 import { ProfileManagerSheet, SampleTestPanel } from './ProfileManager';
 import { useImportDrop } from './ProfileTransfer';
-import { installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
+import { hint, installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
 import { editKeypadBinding } from './keypad-model';
 import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, readTestWhileEditingSetting, writeAutosaveSetting, writeTestWhileEditingSetting } from './ui-model';
@@ -106,6 +107,9 @@ export default function App() {
   // inventory after a launch) is sent the same writes once more.
   const [lightingState] = useState(() => new LightingStateStore(webStorage()));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
+  const focusState = useSyncExternalStore(focusRules.subscribe, focusRules.getState);
+  // The rules are read once at start so the header can say whether automatic switching is on.
+  useEffect(() => { if (desktop) void focusRules.load(); }, [focusRules]);
   // The picked module, shared by every page that acts on one module.
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
@@ -275,6 +279,8 @@ export default function App() {
   const deviceStatusKind = !desktop ? 'browser'
     : !deviceFeedState.inventoryLoaded ? deviceFeedState.error ? 'unavailable' : 'checking'
       : connectedModules > 0 ? 'connected' : 'disconnected';
+
+  const focusHeader = focusStatus(focusState, state.profiles);
 
   useEffect(() => {
     const query = matchMedia('(prefers-color-scheme: dark)');
@@ -454,10 +460,13 @@ export default function App() {
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{connectedModules}</span>}<span className="sr-only">{deviceStatus}</span></span>
+          {focusHeader && <button type="button" className="focus-status" aria-label={focusHeader.text} data-tip={focusHeader.text} onClick={() => setManagerOpen(true)}><AppWindow size={17} aria-hidden="true" />{focusHeader.matched && <span className="focus-status-name">{focusHeader.matched}</span>}</button>}
           <RunHeaderControl run={runSession} />
           <div className="history-buttons" role="group" aria-label="Change history">
-            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" data-tip={withHint('Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
-            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" data-tip={`Redo (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label="Undo" data-tip={withHint(state.undoLabels[0] ? `Undo: ${state.undoLabels[0]}` : 'Undo', 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label="Redo" data-tip={`${state.redoLabels[0] ? `Redo: ${state.redoLabels[0]}` : 'Redo'} (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+            <HistoryMenu undo={state.undoLabels} redo={state.redoLabels} disabled={disabled} onUndo={steps => { session.undoSteps(steps); }} onRedo={steps => { session.redoSteps(steps); }}
+              undoHint={hint('Z', mac)} redoHint={redoHint(mac)} storage={webStorage()} />
           </div>
           <button className="button" disabled={disabled || !unsaved} data-tip={withHint('Save profile', 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? 'Saving…' : 'Save profile'}</button>
         </div>

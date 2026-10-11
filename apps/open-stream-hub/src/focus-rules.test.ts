@@ -5,7 +5,7 @@ import focusEvents from '../fixtures/focus-changed-events.json';
 import focusResults from '../fixtures/focus-command-results.json';
 import switchEvents from '../fixtures/session-switch-events.json';
 import type { FocusChangedPayload, FocusCurrentApp, FocusRuleInput, FocusRules, Profile, SessionStatePayload, SwitchedProfile } from './contracts';
-import { bundleIdIssue, FocusRulesStore, focusChangedEvent, focusDebounceMs, maxBundleIdLength, sessionsToSwitch } from './focus-rules';
+import { bundleIdIssue, FocusRulesStore, focusChangedEvent, focusDebounceMs, focusStatus, maxBundleIdLength, sessionsToSwitch } from './focus-rules';
 import { emptyCounters, ServiceRunner } from './service-runner';
 import type { ServiceRun } from './service-runner';
 import { noticesFromRuns } from './notices';
@@ -334,5 +334,27 @@ describe('ServiceRunner.switchProfile', () => {
     const { add } = noticesFromRuns({ s: paused }, { s: 'running' });
     expect(add).toEqual([expect.objectContaining({ kind: 'paused', action: 'review', text: 'Focused-app rule switched the profile — confirm to resume actions' })]);
     expect(add[0].text).not.toContain('Browser');
+  });
+});
+
+describe('focusStatus', () => {
+  const profiles = [{ id: 'p1', name: 'Everyday' }, { id: 'p2', name: 'Streaming' }];
+  const rules = [{ id: 'r1', app_bundle_id: 'com.apple.Safari', profile_id: 'p2' }, { id: 'r2', app_bundle_id: 'com.gone.App', profile_id: 'missing' }];
+  const state = (patch: Partial<Parameters<typeof focusStatus>[0]> = {}) => ({ desktop: true, enabled: true, rules, focusedApp: null as string | null, ...patch });
+
+  it('says nothing while automatic switching is off or there is no desktop', () => {
+    expect(focusStatus(state({ enabled: false }), profiles)).toBeNull();
+    expect(focusStatus(state({ desktop: false }), profiles)).toBeNull();
+  });
+  it('names the profile the app in front switches to, ignoring bundle id case', () => {
+    expect(focusStatus(state({ focusedApp: 'com.apple.safari' }), profiles))
+      .toEqual({ text: 'Switching profiles automatically (2 rules). com.apple.safari is in front, so the profile is “Streaming”.', matched: 'Streaming' });
+  });
+  it('says there is no rule for an app that has none, or whose rule points at a deleted profile', () => {
+    expect(focusStatus(state({ focusedApp: 'com.example.Other' }), profiles)).toEqual({ text: 'Switching profiles automatically (2 rules). com.example.Other is in front and has no rule.', matched: null });
+    expect(focusStatus(state({ focusedApp: 'com.gone.App' }), profiles)?.matched).toBeNull();
+  });
+  it('waits for the first app change, and counts a single rule in the singular', () => {
+    expect(focusStatus(state({ rules: [rules[0]] }), profiles)).toEqual({ text: 'Switching profiles automatically (1 rule). Waiting for another app to come to the front.', matched: null });
   });
 });

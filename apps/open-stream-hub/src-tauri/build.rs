@@ -33,6 +33,7 @@ fn main() {
             "delete_focus_rule",
             "set_focus_rules_enabled",
             "focus_current_app",
+            "list_running_apps",
             "display_settings",
             "set_display_settings",
             "default_profile",

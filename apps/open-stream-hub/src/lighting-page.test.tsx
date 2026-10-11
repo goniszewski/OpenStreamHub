@@ -54,9 +54,33 @@ describe('LightingPage', () => {
   });
 
   it('shows unsupported modules as disabled controls with the module named', () => {
-    const markup = render({ feed: feedWith([knobs()]) });
-    expect(markup).toContain('3-knob module lighting is not available yet. The encoder dial is the only module OpenStreamHub lights right now.');
+    const keypad: LiveDevice = { path_hex: 'ke', module: 'm4315', serial_number: null };
+    const markup = render({ feed: feedWith([keypad]) });
+    expect(markup).toContain('15-key IPS display lighting is not available yet. Only the encoder dial, knob and fader modules are lit right now.');
     expect(markup).toContain('<fieldset class="lighting-controls" disabled="">');
+  });
+
+  it('gives a knob module effect, LED and brightness controls and no reset', () => {
+    const markup = render({ feed: feedWith([knobs()]) });
+    expect(markup).not.toContain('<fieldset class="lighting-controls" disabled');
+    expect(markup).toContain('id="lighting-effect"');
+    expect(markup).toContain('<option value="4">Strobe, fast</option>');
+    expect(markup).toContain('id="lighting-led"');
+    expect(markup).toContain('LED 3');
+    expect(markup).not.toContain('LED 4');
+    expect(markup).toContain('>Brightness</label>');
+    expect(markup).not.toContain('lucide-rotate-ccw');
+  });
+
+  it('lists five LEDs for a fader module and keeps the dial controls free of effects', () => {
+    const faders: LiveDevice = { path_hex: 'fd', module: 'm005s', serial_number: null };
+    const fadersMarkup = render({ feed: feedWith([faders]) });
+    expect(fadersMarkup).toContain('LED 5');
+    expect(fadersMarkup).not.toContain('LED 6');
+    const dialMarkup = render({ feed: feedWith([dial('aa')]) });
+    expect(dialMarkup).not.toContain('id="lighting-effect"');
+    expect(dialMarkup).toContain('>Backlight</label>');
+    expect(dialMarkup).toContain('lucide-rotate-ccw');
   });
 
   it('names a run that is driving a target dial', () => {

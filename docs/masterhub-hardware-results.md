@@ -178,3 +178,7 @@ Unit with the M0064 base (firmware `02.00.04.00`), M003K knobs (`01.00.05.00`), 
 ## OBS connection states (pending)
 
 With a real OBS 28+: check that Settings › OBS Studio shows Connected; Not running with OBS closed; WebSocket off with OBS open and its WebSocket server disabled; Wrong password and Password needed with authentication on; Wrong port with another server on the port. The first two depend on `pgrep -xi obs` matching the OBS process name.
+
+## Lighting page: knobs and faders (pending)
+
+With the desktop app and a kit with knobs and faders: pick the 3-knob module, move the effect, brightness and colour controls and check each knob follows (LED set to All LEDs, then LED 1, 2 and 3 one at a time, the others unchanged); the same on the 5-fader module with LEDs 1 to 5; Whole kit with a knob module picked reaches the faders as well; Strobe, fast is faster than Strobe, slow. A running profile on the module refuses the write with its message.

@@ -9,6 +9,7 @@
 //! the reset command leaves software mode, which returns the animation.
 
 use cooltek_sdk_cli::device::{parse_path, select_device};
+use cooltek_sdk_masterhub::lighting::{self as led, LedModule, LedTarget};
 use cooltek_sdk_masterhub::{DeviceRegistry, ModuleIdentity, ModuleKind, ReportTransport, dial};
 
 /// Writes one dial's lighting in the order hardware verified: software mode,
@@ -114,6 +115,117 @@ pub fn reset_dial_lighting(registry: &DeviceRegistry, targets: &[String]) -> Res
         restore_dial_mode(device).map_err(|error| format!("{label}: {error}"))?;
     }
     Ok(dials.len())
+}
+
+/// What one LED module is told: a colour, an effect number and a brightness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LedLook {
+    pub colour: [u8; 3],
+    pub mode: u8,
+    pub brightness: u8,
+}
+
+/// The LED module a module kind is, or `None` for kinds the app cannot light
+/// per LED yet (the dial has its own feature-report lighting).
+pub fn led_module(kind: Option<ModuleKind>) -> Option<LedModule> {
+    match kind? {
+        ModuleKind::M003K => Some(LedModule::Knob),
+        ModuleKind::M005S => Some(LedModule::Slider),
+        _ => None,
+    }
+}
+
+/// Writes one module's lighting the way the official app does, per LED:
+/// colour, then effect, then brightness, for one LED or each LED in turn
+/// (the app never sends the SDK's `0xff` index). Everything is validated
+/// before the first write, so a bad value or LED writes nothing; a transport
+/// failure stops at the failing write, and the next apply rewrites everything.
+pub fn write_led_lighting<T: ReportTransport + ?Sized>(
+    transport: &T,
+    module: LedModule,
+    led_index: Option<u8>,
+    look: LedLook,
+) -> Result<(), String> {
+    if look.mode > led::MAX_MODE {
+        return Err(format!(
+            "the effect must be between 0 and {}",
+            led::MAX_MODE
+        ));
+    }
+    if look.brightness > 100 {
+        return Err("the brightness must be between 0 and 100".into());
+    }
+    let leds: Vec<u8> = match led_index {
+        Some(index) if index < module.led_count() => vec![index],
+        Some(index) => {
+            return Err(format!(
+                "LED {} does not exist: this module has {}",
+                u16::from(index) + 1,
+                module.led_count()
+            ));
+        }
+        None => (0..module.led_count()).collect(),
+    };
+    for index in leds {
+        let target = LedTarget::Index(index);
+        let label = u16::from(index) + 1;
+        led::set_color(transport, module, target, look.colour, false)
+            .map_err(|error| format!("could not set the colour of LED {label}: {error}"))?;
+        led::set_mode(transport, module, target, look.mode, false)
+            .map_err(|error| format!("could not set the effect of LED {label}: {error}"))?;
+        led::set_brightness(transport, module, target, look.brightness)
+            .map_err(|error| format!("could not set the brightness of LED {label}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// The one inventory entry an LED target must name: a knob or fader module.
+pub fn select_led_identity<'a>(
+    devices: &'a [ModuleIdentity],
+    path: &[u8],
+) -> Result<(&'a ModuleIdentity, LedModule), String> {
+    let selected = select_device(devices, path, false).map_err(|error| match error.as_str() {
+        cooltek_sdk_cli::device::NOT_IN_INVENTORY => {
+            "the module went away or is still connecting; try again".to_string()
+        }
+        other => format!("could not select the module: {other}"),
+    })?;
+    let module = led_module(ModuleKind::from_ids(
+        selected.vendor_id,
+        selected.product_id,
+    ))
+    .ok_or("per-LED lighting works on knob and fader modules only")?;
+    Ok((selected, module))
+}
+
+/// Applies one look to every target knob or fader module, in order, stopping at
+/// the first failure. All targets are opened first, so a wrong target never
+/// leaves an earlier one half-written. Returns the number of modules written.
+pub fn apply_led_lighting(
+    registry: &DeviceRegistry,
+    targets: &[String],
+    led_index: Option<u8>,
+    look: LedLook,
+) -> Result<usize, String> {
+    let inventory = registry.devices();
+    let mut opened = Vec::new();
+    for target in targets {
+        let path = parse_path(target)?;
+        let (selected, module) = select_led_identity(&inventory, &path)?;
+        let label = match selected.serial_number.as_deref() {
+            Some(serial) => format!("the module with serial {serial}"),
+            None => "the module".into(),
+        };
+        let device = registry
+            .open(selected)
+            .map_err(|error| format!("{label}: could not open it: {error}"))?;
+        opened.push((device, module, label));
+    }
+    for (device, module, label) in &opened {
+        write_led_lighting(device, *module, led_index, look)
+            .map_err(|error| format!("{label}: {error}"))?;
+    }
+    Ok(opened.len())
 }
 
 #[cfg(test)]
@@ -295,5 +407,148 @@ mod tests {
         let ambiguous = [identity("dd", 0x0206, None), identity("dd", 0x0206, None)];
         let error = select_dial_identity(&ambiguous, b"dd").unwrap_err();
         assert!(error.contains("ambiguous"), "{error}");
+    }
+
+    /// Records output reports; the descriptor declares report 2 with 63 payload bytes.
+    #[derive(Default)]
+    struct OutputFake {
+        outputs: RefCell<Vec<Vec<u8>>>,
+        fail_at: Option<usize>,
+    }
+
+    impl ReportTransport for OutputFake {
+        fn read_timeout(&self, _: &mut [u8], _: i32) -> HidResult<usize> {
+            panic!("lighting writes never poll input")
+        }
+
+        fn get_feature_report(&self, _: &mut [u8]) -> HidResult<usize> {
+            panic!("lighting writes never query feature reports")
+        }
+
+        fn send_feature_report(&self, _: &[u8]) -> HidResult<()> {
+            panic!("LED lighting uses output reports")
+        }
+
+        fn write_output(&self, report: &[u8]) -> HidResult<usize> {
+            let index = self.outputs.borrow().len();
+            self.outputs.borrow_mut().push(report.to_vec());
+            if self.fail_at == Some(index) {
+                return Err(HidError::HidApiError {
+                    message: "disconnected".into(),
+                });
+            }
+            Ok(report.len())
+        }
+
+        fn get_report_descriptor(&self, buffer: &mut [u8]) -> HidResult<usize> {
+            const DESCRIPTOR: [u8; 17] = [
+                0x05, 0x0c, 0x09, 0x01, 0xa1, 0x01, 0x75, 0x08, 0x96, 0x3f, 0x00, 0x85, 0x02, 0x91,
+                0x02, 0xc0, 0x00,
+            ];
+            buffer[..DESCRIPTOR.len()].copy_from_slice(&DESCRIPTOR);
+            Ok(DESCRIPTOR.len())
+        }
+    }
+
+    const LOOK: LedLook = LedLook {
+        colour: [0x12, 0x34, 0x56],
+        mode: 5,
+        brightness: 80,
+    };
+
+    fn heads(fake: &OutputFake) -> Vec<Vec<u8>> {
+        fake.outputs
+            .borrow()
+            .iter()
+            .map(|r| r[..7].to_vec())
+            .collect()
+    }
+
+    #[test]
+    fn one_led_gets_colour_effect_brightness_in_the_official_apps_order() {
+        let fake = OutputFake::default();
+        write_led_lighting(&fake, LedModule::Knob, Some(1), LOOK).unwrap();
+        assert_eq!(
+            heads(&fake),
+            [
+                vec![2, 0x2d, 2, 1, 0x12, 0x34, 0x56],
+                vec![2, 0x2c, 2, 1, 5, 0, 0],
+                vec![2, 0x2e, 2, 1, 80, 0, 0],
+            ]
+        );
+        assert!(
+            fake.outputs
+                .borrow()
+                .iter()
+                .all(|report| report.len() == 64)
+        );
+    }
+
+    #[test]
+    fn all_leds_are_written_one_index_at_a_time_never_with_the_all_index() {
+        let knobs = OutputFake::default();
+        write_led_lighting(&knobs, LedModule::Knob, None, LOOK).unwrap();
+        let faders = OutputFake::default();
+        write_led_lighting(&faders, LedModule::Slider, None, LOOK).unwrap();
+        assert_eq!(knobs.outputs.borrow().len(), 9);
+        assert_eq!(faders.outputs.borrow().len(), 15);
+        for (fake, type_byte, count) in [(&knobs, 2, 3), (&faders, 1, 5)] {
+            let indexes: Vec<u8> = fake.outputs.borrow().iter().map(|r| r[3]).collect();
+            assert!(indexes.iter().all(|&index| index < count), "{indexes:?}");
+            assert!(fake.outputs.borrow().iter().all(|r| r[2] == type_byte));
+        }
+    }
+
+    #[test]
+    fn bad_values_and_leds_write_nothing() {
+        let fake = OutputFake::default();
+        for (module, index, look) in [
+            (LedModule::Knob, Some(3), LOOK),
+            (LedModule::Slider, Some(5), LOOK),
+            (LedModule::Knob, None, LedLook { mode: 10, ..LOOK }),
+            (
+                LedModule::Knob,
+                None,
+                LedLook {
+                    brightness: 101,
+                    ..LOOK
+                },
+            ),
+        ] {
+            assert!(write_led_lighting(&fake, module, index, look).is_err());
+        }
+        assert!(fake.outputs.borrow().is_empty());
+    }
+
+    #[test]
+    fn an_led_transport_failure_names_the_step_and_stops() {
+        let fake = OutputFake {
+            fail_at: Some(4),
+            ..OutputFake::default()
+        };
+        let error = write_led_lighting(&fake, LedModule::Knob, None, LOOK).unwrap_err();
+        assert!(error.contains("effect of LED 2"), "{error}");
+        assert_eq!(fake.outputs.borrow().len(), 5);
+    }
+
+    #[test]
+    fn led_selection_accepts_knobs_and_faders_only() {
+        let devices = [
+            identity("kn", 0x0202, Some("MHKB03")),
+            identity("fd", 0x0200, None),
+            identity("dl", 0x0206, None),
+        ];
+        assert_eq!(
+            select_led_identity(&devices, b"kn").unwrap().1,
+            LedModule::Knob
+        );
+        assert_eq!(
+            select_led_identity(&devices, b"fd").unwrap().1,
+            LedModule::Slider
+        );
+        let error = select_led_identity(&devices, b"dl").unwrap_err();
+        assert!(error.contains("knob and fader"), "{error}");
+        let error = select_led_identity(&devices, b"zz").unwrap_err();
+        assert!(error.contains("went away"), "{error}");
     }
 }

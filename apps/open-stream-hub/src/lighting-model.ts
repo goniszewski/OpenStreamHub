@@ -3,9 +3,37 @@ import { formatHexColour, parseHexColour } from './artwork-model';
 import { modules } from './ui-model';
 import type { Invoke } from './profile-session';
 
-// Phase 1 lights the encoder dial only: knob rings, base edge and fader
-// lighting wait for their protocol (a later phase).
-const lightingModule: ServiceModule = 'm131e';
+// What lights a module: the dial has a backlight and one colour (feature
+// reports); knobs and faders have a colour, an effect and a brightness per
+// LED (output reports). The base edge strip and the other modules are not
+// lit yet.
+export type LightingKind = 'dial' | 'led';
+
+export function lightingKind(module: ServiceModule): LightingKind | null {
+  if (module === 'm131e') return 'dial';
+  return module === 'm003k' || module === 'm005s' ? 'led' : null;
+}
+
+// How many LEDs the module has, as the protocol counts them.
+export function ledCount(module: ServiceModule): number {
+  return module === 'm003k' ? 3 : module === 'm005s' ? 5 : 0;
+}
+
+// The effects the hardware accepted (checked on knobs and faders, 11 October
+// 2026). Mode 4 is not in the official app's list but works: a faster strobe.
+export const lightingEffects: { value: number; label: string }[] = [
+  { value: 1, label: 'Static' },
+  { value: 0, label: 'Off' },
+  { value: 2, label: 'Breathing' },
+  { value: 3, label: 'Strobe, slow' },
+  { value: 4, label: 'Strobe, fast' },
+  { value: 5, label: 'Cycling' },
+  { value: 6, label: 'Random' },
+  { value: 7, label: 'Wave' },
+  { value: 8, label: 'Water' },
+  { value: 9, label: 'Rainbow' },
+];
+export const defaultEffect = 1;
 
 // Where a lighting change lands: the picked module, or every connected dial.
 export type LightingScope = 'module' | 'kit';
@@ -23,9 +51,14 @@ export const favouritesStorageKey = 'open-stream-hub.lighting-favourites';
 // The dials a lighting change reaches, in inventory order. A picked module
 // that cannot be lit never becomes a target: its controls are disabled with a
 // reason instead (the backend re-checks the module kind on every write).
+// Whole kit reaches every module of the picked module's kind (every dial, or
+// every knob and fader module); with nothing lit-able picked it reaches the dials.
 export function lightingTargets(devices: LiveDevice[], scope: LightingScope, selectedPath: string | null): LiveDevice[] {
-  const dials = devices.filter(device => device.module === lightingModule);
-  return scope === 'kit' ? dials : dials.filter(device => device.path_hex === selectedPath);
+  const selected = devices.find(device => device.path_hex === selectedPath);
+  const selectedKind = selected ? lightingKind(selected.module) : null;
+  if (scope === 'module') return selected && selectedKind ? [selected] : [];
+  const kind = selectedKind ?? 'dial';
+  return devices.filter(device => lightingKind(device.module) === kind);
 }
 
 export interface LightingGate {
@@ -44,13 +77,15 @@ export function lightingBlockReason({ desktop, runOwnedTargets, scope, selected,
   if (!desktop) return 'The browser preview cannot reach hardware.';
   if (runOwnedTargets) return 'A run is driving a dial. Stop the run before changing its lighting.';
   if (devices.length === 0) return 'No modules are connected. Connect a module to change its lighting.';
+  const kind = selected ? lightingKind(selected.module) : 'dial';
   if (scope === 'kit') {
-    return devices.some(device => device.module === lightingModule)
+    const wanted = kind ?? 'dial';
+    return devices.some(device => lightingKind(device.module) === wanted)
       ? null
-      : 'Whole kit reaches the encoder dial’s lighting only right now, and no dial is connected.';
+      : 'Whole kit lights the encoder dials, or the knob and fader modules, and none is connected.';
   }
-  return selected && selected.module !== lightingModule
-    ? `${moduleShortName(selected.module)} lighting is not available yet. The encoder dial is the only module OpenStreamHub lights right now.`
+  return kind === null && selected
+    ? `${moduleShortName(selected.module)} lighting is not available yet. Only the encoder dial, knob and fader modules are lit right now.`
     : null;
 }
 
@@ -93,6 +128,20 @@ export function applyLighting(invoke: Invoke, request: LightingRequest): Promise
     targets: request.targets,
     backlight: clampBacklight(request.backlight),
     colour: colourChannels(request.colour),
+  }) as Promise<number>;
+}
+
+export interface LedLightingRequest { targets: string[]; led: number | null; colour: string; effect: number; brightness: number }
+
+// Knob and fader lighting: the same colour, effect and brightness for one LED
+// or every LED of each target module.
+export function applyLedLighting(invoke: Invoke, request: LedLightingRequest): Promise<number> {
+  return invoke('set_led_lighting', {
+    targets: request.targets,
+    led: request.led,
+    colour: colourChannels(request.colour),
+    mode: Math.min(9, Math.max(0, Math.round(request.effect))),
+    brightness: clampBacklight(request.brightness),
   }) as Promise<number>;
 }
 
@@ -144,6 +193,10 @@ export function createApplyQueue(run: () => Promise<void>, delayMs: number) {
 
 export function appliedStatus(count: number): string {
   return count === 1 ? 'Applied to 1 dial.' : `Applied to ${count} dials.`;
+}
+
+export function appliedLedStatus(count: number): string {
+  return count === 1 ? 'Applied to 1 module.' : `Applied to ${count} modules.`;
 }
 
 export function resetStatus(count: number): string {

@@ -835,6 +835,28 @@ fn set_dial_lighting(
     lighting::apply_dial_lighting(&registry, &targets, backlight, colour)
 }
 
+// Knob and fader lighting: one colour, effect and brightness for one LED or
+// every LED of each target module, written as output reports.
+#[tauri::command(async)]
+fn set_led_lighting(
+    state: State<'_, AppState>,
+    targets: Vec<String>,
+    led: Option<u8>,
+    colour: [u8; 3],
+    mode: u8,
+    brightness: u8,
+) -> Result<usize, String> {
+    service::check_lighting_allowed(&state.services, &targets)?;
+    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+    let look = lighting::LedLook {
+        colour,
+        mode,
+        brightness,
+    };
+    lighting::apply_led_lighting(&registry, &targets, led, look)
+}
+
 #[tauri::command(async)]
 fn reset_dial_lighting(state: State<'_, AppState>, targets: Vec<String>) -> Result<usize, String> {
     service::check_lighting_allowed(&state.services, &targets)?;
@@ -1567,6 +1589,7 @@ pub fn run() {
             start_feed,
             stop_feed,
             set_dial_lighting,
+            set_led_lighting,
             reset_dial_lighting,
             start_service,
             stop_service,

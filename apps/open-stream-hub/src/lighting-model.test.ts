@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveDevice } from './contracts';
 import { FakeStorage } from './fake-storage';
 import {
-  addColourFavourite, appliedStatus, applyDelayMs, applyLighting, clampBacklight, colourChannels, createApplyQueue, defaultColour,
+  addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, ledCount, lightingEffects, lightingKind, clampBacklight, colourChannels, createApplyQueue, defaultColour,
   favouritesStorageKey, lightingBlockReason, lightingDeviceLabel, lightingTargets, maxColourFavourites,
   normaliseHexColour, readColourFavourites, removeColourFavourite, resetLighting, resetStatus,
   writeColourFavourites,
@@ -27,8 +27,14 @@ describe('lightingTargets', () => {
   });
   it('never targets a module that cannot be lit', () => {
     expect(lightingTargets(devices, 'module', 'ke')).toEqual([]);
-    expect(lightingTargets(devices, 'module', 'kn')).toEqual([]);
     expect(lightingTargets(devices, 'module', null)).toEqual([]);
+  });
+  it('lights a picked knob or fader module, and the whole kit means every knob and fader module', () => {
+    const fader: LiveDevice = { path_hex: 'fd', module: 'm005s', serial_number: null };
+    const all = [keypad(), dial('aa'), knobs(), fader];
+    expect(lightingTargets(all, 'module', 'kn').map(device => device.path_hex)).toEqual(['kn']);
+    expect(lightingTargets(all, 'kit', 'kn').map(device => device.path_hex)).toEqual(['kn', 'fd']);
+    expect(lightingTargets(all, 'kit', 'aa').map(device => device.path_hex)).toEqual(['aa']);
   });
 });
 
@@ -49,14 +55,14 @@ describe('lightingBlockReason', () => {
   it('keeps whole kit enabled with a dial and explains a kit without one', () => {
     expect(gate({ scope: 'kit' })).toBeNull();
     expect(gate({ scope: 'kit', selected: keypad(), devices: [keypad(), knobs()] }))
-      .toBe('Whole kit reaches the encoder dial’s lighting only right now, and no dial is connected.');
+      .toBe('Whole kit lights the encoder dials, or the knob and fader modules, and none is connected.');
+    expect(gate({ scope: 'kit', selected: knobs(), devices: [knobs()] })).toBeNull();
   });
   it('keeps the dial enabled and disables other modules with their name, not a hidden panel', () => {
     expect(gate({ selected: dial('aa') })).toBeNull();
-    expect(gate({ selected: knobs(), devices: [knobs()] }))
-      .toBe('3-knob module lighting is not available yet. The encoder dial is the only module OpenStreamHub lights right now.');
+    expect(gate({ selected: knobs(), devices: [knobs()] })).toBeNull();
     expect(gate({ selected: keypad(), devices: [keypad()] }))
-      .toBe('15-key IPS display lighting is not available yet. The encoder dial is the only module OpenStreamHub lights right now.');
+      .toBe('15-key IPS display lighting is not available yet. Only the encoder dial, knob and fader modules are lit right now.');
   });
 });
 
@@ -201,5 +207,32 @@ describe('createApplyQueue', () => {
     await queue.fire();
     await new Promise(resolve => setTimeout(resolve, 30));
     expect(sent).toEqual([]);
+  });
+});
+
+describe('knob and fader lighting', () => {
+  it('knows which modules take which lighting', () => {
+    expect(lightingKind('m131e')).toBe('dial');
+    expect(lightingKind('m003k')).toBe('led');
+    expect(lightingKind('m005s')).toBe('led');
+    expect(lightingKind('m4315')).toBeNull();
+    expect([ledCount('m003k'), ledCount('m005s'), ledCount('m131e')]).toEqual([3, 5, 0]);
+  });
+  it('offers every effect number 0 to 9 once, Static first', () => {
+    expect(lightingEffects[0]).toEqual({ value: 1, label: 'Static' });
+    expect(lightingEffects.map(item => item.value).sort()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+  it('shapes the apply with raw channels, clamped effect and brightness', async () => {
+    const invoke = invokeRecording(2);
+    await expect(applyLedLighting(invoke, { targets: ['kn', 'fd'], led: 1, colour: '#123456', effect: 12, brightness: 140 })).resolves.toBe(2);
+    expect(invoke).toHaveBeenCalledWith('set_led_lighting', {
+      targets: ['kn', 'fd'], led: 1, colour: [0x12, 0x34, 0x56], mode: 9, brightness: 100,
+    });
+    await applyLedLighting(invoke, { targets: ['kn'], led: null, colour: '#ffffff', effect: -1, brightness: 5 });
+    expect(invoke).toHaveBeenLastCalledWith('set_led_lighting', { targets: ['kn'], led: null, colour: [255, 255, 255], mode: 0, brightness: 5 });
+  });
+  it('words the status for modules', () => {
+    expect(appliedLedStatus(1)).toBe('Applied to 1 module.');
+    expect(appliedLedStatus(3)).toBe('Applied to 3 modules.');
   });
 });

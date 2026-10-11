@@ -4,8 +4,9 @@ import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import {
-  addColourFavourite, appliedStatus, applyDelayMs, applyLighting, clampBacklight, createApplyQueue, defaultBacklight, defaultColour,
-  lightingBlockReason, lightingDeviceLabel, lightingScopeLabels, lightingTargets, readColourFavourites,
+  addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, clampBacklight, createApplyQueue,
+  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingDeviceLabel, lightingEffects, lightingKind,
+  lightingScopeLabels, lightingTargets, readColourFavourites,
   removeColourFavourite, resetLighting, resetStatus, writeColourFavourites,
 } from './lighting-model';
 import type { LightingScope } from './lighting-model';
@@ -16,8 +17,9 @@ import type { ServiceRunner } from './service-runner';
 const noopSubscribe = () => () => {};
 const idleState = () => idleFeedState;
 
-// The Lighting page (first phase): the encoder dial's backlight and one
-// solid colour, applied to the hardware as the controls move. Everything that
+// The Lighting page: the encoder dial's backlight and one solid colour, and
+// the knob and fader modules' colour, effect and brightness per LED, applied
+// to the hardware as the controls move. Everything that
 // decides — targets, gating, favourites, request shaping — lives in
 // lighting-model; this component only holds the controls and debounces.
 export function LightingPage({ desktop, invoke, feed, runner, storage = null }: {
@@ -29,6 +31,8 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [backlight, setBacklight] = useState(defaultBacklight);
   const [colour, setColour] = useState(defaultColour);
+  const [effect, setEffect] = useState(defaultEffect);
+  const [ledIndex, setLedIndex] = useState<number | null>(null);
   const [favourites, setFavourites] = useState<string[]>(() => readColourFavourites(storage));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -38,12 +42,16 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const selected = devices.find(device => device.path_hex === selectedPath)
     ?? devices.find(device => device.module === 'm131e') ?? devices[0];
   const targets = lightingTargets(devices, scope, selected?.path_hex ?? null);
+  const kind = selected ? lightingKind(selected.module) : 'dial';
+  const leds = selected ? ledCount(selected.module) : 0;
+  // A LED pick only means something for the module it was made on, and only per module.
+  const led = kind === 'led' && scope === 'module' && ledIndex !== null && ledIndex < leds ? ledIndex : null;
   const runOwned = targets.some(device => runner?.isActivePath(device.path_hex, device) ?? false);
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
   // The apply queue reads the latest values and gate from this ref, not from
   // a render closure; a trailing apply runs after the state that scheduled it.
-  const latest = useRef({ invoke, reason, targets, backlight, colour });
-  latest.current = { invoke, reason, targets, backlight, colour };
+  const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led });
+  latest.current = { invoke, reason, targets, backlight, colour, kind, effect, led };
   // One write at a time, and a change landing during a write re-applies once
   // with the latest values, so a dragged slider is never silently dropped —
   // even while a slow Whole kit write is running. Recreated per mount cycle:
@@ -55,10 +63,16 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
       if (current.reason !== null || !current.invoke || current.targets.length === 0) return;
       setError(null);
       try {
-        const written = await applyLighting(current.invoke, {
-          targets: current.targets.map(device => device.path_hex), backlight: current.backlight, colour: current.colour,
-        });
-        setStatus(appliedStatus(written));
+        const paths = current.targets.map(device => device.path_hex);
+        if (current.kind === 'led') {
+          const written = await applyLedLighting(current.invoke, {
+            targets: paths, led: current.led, colour: current.colour, effect: current.effect, brightness: current.backlight,
+          });
+          setStatus(appliedLedStatus(written));
+        } else {
+          const written = await applyLighting(current.invoke, { targets: paths, backlight: current.backlight, colour: current.colour });
+          setStatus(appliedStatus(written));
+        }
       } catch (reason) { setError(errorMessage(reason)); }
     }, applyDelayMs);
     applyRef.current = queue;
@@ -86,6 +100,16 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
     scheduleApply();
   }
 
+  function setEffectValue(value: number) {
+    setEffect(value);
+    scheduleApply();
+  }
+
+  function setLedValue(value: number | null) {
+    setLedIndex(value);
+    scheduleApply();
+  }
+
   function setColourValue(value: string) {
     setColour(value);
     scheduleApply();
@@ -106,7 +130,7 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
   const controlsLocked = reason !== null;
 
   return <section className="page-content lighting-page">
-    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s backlight and colour, applied to the hardware as you adjust them.</p></div></div>
+    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s backlight and colour, and the knob and fader modules’ colour, effect and brightness, applied to the hardware as you adjust them.</p></div></div>
     <div className="panel lighting-panel">
       <div className="theme-picker lighting-scope" role="group" aria-label="Lighting scope">
         {(Object.keys(lightingScopeLabels) as LightingScope[]).map(value => <button key={value} type="button"
@@ -122,8 +146,22 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
         </SelectField>
       </div>}
       <fieldset className="lighting-controls" disabled={controlsLocked}>
+        {kind === 'led' && <div className="lighting-row">
+          <label htmlFor="lighting-effect">Effect</label>
+          <SelectField id="lighting-effect" value={String(effect)} onChange={event => setEffectValue(Number(event.target.value))}>
+            {lightingEffects.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </SelectField>
+        </div>}
+        {kind === 'led' && scope === 'module' && <div className="lighting-row">
+          <label htmlFor="lighting-led">LED</label>
+          <SelectField id="lighting-led" value={led === null ? 'all' : String(led)}
+            onChange={event => setLedValue(event.target.value === 'all' ? null : Number(event.target.value))}>
+            <option value="all">All LEDs</option>
+            {Array.from({ length: leds }, (_, index) => <option key={index} value={index}>LED {index + 1}</option>)}
+          </SelectField>
+        </div>}
         <div className="lighting-row">
-          <label htmlFor="lighting-backlight">Backlight</label>
+          <label htmlFor="lighting-backlight">{kind === 'led' ? 'Brightness' : 'Backlight'}</label>
           <div className="lighting-backlight">
             <input id="lighting-backlight" type="range" min={0} max={100} step={1} value={backlight}
               onChange={event => setBacklightValue(Number(event.target.value))} />
@@ -148,18 +186,18 @@ export function LightingPage({ desktop, invoke, feed, runner, storage = null }: 
         </div>}
       </fieldset>
       <div className="lighting-actions">
-        <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
+        {kind !== 'led' && <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
           <RotateCcw size={16} />{busy ? 'Resetting…' : 'Reset'}
-        </button>
+        </button>}
       </div>
       {reason && <p className="fine-print lighting-reason" role="status">{reason}</p>}
-      {error && <div className="service-failure" role="alert"><strong>Could not reach the dial.</strong> {error}</div>}
+      {error && <div className="service-failure" role="alert"><strong>{kind === 'led' ? 'Could not reach the module.' : 'Could not reach the dial.'}</strong> {error}</div>}
       {!error && status && <p className="fine-print" role="status">{status}</p>}
-      <p className="fine-print">Changes apply the moment you adjust them. Reset hands the dial back to its built-in animation.</p>
+      <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Pick Off or another effect to change a module’s LEDs; there is no reset for them yet.' : 'Reset hands the dial back to its built-in animation.'}</p>
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob rings, base edge and fader lighting are not available yet.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module. The base edge strip is not available here yet.</p>
       </details>
     </div>
   </section>;

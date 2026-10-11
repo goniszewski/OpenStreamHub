@@ -40,7 +40,6 @@ describe('onboarding steps', () => {
   it('merges editing, testing and saving on the second step', () => {
     const markup = render(1);
     expect(markup).toContain('saved automatically a moment after you stop typing');
-    expect(markup).toContain('“Test with sample input”');
     expect(markup).toContain('Nothing is executed on your Mac.');
     expect(markup).toContain('offered back the next time you open it');
     expect(render(1, false)).toContain('Ctrl+Z');

@@ -23,7 +23,7 @@ import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStart
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
-import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, RunMode, ServiceModule } from './contracts';
+import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
@@ -48,7 +48,7 @@ import { isEditing } from './editing-hold';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { defaultDisplaySettings } from './display-settings';
-import { ProfileManagerSheet, SampleTestPanel } from './ProfileManager';
+import { ProfileManagerSheet } from './ProfileManager';
 import { useImportDrop } from './ProfileTransfer';
 import { hint, installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
@@ -196,7 +196,6 @@ export default function App() {
   const [page, setPage] = useState<Page>('workspace');
   const [appearance, setAppearance] = useState<Appearance>(getAppearance);
   const [systemDark, setSystemDark] = useState(() => matchMedia('(prefers-color-scheme: dark)').matches);
-  const [replayKind, setReplayKind] = useState<ReplayKind>('knobs');
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const editor = useDeviceEditor(session, state, setConfirmation);
   // The shortcuts read the editor of the current render (the closure below would go stale).
@@ -525,7 +524,6 @@ export default function App() {
           <div className="workspace-column">
             <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} onPickUnit={path => moduleSelection.select(path)} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
-            <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
           </div>
           <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
         </div>}

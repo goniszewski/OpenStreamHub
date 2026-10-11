@@ -1,9 +1,9 @@
-import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, History, LayoutTemplate, LoaderCircle, Play, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert, X } from 'lucide-react';
-import type { ProfileSummary, ReplayKind } from './contracts';
-import { LabelError, SelectField } from './controls';
+import { ArrowDownToLine, Check, CheckCircle2, ChevronRight, CircleHelp, FileText, History, LayoutTemplate, LoaderCircle, Plus, RotateCcw, ShieldAlert, Trash2, TriangleAlert, X } from 'lucide-react';
+import type { ProfileSummary } from './contracts';
+import { LabelError } from './controls';
 import { isUnsaved } from './profile-session';
 import type { ProfileSession, ReplaySession, SessionState } from './profile-session';
-import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, replayLabels, versionSummary, versionTimeLabel } from './ui-model';
+import { actionLabel, controlLabel, dialSwitchLabel, gestureLabels, versionSummary, versionTimeLabel } from './ui-model';
 import type { ConfirmRequest } from './useDeviceEditor';
 import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { FocusRulesPanel } from './FocusRulesPanel';
@@ -80,16 +80,6 @@ export function ProfileManagerSheet({ session, state, desktop, disabled, confirm
 
 // The built-in module samples that run through the open profile without hardware. Lives under the
 // module canvas in the workspace.
-export function SampleTestPanel({ session, state, disabled, replayKind, setReplayKind }: {
-  session: ProfileSession; state: SessionState; disabled: boolean; replayKind: ReplayKind; setReplayKind(kind: ReplayKind): void;
-}) {
-  const t = useT();
-  return <details className="panel replay-panel"><summary className="replay-summary"><span>{t('sample.title')}</span><span className="small-label">{t('sample.noHardware')}</span></summary>
-    <p className="fine-print">{t('sample.note')}</p>
-    <div className="replay-controls"><label htmlFor="replay-capture">{t('sample.input')}</label><SelectField id="replay-capture" value={replayKind} onChange={event => { session.clearReplay(); setReplayKind(event.target.value as ReplayKind); }}>{Object.entries(replayLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}</SelectField><button className="button primary" disabled={disabled || state.replay.status === 'running'} onClick={() => { void session.replayCapture(replayKind); }}><Play size={17} />{t(state.replay.status === 'running' ? 'sample.running' : 'sample.run')}</button></div>
-    <SessionView session={state.replay} t={t} />
-  </details>;
-}
 
 // The kept earlier versions of the open profile, listed when the panel is
 // opened. Hook-free and controlled by the session state, so tests can call

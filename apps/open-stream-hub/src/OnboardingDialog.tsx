@@ -15,7 +15,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
     title: 'Edit, test and save a profile',
     body: <>
       <p id="onboarding-body">Pick a module in the Modules drawer under the header and select a control on its image to edit what it does. Your changes stay unsaved until the profile is saved; the saved file is not touched before that.</p>
-      <ul><li>Changes are saved automatically a moment after you stop typing, and each saved version is kept so you can restore one from the profile manager. Undo with {mod}+Z, redo with Shift+{mod}+Z.</li><li>The inspector's Test button shows what one binding would do. “Test with sample input” under the module canvas runs a built-in sample through the profile.</li><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>If the app quits unexpectedly, your unsaved changes are offered back the next time you open it. That recovery copy stays on this Mac.</li></ul>
+      <ul><li>Changes are saved automatically a moment after you stop typing, and each saved version is kept so you can restore one from the profile manager. Undo with {mod}+Z, redo with Shift+{mod}+Z.</li><li>The inspector's Test button shows what one binding would do.</li><li>Tests and sample tests only show what would happen. Nothing is executed on your Mac.</li><li>If the app quits unexpectedly, your unsaved changes are offered back the next time you open it. That recovery copy stays on this Mac.</li></ul>
     </>,
   },
   connect: {

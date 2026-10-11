@@ -5,7 +5,7 @@ import { KeypadScreen } from './KeypadScreen';
 import { createKeypadFolder, keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
 import { BindingsDrawer } from './DevicesPage';
-import { ProfileManagerSheet, SampleTestPanel, VersionHistory } from './ProfileManager';
+import { ProfileManagerSheet, VersionHistory } from './ProfileManager';
 import { browserProfile } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -185,15 +185,5 @@ describe('bindings drawer', () => {
     const markup = renderToStaticMarkup(<BindingsDrawer open={false} onToggle={() => {}} profile={warned.getState().draft.profile} session={warned} editor={{} as DeviceEditor} disabled />);
     expect(markup).toContain('drawer-warnings');
     expect(markup).toContain('aria-label="All bindings in this profile"');
-  });
-});
-
-describe('sample test panel', () => {
-  it('keeps the sample-input test as a collapsed section with its summary visible', () => {
-    const session = new ProfileSession(() => new Promise(() => {}), browserProfile, false);
-    const markup = renderToStaticMarkup(<SampleTestPanel session={session} state={session.getState()} disabled replayKind="knobs" setReplayKind={() => {}} />);
-    expect(markup).toContain('<details class="panel replay-panel">');
-    expect(markup).toContain('<summary class="replay-summary"><span>Test with sample input</span><span class="small-label">No hardware required</span></summary>');
-    expect(markup).toContain('>Run test</button>');
   });
 });

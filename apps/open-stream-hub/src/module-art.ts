@@ -33,11 +33,17 @@ export function fadersSvg(values: readonly number[], idPrefix = '', maximum = 10
     const value = values[index++] ?? defaultFaderValues[0];
     return `class="cap" transform="translate(0 ${Math.round(faderCapCentre(value, maximum) * 10) / 10})`;
   });
+  // The strip lights only the part of the track below the cap, so it shrinks as the fader goes down.
   let glowIndex = 0;
-  const lit = glows ? moved.replace(/fill="#8a3cff" opacity="0"/g, () => {
-    const colour = glows[glowIndex++];
-    if (colour === 'unknown') return 'fill="#a4a4b6" opacity=".5"';
-    return colour ? `fill="${colour}" opacity="1"` : 'fill="#8a3cff" opacity="0"';
+  const lit = glows ? moved.replace(/<rect class="glow" x="-9" y="211" width="18" height="558" rx="9" fill="#8a3cff" opacity="0"/g, match => {
+    const at = glowIndex++;
+    const colour = glows[at];
+    if (!colour) return match;
+    // The cap's lower edge is about 98 art units under its centre.
+    const top = Math.round(faderCapCentre(values[at] ?? defaultFaderValues[0], maximum) + 98);
+    const height = Math.max(0, 769 - top);
+    const paint = colour === 'unknown' ? 'fill="#a4a4b6" opacity=".5"' : `fill="${colour}" opacity="1"`;
+    return `<rect class="glow" x="-9" y="${top}" width="18" height="${height}" rx="9" ${paint}`;
   }) : moved;
   if (!idPrefix) return lit;
   return lit.replace(/\bid="([^"]+)"/g, `id="${idPrefix}$1"`).replace(/url\(#([^)]+)\)/g, `url(#${idPrefix}$1)`);

@@ -278,9 +278,8 @@ describe('what modules report about themselves', () => {
     expect(lightMotion(store.getState().shown.fd, 5)).toBe('cycle');
     expect(store.getState().shown.kn).toBe(store.getState().records.kn);
   });
-  it('spreads the hue of a rainbow along the LEDs', () => {
+  it('keeps every LED of a rainbow in step', () => {
     const colours = litLedColours({ kind: 'led', leds: Array.from({ length: 5 }, () => ({ colour: '#ff0000', effect: 9, brightness: 100 })) }, 5);
-    expect(new Set(colours).size).toBe(5);
-    expect(colours[0]).toBe('#ff0000');
+    expect(new Set(colours).size).toBe(1);
   });
 });

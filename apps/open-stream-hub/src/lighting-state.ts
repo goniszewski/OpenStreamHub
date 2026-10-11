@@ -1,4 +1,3 @@
-import { hexToHsv, hsvToHex } from './colour-math';
 import { clampBacklight, defaultColour, ledCount, lightingKind, normaliseHexColour } from './lighting-model';
 import type { LightingDevice } from './lighting-model';
 import type { Invoke } from './profile-session';
@@ -116,20 +115,15 @@ export const unknownLed = 'unknown';
 
 // The colour each of the module's LEDs shows in the art (a knob's ring, a fader's glow strip): the LED's colour when
 // it is lit — an effect other than Off, at a brightness above zero — null when it is off, and `unknownLed` when
-// there is neither a stored look nor a report. The spreading effects (wave, water, rainbow) start each LED at its
-// own hue, so the art's hue shift reads as colours travelling along the module.
+// there is neither a stored look nor a report. The colour-shifting effects move every LED through the same hues together, as the
+// hardware does, so the art's hue shift keeps them in step.
 export function litLedColours(record: StoredLighting | undefined, count: number): (string | null)[] {
   return Array.from({ length: count }, (_, index) => {
     const led = record && record.kind === 'led' ? record.leds[index] : undefined;
     if (!led) return unknownLed;
     if (led.effect === 0 || led.brightness <= 0) return null;
-    return led.effect >= 7 ? turnHue(led.colour, (360 / count) * index) : led.colour;
+    return led.colour;
   });
-}
-
-function turnHue(colour: string, degrees: number): string {
-  const hsv = hexToHsv(colour);
-  return hsvToHex({ ...hsv, h: (hsv.h + degrees) % 360 });
 }
 
 // How a module's lit LEDs move, for the art: 'cycle' for the colour-shifting effects, 'blink' for the strobes,

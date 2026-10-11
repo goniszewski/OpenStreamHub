@@ -12,6 +12,9 @@ import type { RunMode } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
 import { endEditingHold, restoreNeedsConfirm } from './editing-hold';
+import { useT } from './i18n-react';
+import type { Translate } from './i18n-react';
+import type { MessageKey } from './locales/en';
 
 // The Resume actions button, focused after Review on a paused-run notice.
 export const serviceResumeId = 'service-resume';
@@ -87,6 +90,15 @@ export const runStatePill = (run: ServiceRun | undefined) => {
   const label = phaseLabel(run);
   return { label, className: `${phaseClass(run)}${label === 'Executing' ? ' executing' : ''}` };
 };
+// The state pill's label in the reader's language. The labels themselves stay English in the model (tests and the CSS
+// classes read them); an unknown one is shown as it is.
+const pillKeys: Record<string, MessageKey> = {
+  Paused: 'run.pill.paused', Waiting: 'run.pill.waiting', Reconnecting: 'run.pill.reconnecting', 'Needs confirmation': 'run.pill.needsConfirmation',
+  Failed: 'run.pill.failed', Stopped: 'run.pill.stopped', Stopping: 'run.pill.stopping', Executing: 'run.pill.executing', 'Dry run': 'run.pill.dryRun',
+  Starting: 'run.pill.starting', Running: 'run.pill.running',
+};
+export const pillText = (t: Translate, label: string) => label in pillKeys ? t(pillKeys[label]) : label;
+const badgeKeys: Record<string, MessageKey> = { 'Test (imported profile)': 'run.badge.testImported', 'Test (editing)': 'run.badge.testEditing', Live: 'run.badge.live', Test: 'run.badge.test' };
 const moduleName = (module: ServiceModule) => modules.find(entry => entry.id === module)?.shortName ?? module;
 const sessionDeviceName = (session: { module: ServiceModule; serialNumber: string | null }) => `${moduleName(session.module)}${session.serialNumber ? ` …${session.serialNumber.slice(-6)}` : ''}`;
 export const countdownSeconds = (nextAttemptAt: number | undefined, now: number) => nextAttemptAt === undefined ? null : Math.max(0, Math.ceil((nextAttemptAt - now) / 1000));
@@ -499,7 +511,7 @@ export const idleRunSession: RunSession = {
 };
 
 // Compact module names for the header Run button ("Run on 15-key"); the tooltip carries the full device name.
-const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315: '15-key', m003k: 'knobs', m005s: 'faders', m032le: 'rollers' };
+const runTargetKey: Record<ServiceModule, MessageKey> = { m131e: 'run.target.m131e', m4315: 'run.target.m4315', m003k: 'run.target.m003k', m005s: 'run.target.m005s', m032le: 'run.target.m032le' };
 
 // The one run-mode badge and its switch: the only place that shows and
 // changes what a press does. The switch saves the mode; with running sessions
@@ -507,18 +519,19 @@ const runTargetLabel: Record<ServiceModule, string> = { m131e: 'encoder', m4315:
 // editing hold is on, the badge reads "Test (editing)" and its tooltip says
 // why.
 export function ModeControl({ run }: { run: RunSession }) {
+  const t = useT();
   const { runMode, setRunMode, display, enabled, mac, dryRunOnly, editingHeld } = run;
   const live = runMode === 'live' && !editingHeld;
   const confirmed = display.settings.live_offered;
   const busy = display.busy || !display.loaded;
   // The switch itself shows the mode; the badge text stays for screen readers, because three holds
   // (imported profile, unconfirmed Live, editing) read as Test whatever the mode is.
-  return <div className="mode-control" role="group" aria-label="Run mode">
-    <span className={`mode-pill run-mode-pill sr-only ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{runModeBadge(runMode, dryRunOnly, confirmed, editingHeld)}</span>
-    <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy} aria-label="Test mode"
-      data-tip={editingHeld ? editingHoldNote : 'Test mode: presses are logged only, nothing happens on the Mac'} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /></button>
-    <button type="button" className="mode-choice live" aria-pressed={live} disabled={!enabled || busy || !mac} aria-label="Live mode"
-      data-tip={mac ? 'Live mode: presses run their actions on this Mac' : 'Actions run only on macOS'}
+  return <div className="mode-control" role="group" aria-label={t('run.mode')}>
+    <span className={`mode-pill run-mode-pill sr-only ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{(badge => badgeKeys[badge] ? t(badgeKeys[badge]) : badge)(runModeBadge(runMode, dryRunOnly, confirmed, editingHeld))}</span>
+    <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy} aria-label={t('run.testMode')}
+      data-tip={editingHeld ? t('run.editingNote') : t('run.testTip')} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /></button>
+    <button type="button" className="mode-choice live" aria-pressed={live} disabled={!enabled || busy || !mac} aria-label={t('run.liveMode')}
+      data-tip={mac ? t('run.liveTip') : t('run.macOnly')}
       onClick={() => setRunMode('live')}><Zap size={16} aria-hidden="true" /></button>
   </div>;
 }
@@ -528,24 +541,26 @@ export function ModeControl({ run }: { run: RunSession }) {
 // button names the module a start would use and turns danger when the mode would run with actions.
 // The confirmations live here too, so Run and the mode switch work from every page.
 export function RunHeaderControl({ run }: { run: RunSession }) {
+  const t = useT();
   const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device } = run;
   const pill = runStatePill(activeRun);
   const needsConfirmation = phase === 'needs_confirmation';
   const stopping = activeRun?.state === 'stopping';
   const starting = activeRun?.state === 'starting';
-  const target = device ? runTargetLabel[device.module] : null;
-  const runTitle = blocker ?? `${executeSelected ? 'Run with actions' : 'Dry run'}${device ? ` on ${deviceName(device)}` : ''}`;
-  const runLabel = executeSelected ? target ? `Run with actions on ${target}` : 'Run with actions' : target ? `Run on ${target}` : 'Run';
+  const target = device ? t(runTargetKey[device.module]) : null;
+  const what = executeSelected ? t('run.runWithActions') : t('run.dryRun');
+  const runTitle = blocker ?? (device ? t('run.on', { what, device: deviceName(device) }) : what);
+  const runLabel = executeSelected ? target ? t('run.runWithActionsOn', { target }) : t('run.runWithActions') : target ? t('run.runOn', { target }) : t('run.run');
   // An idle run says nothing visually (the Run button is the state); anything else gets a chip.
   const quiet = pill.label === 'Stopped';
-  return <div className="run-control" role="group" aria-label="Run control">
-    <span className={`mode-pill run-state-pill ${pill.className}${quiet ? ' sr-only' : ''}`} role="status">{pill.label}</span>
+  return <div className="run-control" role="group" aria-label={t('run.control')}>
+    <span className={`mode-pill run-state-pill ${pill.className}${quiet ? ' sr-only' : ''}`} role="status">{pillText(t, pill.label)}</span>
     <ModeControl run={run} />
     {needsConfirmation ? <>
-      <button type="button" className="button compact danger" data-tip="Resume actions on this Mac" onClick={resume}>Resume…</button>
-      <button type="button" className="button icon-run" aria-label="Stop" data-tip="Stop without resuming" disabled={stopping} onClick={stop}><Square size={16} aria-hidden="true" /></button>
+      <button type="button" className="button compact danger" data-tip={t('run.resumeTip')} onClick={resume}>{t('run.resume')}</button>
+      <button type="button" className="button icon-run" aria-label={t('run.stop')} data-tip={t('run.stopWithout')} disabled={stopping} onClick={stop}><Square size={16} aria-hidden="true" /></button>
     </> : active
-      ? <button type="button" className="button icon-run" aria-label={stopping ? 'Stopping' : 'Stop'} data-tip={stopping ? 'Stopping…' : 'Stop the run'} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}</button>
+      ? <button type="button" className="button icon-run" aria-label={stopping ? t('run.stoppingLabel') : t('run.stop')} data-tip={stopping ? t('run.stoppingTip') : t('run.stopTip')} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}</button>
       : <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}</button>}
     <ExecuteDialog run={run} />
   </div>;
@@ -561,36 +576,37 @@ export function RunBlockerNotice({ run }: { run: RunSession }) {
 
 // The Execute confirmation with the capability disclosure. Shown for a start and for a resume.
 export function ExecuteDialog({ run }: { run: RunSession }) {
+  const t = useT();
   const { copy, dialogOpen, answer, acknowledged, setAcknowledged } = run;
   return <ModalDialog open={dialogOpen} role="alertdialog" labelledBy="execute-title" describedBy={copy.warning ? 'execute-warning execute-message' : 'execute-message'} onCancel={() => answer(false)} className="execute-dialog">
     <h2 id="execute-title">{copy.title}</h2>
     {copy.warning && <p id="execute-warning" className="execute-warning"><TriangleAlert size={18} aria-hidden="true" /><span>{copy.warning}</span></p>}
     <p id="execute-message">{copy.message}</p>
-    <div className="execute-details" tabIndex={0} role="region" aria-label="What this profile will do">
+    <div className="execute-details" tabIndex={0} role="region" aria-label={t('execute.region')}>
       <ul className="execute-capabilities">{copy.lines.map(line => <li key={line}>{line}</li>)}</ul>
       {copy.snippets.length > 0 && <>
-        <h3>Text snippets</h3>
-        <p className="fine-print">Shown exactly as they will be pasted: ⏎ is a line break, ⇥ a tab and \u{'{…}'} an invisible character or a stack of combining marks.</p>
+        <h3>{t('execute.snippets')}</h3>
+        <p className="fine-print">{t('execute.snippetsNote')}</p>
         <ol className="execute-snippets">{copy.snippets.map((snippet, index) => <li key={index}>
           <code>{snippet.text}</code>
-          {snippet.more > 0 && <span className="fine-print"> … and {snippet.more} more characters not shown</span>}
-          {snippet.pressEnter && <strong className="execute-enter"> Then presses Return.</strong>}
+          {snippet.more > 0 && <span className="fine-print"> {t('execute.more', { count: snippet.more })}</span>}
+          {snippet.pressEnter && <strong className="execute-enter"> {t('execute.enter')}</strong>}
         </li>)}</ol>
       </>}
       {copy.sequences.length > 0 && <>
-        <h3>Multi-step sequences</h3>
-        {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={`Sequence ${index + 1}`}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
+        <h3>{t('execute.sequences')}</h3>
+        {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={t('execute.sequence', { n: index + 1 })}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
       </>}
       {copy.macros.length > 0 && <>
-        <h3>Recorded macros</h3>
-        {copy.macros.map((macro, index) => <div key={index} className="execute-macro" aria-label={`Macro ${index + 1}`}>
+        <h3>{t('execute.macros')}</h3>
+        {copy.macros.map((macro, index) => <div key={index} className="execute-macro" aria-label={t('execute.macro', { n: index + 1 })}>
           <p className="fine-print">{macro.label}</p>
           <ol className="execute-sequence">{macro.steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>
         </div>)}
       </>}
     </div>
     {copy.acknowledge && <label className="service-option execute-acknowledge"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />{copy.acknowledge}</label>}
-    <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>Cancel</button><button type="button" className="button danger" disabled={copy.acknowledge !== null && !acknowledged} onClick={() => answer(true)}>{copy.confirm}</button></div>
+    <div className="dialog-actions"><button type="button" className="button" autoFocus onClick={() => answer(false)}>{t('execute.cancel')}</button><button type="button" className="button danger" disabled={copy.acknowledge !== null && !acknowledged} onClick={() => answer(true)}>{copy.confirm}</button></div>
   </ModalDialog>;
 }
 
@@ -601,46 +617,50 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
   const log = useRef<HTMLOListElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [activeRun?.entries.length]);
   const pill = runStatePill(activeRun);
+  const t = useT();
+  const reason = (value: keyof typeof stoppedReason) => t(`service.reason.${value}` as MessageKey);
+  const by = (value: ServiceRun['profileSwitchedBy']) => t(value === 'key' ? 'service.by.key' : value === 'rule' ? 'service.by.rule' : 'service.by.other');
+  const seconds = countdownSeconds(session?.nextAttemptAt, now);
 
-  return <section className="service-panel" aria-label="Run profile">
-    <div className="section-heading"><h2>Run profile</h2><span className={`service-badge ${pill.className}`} role="status">{pill.label}</span></div>
-    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>Actions are running on this Mac</strong><span>Every action in this profile, including pasted text, web pages and multi-step sequences, really runs when you use the module. Stop to end it.</span></div></div>}
-    {activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>Dry run: actions are logged only. Nothing changes on this Mac.</span></div>}
-    {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>Paused while your Mac sleeps</strong><span>{activeRun.execute ? session.autoStart ? 'Actions resume automatically after wake.' : 'Actions stay off. You will be asked before they resume.' : 'It resumes automatically in dry-run mode.'}</span></div></div>}
-    {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Waiting for {sessionDeviceName(session)} to reconnect…</strong><span>{activeRun.execute ? session.autoStart ? 'Actions stay paused until the module reconnects, then resume automatically.' : 'Actions are paused and will not run until you confirm.' : 'The dry run continues when the module is back.'}</span></div></div>}
-    {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>Reconnecting to {sessionDeviceName(session)} (attempt {session.attempt}/{maxReconnectAttempts})</strong><span>{countdownSeconds(session.nextAttemptAt, now) === null ? 'Trying now.' : `Next attempt in ${countdownSeconds(session.nextAttemptAt, now)}s.`}{activeRun.execute ? session.autoStart ? ' Actions are paused until the session restarts; they resume automatically.' : ' Actions are paused until you confirm.' : ''}</span></div></div>}
-    {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>Actions are paused. Nothing will run until you resume.</strong><span>{session.reason ? `Paused because ${stoppedReason[session.reason]}. ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? `Resuming starts the saved profile "${activeRun.profileName}" ${switchedTo(activeRun.profileSwitchedBy)}.` : session.reason === 'profile_saved' ? `Resuming starts "${activeRun.profileName}" as you saved it.` : `Resuming restarts "${activeRun.profileName}" exactly as it was started.`}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>Resume actions…</button></div></div>}
-    {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>Session stopped{session.reason ? `: ${stoppedReason[session.reason]}` : ''}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
+  return <section className="service-panel" aria-label={t('service.heading')}>
+    <div className="section-heading"><h2>{t('service.heading')}</h2><span className={`service-badge ${pill.className}`} role="status">{pillText(t, pill.label)}</span></div>
+    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
+    {activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>{t('service.dryBanner')}</span></div>}
+    {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>{t('service.sleepTitle')}</strong><span>{activeRun.execute ? session.autoStart ? t('service.sleepAuto') : t('service.sleepAsk') : t('service.sleepDry')}</span></div></div>}
+    {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.waitTitle', { device: sessionDeviceName(session) })}</strong><span>{activeRun.execute ? session.autoStart ? t('service.waitAuto') : t('service.waitAsk') : t('service.waitDry')}</span></div></div>}
+    {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.reconTitle', { device: sessionDeviceName(session), attempt: session.attempt, max: maxReconnectAttempts })}</strong><span>{seconds === null ? t('service.tryingNow') : t('service.nextIn', { seconds })}{activeRun.execute ? session.autoStart ? t('service.reconAuto') : t('service.reconAsk') : ''}</span></div></div>}
+    {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>{t('service.pausedTitle')}</strong><span>{session.reason ? `${t('service.pausedBecause', { reason: reason(session.reason) })} ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? t('service.resumeSwitched', { name: activeRun.profileName, by: by(activeRun.profileSwitchedBy) }) : session.reason === 'profile_saved' ? t('service.resumeSaved', { name: activeRun.profileName }) : t('service.resumeSame', { name: activeRun.profileName })}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>{t('service.resumeButton')}</button></div></div>}
+    {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>{session.reason ? t('service.stoppedBecause', { reason: reason(session.reason) }) : t('service.stoppedTitle')}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
     {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
     {active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
     <div className="service-controls">
-      <label className="sr-only" htmlFor="service-device">Device to run on</label>
+      <label className="sr-only" htmlFor="service-device">{t('service.deviceLabel')}</label>
       <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => {
         const next = devices.find(item => item.path_hex === event.target.value);
         if (next) chooseDevice(next);
       }}>
-        {selection && !device && <option value={disconnectedServiceValue}>{deviceName(selection.device)} (disconnected)</option>}
-        {devices.length === 0 && !selection ? <option value="">No module connected</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
+        {selection && !device && <option value={disconnectedServiceValue}>{t('service.disconnected', { device: deviceName(selection.device) })}</option>}
+        {devices.length === 0 && !selection ? <option value="">{t('service.noModule')}</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
       </SelectField>
-      <p className="fine-print service-mode-note">What a press does — {executeSelected ? 'Live' : 'Test'} — is shown and switched by the badge in the header.</p>
+      <p className="fine-print service-mode-note">{t('service.modeNote', { mode: t(executeSelected ? 'run.badge.live' : 'run.badge.test') })}</p>
     </div>
-    <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />Request device software mode (encoder and 15-key modules)</label>
+    <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />{t('service.softwareMode')}</label>
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
-    {!mac && enabled && <p className="fine-print">Running actions is only available on macOS. Test mode logs what would happen.</p>}
-    {activeRun && <p className="fine-print">Profile "{activeRun.profileName}" ({activeRun.draftUnsaved ? 'unsaved changes' : 'the saved version'}) was used when this run started.</p>}
+    {!mac && enabled && <p className="fine-print">{t('service.macOnlyNote')}</p>}
+    {activeRun && <p className="fine-print">{t('service.usedProfile', { name: activeRun.profileName, version: t(activeRun.draftUnsaved ? 'service.unsavedVersion' : 'service.savedVersion') })}</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />{staleNote(activeRun, draftProfile)}</p>}
-    {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? 'The run failed.'}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
-    {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">The background helper exited with code {activeRun.exitCode}.</p>}
+    {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? t('service.failed')}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
+    {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">{t('service.helperExit', { code: activeRun.exitCode ?? 0 })}</p>}
     {service.error && <p className="service-failure" role="alert">{service.error}</p>}
     {activeRun && <>
-      <dl className="service-counters" aria-label="Run counters">
-        <div><dt>Events</dt><dd>{activeRun.counters.events}</dd></div><div><dt>Would run</dt><dd>{activeRun.counters.planned}</dd></div>
-        <div><dt>Executed</dt><dd>{activeRun.counters.executed}</dd></div><div><dt>Failed</dt><dd>{activeRun.counters.failed}</dd></div>
-        {activeRun.counters.timerAlertsFailed > 0 && <div><dt>Timer alerts failed</dt><dd>{activeRun.counters.timerAlertsFailed}</dd></div>}
+      <dl className="service-counters" aria-label={t('service.counters')}>
+        <div><dt>{t('service.events')}</dt><dd>{activeRun.counters.events}</dd></div><div><dt>{t('service.wouldRun')}</dt><dd>{activeRun.counters.planned}</dd></div>
+        <div><dt>{t('service.executed')}</dt><dd>{activeRun.counters.executed}</dd></div><div><dt>{t('service.failedCount')}</dt><dd>{activeRun.counters.failed}</dd></div>
+        {activeRun.counters.timerAlertsFailed > 0 && <div><dt>{t('service.timerAlerts')}</dt><dd>{activeRun.counters.timerAlertsFailed}</dd></div>}
       </dl>
-      <ol className="service-log" ref={log} role="log" aria-label="Run activity" tabIndex={0}>
-        {activeRun.entries.length === 0 ? <li className="info">Waiting for activity…</li> : activeRun.entries.slice(-100).map((entry, index) =>
+      <ol className="service-log" ref={log} role="log" aria-label={t('service.activity')} tabIndex={0}>
+        {activeRun.entries.length === 0 ? <li className="info">{t('service.waitingActivity')}</li> : activeRun.entries.slice(-100).map((entry, index) =>
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}
       </ol>
     </>}

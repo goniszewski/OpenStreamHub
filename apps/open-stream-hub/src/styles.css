@@ -759,3 +759,5 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 @keyframes fx-glow-pulse { 50% { opacity:.55; } }
 @keyframes fx-glow-blink { 50% { opacity:.3; } }
 @media (prefers-reduced-motion: reduce) { .base-layout-base,.base-layout-module .rig-stage { animation:none !important; } }
+
+.info-tip { position:fixed; z-index:200; transform:translate(-50%, calc(-100% - 6px)); padding:5px 8px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--text); font-size:11px; white-space:nowrap; pointer-events:none; box-shadow:0 6px 18px rgba(0,0,0,.35); }

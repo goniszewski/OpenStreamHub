@@ -106,12 +106,12 @@ describe('RigPreview canvas', () => {
     expect(selectedCells(second)).toBe(1);
     // Only the picked unit outlines the selected control.
     expect(second.match(/image-control[^"]* selected/g)).toHaveLength(1);
-    expect(second).toMatch(/class="base-layout-name" data-picked="false"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
-    expect(second).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252309999"/);
+    expect(second).toMatch(/class="base-layout-name" data-picked="false"[^>]*><span>3-knob module<\/span><span[^>]*aria-label="Serial number MHKB03AA221252301179"/);
+    expect(second).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*aria-label="Serial number MHKB03AA221252309999"/);
     expect(second).not.toContain('…1179');
     // A pick that is not a unit of the editor's kind falls back to the first unit of that kind.
-    expect(markupFor('gone')).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
-    expect(markupFor(null)).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
+    expect(markupFor('gone')).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*aria-label="Serial number MHKB03AA221252301179"/);
+    expect(markupFor(null)).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*aria-label="Serial number MHKB03AA221252301179"/);
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

@@ -1,6 +1,7 @@
 import { useState, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
-import type { CSSProperties, MouseEvent, PointerEvent } from 'react';
+import type { CSSProperties, FocusEvent, MouseEvent, PointerEvent } from 'react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
 import { baseGlow, emptyLightingState, kindLighting, lightMotion } from './lighting-state';
@@ -30,6 +31,19 @@ const deviceLocation = (device: LiveDevice) => {
   const overhang = overhangLabel(overhangOf(placement));
   return `${placementLabel(placement)}${overhang ? ` (${overhang})` : ''}`;
 };
+
+// An info mark with an instant tooltip. The tooltip is drawn on the page body, so no tile's clipping can cut it off.
+function InfoTip({ text }: { text: string }) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const show = (event: MouseEvent<HTMLElement> | FocusEvent<HTMLElement>) => {
+    const box = event.currentTarget.getBoundingClientRect();
+    setAt({ x: box.left + box.width / 2, y: box.top });
+  };
+  return <span className="base-layout-info" aria-label={text} role="img" onMouseEnter={show} onMouseLeave={() => setAt(null)}>
+    <Info size={11} aria-hidden="true" />
+    {at && typeof document !== 'undefined' && createPortal(<span className="info-tip" role="tooltip" style={{ left: at.x, top: at.y }}>{text}</span>, document.body)}
+  </span>;
+}
 
 // The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
 // hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
@@ -95,7 +109,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     // A plain label, not a control: the tile and its own controls pick the unit. The serial number sits behind an info mark.
     return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
       <span>{name}</span>
-      {device.serial_number && <span className="base-layout-info" title={`Serial number ${device.serial_number}`} aria-label={`Serial number ${device.serial_number}`} role="img"><Info size={11} aria-hidden="true" /></span>}
+      {device.serial_number && <InfoTip text={`Serial number ${device.serial_number}`} />}
       {device.module === 'm005s' && !feedState.live.m005s && <span className="base-layout-note"> · positions not read</span>}
     </div>;
   };

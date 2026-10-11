@@ -237,7 +237,7 @@ html,body { overflow:clip; }
 .keypad-breadcrumbs { margin-bottom: 12px; }
 .keypad-breadcrumbs button { color: var(--muted); background: transparent; border: 0; padding: 4px; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .keypad-breadcrumbs button[aria-current] { color: var(--text); }
-.keypad-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.keypad-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; max-width: 520px; }
 .keypad-tile { position: relative; min-width: 0; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 10px; background: var(--control); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 12px 4px 4px; }
 .keypad-tile.selected { border-color: var(--accent); background: var(--selected); }
 .keypad-tile.folder, .keypad-tile.back { color: var(--accent); }

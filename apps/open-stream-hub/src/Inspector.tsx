@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { translateIn, useT } from './i18n-react';
 import type { Translate } from './i18n-react';
-import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Play, Trash2 } from 'lucide-react';
+import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Copy, ClipboardPaste, Play, Trash2 } from 'lucide-react';
 import type { Gesture, Profile } from './contracts';
 import { DialDisplayPanel } from './DialDisplayPanel';
 import { ActionFields } from './ActionFields';
@@ -15,6 +15,7 @@ import { actionLabel, controlLabel, faderMaximum, gestureLabels, gestures } from
 import type { Page } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
 import { ControlWarnings } from './BindingsPanel';
+import { hint, isMacPlatform, withHint } from './shortcuts';
 import { editorGestures } from './binding-model';
 import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
 import { emptyFaderStats, faderStatsText, recordFader } from './fader-readout';
@@ -23,6 +24,7 @@ import type { FaderStats } from './fader-readout';
 
 export function Inspector({ editor, session, state, disabled, desktop = false, invoke, setPage, catalog: catalogStore, liveFader }: { editor: DeviceEditor; session: ProfileSession; state: SessionState; disabled: boolean; desktop?: boolean; invoke?: Invoke; setPage?: (page: Page) => void; catalog?: ObsCatalogStore; liveFader?: number }) {
   const t = useT();
+  const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
   const { selected, selection, isKeypad, isBack, keypadPath, currentKeypadPage, keypadSlot, folderPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   // While the profile uses dial functions, the encoder's inspector is the dial functions editor
@@ -46,6 +48,10 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? t('inspector.folder', { depth: keypadDepth(keypadPath) }) : t('inspector.rootPage')}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />{t('inspector.deleteFolder')}</button>}<div className="inspector-divider" /></>}
       <h2>{isBack ? t('inspector.back', { depth: keypadDepth(keypadPath) }) : controlLabel(selection.module, selection.control)}</h2>
+      {!isBack && !folderPage && <div className="inspector-clipboard">
+        <button type="button" className="button compact" disabled={disabled || (isKeypad ? !keypadSlot : !binding)} data-shortcut={hint('C', mac)} title={withHint(t('inspector.copyTip'), 'C', mac)} onClick={() => { editor.copySelection(); }}><Copy size={16} />{t('inspector.copy')}</button>
+        <button type="button" className="button compact" disabled={disabled || !editor.clipboard} data-shortcut={hint('V', mac)} title={withHint(t('inspector.pasteTip'), 'V', mac)} onClick={() => { editor.pasteSelection(); }}><ClipboardPaste size={16} />{t('inspector.paste')}</button>
+      </div>}
       <ControlWarnings profile={profile} editor={editor} selected={{ module: selection.module, control: selection.control, keypadPageId: isKeypad ? currentKeypadPage.id : undefined }}
         excludeKinds={dialFunctionsActive ? ['dial-flat-conflict'] : undefined} />
       {isKeypad && !isBack && <KeyArtworkEditor key={`${state.draftGeneration}:${currentKeypadPage.id}:${selection.control}`} session={session} path={keypadPath} control={selection.control} artwork={currentKeypadPage.artwork?.[String(selection.control)]} action={keypadSlot?.type === 'action' ? keypadSlot.bindings[0]?.action : null} initialText={keypadSlot?.type === 'action' ? keypadSlot.label : ''} disabled={disabled} invoke={invoke} />}

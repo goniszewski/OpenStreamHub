@@ -782,3 +782,4 @@ html[data-mod-held] [data-shortcut]::before { display:block; }
 .sidebar [data-shortcut]::before { top:3px; right:6px; padding:0 5px; font-size:9px; line-height:14px; }
 .sidebar.collapsed [data-shortcut]::before { top:3px; right:3px; transform:none; padding:0 4px; font-size:9px; line-height:14px; }
 html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
+.inspector-clipboard { display:flex; gap:8px; margin:8px 0; }

@@ -77,7 +77,7 @@ html,body { overflow:clip; }
 .sidebar nav { display:flex; flex-direction:column; gap:4px; }
 .sidebar nav button,.settings-link { border:0; background:transparent; border-radius:9px; display:flex; align-items:center; text-align:left; gap:12px; min-height:44px; width:100%; padding:8px 12px; font-size:14px; font-weight:500; color:var(--text); position:relative; }
 .sidebar nav button:hover,.settings-link:hover { background:var(--selected); }
-.sidebar nav button.active::before { content:''; position:absolute; left:0; top:11px; bottom:11px; width:3px; border-radius:0 3px 3px 0; background:var(--accent); }
+.sidebar nav button.active { box-shadow:inset 3px 0 0 var(--accent); }
 .sidebar svg { flex:none; }
 .sidebar button.active { background:var(--selected); color:var(--accent); font-weight:600; }
 .sidebar nav small { display:block; color:var(--muted); font-size:10px; margin-top:1px; font-weight:400; }

@@ -16,7 +16,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'profile'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'macro', 'profile'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });

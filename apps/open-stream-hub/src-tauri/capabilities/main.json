@@ -57,6 +57,11 @@
     "allow-prepare-artwork",
     "allow-prepare-key-artwork",
     "allow-save-artwork",
-    "allow-app-icon"
+    "allow-app-icon",
+    "allow-macro-record-start",
+    "allow-macro-record-state",
+    "allow-macro-record-stop",
+    "allow-input-permissions",
+    "allow-open-permission-settings"
   ]
 }

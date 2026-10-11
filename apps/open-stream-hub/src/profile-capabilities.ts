@@ -1,5 +1,5 @@
-import type { BindingAction, Profile, StepAction } from './contracts';
-import { keyLabel, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
+import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -49,6 +49,8 @@ export interface ProfileCapabilities {
   obsReloads: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
+  // The steps of every distinct macro, in profile order.
+  macros: MacroStep[][];
   risk: RiskLevel;
   // Why risk is 'high', in plain language. Empty otherwise.
   riskReasons: string[];
@@ -79,10 +81,15 @@ function profileActions(profile: Profile): unknown[] {
 
 // A shortcut that submits the current line in a terminal: Return (or Enter), and Control+M (CR), Control+J (LF) and
 // Control+O (accept-line-and-down-history), which pass the service validation as plain letters.
+export function submitChord(key: string, modifiers: unknown): boolean {
+  const lowered = String(key).toLowerCase();
+  const hasControl = isRecord(modifiers) || Array.isArray(modifiers) ? list(modifiers).includes('control') : false;
+  return lowered === 'return' || lowered === 'enter' || lowered === 'keypad_enter'
+    || (['m', 'j', 'o'].includes(lowered) && hasControl);
+}
 export function submitKey(step: unknown): boolean {
   if (!isRecord(step) || step.type !== 'shortcut') return false;
-  const key = String(step.key).toLowerCase();
-  return key === 'return' || key === 'enter' || (['m', 'j', 'o'].includes(key) && list(step.modifiers).includes('control'));
+  return submitChord(String(step.key), step.modifiers);
 }
 const isShortcut = (step: unknown) => isRecord(step) && step.type === 'shortcut';
 const isScreenshot = (step: unknown) => isRecord(step) && step.type === 'system' && step.command === 'screenshot';
@@ -122,6 +129,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const obsItems = new Set<string>();
   const obsReloads = new Set<string>();
   const sequences = new Map<string, StepAction[]>();
+  const macros = new Map<string, MacroStep[]>();
   const reasons = new Set<string>();
   let screenshot = false;
   let undoRedo = false;
@@ -196,6 +204,20 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         if (followedBy(steps, isScreenshot, isShortcut)) reasons.add('A multi-step sequence captures the screen and then sends keys, which can paste it into another app.');
         break;
       }
+      case 'macro': {
+        // The recorded keys play one after another into the focused app, so a
+        // macro that types bare characters can run commands in a terminal,
+        // like a pasted snippet with line breaks can. A modifier chord
+        // (Command+C) is a shortcut, not typing. The steps themselves are
+        // disclosed below; the keys are shown, never trusted silently.
+        const steps = list(action.steps).filter(isRecord) as unknown as MacroStep[];
+        macros.set(JSON.stringify(steps), steps);
+        const typesText = steps.some(step => list(step?.modifiers).length === 0 && /^[a-z0-9 ]$/i.test(String(step?.key)));
+        const submits = steps.some(step => submitChord(String(step?.key), step?.modifiers));
+        if (typesText) reasons.add('A macro types characters one by one; in a terminal they can run commands.');
+        if (submits) reasons.add('A macro presses a key that submits a line (Return, Keypad Enter, Control+M, Control+J or Control+O).');
+        break;
+      }
       default: {
         // Adding an Action variant without handling it here fails the build.
         const unchecked: never = kind;
@@ -206,7 +228,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   for (const action of profileActions(profile)) visit(action, 0);
 
   const snippets = [...texts.values()];
-  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || (counts.multi_action ?? 0) > 0;
+  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || macros.size > 0 || (counts.multi_action ?? 0) > 0;
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
@@ -220,6 +242,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     obsItems: [...obsItems],
     obsReloads: [...obsReloads],
     sequences: [...sequences.values()],
+    macros: [...macros.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
     riskReasons: [...reasons],
   };
@@ -299,6 +322,20 @@ export function stepLabel(step: StepAction): string {
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const sum = (counts: Partial<Record<ActionKind, number>>, kinds: ActionKind[]) => kinds.reduce((total, kind) => total + (counts[kind] ?? 0), 0);
 
+// One macro step in the Execute disclosure: the chord, its wait and its hold.
+export function macroStepLabel(step: MacroStep): string {
+  const chord = [...step.modifiers.map(modifier => modifierLabel(String(modifier))), keyLabel(String(step.key))].join(' + ');
+  const wait = step.delay_before_ms ? `, after ${step.delay_before_ms.toLocaleString('en-US')} ms` : '';
+  const hold = step.hold_ms ? `, held ${step.hold_ms.toLocaleString('en-US')} ms` : '';
+  return `Press ${chord}${wait}${hold}`;
+}
+
+// The whole of one macro in the Execute disclosure: its steps, with the total
+// time its waits and holds plan to spend.
+export function macroLabel(steps: MacroStep[]): string {
+  return `${steps.length} keystroke${steps.length === 1 ? '' : 's'} over ${macroDurationLabel(macroDurationMs(steps))}`;
+}
+
 // The capabilities in plain language, most consequential first.
 export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   const { counts } = capabilities;
@@ -309,6 +346,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.urlOrigins.length) lines.push(`Opens web pages: ${capabilities.urlOrigins.join(', ')}.`);
   if (capabilities.screenshot) lines.push('Captures the whole screen to the clipboard.');
   if (capabilities.multiAction) lines.push(`Runs ${plural(capabilities.sequences.length, 'multi-step sequence')} (up to ${multiActionSteps.maximum} steps each, shown below).`);
+  if (capabilities.macros.length) lines.push(`Replays ${plural(capabilities.macros.length, 'recorded macro')} of keystrokes with pauses between them (shown below).`);
   if (capabilities.apps.length) lines.push(`Opens applications: ${capabilities.apps.join(', ')}.`);
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);
   if (capabilities.submitKey && capabilities.texts.length) lines.push('Has a key that submits a line (Return, Control+M, Control+J or Control+O). Pressed after pasted text, it runs commands in a terminal.');

@@ -48,7 +48,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       </SelectField>
       <div className="inspector-divider" />
       <fieldset disabled={disabled || serialMissing || !editorGestures(profile, selection.module).length}>
-        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} />
+        <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} invoke={invoke} />
       </fieldset>
       <div className="inspector-divider" />
       <details className="advanced">

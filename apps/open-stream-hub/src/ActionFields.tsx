@@ -5,13 +5,16 @@ import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, O
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
+import { HotkeyField } from './key-capture';
+import { MacroFields } from './MacroFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
 import { obsConnectionLabels } from './obs-settings';
+import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultStepAction, defaultTimerSound, isFaderTemplate, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaLabels, multiActionSteps,
-  namedKeys, obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
+  defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
+  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -159,15 +162,17 @@ function ObsNameRow({ id, label, value, entry, what, issue, onChange, onOpenList
 // The action picker and the parameter fields of the chosen action. Top-level ids keep their
 // historical names; multi-action steps prefix theirs with `step-N-`. onSetUpObs opens
 // Settings, where the OBS connection is configured. catalog carries OBS's current
-// listings for the OBS name fields; without it they stay plain inputs.
-export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs, catalog }: {
-  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView;
+// listings for the OBS name fields; without it they stay plain inputs. invoke reaches
+// the macro editor's recorder and permission checks (desktop only).
+export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs, catalog, invoke }: {
+  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
 }) {
   return <>
     <label htmlFor="binding-action">Action</label>
     <ActionPickerField triggerId="binding-action" scope={fader ? 'binding-fader' : 'binding'} action={action}
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
+    {action?.type === 'macro' && <MacroFields steps={action.steps} disabled={false} onChange={steps => onChange({ type: 'macro', steps }, 'macro-steps')} invoke={invoke} />}
     {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
@@ -176,7 +181,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       <Hint hint="Switches the run to the next or previous saved profile, in name order.">It wraps around at the ends. Only runs started from this app switch; nothing happens with a single saved profile or outside this app. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</Hint></div>}
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
-    {action && !isFaderTemplate(action) && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
+    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} />}
   </>;
 }
@@ -251,16 +256,15 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog }:
     case 'set_volume': return <div className="action-fields"><label htmlFor={id('volume-percent')}>Output volume (%)</label><IntegerField key={inputKey} id={id('volume-percent')} value={action.percent} minimum={0} maximum={100} onCommit={percent => onChange({ type: 'set_volume', percent }, 'volume-percent')} /><p className="fine-print">Plans an absolute output volume from 0% to 100%.</p></div>;
     case 'volume': return <div className="action-fields"><label htmlFor={id('volume-delta')}>Volume change (points)</label><IntegerField key={inputKey} id={id('volume-delta')} value={action.delta} minimum={-100} maximum={100} nonZero onCommit={delta => onChange({ type: 'volume', delta }, 'volume-delta')} /><p className="fine-print">Signed percentage points, −100 to +100, excluding zero.</p></div>;
     case 'shortcut': {
-      const named = namedKeys.some(([name]) => name === action.key);
+      const media = isMediaKey(action.key) ? action.key : null;
       return <div className="action-fields">
-        <label htmlFor={id('shortcut-key-kind')}>Key</label>
-        <SelectField id={id('shortcut-key-kind')} value={named ? action.key : 'character'} onChange={event => onChange({ ...action, key: event.target.value === 'character' ? 'a' : event.target.value }, 'shortcut-key')}>
-          <option value="character">Letter, digit or space</option>
-          {namedKeys.map(([name, label]) => <option key={name} value={name}>{label}</option>)}
-        </SelectField>
-        {!named && <><label className="spaced-label" htmlFor={id('shortcut-key')}>Character</label><input id={id('shortcut-key')} value={action.key} maxLength={1} onChange={event => onChange({ ...action, key: event.target.value }, 'shortcut-key')} /></>}
-        <p className="fine-print">One ASCII letter, digit or space, or a named key such as an arrow, Return or F1–F20. Punctuation and key sequences are not supported.</p>
-        <fieldset className="modifiers"><legend>Modifiers</legend>{(['command', 'control', 'option', 'shift'] as Modifier[]).map(modifier => <label key={modifier}><input type="checkbox" checked={action.modifiers.includes(modifier)} onChange={event => onChange({ ...action, modifiers: event.target.checked ? [...action.modifiers, modifier] : action.modifiers.filter(item => item !== modifier) })} />{modifier[0].toUpperCase() + modifier.slice(1)}</label>)}</fieldset>
+        <label htmlFor={id('shortcut-key')}>Key combination</label>
+        <HotkeyField id={id('shortcut-key')} value={action.key} modifiers={action.modifiers}
+          onChange={({ key, modifiers }) => onChange({ ...action, key, modifiers }, 'shortcut-key')} />
+        <fieldset className="modifiers"><legend>Modifiers</legend>{(['command', 'control', 'option', 'shift'] as Modifier[]).map(modifier => <label key={modifier}><input type="checkbox" checked={action.modifiers.includes(modifier)} disabled={!!media} onChange={event => onChange({ ...action, modifiers: event.target.checked ? [...action.modifiers, modifier] : action.modifiers.filter(item => item !== modifier) }, 'shortcut-key')} />{modifier[0].toUpperCase() + modifier.slice(1)}</label>)}</fieldset>
+        <p className="fine-print">{media
+          ? `A media key (${mediaKeyLabels[media]}) reaches whichever app controls playback and cannot combine with modifiers. Needs macOS Accessibility permission.`
+          : 'Focus the field and press the keys, or choose every key from the list without pressing it: letters, digits, named keys, F1–F20, the keypad and the media keys. A chord holds at most 5 keys (4 modifiers plus the key). Media keys need macOS Accessibility permission.'}</p>
       </div>;
     }
     case 'launch_app': return <div className="action-fields"><label htmlFor={id('app-bundle-id')}>Application bundle ID</label><input id={id('app-bundle-id')} spellCheck={false} value={action.bundle_id} onChange={event => onChange({ type: 'launch_app', bundle_id: event.target.value }, 'bundle-id')} /><p className="fine-print">For example, com.apple.finder. The app checks the identifier; tests do not open it.</p></div>;

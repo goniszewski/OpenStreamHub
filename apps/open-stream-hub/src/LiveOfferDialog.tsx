@@ -20,6 +20,7 @@ export function liveOfferCopy(profile: Profile): ConfirmCopy {
     lines: capabilityLines(capabilities),
     snippets: [],
     sequences: [],
+    macros: [],
     warning: capabilities.risk === 'high' ? `High risk. ${capabilities.riskReasons.join(' ')} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote this profile or reviewed it and trust where it came from.` : null,
     acknowledge: capabilities.risk === 'high' ? 'I reviewed this profile and trust its source' : null,
   };

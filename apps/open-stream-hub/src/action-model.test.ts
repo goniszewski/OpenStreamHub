@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, maxObsSceneBytes, maxTimerLabelBytes,
+  defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
@@ -56,6 +57,65 @@ describe('timer contract', () => {
     expect(actionLabel({ type: 'timer', seconds: 90, label: 'Tea' })).toBe('Timer 1:30 “Tea”');
     expect(actionLabel(defaultTimerAction())).toBe('Timer 5:00');
     expect(timerAccepted(defaultTimerAction() as LooseTimer)).toBe(true);
+  });
+});
+
+describe('macro contract', () => {
+  type LooseMacro = { type?: string; steps?: unknown };
+  type LooseStep = { key?: unknown; modifiers?: unknown; delay_before_ms?: unknown; hold_ms?: unknown };
+  // Mirrors the Rust checks for one macro action, so the fixture's entries are explained on this side too.
+  const macroAccepted = (action: LooseMacro) => {
+    if (action.type !== 'macro' || !Array.isArray(action.steps)) return false;
+    const steps = action.steps as LooseStep[];
+    if (steps.length < macroLimits.steps.minimum || steps.length > macroLimits.steps.maximum) return false;
+    let total = 0;
+    for (const step of steps) {
+      if (Object.keys(step).some(key => !['key', 'modifiers', 'delay_before_ms', 'hold_ms'].includes(key))) return false;
+      const named = namedKeys.some(([name]) => name === step.key);
+      const literal = typeof step.key === 'string' && step.key.length === 1 && /[a-z0-9 ]/i.test(step.key);
+      if (!literal && !named) return false;
+      if (!Array.isArray(step.modifiers) || step.modifiers.length > 4 || new Set(step.modifiers.map(String)).size !== step.modifiers.length) return false;
+      if (!Number.isInteger(step.delay_before_ms) || (step.delay_before_ms as number) > macroLimits.delayMs.maximum) return false;
+      if (!Number.isInteger(step.hold_ms) || (step.hold_ms as number) > macroLimits.holdMs.maximum) return false;
+      total += (step.delay_before_ms as number) + (step.hold_ms as number);
+      if (total > macroLimits.durationMs) return false;
+    }
+    return true;
+  };
+
+  it('agrees with the shared fixture on valid and invalid macros', () => {
+    const valid = fixture.valid.filter(action => action.type === 'macro');
+    expect(valid.length).toBeGreaterThan(0);
+    for (const action of valid) expect(macroAccepted(action), JSON.stringify(action)).toBe(true);
+    const invalid = (fixture.invalid as LooseMacro[]).filter(action => action.type === 'macro');
+    expect(invalid.length).toBeGreaterThan(3);
+    for (const action of invalid) expect(macroAccepted(action), JSON.stringify(action)).toBe(false);
+    // Never a multi-action step, on either side.
+    expect(stepActionTypes.map(([type]) => type)).not.toContain('macro');
+  });
+
+  it('names every key the Mac can send, including the keypad and the media keys', () => {
+    expect(keyLabel('keypad_enter')).toBe('Keypad Enter');
+    expect(keyLabel('keypad_0')).toBe('Keypad 0');
+    expect(keyLabel('play_pause')).toBe('Play/Pause media key');
+    expect(keyLabel(' ')).toBe('Space');
+    expect(keyLabel('c')).toBe('C');
+  });
+
+  it('says why a macro is refused and what it plans to spend', () => {
+    expect(macroIssue([])).toContain('1 to 64 keystrokes');
+    expect(macroIssue([{ key: 'a', modifiers: [], delay_before_ms: 0, hold_ms: 0 }])).toBeNull();
+    expect(macroIssue([{ key: 'play_pause', modifiers: [], delay_before_ms: 0, hold_ms: 0 }])).toContain('media keys cannot be macro keys');
+    expect(macroIssue([{ key: '"', modifiers: [], delay_before_ms: 0, hold_ms: 0 }])).toContain('pick a key');
+    expect(macroIssue([{ key: 'a', modifiers: ['command', 'command'], delay_before_ms: 0, hold_ms: 0 }])).toContain('each modifier once');
+    expect(macroIssue([{ key: 'a', modifiers: [], delay_before_ms: 10001, hold_ms: 0 }])).toContain('wait must be 0 to 10,000 ms');
+    expect(macroIssue([{ key: 'a', modifiers: [], delay_before_ms: 0, hold_ms: 5001 }])).toContain('hold must be 0 to 5,000 ms');
+    const steps = Array.from({ length: 3 }, () => ({ key: 'a', modifiers: [], delay_before_ms: 10000, hold_ms: 5000 }));
+    expect(macroIssue(steps)).toContain('total at most 0:30');
+    expect(macroDurationLabel(80)).toBe('0:00.1');
+    expect(macroDurationLabel(30_000)).toBe('0:30');
+    expect(macroDurationMs(steps)).toBe(45_000);
+    expect(macroAccepted(defaultMacro())).toBe(true);
   });
 });
 

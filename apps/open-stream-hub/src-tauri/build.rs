@@ -52,6 +52,11 @@ fn main() {
             "prepare_key_artwork",
             "save_artwork",
             "app_icon",
+            "macro_record_start",
+            "macro_record_state",
+            "macro_record_stop",
+            "input_permissions",
+            "open_permission_settings",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

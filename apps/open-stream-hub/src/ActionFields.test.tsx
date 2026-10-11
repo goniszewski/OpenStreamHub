@@ -56,11 +56,20 @@ describe('action fields', () => {
     expect(ids(render({ type: 'shortcut', key: 'c', modifiers: ['command'] }))).toContain('shortcut-key');
   });
 
-  it('shows a named-key select without the character input', () => {
+  it('replaces the key selects with the capture field and the key chooser', () => {
     const markup = render({ type: 'shortcut', key: 'arrow_up', modifiers: [] });
-    expect(markup).toMatch(/<option value="arrow_up" selected="">Up Arrow<\/option>/);
-    expect(ids(markup)).not.toContain('shortcut-key');
+    // The capture input shows the chord and offers pressing keys; the chooser sits beside it.
+    expect(markup).toContain('>Up Arrow</span>');
+    expect(markup).toContain('placeholder="Press keys…"');
+    expect(markup).toMatch(/aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+    expect(markup).toContain('A chord holds at most 5 keys');
+    // The manual key select and character input are gone.
+    expect(ids(markup)).not.toContain('shortcut-key-kind');
     expectAccessible(markup);
+    const media = render({ type: 'shortcut', key: 'play_pause', modifiers: [] });
+    expect(media).toContain('Play/Pause media key');
+    expect(media).toContain('cannot combine with modifiers');
+    expectAccessible(media);
   });
 
   it('renders URL, text, media and system fields with inline problems', () => {
@@ -126,7 +135,7 @@ describe('action fields', () => {
     const steps: StepAction[] = [{ type: 'volume', delta: 5 }, { type: 'shortcut', key: 'tab', modifiers: ['command'] }];
     const two = render({ type: 'multi_action', actions: steps });
     expectAccessible(two);
-    expect(ids(two)).toEqual(expect.arrayContaining(['step-1-action', 'step-1-volume-delta', 'step-2-action', 'step-2-shortcut-key-kind']));
+    expect(ids(two)).toEqual(expect.arrayContaining(['step-1-action', 'step-1-volume-delta', 'step-2-action', 'step-2-shortcut-key']));
     // Each step shows its action on its own picker trigger.
     expect(two).toContain('>Change output volume</span>');
     expect(two).toContain('>Keyboard shortcut</span>');

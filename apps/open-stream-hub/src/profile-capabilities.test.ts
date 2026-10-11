@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import type { Action, Profile, StepAction } from './contracts';
+import type { Action, Modifier, Profile, StepAction } from './contracts';
 import { emptyKeypadPage } from './keypad-model';
 import { stableStringify } from './draft-model';
-import { capabilityLines, maxShownChars, profileCapabilities, snapshotProfile, snippetPreview, stepLabel, submitKey, tooLongReason, visibleText } from './profile-capabilities';
+import { capabilityLines, macroLabel, macroStepLabel, maxShownChars, profileCapabilities, snapshotProfile, snippetPreview, stepLabel, submitKey, tooLongReason, visibleText } from './profile-capabilities';
 
 const flat = (...actions: Action[]): Profile => ({ schema_version: 1, name: 'P', bindings: actions.map((action, control) => ({ module: 'm003k', control, gesture: 'pressed', action })) });
 
@@ -303,5 +303,45 @@ describe('obs_scene capabilities', () => {
     expect(line).toBe('Switches OBS scenes through the OBS WebSocket on this Mac (when OBS is turned on in Settings): “Starting soon”, “Be\\u{200B}right back”.');
     expect(stepLabel({ type: 'obs_scene', scene: 'Live' })).toBe('Switch OBS to the scene “Live”');
     expect(capabilityLines(profileCapabilities(flat({ type: 'toggle_mute' }))).some(text => text.includes('OBS'))).toBe(false);
+  });
+});
+
+describe('macro capabilities', () => {
+  const macro = (steps: { key: string; modifiers?: Modifier[]; delay_before_ms?: number; hold_ms?: number }[]): Action =>
+    ({ type: 'macro', steps: steps.map(step => ({ key: step.key, modifiers: step.modifiers ?? [], delay_before_ms: step.delay_before_ms ?? 0, hold_ms: step.hold_ms ?? 80 })) });
+
+  it('is elevated for a copy-paste style macro with no typing', () => {
+    const capabilities = profileCapabilities(flat(macro([{ key: 'c', modifiers: ['command'] }, { key: 'v', modifiers: ['command'], delay_before_ms: 150 }])));
+    expect(capabilities.risk).toBe('elevated');
+    expect(capabilities.riskReasons).toEqual([]);
+    expect(capabilities.counts.macro).toBe(1);
+    expect(capabilities.macros).toHaveLength(1);
+  });
+
+  it('is high when a macro types characters or submits a line', () => {
+    const typing = profileCapabilities(flat(macro([{ key: 'h' }, { key: 'i' }, { key: ' ', hold_ms: 40 }])));
+    expect(typing.risk).toBe('high');
+    expect(typing.riskReasons).toContain('A macro types characters one by one; in a terminal they can run commands.');
+    const submit = profileCapabilities(flat(macro([{ key: 'return', hold_ms: 40 }])));
+    expect(submit.risk).toBe('high');
+    expect(submit.riskReasons).toContain('A macro presses a key that submits a line (Return, Keypad Enter, Control+M, Control+J or Control+O).');
+    const controlM = profileCapabilities(flat(macro([{ key: 'm', modifiers: ['control'] }])));
+    expect(controlM.risk).toBe('high');
+    // Upper case is the same physical key and still types.
+    const upper = profileCapabilities(flat(macro([{ key: 'X' }])));
+    expect(upper.risk).toBe('high');
+  });
+
+  it('discloses every distinct macro with its steps and planned time', () => {
+    const profile = flat(macro([{ key: 'c', modifiers: ['command'], delay_before_ms: 0, hold_ms: 80 }]), macro([{ key: 'return', hold_ms: 40 }]));
+    const capabilities = profileCapabilities(profile);
+    expect(capabilities.macros).toHaveLength(2);
+    const lines = capabilityLines(capabilities);
+    expect(lines).toContain('Replays 2 recorded macros of keystrokes with pauses between them (shown below).');
+    // The steps are spelled out where the confirmation shows them.
+    const first = capabilities.macros[0];
+    expect(macroLabel(first)).toBe('1 keystroke over 0:00.1');
+    expect(macroStepLabel(first[0])).toBe('Press Command + C, held 80 ms');
+    expect(macroStepLabel(capabilities.macros[1][0])).toBe('Press Return, held 40 ms');
   });
 });

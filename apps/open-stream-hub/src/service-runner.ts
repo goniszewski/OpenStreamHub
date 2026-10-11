@@ -1,5 +1,5 @@
 import type { AppliedSavedProfile, HeldProfile, LiveDevice, Profile, ServiceModule, ServiceRecordPayload, ServiceState, ServiceStatusPayload, SessionAutoStart, SessionPhase, SessionReason, SessionStatePayload, StartServiceRequest, SwitchedProfile } from './contracts';
-import { timerDuration, urlOrigin } from './action-model';
+import { macroDurationLabel, timerDuration, urlOrigin } from './action-model';
 import { stableStringify } from './draft-model';
 import type { DeviceFeed, Listen, Scheduler } from './device-feed';
 import { sessionInput } from './live-state';
@@ -197,6 +197,13 @@ function describeAction(action: unknown): string {
     case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;
     case 'obs_profile': return `OBS profile (${nameChars(action, 'name')} characters)`;
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
+    // The recorded keys read like typed text, so like a text snippet only the
+    // shape is shown: the service logs {type, steps, ms} for the same reason.
+    case 'macro': {
+      const steps = Array.isArray(action.steps) ? action.steps : [];
+      const ms = steps.reduce((total, step) => total + (isObject(step) && typeof step.delay_before_ms === 'number' ? step.delay_before_ms : 0) + (isObject(step) && typeof step.hold_ms === 'number' ? step.hold_ms : 0), 0);
+      return `macro (${steps.length} keystrokes, ${macroDurationLabel(ms)} of waits and holds)`;
+    }
     default: return str(action.type) ?? 'action';
   }
 }

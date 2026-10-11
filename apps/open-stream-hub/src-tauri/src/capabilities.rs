@@ -92,6 +92,14 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
                 visit(step, set);
             }
         }
+        // A macro is never a multi_action step, so its typed steps are the
+        // whole identity, judged like a sequence's.
+        Action::Macro { steps } => {
+            match serde_json::to_string(steps) {
+                Ok(steps) => set.insert(format!("macro\0{steps}")),
+                Err(_) => set.insert("macro\0unnameable".into()),
+            };
+        }
         Action::Profile { direction } => {
             set.insert(format!("profile_key\0{direction:?}"));
         }

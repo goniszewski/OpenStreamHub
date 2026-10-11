@@ -1,15 +1,32 @@
-import type { Action, FaderTemplate, MediaCommand, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
-// service holds the authoritative allow-list and rejects anything else.
+// service holds the authoritative allow-list and rejects anything else; the
+// shared fixture test keeps both tables identical, in order.
 export const namedKeys: ReadonlyArray<readonly [string, string]> = [
   ['return', 'Return'], ['tab', 'Tab'], ['space', 'Space'], ['delete', 'Delete'], ['escape', 'Escape'],
   ['forward_delete', 'Forward Delete'], ['home', 'Home'], ['end', 'End'], ['page_up', 'Page Up'], ['page_down', 'Page Down'],
   ['arrow_left', 'Left Arrow'], ['arrow_right', 'Right Arrow'], ['arrow_down', 'Down Arrow'], ['arrow_up', 'Up Arrow'],
   ...Array.from({ length: 20 }, (_, index) => [`f${index + 1}`, `F${index + 1}`] as const),
+  // The Apple extended keypad (kVK_ANSI_Keypad*). F13–F20 are the last function keys macOS gives
+  // virtual key codes; F21–F24 have none, so no key can send them.
+  ...Array.from({ length: 10 }, (_, index) => [`keypad_${index}`, `Keypad ${index}`] as const),
+  ['keypad_decimal', 'Keypad .'], ['keypad_multiply', 'Keypad *'], ['keypad_plus', 'Keypad +'],
+  ['keypad_clear', 'Keypad Clear'], ['keypad_divide', 'Keypad /'], ['keypad_enter', 'Keypad Enter'],
+  ['keypad_minus', 'Keypad −'], ['keypad_equals', 'Keypad ='],
 ];
 
+// Mirrors MEDIA_KEYS in crates/cooltek-sdk-service/src/profile.rs: shortcut keys sent as hardware
+// media keys. They have no virtual key code, cannot combine with modifiers, and cannot be macro
+// keys (a recording cannot see them; the media action sends them on its own).
+export const mediaKeyLabels: Record<MediaKey, string> = {
+  play_pause: 'Play/Pause media key', next_track: 'Next-track media key', previous_track: 'Previous-track media key',
+};
+
+export const isMediaKey = (key: string): key is MediaKey => key in mediaKeyLabels;
+
 export function keyLabel(key: string) {
+  if (isMediaKey(key)) return mediaKeyLabels[key];
   return namedKeys.find(([name]) => name === key)?.[1] ?? (key === ' ' ? 'Space' : key.toUpperCase());
 }
 
@@ -43,6 +60,64 @@ export const maxTimerLabelBytes = 64;
 // TimerTable::MAX_RUNNING: more presses fail until one ends or is cancelled.
 export const maxRunningTimers = 8;
 export const maxObsSceneBytes = 128;
+// A recorded macro: 1–64 keystrokes, per-step wait and hold bounds, and a
+// total of waits and holds (Action::MAX_MACRO_* in profile.rs).
+export const macroLimits = {
+  steps: { minimum: 1, maximum: 64 },
+  delayMs: { minimum: 0, maximum: 10_000 },
+  holdMs: { minimum: 0, maximum: 5_000 },
+  durationMs: 30_000,
+} as const;
+
+// The whole wall-clock time a macro plans to spend: waits plus holds.
+export function macroDurationMs(steps: MacroStep[]): number {
+  return steps.reduce((total, step) => total + step.delay_before_ms + step.hold_ms, 0);
+}
+
+// M:SS (m:ss.decimal below ten seconds) from milliseconds, for the macro's
+// planned duration in the editor and the labels.
+export function macroDurationLabel(ms: number): string {
+  const total = Math.round(ms / 100) / 10;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  const text = Number.isInteger(seconds) ? String(seconds).padStart(2, '0') : seconds.toFixed(1).padStart(4, '0');
+  return `${minutes}:${text}`;
+}
+
+export function defaultMacro(): BindingAction {
+  return { type: 'macro', steps: [{ key: 'c', modifiers: ['command'], delay_before_ms: 0, hold_ms: 80 }] };
+}
+
+// Mirrors the macro rules of Action::validate (profile.rs): inline hints only,
+// the Rust validator is authoritative and runs on save.
+export function macroIssue(steps: MacroStep[]): string | null {
+  if (steps.length < macroLimits.steps.minimum || steps.length > macroLimits.steps.maximum) {
+    return `A macro holds ${macroLimits.steps.minimum} to ${macroLimits.steps.maximum} keystrokes.`;
+  }
+  let total = 0;
+  for (const [index, step] of steps.entries()) {
+    const named = namedKeys.some(([name]) => name === step.key);
+    const literal = step.key.length === 1 && /[a-z0-9 ]/i.test(step.key);
+    if (!literal && !named) {
+      return isMediaKey(step.key)
+        ? `Step ${index + 1}: media keys cannot be macro keys. Use the Media control action instead.`
+        : `Step ${index + 1}: pick a key the Mac can send.`;
+    }
+    if (step.modifiers.length > 4) return `Step ${index + 1}: at most four modifiers.`;
+    if (new Set(step.modifiers).size !== step.modifiers.length) return `Step ${index + 1}: each modifier once.`;
+    if (step.delay_before_ms < macroLimits.delayMs.minimum || step.delay_before_ms > macroLimits.delayMs.maximum) {
+      return `Step ${index + 1}: the wait must be 0 to ${macroLimits.delayMs.maximum.toLocaleString('en-US')} ms.`;
+    }
+    if (step.hold_ms < macroLimits.holdMs.minimum || step.hold_ms > macroLimits.holdMs.maximum) {
+      return `Step ${index + 1}: the hold must be 0 to ${macroLimits.holdMs.maximum.toLocaleString('en-US')} ms.`;
+    }
+    total += step.delay_before_ms + step.hold_ms;
+    if (total > macroLimits.durationMs) {
+      return `The waits and holds together must total at most ${macroDurationLabel(macroLimits.durationMs)} (m:ss). Trim the pauses.`;
+    }
+  }
+  return null;
+}
 
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
 export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };

@@ -3,6 +3,12 @@ export type Gesture = 'clockwise' | 'counter_clockwise' | 'pressed' | 'released'
 export type ReplayKind = 'knobs' | 'dial' | 'keys' | 'faders' | 'rollers';
 export interface PositionValue { type: 'position'; raw: number; maximum: number }
 export type Modifier = 'command' | 'control' | 'option' | 'shift';
+// A hardware media key a 'shortcut' can send (MEDIA_KEYS in profile.rs). No virtual key code, so it
+// never combines with modifiers and cannot be a macro key.
+export type MediaKey = 'play_pause' | 'next_track' | 'previous_track';
+// One recorded keystroke of a macro: the key held down and released, the modifiers held while it is
+// down, the wait before it and how long it stays down (MacroStep in profile.rs).
+export interface MacroStep { key: string; modifiers: Modifier[]; delay_before_ms: number; hold_ms: number }
 export type MediaCommand = 'play_pause' | 'next_track' | 'previous_track' | 'stop';
 export type SystemCommand = 'undo' | 'redo' | 'screenshot';
 // The neighbouring saved profile a 'profile' action asks for. The OpenStreamHub session manager resolves it.
@@ -47,6 +53,9 @@ export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
+  // A recorded sequence of keystrokes with waits and holds (bounded: 1–64 steps, ≤30 s in total).
+  // Never a multi_action step: a macro is already a timed sequence.
+  | { type: 'macro'; steps: MacroStep[] }
   // Never a multi_action step: the switch stops the running service, so later steps could not run.
   | { type: 'profile'; direction: ProfileDirection }
   // A countdown in the running service; pressing the same binding again cancels it. Never a multi_action step.
@@ -233,3 +242,17 @@ export interface ObsConnectionView { state: ObsConnectionState; message: string 
 export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }
 // One name list an OBS editor field can offer: loading, the names, or why OBS could not be asked.
 export type ObsNameList = { status: 'loading' } | { status: 'ready'; names: string[] } | { status: 'failed'; error: string }
+
+// Macro recording (src-tauri/src/recorder.rs) and its permission preflights. One recording runs at
+// a time, in the editor that started it. Recording needs Input Monitoring (listen_events); replaying
+// recorded keys needs Accessibility (post_events). Both are checked, never requested, here.
+export type PermissionTarget = 'post_events' | 'listen_events';
+export interface InputPermissions { post_events: boolean; listen_events: boolean }
+// One recorded keyboard event. key is the OpenStreamHub key name (or literal character) of the
+// virtual key code, or null for a key no macro can hold (the editor drops those and says so).
+export interface RecordedKey {
+  key: string | null; key_code: number; down: boolean;
+  shift: boolean; control: boolean; option: boolean; command: boolean;
+  at_ms: number;
+}
+export interface RecordingView { events: RecordedKey[]; elapsed_ms: number; capped: boolean }

@@ -126,6 +126,16 @@ describe('summarizeRecord', () => {
     expect(summarizeRecord({ type: 'report', status: 'decoded', error: null }, 1)).toBeNull();
     expect(summarizeRecord({ type: 'report', status: 'parse_error', error: 'short' }, 1)?.kind).toBe('error');
   });
+  it('logs a macro as its shape only, never the keys it would type', () => {
+    const macro = { type: 'macro', steps: [{ key: 'h', modifiers: [], delay_before_ms: 0, hold_ms: 40 }, { key: 'u', modifiers: [], delay_before_ms: 100, hold_ms: 0 }] };
+    const planned = summarizeRecord({ type: 'event', status: 'planned', event, action: macro }, 1, false)!.text;
+    expect(planned).toBe('Would run: macro (2 keystrokes, 0:00.1 of waits and holds) (m003k control 1 pressed)');
+    expect(planned).not.toMatch(/\bh\b|\bu\b|hold_ms/);
+    const live = summarizeRecord({ type: 'event', status: 'planned', event, action: macro }, 1)!.text;
+    expect(live).toBe('m003k control 1 pressed: planned macro (2 keystrokes, 0:00.1 of waits and holds)');
+    const executed = summarizeRecord({ type: 'action_executed', event, action: macro }, 1)!.text;
+    expect(executed).toContain('macro (2 keystrokes, 0:00.1 of waits and holds)');
+  });
   it('logs only the origin of an opened URL, never its path or query', () => {
     const url = 'https://Example.com:8443/reset?token=s3cr3t#frag';
     const planned = summarizeRecord({ type: 'event', status: 'planned', event, action: { type: 'open_url', url } }, 1)!.text;

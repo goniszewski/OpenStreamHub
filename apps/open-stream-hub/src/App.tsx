@@ -38,6 +38,7 @@ import { DiagnosticsPanel } from './DiagnosticsPanel';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
 import { readOpenPickers, subscribeOpenPickers } from './ActionPicker';
+import { readOpenKeyPickers, subscribeOpenKeyPickers } from './key-capture';
 import { isEditing } from './editing-hold';
 import { DraftPersister, DraftStore } from './draft-store';
 import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
@@ -63,6 +64,8 @@ declare global {
     __oshKeyMenuSeed?: (control: number, x: number, y: number) => void;
     __oshKeyCopySeed?: (control: number) => void;
     __oshKeySampleSeed?: () => void;
+    __oshMacroSeed?: () => void;
+    __oshShortcutSeed?: () => void;
     __oshLightingSeed?: (devices: LiveDevice[]) => void;
     __oshDialDisplaySeed?: (content: DialDisplayContent, image?: string) => void;
     __oshStarterSeed?: (entry: StarterEntry, module?: ServiceModule) => void;
@@ -256,7 +259,8 @@ export default function App() {
   // progress — unless a restored draft makes editing true, and the hold
   // simply continues.
   const pickerOpenCount = useSyncExternalStore(subscribeOpenPickers, readOpenPickers);
-  const editing = isEditing({ unsavedChanges: unsaved, pickerOpen: pickerOpenCount > 0, drawerOpen: bindingsOpen });
+  const keyPickerOpenCount = useSyncExternalStore(subscribeOpenKeyPickers, readOpenKeyPickers);
+  const editing = isEditing({ unsavedChanges: unsaved, pickerOpen: pickerOpenCount + keyPickerOpenCount > 0, drawerOpen: bindingsOpen });
   useEffect(() => {
     runSession.applyEditingHold(editing, testWhileEditing);
     // The hold reads the current stores through the hook's own closures; only
@@ -335,6 +339,18 @@ export default function App() {
         next = editKeypadBinding(next, ['root'], 3, 'pressed', '', { type: 'timer', seconds: 300, label: 'Break' }, 'Break');
         return editKeypadBinding(next, ['root'], 4, 'pressed', '', { type: 'media', command: 'play_pause' }, 'Play');
       });
+      // The macro editor and the shortcut capture field: the preview cannot
+      // record or capture, so captures seed a recorded macro and a media-key
+      // chord directly.
+      window.__oshMacroSeed = () => session.update(latest => editKeypadBinding(latest, ['root'], 5, 'pressed', '', {
+        type: 'macro',
+        steps: [
+          { key: 'c', modifiers: ['command'], delay_before_ms: 0, hold_ms: 80 },
+          { key: 'arrow_left', modifiers: ['option', 'shift'], delay_before_ms: 1200, hold_ms: 40 },
+          { key: 'keypad_enter', modifiers: [], delay_before_ms: 150, hold_ms: 60 },
+        ],
+      }, 'Macro'));
+      window.__oshShortcutSeed = () => session.update(latest => editKeypadBinding(latest, ['root'], 6, 'pressed', '', { type: 'shortcut', key: 'play_pause', modifiers: [] }, 'Media key'));
       // Lighting captures likewise: the preview has no device inventory, so captures seed one.
       window.__oshLightingSeed = devices => feed.seedPreview(devices);
       // The dial's Display tab: the mode picker works in the preview, but an

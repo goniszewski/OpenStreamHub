@@ -7,7 +7,7 @@ import type { DeviceFeed } from './device-feed';
 import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, staleNote, unknownSnapshot } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
-import { capabilityLines, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';import type { RiskLevel } from './profile-capabilities';
+import { capabilityLines, macroLabel, macroStepLabel, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';import type { RiskLevel } from './profile-capabilities';
 import type { RunMode } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
@@ -98,8 +98,9 @@ const switchedTo = (by: ServiceRun['profileSwitchedBy']) => by === 'key' ? 'a pr
 
 export interface ConfirmCopy {
   title: string; confirm: string; message: string; risk: RiskLevel;
-  // The capabilities in plain language, then every distinct text snippet and multi-step sequence.
-  lines: string[]; snippets: { text: string; more: number; pressEnter: boolean }[]; sequences: string[][];
+  // The capabilities in plain language, then every distinct text snippet,
+  // multi-step sequence and recorded macro.
+  lines: string[]; snippets: { text: string; more: number; pressEnter: boolean }[]; sequences: string[][]; macros: { label: string; steps: string[] }[];
   // Set for a high-risk profile: the warning shown above the details and the label of the box that must be ticked.
   warning: string | null; acknowledge: string | null;
 }
@@ -131,6 +132,7 @@ export function confirmCopy(kind: 'start' | 'resume', profileName: string, devic
     lines: capabilities ? capabilityLines(capabilities) : [key ? unknownKeyContents : unknownContents],
     snippets: capabilities?.texts.map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter })) ?? [],
     sequences: capabilities?.sequences.map(steps => steps.map(stepLabel)) ?? [],
+    macros: capabilities?.macros.map(steps => ({ label: macroLabel(steps), steps: steps.map(macroStepLabel) })) ?? [],
     warning: risk === 'high' ? `High risk. ${reasons.join(' ')} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote this profile or reviewed every snippet and step below and trust where it came from.` : null,
     acknowledge: risk === 'high' ? 'I reviewed this profile and trust its source' : null,
   };
@@ -154,11 +156,13 @@ export function resumeCopy(runs: Record<string, ServiceRun>, sessionId: string |
   const lines = capabilityLines(current).filter(line => !previousLines.has(line));
   const previousTexts = new Set(previous.texts.map(snippet => JSON.stringify([snippet.text, snippet.pressEnter])));
   const previousSequences = new Set(previous.sequences.map(steps => JSON.stringify(steps)));
+  const previousMacros = new Set(previous.macros.map(steps => JSON.stringify(steps)));
   return {
     ...copy,
     lines: lines.length ? lines : copy.lines,
     snippets: current.texts.filter(snippet => !previousTexts.has(JSON.stringify([snippet.text, snippet.pressEnter]))).map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter })),
     sequences: current.sequences.filter(steps => !previousSequences.has(JSON.stringify(steps))).map(steps => steps.map(stepLabel)),
+    macros: current.macros.filter(steps => !previousMacros.has(JSON.stringify(steps))).map(steps => ({ label: macroLabel(steps), steps: steps.map(macroStepLabel) })),
   };
 }
 
@@ -202,6 +206,7 @@ export function modeSwitchCopy(runs: ServiceRun[], bodies: (Profile | null)[]): 
     lines: lines.length ? lines : [unknownContents],
     snippets: checked.flatMap(caps => caps.texts.map(snippet => ({ ...snippetPreview(snippet.text), pressEnter: snippet.pressEnter }))),
     sequences: checked.flatMap(caps => caps.sequences.map(steps => steps.map(stepLabel))),
+    macros: checked.flatMap(caps => caps.macros.map(steps => ({ label: macroLabel(steps), steps: steps.map(macroStepLabel) }))),
     warning: risk === 'high' ? `High risk.${unknown > 0 ? ` ${unknown === 1 ? 'One profile' : `${unknown} profiles`} could not be checked here and may do anything.` : reasons.length ? ` ${reasons.join(' ')}` : ''} With one press of a control, a profile like this can type and run commands, or send what is on screen or in the clipboard to a web page. Only continue if you wrote these profiles or reviewed every snippet and step below and trust where they came from.` : null,
     acknowledge: risk === 'high' ? 'I reviewed these profiles and trust their sources' : null,
   };
@@ -575,6 +580,13 @@ export function ExecuteDialog({ run }: { run: RunSession }) {
       {copy.sequences.length > 0 && <>
         <h3>Multi-step sequences</h3>
         {copy.sequences.map((steps, index) => <ol key={index} className="execute-sequence" aria-label={`Sequence ${index + 1}`}>{steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>)}
+      </>}
+      {copy.macros.length > 0 && <>
+        <h3>Recorded macros</h3>
+        {copy.macros.map((macro, index) => <div key={index} className="execute-macro" aria-label={`Macro ${index + 1}`}>
+          <p className="fine-print">{macro.label}</p>
+          <ol className="execute-sequence">{macro.steps.map((step, stepIndex) => <li key={stepIndex}>{step}</li>)}</ol>
+        </div>)}
       </>}
     </div>
     {copy.acknowledge && <label className="service-option execute-acknowledge"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} />{copy.acknowledge}</label>}

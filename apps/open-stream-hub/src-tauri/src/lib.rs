@@ -16,6 +16,7 @@ mod obs;
 mod power;
 #[cfg(target_os = "macos")]
 mod quit;
+mod recorder;
 mod replay;
 mod service;
 mod session;
@@ -1158,6 +1159,35 @@ async fn prepare_artwork(
         .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
 
+// Macro recording and its permission preflights (`recorder`). The recorder is
+// one global listener for the one editor that can record, so the commands need
+// no state; start and stop wait on the event tap, so they run off the main
+// thread.
+#[tauri::command(async)]
+fn macro_record_start() -> Result<(), String> {
+    recorder::start()
+}
+
+#[tauri::command]
+fn macro_record_state() -> Result<recorder::RecordingView, String> {
+    recorder::view()
+}
+
+#[tauri::command(async)]
+fn macro_record_stop() -> Result<recorder::RecordingView, String> {
+    recorder::stop()
+}
+
+#[tauri::command(async)]
+fn input_permissions() -> Result<recorder::InputPermissions, String> {
+    recorder::permissions()
+}
+
+#[tauri::command]
+fn open_permission_settings(target: recorder::PermissionTarget) -> Result<(), String> {
+    recorder::open_permission_settings(target)
+}
+
 #[tauri::command]
 async fn prepare_key_artwork(
     state: State<'_, AppState>,
@@ -1629,7 +1659,12 @@ pub fn run() {
             prepare_artwork,
             prepare_key_artwork,
             save_artwork,
-            app_icon
+            app_icon,
+            macro_record_start,
+            macro_record_state,
+            macro_record_stop,
+            input_permissions,
+            open_permission_settings
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

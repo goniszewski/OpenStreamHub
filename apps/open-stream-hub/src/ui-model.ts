@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -137,6 +137,9 @@ export function actionLabel(action: Action | BindingAction | null): string {
       return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
     }
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
+    // The keys themselves are not listed here (they read like typed text); the inspector's macro
+    // editor shows them, and the Execute confirmation discloses them.
+    case 'macro': return `Macro: ${action.steps.length} keystroke${action.steps.length === 1 ? '' : 's'}, ${macroDurationLabel(macroDurationMs(action.steps))} planned`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;

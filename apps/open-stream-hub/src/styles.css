@@ -595,6 +595,11 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .about-facts { display:grid; grid-template-columns:max-content 1fr; gap:9px 18px; margin:0; font-size:13px; }
 .about-facts dt { color:var(--muted); }
 .about-facts dd { margin:0; overflow-wrap:anywhere; }
+.about-panel { padding:4px 22px; }
+.about-section { padding:18px 0; border-top:1px solid var(--line); }
+.about-section:first-child { border-top:0; }
+.about-section h2 { margin:0 0 10px; }
+.about-section p { margin:0; }
 
 .display-settings-subtitle { margin:17px 0 10px; }
 

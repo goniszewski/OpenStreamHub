@@ -1200,6 +1200,7 @@ mod tests {
         profile.dial_display = Some(cooltek_sdk_service::DialDisplay {
             content,
             image: None,
+            source: None,
         });
         profile
     }

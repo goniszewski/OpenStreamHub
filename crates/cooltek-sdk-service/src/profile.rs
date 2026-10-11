@@ -1628,6 +1628,73 @@ mod tests {
     }
 
     #[test]
+    fn a_dial_source_picture_is_kept_only_with_the_image_it_made() {
+        use base64::Engine as _;
+        let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+        let png = encode(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+        let image = dial_jpeg();
+        let profile = |content: &str, image: Option<&str>, source: &str| {
+            let image = image.map_or(String::new(), |image| format!(r#","image":"{image}""#));
+            format!(
+                r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"{content}"{image},"source":{source}}}}}"#
+            )
+        };
+        let source = |image: &str, turns: u8| {
+            format!(
+                r#"{{"image":"{image}","fit":"contain","quarter_turns":{turns},"background":[1,2,3]}}"#
+            )
+        };
+        let parsed =
+            Profile::from_json(profile("image", Some(&image), &source(&png, 3)).as_bytes())
+                .unwrap();
+        let kept = parsed.dial_display.clone().unwrap().source.unwrap();
+        assert_eq!(kept.fit, crate::DialFit::Contain);
+        assert_eq!(kept.background, [1, 2, 3]);
+        // It survives a round trip.
+        let again = Profile::from_json(&serde_json::to_vec(&parsed).unwrap()).unwrap();
+        assert_eq!(again.dial_display, parsed.dial_display);
+        for (label, json) in [
+            (
+                "turns above 3",
+                profile("image", Some(&image), &source(&png, 4)),
+            ),
+            (
+                "not a picture",
+                profile("image", Some(&image), &source(&encode(b"plain text"), 0)),
+            ),
+            (
+                "not base64",
+                profile("image", Some(&image), &source("not base64!", 0)),
+            ),
+            ("other content", profile("clock", None, &source(&png, 0))),
+            (
+                "without the image",
+                profile("image", None, &source(&png, 0)),
+            ),
+            (
+                "unknown fit",
+                profile(
+                    "image",
+                    Some(&image),
+                    &format!(
+                        r#"{{"image":"{png}","fit":"zoom","quarter_turns":0,"background":[0,0,0]}}"#
+                    ),
+                ),
+            ),
+        ] {
+            assert!(
+                Profile::from_json(json.as_bytes()).is_err(),
+                "accepted {label}"
+            );
+        }
+        let oversized = encode(&vec![0xff; crate::DialSource::MAX_IMAGE_BYTES + 3]);
+        let error =
+            Profile::from_json(profile("image", Some(&image), &source(&oversized, 0)).as_bytes())
+                .unwrap_err();
+        assert!(error.contains("256 KiB"), "{error}");
+    }
+
+    #[test]
     fn profile_bounds_and_versions_are_checked() {
         let mut profile = sample();
         profile.schema_version = 2;

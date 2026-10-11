@@ -94,7 +94,9 @@ export interface DialFunction { name: string; bindings: DialBinding[] }
 // masterhub-service --dial-content spellings; 'image' shows the picture in DialDisplay.image. Absent means the
 // default: the active function's name, or the analog clock for a profile with nothing on the dial.
 export type DialDisplayContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu' | 'image';
-export interface DialDisplay { content: DialDisplayContent; image?: string }
+// The picture the custom face was made from and how it was fitted, so the look can be changed after a reopen.
+export interface DialSource { image: string; fit: 'contain' | 'cover' | 'stretch'; quarter_turns: number; background: [number, number, number] }
+export interface DialDisplay { content: DialDisplayContent; image?: string; source?: DialSource }
 // dial_functions and dial_display are edited in the dial editor of the inspector or imported; edit paths that do not
 // touch them must carry them through untouched.
 export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay }

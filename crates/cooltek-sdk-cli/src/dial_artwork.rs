@@ -1080,6 +1080,7 @@ mod tests {
             dial_display: Some(cooltek_sdk_service::DialDisplay {
                 content: cooltek_sdk_service::DialDisplayContent::Image,
                 image: None,
+                source: None,
             }),
             ..profile(serde_json::Value::Null)
         };

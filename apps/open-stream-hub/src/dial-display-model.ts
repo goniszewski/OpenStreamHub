@@ -1,4 +1,4 @@
-import type { DialDisplay, DialDisplayContent, Profile } from './contracts';
+import type { DialDisplay, DialDisplayContent, DialSource, Profile } from './contracts';
 
 // What the M131E dial screen shows while this profile runs and the app drives
 // the display (Profile.dial_display). The Rust authority is the DialDisplay
@@ -45,6 +45,6 @@ export function setDialDisplayContent(profile: Profile, content: DialDisplayCont
 }
 
 // `profile` with the custom dial picture set (content already image).
-export function setDialImage(profile: Profile, image: string): Profile {
-  return { ...profile, dial_display: { content: 'image', image } };
+export function setDialImage(profile: Profile, image: string, source?: DialSource): Profile {
+  return { ...profile, dial_display: source ? { content: 'image', image, source } : { content: 'image', image } };
 }

@@ -58,6 +58,42 @@ pub struct DialDisplay {
     /// Refused with any other content.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// The picture the custom face was prepared from and how it was fitted,
+    /// kept so the fit, rotation and background can be changed after a
+    /// reopen. Refused unless an image is present; the dial never reads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<DialSource>,
+}
+
+/// How a source picture is fitted onto the round screen.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DialFit {
+    /// Keep the whole picture and fill the margins with the background.
+    Contain,
+    /// Crop a centred square so the picture fills the screen.
+    Cover,
+    /// Scale width and height independently.
+    Stretch,
+}
+
+/// The picture a custom dial face was made from, with the look it was given.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialSource {
+    /// A PNG or JPEG, base64-encoded, at most [`DialSource::MAX_IMAGE_BYTES`] decoded.
+    pub image: String,
+    /// How the picture was fitted.
+    pub fit: DialFit,
+    /// Clockwise quarter turns, 0 through 3.
+    pub quarter_turns: u8,
+    /// Margin colour as red, green and blue.
+    pub background: [u8; 3],
+}
+
+impl DialSource {
+    /// Maximum decoded size of a kept source picture.
+    pub const MAX_IMAGE_BYTES: usize = 256 * 1024;
 }
 
 impl DialDisplay {
@@ -101,6 +137,12 @@ impl DialDisplayContent {
 
 /// Checks the profile's optional dial display setting.
 pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
+    if let Some(source) = &display.source {
+        if display.content != DialDisplayContent::Image || display.image.is_none() {
+            return Err("dial_display: a source picture belongs to image content".into());
+        }
+        validate_source(source)?;
+    }
     match (display.content, display.image.as_deref()) {
         (DialDisplayContent::Image, Some(image)) => validate_display_image(image),
         (DialDisplayContent::Image, None) => {
@@ -109,6 +151,34 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
         (_, Some(_)) => Err("dial_display: only image content carries an image".into()),
         (_, None) => Ok(()),
     }
+}
+
+fn validate_source(source: &DialSource) -> Result<(), String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    if source.quarter_turns > 3 {
+        return Err("dial_display: source quarter_turns must be 0 through 3".into());
+    }
+    if source.image.len() > DialSource::MAX_IMAGE_BYTES.div_ceil(3) * 4 {
+        return Err(format!(
+            "dial_display: the source picture exceeds {} KiB",
+            DialSource::MAX_IMAGE_BYTES / 1024
+        ));
+    }
+    let bytes = STANDARD
+        .decode(&source.image)
+        .map_err(|_| "dial_display: the source picture is not valid base64".to_string())?;
+    if bytes.len() > DialSource::MAX_IMAGE_BYTES {
+        return Err(format!(
+            "dial_display: the source picture exceeds {} KiB",
+            DialSource::MAX_IMAGE_BYTES / 1024
+        ));
+    }
+    let png = bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+    let jpeg = bytes.starts_with(&[0xff, 0xd8, 0xff]);
+    if !png && !jpeg {
+        return Err("dial_display: the source picture must be a PNG or JPEG".into());
+    }
+    Ok(())
 }
 
 /// Longest base64 text that can decode to [`DialDisplay::MAX_IMAGE_BYTES`]

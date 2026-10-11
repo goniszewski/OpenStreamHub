@@ -1,9 +1,10 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RotateCcw, RotateCw, Trash2 } from 'lucide-react';
 import type { DialDisplayContent, Profile } from './contracts';
 import { fitInfo, formatHexColour, parseHexColour, prepareArtwork, readSourceFile, rotationLabel } from './artwork-model';
 import type { ArtworkFit, PrepareResult } from './artwork-model';
 import { ColourSwatchPicker } from './ColourPicker';
+import { sourceToKeep } from './dial-source';
 import { DialFace } from './DisplayContent';
 import { dialDisplayOptions, maxDialImageBytes, setDialDisplayContent, setDialImage } from './dial-display-model';
 import type { Invoke, ProfileSession } from './profile-session';
@@ -26,10 +27,16 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   const requestId = useRef(0);
   // The picture chosen in this session and how it is fitted. The profile keeps only the prepared JPEG, so
   // fit, rotation and background can be changed only while the source is still at hand.
-  const [source, setSource] = useState<string | null>(null);
-  const [fit, setFit] = useState<ArtworkFit>('cover');
-  const [turns, setTurns] = useState(0);
-  const [background, setBackground] = useState('#000000');
+  const stored = profile.dial_display?.source;
+  const [source, setSource] = useState<string | null>(stored?.image ?? null);
+  const [fit, setFit] = useState<ArtworkFit>(stored?.fit ?? 'cover');
+  const [turns, setTurns] = useState(stored?.quarter_turns ?? 0);
+  const [background, setBackground] = useState(stored ? formatHexColour(stored.background) : '#000000');
+  // The kept source is the truth after a reopen, an undo or a profile switch.
+  useEffect(() => {
+    if (!stored) return;
+    setSource(stored.image); setFit(stored.fit); setTurns(stored.quarter_turns); setBackground(formatHexColour(stored.background));
+  }, [stored]);
   const content = profile.dial_display?.content ?? 'function';
   const image = profile.dial_display?.image;
 
@@ -39,7 +46,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
 
   // Prepares the source as the exact 240×240 JPEG the dial receives, lowering the quality until it fits the
   // profile budget, then stores it in the profile. Never applies across a draft change (undo, switch or save).
-  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }) => {
+  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }, keep: string | null) => {
     if (!invoke) return;
     const rgb = parseHexColour(look.background);
     if (!rgb) return;
@@ -61,7 +68,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         setError('The profile changed while preparing the image. Choose the file again.');
         return;
       }
-      session.edit(setDialImage(current.draft.profile, prepared.jpeg_base64));
+      session.edit(setDialImage(current.draft.profile, prepared.jpeg_base64, keep ? { image: keep, fit: look.fit, quarter_turns: look.turns, background: rgb } : undefined));
     } catch (reason) {
       if (id === requestId.current) setError(errorMessage(reason));
     } finally {
@@ -74,14 +81,15 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     const read = await readSourceFile(file);
     if (!read.ok) { setBusy(false); setError(read.error); return; }
     setSource(read.base64);
-    await prepare(read.base64, { fit, turns, background });
+    const kept = await sourceToKeep(read.base64, read.mime, background);
+    await prepare(read.base64, { fit, turns, background }, kept?.image ?? null);
   };
 
   // A change of look re-prepares the chosen picture.
   const adjust = (next: Partial<{ fit: ArtworkFit; turns: number; background: string }>) => {
     const look = { fit, turns, background, ...next };
     setFit(look.fit); setTurns(look.turns); setBackground(look.background);
-    if (source) void prepare(source, look);
+    if (source) void prepare(source, look, stored ? source : null);
   };
 
   return <section className="dial-display" aria-labelledby={dialDisplayHeadingId}>
@@ -118,6 +126,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         </div>
         <p className="fine-print">Fills the margins when the picture does not cover the whole screen.</p>
       </div> : image && <p className="fine-print">To change the fit, rotation or background, choose the picture again.</p>}
+      {source && !stored && image && <p className="fine-print">This picture is too large to keep in the profile, so these controls work only until the app closes.</p>}
       {busy && <p className="fine-print" role="status"><LoaderCircle size={15} className="spinning" /> Preparing the image…</p>}
       {!invoke && <p className="fine-print">Preparing the dial picture needs the desktop app.</p>}
     </>}

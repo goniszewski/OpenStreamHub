@@ -41,6 +41,15 @@ describe('DialDisplayPanel markup', () => {
     expect(html).toContain('choose the picture again');
     expect(html).not.toContain('id="dial-image-fit"');
   });
+  it('offers fit, rotation and background again when the profile kept the source picture', () => {
+    const kept = setDialImage(flat, 'AAAA', { image: 'BBBB', fit: 'contain', quarter_turns: 1, background: [255, 0, 0] });
+    const { html } = render(kept);
+    expect(html).toContain('id="dial-image-fit"');
+    expect(html).toContain('<option value="contain" selected="">');
+    expect(html).toContain('value="#ff0000"');
+    expect(html).toContain('>90°<');
+    expect(html).not.toContain('choose the picture again');
+  });
   it('asks for CPU honestly and only on the CPU face', () => {
     const { html } = render(setDialDisplayContent(flat, 'cpu'));
     expect(html).toContain('CPU usage is measured on this Mac');

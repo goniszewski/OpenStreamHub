@@ -36,3 +36,14 @@ describe('dial display model', () => {
     expect(maxDialImageBytes).toBe(64 * 1024);
   });
 });
+
+describe('setDialImage with a source', () => {
+  it('keeps the source beside the image and drops it with any other content', () => {
+    const source = { image: 'BBBB', fit: 'cover' as const, quarter_turns: 0, background: [0, 0, 0] as [number, number, number] };
+    const flat = { schema_version: 1, name: 'Desk', bindings: [] };
+    const pictured = setDialImage(flat, 'AAAA', source);
+    expect(pictured.dial_display).toEqual({ content: 'image', image: 'AAAA', source });
+    expect(setDialDisplayContent(pictured, 'clock').dial_display).toEqual({ content: 'clock' });
+    expect(setDialImage(flat, 'AAAA').dial_display).toEqual({ content: 'image', image: 'AAAA' });
+  });
+});

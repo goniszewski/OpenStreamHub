@@ -72,6 +72,8 @@ export interface LightingGate {
   desktop: boolean;
   // True when one of the current targets is held by a running profile.
   runOwnedTargets: boolean;
+  // The names of the held modules, when known, so the reason can say which ones.
+  heldNames?: string[];
   scope: LightingScope;
   selected: LightingDevice | undefined;
   devices: LightingDevice[];
@@ -80,9 +82,9 @@ export interface LightingGate {
 // Why the lighting controls are disabled right now, or null when they are
 // usable. The controls always render: an unsupported module shows them
 // disabled with the reason instead of hiding them.
-export function lightingBlockReason({ desktop, runOwnedTargets, scope, selected, devices }: LightingGate): string | null {
+export function lightingBlockReason({ desktop, runOwnedTargets, heldNames = [], scope, selected, devices }: LightingGate): string | null {
   if (!desktop) return 'The browser preview cannot reach hardware.';
-  if (runOwnedTargets) return 'A run is driving a dial. Stop the run before changing its lighting.';
+  if (runOwnedTargets) return `A run is using ${heldNames.length ? joinNames(heldNames) : 'a module you are changing'}, so its lighting is locked. Stop the run to change it.`;
   if (devices.length === 0) return 'No modules are connected. Connect a module to change its lighting.';
   const kind = selected ? lightingKind(selected.module) : 'dial';
   if (scope === 'kit') {
@@ -94,6 +96,14 @@ export function lightingBlockReason({ desktop, runOwnedTargets, scope, selected,
   return kind === null && selected
     ? `${moduleShortName(selected.module)} lighting is not available yet. Only the encoder dial, knob and fader modules are lit right now.`
     : null;
+}
+
+function joinNames(names: string[]): string {
+  return names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+export function heldModuleNames(devices: LightingDevice[]): string[] {
+  return [...new Set(devices.map(device => moduleShortName(device.module)))];
 }
 
 function moduleShortName(module: LightingModule): string {

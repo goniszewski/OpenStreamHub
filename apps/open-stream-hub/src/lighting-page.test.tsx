@@ -11,7 +11,7 @@ import type { ServiceRunner } from './service-runner';
 const dial = (path: string, serial: string | null = 'MHDD01FAKE0843'): LightingDevice =>
   ({ path_hex: path, module: 'm131e', serial_number: serial });
 const knobs = (): LightingDevice => ({ path_hex: 'kn', module: 'm003k', serial_number: null });
-const runOwned = { isActivePath: () => true } as unknown as ServiceRunner;
+const runOwned = { isActivePath: () => true, runsHolding: () => ['run'] } as unknown as ServiceRunner;
 
 // Hooks (feed subscription, control state) need the SSR renderer, so these
 // render through JSX instead of calling the component as a function.
@@ -81,7 +81,9 @@ describe('LightingPage', () => {
 
   it('names a run that is driving a target dial', () => {
     const markup = render({ devices: [dial('aa')], runner: runOwned });
-    expect(markup).toContain('A run is driving a dial. Stop the run before changing its lighting.');
+    expect(markup).toContain('A run is using');
+    expect(markup).toContain('Stop the run to change it.');
+    expect(markup).toContain('>Stop run</button>');
     expect(markup).toContain('<fieldset class="lighting-controls" disabled="">');
   });
 

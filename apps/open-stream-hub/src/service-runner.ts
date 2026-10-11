@@ -372,6 +372,11 @@ export class ServiceRunner {
     return device !== undefined && Object.values(runs).some(run => run.session && run.session.phase !== 'stopped' && sessionMatches(run.session, device));
   };
 
+  // The keys of the active runs that hold any of these devices, the ones Stop must end to free them.
+  runsHolding = (devices: LiveDevice[]): string[] => Object.entries(this.runs())
+    .filter(([key, run]) => isActiveRun(run) && devices.some(device => processOf(key, run) === serviceIdFor(device.path_hex) || (run.session !== undefined && sessionMatches(run.session, device))))
+    .map(([key]) => key);
+
   // The live preview shows the input each running session reads on its own module. The feed never opens a session's
   // path, so without this the 15-key and dial modules (which report only to a session) would never show input.
   setLiveSink(sink: Pick<DeviceFeed, 'sessionInput' | 'setSessionModules'> | null) {

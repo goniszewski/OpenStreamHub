@@ -614,7 +614,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .lighting-favourite .remove { position:absolute; top:-7px; right:-7px; width:18px; height:18px; min-height:0; display:flex; align-items:center; justify-content:center; padding:0; border:1px solid var(--line); border-radius:50%; background:var(--panel); color:var(--muted); }
 .lighting-favourite .remove:hover:enabled { color:var(--red); border-color:var(--red); }
 .lighting-actions { display:flex; gap:10px; }
-.lighting-reason { margin:0; }
+.lighting-reason { margin:0; display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; }
 .lighting-panel .learn-more { justify-self:stretch; }
 .lighting-panel .learn-more summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }
 .lighting-panel .learn-more p { margin:9px 0 0; font-size:12px; }

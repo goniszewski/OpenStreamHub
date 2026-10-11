@@ -7,7 +7,7 @@ import type { ModuleSelection } from './module-selection';
 import type { DeviceFeed } from './device-feed';
 import {
   addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, clampBacklight, createApplyQueue,
-  defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingEffects, lightingKind,
+  defaultBacklight, defaultColour, defaultEffect, ledCount, heldModuleNames, lightingBlockReason, lightingEffects, lightingKind,
   lightingScopeLabels, lightingTargets, readColourFavourites,
   removeColourFavourite, resetLighting, resetStatus, turnedOffLedStatus, writeColourFavourites,
 } from './lighting-model';
@@ -17,6 +17,7 @@ import type { LightingStateStore } from './lighting-state';
 import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
 import type { ServiceRunner } from './service-runner';
+import type { LiveDevice } from './contracts';
 
 // The Lighting page: the encoder dial's backlight and one solid colour, and
 // the knob and fader modules' colour, effect and brightness per LED, applied
@@ -67,8 +68,9 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
     setBacklight(look?.backlight ?? defaultBacklight);
   }, [selectedPath, kind, led, records]);
   // A base takes no input, so no run can own it.
-  const runOwned = targets.some(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
-  const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
+  const held = targets.filter(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
+  const runOwned = held.length > 0;
+  const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, heldNames: heldModuleNames(held), scope, selected, devices });
   // The base's edge strip can take a module's colour: the first lit knob or
   // fader LED, or nothing to match when no module is lit.
   const matched = selected?.module === 'm0064' && scope === 'module' ? matchedModuleColour(records, devices) : null;
@@ -241,7 +243,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           {kind === 'led' ? <LightbulbOff size={16} /> : <RotateCcw size={16} />}{busy ? (kind === 'led' ? 'Turning off…' : 'Resetting…') : kind === 'led' ? 'Turn off' : 'Reset'}
         </button>
       </div>
-      {reason && <p className="fine-print lighting-reason" role="status">{reason}</p>}
+      {reason && <p className="fine-print lighting-reason" role="status">{reason}{runOwned && runner && <button type="button" className="button compact" onClick={() => runner.runsHolding(held as unknown as LiveDevice[]).forEach(id => void runner.stop(id))}>Stop run</button>}</p>}
       {error && <div className="service-failure" role="alert"><strong>{kind === 'led' ? 'Could not reach the module.' : 'Could not reach the dial.'}</strong> {error}</div>}
       {!error && status && <p className="fine-print" role="status">{status}</p>}
       <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Turn off switches the picked LED, or every LED, back to Off.' : 'Reset hands the dial back to its built-in animation.'}</p>

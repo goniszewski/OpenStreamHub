@@ -1,3 +1,4 @@
+import { hint, isMacPlatform } from './shortcuts';
 import { useState } from 'react';
 import { Search, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Binding, Profile } from './contracts';
@@ -81,7 +82,7 @@ export function BindingsPanel({ profile, session, editor, disabled, initialQuery
   };
   const menuEntry = rowMenu ? entries.find(item => item.id === rowMenu.id) : undefined;
   return <>
-    {profileBindingCount(profile) > 0 && <div className="binding-search" role="search">
+    {profileBindingCount(profile) > 0 && <div className="binding-search" role="search" data-shortcut={hint('F', isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator))}>
       <Search size={16} aria-hidden="true" />
       <label className="sr-only" htmlFor={bindingSearchId}>Search bindings</label>
       <input id={bindingSearchId} type="search" autoComplete="off" spellCheck={false} placeholder="Search bindings" value={query} aria-describedby="binding-search-count"

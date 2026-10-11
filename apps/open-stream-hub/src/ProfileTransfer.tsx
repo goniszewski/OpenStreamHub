@@ -5,7 +5,7 @@ import { formatBytes } from './diagnostics';
 import { ImportError, isMhzFileName, readImportFile, readMhzFile } from './profile-library';
 import type { ProfileSession, SessionState } from './profile-session';
 import { errorMessage } from './ui-model';
-import { withHint } from './shortcuts';
+import { hint, withHint } from './shortcuts';
 import { useT } from './i18n-react';
 
 // Reads the file in the webview and hands its text to the session, which
@@ -63,7 +63,7 @@ export function ProfileTransfer({ session, state, disabled, mac }: { session: Pr
   const { exportResult, importError } = state;
   return <div className="profile-transfer">
     <div className="profile-actions">
-      <button className="button" disabled={disabled} title={withHint(t('transfer.duplicateTip'), 'D', mac)} onClick={() => session.requestDuplicate()}><Copy size={17} />{t('transfer.duplicate')}</button>
+      <button className="button" disabled={disabled} data-shortcut={hint('D', mac)} title={withHint(t('transfer.duplicateTip'), 'D', mac)} onClick={() => session.requestDuplicate()}><Copy size={17} />{t('transfer.duplicate')}</button>
       <button className="button" disabled={disabled} title={t('transfer.exportTip')} onClick={() => { setCopy(null); void session.exportProfile(); }}><FileDown size={17} />{t('transfer.export')}</button>
       <button className="button" disabled={disabled} title={t('transfer.importTip')} onClick={() => input.current?.click()}><FileUp size={17} />{t('transfer.import')}</button>
       <input ref={input} type="file" accept=".json,application/json" className="sr-only" tabIndex={-1} aria-label={t('transfer.importLabel')} disabled={disabled}

@@ -227,7 +227,8 @@ export type ModuleControl = 'app' | 'built_in_animation';
 // held_from: set only while the editing hold ("Switch to Test mode while editing") has Test stored on the user's behalf,
 // naming the Live to restore when the editing ends — or at the next launch, when the app quit or crashed mid-edit.
 export type RunMode = 'live' | 'test';
-export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode; live_offered: boolean; held_from?: 'live' }
+// press_feedback: whether a key on the 15-key module is drawn dimmed while it is held down (on by default).
+export interface DisplaySettings { module_control: ModuleControl; run_mode: RunMode; live_offered: boolean; held_from?: 'live'; press_feedback: boolean }
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.

@@ -25,6 +25,7 @@
 //! checks. Display outcomes reach the log through the action worker.
 
 use crate::dial_artwork::DialArtwork;
+use crate::display_artwork::PressedKey;
 use crate::service_events::{
     PlannedEvent, TimerCancelReason, Work, cancel_timers, dial_function_details, emit, end_record,
     log_alert_outcome, plan_report, process_due_timers, process_work,
@@ -187,6 +188,7 @@ pub struct LiveDisplay {
     pub(crate) sink: Box<dyn DisplaySink + Send>,
     content: DisplayContent,
     pub(crate) write_gate: Arc<AtomicBool>,
+    press_feedback: bool,
 }
 
 /// What a [`LiveDisplay`] draws.
@@ -219,7 +221,18 @@ impl LiveDisplay {
             sink: Box::new(sink),
             content: DisplayContent::Keys(Box::new(artwork)),
             write_gate,
+            press_feedback: false,
         }
+    }
+
+    /// Dims a key while it is held down: one extra key write on press and one
+    /// on release, drawn on the display thread so an action never waits for it.
+    /// Dropped for the rest of the run when a press write takes longer than
+    /// [`PRESS_FEEDBACK_MAX_WRITE`], since feedback that late reads as lag.
+    /// Keys displays only; a dial display ignores it.
+    pub fn with_press_feedback(mut self, on: bool) -> Self {
+        self.press_feedback = on;
+        self
     }
 
     /// Pairs a dial sink with prepared dial artwork and the sink transport's
@@ -238,6 +251,7 @@ impl LiveDisplay {
                 min_interval: DIAL_MIN_INTERVAL,
             },
             write_gate,
+            press_feedback: false,
         }
     }
 
@@ -304,6 +318,8 @@ struct DisplayRequest {
     path: Vec<String>,
     /// Current dial function index (dial).
     dial_function: Option<usize>,
+    /// The key held down, drawn dimmed (keys, with press feedback on).
+    pressed: Option<u8>,
     trigger: &'static str,
 }
 
@@ -326,6 +342,8 @@ struct DisplayThread {
     slot: Arc<(Mutex<DisplaySlot>, Condvar)>,
     counts: Arc<DisplayCounts>,
     write_gate: Arc<AtomicBool>,
+    /// Whether a held key is drawn dimmed (a keys display with the option on).
+    press_feedback: bool,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -340,6 +358,7 @@ impl DisplayThread {
         let counts = Arc::new(DisplayCounts::default());
         let (thread_slot, thread_counts) = (Arc::clone(&slot), Arc::clone(&counts));
         let write_gate = Arc::clone(&display.write_gate);
+        let press_feedback = display.press_feedback && !display.is_dial();
         let handle = thread::Builder::new()
             .name("masterhub-display".into())
             .spawn(move || {
@@ -347,7 +366,9 @@ impl DisplayThread {
                     sink,
                     content,
                     write_gate: gate,
+                    press_feedback,
                 } = display;
+                let mut press_feedback = press_feedback;
                 let gate_closed = Arc::clone(&gate);
                 // Built here: `DisplaySync` is not `Send`.
                 let mut sync = DisplaySync::new(BoxedSink { sink, gate });
@@ -429,19 +450,31 @@ impl DisplayThread {
                             let closed = || {
                                 gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst)
                             };
+                            let held = request.pressed.filter(|_| press_feedback);
+                            let began = Instant::now();
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     artwork.advance(page_of(request), started.elapsed());
+                                    let shown = PressedKey {
+                                        inner: &*artwork,
+                                        pressed: held,
+                                    };
                                     sync_page(
                                         &mut sync,
                                         &mut session,
-                                        &*artwork,
+                                        &shown,
                                         request,
                                         &thread_counts,
                                         &|| timed && closed(),
                                     )
                                 }));
                             last_sync = Some(Instant::now());
+                            if press_feedback
+                                && request.trigger == PRESS_TRIGGER
+                                && began.elapsed() > PRESS_FEEDBACK_MAX_WRITE
+                            {
+                                press_feedback = false;
+                            }
                             let record = match record {
                                 // A Stop interrupted an animation frame and every failure was
                                 // its refusal: nothing is logged; no further sync may start.
@@ -544,6 +577,7 @@ impl DisplayThread {
             slot,
             counts,
             write_gate,
+            press_feedback,
             handle: Some(handle),
         })
     }
@@ -551,6 +585,16 @@ impl DisplayThread {
     /// Records the newest page and dial function to draw without waiting for
     /// the display thread.
     fn request(&self, session: &ProfileSession, trigger: &'static str) {
+        self.request_pressed(session, trigger, None);
+    }
+
+    /// As [`Self::request`], with the key held down at this moment.
+    fn request_pressed(
+        &self,
+        session: &ProfileSession,
+        trigger: &'static str,
+        pressed: Option<u8>,
+    ) {
         let (lock, changed) = &*self.slot;
         let mut slot = lock.lock().unwrap_or_else(PoisonError::into_inner);
         if slot.stopped {
@@ -559,6 +603,7 @@ impl DisplayThread {
         let request = DisplayRequest {
             path: session.path().to_vec(),
             dial_function: session.dial_function_index(),
+            pressed,
             trigger,
         };
         if slot.pending.replace(request).is_some() {
@@ -611,6 +656,12 @@ pub const WORKER_START_FAILED: &str = "could not start action worker";
 /// Prefix of the error when the action worker never reported ready (it did
 /// not write `service_start` in time). OpenStreamHub treats it as transient.
 pub const WORKER_NOT_READY: &str = "action worker did not become ready";
+
+/// Trigger of a key sync started by a key going down or up.
+const PRESS_TRIGGER: &str = "press";
+
+/// Longest a press-feedback write may take before feedback is dropped for the run.
+const PRESS_FEEDBACK_MAX_WRITE: Duration = Duration::from_millis(150);
 
 /// Trigger of a key sync started by an animation frame deadline, not a request.
 const ANIMATION_TRIGGER: &str = "animation";
@@ -1195,6 +1246,8 @@ where
     let mut mode_attempted = false;
     let mut counts = Finish::default();
     let mut pending: Option<Work> = None;
+    // The key currently held down, for press feedback.
+    let mut held: Option<u8> = None;
     // A panic in the input loop (decoding, routing, a transport) is contained
     // so the cleanup below, including the hardware-mode restore, still runs.
     let input_loop = std::panic::AssertUnwindSafe(|| -> Result<&str, String> {
@@ -1246,6 +1299,11 @@ where
                     return Ok("interrupted");
                 }
                 let work = plan_report(&mut input, &mut session, &device, raw, now)?;
+                let work_gestures: Vec<(u8, Gesture)> = work
+                    .events
+                    .iter()
+                    .map(|planned| (planned.event.control, planned.event.gesture))
+                    .collect();
                 counts.decoded_events += work.events.len() as u64;
                 counts.matched_actions +=
                     work.events.iter().filter(|e| e.action().is_some()).count() as u64;
@@ -1265,10 +1323,22 @@ where
                 };
                 // Only after the work was queued or coalesced, and never blocking.
                 if let Some(display) = &display_thread {
+                    let was_held = held;
+                    if display.press_feedback {
+                        for planned in &work_gestures {
+                            match planned.1 {
+                                Gesture::Pressed => held = Some(planned.0),
+                                Gesture::Released if held == Some(planned.0) => held = None,
+                                _ => {}
+                            }
+                        }
+                    }
                     if navigated {
-                        display.request(&session, "navigation");
+                        display.request_pressed(&session, "navigation", held);
                     } else if switched {
                         display.request(&session, "dial_function");
+                    } else if held != was_held {
+                        display.request_pressed(&session, PRESS_TRIGGER, held);
                     }
                 }
                 if options
@@ -4566,6 +4636,48 @@ mod tests {
     }
 
     #[test]
+    fn a_held_folder_key_stays_dimmed_after_it_navigates_until_release_and_the_option_gates_it() {
+        for on in [true, false] {
+            let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+            let run = run_display(
+                vec![
+                    wait_for_writes(&fake, 15),
+                    keys(&[1], 10),
+                    // The folder opens on the press; let that redraw land before the release.
+                    Step::Run(Box::new({
+                        let fake = Arc::clone(&fake);
+                        move || {
+                            assert!(wait_until(|| written(&fake) > 15), "navigation writes");
+                            thread::sleep(Duration::from_millis(150));
+                        }
+                    })),
+                    keys(&[], 20),
+                    // Let the release redraw land before the run ends.
+                    Step::Run(Box::new(|| thread::sleep(Duration::from_millis(150)))),
+                    keys(&[], 30),
+                ],
+                keypad_options(3),
+                Arc::new(AtomicBool::new(false)),
+                Some(shared_display(&fake, None).with_press_feedback(on)),
+                Arc::default(),
+            );
+            run.result.unwrap();
+            let triggers: Vec<_> = display_rows(&run.rows)
+                .iter()
+                .map(|record| record["trigger"].as_str().unwrap().to_owned())
+                .collect();
+            if on {
+                // The new page draws key 1 dimmed; the release writes it back, alone.
+                assert_eq!(triggers, ["software_mode", "navigation", "press"]);
+                let rows = display_rows(&run.rows);
+                assert_eq!(rows[2]["written"], json!([1]));
+            } else {
+                assert_eq!(triggers, ["software_mode", "navigation"]);
+            }
+        }
+    }
+
+    #[test]
     fn a_short_write_is_logged_while_actions_still_dispatch_and_the_run_succeeds() {
         let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
         fake.lock().unwrap().fail_next(
@@ -4825,6 +4937,75 @@ mod tests {
     }
     fn successful_after(fake: &Arc<Mutex<FakeDisplaySink>>, skip: usize) -> Vec<DisplayTarget> {
         fake.lock().unwrap().successful()[skip..].to_vec()
+    }
+
+    /// A key display thread over a plain profile, with press feedback `on`.
+    fn pressable_display(
+        fake: &Arc<Mutex<FakeDisplaySink>>,
+        on: bool,
+        abort: &Arc<AtomicBool>,
+    ) -> (DisplayThread, ProfileSession, Receiver<Value>) {
+        use crate::display_artwork::tests::{key_artwork, profile_with};
+        let profile = profile_with(vec![(0, "3", key_artwork(&[(120, 100)], 1))]);
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(fake),
+                before_write: None,
+            },
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_press_feedback(on);
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, records_rx) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let display =
+            DisplayThread::spawn(display, session.clone(), Arc::clone(abort), records_tx).unwrap();
+        display.request(&session, "software_mode");
+        (display, session, records_rx)
+    }
+
+    #[test]
+    fn a_held_key_is_drawn_dimmed_and_restored_with_one_write_each() {
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, session, records) = pressable_display(&fake, true, &abort);
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap()["trigger"],
+            "software_mode"
+        );
+        assert_eq!(written(&fake), 15);
+        let resting = fake.lock().unwrap().writes[3].jpeg.clone();
+        display.request_pressed(&session, PRESS_TRIGGER, Some(3));
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap()["trigger"],
+            "press"
+        );
+        assert_eq!(written(&fake), 16);
+        let dimmed = fake.lock().unwrap().writes[15].clone();
+        assert_eq!(dimmed.target, DisplayTarget::Key(3));
+        assert_ne!(dimmed.jpeg, resting);
+        display.request_pressed(&session, PRESS_TRIGGER, None);
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap()["trigger"],
+            "press"
+        );
+        assert_eq!(written(&fake), 17);
+        let restored = fake.lock().unwrap().writes[16].clone();
+        assert_eq!(restored.target, DisplayTarget::Key(3));
+        assert_eq!(restored.jpeg, resting);
+        assert!(display.finish(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_press_draws_nothing_extra_while_the_option_is_off() {
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let abort = Arc::new(AtomicBool::new(false));
+        let (mut display, session, records) = pressable_display(&fake, false, &abort);
+        records.recv_timeout(Duration::from_secs(2)).unwrap();
+        display.request_pressed(&session, PRESS_TRIGGER, Some(3));
+        records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(written(&fake), 15);
+        assert!(display.finish(Duration::from_secs(2)));
     }
 
     #[test]

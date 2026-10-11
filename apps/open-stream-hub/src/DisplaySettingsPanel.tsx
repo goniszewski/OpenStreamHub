@@ -33,6 +33,9 @@ export function appliesNote(activeRuns: number): string {
   return `${base} ${rest}; nothing is restarted for you.`;
 }
 
+// What the press feedback setting does, shown under the checkbox.
+export const pressFeedbackNote = 'The 15-key module draws a key dimmed while it is held down, so you can see the press was received: one extra key write when you press and one when you let go, never delaying the action itself. It switches itself off for the rest of a run if a key write turns out slow. Not yet checked on hardware. Applies the next time a profile starts.';
+
 // What "Switch to Test mode while editing" does, shown under the checkbox.
 export const testWhileEditingNote = 'While you are editing a binding — an open action picker, the bindings drawer, or a change you have not saved yet — presses are held in Test mode on every module, and the badge in the header reads “Test (editing)”. When you save, undo or close the editor, the mode goes back to what you chose. A switch you make yourself while editing stands.';
 
@@ -56,6 +59,12 @@ export function DisplaySettingsPanel({ store, runner, profiles = [], testWhileEd
       {moduleControlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
     </SelectField>
     <p id="display-module-control-note" className="fine-print">{moduleControlNotes[moduleControl]}</p>
+    <label className="service-option" htmlFor="display-press-feedback">
+      <input id="display-press-feedback" type="checkbox" checked={state.settings.press_feedback} disabled={off || moduleControl !== 'app'}
+        aria-describedby="display-press-feedback-note" onChange={event => { void store?.setPressFeedback(event.target.checked); }} />
+      Dim a key while it is pressed
+    </label>
+    <p id="display-press-feedback-note" className="fine-print">{pressFeedbackNote}</p>
     <h3 className="display-settings-subtitle">Run mode</h3>
     <label className="service-option" htmlFor="run-mode-editing">
       <input id="run-mode-editing" type="checkbox" checked={testWhileEditing} disabled={!store || !state.desktop}

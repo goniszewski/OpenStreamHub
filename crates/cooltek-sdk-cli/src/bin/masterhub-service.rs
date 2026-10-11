@@ -94,6 +94,11 @@ enum Command {
         /// Off by default; display failures are logged and never end the session.
         #[arg(long)]
         display_sync: bool,
+        /// Experimental, hardware-unverified: with --display-sync on an M4315, draw a
+        /// key dimmed while it is held down (one extra key write on press and one on
+        /// release). Dropped for the run if a press write takes over 150 ms.
+        #[arg(long, requires = "display_sync")]
+        press_feedback: bool,
         /// Experimental, hardware-unverified: what the M131E dial screen shows
         /// with --display-sync: the active dial function's name (`function`), a
         /// digital clock (`clock`), an analog clock (`analog-clock`), the
@@ -170,6 +175,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             timeout_ms,
             stop_on_action_error,
             display_sync,
+            press_feedback,
             dial_content,
             profile_switch_requests,
             obs_endpoint,
@@ -282,7 +288,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     // Fail closed before software mode: folder navigation must
                     // not run live without its display.
                     let display = Some(match artwork {
-                        Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?,
+                        Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?
+                            .with_press_feedback(press_feedback),
                         Artwork::Dial(artwork) => {
                             live_dial_display(&shared, selected.module, artwork)?
                         }

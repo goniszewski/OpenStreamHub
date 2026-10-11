@@ -220,6 +220,47 @@ impl KeyImageProvider for PreparedKeyArtwork {
     }
 }
 
+/// Brightness a pressed key keeps, in percent.
+const PRESSED_PERCENT: u16 = 55;
+
+/// The same key image dimmed, as shown while the key is held down. `None`
+/// when the bytes cannot be decoded or re-encoded, or the image is already
+/// black (a blank key): the caller then keeps the normal image.
+pub fn dimmed(jpeg: &[u8]) -> Option<Vec<u8>> {
+    let mut image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
+        .ok()?
+        .to_rgb8();
+    if image.dimensions() != (SIDE, SIDE) {
+        return None;
+    }
+    if image.as_raw().iter().all(|&channel| channel == 0) {
+        return None;
+    }
+    for pixel in image.pixels_mut() {
+        for channel in &mut pixel.0 {
+            *channel = (u16::from(*channel) * PRESSED_PERCENT / 100) as u8;
+        }
+    }
+    encode(&image).ok()
+}
+
+/// Wraps a provider so one held key shows dimmed; every other key, and the
+/// held key's animation frames, come from the inner provider unchanged.
+pub struct PressedKey<'a> {
+    pub inner: &'a dyn KeyImageProvider,
+    pub pressed: Option<u8>,
+}
+
+impl KeyImageProvider for PressedKey<'_> {
+    fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        let image = self.inner.key_image(request)?;
+        if self.pressed != Some(request.key_index) {
+            return Some(image);
+        }
+        Some(dimmed(&image).unwrap_or(image))
+    }
+}
+
 /// Encodes through the shared preparation path, then validates explicitly.
 fn encode(image: &RgbImage) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();

@@ -23,12 +23,14 @@
   "display_settings_default": {
     "live_offered": false,
     "module_control": "app",
+    "press_feedback": true,
     "run_mode": "live"
   },
   "held_settings": {
     "held_from": "live",
     "live_offered": true,
     "module_control": "app",
+    "press_feedback": true,
     "run_mode": "test"
   },
   "module_controls": [
@@ -42,12 +44,14 @@
     "settings": {
       "live_offered": true,
       "module_control": "built_in_animation",
+      "press_feedback": true,
       "run_mode": "live"
     }
   },
   "set_display_settings_result": {
     "live_offered": true,
     "module_control": "built_in_animation",
+    "press_feedback": true,
     "run_mode": "live"
   }
 }

@@ -4644,18 +4644,21 @@ mod tests {
         run_mode: crate::display::RunMode::Test,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: crate::display::RunMode::Test,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
     const APP_CONTROL_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: crate::display::RunMode::Live,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
 
     fn launched(driver: &mut Driver<FakeRunner>, index: usize) -> Option<DisplayLaunch> {
@@ -4817,7 +4820,7 @@ mod tests {
                 let keypad_args = spawned_args(&mut driver, 1);
                 if app {
                     assert_eq!(dial_args[..2], ["--display-sync", "--dial-content"]);
-                    assert_eq!(keypad_args, ["--display-sync"]);
+                    assert_eq!(keypad_args, ["--display-sync", "--press-feedback"]);
                 } else {
                     assert!(dial_args.is_empty() && keypad_args.is_empty());
                 }
@@ -4904,14 +4907,20 @@ mod tests {
         flat.software_mode = false;
         let id = driver.start(flat.clone(), 0).unwrap();
         assert!(driver.runner().starts[0].software_mode);
-        assert_eq!(spawned_args(&mut driver, 0), ["--display-sync"]);
+        assert_eq!(
+            spawned_args(&mut driver, 0),
+            ["--display-sync", "--press-feedback"]
+        );
         driver
             .switch_profile(&id, "Folders".into(), crate::test_profiles::folders(), 10)
             .unwrap();
         let current = driver.runner().stops.last().unwrap().clone();
         exit(&mut driver, &current, "", 11);
         assert_eq!(starts(&mut driver), 2);
-        assert_eq!(spawned_args(&mut driver, 1), ["--display-sync"]);
+        assert_eq!(
+            spawned_args(&mut driver, 1),
+            ["--display-sync", "--press-feedback"]
+        );
 
         // Built-in animation (and unreadable settings): the switch is
         // refused, and the working session keeps running its profile.
@@ -5465,7 +5474,10 @@ mod tests {
             ["--display-sync", "--dial-content", "analog-clock"]
         );
         // The blank (flat) profile is drawn as one empty page on the keys.
-        assert_eq!(spawned_args(&mut driver, 1), ["--display-sync"]);
+        assert_eq!(
+            spawned_args(&mut driver, 1),
+            ["--display-sync", "--press-feedback"]
+        );
         let started = driver.runner().starts[1].clone();
         let page = crate::display::spawn_display(true, &started)
             .profile

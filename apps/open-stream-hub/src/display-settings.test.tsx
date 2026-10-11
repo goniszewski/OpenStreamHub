@@ -6,7 +6,7 @@ import { emptyKeypadPage } from './keypad-model';
 import { appControls, defaultDisplaySettings, displayFlags, DisplaySettingsStore, isDisplaySettings, moduleControlOptions } from './display-settings';
 import { dialDisplayArgs, dialDisplayOptions } from './dial-display-model';
 import type { DisplaySettingsState } from './display-settings';
-import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes, testWhileEditingNote } from './DisplaySettingsPanel';
+import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes, pressFeedbackNote, testWhileEditingNote } from './DisplaySettingsPanel';
 import { emptyCounters } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
 
@@ -14,8 +14,8 @@ const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
 root.slots[1] = { type: 'folder', page_id: 'sub' };
 const nested: Profile = { schema_version: 2, name: 'Nested', bindings: [], keypad: { pages: [root, emptyKeypadPage('sub', 'Sub')] } };
-const app: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
-const builtIn: DisplaySettings = { module_control: 'built_in_animation', run_mode: 'test', live_offered: true };
+const app: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true };
+const builtIn: DisplaySettings = { module_control: 'built_in_animation', run_mode: 'test', live_offered: true, press_feedback: true };
 const otherModules = ['m003k', 'm005s', 'm032le'] as const;
 
 // The dial screen choice is a profile setting; these stand in for profiles
@@ -37,9 +37,9 @@ describe('display settings contract', () => {
     expect(fixture.set_display_settings_result.run_mode).toBe('live');
     expect(fixture.set_display_settings_result.live_offered).toBe(true);
     // The editing hold's stored shape: the held Test names the Live to restore.
-    expect(fixture.held_settings).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' });
+    expect(fixture.held_settings).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: 'live' });
     // Without a hold the marker is absent, never null.
-    expect(Object.keys(fixture.display_settings_default)).toHaveLength(3);
+    expect(Object.keys(fixture.display_settings_default)).toHaveLength(4);
     expect(Object.keys(fixture.set_default_profile_args)).toEqual(['profileId']);
     expect(fixture.default_profile_result.profile_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(fixture.default_profile_none).toEqual({ profile_id: null });
@@ -54,22 +54,22 @@ describe('display settings contract', () => {
     expect(moduleControlOptions.map(option => option.label)).toEqual(['App', 'Built-in animation']);
   });
   it('accepts only the exact settings shape', () => {
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true })).toBe(true);
-    expect(isDisplaySettings({ module_control: 'built_in_animation', run_mode: 'live', live_offered: false })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'built_in_animation', run_mode: 'live', live_offered: false, press_feedback: true })).toBe(true);
     // All three fields are required and strict about their values.
     expect(isDisplaySettings({ module_control: 'app' })).toBe(false);
     expect(isDisplaySettings({ module_control: 'app', run_mode: 'test' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes', live_offered: true })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live', live_offered: true })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'yes', live_offered: true, press_feedback: true })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'Live', live_offered: true, press_feedback: true })).toBe(false);
     expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: 'yes' })).toBe(false);
     // The editing hold's marker: "live" beside the held Test, or absent.
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' })).toBe(true);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: 'live' })).toBe(true);
     expect(isDisplaySettings(fixture.held_settings)).toBe(true);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'test' })).toBe(false);
-    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: null })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: 'test' })).toBe(false);
+    expect(isDisplaySettings({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: null })).toBe(false);
     // The earlier shapes (the toggle, the file with a global dial choice) are
     // migrated by Rust and never reach the frontend.
-    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test', live_offered: true }, { module_control: 'app', dial_content: 'clock', run_mode: 'test', live_offered: true }, { module_control: 'app', run_mode: 'test', live_offered: true, extra: 1 }, { module_control: 'app', auto_execute: true }]) {
+    for (const bad of [null, 'on', { module_control: 'app' }, { enabled: true, dial_content: 'clock' }, { module_control: 'App', run_mode: 'test', live_offered: true, press_feedback: true }, { module_control: 'app', dial_content: 'clock', run_mode: 'test', live_offered: true, press_feedback: true }, { module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, extra: 1 }, { module_control: 'app', auto_execute: true }]) {
       expect(isDisplaySettings(bad)).toBe(false);
     }
   });
@@ -82,9 +82,10 @@ describe('display flags and software mode', () => {
     expect(displayFlags(builtIn, 'm131e', true, flat)).toEqual([]);
     expect(displayFlags(app, 'm4315', false, nested)).toEqual([]);
     expect(displayFlags(app, 'm131e', false, flat)).toEqual([]);
-    expect(displayFlags(app, 'm4315', true, nested)).toEqual(['--display-sync']);
+    expect(displayFlags(app, 'm4315', true, nested)).toEqual(['--display-sync', '--press-feedback']);
     // A flat 15-key profile is written as one page, so it is drawn too.
-    expect(displayFlags(app, 'm4315', true, flat)).toEqual(['--display-sync']);
+    expect(displayFlags(app, 'm4315', true, flat)).toEqual(['--display-sync', '--press-feedback']);
+    expect(displayFlags({ ...app, press_feedback: false }, 'm4315', true, flat)).toEqual(['--display-sync']);
   });
   it('take the dial content from the profile, with the idle fallback', () => {
     // The default is the function name, which needs something on the dial;
@@ -100,7 +101,7 @@ describe('display flags and software mode', () => {
     // A profile whose dial display is off: no display flags at all.
     expect(displayFlags(app, 'm131e', true, withDialDisplay(flat, 'off'))).toEqual([]);
     // The keypad ignores the dial setting, the dial ignores the keypad pages.
-    expect(displayFlags(app, 'm4315', true, withDialDisplay(flat, 'cpu'))).toEqual(['--display-sync']);
+    expect(displayFlags(app, 'm4315', true, withDialDisplay(flat, 'cpu'))).toEqual(['--display-sync', '--press-feedback']);
   });
   it('App control covers the keypad and dial only and never gives other modules flags', () => {
     for (const module of ['m4315', 'm131e'] as const) expect(appControls(module)).toBe(true);
@@ -116,7 +117,7 @@ describe('display flags and software mode', () => {
 describe('DisplaySettingsStore', () => {
   it('loads, saves and shows App until the backend answers', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true };
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -126,14 +127,26 @@ describe('DisplaySettingsStore', () => {
     expect(store.getState().settings.module_control).toBe('app');
     expect(await store.load()).toBe(true);
     expect(await store.setModuleControl('built_in_animation')).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'test', live_offered: true });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'test', live_offered: true, press_feedback: true });
     expect(await store.setRunMode('live')).toBe(true);
-    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'live', live_offered: true });
+    expect(store.getState().settings).toEqual({ module_control: 'built_in_animation', run_mode: 'live', live_offered: true, press_feedback: true });
     expect(calls).toEqual([
       ['display_settings', undefined],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'test', live_offered: true } }],
-      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'live', live_offered: true } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'test', live_offered: true, press_feedback: true } }],
+      ['set_display_settings', { settings: { module_control: 'built_in_animation', run_mode: 'live', live_offered: true, press_feedback: true } }],
     ]);
+  });
+  it('saves the press feedback switch and keeps the rest of the settings', async () => {
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true };
+    const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
+      if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
+      return stored as T;
+    };
+    const store = new DisplaySettingsStore(invoke, true);
+    await store.load();
+    expect(await store.setPressFeedback(false)).toBe(true);
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: false });
+    expect(store.getState().settings.press_feedback).toBe(false);
   });
   it('reports errors and unexpected replies', async () => {
     const failing = new DisplaySettingsStore(async () => { throw 'display settings in /x are unreadable'; }, true);
@@ -150,7 +163,7 @@ describe('DisplaySettingsStore', () => {
   });
   it('records the one-time confirmation whichever way it is answered', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false };
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false, press_feedback: true };
     const store = new DisplaySettingsStore(async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -159,17 +172,17 @@ describe('DisplaySettingsStore', () => {
     (store as unknown as { state: unknown }).state = { ...store.getState(), loaded: true, settings: stored };
     // Confirming lifts the hold and keeps Live.
     expect(await store.confirmLive()).toBe(true);
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true, press_feedback: true });
     // Declining saves Test, once, so the offer never nags again.
     expect(await store.declineLiveOffer()).toBe(true);
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true });
     // A confirmed Run with actions is a confirmation of the mode too.
     expect(await store.markLiveConfirmed()).toBe(true);
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true });
   });
   it('holds the mode for editing without answering the confirmation, and a switch ends the hold', async () => {
     const calls: [string, Record<string, unknown> | undefined][] = [];
-    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: true };
+    let stored: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: true, press_feedback: true };
     const invoke = async <T,>(command: string, args?: Record<string, unknown>) => {
       calls.push([command, args]);
       if (command === 'set_display_settings') stored = args!.settings as DisplaySettings;
@@ -184,20 +197,20 @@ describe('DisplaySettingsStore', () => {
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(store.editingHeld).toBe(true);
     expect(store.editingSnapshotRuns).toEqual(new Set(['s1', 's2']));
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: 'live' });
     // Already held, or the setting off, or the mode already Test: nothing.
     expect(store.beginEditingHold(true, [])).toBe(false);
     expect(store.beginEditingHold(false, [])).toBe(false);
     // A fresh install's owed confirmation is never answered by the hold.
     const fresh = new DisplaySettingsStore(invoke, true);
-    (fresh as unknown as { state: unknown }).state = { ...fresh.getState(), loaded: true, settings: { module_control: 'app', run_mode: 'live', live_offered: false } };
+    (fresh as unknown as { state: unknown }).state = { ...fresh.getState(), loaded: true, settings: { module_control: 'app', run_mode: 'live', live_offered: false, press_feedback: true } };
     fresh.beginEditingHold(true, []);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: false, held_from: 'live' });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: false, press_feedback: true, held_from: 'live' });
     // A hold read back from storage (the launch after a quit or crash
     // mid-edit) holds without any begin, with no snapshot: this session has
     // seen nothing execute, so its restore never asks.
-    const held: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, held_from: 'live' };
+    const held: DisplaySettings = { module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true, held_from: 'live' };
     const fromDisk = new DisplaySettingsStore(invoke, true);
     (fromDisk as unknown as { state: unknown }).state = { ...fromDisk.getState(), loaded: true, settings: held };
     expect(fromDisk.editingHeld).toBe(true);
@@ -209,7 +222,7 @@ describe('DisplaySettingsStore', () => {
     // Dropping the hold keeps the mode but stores the marker as absent.
     expect(fromDisk.dropEditingHold()).toBe(true);
     await new Promise(resolve => setTimeout(resolve, 0));
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'test', live_offered: true, press_feedback: true });
     expect(fromDisk.editingHeld).toBe(false);
     // Dropping a hold that is not on does nothing.
     expect(fromDisk.dropEditingHold()).toBe(false);
@@ -219,15 +232,15 @@ describe('DisplaySettingsStore', () => {
     await store.setRunMode('live');
     expect(store.editingHeld).toBe(false);
     expect(store.editingSnapshotRuns).toBeNull();
-    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true });
+    expect(stored).toEqual({ module_control: 'app', run_mode: 'live', live_offered: true, press_feedback: true });
   });
   it('seeds the browser preview for captures and never the desktop app', () => {
     const preview = new DisplaySettingsStore(async () => { throw new Error('must not be called'); }, false);
-    preview.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true });
+    preview.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true, press_feedback: true });
     expect(preview.getState().loaded).toBe(true);
     expect(preview.getState().settings.run_mode).toBe('live');
     const desktop = new DisplaySettingsStore(async <T,>() => defaultDisplaySettings as T, true);
-    desktop.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true });
+    desktop.seedPreview({ module_control: 'app', run_mode: 'live', live_offered: true, press_feedback: true });
     expect(desktop.getState().loaded).toBe(false);
   });
 });
@@ -264,6 +277,15 @@ describe('DisplaySettingsPanel markup', () => {
     // The mode is the header badge's business; the panel has no toggle for it.
     expect(markup).not.toContain('Run actions automatically');
     expect(markup).not.toContain('setting-toggle');
+  });
+  it('offers the press feedback switch, on by default, only while the app drives the module', () => {
+    const on = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} />);
+    expect(on).toContain('Dim a key while it is pressed');
+    expect(on).toMatch(/id="display-press-feedback"[^>]*checked=""/);
+    expect(on).toContain(pressFeedbackNote);
+    const off = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: { ...app, press_feedback: false } })} />);
+    expect(off).not.toMatch(/id="display-press-feedback"[^>]*checked=""/);
+    expect(renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: builtIn })} />)).toMatch(/id="display-press-feedback"[^>]*disabled=""/);
   });
   it('Built-in animation explains what it gives up', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: builtIn })} />);

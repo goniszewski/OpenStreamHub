@@ -102,7 +102,7 @@ pub enum RunMode {
 /// settings file is a fresh install, which the frontend greets with the
 /// what-will-run dialog once). The dial screen content is a profile setting
 /// (`Profile`'s `dial_display`) and is no longer stored here.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "StoredSettings")]
 pub struct DisplaySettings {
     pub module_control: ModuleControl,
@@ -125,6 +125,22 @@ pub struct DisplaySettings {
     /// existed and files written outside a hold are byte-identical either way.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub held_from: Option<RunMode>,
+    /// Whether a key on the 15-key module is drawn dimmed while it is held
+    /// down (`--press-feedback`). On by default, and for every file written
+    /// before the setting existed.
+    pub press_feedback: bool,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            module_control: ModuleControl::default(),
+            run_mode: RunMode::default(),
+            live_offered: false,
+            held_from: None,
+            press_feedback: true,
+        }
+    }
 }
 
 impl DisplaySettings {
@@ -136,6 +152,7 @@ impl DisplaySettings {
         run_mode: RunMode::Test,
         live_offered: true,
         held_from: None,
+        press_feedback: false,
     };
 }
 
@@ -166,6 +183,14 @@ struct CurrentSettings {
     /// Missing unless the file was written while the editing hold was up.
     #[serde(default)]
     held_from: Option<RunMode>,
+    /// Missing in files written before the setting existed: on.
+    #[serde(default = "press_feedback_default")]
+    press_feedback: bool,
+}
+
+/// The field default for files that predate `press_feedback`.
+fn press_feedback_default() -> bool {
+    true
 }
 
 /// The field default for files that predate `live_offered`.
@@ -229,11 +254,13 @@ impl From<StoredSettings> for DisplaySettings {
                 run_mode,
                 live_offered,
                 held_from,
+                press_feedback,
             }) => Self {
                 module_control,
                 run_mode,
                 live_offered,
                 held_from,
+                press_feedback,
             },
             StoredSettings::WithAutoExecute(WithAutoExecuteSettings {
                 module_control,
@@ -249,6 +276,7 @@ impl From<StoredSettings> for DisplaySettings {
                 // Their user predates the one-time confirmation.
                 live_offered: true,
                 held_from: None,
+                press_feedback: true,
             },
             StoredSettings::Legacy(LegacySettings { enabled, .. }) => Self {
                 module_control: if enabled {
@@ -259,6 +287,7 @@ impl From<StoredSettings> for DisplaySettings {
                 run_mode: RunMode::Test,
                 live_offered: true,
                 held_from: None,
+                press_feedback: true,
             },
         }
     }
@@ -383,7 +412,11 @@ pub fn display_args(
     }
     match launch.module {
         ServiceModule::M4315 if profile.schema_version == 2 && profile.keypad.is_some() => {
-            vec!["--display-sync".into()]
+            let mut args: Vec<OsString> = vec!["--display-sync".into()];
+            if launch.settings.press_feedback {
+                args.push("--press-feedback".into());
+            }
+            args
         }
         ServiceModule::M131E if dial_content(profile) != DialDisplayContent::Off => vec![
             "--display-sync".into(),
@@ -573,18 +606,21 @@ mod tests {
         run_mode: RunMode::Test,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
     const BUILT_IN: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::BuiltInAnimation,
         run_mode: RunMode::Test,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
     const APP_LIVE: DisplaySettings = DisplaySettings {
         module_control: ModuleControl::App,
         run_mode: RunMode::Live,
         live_offered: true,
         held_from: None,
+        press_feedback: true,
     };
     /// A fresh install: Live, with the one-time confirmation still owed.
     const FRESH: DisplaySettings = DisplaySettings {
@@ -592,6 +628,7 @@ mod tests {
         run_mode: RunMode::Live,
         live_offered: false,
         held_from: None,
+        press_feedback: true,
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
@@ -621,6 +658,7 @@ mod tests {
                 run_mode: RunMode::Test,
                 live_offered: true,
                 held_from: None,
+                press_feedback: true,
             }
         );
         let parsed = parse(r#"{"module_control":"built_in_animation","run_mode":"live"}"#).unwrap();
@@ -631,6 +669,7 @@ mod tests {
                 run_mode: RunMode::Live,
                 live_offered: true,
                 held_from: None,
+                press_feedback: true,
             }
         );
         // Files that already stored a run mode predate the confirmation.
@@ -641,12 +680,13 @@ mod tests {
                 run_mode: RunMode::Live,
                 live_offered: false,
                 held_from: None,
+                press_feedback: true,
             }
         );
         // Always written in the current shape, confirmation included.
         assert_eq!(
             serde_json::to_value(BUILT_IN).unwrap(),
-            serde_json::json!({"module_control":"built_in_animation","run_mode":"test","live_offered":true})
+            serde_json::json!({"module_control":"built_in_animation","run_mode":"test","live_offered":true,"press_feedback":true})
         );
         for bad in [
             r#"{"module_control":"app","extra":1}"#,
@@ -690,6 +730,7 @@ mod tests {
                 run_mode: RunMode::Live,
                 live_offered: true,
                 held_from: None,
+                press_feedback: true,
             }
         );
         // Every earlier shape reads as offered: their user predates the
@@ -730,7 +771,7 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             saved,
-            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true})
+            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true,"press_feedback":true})
         );
     }
 
@@ -826,7 +867,7 @@ mod tests {
         }
         assert_eq!(
             display_args(Some(&launch(ServiceModule::M4315, APP)), true, &folders),
-            ["--display-sync"]
+            ["--display-sync", "--press-feedback"]
         );
         // A flat profile on the keypad: software mode only (the service
         // refuses --display-sync without a schema-2 keypad profile).
@@ -893,7 +934,7 @@ mod tests {
         assert!(display_args(Some(&keypad), true, &flat()).is_empty());
         assert_eq!(
             display_args(Some(&keypad), true, &folders),
-            ["--display-sync"]
+            ["--display-sync", "--press-feedback"]
         );
         // The dial is synced for any profile.
         let dial = launch(ServiceModule::M131E, APP);
@@ -917,7 +958,7 @@ mod tests {
             spawn_display(true, &request),
             SpawnDisplay {
                 profile: None,
-                args: vec!["--display-sync".into()]
+                args: vec!["--display-sync".into(), "--press-feedback".into()]
             }
         );
         assert_eq!(spawn_display(false, &request), SpawnDisplay::default());
@@ -967,6 +1008,44 @@ mod tests {
     }
 
     #[test]
+    fn press_feedback_is_a_keypad_flag_that_defaults_on_and_can_be_turned_off() {
+        let keypad = test_profiles::folders();
+        let launch = |press_feedback| DisplayLaunch {
+            settings: DisplaySettings {
+                press_feedback,
+                ..APP
+            },
+            module: ServiceModule::M4315,
+        };
+        assert_eq!(
+            display_args(Some(&launch(true)), true, &keypad),
+            ["--display-sync", "--press-feedback"]
+        );
+        assert_eq!(
+            display_args(Some(&launch(false)), true, &keypad),
+            ["--display-sync"]
+        );
+        // The dial never gets it, whatever the setting says.
+        let dial = DisplayLaunch {
+            settings: APP,
+            module: ServiceModule::M131E,
+        };
+        assert!(
+            !display_args(Some(&dial), true, &keypad)
+                .iter()
+                .any(|arg| arg == "--press-feedback")
+        );
+        // Files from before the setting read as on, and an explicit off survives.
+        assert!(parse(r#"{"module_control":"app"}"#).unwrap().press_feedback);
+        assert!(
+            !parse(r#"{"module_control":"app","press_feedback":false}"#)
+                .unwrap()
+                .press_feedback
+        );
+        assert!(DisplaySettings::default().press_feedback);
+    }
+
+    #[test]
     fn a_flat_keypad_profile_is_shown_as_one_page_under_app_control() {
         use cooltek_sdk_service::KeypadTile;
         let request = |profile: Profile, settings, module, software_mode| StartRequest {
@@ -980,7 +1059,7 @@ mod tests {
             obs: None,
         };
         let shown = spawn_display(true, &request(flat_keys(), APP, ServiceModule::M4315, true));
-        assert_eq!(shown.args, ["--display-sync"]);
+        assert_eq!(shown.args, ["--display-sync", "--press-feedback"]);
         let page = shown.profile.unwrap();
         // One root page; each keypad binding on its own key with its action,
         // every other binding unchanged, the name kept.
@@ -1021,7 +1100,7 @@ mod tests {
                 true,
             ),
         );
-        assert_eq!(blank.args, ["--display-sync"]);
+        assert_eq!(blank.args, ["--display-sync", "--press-feedback"]);
         let blank = blank.profile.unwrap();
         assert!(
             blank.keypad.unwrap().pages[0]
@@ -1298,6 +1377,7 @@ mod tests {
                 run_mode: RunMode::Test,
                 live_offered: true,
                 held_from: Some(RunMode::Live),
+                press_feedback: true,
             }
         );
         // Written back exactly as parsed, and the no-hold shape stays
@@ -1306,12 +1386,12 @@ mod tests {
             serde_json::to_value(held).unwrap(),
             serde_json::json!({
                 "module_control": "app", "run_mode": "test",
-                "live_offered": true, "held_from": "live"
+                "live_offered": true, "held_from": "live", "press_feedback": true
             })
         );
         assert_eq!(
             serde_json::to_value(APP).unwrap(),
-            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true})
+            serde_json::json!({"module_control":"app","run_mode":"test","live_offered":true,"press_feedback":true})
         );
         // Strict about the value.
         assert!(parse(

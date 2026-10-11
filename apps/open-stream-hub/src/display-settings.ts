@@ -17,7 +17,7 @@ import { errorMessage } from './ui-model';
 
 // A fresh install (no settings file): Live, with the one-time what-will-run
 // confirmation still owed. Mirrors DisplaySettings::default() in Rust.
-export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false };
+export const defaultDisplaySettings: DisplaySettings = { module_control: 'app', run_mode: 'live', live_offered: false, press_feedback: true };
 
 export const moduleControlOptions: readonly { value: ModuleControl; label: string }[] = [
   { value: 'app', label: 'App' },
@@ -37,7 +37,7 @@ export const autoTakesOver = (module: ServiceModule) => appControls(module) || m
 // by default, the analog clock for a profile with nothing on the dial).
 export function displayFlags(settings: DisplaySettings, module: ServiceModule, softwareMode: boolean, profile: Profile): string[] {
   if (settings.module_control !== 'app' || !softwareMode) return [];
-  if (module === 'm4315' && (profile.schema_version === 1 || profile.keypad !== undefined)) return ['--display-sync'];
+  if (module === 'm4315' && (profile.schema_version === 1 || profile.keypad !== undefined)) return settings.press_feedback ? ['--display-sync', '--press-feedback'] : ['--display-sync'];
   if (module === 'm131e' && effectiveDialDisplay(profile) !== 'off') {
     return ['--display-sync', '--dial-content', dialDisplayArgs[effectiveDialDisplay(profile)]];
   }
@@ -51,10 +51,11 @@ export function isDisplaySettings(value: unknown): value is DisplaySettings {
   // with an undefined value (the cleared hold), which counts as absent.
   const held = record.held_from === undefined ? 0 : 1;
   const keys = Object.keys(record).filter(key => record[key] !== undefined);
-  return keys.length === 3 + held
+  return keys.length === 4 + held
     && moduleControlOptions.some(option => option.value === record.module_control)
     && (record.run_mode === 'live' || record.run_mode === 'test')
     && typeof record.live_offered === 'boolean'
+    && typeof record.press_feedback === 'boolean'
     && (held === 0 || record.held_from === 'live');
 }
 
@@ -109,6 +110,7 @@ export class DisplaySettingsStore {
 
   load() { return this.run('display_settings'); }
   save(settings: DisplaySettings) { return this.run('set_display_settings', { settings }); }
+  setPressFeedback(on: boolean) { return this.save({ ...this.state.settings, press_feedback: on }); }
   setModuleControl(moduleControl: ModuleControl) { return this.save({ ...this.state.settings, module_control: moduleControl }); }
   // Switching the run mode applies it to every running module: the backend
   // restarts the sessions that change, a running dry one executing only

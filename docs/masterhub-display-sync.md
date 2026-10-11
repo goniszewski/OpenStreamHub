@@ -77,6 +77,10 @@ Automated tests for these pieces use fake transports. Manual runs of `masterhub-
 
 The display runs on its own thread instead of the action worker, so display failures never dispatch, suppress, or reorder an action.
 
+### Press feedback (`--press-feedback`, not yet run on hardware)
+
+With `--display-sync` on an M4315, `--press-feedback` draws a key dimmed (about 55% brightness) while it is held down. The input owner tracks the held key from each report's pressed and released events and puts it in the same single request slot as the page path (trigger `press`, or `navigation` when the press opens a folder, which then draws the new page with that key already dimmed). The display thread wraps the artwork provider for the held key only, so `DisplaySync` still diffs against what is drawn: a press costs one key write and a release one more, and a press that never changes a pixel (a blank black key) writes nothing. An animated key keeps animating while dimmed. Nothing waits for it: the action goes through the worker queue as before, and a press and release that arrive before the display thread wakes coalesce into no write at all. If a press-triggered sync takes longer than 150 ms, feedback is dropped for the rest of the run, since a late dim reads as lag. OpenStreamHub passes the flag when Settings > "Dim a key while it is pressed" is on (the default); the dial never gets it.
+
 ### Dial (run on one M131E)
 
 `masterhub-service run --software-mode --display-sync --dial-content function|clock|analog-clock|cpu|image` on an M131E draws the dial screen. `--dial-content` defaults to `off`; any other value needs `--display-sync`, `--software-mode` and an M131E (checked before the device is opened, values parsed strictly). A flat profile is enough; no keypad tree is needed. What the OpenStreamHub app passes is each running profile's own `dial_display` setting (see [the profile's dial display setting](#the-profiles-dial-display-setting)); the standalone flag chooses by hand.

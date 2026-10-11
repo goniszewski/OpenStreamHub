@@ -90,6 +90,7 @@ All options of `masterhub-service run`, as defined in `crates/cooltek-sdk-cli/sr
 | `--timeout-ms N` | Read timeout, 1–1000 ms (default 100). |
 | `--stop-on-action-error` | End the session on the first failed action. |
 | `--display-sync` | Experimental: draw M4315 key images, or the dial screen with `--dial-content`. Requires `--software-mode`. |
+| `--press-feedback` | Experimental: with `--display-sync` on an M4315, draw a key dimmed while it is held down (see [press feedback](masterhub-display-sync.md#press-feedback---press-feedback-not-yet-run-on-hardware)). |
 | `--dial-content off\|function\|clock\|analog-clock\|cpu\|image` | Experimental: what the M131E dial screen shows (default `off`). Any other value requires `--display-sync`; `image` serves the picture in the profile's `dial_display` setting. |
 | `--profile-switch-requests` | Report `profile` actions as `profile_switch_requested` for a supervising session manager. |
 | `--obs-endpoint ADDR` | Loopback obs-websocket endpoint for `obs_scene` (`127.0.0.1:PORT`, `[::1]:PORT` or `localhost:PORT`). |

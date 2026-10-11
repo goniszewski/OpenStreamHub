@@ -11,7 +11,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M0064 base | 502 | Sends a constant heartbeat only. No input. |
 | M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
 | M131E dial | 518 | Input, a raw 240x240 image upload, the four generated faces, backlight and color writes verified in software mode. App-controlled dry-run display, live preview and normal Stop verified below. |
-| M005S faders | n/a | Not connected. |
+| M005S faders | 512 | Input verified on all five faders in default mode (11 October 2026): positions arrive as 0 (bottom) to 100 (top). Lighting verified; see the LED sections. |
 
 ## USB topology and reported physical layout
 
@@ -206,3 +206,11 @@ On a Mac with the 5-fader module: bind a fader to "Microphone volume follows pos
 ## Key press feedback (pending)
 
 On the 15-key module with the desktop app (Module control App, "Dim a key while it is pressed" on): press and hold an action key and check it dims within a blink and returns to normal on release, while the action itself still runs without any delay compared with the setting off; hold a folder key and check the folder opens with that key dimmed until release; check an animated key keeps animating while dimmed. Turn the setting off, start the profile again, and check nothing dims. Watch the run log for `press` display records and see whether a press write ever exceeds 150 ms (feedback then switches itself off for the run). Applies at the next profile start.
+
+## Fader input (11 October 2026)
+
+`masterhub-diag record` on the M005S (product ID 512), default mode, nothing sent, 60 seconds, the faders moved by hand. The module sends input reports in default mode, unlike the roller module. A first capture (45 reports, the faders only partly moved) showed the frame: each report is `01 2a 07 00 02 05` followed by five position bytes, and the first report carries all five positions. `replay` decodes only the faders that changed after that.
+
+- **Full-range run:** all five faders were set to the middle (start values 54 to 60), then each in turn, 1 to 5, was pushed fully down and then fully up. 395 reports. Each fader reached 0 first and then 100, in that order, so 0 is the bottom and 100 the top. All five ended at 100.
+- **Not done:** the move was by hand and not timed; jitter and a fader's resolution at rest are not measured, and the microphone-volume behaviour is the separate pending check.
+- **Not asked of the module:** there is no read-on-demand for positions; a position becomes known with the first report after a fader moves, which carries all five.

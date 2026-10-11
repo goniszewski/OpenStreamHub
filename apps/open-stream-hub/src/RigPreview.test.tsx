@@ -50,7 +50,7 @@ describe('RigPreview canvas', () => {
     expect(markup).toContain('aria-label="Select Roller 1 on the base"');
     expect(markup).toMatch(/image-control round bound selected"[^>]*aria-label="Select Knob 1 on the base"/);
     // A module is also pickable by its caption, and the old rig list and its tools are gone.
-    expect(markup).toContain('class="base-layout-name" aria-pressed="true"');
+    expect(markup).toContain('class="base-layout-name" data-picked="true"');
     expect(markup).not.toContain('Add module');
     expect(markup).not.toContain('in rig');
     expect(markup).not.toContain('Move 15-key IPS display left');
@@ -106,11 +106,12 @@ describe('RigPreview canvas', () => {
     expect(selectedCells(second)).toBe(1);
     // Only the picked unit outlines the selected control.
     expect(second.match(/image-control[^"]* selected/g)).toHaveLength(1);
-    expect(second).toMatch(/class="base-layout-name" aria-pressed="false"[^>]*>3-knob module …1179</);
-    expect(second).toMatch(/class="base-layout-name" aria-pressed="true"[^>]*>3-knob module …9999</);
+    expect(second).toMatch(/class="base-layout-name" data-picked="false"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
+    expect(second).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252309999"/);
+    expect(second).not.toContain('…1179');
     // A pick that is not a unit of the editor's kind falls back to the first unit of that kind.
-    expect(markupFor('gone')).toMatch(/class="base-layout-name" aria-pressed="true"[^>]*>3-knob module …1179</);
-    expect(markupFor(null)).toMatch(/class="base-layout-name" aria-pressed="true"[^>]*>3-knob module …1179</);
+    expect(markupFor('gone')).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
+    expect(markupFor(null)).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module<\/span><span[^>]*title="Serial number MHKB03AA221252301179"/);
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

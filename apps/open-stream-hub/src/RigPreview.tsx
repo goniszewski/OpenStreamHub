@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore } from 'react';
+import { Info } from 'lucide-react';
 import type { CSSProperties, MouseEvent, PointerEvent } from 'react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
@@ -91,8 +92,12 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   };
   const caption = (device: LiveDevice) => {
     const name = modules.find(module => module.id === device.module)?.shortName ?? device.module;
-    return <button type="button" className="base-layout-name" aria-pressed={device.path_hex === activePath} title={device.serial_number ?? undefined}
-      onClick={() => select(device, device.path_hex === activePath ? selection.control : 0)}>{name}{device.serial_number ? ` …${device.serial_number.slice(-4)}` : ''}{device.module === 'm005s' && !feedState.live.m005s ? ' · positions not read' : ''}</button>;
+    // A plain label, not a control: the tile and its own controls pick the unit. The serial number sits behind an info mark.
+    return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
+      <span>{name}</span>
+      {device.serial_number && <span className="base-layout-info" title={`Serial number ${device.serial_number}`} aria-label={`Serial number ${device.serial_number}`} role="img"><Info size={11} aria-hidden="true" /></span>}
+      {device.module === 'm005s' && !feedState.live.m005s && <span className="base-layout-note"> · positions not read</span>}
+    </div>;
   };
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">

@@ -1,3 +1,4 @@
+import { ColourSwatchPicker } from './ColourPicker';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { Check, Copy, FileDown, ImageUp, LoaderCircle, TriangleAlert } from 'lucide-react';
@@ -159,7 +160,7 @@ export function ArtworkPage({ desktop, invoke, selection, devices = [], initialS
             <div className="artwork-colour">
               <input id="artwork-background" type="text" value={options.background} disabled={locked} spellCheck={false} autoComplete="off" maxLength={7}
                 aria-invalid={colourInvalid} aria-describedby={colourInvalid ? 'artwork-background-error' : undefined} onChange={event => set('background', event.target.value)} />
-              <input type="color" aria-label="Pick background colour" value={formatHexColour(colour ?? [0, 0, 0])} disabled={locked} onChange={event => set('background', event.target.value)} />
+              <ColourSwatchPicker label="Pick background colour" value={formatHexColour(colour ?? [0, 0, 0])} disabled={locked} onChange={hex => set('background', hex)} />
             </div>
             {colourInvalid ? <p id="artwork-background-error" className="field-error" role="alert">Background colour must be a hex value such as #000000 or #fff.</p>
               : <p className="fine-print">Fills margins and transparent areas.</p>}

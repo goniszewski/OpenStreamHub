@@ -5,7 +5,7 @@ import { colourPresets, hexToHsv, hsvToHex } from './colour-math';
 
 // An inline picker with exact values: a saturation/brightness square, a hue slider, a hex field and
 // preset swatches. The system picker's swatches are not pure channels (its red is #ff2600).
-export function ColourPicker({ id, value, disabled, onChange, children }: { id: string; value: string; disabled?: boolean; onChange(hex: string): void; children?: ReactNode }) {
+export function ColourPicker({ id, value, disabled, onChange, children, hideHex }: { id: string; value: string; disabled?: boolean; onChange(hex: string): void; children?: ReactNode; hideHex?: boolean }) {
   // The hue is kept apart from the hex, which loses it for greys and black.
   const [hsv, setHsv] = useState(() => hexToHsv(value));
   const [text, setText] = useState(value);
@@ -47,9 +47,27 @@ export function ColourPicker({ id, value, disabled, onChange, children }: { id: 
         aria-label={`Use ${preset.name.toLowerCase()} ${preset.hex}`} disabled={disabled} onClick={() => { setHsv(hexToHsv(preset.hex)); setText(preset.hex); if (preset.hex !== value) onChange(preset.hex); }} />)}
     </div>
     <div className="colour-footer">
-      <input id={id} className="colour-hex" type="text" inputMode="text" spellCheck={false} maxLength={7} aria-label="Colour as hex" value={text} disabled={disabled}
-      onChange={event => typed(event.target.value)} onBlur={() => setText(value)} />
+      {!hideHex && <input id={id} className="colour-hex" type="text" inputMode="text" spellCheck={false} maxLength={7} aria-label="Colour as hex" value={text} disabled={disabled}
+      onChange={event => typed(event.target.value)} onBlur={() => setText(value)} />}
       {children}
     </div>
+  </div>;
+}
+
+// A swatch button that opens the picker in a popover beside a field that already has its own hex input.
+export function ColourSwatchPicker({ label, value, disabled, onChange }: { label: string; value: string; disabled?: boolean; onChange(hex: string): void }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (event: Event) => { if (!box.current?.contains(event.target as Node)) setOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    document.addEventListener('pointerdown', away);
+    document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('pointerdown', away); document.removeEventListener('keydown', escape); };
+  }, [open]);
+  return <div className="colour-popover-host" ref={box}>
+    <button type="button" className="colour-swatch-button" aria-label={label} aria-expanded={open} disabled={disabled} style={{ background: value }} onClick={() => setOpen(!open)} />
+    {open && <div className="colour-popover" role="dialog" aria-label={label}><ColourPicker id="" value={value} hideHex onChange={onChange} /></div>}
   </div>;
 }

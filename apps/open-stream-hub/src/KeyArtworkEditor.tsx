@@ -1,3 +1,4 @@
+import { ColourSwatchPicker } from './ColourPicker';
 import { useEffect, useRef, useState } from 'react';
 import type { BindingAction, KeyArtwork } from './contracts';
 import { dataUrl, formatHexColour, parseHexColour, readSourceFile } from './artwork-model';
@@ -118,7 +119,7 @@ const colourRow = (id: string, label: string, value: string, disabled: boolean, 
   <div className="artwork-colour">
     <input id={id} type="text" value={value} disabled={disabled} spellCheck={false} autoComplete="off" maxLength={7}
       aria-invalid={parseHexColour(value) === null} onChange={event => onChange(event.target.value)} />
-    <input type="color" aria-label={`Pick ${label.toLowerCase()}`} value={formatHexColour(parseHexColour(value) ?? [0, 0, 0])} disabled={disabled} onChange={event => onChange(event.target.value)} />
+    <ColourSwatchPicker label={`Pick ${label.toLowerCase()}`} value={formatHexColour(parseHexColour(value) ?? [0, 0, 0])} disabled={disabled} onChange={onChange} />
   </div>
 </div>;
 

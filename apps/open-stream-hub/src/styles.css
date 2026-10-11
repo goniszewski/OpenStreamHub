@@ -734,3 +734,7 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .pack-rejected summary { cursor:pointer; color:var(--muted); }
 .pack-rejected ul { margin:4px 0 8px 18px; padding:0; }
 .fader-readout { display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; margin-top:10px; font-size:13px; }
+
+.colour-popover-host { position:relative; flex:none; }
+.colour-swatch-button { width:44px; height:38px; padding:0; border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+.colour-popover { position:absolute; z-index:40; top:calc(100% + 6px); right:0; width:240px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel, var(--header)); box-shadow:0 8px 24px rgba(0,0,0,.35); }

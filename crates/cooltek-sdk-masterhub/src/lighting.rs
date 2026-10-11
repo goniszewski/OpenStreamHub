@@ -354,4 +354,37 @@ mod tests {
         };
         assert!(set_color(&fake, LedModule::Knob, LedTarget::All, [0; 3], false).is_err());
     }
+
+    #[test]
+    fn every_report_the_windows_app_sent_is_rebuilt_byte_for_byte() {
+        let fixture = include_str!("../tests/fixtures/windows-lighting-writes.txt");
+        let mut checked = 0;
+        for line in fixture.lines().filter(|line| !line.starts_with('#')) {
+            let hex = line.split(' ').nth(2).unwrap();
+            let bytes: Vec<u8> = (0..8)
+                .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+                .collect();
+            let module = match bytes[2] {
+                0 => LedModule::Base,
+                1 => LedModule::Slider,
+                2 => LedModule::Knob,
+                other => panic!("unknown module type {other}"),
+            };
+            let target = LedTarget::Index(bytes[3]);
+            let rebuilt = match bytes[1] {
+                COLOR_COMMAND => {
+                    color_report(module, target, [bytes[4], bytes[5], bytes[6]], false, 64)
+                }
+                BRIGHTNESS_COMMAND => brightness_report(module, target, bytes[4], 64),
+                MODE_COMMAND => mode_report(module, target, bytes[4], false, 64),
+                other => panic!("unknown command {other:#x}"),
+            }
+            .unwrap_or_else(|error| panic!("{line}: {error}"));
+            // Bytes past the command's own arguments are buffer residue in the capture.
+            let used = if bytes[1] == COLOR_COMMAND { 7 } else { 5 };
+            assert_eq!(rebuilt[..used], bytes[..used], "{line}");
+            checked += 1;
+        }
+        assert!(checked > 100, "fixture looks truncated: {checked} reports");
+    }
 }

@@ -9,7 +9,7 @@ Reference, what the Mac sent and the base accepted (output report ID 2, 64 bytes
 02 2d 00 00 ff 00 00 …  base, colour red
 ```
 
-For knobs the same commands used type `01`, for faders `02`. Compare what Windows sends with these.
+The Mac used type `01` for knobs and `02` for faders; the capture below showed those two were swapped (see [results](#capture-results-11-october-2026)). Compare what Windows sends with these.
 
 ## What you need
 
@@ -75,3 +75,15 @@ tshark -r 02-knob-colour.pcapng -Y "usb.transfer_type == 0x01 || usb.bmRequestTy
   (repeat per file; skip it if `tshark` is not available, the `pcapng` files are enough).
 
 Captures include the modules' USB serial numbers. They are not secret in the way a password is, but share the folder only with whoever is analysing it.
+
+## Capture results (11 October 2026)
+
+The eight captures (`01` to `08`, the last one cycling every effect on the knob module) were taken and analysed; the pcapng files stay outside the repository. Every lighting write the app sent is in [`windows-lighting-writes.txt`](../crates/cooltek-sdk-masterhub/tests/fixtures/windows-lighting-writes.txt) (capture number, seconds, first 8 bytes), and a test rebuilds each report from the SDK's builders.
+
+- **Module types:** base `00` (index 0), faders `01` (indexes 0 to 4), knobs `02` (indexes 0 to 2). Each module is its own USB device, and the app sends one interrupt OUT report of 64 bytes per LED.
+- **Commands:** `02 2d <type> <index> R G B` colour, `02 2c <type> <index> <mode>` mode, `02 2e <type> <index> <0-100>` brightness. The bytes after the arguments (a version string such as `.00.05.00`) are residue and ignored.
+- **Effects** (knob module, capture 08, in the app's dropdown order): Off 0, Static 1, Breathing 2, Strobe 3, Cycling 5, Random 6, Wave 7, Water 8, Rainbow 9. Mode 4 never appears.
+- **Per change the app resends the module's state:** a colour change in Static sends colour, mode 1 and brightness for every LED of the module. After a replug (capture 07) it resends mode, brightness and colour for the knobs. The Lighting page should do the same.
+- **No setup report:** startup (capture 01) shows no output reports and only periodic feature report polling. Brightness (capture 03) is sent as a value from 0 to 100 per LED, one step per slider position.
+- **Whole kit** (capture 06) sends all three module types, per LED, in an order that varies between commands.
+- **Not recorded:** the app version, the modules' firmware as the app shows it, and whether the knob LEDs can be set separately. The action log was not supplied, so times were matched to the app's actions by order.

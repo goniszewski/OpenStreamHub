@@ -16,6 +16,7 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"media","command":"play_pause"}` (also `next_track`, `previous_track`) | Executes: `/usr/bin/osascript -l JavaScript` (fixed script; after `--`, the key type and a `request`/`check` mode) posts a hardware media key, down then up, to whichever app owns media keys (see below) | Accessibility (posting events) |
 | `{"type":"media","command":"stop"}` | **Best effort, two players only.** macOS has no stop media key: a fixed script stops Apple Music and pauses Spotify, each only if already running; with neither running it succeeds and does nothing | Automation (control of Music or Spotify) |
 | `{"type":"multi_action","actions":[…]}` | Executes each step in order, 280 ms apart, within a 15 s overall deadline | Whatever the steps need |
+| `{"type":"macro","steps":[…]}` | Executes: `/usr/bin/osascript -l JavaScript` (fixed script) replays the recorded keystrokes with their waits and holds as paired `CGEvent` down/up events; steps travel on stdin (see [Recorded macros](#recorded-macros-macro)) | Accessibility (posting events); recording also needs Input Monitoring |
 | `{"type":"profile","direction":"next"}` (or `"previous"`) | **Never executed on the host.** The service reports a request; the OpenStreamHub session manager switches the run to another saved profile. Standalone runs log it as unavailable and do nothing | Nothing (no macOS permission) |
 | `{"type":"timer","seconds":300,"label":"Tea","sound":"glass"}` | The service counts down; a second press of the same control cancels. At the end: `/usr/bin/osascript` (fixed script, label as an argv item) posts a notification, then `/usr/bin/afplay /System/Library/Sounds/<Name>.aiff` plays the sound | Notification permission for the process macOS attributes `osascript` to (unverified; a refusal that prints to stderr is logged as `timer_alert_warning`) |
 | `{"type":"obs_scene","scene":"Live"}` | Executes when the run has an OBS endpoint: one loopback obs-websocket v5 connection, `SetCurrentProgramScene`, close. Without an endpoint it is logged as unavailable and does nothing | OBS 28+ with its WebSocket server on; OBS turned on in OpenStreamHub Settings (or `--obs-endpoint`) |
@@ -44,9 +45,45 @@ Dry runs, replay and preview call the same `Action::validate_executable` as the 
 `shortcut` stays backward compatible. `key` is either:
 
 - one ASCII letter, digit or space, sent as `keystroke "<key>"` as before, or
-- exactly one of these lowercase names, sent as `key code <n>`: `return`, `tab`, `space`, `delete` (backspace), `escape`, `forward_delete`, `home`, `end`, `page_up`, `page_down`, `arrow_left`, `arrow_right`, `arrow_down`, `arrow_up`, `f1`…`f20`.
+- exactly one of these lowercase names, sent as `key code <n>`: `return`, `tab`, `space`, `delete` (backspace), `escape`, `forward_delete`, `home`, `end`, `page_up`, `page_down`, `arrow_left`, `arrow_right`, `arrow_down`, `arrow_up`, `f1`…`f20`, the keypad keys `keypad_0`…`keypad_9`, `keypad_decimal`, `keypad_multiply`, `keypad_plus`, `keypad_clear`, `keypad_divide`, `keypad_enter`, `keypad_minus`, `keypad_equals`, or
+- one of the media keys `play_pause`, `next_track`, `previous_track`, posted as hardware media keys exactly like the `media` action (with `request` on the first key of a run, then `check`). They have no virtual key code and refuse every modifier, so a chord like Command+Play does not exist; `stop` is not a key.
 
-Any subset of `command`, `control`, `option`, `shift` can be added, with no duplicates. Named keys are mapped to integers from a closed table (`NAMED_KEYS` in `profile.rs`, Carbon `kVK_*` values), so no user text is placed into the AppleScript source. Uppercase names, unknown names, punctuation and sequences are rejected. Function keys may be captured by macOS or by the keyboard's media-key setting before the focused app sees them. That has not been checked.
+Any subset of `command`, `control`, `option`, `shift` can be added, with no duplicates. Named keys are mapped to integers from a closed table (`NAMED_KEYS` in `profile.rs`, Carbon `kVK_*` values), so no user text is placed into the AppleScript source. Uppercase names, unknown names, punctuation and sequences are rejected. F13–F20 are the last function keys macOS gives virtual key codes (there are no `kVK_F21`–`kVK_F24` in `HIToolbox/Events.h`, so no key can send them). Function keys and media keys may be captured by macOS or by the keyboard's media-key setting before the focused app sees them. That has not been checked.
+
+In the app the `shortcut` editor is a capture field ("Press keys…") plus a key chooser that lists every key above without pressing it: letters and digits, the named keys, F1–F20, the keypad and the media keys. A chord holds at most five keys (the four modifiers plus the key), which is the same limit the validator enforces.
+
+## Recorded macros (`macro`)
+
+`macro` replays a recorded sequence of keystrokes, each with its own wait and hold time. It is a binding-level action like `multi_action` and is never a step of one: a macro is already a timed sequence, so its replay keeps one deadline instead of nesting two.
+
+```json
+{"type":"macro","steps":[
+  {"key":"c","modifiers":["command"],"delay_before_ms":0,"hold_ms":80},
+  {"key":"arrow_left","modifiers":[],"delay_before_ms":120,"hold_ms":40}
+]}
+```
+
+- `key` follows the same rules as a `shortcut` key without media keys: one ASCII letter, digit or space (an upper-case letter is the same physical key), or one allow-listed named key. Media keys cannot be macro keys — macOS consumes them before a recording can see them, and the `media` action sends them on its own.
+- `modifiers` is any subset of the four, no duplicates.
+- Bounds (`Action::MAX_*` in `profile.rs`, mirrored in the app editor): 1–64 steps; `delay_before_ms` 0–10,000; `hold_ms` 0–5,000; the waits and holds together at most 30,000 ms. Both the Rust validator and the editor enforce them.
+- The activity log redacts a macro like a text snippet: only `{"type":"macro","steps":N,"ms":M}` is written, never the keys, because the recorded keys read like typed text. The Execute confirmation discloses every step in full, and a macro that types bare characters or presses a submit key (Return, Keypad Enter, Control+M/J/O) rates the profile high risk, like a snippet that pastes line breaks.
+
+### Replay
+
+One fixed `osascript -l JavaScript` run per macro (`MACRO_SCRIPT` in `crates/cooltek-sdk-service/src/macos.rs`):
+
+1. It reads the step list from stdin as a JSON array of validated integers — the virtual key code, the CoreGraphics modifier flag word, the wait and the hold — never from `argv`. The list is bounded far below the 8 KiB stdin limit.
+2. It re-checks every bound (including the field set of each step and the 30 s total) and preflights `CGPreflightPostEventAccess()`; on any refusal it throws a fixed `macro: …` error and posts nothing.
+3. For each step it waits the recorded delay, posts the key down with `CGEventCreateKeyboardEvent` + `CGEventSetFlags`, waits the hold, and posts the key up. Every event is read back through `NSEvent.eventWithCGEvent` and must show the expected type and key code before it is posted.
+4. The subprocess timeout is the macro's own duration plus 5 s, so a long macro neither blocks forever nor rushes its pauses; stopping a run kills the script between two events at the latest.
+
+Failures name fixed causes (posting not allowed → the Accessibility guidance, event check failed → "this macOS did not accept the keyboard event layout"), never stderr text. A macro that fails part way may already have sent its earlier keys; nothing is retried. Letters, digits and named keys go out as fixed ANSI/`kVK_*` codes, so an alternative layout (Dvorak) prints different characters — the same caveat as every key-code path.
+
+### Recording
+
+The app records through a listen-only `CGEventTap` (`apps/open-stream-hub/src-tauri/src/recorder.rs`): key downs and ups with their modifier flags and millisecond times, capped at 60 s and 4096 events. The editor folds the raw events into steps (auto-repeat and modifier taps fold away, unmapped keys are dropped and counted, waits and holds beyond the limits are trimmed), shows the folded timeline for review, and only replaces the macro when the user accepts it. Recording needs the Input Monitoring permission and replay needs Accessibility; the recorder dialog preflights both through the same public `CGPreflight*EventAccess` functions the service scripts use, explains them, and deep-links to the matching System Settings pane — it never requests a prompt implicitly. The "Press keys…" capture field of the shortcut editor needs no permission at all: it reads the web page's own keyboard events while focused.
+
+The service (a standalone `masterhub-service` run) can replay macros but has no recorder; recording is an OpenStreamHub editor feature.
 
 ## System actions
 

@@ -423,6 +423,15 @@ pub fn loggable(action: &Action) -> Value {
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
+        // A macro's step list is the keys it types, so like a text snippet
+        // only its shape is logged: never the keys themselves.
+        Action::Macro { steps } => {
+            let ms: u64 = steps
+                .iter()
+                .map(|step| u64::from(step.delay_before_ms) + u64::from(step.hold_ms))
+                .sum();
+            json!({"type":"macro", "steps":steps.len(), "ms":ms})
+        }
         // The label is user text shown in a notification; only its length is logged.
         Action::Timer {
             seconds,
@@ -637,7 +646,7 @@ pub fn emit(output: &mut impl Write, value: Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cooltek_sdk_service::{Gesture, Modifier, ProfileDirection};
+    use cooltek_sdk_service::{Gesture, MacroStep, Modifier, ProfileDirection};
 
     /// Fails the test if a `profile` action ever reaches the host boundary.
     struct NoHost;
@@ -1267,6 +1276,27 @@ mod tests {
             );
             assert!(!loggable(&nested).to_string().contains(scene));
         }
+        // A macro's steps are the keys it types, so they are never logged.
+        let macro_action = Action::Macro {
+            steps: vec![
+                MacroStep {
+                    key: "h".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 40,
+                },
+                MacroStep {
+                    key: "unter2".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 100,
+                    hold_ms: 0,
+                },
+            ],
+        };
+        assert_eq!(
+            loggable(&macro_action),
+            json!({"type":"macro", "steps":2, "ms":140})
+        );
         for plain in [
             Action::Volume { delta: -5 },
             Action::ToggleMute,

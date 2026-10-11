@@ -1,7 +1,8 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
 use crate::{
-    Action, ActionDispatcher, MediaCommand, Modifier, SystemCommand, TimerAlert, TimerAlerter,
+    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, SystemCommand, TimerAlert,
+    TimerAlerter,
     obs::{OBS_UNAVAILABLE, ObsClient},
 };
 use std::{
@@ -165,6 +166,145 @@ const UTF8_ENV: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.U
 const MULTI_ACTION_DEADLINE: Duration = Duration::from_secs(15);
 /// Clipboard type names that `clipboard info` reports for plain text only.
 const PLAIN_TEXT_TYPES: &[&str] = &["«class utf8»", "«class ut16»", "string", "Unicode text"];
+
+/// Fixed JavaScript for Automation script that replays a `macro`: it reads the
+/// step list from stdin as a JSON array, validates every field against the
+/// same bounds the profile validator enforces, checks the Accessibility
+/// (post event) permission, and then posts each keystroke as a paired
+/// `CGEventCreateKeyboardEvent` down and up with the recorded modifiers and
+/// the waits and holds between them.
+///
+/// The step list never touches `argv`: every step is a validated integer
+/// (virtual key code, modifier flags, wait, hold) written to stdin, which is
+/// bounded well below the 16 KiB pipe buffer. The script re-checks every
+/// bound, so a future caller bug posts nothing rather than something
+/// unexpected. Before anything is posted, every event is read back through
+/// `NSEvent.eventWithCGEvent` and must show exactly the expected type and key
+/// code; if a future macOS moved those fields, the script fails and posts
+/// nothing.
+///
+/// Posting needs the Accessibility (post event) permission of the process
+/// macOS holds responsible. Without it `CGEventPost` drops events silently,
+/// so the script preflights first and fails with a fixed marker; the
+/// permission flow of the app links to System Settings.
+const MACRO_SCRIPT: &[&str] = &[
+    "ObjC.import('AppKit');",
+    "ObjC.import('CoreGraphics');",
+    "ObjC.import('Foundation');",
+    "ObjC.bindFunction('CGPreflightPostEventAccess', ['bool', []]);",
+    "function run(argv) {",
+    "if (argv.length !== 0) throw new Error('macro: unexpected argument');",
+    "var data = $.NSFileHandle.fileHandleWithStandardInput.readDataToEndOfFile;",
+    "var steps = JSON.parse($.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js);",
+    "if (!Array.isArray(steps) || steps.length < 1 || steps.length > 64) throw new Error('macro: bad step count');",
+    "var total = 0;",
+    "steps.forEach(function (step) {",
+    "if (!step || typeof step !== 'object' || Array.isArray(step)) throw new Error('macro: bad step');",
+    "if (Object.keys(step).sort().join(',') !== 'code,delay,flags,hold') throw new Error('macro: bad step fields');",
+    "if (typeof step.code !== 'number' || step.code < 0 || step.code > 127 || step.code % 1 !== 0) throw new Error('macro: bad key code');",
+    "if (typeof step.flags !== 'number' || step.flags < 0 || step.flags > 1966080 || (step.flags & ~1966080) !== 0) throw new Error('macro: bad modifier flags');",
+    "if (typeof step.delay !== 'number' || step.delay < 0 || step.delay > 10000 || step.delay % 1 !== 0) throw new Error('macro: bad wait');",
+    "if (typeof step.hold !== 'number' || step.hold < 0 || step.hold > 5000 || step.hold % 1 !== 0) throw new Error('macro: bad hold');",
+    "total += step.delay + step.hold;",
+    "});",
+    "if (total > 30000) throw new Error('macro: total duration exceeded');",
+    "if (!$.CGPreflightPostEventAccess()) throw new Error('macro: not allowed to post events');",
+    "function sleep(ms) { if (ms > 0) $.NSThread.sleepForTimeInterval(ms / 1000); }",
+    "function post(down, code, flags) {",
+    "var event = $.CGEventCreateKeyboardEvent($(), code, down);",
+    "$.CGEventSetFlags(event, flags);",
+    "var check = $.NSEvent.eventWithCGEvent(event);",
+    "if (check.isNil() || Number(check.type) !== (down ? 10 : 11) || Number(check.keyCode) !== code) throw new Error('macro: event check failed');",
+    "$.CGEventPost(0, event);",
+    "}",
+    "steps.forEach(function (step) {",
+    "sleep(step.delay);",
+    "post(true, step.code, step.flags);",
+    "sleep(step.hold);",
+    "post(false, step.code, step.flags);",
+    "});",
+    "return 'ok';",
+    "}",
+];
+/// Marker the macro script throws when posting events is not allowed.
+const MACRO_DENIED: &str = "macro: not allowed to post events";
+/// Marker the macro script throws when a built event reads back wrong.
+const MACRO_CHECK_FAILED: &str = "macro: event check failed";
+/// The replay subprocess gets the macro's total duration plus this margin for
+/// startup, reading stdin and validation. An in-flight script past that is
+/// killed, so a stuck step cannot hold the action worker forever.
+const MACRO_TIMEOUT_MARGIN: Duration = Duration::from_secs(5);
+/// `kCGEventFlagMaskShift`, `kCGEventFlagMaskControl`,
+/// `kCGEventFlagMaskAlternate` and `kCGEventFlagMaskCommand` from CoreGraphics.
+const CG_FLAG_SHIFT: u32 = 1 << 17;
+const CG_FLAG_CONTROL: u32 = 1 << 18;
+const CG_FLAG_OPTION: u32 = 1 << 19;
+const CG_FLAG_COMMAND: u32 = 1 << 20;
+
+/// The modifier flag word of one macro step, as `CGEventSetFlags` reads it.
+fn macro_flags(modifiers: &[Modifier]) -> u32 {
+    modifiers.iter().fold(0, |flags, modifier| {
+        flags
+            | match modifier {
+                Modifier::Command => CG_FLAG_COMMAND,
+                Modifier::Control => CG_FLAG_CONTROL,
+                Modifier::Option => CG_FLAG_OPTION,
+                Modifier::Shift => CG_FLAG_SHIFT,
+            }
+    })
+}
+
+/// The fixed stdin payload of the macro replay: one JSON object per step, in
+/// order. A validated macro always has a virtual key code per step; without
+/// one the step encodes as `null` so the script rejects the whole list.
+fn macro_payload(steps: &[MacroStep]) -> Result<Vec<u8>, String> {
+    let items = steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| {
+            let code = crate::profile::virtual_key_code(&step.key).ok_or_else(|| {
+                format!("macro step {}: the key has no virtual key code", index + 1)
+            })?;
+            Ok(serde_json::json!({
+                "code": code,
+                "flags": macro_flags(&step.modifiers),
+                "delay": step.delay_before_ms,
+                "hold": step.hold_ms,
+            }))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    serde_json::to_vec(&items).map_err(|error| format!("could not encode the macro: {error}"))
+}
+
+/// The total wall-clock time of a macro's waits and holds.
+fn macro_duration(steps: &[MacroStep]) -> Duration {
+    steps
+        .iter()
+        .map(|step| {
+            Duration::from_millis(u64::from(step.delay_before_ms) + u64::from(step.hold_ms))
+        })
+        .sum()
+}
+
+/// Describes a failed macro replay by fixed markers in its stderr, which is
+/// otherwise reported only by size. A partially played macro may already have
+/// taken effect; the error never implies a retry.
+fn macro_failure(output: &ProcessOutput) -> String {
+    let has = |marker: &str| {
+        output
+            .stderr
+            .windows(marker.len())
+            .any(|window| window == marker.as_bytes())
+    };
+    let cause = if has(MACRO_DENIED) {
+        "macOS did not allow posting keyboard events. Allow the app that runs the service in System Settings > Privacy & Security > Accessibility, then try again".to_string()
+    } else if has(MACRO_CHECK_FAILED) {
+        "this macOS did not accept the keyboard event layout, so no keys were sent".to_string()
+    } else {
+        format!("stderr: {} bytes, not shown", output.stderr.len())
+    };
+    format!("{OSASCRIPT}: {} ({cause})", output.status)
+}
 
 /// The system output's volume and mute state, suitable for exact restoration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -495,7 +635,17 @@ impl MacOsDispatcher {
                 self.apple_script(format!("set volume output muted {target}"))?;
             }
             Action::Shortcut { key, modifiers } => {
-                self.apple_script(keystroke_script(key, modifiers))?;
+                if let Some(command) = crate::profile::media_key_command(key) {
+                    // The validator refuses modifiers on a media key, so the
+                    // event flags the script builds are exactly its own.
+                    debug_assert!(
+                        modifiers.is_empty(),
+                        "a media key cannot combine with modifiers"
+                    );
+                    self.media(command)?;
+                } else {
+                    self.apple_script(keystroke_script(key, modifiers))?;
+                }
             }
             Action::LaunchApp { bundle_id } => {
                 self.run(OPEN, vec!["-b".into(), bundle_id.clone()])?;
@@ -521,6 +671,7 @@ impl MacOsDispatcher {
                 }
             },
             Action::Text { text, press_enter } => self.paste_text(text, *press_enter)?,
+            Action::Macro { steps } => self.macro_keys(steps)?,
             Action::Profile { .. } => {
                 // The service never owns the profile list; `process_work`
                 // reports the request to a session manager instead.
@@ -643,6 +794,31 @@ impl MacOsDispatcher {
             Ok(())
         } else {
             Err(media_failure(&output))
+        }
+    }
+
+    /// Replays a `macro` through one fixed `osascript` JavaScript run (see
+    /// [`MACRO_SCRIPT`]). The steps travel on stdin as validated integers and
+    /// the subprocess timeout is the macro's own duration plus a margin, so a
+    /// long macro neither blocks forever nor rushes its pauses. A failure
+    /// names a fixed cause and never contains stderr text; the keystrokes up
+    /// to the failure may already have taken effect.
+    fn macro_keys(&mut self, steps: &[MacroStep]) -> Result<(), String> {
+        let mut args = vec!["-l".to_string(), "JavaScript".to_string()];
+        for line in MACRO_SCRIPT {
+            args.extend(["-e".to_string(), line.to_string()]);
+        }
+        let output = self.run_bounded(ProcessRequest {
+            program: OSASCRIPT,
+            args,
+            stdin: Some(macro_payload(steps)?),
+            timeout: macro_duration(steps) + MACRO_TIMEOUT_MARGIN,
+            ..ProcessRequest::default()
+        })?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(macro_failure(&output))
         }
     }
 
@@ -1421,6 +1597,199 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.requests[0].program, OPEN);
         assert_eq!(state.requests[0].args, ["-b", "com.apple.TextEdit"]);
+    }
+
+    #[test]
+    fn media_key_shortcuts_post_the_hardware_media_key_script() {
+        for (key, key_type) in [
+            ("play_pause", "16"),
+            ("next_track", "17"),
+            ("previous_track", "18"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher
+                .dispatch(&Action::Shortcut {
+                    key: key.into(),
+                    modifiers: vec![],
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            assert_eq!(state.requests[0].program, OSASCRIPT);
+            assert_eq!(state.requests[0].args[0], "-l");
+            assert_eq!(*state.requests[0].args.last().unwrap(), "request");
+            // The first media key of a dispatcher asks macOS for its prompt.
+            assert!(state.requests[0].args.contains(&key_type.to_string()));
+        }
+        // With modifiers the action is refused before any subprocess starts.
+        let (mut dispatcher, state) = fake(vec![]);
+        assert!(
+            dispatcher
+                .dispatch(&Action::Shortcut {
+                    key: "play_pause".into(),
+                    modifiers: vec![Modifier::Command],
+                })
+                .is_err()
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn macro_replays_one_fixed_script_with_the_steps_on_stdin() {
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher
+            .dispatch(&Action::Macro {
+                steps: vec![
+                    MacroStep {
+                        key: "c".into(),
+                        modifiers: vec![Modifier::Command],
+                        delay_before_ms: 0,
+                        hold_ms: 80,
+                    },
+                    MacroStep {
+                        key: "arrow_left".into(),
+                        modifiers: vec![Modifier::Shift, Modifier::Option],
+                        delay_before_ms: 120,
+                        hold_ms: 0,
+                    },
+                ],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 1);
+        let request = &state.requests[0];
+        assert_eq!(request.program, OSASCRIPT);
+        assert_eq!(request.args[0], "-l");
+        assert_eq!(request.args[1], "JavaScript");
+        assert_eq!(request.args[2], "-e");
+        // One `-e` item per script line, then nothing else: the steps are on stdin.
+        assert_eq!(request.args.len(), 2 + 2 * MACRO_SCRIPT.len());
+        let payload: serde_json::Value =
+            serde_json::from_slice(request.stdin.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            payload,
+            serde_json::json!([
+                {"code": 0x08, "flags": 0x100000, "delay": 0, "hold": 80},
+                {"code": 123, "flags": 0x0A0000, "delay": 120, "hold": 0},
+            ])
+        );
+        // The timeout is the macro's own duration (80 + 120 ms) plus the margin.
+        assert_eq!(
+            request.timeout,
+            Duration::from_millis(200) + MACRO_TIMEOUT_MARGIN
+        );
+    }
+
+    #[test]
+    fn macro_failures_name_the_fixed_permission_and_layout_causes() {
+        let denied = Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: Vec::new(),
+            stderr: b"script error: Error: macro: not allowed to post events.\n".to_vec(),
+        });
+        let (mut dispatcher, _state) = fake(vec![denied]);
+        let error = dispatcher
+            .dispatch(&Action::Macro {
+                steps: vec![MacroStep {
+                    key: "a".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 0,
+                }],
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("System Settings > Privacy & Security > Accessibility"),
+            "{error}"
+        );
+        assert!(!error.contains("script error"), "{error}");
+        let checked = Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: Vec::new(),
+            stderr: b"script error: Error: macro: event check failed.\n".to_vec(),
+        });
+        let (mut dispatcher, _state) = fake(vec![checked]);
+        let error = dispatcher
+            .dispatch(&Action::Macro {
+                steps: vec![MacroStep {
+                    key: "a".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 0,
+                }],
+            })
+            .unwrap_err();
+        assert!(error.contains("keyboard event layout"), "{error}");
+        // Any other stderr is reported by size only.
+        let other = Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 1".into(),
+            stdout: Vec::new(),
+            stderr: b"script error: something quoted \"a b\"\n".to_vec(),
+        });
+        let (mut dispatcher, _state) = fake(vec![other]);
+        let error = dispatcher
+            .dispatch(&Action::Macro {
+                steps: vec![MacroStep {
+                    key: "a".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 0,
+                }],
+            })
+            .unwrap_err();
+        assert!(error.contains("stderr: "), "{error}");
+        assert!(!error.contains("quoted"), "{error}");
+    }
+
+    /// Runs the fixed script against stdin that the script must refuse before
+    /// it touches any permission, so the JSON plumbing is exercised on this
+    /// macOS without posting anything. Shape errors carry a `macro:` marker;
+    /// unparsable input fails in JSON.parse itself.
+    #[test]
+    fn macro_script_rejects_bad_stdin_before_posting_anything() {
+        for input in [
+            "[]",
+            "[{\"code\":8,\"flags\":0,\"delay\":0,\"hold\":80,\"x\":1}]",
+            "[{\"code\":8,\"flags\":1048577,\"delay\":0,\"hold\":80}]",
+            "[{\"code\":128,\"flags\":0,\"delay\":0,\"hold\":80}]",
+        ] {
+            let output = std::process::Command::new(OSASCRIPT)
+                .arg("-l")
+                .arg("JavaScript")
+                .args(MACRO_SCRIPT.iter().flat_map(|line| ["-e", line]))
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .and_then(|mut child| {
+                    use std::io::Write;
+                    child.stdin.take().unwrap().write_all(input.as_bytes())?;
+                    child.wait_with_output()
+                })
+                .unwrap();
+            assert!(!output.status.success(), "{input}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains("macro:"), "{input}: {stderr}");
+            assert!(!stderr.contains(MACRO_DENIED), "{input}: {stderr}");
+        }
+        let output = std::process::Command::new(OSASCRIPT)
+            .arg("-l")
+            .arg("JavaScript")
+            .args(MACRO_SCRIPT.iter().flat_map(|line| ["-e", line]))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.take().unwrap().write_all(b"not json")?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(!output.status.success());
     }
 
     #[test]
@@ -2838,7 +3207,11 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("cooltek-media-scripts-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
-        for (name, lines) in [("key", MEDIA_KEY_SCRIPT), ("stop", MEDIA_STOP_SCRIPT)] {
+        for (name, lines) in [
+            ("key", MEDIA_KEY_SCRIPT),
+            ("stop", MEDIA_STOP_SCRIPT),
+            ("macro", MACRO_SCRIPT),
+        ] {
             let source = directory.join(format!("{name}.js"));
             // osascript joins `-e` items with newlines, so this is the same text.
             std::fs::write(&source, lines.join("\n")).unwrap();

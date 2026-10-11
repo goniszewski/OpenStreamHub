@@ -99,12 +99,15 @@ pub enum Modifier {
     Shift,
 }
 
-/// Named non-character keys accepted by `shortcut` and their macOS virtual key codes.
+/// Named non-character keys accepted by `shortcut` and `macro` and their macOS
+/// virtual key codes.
 ///
-/// The table is the allow-list: a `shortcut` key is either one ASCII
-/// alphanumeric byte or space (sent as a literal keystroke) or exactly one of
-/// these lowercase names (sent by integer key code). Codes are the Carbon
-/// `kVK_*` values from `HIToolbox/Events.h`; hardware behaviour is unverified.
+/// The table is the allow-list: a key is either one ASCII alphanumeric byte or
+/// space (sent as a literal keystroke) or exactly one of these lowercase names
+/// (sent by integer key code). Codes are the Carbon `kVK_*` values from
+/// `HIToolbox/Events.h`; hardware behaviour is unverified. The keypad names
+/// cover the whole Apple extended keypad; F13–F20 are the last function keys
+/// macOS assigns virtual key codes (there are no `kVK_F21`–`kVK_F24`).
 pub(crate) const NAMED_KEYS: &[(&str, u8)] = &[
     ("return", 36),
     ("tab", 48),
@@ -140,7 +143,94 @@ pub(crate) const NAMED_KEYS: &[(&str, u8)] = &[
     ("f18", 79),
     ("f19", 80),
     ("f20", 90),
+    ("keypad_0", 0x52),
+    ("keypad_1", 0x53),
+    ("keypad_2", 0x54),
+    ("keypad_3", 0x55),
+    ("keypad_4", 0x56),
+    ("keypad_5", 0x57),
+    ("keypad_6", 0x58),
+    ("keypad_7", 0x59),
+    ("keypad_8", 0x5B),
+    ("keypad_9", 0x5C),
+    ("keypad_decimal", 0x41),
+    ("keypad_multiply", 0x43),
+    ("keypad_plus", 0x45),
+    ("keypad_clear", 0x47),
+    ("keypad_divide", 0x4B),
+    ("keypad_enter", 0x4C),
+    ("keypad_minus", 0x4E),
+    ("keypad_equals", 0x51),
 ];
+
+/// Hardware media keys a `shortcut` can send, and the transport command each
+/// one posts. macOS has no virtual key codes for them: they are posted as
+/// `NX_SYSDEFINED` media-key events (the fixed media-key script in `macos`),
+/// so they can never combine with modifiers and cannot be recorded into a
+/// `macro` (the system consumes them before a recording can see them; the
+/// `media` action sends them on its own).
+pub(crate) const MEDIA_KEYS: &[(&str, MediaCommand)] = &[
+    ("play_pause", MediaCommand::PlayPause),
+    ("next_track", MediaCommand::NextTrack),
+    ("previous_track", MediaCommand::PreviousTrack),
+];
+
+/// Returns the transport command behind an allow-listed media key name.
+pub(crate) fn media_key_command(name: &str) -> Option<MediaCommand> {
+    MEDIA_KEYS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, command)| *command)
+}
+
+/// The fixed ANSI virtual key codes of the literal keys (`a`–`z`, `0`–`9`,
+/// space), from `HIToolbox/Events.h`. A Dvorak or other alternative layout
+/// prints different characters at these codes, like every key-code table here.
+const LITERAL_CODES: &[(u8, u8)] = &[
+    (b'a', 0x00),
+    (b'b', 0x0B),
+    (b'c', 0x08),
+    (b'd', 0x02),
+    (b'e', 0x0E),
+    (b'f', 0x03),
+    (b'g', 0x05),
+    (b'h', 0x04),
+    (b'i', 0x22),
+    (b'j', 0x26),
+    (b'k', 0x28),
+    (b'l', 0x25),
+    (b'm', 0x2E),
+    (b'n', 0x2D),
+    (b'o', 0x1F),
+    (b'p', 0x23),
+    (b'q', 0x0C),
+    (b'r', 0x0F),
+    (b's', 0x01),
+    (b't', 0x11),
+    (b'u', 0x20),
+    (b'v', 0x09),
+    (b'w', 0x0D),
+    (b'x', 0x07),
+    (b'y', 0x10),
+    (b'z', 0x06),
+    (b'0', 0x1D),
+    (b'1', 0x12),
+    (b'2', 0x13),
+    (b'3', 0x14),
+    (b'4', 0x15),
+    (b'5', 0x17),
+    (b'6', 0x16),
+    (b'7', 0x1A),
+    (b'8', 0x1C),
+    (b'9', 0x19),
+    (b' ', 0x31),
+];
+
+/// True for the keys that pass `shortcut` and `macro` validation as a single
+/// literal: one ASCII alphanumeric byte or space.
+pub(crate) fn is_literal_key(key: &str) -> bool {
+    key.len() == 1 && (key.as_bytes()[0].is_ascii_alphanumeric() || key.as_bytes()[0] == b' ')
+}
 
 /// Returns the macOS virtual key code of an allow-listed named key.
 pub(crate) fn named_key_code(name: &str) -> Option<u8> {
@@ -148,6 +238,38 @@ pub(crate) fn named_key_code(name: &str) -> Option<u8> {
         .iter()
         .find(|(candidate, _)| *candidate == name)
         .map(|(_, code)| *code)
+}
+
+/// Returns the macOS virtual key code of any `shortcut` or `macro` key: the
+/// fixed ANSI code of a literal (an upper-case letter is the same physical
+/// key), or the code of an allow-listed named key. Media keys have no virtual
+/// key code and return `None`. The macro replay and the recorder both key off
+/// this table, so a recording and its replay name the same physical keys.
+pub fn virtual_key_code(key: &str) -> Option<u8> {
+    if let [byte] = key.as_bytes() {
+        let lowered = byte.to_ascii_lowercase();
+        if let Some((_, code)) = LITERAL_CODES.iter().find(|(letter, _)| *letter == lowered) {
+            return Some(*code);
+        }
+    }
+    named_key_code(key)
+}
+
+/// Returns the key name of a macOS virtual key code: the inverse of
+/// [`virtual_key_code`] for the keys a recording can hold. Letters, digits and
+/// space come back as the literal character, so a recorded macro reads like
+/// the keys it replays; media keys and unknown codes return `None`.
+pub fn key_for_virtual_code(code: u8) -> Option<String> {
+    if let Some((letter, _)) = LITERAL_CODES
+        .iter()
+        .find(|(_, candidate)| *candidate == code)
+    {
+        return Some((*letter as char).to_string());
+    }
+    NAMED_KEYS
+        .iter()
+        .find(|(_, candidate)| *candidate == code)
+        .map(|(name, _)| (*name).to_string())
 }
 
 /// A media transport command, matching the official `media-track-control` options.
@@ -317,6 +439,25 @@ impl TimerSound {
     }
 }
 
+/// One recorded keystroke of a `macro`: a key held down and released, with
+/// the wait before it and how long it stays down.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacroStep {
+    /// One ASCII alphanumeric byte or ASCII space (an upper-case letter is
+    /// the same physical key), or one allow-listed named key such as
+    /// `arrow_left`, `return`, or `keypad_enter`. Media keys cannot be macro
+    /// keys: the system consumes them before a recording sees them, and the
+    /// `media` action sends them on its own.
+    pub key: String,
+    /// Distinct modifiers held while the key is down; order does not matter.
+    pub modifiers: Vec<Modifier>,
+    /// Wait before the key goes down, in whole milliseconds.
+    pub delay_before_ms: u32,
+    /// How long the key stays down, in whole milliseconds.
+    pub hold_ms: u32,
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -381,6 +522,15 @@ pub enum Action {
     MultiAction {
         /// Ordered steps; a failure stops the remaining steps.
         actions: Vec<Action>,
+    },
+    /// Replay a recorded sequence of keystrokes, each with its own wait and
+    /// hold time. Bounded: at most [`Action::MAX_MACRO_STEPS`] keystrokes and
+    /// at most [`Action::MAX_MACRO_DURATION_MS`] of waits and holds in total.
+    /// Not allowed as a multi-action step, so the sequence timing stays in one
+    /// place and the whole replay keeps one deadline.
+    Macro {
+        /// Recorded keystrokes in the order they play.
+        steps: Vec<MacroStep>,
     },
     /// Ask the supervising session manager to switch to a neighbouring saved
     /// profile. Never executed on the host; not allowed as a multi-action step.
@@ -679,6 +829,9 @@ impl<'de> Deserialize<'de> for Action {
             MultiAction {
                 actions: Vec<Action>,
             },
+            Macro {
+                steps: Vec<MacroStep>,
+            },
             Profile {
                 direction: ProfileDirection,
             },
@@ -738,6 +891,7 @@ impl<'de> Deserialize<'de> for Action {
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
+            Shape::Macro { steps } => Self::Macro { steps },
             Shape::Profile { direction } => Self::Profile { direction },
             Shape::Timer {
                 seconds,
@@ -788,6 +942,15 @@ impl Action {
     pub const MAX_OBS_NAME_BYTES: usize = 128;
     /// Maximum `obs_scene` scene name length in UTF-8 bytes.
     pub const MAX_OBS_SCENE_BYTES: usize = Self::MAX_OBS_NAME_BYTES;
+    /// Maximum number of keystrokes in a `macro`.
+    pub const MAX_MACRO_STEPS: usize = 64;
+    /// Longest wait before a macro keystroke, in milliseconds.
+    pub const MAX_MACRO_DELAY_MS: u32 = 10_000;
+    /// Longest hold of a macro keystroke, in milliseconds.
+    pub const MAX_MACRO_HOLD_MS: u32 = 5_000;
+    /// Longest wall-clock time of a whole `macro` (waits plus holds), in
+    /// milliseconds. The replay timeout is derived from it in `macos`.
+    pub const MAX_MACRO_DURATION_MS: u32 = 30_000;
 
     /// The JSON `type` tag of this action, for diagnostics.
     pub fn type_name(&self) -> &'static str {
@@ -803,6 +966,7 @@ impl Action {
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
             Self::MultiAction { .. } => "multi_action",
+            Self::Macro { .. } => "macro",
             Self::Profile { .. } => "profile",
             Self::Timer { .. } => "timer",
             Self::ObsScene { .. } => "obs_scene",
@@ -848,9 +1012,15 @@ impl Action {
                 Err("absolute volume must be between 0 and 100".into())
             }
             Self::Shortcut { key, modifiers } => {
-                let literal = key.len() == 1
-                    && (key.as_bytes()[0].is_ascii_alphanumeric() || key.as_bytes()[0] == b' ');
-                if !literal && named_key_code(key).is_none() {
+                if media_key_command(key).is_some() {
+                    // The media-key event carries no modifier flags (see
+                    // `macos::MEDIA_KEY_SCRIPT`), so a chord would be dropped.
+                    if !modifiers.is_empty() {
+                        return Err("a media key cannot combine with modifiers".into());
+                    }
+                    return Ok(());
+                }
+                if !is_literal_key(key) && named_key_code(key).is_none() {
                     return Err(
                         "shortcut key must be one ASCII alphanumeric key, space, or a supported named key"
                             .into(),
@@ -862,6 +1032,61 @@ impl Action {
                 let unique: HashSet<_> = modifiers.iter().collect();
                 if unique.len() != modifiers.len() {
                     return Err("shortcut modifiers must not contain duplicates".into());
+                }
+                Ok(())
+            }
+            Self::Macro { steps } => {
+                if steps.is_empty() || steps.len() > Self::MAX_MACRO_STEPS {
+                    return Err(format!(
+                        "macro must contain 1 to {} keystrokes",
+                        Self::MAX_MACRO_STEPS
+                    ));
+                }
+                let mut total_ms = 0u64;
+                for (index, step) in steps.iter().enumerate() {
+                    if !is_literal_key(&step.key) && named_key_code(&step.key).is_none() {
+                        if media_key_command(&step.key).is_some() {
+                            return Err(format!(
+                                "macro step {}: media keys cannot be macro keys; the media action sends them",
+                                index + 1
+                            ));
+                        }
+                        return Err(format!(
+                            "macro step {}: key must be one ASCII alphanumeric key, space, or a supported named key",
+                            index + 1
+                        ));
+                    }
+                    if step.modifiers.len() > 4 {
+                        return Err(format!("macro step {}: at most four modifiers", index + 1));
+                    }
+                    let unique: HashSet<_> = step.modifiers.iter().collect();
+                    if unique.len() != step.modifiers.len() {
+                        return Err(format!(
+                            "macro step {}: modifiers must not contain duplicates",
+                            index + 1
+                        ));
+                    }
+                    if step.delay_before_ms > Self::MAX_MACRO_DELAY_MS {
+                        return Err(format!(
+                            "macro step {}: the wait must be at most {} ms",
+                            index + 1,
+                            Self::MAX_MACRO_DELAY_MS
+                        ));
+                    }
+                    if step.hold_ms > Self::MAX_MACRO_HOLD_MS {
+                        return Err(format!(
+                            "macro step {}: the hold must be at most {} ms",
+                            index + 1,
+                            Self::MAX_MACRO_HOLD_MS
+                        ));
+                    }
+                    total_ms += u64::from(step.delay_before_ms) + u64::from(step.hold_ms);
+                    if total_ms > u64::from(Self::MAX_MACRO_DURATION_MS) {
+                        return Err(format!(
+                            "macro waits and holds must total at most {} ms",
+                            Self::MAX_MACRO_DURATION_MS
+                        ));
+                    }
                 }
                 Ok(())
             }
@@ -944,10 +1169,13 @@ impl Action {
                     // A profile switch stops the running service, so it
                     // could never be followed by the remaining steps. A timer
                     // toggles per binding, which a step does not have; the
-                    // official app refuses timers in multi-task lists too.
+                    // official app refuses timers in multi-task lists too. A
+                    // macro is already a timed sequence; nesting one would
+                    // split the overall deadline across two clocks.
                     if matches!(
                         step,
                         Self::MultiAction { .. }
+                            | Self::Macro { .. }
                             | Self::VolumeFromPosition
                             | Self::ObsInputVolumeFromPosition { .. }
                             | Self::Profile { .. }
@@ -1711,6 +1939,13 @@ mod tests {
                     ],
                 },
             ),
+            (
+                r#"{"type":"macro","steps":[{"key":"c","modifiers":["command"],"delay_before_ms":0,"hold_ms":80},{"key":"arrow_left","modifiers":[],"delay_before_ms":120,"hold_ms":40}]}"#,
+                macro_action(vec![
+                    macro_step("c", vec![Modifier::Command], 0, 80),
+                    macro_step("arrow_left", vec![], 120, 40),
+                ]),
+            ),
         ] {
             let decoded: Action = serde_json::from_str(json).unwrap();
             assert_eq!(decoded, action);
@@ -1734,6 +1969,9 @@ mod tests {
             r#"{"type":"multi_action","actions":[],"spacing_ms":0}"#,
             r#"{"type":"multi_action","actions":{"type":"toggle_mute"}}"#,
             r#"{"type":"run_script","script":"do shell script \"x\""}"#,
+            r#"{"type":"macro","steps":[{"key":"c","modifiers":["command"],"delay_before_ms":0,"hold_ms":80}],"timeout_ms":500}"#,
+            r#"{"type":"macro","steps":[{"key":"c","modifiers":["command"],"delay_before_ms":0}]}"#,
+            r#"{"type":"macro","steps":[{"key":"c","modifiers":["command"],"delay_before_ms":0,"hold_ms":80,"extra":1}]}"#,
         ] {
             assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
         }
@@ -2341,11 +2579,18 @@ mod tests {
                 "{name}"
             );
         }
-        assert_eq!(NAMED_KEYS.len(), 34);
+        assert_eq!(NAMED_KEYS.len(), 52);
         let mut codes: Vec<_> = NAMED_KEYS.iter().map(|(_, code)| *code).collect();
         codes.sort_unstable();
         codes.dedup();
         assert_eq!(codes.len(), NAMED_KEYS.len(), "key codes must be distinct");
+        // Media keys are shortcut keys without codes, checked separately.
+        assert_eq!(MEDIA_KEYS.len(), 3);
+        for name in ["play_pause", "next_track", "previous_track"] {
+            assert!(key(name, vec![]).validate().is_ok(), "{name}");
+            assert!(named_key_code(name).is_none(), "{name} has no key code");
+            assert!(key(name, vec![Modifier::Command]).validate().is_err());
+        }
         for invalid in [
             "F1",
             "f0",
@@ -2367,6 +2612,181 @@ mod tests {
         ] {
             assert!(key(invalid, vec![]).validate().is_err(), "{invalid:?}");
         }
+    }
+
+    fn macro_step(
+        key: &str,
+        modifiers: Vec<Modifier>,
+        delay_before_ms: u32,
+        hold_ms: u32,
+    ) -> MacroStep {
+        MacroStep {
+            key: key.into(),
+            modifiers,
+            delay_before_ms,
+            hold_ms,
+        }
+    }
+
+    fn macro_action(steps: Vec<MacroStep>) -> Action {
+        Action::Macro { steps }
+    }
+
+    #[test]
+    fn virtual_key_codes_round_trip_and_cover_every_macro_key() {
+        // Every literal and named key has a code, and the code reads back as
+        // the same physical key (upper case is the same key as lower case).
+        for name in ["a", "z", "A", "0", "9", " "] {
+            let code = virtual_key_code(name).unwrap();
+            assert_eq!(
+                key_for_virtual_code(code).as_deref(),
+                Some(name.to_lowercase().as_str()),
+                "{name}"
+            );
+        }
+        for (name, _) in NAMED_KEYS {
+            let code = virtual_key_code(name).unwrap();
+            // Code 49 is both the literal space and the named `space` key; the
+            // inverse reads it back as the literal, which validates the same.
+            if *name == "space" {
+                assert_eq!(code, virtual_key_code(" ").unwrap());
+                assert_eq!(key_for_virtual_code(code).as_deref(), Some(" "));
+            } else {
+                assert_eq!(key_for_virtual_code(code).as_deref(), Some(*name), "{name}");
+            }
+        }
+        assert!(virtual_key_code("play_pause").is_none());
+        // Codes outside the table (the = and ` keys are not macro keys) read
+        // back as nothing.
+        assert!(key_for_virtual_code(0x18).is_none());
+        assert!(key_for_virtual_code(0x32).is_none());
+        // A few fixed anchor codes from HIToolbox/Events.h.
+        assert_eq!(virtual_key_code("c"), Some(0x08));
+        assert_eq!(virtual_key_code("5"), Some(0x17));
+        assert_eq!(virtual_key_code("keypad_enter"), Some(0x4C));
+    }
+
+    #[test]
+    fn macros_are_bounded_sequences_of_known_keys() {
+        assert!(
+            macro_action(vec![macro_step("c", vec![Modifier::Command], 0, 80)])
+                .validate()
+                .is_ok()
+        );
+        // Every named key and every literal is a macro key; media keys are not.
+        for (name, _) in NAMED_KEYS {
+            assert!(
+                macro_action(vec![macro_step(name, vec![], 0, 0)])
+                    .validate()
+                    .is_ok(),
+                "{name}"
+            );
+        }
+        let media = macro_action(vec![macro_step("play_pause", vec![], 0, 0)])
+            .validate()
+            .unwrap_err();
+        assert!(
+            media.contains("step 1: media keys cannot be macro keys"),
+            "{media}"
+        );
+        // Bounds: counts, per-step waits and holds, duplicates, and the total.
+        for (steps, fragment) in [
+            (vec![], "must contain 1 to"),
+            (
+                vec![macro_step("a", vec![], 0, 0); Action::MAX_MACRO_STEPS + 1],
+                "must contain 1 to",
+            ),
+            (
+                vec![macro_step("a", vec![Modifier::Command; 5], 0, 0)],
+                "at most four modifiers",
+            ),
+            (
+                vec![macro_step(
+                    "a",
+                    vec![Modifier::Shift, Modifier::Shift],
+                    0,
+                    0,
+                )],
+                "must not contain duplicates",
+            ),
+            (
+                vec![macro_step("a", vec![], Action::MAX_MACRO_DELAY_MS + 1, 0)],
+                "the wait must be at most",
+            ),
+            (
+                vec![macro_step("a", vec![], 0, Action::MAX_MACRO_HOLD_MS + 1)],
+                "the hold must be at most",
+            ),
+            (
+                vec![";", "-", "f21", "Return", "key code 36"]
+                    .into_iter()
+                    .map(|key| macro_step(key, vec![], 0, 0))
+                    .collect(),
+                "key must be one ASCII alphanumeric key",
+            ),
+        ] {
+            let error = macro_action(steps).validate().unwrap_err();
+            assert!(error.contains(fragment), "{error}");
+        }
+        // Exactly at the limits passes: 10000 + 5000 + 10000 + 5000 = 30000 ms.
+        assert!(
+            macro_action(vec![
+                macro_step(
+                    "a",
+                    vec![],
+                    Action::MAX_MACRO_DELAY_MS,
+                    Action::MAX_MACRO_HOLD_MS
+                ),
+                macro_step(
+                    "b",
+                    vec![],
+                    Action::MAX_MACRO_DELAY_MS,
+                    Action::MAX_MACRO_HOLD_MS
+                ),
+            ])
+            .validate()
+            .is_ok()
+        );
+        let over = macro_action(vec![
+            macro_step(
+                "a",
+                vec![],
+                Action::MAX_MACRO_DELAY_MS,
+                Action::MAX_MACRO_HOLD_MS,
+            ),
+            macro_step(
+                "b",
+                vec![],
+                Action::MAX_MACRO_DELAY_MS,
+                Action::MAX_MACRO_HOLD_MS,
+            ),
+            macro_step("c", vec![], 0, 1),
+        ])
+        .validate()
+        .unwrap_err();
+        assert!(
+            over.contains("waits and holds must total at most"),
+            "{over}"
+        );
+        // The upper-case letter is the same physical key as the lower-case one.
+        assert!(
+            macro_action(vec![macro_step("C", vec![Modifier::Shift], 0, 10)])
+                .validate()
+                .is_ok()
+        );
+        // A macro never nests inside a multi_action.
+        let nested = Action::MultiAction {
+            actions: vec![
+                Action::ToggleMute,
+                macro_action(vec![macro_step("a", vec![], 0, 0)]),
+            ],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            nested.contains("step 2: macro cannot be a multi_action step"),
+            "{nested}"
+        );
     }
 
     #[test]

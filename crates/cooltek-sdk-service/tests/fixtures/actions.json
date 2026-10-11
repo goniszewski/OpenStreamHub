@@ -1,125 +1,716 @@
 {
   "named_keys": [
-    "return", "tab", "space", "delete", "escape", "forward_delete", "home", "end", "page_up", "page_down",
-    "arrow_left", "arrow_right", "arrow_down", "arrow_up",
-    "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
-    "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20"
+    "return",
+    "tab",
+    "space",
+    "delete",
+    "escape",
+    "forward_delete",
+    "home",
+    "end",
+    "page_up",
+    "page_down",
+    "arrow_left",
+    "arrow_right",
+    "arrow_down",
+    "arrow_up",
+    "f1",
+    "f2",
+    "f3",
+    "f4",
+    "f5",
+    "f6",
+    "f7",
+    "f8",
+    "f9",
+    "f10",
+    "f11",
+    "f12",
+    "f13",
+    "f14",
+    "f15",
+    "f16",
+    "f17",
+    "f18",
+    "f19",
+    "f20",
+    "keypad_0",
+    "keypad_1",
+    "keypad_2",
+    "keypad_3",
+    "keypad_4",
+    "keypad_5",
+    "keypad_6",
+    "keypad_7",
+    "keypad_8",
+    "keypad_9",
+    "keypad_decimal",
+    "keypad_multiply",
+    "keypad_plus",
+    "keypad_clear",
+    "keypad_divide",
+    "keypad_enter",
+    "keypad_minus",
+    "keypad_equals"
   ],
   "timer_sounds": [
-    "basso", "blow", "bottle", "frog", "funk", "glass", "hero", "morse", "ping", "pop",
-    "purr", "sosumi", "submarine", "tink", "none"
+    "basso",
+    "blow",
+    "bottle",
+    "frog",
+    "funk",
+    "glass",
+    "hero",
+    "morse",
+    "ping",
+    "pop",
+    "purr",
+    "sosumi",
+    "submarine",
+    "tink",
+    "none"
   ],
   "valid": [
-    {"type":"volume","delta":5},
-    {"type":"set_volume","percent":63},
-    {"type":"toggle_mute"},
-    {"type":"shortcut","key":"c","modifiers":["command"]},
-    {"type":"shortcut","key":"arrow_left","modifiers":["command","option"]},
-    {"type":"shortcut","key":"f12","modifiers":[]},
-    {"type":"launch_app","bundle_id":"com.apple.finder"},
-    {"type":"open_url","url":"https://example.com/search?q=masterhub#top"},
-    {"type":"media","command":"play_pause"},
-    {"type":"media","command":"stop"},
-    {"type":"system","command":"undo"},
-    {"type":"system","command":"redo"},
-    {"type":"system","command":"screenshot"},
-    {"type":"text","text":"Thanks for watching!\nSee you","press_enter":true},
-    {"type":"multi_action","actions":[{"type":"launch_app","bundle_id":"com.apple.TextEdit"},{"type":"text","text":"hello","press_enter":false},{"type":"shortcut","key":"s","modifiers":["command"]}]},
-    {"type":"profile","direction":"next"},
-    {"type":"profile","direction":"previous"},
-    {"type":"timer","seconds":300},
-    {"type":"timer","seconds":1,"label":"Tea","sound":"glass"},
-    {"type":"timer","seconds":86400,"label":"Stream break \" `id` $(id)","sound":"none"},
-    {"type":"obs_scene","scene":"Starting soon"},
-    {"type":"obs_scene","scene":"Zażółć 🎥 \"Live\""},
-    {"type":"multi_action","actions":[{"type":"obs_scene","scene":"Live"},{"type":"toggle_mute"}]},
-    {"type":"obs_virtual_camera","op":"toggle"},
-    {"type":"obs_virtual_camera","op":"start"},
-    {"type":"obs_virtual_camera","op":"stop"},
-    {"type":"obs_replay_buffer","op":"toggle"},
-    {"type":"obs_replay_buffer","op":"start"},
-    {"type":"obs_replay_buffer","op":"stop"},
-    {"type":"obs_replay_buffer","op":"save"},
-    {"type":"multi_action","actions":[{"type":"obs_replay_buffer","op":"save"},{"type":"obs_virtual_camera","op":"stop"}]},
-    {"type":"obs_studio_mode","op":"toggle"},
-    {"type":"obs_studio_mode","op":"on"},
-    {"type":"obs_studio_mode","op":"off"},
-    {"type":"obs_transition"},
-    {"type":"obs_filter","source":"Webcam","filter":"Color Correction","op":"toggle"},
-    {"type":"obs_filter","source":"Zażółć 🎥","filter":"Blur \"hard\" {x}","op":"off"},
-    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on"},
-    {"type":"obs_scene_collection","name":"Streaming"},
-    {"type":"obs_profile","name":"Zażółć 🎥 {x}"},
-    {"type":"multi_action","actions":[{"type":"obs_studio_mode","op":"on"},{"type":"obs_transition"}]}
+    {
+      "type": "volume",
+      "delta": 5
+    },
+    {
+      "type": "set_volume",
+      "percent": 63
+    },
+    {
+      "type": "toggle_mute"
+    },
+    {
+      "type": "shortcut",
+      "key": "c",
+      "modifiers": [
+        "command"
+      ]
+    },
+    {
+      "type": "shortcut",
+      "key": "arrow_left",
+      "modifiers": [
+        "command",
+        "option"
+      ]
+    },
+    {
+      "type": "shortcut",
+      "key": "f12",
+      "modifiers": []
+    },
+    {
+      "type": "launch_app",
+      "bundle_id": "com.apple.finder"
+    },
+    {
+      "type": "open_url",
+      "url": "https://example.com/search?q=masterhub#top"
+    },
+    {
+      "type": "media",
+      "command": "play_pause"
+    },
+    {
+      "type": "media",
+      "command": "stop"
+    },
+    {
+      "type": "system",
+      "command": "undo"
+    },
+    {
+      "type": "system",
+      "command": "redo"
+    },
+    {
+      "type": "system",
+      "command": "screenshot"
+    },
+    {
+      "type": "text",
+      "text": "Thanks for watching!\nSee you",
+      "press_enter": true
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "launch_app",
+          "bundle_id": "com.apple.TextEdit"
+        },
+        {
+          "type": "text",
+          "text": "hello",
+          "press_enter": false
+        },
+        {
+          "type": "shortcut",
+          "key": "s",
+          "modifiers": [
+            "command"
+          ]
+        }
+      ]
+    },
+    {
+      "type": "profile",
+      "direction": "next"
+    },
+    {
+      "type": "profile",
+      "direction": "previous"
+    },
+    {
+      "type": "timer",
+      "seconds": 300
+    },
+    {
+      "type": "timer",
+      "seconds": 1,
+      "label": "Tea",
+      "sound": "glass"
+    },
+    {
+      "type": "timer",
+      "seconds": 86400,
+      "label": "Stream break \" `id` $(id)",
+      "sound": "none"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "Starting soon"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "Zażółć 🎥 \"Live\""
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "obs_scene",
+          "scene": "Live"
+        },
+        {
+          "type": "toggle_mute"
+        }
+      ]
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "start"
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "stop"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "start"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "stop"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "save"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "obs_replay_buffer",
+          "op": "save"
+        },
+        {
+          "type": "obs_virtual_camera",
+          "op": "stop"
+        }
+      ]
+    },
+    {
+      "type": "obs_studio_mode",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_studio_mode",
+      "op": "on"
+    },
+    {
+      "type": "obs_studio_mode",
+      "op": "off"
+    },
+    {
+      "type": "obs_transition"
+    },
+    {
+      "type": "obs_filter",
+      "source": "Webcam",
+      "filter": "Color Correction",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_filter",
+      "source": "Zażółć 🎥",
+      "filter": "Blur \"hard\" {x}",
+      "op": "off"
+    },
+    {
+      "type": "obs_source_visibility",
+      "scene": "Live",
+      "source": "Camera",
+      "op": "on"
+    },
+    {
+      "type": "obs_scene_collection",
+      "name": "Streaming"
+    },
+    {
+      "type": "obs_profile",
+      "name": "Zażółć 🎥 {x}"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "obs_studio_mode",
+          "op": "on"
+        },
+        {
+          "type": "obs_transition"
+        }
+      ]
+    },
+    {
+      "type": "macro",
+      "steps": [
+        {
+          "key": "c",
+          "modifiers": [
+            "command"
+          ],
+          "delay_before_ms": 0,
+          "hold_ms": 80
+        },
+        {
+          "key": "keypad_enter",
+          "modifiers": [],
+          "delay_before_ms": 120,
+          "hold_ms": 40
+        }
+      ]
+    },
+    {
+      "type": "shortcut",
+      "key": "play_pause",
+      "modifiers": []
+    }
   ],
   "invalid": [
-    {"type":"open_url","url":"file:///etc/passwd"},
-    {"type":"open_url","url":"https://user:secret@example.com/"},
-    {"type":"open_url","url":"https://example.com/\" & do shell script \"id\""},
-    {"type":"shortcut","key":"F1","modifiers":[]},
-    {"type":"shortcut","key":"key code 36","modifiers":[]},
-    {"type":"media","command":"fast_forward"},
-    {"type":"system","command":"lock_screen"},
-    {"type":"text","text":""},
-    {"type":"text","text":"bell\u0007"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"}]},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"toggle_mute"}]}]},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"volume_from_position"}]},
-    {"type":"profile","direction":"first"},
-    {"type":"profile","direction":"Next"},
-    {"type":"profile"},
-    {"type":"profile","direction":"next","name":"Streaming"},
-    {"type":"profile","name":"Streaming"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"profile","direction":"next"}]},
-    {"type":"timer"},
-    {"type":"timer","seconds":0},
-    {"type":"timer","seconds":86401},
-    {"type":"timer","seconds":1.5},
-    {"type":"timer","seconds":60,"repeat":true},
-    {"type":"timer","seconds":60,"label":null},
-    {"type":"timer","seconds":60,"label":""},
-    {"type":"timer","seconds":60,"label":" padded"},
-    {"type":"timer","seconds":60,"label":"line\nbreak"},
-    {"type":"timer","seconds":60,"label":"rtl\u202etxt"},
-    {"type":"timer","seconds":60,"label":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
-    {"type":"timer","seconds":60,"sound":"Glass"},
-    {"type":"timer","seconds":60,"sound":"/System/Library/Sounds/Glass.aiff"},
-    {"type":"timer","seconds":60,"sound":"beep"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"timer","seconds":60}]},
-    {"type":"obs_scene"},
-    {"type":"obs_scene","scene":""},
-    {"type":"obs_scene","scene":"   "},
-    {"type":"obs_scene","scene":"line\nbreak"},
-    {"type":"obs_scene","scene":"zero\u200bwidth"},
-    {"type":"obs_scene","scene":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},
-    {"type":"obs_scene","scene":"Live","endpoint":"127.0.0.1:4455"},
-    {"type":"obs_scene","scene":"Live","password":"secret"},
-    {"type":"multi_action","actions":[{"type":"toggle_mute"},{"type":"obs_scene","scene":""}]},
-    {"type":"obs_virtual_camera"},
-    {"type":"obs_virtual_camera","op":"save"},
-    {"type":"obs_virtual_camera","op":"Toggle"},
-    {"type":"obs_virtual_camera","op":null},
-    {"type":"obs_virtual_camera","op":"toggle","endpoint":"127.0.0.1:4455"},
-    {"type":"obs_replay_buffer"},
-    {"type":"obs_replay_buffer","op":"pause"},
-    {"type":"obs_replay_buffer","op":"save","password":"secret"},
-    {"type":"obs_studio_mode"},
-    {"type":"obs_studio_mode","op":"start"},
-    {"type":"obs_transition","op":"toggle"},
-    {"type":"obs_filter","source":"Webcam","op":"on"},
-    {"type":"obs_filter","source":"","filter":"Blur","op":"on"},
-    {"type":"obs_filter","source":"Webcam","filter":"zero\u200bwidth","op":"on"},
-    {"type":"obs_source_visibility","scene":"Live","source":"Camera"},
-    {"type":"obs_source_visibility","scene":"line\nbreak","source":"Camera","op":"on"},
-    {"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"on","endpoint":"127.0.0.1:4455"},
-    {"type":"obs_scene_collection"},
-    {"type":"obs_scene_collection","name":""},
-    {"type":"obs_scene_collection","name":"a","op":"on"},
-    {"type":"obs_profile","name":"zero\u200bwidth"},
-    {"type":"obs_profile","name":"line\nbreak"},
-    {"type":"obs_profile","scene":"Live"},
-    {"type":"obs_profile","name":null},
-    {"type":"obs_scene_collection","name":"   "},
-    {"type":"obs_profile","name":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+    {
+      "type": "open_url",
+      "url": "file:///etc/passwd"
+    },
+    {
+      "type": "open_url",
+      "url": "https://user:secret@example.com/"
+    },
+    {
+      "type": "open_url",
+      "url": "https://example.com/\" & do shell script \"id\""
+    },
+    {
+      "type": "shortcut",
+      "key": "F1",
+      "modifiers": []
+    },
+    {
+      "type": "shortcut",
+      "key": "key code 36",
+      "modifiers": []
+    },
+    {
+      "type": "media",
+      "command": "fast_forward"
+    },
+    {
+      "type": "system",
+      "command": "lock_screen"
+    },
+    {
+      "type": "text",
+      "text": ""
+    },
+    {
+      "type": "text",
+      "text": "bell\u0007"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        }
+      ]
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        },
+        {
+          "type": "multi_action",
+          "actions": [
+            {
+              "type": "toggle_mute"
+            },
+            {
+              "type": "toggle_mute"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        },
+        {
+          "type": "volume_from_position"
+        }
+      ]
+    },
+    {
+      "type": "profile",
+      "direction": "first"
+    },
+    {
+      "type": "profile",
+      "direction": "Next"
+    },
+    {
+      "type": "profile"
+    },
+    {
+      "type": "profile",
+      "direction": "next",
+      "name": "Streaming"
+    },
+    {
+      "type": "profile",
+      "name": "Streaming"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        },
+        {
+          "type": "profile",
+          "direction": "next"
+        }
+      ]
+    },
+    {
+      "type": "timer"
+    },
+    {
+      "type": "timer",
+      "seconds": 0
+    },
+    {
+      "type": "timer",
+      "seconds": 86401
+    },
+    {
+      "type": "timer",
+      "seconds": 1.5
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "repeat": true
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": null
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": ""
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": " padded"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": "line\nbreak"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": "rtl‮txt"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "label": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "sound": "Glass"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "sound": "/System/Library/Sounds/Glass.aiff"
+    },
+    {
+      "type": "timer",
+      "seconds": 60,
+      "sound": "beep"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        },
+        {
+          "type": "timer",
+          "seconds": 60
+        }
+      ]
+    },
+    {
+      "type": "obs_scene"
+    },
+    {
+      "type": "obs_scene",
+      "scene": ""
+    },
+    {
+      "type": "obs_scene",
+      "scene": "   "
+    },
+    {
+      "type": "obs_scene",
+      "scene": "line\nbreak"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "zero​width"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "Live",
+      "endpoint": "127.0.0.1:4455"
+    },
+    {
+      "type": "obs_scene",
+      "scene": "Live",
+      "password": "secret"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "toggle_mute"
+        },
+        {
+          "type": "obs_scene",
+          "scene": ""
+        }
+      ]
+    },
+    {
+      "type": "obs_virtual_camera"
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "save"
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "Toggle"
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": null
+    },
+    {
+      "type": "obs_virtual_camera",
+      "op": "toggle",
+      "endpoint": "127.0.0.1:4455"
+    },
+    {
+      "type": "obs_replay_buffer"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "pause"
+    },
+    {
+      "type": "obs_replay_buffer",
+      "op": "save",
+      "password": "secret"
+    },
+    {
+      "type": "obs_studio_mode"
+    },
+    {
+      "type": "obs_studio_mode",
+      "op": "start"
+    },
+    {
+      "type": "obs_transition",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_filter",
+      "source": "Webcam",
+      "op": "on"
+    },
+    {
+      "type": "obs_filter",
+      "source": "",
+      "filter": "Blur",
+      "op": "on"
+    },
+    {
+      "type": "obs_filter",
+      "source": "Webcam",
+      "filter": "zero​width",
+      "op": "on"
+    },
+    {
+      "type": "obs_source_visibility",
+      "scene": "Live",
+      "source": "Camera"
+    },
+    {
+      "type": "obs_source_visibility",
+      "scene": "line\nbreak",
+      "source": "Camera",
+      "op": "on"
+    },
+    {
+      "type": "obs_source_visibility",
+      "scene": "Live",
+      "source": "Camera",
+      "op": "on",
+      "endpoint": "127.0.0.1:4455"
+    },
+    {
+      "type": "obs_scene_collection"
+    },
+    {
+      "type": "obs_scene_collection",
+      "name": ""
+    },
+    {
+      "type": "obs_scene_collection",
+      "name": "a",
+      "op": "on"
+    },
+    {
+      "type": "obs_profile",
+      "name": "zero​width"
+    },
+    {
+      "type": "obs_profile",
+      "name": "line\nbreak"
+    },
+    {
+      "type": "obs_profile",
+      "scene": "Live"
+    },
+    {
+      "type": "obs_profile",
+      "name": null
+    },
+    {
+      "type": "obs_scene_collection",
+      "name": "   "
+    },
+    {
+      "type": "obs_profile",
+      "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "type": "macro",
+      "steps": []
+    },
+    {
+      "type": "macro",
+      "steps": [
+        {
+          "key": "play_pause",
+          "modifiers": [],
+          "delay_before_ms": 0,
+          "hold_ms": 0
+        }
+      ]
+    },
+    {
+      "type": "macro",
+      "steps": [
+        {
+          "key": "c",
+          "modifiers": [
+            "command"
+          ],
+          "delay_before_ms": 10001,
+          "hold_ms": 0
+        }
+      ]
+    },
+    {
+      "type": "macro",
+      "steps": [
+        {
+          "key": "c",
+          "modifiers": [
+            "command"
+          ],
+          "delay_before_ms": 0,
+          "hold_ms": 5001
+        }
+      ]
+    },
+    {
+      "type": "shortcut",
+      "key": "play_pause",
+      "modifiers": [
+        "command"
+      ]
+    }
   ]
 }

@@ -45,6 +45,21 @@ export function kindLighting(records: LightingSnapshot['records'], devices: Ligh
   return devices.filter(device => device.module === module).map(device => records[device.path_hex]).find(record => record !== undefined);
 }
 
+// The colour a "match modules" shortcut hands to the base's edge strip: the
+// first lit LED of the connected knob and fader modules, in inventory order,
+// or null when none is lit.
+export function matchedModuleColour(records: LightingSnapshot['records'], devices: LightingDevice[]): string | null {
+  for (const device of devices) {
+    if (device.module !== 'm003k' && device.module !== 'm005s') continue;
+    const record = records[device.path_hex];
+    if (!record || record.kind !== 'led') continue;
+    for (const led of record.leds) {
+      if (led && led.effect !== 0 && led.brightness > 0) return led.colour;
+    }
+  }
+  return null;
+}
+
 // The colour each of the module's LEDs shows in the art (a knob's ring, a
 // fader's glow strip): the LED's colour when it is lit — an effect other than
 // Off, at a brightness above zero — else null for the art's resting look.

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Grid2X2, Lightbulb, LightbulbOff, RotateCcw, Star, X } from 'lucide-react';
+import { Grid2X2, Lightbulb, LightbulbOff, Palette, RotateCcw, Star, X } from 'lucide-react';
 import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
 import { resolveSelected } from './module-selection';
@@ -12,7 +12,7 @@ import {
   removeColourFavourite, resetLighting, resetStatus, turnedOffLedStatus, writeColourFavourites,
 } from './lighting-model';
 import type { LightingDevice, LightingScope } from './lighting-model';
-import { controlsFromRecord, emptyLightingState, withDialLook, withLedLook } from './lighting-state';
+import { controlsFromRecord, emptyLightingState, matchedModuleColour, withDialLook, withLedLook } from './lighting-state';
 import type { LightingStateStore } from './lighting-state';
 import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
@@ -69,6 +69,9 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
   // A base takes no input, so no run can own it.
   const runOwned = targets.some(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
+  // The base's edge strip can take a module's colour: the first lit knob or
+  // fader LED, or nothing to match when no module is lit.
+  const matched = selected?.module === 'm0064' && scope === 'module' ? matchedModuleColour(records, devices) : null;
   // The apply queue reads the latest values and gate from this ref, not from
   // a render closure; a trailing apply runs after the state that scheduled it.
   const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led, lighting });
@@ -229,6 +232,11 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
         </div>}
       </fieldset>
       <div className="lighting-actions">
+        {selected?.module === 'm0064' && <button type="button" className="button compact" disabled={controlsLocked || matched === null}
+          title={matched === null ? 'No lit knob or fader LED to match yet' : `Copies ${matched} from the first lit knob or fader LED`}
+          onClick={() => { if (matched !== null) setColourValue(matched); }}>
+          <Palette size={16} />Match modules
+        </button>}
         <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
           {kind === 'led' ? <LightbulbOff size={16} /> : <RotateCcw size={16} />}{busy ? (kind === 'led' ? 'Turning off…' : 'Resetting…') : kind === 'led' ? 'Turn off' : 'Reset'}
         </button>
@@ -240,7 +248,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
       </details>
     </div>
   </section>;

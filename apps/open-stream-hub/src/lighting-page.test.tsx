@@ -121,6 +121,23 @@ describe('LightingPage', () => {
     expect(markup).toContain('>Turn off<');
   });
 
+  it('offers the base strip a match-modules colour from the lit modules', () => {
+    const base: LightingDevice = { path_hex: 'bs', module: 'm0064', serial_number: null };
+    const storage = new FakeStorage();
+    storage.setItem(lightingStateStorageKey, JSON.stringify({
+      kn: { kind: 'led', leds: [{ colour: '#ff0000', effect: 1, brightness: 80 }, null, null] },
+    }));
+    const lighting = new LightingStateStore(storage);
+    const markup = render({ devices: [base, knobs()], lighting });
+    expect(markup).toContain('Match modules');
+    // The lit module is there, so the shortcut is enabled and names the colour.
+    expect(markup).toContain('<button type="button" class="button compact" title="Copies #ff0000 from the first lit knob or fader LED">');
+    const bare = render({ devices: [base] });
+    expect(bare).toContain('<button type="button" class="button compact" disabled="" title="No lit knob or fader LED to match yet">');
+    // Only the base gets the shortcut; other modules get the mention in the notes only.
+    expect(render({ devices: [knobs()] })).not.toContain('>Match modules<');
+  });
+
   it('starts the controls from the stored look of the picked unit', () => {
     const storage = new FakeStorage();
     storage.setItem(lightingStateStorageKey, JSON.stringify({

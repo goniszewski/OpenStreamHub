@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   appearedTargets, controlsFromRecord, kindLighting, lightingStateStorageKey, litLedColours, LightingStateStore,
-  readLightingRecords, restoreLighting, withDialLook, withLedLook,
+  matchedModuleColour, readLightingRecords, restoreLighting, withDialLook, withLedLook,
 } from './lighting-state';
 import type { StoredLighting } from './lighting-state';
 import { FakeStorage } from './fake-storage';
@@ -40,6 +40,21 @@ describe('lighting state', () => {
     expect(kindLighting(records, devices, 'm005s')).toEqual(records.fd);
     expect(kindLighting({}, devices, 'm003k')).toBeUndefined();
     expect(kindLighting(records, [], 'm005s')).toBeUndefined();
+  });
+
+  it('hands the base strip the first lit module LED colour, in inventory order', () => {
+    const records = {
+      kn: { kind: 'led', leds: [null, { colour: '#00ff00', effect: 0, brightness: 100 }, { colour: '#ff0000', effect: 1, brightness: 80 }] } as StoredLighting,
+      fd: { kind: 'led', leds: [{ colour: '#0000ff', effect: 1, brightness: 100 }, null, null, null, null] } as StoredLighting,
+      dl: { kind: 'dial', backlight: 50, colour: '#ffffff' } as StoredLighting,
+    };
+    const devices = [unit('dl', 'm131e'), unit('fd', 'm005s'), unit('kn', 'm003k'), unit('bs', 'm0064')];
+    expect(matchedModuleColour(records, devices)).toBe('#0000ff');
+    // An Off LED is not lit: the next module's lit LED wins.
+    const faderOff = { ...records, fd: { kind: 'led', leds: [{ colour: '#0000ff', effect: 0, brightness: 100 }, null, null, null, null] } as StoredLighting };
+    expect(matchedModuleColour(faderOff, devices)).toBe('#ff0000');
+    expect(matchedModuleColour({}, devices)).toBeNull();
+    expect(matchedModuleColour(records, [unit('bs', 'm0064')])).toBeNull();
   });
 
   it('lights only LEDs that are on', () => {

@@ -54,7 +54,7 @@ export function shortcutAction(event: KeyEventLike, mac: boolean, options: { mod
   return index >= 0 ? { type: 'page', page: shortcutPages[index] } : null;
 }
 
-export function hint(key: string, mac: boolean) { return mac ? `⌘${key}` : `Ctrl+${key}`; }
+export function hint(key: string, mac: boolean) { return mac ? `⌘${key.replace('Shift+', '⇧')}` : `Ctrl+${key}`; }
 export function withHint(label: string, key: string, mac: boolean) { return `${label} (${hint(key, mac)})`; }
 export function redoHint(mac: boolean) { return mac ? '⌘⇧Z' : 'Ctrl+Y'; }
 
@@ -62,7 +62,7 @@ export const shortcutList: { keys: string; label: string }[] = [
   { keys: 'S', label: 'Save profile' },
   { keys: 'D', label: 'Duplicate profile' },
   { keys: 'Z', label: 'Undo your last change (not while typing in a field)' },
-  { keys: 'Shift+Z', label: 'Redo your last change (Ctrl+Y also works on Windows and Linux)' },
+  { keys: 'Shift+Z', label: 'Redo your last change' },
   { keys: 'C', label: 'Copy the selected key or binding' },
   { keys: 'V', label: 'Paste the copied key or binding onto the selection' },
   { keys: '⌫', label: 'Clear the selected key or remove the selected binding (a folder asks first)' },

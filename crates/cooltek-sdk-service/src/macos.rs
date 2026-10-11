@@ -627,7 +627,12 @@ impl MacOsDispatcher {
             Action::SetVolume { percent } => {
                 self.apple_script(format!("set volume output volume {percent}"))?;
             }
-            Action::VolumeFromPosition | Action::ObsInputVolumeFromPosition { .. } => {
+            Action::SetMicInputVolume { percent } => {
+                self.apple_script(format!("set volume input volume {percent}"))?;
+            }
+            Action::VolumeFromPosition
+            | Action::MicInputVolumeFromPosition
+            | Action::ObsInputVolumeFromPosition { .. } => {
                 unreachable!("unresolved templates are rejected before host operations")
             }
             Action::ToggleMute => {
@@ -1510,10 +1515,32 @@ mod tests {
     }
 
     #[test]
+    fn microphone_volume_sets_the_input_volume_only() {
+        for percent in [0, 1, 50, 100] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher
+                .dispatch(&Action::SetMicInputVolume { percent })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            assert_eq!(state.requests[0].program, OSASCRIPT);
+            assert_eq!(
+                state.requests[0].args,
+                [
+                    "-e".to_string(),
+                    format!("set volume input volume {percent}")
+                ]
+            );
+        }
+    }
+
+    #[test]
     fn unresolved_fader_template_or_invalid_absolute_volume_never_starts_host_tools() {
         let (mut dispatcher, state) = fake(vec![]);
         for action in [
             Action::VolumeFromPosition,
+            Action::MicInputVolumeFromPosition,
+            Action::SetMicInputVolume { percent: 101 },
             Action::SetVolume { percent: 101 },
         ] {
             assert!(dispatcher.dispatch(&action).is_err());

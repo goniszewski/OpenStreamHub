@@ -40,6 +40,8 @@ describe('profileCapabilities', () => {
     expect(capabilities.risk).toBe('normal');
     expect(capabilities).toMatchObject({ shortcut: true, launchApp: true, multiAction: false, screenshot: false, apps: ['com.apple.finder'], riskReasons: [] });
     expect(capabilities.counts).toEqual({ volume: 1, shortcut: 1, launch_app: 1 });
+    const mic = { schema_version: 1, name: 'P', bindings: [{ module: 'm005s', control: 0, gesture: 'position_changed', action: { type: 'mic_input_volume_from_position' } }] } as Profile;
+    expect(capabilityLines(profileCapabilities(mic))).toContain('Sets the microphone input volume from a fader.');
   });
   it('is elevated for text, URLs, screenshots and sequences without a dangerous combination', () => {
     for (const action of [

@@ -360,6 +360,8 @@ describe('obs input volume', () => {
   it('recognises both fader templates', () => {
     expect(isFaderTemplate({ type: 'volume_from_position' })).toBe(true);
     expect(isFaderTemplate({ type: 'obs_input_volume_from_position' })).toBe(true);
+    expect(isFaderTemplate({ type: 'mic_input_volume_from_position' })).toBe(true);
+    expect(actionLabel({ type: 'mic_input_volume_from_position' })).toBe('Follow fader position for microphone volume');
     expect(isFaderTemplate({ type: 'obs_set_input_volume' })).toBe(false);
     expect(isFaderTemplate(null)).toBe(false);
   });

@@ -180,6 +180,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       </SelectField>
       <Hint hint="Switches the run to the next or previous saved profile, in name order.">It wraps around at the ends. Only runs started from this app switch; nothing happens with a single saved profile or outside this app. When actions run on this Mac, they pause until you confirm the new profile. It cannot be a multi-action step.</Hint></div>}
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
+    {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">Each position change sets the default input device's volume (the microphone gain) from 0% to 100%. Some microphones have no software gain, and macOS then ignores it.</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
     {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} />}

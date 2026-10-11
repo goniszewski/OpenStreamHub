@@ -47,6 +47,10 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::Volume { .. } | Action::VolumeFromPosition | Action::ToggleMute => {
             set.insert("volume".into());
         }
+        // The microphone's gain is its own effect, apart from the output volume.
+        Action::MicInputVolumeFromPosition | Action::SetMicInputVolume { .. } => {
+            set.insert("mic_volume".into());
+        }
         // An absolute volume target is a fact the confirmation names, so a
         // new one counts as new.
         Action::SetVolume { percent } => {

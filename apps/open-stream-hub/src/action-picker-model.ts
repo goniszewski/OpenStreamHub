@@ -4,7 +4,7 @@ import type { StepActionType } from './action-model';
 
 // One file per picker entry: the step actions plus the binding-only ones, and the one
 // OBS entry ('obs'), which stands in for the ten obs_* step action types.
-export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'obs_input_volume_from_position' | 'obs';
+export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs';
 
 export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'navigation';
 
@@ -16,7 +16,7 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
 const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['profile', 'Switch profile'],
-  ['timer', 'Timer'], ['macro', 'Recorded macro'], ['volume_from_position', 'Output volume follows position'],
+  ['timer', 'Timer'], ['macro', 'Recorded macro'], ['volume_from_position', 'Output volume follows position'], ['mic_input_volume_from_position', 'Microphone volume follows position'],
   ['obs_input_volume_from_position', 'OBS input volume follows position'], ['obs', 'OBS']]);
 
 export interface PickerEntry { type: PickerActionType; label: string; category: PickerCategory; keywords: string }
@@ -27,6 +27,7 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['set_volume', 'audio', 'percent level fixed'],
   ['toggle_mute', 'audio', 'mute unmute silence sound'],
   ['volume_from_position', 'audio', 'fader position volume follow'],
+  ['mic_input_volume_from_position', 'audio', 'fader position microphone mic input gain level follow'],
   ['obs_input_volume_from_position', 'obs', 'fader position follow input volume level mixer mic audio'],
   ['shortcut', 'keyboard', 'hotkey key combination command press'],
   ['text', 'keyboard', 'type snippet clipboard string enter'],
@@ -69,7 +70,7 @@ export function pickerEntryIsCurrent(entry: PickerActionType, action: PickerActi
 // steps cannot nest multi-actions, profiles or timers, and every other control offers all but the fader actions.
 export type PickerScope = 'binding' | 'binding-fader' | 'step';
 
-const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'obs_input_volume_from_position'];
+const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position'];
 // A macro is a binding-level sequence like a multi-action: never a step.
 const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'macro', 'profile', 'timer', ...faderTypes];
 
@@ -109,7 +110,7 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 // select's onChange built them. The OBS entry starts from the scene operation; the editor's
 // Operation dropdown changes it from there.
 export function defaultBindingAction(type: PickerActionType): BindingAction {
-  return type === 'volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction()
+  return type === 'volume_from_position' || type === 'mic_input_volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction()
     : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
     : type === 'macro' ? defaultMacro()
     : type === 'obs' ? defaultStepAction('obs_scene') : defaultStepAction(type);

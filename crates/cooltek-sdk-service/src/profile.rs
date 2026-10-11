@@ -477,6 +477,18 @@ pub enum Action {
     /// This is a binding template. It must be resolved using the current input
     /// value before it reaches an action dispatcher.
     VolumeFromPosition,
+    /// Set the default input device's volume (the microphone gain) to an
+    /// absolute percentage.
+    SetMicInputVolume {
+        /// Absolute input percentage, between 0 and 100 inclusive.
+        percent: u8,
+    },
+    /// Resolve a fader's absolute position into an absolute microphone input
+    /// volume percentage.
+    ///
+    /// A binding template like [`Action::VolumeFromPosition`]; it must be
+    /// resolved using the current input value before it reaches a dispatcher.
+    MicInputVolumeFromPosition,
     /// Invert the default output's current mute state.
     ToggleMute,
     /// Send one key with explicit modifiers.
@@ -804,6 +816,10 @@ impl<'de> Deserialize<'de> for Action {
                 percent: u8,
             },
             VolumeFromPosition {},
+            SetMicInputVolume {
+                percent: u8,
+            },
+            MicInputVolumeFromPosition {},
             ToggleMute {},
             Shortcut {
                 key: String,
@@ -883,6 +899,8 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Volume { delta } => Self::Volume { delta },
             Shape::SetVolume { percent } => Self::SetVolume { percent },
             Shape::VolumeFromPosition {} => Self::VolumeFromPosition,
+            Shape::SetMicInputVolume { percent } => Self::SetMicInputVolume { percent },
+            Shape::MicInputVolumeFromPosition {} => Self::MicInputVolumeFromPosition,
             Shape::ToggleMute {} => Self::ToggleMute,
             Shape::Shortcut { key, modifiers } => Self::Shortcut { key, modifiers },
             Shape::LaunchApp { bundle_id } => Self::LaunchApp { bundle_id },
@@ -958,6 +976,8 @@ impl Action {
             Self::Volume { .. } => "volume",
             Self::SetVolume { .. } => "set_volume",
             Self::VolumeFromPosition => "volume_from_position",
+            Self::SetMicInputVolume { .. } => "set_mic_input_volume",
+            Self::MicInputVolumeFromPosition => "mic_input_volume_from_position",
             Self::ToggleMute => "toggle_mute",
             Self::Shortcut { .. } => "shortcut",
             Self::LaunchApp { .. } => "launch_app",
@@ -1177,6 +1197,7 @@ impl Action {
                         Self::MultiAction { .. }
                             | Self::Macro { .. }
                             | Self::VolumeFromPosition
+                            | Self::MicInputVolumeFromPosition
                             | Self::ObsInputVolumeFromPosition { .. }
                             | Self::Profile { .. }
                             | Self::Timer { .. }
@@ -1202,9 +1223,16 @@ impl Action {
                 }
                 label.as_deref().map_or(Ok(()), validate_timer_label)
             }
+            Self::SetMicInputVolume { percent } => {
+                if *percent > 100 {
+                    return Err("absolute microphone input volume must be between 0 and 100".into());
+                }
+                Ok(())
+            }
             Self::Volume { .. }
             | Self::SetVolume { .. }
             | Self::VolumeFromPosition
+            | Self::MicInputVolumeFromPosition
             | Self::ToggleMute
             | Self::Media { .. }
             | Self::System { .. }
@@ -1234,7 +1262,9 @@ impl Action {
     pub fn is_fader_template(&self) -> bool {
         matches!(
             self,
-            Self::VolumeFromPosition | Self::ObsInputVolumeFromPosition { .. }
+            Self::VolumeFromPosition
+                | Self::MicInputVolumeFromPosition
+                | Self::ObsInputVolumeFromPosition { .. }
         )
     }
 }
@@ -1361,7 +1391,7 @@ impl Profile {
                 .map_err(|error| format!("binding {index}: {error}"))?;
             if (binding.module == ServiceModule::M005S) != binding.action.is_fader_template() {
                 return Err(format!(
-                    "binding {index}: fader bindings require a fader action (volume_from_position or obs_input_volume_from_position), which are supported only for faders"
+                    "binding {index}: fader bindings require a fader action (volume_from_position, mic_input_volume_from_position or obs_input_volume_from_position), which are supported only for faders"
                 ));
             }
             validate_serial_number(binding.serial_number.as_deref())
@@ -1624,6 +1654,36 @@ mod tests {
             profile.bindings[1].serial_number = Some(serial);
             assert!(profile.validate().is_err());
         }
+    }
+
+    #[test]
+    fn microphone_volume_actions_parse_validate_and_stay_out_of_multi_actions() {
+        let template: Action =
+            serde_json::from_str(r#"{"type":"mic_input_volume_from_position"}"#).unwrap();
+        assert_eq!(template, Action::MicInputVolumeFromPosition);
+        assert_eq!(template.type_name(), "mic_input_volume_from_position");
+        assert!(template.is_fader_template());
+        assert!(template.validate().is_ok());
+        assert!(template.validate_executable().is_err());
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"mic_input_volume_from_position","percent":1}"#
+            )
+            .is_err()
+        );
+        let fixed: Action =
+            serde_json::from_str(r#"{"type":"set_mic_input_volume","percent":40}"#).unwrap();
+        assert_eq!(fixed, Action::SetMicInputVolume { percent: 40 });
+        assert!(fixed.validate_executable().is_ok());
+        assert!(
+            Action::SetMicInputVolume { percent: 101 }
+                .validate()
+                .is_err()
+        );
+        let nested = Action::MultiAction {
+            actions: vec![Action::MicInputVolumeFromPosition],
+        };
+        assert!(nested.validate().is_err());
     }
 
     #[test]

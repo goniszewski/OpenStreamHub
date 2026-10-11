@@ -167,6 +167,7 @@ function describeAction(action: unknown): string {
   if (!isObject(action)) return 'action';
   switch (action.type) {
     case 'volume': return `volume ${typeof action.delta === 'number' && action.delta > 0 ? '+' : ''}${String(action.delta)}`;
+    case 'mic_input_volume_from_position': return 'microphone volume follows the fader';
     case 'set_volume': return `set volume to ${String(action.percent)}%`;
     case 'toggle_mute': return 'toggle mute';
     case 'shortcut': {

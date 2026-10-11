@@ -130,7 +130,7 @@ export function removeDialBinding(profile: Profile, index: number, bindingIndex:
 
 const isFlatDial = (binding: Binding) => binding.module === 'm131e';
 const movable = (binding: Binding): binding is Binding & { gesture: DialBinding['gesture']; action: Action } =>
-  isFlatDial(binding) && dialFunctionGestures.includes(binding.gesture as DialBinding['gesture']) && binding.action.type !== 'volume_from_position';
+  isFlatDial(binding) && dialFunctionGestures.includes(binding.gesture as DialBinding['gesture']) && binding.action.type !== 'volume_from_position' && binding.action.type !== 'mic_input_volume_from_position';
 
 // What moving the flat encoder bindings into function `index` would do:
 // `moved` are added to it, `conflicting` are dropped because the function

@@ -126,6 +126,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${keyLabel(action.key)}`;
     case 'launch_app': return `Open ${action.bundle_id}`;
     case 'volume_from_position': return 'Follow fader position for output volume';
+    case 'mic_input_volume_from_position': return 'Follow fader position for microphone volume';
     case 'obs_input_volume_from_position': return `Follow fader position for OBS input “${clipLabel(action.input)}”`;
     case 'obs_set_input_volume': return `Set OBS input “${clipLabel(action.input)}” to ${action.percent}%`;
     case 'set_volume': return `Set output volume to ${action.percent}%`;

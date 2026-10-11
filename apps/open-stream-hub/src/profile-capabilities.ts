@@ -145,7 +145,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
       // timer shows a notification and plays a fixed system sound; its label is plain notification text.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'profile': case 'timer': break;
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer': break;
       // A media key or a stop of an already running player: disclosed, but low risk.
       case 'media': if (action.command === 'stop') mediaStop = true; else mediaKeys = true; break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
@@ -356,6 +356,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.obsItems.length) lines.push(`Changes OBS filters or source visibility through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsItems.join('; ')}.`);
   if (capabilities.obsReloads.length) lines.push(`Switches the OBS scene collection or profile through the OBS WebSocket on this Mac (when OBS is turned on in Settings); OBS reloads and this can interrupt a live stream or recording: ${capabilities.obsReloads.join('; ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
+  if (counts.mic_input_volume_from_position) lines.push('Sets the microphone input volume from a fader.');
   if (capabilities.mediaKeys) lines.push('Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.');
   if (capabilities.mediaStop) lines.push('Stops Music or Spotify if running; it does not start a player that is not running (one that quits at that instant may be relaunched by macOS, without playing). macOS may ask for Automation permission to control them.');
   if (capabilities.timers) lines.push(`Runs countdown timers (${plural(counts.timer ?? 0, 'timer')} bound). When one ends, macOS shows a notification and plays a system sound. Pressing the same control again cancels it; stopping the run cancels them all.`);

@@ -133,7 +133,7 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
         {serialIssue && <p id="dial-binding-serial-error" className="field-error" role="alert">{serialIssue}</p>}
         <fieldset disabled={disabled || !!serialIssue}>
           <ActionFields action={binding?.action ?? null} fader={false} selectorKey={`dial:${selected}:${gesture}:${serial}`} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} onChange={(action, field) => {
-            if (action?.type === 'volume_from_position') { session.setError('Dial functions cannot follow a fader position.'); return; }
+            if (action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position') { session.setError('Dial functions cannot follow a fader position.'); return; }
             run(latest => editDialBinding(latest, selected, gesture, serial, action as Action | null), field && `dial:${field}:${selected}:${gesture}:${serial}`);
           }} />
         </fieldset>

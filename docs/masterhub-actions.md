@@ -28,6 +28,8 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 | `{"type":"obs_source_visibility","scene":"Live","source":"Camera","op":"off"}` (`toggle`, `on`) | `GetSceneItemId`, then `GetSceneItemEnabled` (`toggle` only), then `SetSceneItemEnabled` | Same as `obs_scene` |
 | `{"type":"obs_scene_collection","name":"Streaming"}` | `SetCurrentSceneCollection` with `sceneCollectionName`. See [OBS scene collection and profile](#obs-scene-collection-and-profile-obs_scene_collection-obs_profile) | Same as `obs_scene` |
 | `{"type":"obs_profile","name":"Work"}` | `SetCurrentProfile` with `profileName` | Same as `obs_scene` |
+| `{"type":"set_mic_input_volume","percent":40}` | `osascript -e "set volume input volume 40"`: the default input device's volume (the microphone gain). See [Microphone volume](#microphone-volume-set_mic_input_volume-mic_input_volume_from_position) | macOS only |
+| `{"type":"mic_input_volume_from_position"}` | Fader-only template; each position resolves into `set_mic_input_volume` | macOS only; fader bindings only |
 | `{"type":"obs_set_input_volume","input":"Mic/Aux","percent":40}` | `SetInputVolume` with `inputName` and `inputVolumeMul` 0.4. See [OBS input volume](#obs-input-volume-obs_set_input_volume-obs_input_volume_from_position) | Same as `obs_scene` |
 | `{"type":"obs_input_volume_from_position","input":"Mic/Aux"}` | Fader-only template; each position resolves into `obs_set_input_volume` | Same as `obs_scene`; fader bindings only |
 
@@ -294,6 +296,13 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - The Execute confirmation lists the input by name with the level, or says the volume follows the fader. It is a local OBS effect and does not raise the risk level.
 - Tested against the scripted fake obs-websocket server only; no real OBS has been used, and the fader's range and jitter on hardware are unrecorded. Each position change sends one request, but a backlog of queued movements on the same input is coalesced to the latest level, like `set_volume`. There is no deadband yet.
 
+## Microphone volume (`set_mic_input_volume`, `mic_input_volume_from_position`)
+
+- JSON: `{"type":"set_mic_input_volume","percent":40}` and the fader template `{"type":"mic_input_volume_from_position"}`. `percent` is 0 to 100; extra fields are rejected. Additive variants, no schema bump.
+- **What it does.** Sets the default input device's volume with `set volume input volume N` (the same `osascript` path as `set_volume`, one bounded subprocess, no query). Output volume and mute are untouched, and unlike the output volume the app does not snapshot or restore the input volume.
+- **Fader template.** Like `volume_from_position`: bindable only to a fader (module `m005s`), a fader binding can only be one of the fader templates, a position resolves to the nearest whole percentage, and the template cannot run unresolved or be a `multi_action` step. `set_mic_input_volume` itself can be a step or bound elsewhere in a hand-written profile; the editor offers only the fader template.
+- **Limit.** macOS ignores the call for an input device without software gain (many USB and some built-in microphones); nothing is reported then. Not yet checked on hardware.
+
 ## OBS connection test
 
 Settings › OBS Studio has a **Test connection** button and a status chip, refreshed every ten seconds while the panel is open and OBS is switched on. The test opens one short loopback connection, goes as far as the `Identified` reply and closes; it sends no OBS request and shows no text that OBS sent. The chip is one of:
@@ -315,7 +324,7 @@ Each state shows a one-line fix. OBS being a running process is found with `pgre
 This is the first of the official app's OBS integrations ([app features](research/masterhub-1.0.0.113-app-features.md), "Integrations: OBS", about 18 actions over obs-websocket). Only switching the program scene is implemented; the rest are listed under [Not implemented](#not-implemented).
 
 - JSON: `{"type":"obs_scene","scene":"Starting soon"}`. `scene` is required and follows the keypad label rules plus the text snippet's invisible-character rule (`Action::validate` in `profile.rs`, `obsSceneIssue` in `action-model.ts`): not empty or only spaces, at most 128 UTF-8 bytes (`Action::MAX_OBS_SCENE_BYTES`), no control characters, and none of the invisible format or separator characters listed for `text` above. The name is matched by OBS exactly (case and spaces included). Extra fields such as `endpoint` or `password` are rejected (`deny_unknown_fields`), so a profile can never name where it connects. The variant is additive: no schema bump, records stay at `schema_version` 1, and a build without it rejects such a profile with `unknown variant`.
-- It can be bound wherever a discrete action can: flat bindings, keypad action tiles and dial function bindings. Faders accept only the fader templates (`volume_from_position`, `obs_input_volume_from_position`).
+- It can be bound wherever a discrete action can: flat bindings, keypad action tiles and dial function bindings. Faders accept only the fader templates (`volume_from_position`, `mic_input_volume_from_position`, `obs_input_volume_from_position`).
 - **It is allowed as a `multi_action` step** (a decision to review): it is one bounded request of at most 3 s, it does not stop the service, and it fits the 15 s sequence deadline. A sequence such as "switch to Be right back, then mute" matches the official app's flat multi-action list. When the run has no OBS endpoint, a `multi_action` with an `obs_scene` step is reported as unavailable **as a whole** and none of its steps run, so a sequence is never half-run because OBS is not configured.
 
 ### What a run does

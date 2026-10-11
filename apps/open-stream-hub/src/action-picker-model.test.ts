@@ -15,7 +15,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
-    const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
+    const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
       'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'macro', 'profile'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
@@ -44,7 +44,10 @@ describe('picker catalogue', () => {
 
 describe('scope filtering', () => {
   it('offers faders only the position-driven actions', () => {
-    expect(types(entriesForScope('binding-fader'))).toEqual(['volume_from_position', 'obs_input_volume_from_position']);
+    expect(types(entriesForScope('binding-fader'))).toEqual(['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position']);
+    expect(isValidForControl('mic_input_volume_from_position', 'm005s')).toBe(true);
+    expect(isValidForControl('mic_input_volume_from_position', 'm003k')).toBe(false);
+    expect(types(entriesForScope('binding'))).not.toContain('mic_input_volume_from_position');
     expect(isValidForControl('volume_from_position', 'm005s')).toBe(true);
     expect(isValidForControl('obs_input_volume_from_position', 'm005s')).toBe(true);
     expect(isValidForControl('obs_input_volume_from_position', 'm003k')).toBe(false);
@@ -115,6 +118,7 @@ describe('default actions', () => {
     expect(defaultBindingAction('profile')).toEqual({ type: 'profile', direction: 'next' });
     expect(defaultBindingAction('timer')).toEqual({ type: 'timer', seconds: 300 });
     expect(defaultBindingAction('volume_from_position')).toEqual({ type: 'volume_from_position' });
+    expect(defaultBindingAction('mic_input_volume_from_position')).toEqual({ type: 'mic_input_volume_from_position' });
     expect(defaultBindingAction('obs_input_volume_from_position')).toEqual({ type: 'obs_input_volume_from_position', input: 'Mic/Aux' });
     // The OBS entry starts from the scene operation, which the editor's Operation dropdown changes.
     expect(defaultBindingAction('obs')).toEqual({ type: 'obs_scene', scene: 'Scene' });

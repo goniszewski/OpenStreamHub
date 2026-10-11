@@ -61,9 +61,10 @@ export type BindingAction =
   // A countdown in the running service; pressing the same binding again cancels it. Never a multi_action step.
   | { type: 'timer'; seconds: number; label?: string; sound?: TimerSound }
   | { type: 'volume_from_position' }
+  | { type: 'mic_input_volume_from_position' }
   // Fader-only: each position change sets the named OBS input's volume (obs_set_input_volume with the fader's percentage).
   | { type: 'obs_input_volume_from_position'; input: string };
-export type FaderTemplate = Extract<BindingAction, { type: 'volume_from_position' | 'obs_input_volume_from_position' }>;
+export type FaderTemplate = Extract<BindingAction, { type: 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' }>;
 export type Action = Exclude<BindingAction, FaderTemplate>;
 export interface Binding {
   module: ServiceModule;

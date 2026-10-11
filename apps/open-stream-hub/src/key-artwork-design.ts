@@ -168,7 +168,7 @@ export function keyDesignLayout(design: KeyArtworkDesign, measure: KeyTextMeasur
 // preselects, the rest are one click away in the suggested row. The launch_app
 // entry carries a bare 'app:' placeholder that gains the action's bundle id.
 const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
-  volume: ['volume-2', 'volume-1'], set_volume: ['volume-2', 'volume-1'], volume_from_position: ['volume-2', 'volume-1'], obs_input_volume_from_position: ['sliders-vertical'], obs_set_input_volume: ['sliders-vertical'],
+  volume: ['volume-2', 'volume-1'], set_volume: ['volume-2', 'volume-1'], volume_from_position: ['volume-2', 'volume-1'], mic_input_volume_from_position: ['mic'], obs_input_volume_from_position: ['sliders-vertical'], obs_set_input_volume: ['sliders-vertical'],
   toggle_mute: ['volume-x', 'mic-off'],
   shortcut: ['keyboard'],
   launch_app: [appIconId(''), 'app-window'],

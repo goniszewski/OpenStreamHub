@@ -99,7 +99,9 @@ impl BindingEngine {
             return Ok(None);
         };
         let action = match &binding.action {
-            template @ (Action::VolumeFromPosition | Action::ObsInputVolumeFromPosition { .. }) => {
+            template @ (Action::VolumeFromPosition
+            | Action::MicInputVolumeFromPosition
+            | Action::ObsInputVolumeFromPosition { .. }) => {
                 let Some(InputValue::Position { raw, maximum }) = event.value else {
                     return Err(format!(
                         "{} requires an absolute fader value",
@@ -114,6 +116,7 @@ impl BindingEngine {
                         input: input.clone(),
                         percent,
                     },
+                    Action::MicInputVolumeFromPosition => Action::SetMicInputVolume { percent },
                     _ => Action::SetVolume { percent },
                 }
             }
@@ -367,6 +370,33 @@ mod tests {
             assert_eq!(
                 engine.binding_for(&device, &input).unwrap().action,
                 Action::VolumeFromPosition
+            );
+        }
+    }
+
+    #[test]
+    fn microphone_fader_binding_resolves_to_an_absolute_input_volume() {
+        let engine = engine(vec![Binding {
+            module: ServiceModule::M005S,
+            control: 1,
+            gesture: Gesture::PositionChanged,
+            serial_number: None,
+            action: Action::MicInputVolumeFromPosition,
+        }]);
+        let device = DeviceContext {
+            module: ServiceModule::M005S,
+            serial_number: None,
+        };
+        for raw in [0, 33, 100] {
+            let input = InputEvent {
+                timestamp_micros: 0,
+                control: 1,
+                gesture: Gesture::PositionChanged,
+                value: Some(InputValue::Position { raw, maximum: 100 }),
+            };
+            assert_eq!(
+                engine.action_for(&device, &input).unwrap(),
+                Some(Action::SetMicInputVolume { percent: raw as u8 })
             );
         }
     }

@@ -128,7 +128,7 @@ export type StepActionType = StepAction['type'];
 
 // The fader-only templates: each position change resolves into an absolute action (Action::is_fader_template).
 export const isFaderTemplate = (action: { type: string } | null | undefined): action is FaderTemplate =>
-  action?.type === 'volume_from_position' || action?.type === 'obs_input_volume_from_position';
+  action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position' || action?.type === 'obs_input_volume_from_position';
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],

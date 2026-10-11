@@ -67,7 +67,7 @@ describe('3-knob module orientation', () => {
       expect(markup).toContain(`aria-live="polite">${step.label}</span>`);
       expect(markup).toContain('aria-label="Rotate module 90 degrees clockwise"');
       // Both the hero and the rig tile use the top-down art with the same rotation.
-      const images = markup.match(/<img src="\/modules\/knob\.svg"[^>]*>/g) ?? [];
+      const images = markup.match(/<img src="data:image\/svg\+xml,[^"]*"[^>]*>/g) ?? [];
       expect(images).toHaveLength(2);
       for (const image of images) expect(image).toContain(`transform:rotate(${step.rotation}deg)`);
       expect(markup).not.toContain('/modules/knob.png" alt="" draggable');
@@ -93,11 +93,11 @@ describe('3-knob module orientation', () => {
   it('shows the canonical top-down art, unrotated, in the catalog and the compatibility table', () => {
     knobOrientationStore.set('single-left');
     const catalog = renderToStaticMarkup(<ModuleDrawer tiles={drawerTiles({ page: 'workspace', devices: [], selectedPath: null, markedPaths: [], editorKind: 'm003k' })} open onToggle={() => {}} onPick={() => {}} />);
-    expect(catalog).toContain('src="/modules/knob.svg"');
+    expect(catalog).toContain('src="data:image/svg+xml,');
     expect(catalog).not.toContain('knob.png');
-    expect(catalog).not.toMatch(/knob\.svg"[^>]*transform/);
+    expect(catalog).not.toMatch(/data:image\/svg\+xml[^"]*"[^>]*transform/);
     const table = renderToStaticMarkup(<CompatibilityPage />);
-    expect(table).toMatch(/<img src="\/modules\/knob\.svg" alt=""\/>/);
+    expect(table).toMatch(/<img src="data:image\/svg\+xml,[^"]*" alt=""\/>/);
     expect(table).not.toContain('knob.png');
   });
 });

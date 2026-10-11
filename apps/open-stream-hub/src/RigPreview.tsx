@@ -3,6 +3,8 @@ import type { CSSProperties, PointerEvent } from 'react';
 import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, X } from 'lucide-react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
+import { emptyLightingState, kindLighting, litLedColours } from './lighting-state';
+import type { LightingStateStore } from './lighting-state';
 import type { ModuleLive } from './live-state';
 import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
@@ -83,8 +85,10 @@ export function useRig(devices: LiveDevice[] = noDevices, autoDetect = false) {
 // Every module in the rig is drawn from the draft profile, so edits appear as they are made.
 // Live input (when a feed is supplied) is read-only: it overrides what the artwork shows and runs no actions.
 // Dragging a fader while a feed runs still only moves the simulated value; the live value wins on screen.
-export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; state: SessionState; feed?: DeviceFeed }) {
+// The lighting the Lighting page applied lights the knob rings and the fader glow strips.
+export function RigPreview({ editor, state, feed, lighting = emptyLightingState }: { editor: DeviceEditor; state: SessionState; feed?: DeviceFeed; lighting?: LightingStateStore }) {
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
+  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
   const [source, setSource] = useState('off');
   const { rig, add, remove, move } = useRig(feedState.devices, feed !== undefined && feedState.desktop && feedState.autoDetect);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -141,9 +145,15 @@ export function RigPreview({ editor, state, feed }: { editor: DeviceEditor; stat
           : undefined;
         const bound = boundControlCount(profile, item.module);
         const live = feedState.live[item.module];
+        // One stored look per module kind lights the tile: the first connected unit of the kind that has one.
+        const stored = item.module === 'm003k' || item.module === 'm005s'
+          ? kindLighting(lightingRecords, feedState.devices, item.module)
+          : undefined;
         return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
           <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${module.name} in rig`}>
-            <ModuleArtImage module={module} orientation={knobOrientation} faders={item.module === 'm005s' ? [0, 1, 2, 3, 4].map(control => faderValue(item, control)) : undefined} />
+            <ModuleArtImage module={module} orientation={knobOrientation} faders={item.module === 'm005s' ? [0, 1, 2, 3, 4].map(control => faderValue(item, control)) : undefined}
+              knobs={item.module === 'm003k' ? litLedColours(stored, 3) : undefined}
+              glows={item.module === 'm005s' ? litLedColours(stored, 5) : undefined} />
             {item.module === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
             {controls.map(area => {
               const action = controlAction(profile, item.module, area.control);

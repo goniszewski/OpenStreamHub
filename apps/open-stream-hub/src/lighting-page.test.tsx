@@ -4,6 +4,7 @@ import { createModuleSelection } from './module-selection';
 import type { LightingDevice } from './lighting-model';
 import { LightingPage } from './LightingPage';
 import { favouritesStorageKey } from './lighting-model';
+import { lightingStateStorageKey, LightingStateStore } from './lighting-state';
 import { FakeStorage } from './fake-storage';
 import type { ServiceRunner } from './service-runner';
 
@@ -98,5 +99,41 @@ describe('LightingPage', () => {
     expect(markup).toContain('aria-label="Use colour #00ff00"');
     expect(markup).toContain('aria-label="Remove colour #ff0000"');
     expect(markup).toContain('style="background:#ff0000"');
+  });
+
+  it('gives an LED module a turn-off instead of a reset, and the dial keeps its reset', () => {
+    const knobsMarkup = render({ devices: [knobs()] });
+    expect(knobsMarkup).toContain('>Turn off<');
+    expect(knobsMarkup).toContain('lucide-lightbulb-off');
+    expect(knobsMarkup).not.toContain('lucide-rotate-ccw');
+    expect(knobsMarkup).toContain('Turn off switches the picked LED, or every LED, back to Off.');
+    const dialMarkup = render({ devices: [dial('aa')] });
+    expect(dialMarkup).toContain('>Reset<');
+    expect(dialMarkup).toContain('lucide-rotate-ccw');
+  });
+
+  it('lights the base from the page like a one-LED module', () => {
+    const base: LightingDevice = { path_hex: 'bs', module: 'm0064', serial_number: null };
+    const markup = render({ devices: [base] });
+    expect(markup).not.toContain('<fieldset class="lighting-controls" disabled');
+    expect(markup).toContain('id="lighting-effect"');
+    expect(markup).not.toContain('id="lighting-led"');
+    expect(markup).toContain('>Turn off<');
+  });
+
+  it('starts the controls from the stored look of the picked unit', () => {
+    const storage = new FakeStorage();
+    storage.setItem(lightingStateStorageKey, JSON.stringify({
+      kn: { kind: 'led', leds: [{ colour: '#ff0000', effect: 2, brightness: 60 }, { colour: '#00ff00', effect: 7, brightness: 30 }, null] },
+      aa: { kind: 'dial', backlight: 40, colour: '#00ffcc' },
+    }));
+    const lighting = new LightingStateStore(storage);
+    const knobsMarkup = render({ devices: [knobs()], lighting });
+    expect(knobsMarkup).toContain('value="#ff0000"');
+    expect(knobsMarkup).toContain('value="60"');
+    expect(knobsMarkup).toContain('<option value="2" selected="">Breathing</option>');
+    const dialMarkup = render({ devices: [dial('aa'), knobs()], lighting });
+    expect(dialMarkup).toContain('value="40"');
+    expect(dialMarkup).toContain('value="#00ffcc"');
   });
 });

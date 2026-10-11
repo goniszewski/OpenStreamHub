@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Grid2X2, Lightbulb, RotateCcw, Star, X } from 'lucide-react';
+import { Grid2X2, Lightbulb, LightbulbOff, RotateCcw, Star, X } from 'lucide-react';
 import { SelectField } from './controls';
 import { idleFeedState } from './device-feed';
 import { resolveSelected } from './module-selection';
@@ -9,9 +9,11 @@ import {
   addColourFavourite, appliedLedStatus, appliedStatus, applyDelayMs, applyLedLighting, applyLighting, clampBacklight, createApplyQueue,
   defaultBacklight, defaultColour, defaultEffect, ledCount, lightingBlockReason, lightingEffects, lightingKind,
   lightingScopeLabels, lightingTargets, readColourFavourites,
-  removeColourFavourite, resetLighting, resetStatus, writeColourFavourites,
+  removeColourFavourite, resetLighting, resetStatus, turnedOffLedStatus, writeColourFavourites,
 } from './lighting-model';
 import type { LightingDevice, LightingScope } from './lighting-model';
+import { controlsFromRecord, emptyLightingState, withDialLook, withLedLook } from './lighting-state';
+import type { LightingStateStore } from './lighting-state';
 import { errorMessage } from './ui-model';
 import type { Invoke } from './profile-session';
 import type { ServiceRunner } from './service-runner';
@@ -21,23 +23,35 @@ import type { ServiceRunner } from './service-runner';
 // to the hardware as the controls move. Everything that
 // decides — targets, gating, favourites, request shaping — lives in
 // lighting-model; this component only holds the controls and debounces.
-export function LightingPage({ desktop, invoke, devices, selection, runner, storage = null }: {
+// What an apply left on each unit is recorded in the lighting state, which
+// the rig lights its art with and a replug is answered from.
+export function LightingPage({ desktop, invoke, devices, selection, runner, storage = null, lighting = emptyLightingState }: {
   desktop: boolean; invoke?: Invoke; devices: LightingDevice[]; selection: ModuleSelection; runner?: ServiceRunner;
-  storage?: Pick<Storage, 'getItem' | 'setItem'> | null;
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null; lighting?: LightingStateStore;
 }) {
   const picked = useSyncExternalStore(selection.subscribe, selection.getState, selection.getState).path;
+  const records = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
   const [scope, setScope] = useState<LightingScope>('module');
-  const [backlight, setBacklight] = useState(defaultBacklight);
-  const [colour, setColour] = useState(defaultColour);
-  const [effect, setEffect] = useState(defaultEffect);
+  // The picked module, falling back to the first dial and then the first
+  // module, so a replug or a scope flip never leaves the picker empty-handed.
+  const selected = resolveSelected(devices, picked);
+  const kind = selected ? lightingKind(selected.module) : 'dial';
+  const leds = selected ? ledCount(selected.module) : 0;
   const [ledIndex, setLedIndex] = useState<number | null>(null);
+  // A LED pick only means something for the module it was made on, and only per module.
+  const led = kind === 'led' && scope === 'module' && ledIndex !== null && ledIndex < leds ? ledIndex : null;
+  // The controls start from what was last applied to the picked unit: that
+  // LED's own look when one is picked, LED 1's for All LEDs, the dial's
+  // backlight and colour. A unit never lit starts at the defaults. Read at
+  // first render, and re-read when the pick or the record changes.
+  const stored = controlsFromRecord(selected?.path_hex ? records[selected.path_hex] : undefined, kind ?? 'dial', led);
+  const [backlight, setBacklight] = useState(stored?.backlight ?? defaultBacklight);
+  const [colour, setColour] = useState(stored?.colour ?? defaultColour);
+  const [effect, setEffect] = useState(stored?.effect ?? defaultEffect);
   const [favourites, setFavourites] = useState<string[]>(() => readColourFavourites(storage));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  // The picked module, falling back to the first dial and then the first
-  // module, so a replug or a scope flip never leaves the picker empty-handed.
-  const selected = resolveSelected(devices, picked);
   const targets = lightingTargets(devices, scope, selected?.path_hex ?? null);
   // Whole kit flags the modules it will reach on the shared strip.
   const markedKey = scope === 'kit' ? targets.map(device => device.path_hex).join(',') : '';
@@ -45,17 +59,20 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
     selection.mark(markedKey ? markedKey.split(',') : []);
     return () => selection.mark([]);
   }, [selection, markedKey]);
-  const kind = selected ? lightingKind(selected.module) : 'dial';
-  const leds = selected ? ledCount(selected.module) : 0;
-  // A LED pick only means something for the module it was made on, and only per module.
-  const led = kind === 'led' && scope === 'module' && ledIndex !== null && ledIndex < leds ? ledIndex : null;
+  const selectedPath = selected?.path_hex ?? null;
+  useEffect(() => {
+    const look = controlsFromRecord(selectedPath ? records[selectedPath] : undefined, kind ?? 'dial', led);
+    setEffect(look?.effect ?? defaultEffect);
+    setColour(look?.colour ?? defaultColour);
+    setBacklight(look?.backlight ?? defaultBacklight);
+  }, [selectedPath, kind, led, records]);
   // A base takes no input, so no run can own it.
   const runOwned = targets.some(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, scope, selected, devices });
   // The apply queue reads the latest values and gate from this ref, not from
   // a render closure; a trailing apply runs after the state that scheduled it.
-  const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led });
-  latest.current = { invoke, reason, targets, backlight, colour, kind, effect, led };
+  const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led, lighting });
+  latest.current = { invoke, reason, targets, backlight, colour, kind, effect, led, lighting };
   // One write at a time, and a change landing during a write re-applies once
   // with the latest values, so a dragged slider is never silently dropped —
   // even while a slow Whole kit write is running. Recreated per mount cycle:
@@ -72,29 +89,58 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           const written = await applyLedLighting(current.invoke, {
             targets: paths, led: current.led, colour: current.colour, effect: current.effect, brightness: current.backlight,
           });
+          current.lighting.record(paths, existing => withLedLook(existing, current.led, ledsFor(current.targets), {
+            colour: current.colour, effect: current.effect, brightness: current.backlight,
+          }));
           setStatus(appliedLedStatus(written));
         } else {
           const written = await applyLighting(current.invoke, { targets: paths, backlight: current.backlight, colour: current.colour });
+          current.lighting.record(paths, existing => withDialLook(existing, current.backlight, current.colour));
           setStatus(appliedStatus(written));
         }
       } catch (reason) { setError(errorMessage(reason)); }
     }, applyDelayMs);
     applyRef.current = queue;
     return () => { applyRef.current = null; queue.dispose(); };
+    // The queue reads everything through the latest ref; the store arrives with the app.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The LED count of the module kind the targets share (a Whole kit write
+  // reaches one kind at a time).
+  function ledsFor(targets: LightingDevice[]): number {
+    return targets[0] ? ledCount(targets[0].module) : 0;
+  }
 
   function scheduleApply() {
     applyRef.current?.schedule();
   }
 
+  // The dial's reset leaves software mode, so nothing applied here is on it
+  // any more: the record goes too. The LED modules have no built-in mode to
+  // return to — turning them off is their reset, and the Off look is kept so
+  // a replug restores it.
   async function reset() {
     const current = latest.current;
     if (current.reason !== null || !current.invoke || current.targets.length === 0 || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const written = await resetLighting(current.invoke, current.targets.map(device => device.path_hex));
-      setStatus(resetStatus(written));
+      if (current.kind === 'led') {
+        const paths = current.targets.map(device => device.path_hex);
+        const written = await applyLedLighting(current.invoke, {
+          targets: paths, led: current.led, colour: current.colour, effect: 0, brightness: current.backlight,
+        });
+        current.lighting.record(paths, existing => withLedLook(existing, current.led, ledsFor(current.targets), {
+          colour: current.colour, effect: 0, brightness: current.backlight,
+        }));
+        setEffect(0);
+        setStatus(turnedOffLedStatus(written, current.led));
+      } else {
+        const written = await resetLighting(current.invoke, current.targets.map(device => device.path_hex));
+        current.lighting.record(current.targets.map(device => device.path_hex), () => undefined);
+        setStatus(resetStatus(written));
+      }
     } catch (reason) { setError(errorMessage(reason)); }
     setBusy(false);
   }
@@ -134,7 +180,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
   const controlsLocked = reason !== null;
 
   return <section className="page-content lighting-page">
-    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s backlight and colour, and the knob and fader modules’ colour, effect and brightness, applied to the hardware as you adjust them.</p></div></div>
+    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s backlight and colour, and the knob and fader modules’ colour, effect and brightness, applied to the hardware as you adjust them and kept across a replug.</p></div></div>
     <div className="panel lighting-panel">
       <div className="theme-picker lighting-scope" role="group" aria-label="Lighting scope">
         {(Object.keys(lightingScopeLabels) as LightingScope[]).map(value => <button key={value} type="button"
@@ -183,18 +229,18 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
         </div>}
       </fieldset>
       <div className="lighting-actions">
-        {kind !== 'led' && <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
-          <RotateCcw size={16} />{busy ? 'Resetting…' : 'Reset'}
-        </button>}
+        <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
+          {kind === 'led' ? <LightbulbOff size={16} /> : <RotateCcw size={16} />}{busy ? (kind === 'led' ? 'Turning off…' : 'Resetting…') : kind === 'led' ? 'Turn off' : 'Reset'}
+        </button>
       </div>
       {reason && <p className="fine-print lighting-reason" role="status">{reason}</p>}
       {error && <div className="service-failure" role="alert"><strong>{kind === 'led' ? 'Could not reach the module.' : 'Could not reach the dial.'}</strong> {error}</div>}
       {!error && status && <p className="fine-print" role="status">{status}</p>}
-      <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Pick Off or another effect to change a module’s LEDs; there is no reset for them yet.' : 'Reset hands the dial back to its built-in animation.'}</p>
+      <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Turn off switches the picked LED, or every LED, back to Off.' : 'Reset hands the dial back to its built-in animation.'}</p>
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module. The base edge strip is not available here yet.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
       </details>
     </div>
   </section>;

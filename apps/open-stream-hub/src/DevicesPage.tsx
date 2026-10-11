@@ -20,6 +20,8 @@ import { ServicePanel } from './ServicePanel';
 import type { RunSession } from './ServicePanel';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
+import { emptyLightingState, kindLighting, litLedColours } from './lighting-state';
+import type { LightingStateStore } from './lighting-state';
 import type { ProfileSession, SessionState } from './profile-session';
 import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
@@ -55,15 +57,15 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
 // The middle column: the module image with its live input, the control pickers, then the run section.
 // Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
 // lives in the header Run control.
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean }) {
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const knobOrientation = useKnobOrientation();
   const isKnob = selected.id === 'm003k';
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
-    <RigPreview editor={editor} state={state} feed={feed} />
-    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} disabled={disabled} />
+    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} />
+    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} disabled={disabled} lighting={lighting} />
     {isKnob && <KnobOrientationControl orientation={knobOrientation} onRotate={knobOrientationStore.rotate} />}
     {selected.supported ? <>
       {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad}
@@ -99,16 +101,23 @@ export function controlDropHandlers(module: ServiceModule, control: number, drop
 // The module image with its hit areas. It alone subscribes to the feed, so live input re-renders
 // only this image, not the rest of the workspace. Live state is read-only and keyed by module type,
 // as in the rig: same-type devices share one live state. Controls accept a dragged picker entry.
-export function HeroImage({ editor, profile, feed, knobOrientation, disabled = false }: { editor: DeviceEditor; profile: SessionState['draft']['profile']; feed?: DeviceFeed; knobOrientation: KnobOrientation; disabled?: boolean }) {
+// The lighting the Lighting page applied lights the knob rings and the fader glow strips.
+export function HeroImage({ editor, profile, feed, knobOrientation, disabled = false, lighting = emptyLightingState }: { editor: DeviceEditor; profile: SessionState['draft']['profile']; feed?: DeviceFeed; knobOrientation: KnobOrientation; disabled?: boolean; lighting?: LightingStateStore }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding } = editor;
-  const live = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState).live[selected.id];
+  const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
+  const live = feedState.live[selected.id];
+  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
   const isKnob = selected.id === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : moduleArtwork[selected.id].controls;
   // Each cap shows its live value, else the value being tried in the editor for the selected fader.
   const faderValues = selected.id === 'm005s' ? controls.map(area => live?.faders[area.control] ?? (selection.control === area.control ? editor.faderPosition : defaultFaderPosition)) : undefined;
+  // One stored look per module kind lights the art: the first connected unit of the kind that has one.
+  const stored = selected.id === 'm003k' || selected.id === 'm005s' ? kindLighting(lightingRecords, feedState.devices, selected.id) : undefined;
   return <div className={`hero${isKeypad ? ' keypad-art' : ''} ${selected.art === 'knob' || selected.art === 'encoder' ? 'square' : 'wide'}${selected.id === 'm005s' || selected.id === 'm032le' ? ` art-${selected.art}` : ''}`}>
       <div className={`module-image${isKnob ? ' knob-image' : ''}`} style={{ '--art-aspect': moduleArtwork[selected.id].aspect } as CSSProperties} role="group" aria-label={`${selected.name} image controls`}>
-        <ModuleArtImage module={selected} orientation={knobOrientation} faders={faderValues} />
+        <ModuleArtImage module={selected} orientation={knobOrientation} faders={faderValues}
+          knobs={isKnob ? litLedColours(stored, 3) : undefined}
+          glows={selected.id === 'm005s' ? litLedColours(stored, 5) : undefined} />
         {selected.id === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
         {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control, true)}</span>)}

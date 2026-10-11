@@ -26,6 +26,7 @@ import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
+import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
@@ -97,12 +98,37 @@ export default function App() {
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
   const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
+  // The lighting the Lighting page applies, kept per unit: the rig lights its
+  // art with it, and a module that appears again (a replug, or the first
+  // inventory after a launch) is sent the same writes once more.
+  const [lightingState] = useState(() => new LightingStateStore(webStorage()));
   const deviceFeedState = useSyncExternalStore(feed.subscribe, feed.getState);
   // The picked module, shared by every page that acts on one module.
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
   const pickableModules = [...bases, ...deviceFeedState.devices];
   const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);
+  // A module that appears — the first inventory after a launch, or a replug —
+  // is sent the lighting it was last given, so a module keeps its look across
+  // a reconnect the way the official app restores it. A unit a run is driving
+  // is skipped, and the restores queue up so a burst of inventories (a base
+  // replug brings the whole kit back) writes one module at a time.
+  const lightingSeen = useRef<string[] | null>(null);
+  const restoreChain = useRef<Promise<unknown>>(Promise.resolve());
+  const pickableKey = pickableModules.map(device => device.path_hex).join(',');
+  useEffect(() => {
+    const previous = lightingSeen.current;
+    lightingSeen.current = pickableKey.length === 0 ? [] : pickableKey.split(',');
+    if (!desktop || !deviceFeedState.inventoryLoaded) return;
+    const appeared = appearedTargets(previous, pickableModules);
+    if (appeared.length === 0) return;
+    restoreChain.current = restoreChain.current
+      .then(() => restoreLighting(lightingState, appeared, invokeCommand, device =>
+        device.module !== 'm0064' && runner.isActivePath(device.path_hex, { ...device, module: device.module } as LiveDevice)))
+      .catch(() => {});
+    // Everything the restore reads arrives with the app or the inventory key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop, deviceFeedState.inventoryLoaded, pickableKey, lightingState, runner]);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   // A save applies the saved profile to the running sessions that hold it,
   // through the run store that knows them.
@@ -438,7 +464,7 @@ export default function App() {
         {drawerPage && <ModuleDrawer tiles={tiles} open={drawerOpen} onToggle={() => setDrawerOpen(open => { writeDrawerOpen(webStorage(), !open); return !open; })} onPick={pickModule} />}
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <div className="workspace-column">
-            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} />
+            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
             <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
           </div>
@@ -448,7 +474,7 @@ export default function App() {
           <ArtworkPage desktop={desktop} invoke={invokeCommand} selection={moduleSelection} devices={pickableModules} />
         </>}
         {page === 'lighting' && <>
-          <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} />
+          <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} lighting={lightingState} />
         </>}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}

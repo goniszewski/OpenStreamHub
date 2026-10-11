@@ -4,6 +4,7 @@ import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
 import { RigPreview } from './RigPreview';
 import { DeviceFeed } from './device-feed';
+import { LightingStateStore } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
 
 describe('RigPreview', () => {
@@ -74,6 +75,30 @@ describe('RigPreview', () => {
     }
     const off = make(false); await new Promise(resolve => setTimeout(resolve, 0));
     expect(renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={off} />)).not.toContain('5x Fader Precision in rig');
+  });
+
+  it('lights a knob ring and a fader glow strip from the stored lighting', async () => {
+    const profile = upgradeKeypadProfile({ schema_version: 1, name: 'Rig', bindings: [] });
+    const state = new ProfileSession(() => new Promise(() => {}), profile, false).getState();
+    const editor = { selection: { module: 'm003k', control: 0, gesture: 'clockwise', serial: '' }, faderPosition: 50, keypadPath: [keypadRoot], currentKeypadPage: state.draft.profile.keypad!.pages[0] } as unknown as DeviceEditor;
+    const listen = async () => () => {};
+    const make = async (module: string) => {
+      const feed = new DeviceFeed((async (command: string) => command === 'list_live_devices' ? [{ path_hex: 'ab12', module, serial_number: null }] : 'live') as never, listen, true, callback => callback());
+      feed.setAutoDetect(true); feed.connect();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return feed;
+    };
+    const lighting = new LightingStateStore(null);
+    lighting.record(['ab12'], () => ({ kind: 'led', leds: [{ colour: '#ff0000', effect: 1, brightness: 100 }, null, null] }));
+    const knobsMarkup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={await make('m003k')} lighting={lighting} />);
+    expect(knobsMarkup).toContain('module-art-inline');
+    expect(knobsMarkup).toContain('color="#ff0000"');
+    const faders = new LightingStateStore(null);
+    faders.record(['ab12'], () => ({ kind: 'led', leds: [null, { colour: '#00ff00', effect: 5, brightness: 90 }, null, null, null] }));
+    const fadersMarkup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={await make('m005s')} lighting={faders} />);
+    expect(fadersMarkup).toContain('fill="#00ff00" opacity="1"');
+    // An off LED keeps the art's resting look.
+    expect(fadersMarkup).not.toContain('fill="#ff0000" opacity="1"');
   });
 
   it('shows only the connected base map when physical positions are available', async () => {

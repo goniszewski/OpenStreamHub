@@ -1,6 +1,6 @@
 import { knobOrientations, knobRotation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
-import { defaultFaderValues, fadersDataUrl } from './module-art';
+import { defaultFaderValues, fadersDataUrl, knobDataUrl } from './module-art';
 import type { ModuleId } from './ui-model';
 
 export interface ImageControl {
@@ -44,7 +44,8 @@ export function moduleImage(module: { id: ModuleId; art: string }, orientation?:
   if (module.id === 'm005s') return { src: fadersDataUrl(faders ?? defaultFaderValues) };
   if (module.id === 'm131e' || module.id === 'm4315' || module.id === 'm032le') return { src: `/modules/${module.art}.svg` };
   if (module.id !== 'm003k') return { src: `/modules/${module.art}.png` };
-  return orientation ? { src: '/modules/knob.svg', style: { transform: `rotate(${knobRotation(orientation)}deg)` } } : { src: '/modules/knob.svg' };
+  const src = knobDataUrl();
+  return orientation ? { src, style: { transform: `rotate(${knobRotation(orientation)}deg)` } } : { src };
 }
 
 // Percentages refer to the complete approved artwork, including transparent margins.

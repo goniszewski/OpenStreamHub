@@ -224,6 +224,11 @@ export function resetStatus(count: number): string {
   return count === 1 ? 'The dial returned to its built-in animation.' : `${count} dials returned to their built-in animation.`;
 }
 
+export function turnedOffLedStatus(count: number, led: number | null): string {
+  const on = count === 1 ? '' : ` on ${count} modules`;
+  return led === null ? `The LEDs are off${on}.` : `The LED is off${on}.`;
+}
+
 export function readColourFavourites(storage: Pick<Storage, 'getItem'> | null): string[] {
   try {
     const parsed: unknown = JSON.parse(storage?.getItem(favouritesStorageKey) ?? '[]');

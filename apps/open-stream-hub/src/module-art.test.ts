@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { faderCapCentre, fadersDataUrl, fadersSvg, faderTrackInset, moduleGlass } from './module-art';
+import { faderCapCentre, fadersDataUrl, fadersSvg, faderTrackInset, knobSvg, moduleGlass } from './module-art';
 
 describe('module art', () => {
   it('maps a fader value onto the cap centre, bottom to top', () => {
@@ -38,5 +38,39 @@ describe('module art', () => {
     expect(moduleGlass('m131e')).toBe('/modules/encoder-glass.svg');
     expect(moduleGlass('m005s')).toBeUndefined();
     expect(moduleGlass('m003k')).toBeUndefined();
+  });
+
+  it('lights each fader glow strip in its colour and leaves the rest off', () => {
+    const glows = (svg: string) => [...svg.matchAll(/<rect class="glow"[^>]*fill="([^"]*)" opacity="([^"]*)"/g)]
+      .map(match => `${match[1]}@${match[2]}`);
+    expect(glows(fadersSvg([50, 50, 50, 50, 50], '', 100, ['#ff0000', null, '#00ff00'])))
+      .toEqual(['#ff0000@1', '#8a3cff@0', '#00ff00@1', '#8a3cff@0', '#8a3cff@0']);
+    expect(glows(fadersSvg([50, 50, 50, 50, 50]))).toEqual(Array(5).fill('#8a3cff@0'));
+  });
+
+  it('keeps cap and glow changes independent of each other', () => {
+    const caps = (svg: string) => [...svg.matchAll(/class="cap" transform="translate\(0 ([\d.]+)\)/g)].map(match => Number(match[1]));
+    const svg = fadersSvg([0, 0, 0, 0, 0], '', 100, [null, '#1234fe']);
+    expect(caps(svg)).toEqual([675, 675, 675, 675, 675]);
+    expect((svg.match(/fill="#1234fe" opacity="1"/g) ?? []).length).toBe(1);
+  });
+
+  it('colors each knob ring and keeps the unlit ones at their resting colour', () => {
+    const colours = (svg: string) => [...svg.matchAll(/<g id="(?:\w+-)?knob-(\d)"( color="([^"]*)")? transform=/g)]
+      .map(match => match[3] ?? null);
+    expect(colours(knobSvg(['#ff0000', null, '#00ff00']))).toEqual(['#ff0000', null, '#00ff00']);
+    expect(colours(knobSvg([]))).toEqual([null, null, null]);
+    // The resting colour stays on the parent group for unlit rings.
+    expect(knobSvg([null, '#1234fe', null])).toContain('<g id="knobs" color="#b36bff">');
+    expect(knobSvg([null, '#1234fe', null])).toContain('<g id="knob-1" color="#1234fe" transform=');
+  });
+
+  it('prefixes knob ids and references so several inline copies do not collide', () => {
+    const svg = knobSvg(['#ff0000', null, null], 'b2-');
+    expect(svg).toContain('id="b2-shell"');
+    expect(svg).toContain('id="b2-knob-0"');
+    expect(svg).toContain('<g id="b2-knob-0" color="#ff0000" transform=');
+    expect(svg).not.toMatch(/\bid="(?!b2-)/);
+    expect(svg).not.toMatch(/url\(#(?!b2-)/);
   });
 });

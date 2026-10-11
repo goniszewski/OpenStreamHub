@@ -775,3 +775,11 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .settings-toc a { display:block; padding:5px 10px; border-radius:6px; color:var(--muted); font-size:12px; text-decoration:none; }
 .settings-toc a:hover { color:var(--text); background:var(--selected); }
 .settings-toc a.active { color:var(--accent); font-weight:600; }
+
+/* Shortcut chips: shown on the controls that have one while Command (Control elsewhere) is held. */
+[data-shortcut] { position:relative; }
+[data-shortcut]::before { content:attr(data-shortcut); display:none; position:absolute; z-index:70; top:-7px; right:-5px; padding:1px 6px; border-radius:999px; background:var(--accent); color:#fff; font-size:10px; font-weight:600; line-height:16px; letter-spacing:.2px; white-space:nowrap; pointer-events:none; box-shadow:0 1px 4px rgba(0,0,0,.4); }
+html[data-mod-held] [data-shortcut]::before { display:block; }
+.sidebar [data-shortcut]::before { top:50%; right:10px; transform:translateY(-50%); }
+.sidebar.collapsed [data-shortcut]::before { top:3px; right:3px; transform:none; padding:0 4px; font-size:9px; line-height:14px; }
+html[data-mod-held] [data-shortcut]:disabled::before { display:none; }

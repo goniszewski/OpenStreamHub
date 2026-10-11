@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { CircleHelp, Grid2X2, Info, Gamepad2, Lightbulb, Link, PanelLeftClose, PanelLeftOpen, Settings } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { Page } from './ui-model';
+import { hint, isMacPlatform, shortcutPages } from './shortcuts';
 import { useT } from './i18n-react';
 import type { MessageKey } from './locales/en';
 
@@ -30,6 +31,9 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
   page: Page; setPage(page: Page): void; onGuide(): void; themePicker: ReactNode; collapsed: boolean; onToggle(): void;
 }) {
   const t = useT();
+  const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
+  // The key chip shown while the modifier is held: only the pages that have a number shortcut.
+  const chip = (target: Page) => { const index = shortcutPages.indexOf(target); return index >= 0 ? { 'data-shortcut': hint(String(index + 1), mac) } : {}; };
   // Expanded buttons show their label; collapsed ones carry it as the tooltip instead.
   const tip = (label: string) => collapsed ? { 'data-tip': label, 'aria-label': label } : {};
   const current = (target: Page) => ({ 'aria-current': page === target ? ('page' as const) : undefined });
@@ -41,7 +45,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
       </button>
     <div className="sidebar-scroll">
     <nav aria-label={t('nav.primary')}>
-      {pages.map(({ page: target, label, icon: Icon, hint }) => <button key={target} className={page === target ? 'active' : ''} {...current(target)}
+      {pages.map(({ page: target, label, icon: Icon, hint }) => <button key={target} className={page === target ? 'active' : ''} {...current(target)} {...chip(target)}
         {...tip(t(label))} title={collapsed || !hint ? undefined : t(hint)} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(t(label))}</button>)}
     </nav>
     <div className="sidebar-bottom">
@@ -49,7 +53,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
         <button className="help-link" {...tip(t('nav.guide'))} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf(t('nav.guide'))}</button>
         <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip(t('nav.about'))} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf(t('nav.about'))}</button>
       </div>
-      <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
+      <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...chip('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
       {!collapsed && themePicker}
     </div>
     </div>

@@ -13,6 +13,12 @@ describe('SidebarNav', () => {
     for (const label of ['Workspace', 'Lighting', 'Compatibility', 'Getting started', 'About', 'Settings']) {
       expect(markup).toContain(`<span class="nav-label">${label}</span>`);
     }
+    // Each page with a number shortcut carries it for the chip shown while the modifier is held.
+    expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)1"/);
+    expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)2"/);
+    expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)3"/);
+    expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)4"/);
+    expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)5"/);
     expect(markup).toContain('class="theme-picker"');
     expect(markup).toContain('aria-label="Collapse sidebar"');
     expect(markup).toContain('aria-expanded="true"');

@@ -49,6 +49,7 @@ import { isUnsaved, ProfileSession, draftRunBlock } from './profile-session';
 import { defaultDisplaySettings } from './display-settings';
 import { ProfileManagerSheet } from './ProfileManager';
 import { useImportDrop } from './ProfileTransfer';
+import { useModifierHeld } from './modifier-held';
 import { hint, installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
 import { editKeypadBinding } from './keypad-model';
@@ -118,6 +119,7 @@ export default function App() {
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
   const pickableModules = [...bases, ...deviceFeedState.devices];
+  useModifierHeld(mac);
   const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);
   // A module that appears — the first inventory after a launch, or a replug —
   // is sent the lighting it was last given, so a module keeps its look across
@@ -501,12 +503,12 @@ export default function App() {
           {focusHeader && <button type="button" className="focus-status" aria-label={focusHeader.text} data-tip={focusHeader.text} onClick={() => setManagerOpen(true)}><AppWindow size={17} aria-hidden="true" />{focusHeader.matched && <span className="focus-status-name">{focusHeader.matched}</span>}</button>}
           <RunHeaderControl run={runSession} />
           <div className="history-buttons" role="group" aria-label="Change history">
-            <button className="icon-button" disabled={disabled || !state.canUndo} aria-label={t('header.undo')} data-tip={withHint(state.undoLabels[0] ? t('header.undoNamed', { change: state.undoLabels[0] }) : t('header.undo'), 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
-            <button className="icon-button" disabled={disabled || !state.canRedo} aria-label={t('header.redo')} data-tip={`${state.redoLabels[0] ? t('header.redoNamed', { change: state.redoLabels[0] }) : t('header.redo')} (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canUndo} data-shortcut={hint('Z', mac)} aria-label={t('header.undo')} data-tip={withHint(state.undoLabels[0] ? t('header.undoNamed', { change: state.undoLabels[0] }) : t('header.undo'), 'Z', mac)} onClick={() => { session.undo(); }}><Undo2 size={18} /></button>
+            <button className="icon-button" disabled={disabled || !state.canRedo} data-shortcut={redoHint(mac)} aria-label={t('header.redo')} data-tip={`${state.redoLabels[0] ? t('header.redoNamed', { change: state.redoLabels[0] }) : t('header.redo')} (${redoHint(mac)})`} onClick={() => { session.redo(); }}><Redo2 size={18} /></button>
             <HistoryMenu undo={state.undoLabels} redo={state.redoLabels} disabled={disabled} onUndo={steps => { session.undoSteps(steps); }} onRedo={steps => { session.redoSteps(steps); }}
               undoHint={hint('Z', mac)} redoHint={redoHint(mac)} storage={webStorage()} />
           </div>
-          <button className="button" disabled={disabled || !unsaved} data-tip={withHint(t('header.save'), 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? t('header.saving') : t('header.save')}</button>
+          <button className="button" disabled={disabled || !unsaved} data-shortcut={hint('S', mac)} data-tip={withHint(t('header.save'), 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? t('header.saving') : t('header.save')}</button>
         </div>
       </div>
       <RunBlockerNotice run={runSession} />

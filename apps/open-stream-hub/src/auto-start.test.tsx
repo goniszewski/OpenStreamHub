@@ -81,7 +81,7 @@ describe('automatically started sessions', () => {
     t.state(dialState);
     const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
     expect(markup).toContain(autoStartNote('app_opened', true));
-    expect(markup).toContain('Actions are running on this Mac');
+    expect(markup).toContain('Live: actions run on this Mac');
     expect(markup).not.toContain('Profile changed since start');
     expect(markup).toContain('aria-label="Stop"');
   });

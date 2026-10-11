@@ -624,7 +624,7 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
 
   return <section className="service-panel" aria-label={t('service.heading')}>
     <div className="section-heading"><h2>{t('service.heading')}</h2><span className={`service-badge ${pill.className}`} role="status">{pillText(t, pill.label)}</span></div>
-    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="alert"><TriangleAlert size={20} /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
+    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="status"><Zap size={18} aria-hidden="true" /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
     {activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>{t('service.dryBanner')}</span></div>}
     {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>{t('service.sleepTitle')}</strong><span>{activeRun.execute ? session.autoStart ? t('service.sleepAuto') : t('service.sleepAsk') : t('service.sleepDry')}</span></div></div>}
     {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.waitTitle', { device: sessionDeviceName(session) })}</strong><span>{activeRun.execute ? session.autoStart ? t('service.waitAuto') : t('service.waitAsk') : t('service.waitDry')}</span></div></div>}

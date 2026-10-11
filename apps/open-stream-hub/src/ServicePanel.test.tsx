@@ -174,7 +174,7 @@ describe('ServicePanel markup', () => {
   it('shows an unmistakable banner while executing', () => {
     const { feed, runner } = fixtures(true);
     const markup = render({ feed, runner });
-    expect(markup).toContain('Actions are running on this Mac');
+    expect(markup).toContain('Live: actions run on this Mac');
     expect(markup).toContain('service-banner execute');
     expect(markup).toContain(runPreviewNote);
     expect(markup).not.toContain('paused while actions run');
@@ -194,7 +194,7 @@ describe('ServicePanel markup', () => {
   it('shows a dry run without the execute banner', () => {
     const { feed, runner } = fixtures(false);
     const markup = render({ feed, runner });
-    expect(markup).not.toContain('Actions are running on this Mac');
+    expect(markup).not.toContain('Live: actions run on this Mac');
     expect(markup).toContain('Dry run: actions are logged only');
   });
   it('shows failures with the stderr tail', () => {
@@ -680,7 +680,7 @@ describe('session banners', () => {
     (result.feed as unknown as { state: unknown }).state = { ...result.feed.getState(), devices: [device] };
     return result;
   };
-  const liveBanner = 'Actions are running on this Mac';
+  const liveBanner = 'Live: actions run on this Mac';
 
   it('shows the execute-live banner only while running', () => {
     const { feed, runner } = sessionFor('running', { serviceId: serviceIdFor('aabb') });

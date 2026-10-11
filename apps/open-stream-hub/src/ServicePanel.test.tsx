@@ -1040,3 +1040,12 @@ describe('Run-panel selection across replug', () => {
   });
 
 });
+
+describe('ServicePanel variants', () => {
+  it('stays out of the workspace when nothing needs attention, and is whole under Settings', () => {
+    expect(renderToStaticMarkup(<ServicePanel variant="workspace" />)).toBe('');
+    const full = renderToStaticMarkup(<ServicePanel />);
+    expect(full).toContain('Run profile');
+    expect(full).toContain('service-controls');
+  });
+});

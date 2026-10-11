@@ -247,7 +247,8 @@ describe('workspace without the simulation panel', () => {
     const markup = render();
     expect(markup).not.toContain('Simulation');
     expect(markup).not.toContain('event-buttons');
-    expect(markup).toContain('Run profile');
+    // The run details moved to Settings; a quiet workspace shows no run panel.
+    expect(markup).not.toContain('Run profile');
   });
 });
 

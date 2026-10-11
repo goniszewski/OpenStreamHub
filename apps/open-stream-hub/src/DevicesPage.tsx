@@ -96,7 +96,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
       </div>}
       {!onBase && <p className="hero-note">{moduleNote(selection.module)}</p>}
     </> : <div className="planned-panel"><h2>Not available yet</h2><p>{selected.name} is in the module catalog, but this app cannot yet read its input or edit its bindings. See Compatibility for what it supports.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
-    <ServicePanel run={run} />
+    <ServicePanel run={run} variant="workspace" />
     {editor.keyMenu && <ContextMenu x={editor.keyMenu.x} y={editor.keyMenu.y} label={`Key ${editor.keyMenu.control + 1} menu`} items={keyMenuItems(editor, mac)} onClose={editor.closeKeyMenu} />}
   </section>;
 }

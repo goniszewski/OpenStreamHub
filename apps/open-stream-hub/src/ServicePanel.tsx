@@ -612,7 +612,7 @@ export function ExecuteDialog({ run }: { run: RunSession }) {
 
 // The Devices-page run section: which device and mode the header Run control uses, plus the live
 // banners, counters and activity of the selected run. Run and Stop live in the header.
-export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
+export function ServicePanel({ run = idleRunSession, variant = 'full' }: { run?: RunSession; variant?: 'full' | 'workspace' }) {
   const { service, devices, enabled, mac, dryRunOnly, dryRunNote, selection, setSoftwareMode, softwareMode, chooseDevice, device, run: activeRun, session, phase, active, box, stale, now, executeSelected, resume, draftProfile } = run;
   const log = useRef<HTMLOListElement>(null);
   useEffect(() => { if (log.current) log.current.scrollTop = log.current.scrollHeight; }, [activeRun?.entries.length]);
@@ -621,19 +621,26 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
   const reason = (value: keyof typeof stoppedReason) => t(`service.reason.${value}` as MessageKey);
   const by = (value: ServiceRun['profileSwitchedBy']) => t(value === 'key' ? 'service.by.key' : value === 'rule' ? 'service.by.rule' : 'service.by.other');
   const seconds = countdownSeconds(session?.nextAttemptAt, now);
+  // On the workspace the panel only speaks up when something needs attention or a Test run has activity to read;
+  // the header carries Run, Stop and the Live or Test badge. Everything else lives under Settings, Run details.
+  const full = variant === 'full';
+  const attention = !!activeRun && (activeRun.state === 'failed' || stale || (!!session && phase !== 'running' && phase !== undefined)
+    || (activeRun.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0));
+  const testActivity = !!activeRun && !activeRun.execute && active;
+  if (!full && !attention && !testActivity && !service.error && !(dryRunOnly && !active)) return null;
 
   return <section className="service-panel" aria-label={t('service.heading')}>
-    <div className="section-heading"><h2>{t('service.heading')}</h2><span className={`service-badge ${pill.className}`} role="status">{pillText(t, pill.label)}</span></div>
-    {activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="status"><Zap size={18} aria-hidden="true" /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
-    {activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>{t('service.dryBanner')}</span></div>}
+    <div className="section-heading"><h2>{t(full ? 'service.heading' : 'service.activityHeading')}</h2><span className={`service-badge ${pill.className}`} role="status">{pillText(t, pill.label)}</span></div>
+    {full && activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="status"><Zap size={18} aria-hidden="true" /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
+    {full && activeRun && active && phase === 'running' && !activeRun.execute && <div className="service-banner" role="status"><CircleHelp size={18} /><span>{t('service.dryBanner')}</span></div>}
     {activeRun && session && phase === 'suspended' && <div className="service-banner paused" role="status"><MoonStar size={18} /><div><strong>{t('service.sleepTitle')}</strong><span>{activeRun.execute ? session.autoStart ? t('service.sleepAuto') : t('service.sleepAsk') : t('service.sleepDry')}</span></div></div>}
     {activeRun && session && phase === 'waiting_for_device' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.waitTitle', { device: sessionDeviceName(session) })}</strong><span>{activeRun.execute ? session.autoStart ? t('service.waitAuto') : t('service.waitAsk') : t('service.waitDry')}</span></div></div>}
     {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.reconTitle', { device: sessionDeviceName(session), attempt: session.attempt, max: maxReconnectAttempts })}</strong><span>{seconds === null ? t('service.tryingNow') : t('service.nextIn', { seconds })}{activeRun.execute ? session.autoStart ? t('service.reconAuto') : t('service.reconAsk') : ''}</span></div></div>}
     {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>{t('service.pausedTitle')}</strong><span>{session.reason ? `${t('service.pausedBecause', { reason: reason(session.reason) })} ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? t('service.resumeSwitched', { name: activeRun.profileName, by: by(activeRun.profileSwitchedBy) }) : session.reason === 'profile_saved' ? t('service.resumeSaved', { name: activeRun.profileName }) : t('service.resumeSame', { name: activeRun.profileName })}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>{t('service.resumeButton')}</button></div></div>}
     {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>{session.reason ? t('service.stoppedBecause', { reason: reason(session.reason) }) : t('service.stoppedTitle')}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
-    {session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
-    {active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
-    <div className="service-controls">
+    {full && session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
+    {full && active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
+    {full && <><div className="service-controls">
       <label className="sr-only" htmlFor="service-device">{t('service.deviceLabel')}</label>
       <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => {
         const next = devices.find(item => item.path_hex === event.target.value);
@@ -645,20 +652,20 @@ export function ServicePanel({ run = idleRunSession }: { run?: RunSession }) {
       <p className="fine-print service-mode-note">{t('service.modeNote', { mode: t(executeSelected ? 'run.badge.live' : 'run.badge.test') })}</p>
     </div>
     <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />{t('service.softwareMode')}</label>
-    {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}
+    {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}</>}
     {dryRunOnly && !active && <p className="service-stale" role="note"><TriangleAlert size={15} />{dryRunNote}</p>}
-    {!mac && enabled && <p className="fine-print">{t('service.macOnlyNote')}</p>}
-    {activeRun && <p className="fine-print">{t('service.usedProfile', { name: activeRun.profileName, version: t(activeRun.draftUnsaved ? 'service.unsavedVersion' : 'service.savedVersion') })}</p>}
+    {full && !mac && enabled && <p className="fine-print">{t('service.macOnlyNote')}</p>}
+    {full && activeRun && <p className="fine-print">{t('service.usedProfile', { name: activeRun.profileName, version: t(activeRun.draftUnsaved ? 'service.unsavedVersion' : 'service.savedVersion') })}</p>}
     {stale && <p className="service-stale" role="status"><TriangleAlert size={15} />{staleNote(activeRun, draftProfile)}</p>}
     {activeRun?.state === 'failed' && <div className="service-failure" role="alert"><strong>{activeRun.error ?? t('service.failed')}</strong>{activeRun.stderrTail && <pre>{activeRun.stderrTail}</pre>}</div>}
     {activeRun?.state === 'exited' && activeRun.exitCode !== undefined && activeRun.exitCode !== 0 && <p className="fine-print">{t('service.helperExit', { code: activeRun.exitCode ?? 0 })}</p>}
     {service.error && <p className="service-failure" role="alert">{service.error}</p>}
-    {activeRun && <>
-      <dl className="service-counters" aria-label={t('service.counters')}>
+    {activeRun && (full || testActivity) && <>
+      {full && <dl className="service-counters" aria-label={t('service.counters')}>
         <div><dt>{t('service.events')}</dt><dd>{activeRun.counters.events}</dd></div><div><dt>{t('service.wouldRun')}</dt><dd>{activeRun.counters.planned}</dd></div>
         <div><dt>{t('service.executed')}</dt><dd>{activeRun.counters.executed}</dd></div><div><dt>{t('service.failedCount')}</dt><dd>{activeRun.counters.failed}</dd></div>
         {activeRun.counters.timerAlertsFailed > 0 && <div><dt>{t('service.timerAlerts')}</dt><dd>{activeRun.counters.timerAlertsFailed}</dd></div>}
-      </dl>
+      </dl>}
       <ol className="service-log" ref={log} role="log" aria-label={t('service.activity')} tabIndex={0}>
         {activeRun.entries.length === 0 ? <li className="info">{t('service.waitingActivity')}</li> : activeRun.entries.slice(-100).map((entry, index) =>
           <li key={entry.seq ?? index} className={entry.kind}><time>{relativeTime(entry.at, now)}</time><span>{entry.text}</span></li>)}

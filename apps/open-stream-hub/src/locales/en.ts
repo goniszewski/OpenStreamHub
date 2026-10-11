@@ -263,6 +263,7 @@ export const en = {
   'execute.macros': 'Recorded macros',
   'execute.macro': 'Macro {n}',
   'execute.cancel': 'Cancel',
+  'service.activityHeading': 'Test run activity',
   'service.heading': 'Run profile',
   'service.executing': 'Live: actions run on this Mac',
   'service.executingBody': 'Key presses do what they are set to do. Stop to end the run.',

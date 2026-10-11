@@ -258,6 +258,7 @@ export const pl: Record<MessageKey, Message> = {
   'execute.macros': 'Nagrane makra',
   'execute.macro': 'Makro {n}',
   'execute.cancel': 'Anuluj',
+  'service.activityHeading': 'Aktywność przebiegu testowego',
   'service.heading': 'Uruchamianie profilu',
   'service.executing': 'Na żywo: akcje działają na tym Macu',
   'service.executingBody': 'Przyciski robią to, co im przypisano. Zatrzymaj, aby zakończyć.',

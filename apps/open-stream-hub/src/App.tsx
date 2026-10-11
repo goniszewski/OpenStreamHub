@@ -12,7 +12,7 @@ import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
 import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
-import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
+import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
 import { bundledPacks, parsePack } from './preset-packs';
@@ -538,7 +538,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

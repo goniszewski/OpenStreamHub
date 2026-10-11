@@ -20,13 +20,14 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, Info, Lightbulb, Link, LoaderCircle, Monitor, Moon, Palette, Redo2, RotateCcw, Save, Settings, Sun, Undo2, Usb, X } from 'lucide-react';
+import { CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, ReplayKind, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { ArtworkPage } from './ArtworkPage';
 import { LightingPage } from './LightingPage';
 import { ModuleDrawer } from './ModuleDrawer';
+import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
@@ -164,6 +165,7 @@ export default function App() {
   // (bindings belong to a kind), Lighting and Artwork a unit; both read the one shared pick, so a
   // pick made on one page is the pick on the next.
   const drawerPage: DrawerPage | null = page === 'workspace' || page === 'artwork' || page === 'lighting' ? page : null;
+  const [navCollapsed, setNavCollapsed] = useState(() => readNavCollapsed(webStorage()));
   const [drawerOpen, setDrawerOpen] = useState(() => readDrawerOpen(webStorage()));
   const tiles = drawerPage ? drawerTiles({ page: drawerPage, devices: pickableModules, selectedPath: pick.path, markedPaths: pick.marked, editorKind: editor.selectedModule }) : [];
   function pickModule(tile: DrawerTile) {
@@ -421,15 +423,8 @@ export default function App() {
       <RunBlockerNotice run={runSession} />
     </header>
     <div className="app-body">
-      <aside className="sidebar">
-        <nav aria-label="Primary navigation">
-          <button className={page === 'workspace' ? 'active' : ''} aria-current={page === 'workspace' ? 'page' : undefined} onClick={() => setPage('workspace')}><Grid2X2 size={22} />Workspace</button>
-          <button className={page === 'artwork' ? 'active' : ''} aria-current={page === 'artwork' ? 'page' : undefined} title="Prepare images for module displays offline" onClick={() => setPage('artwork')}><Palette size={22} />Display artwork</button>
-          <button className={page === 'lighting' ? 'active' : ''} aria-current={page === 'lighting' ? 'page' : undefined} title="Dial backlight and colour" onClick={() => setPage('lighting')}><Lightbulb size={22} />Lighting</button>
-          <button className={page === 'compatibility' ? 'active' : ''} aria-current={page === 'compatibility' ? 'page' : undefined} onClick={() => setPage('compatibility')}><Link size={22} />Compatibility</button>
-        </nav>
-        <div className="sidebar-bottom"><button className="help-link" onClick={() => setGuide({ open: true, step: 0 })}><CircleHelp size={22} />Getting started</button><button className={`help-link ${page === 'about' ? 'active' : ''}`} aria-current={page === 'about' ? 'page' : undefined} onClick={() => setPage('about')}><Info size={22} />About</button><button className={`settings-link ${page === 'settings' ? 'active' : ''}`} aria-current={page === 'settings' ? 'page' : undefined} onClick={() => setPage('settings')}><Settings size={22} />Settings</button>{themePicker}</div>
-      </aside>
+      <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
+        onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and sample tests run in the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}

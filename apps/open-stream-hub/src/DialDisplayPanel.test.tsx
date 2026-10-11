@@ -38,6 +38,8 @@ describe('DialDisplayPanel markup', () => {
     expect(html).toContain('<img src="data:image/jpeg;base64,AAAA"');
     expect(html).toContain('aria-label="Custom dial image"');
     expect(html).toContain('Remove image');
+    expect(html).toContain('choose the picture again');
+    expect(html).not.toContain('id="dial-image-fit"');
   });
   it('asks for CPU honestly and only on the CPU face', () => {
     const { html } = render(setDialDisplayContent(flat, 'cpu'));

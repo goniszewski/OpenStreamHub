@@ -46,8 +46,10 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
         {...tip(t(label))} title={collapsed || !hint ? undefined : t(hint)} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(t(label))}</button>)}
     </nav>
     <div className="sidebar-bottom">
-      <button className="help-link" {...tip(t('nav.guide'))} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf(t('nav.guide'))}</button>
-      <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip(t('nav.about'))} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf(t('nav.about'))}</button>
+      <div className="sidebar-help">
+        <button className="help-link" {...tip(t('nav.guide'))} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf(t('nav.guide'))}</button>
+        <button className={`help-link ${page === 'about' ? 'active' : ''}`} {...current('about')} {...tip(t('nav.about'))} onClick={() => setPage('about')}><Info size={22} aria-hidden="true" />{labelOf(t('nav.about'))}</button>
+      </div>
       <button className={`settings-link ${page === 'settings' ? 'active' : ''}`} {...current('settings')} {...tip(t('nav.settings'))} onClick={() => setPage('settings')}><Settings size={22} aria-hidden="true" />{labelOf(t('nav.settings'))}</button>
       {!collapsed && themePicker}
     </div>

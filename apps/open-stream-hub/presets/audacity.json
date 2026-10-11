@@ -1,0 +1,322 @@
+{
+  "pack_version": 1,
+  "id": "audacity",
+  "name": "Audacity",
+  "description": "Transport, tools and zoom for Audacity: record, pause and loop play on the 15-key module, the cursor on the encoder, and split, silence, trim and zoom within reach.",
+  "app": {
+    "name": "Audacity",
+    "bundle_id": "org.audacityteam.audacity"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Audacity's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "org.audacityteam.audacity"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Audacity",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_right",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_left",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "space",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Play / stop",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "space",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Record",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "r",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Pause",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "p",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Loop play",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "space",
+                    "modifiers": [
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Select tool",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "f1",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Split",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "i",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Silence",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "l",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Trim",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Zoom in",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "1",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Zoom out",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "3",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Fit to window",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "f",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Select all",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "a",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save project",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

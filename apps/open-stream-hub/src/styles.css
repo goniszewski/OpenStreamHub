@@ -702,3 +702,11 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .auto-switch-add,.auto-switch-typed { display:flex; gap:8px; align-items:center; }
 .auto-switch-add .select-field,.auto-switch-typed input { flex:1; min-width:0; }
 .link-button { padding:0; border:0; background:transparent; color:var(--accent); text-decoration:underline; font:inherit; }
+
+/* App preset packs in the starter chooser. */
+.pack-section { display:grid; gap:8px; margin-top:16px; padding-top:14px; border-top:1px solid var(--line); }
+.pack-section h3 { margin:0; font-size:14px; }
+.pack-file { justify-self:start; cursor:pointer; }
+.pack-rejected { font-size:12px; }
+.pack-rejected summary { cursor:pointer; color:var(--muted); }
+.pack-rejected ul { margin:4px 0 8px 18px; padding:0; }

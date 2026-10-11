@@ -592,6 +592,36 @@ describe('saving and deleting', () => {
     expect(state.busy).toBeNull();
   });
 
+  it('creates a profile from a preset pack through the backend creator, named like a starter, and opens it', async () => {
+    const { session, take } = await ready(stored('a', 'Zoom'));
+    const created = session.createFromPack(starterProfile('Zoom'));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Zoom')));
+    await flush();
+    const call = take('create_pack_profile');
+    expect((call.args!.profile as Profile).name).toBe('Zoom 2');
+    call.resolve(stored('n', 'Zoom 2', 2000));
+    await flush();
+    take('list_profiles').resolve(listing(stored('n', 'Zoom 2'), stored('a', 'Zoom')));
+    expect(await created).toBeNull();
+    const state = session.getState();
+    expect(state.draft.profileId).toBe('n');
+    expect(state.notice).toContain('dry run');
+    expect(state.notice).toContain('Zoom 2');
+  });
+
+  it('reports a refused preset without changing the draft, and never calls the ordinary save', async () => {
+    const { session, take } = await ready(stored('a', 'Alpha'));
+    const created = session.createFromPack(starterProfile('Zoom'));
+    await flush();
+    take('list_profiles').resolve(listing(stored('a', 'Alpha')));
+    await flush();
+    take('create_pack_profile').reject('profile storage is read-only');
+    expect(await created).toBe('profile storage is read-only');
+    expect(session.getState().draft.profileId).toBe('a');
+    expect(() => take('save_profile')).toThrow();
+  });
+
   it('keeps a deleted open profile as unsaved changes', async () => {
     const alpha = stored('a', 'Alpha', 1234);
     const { session, take } = await ready(alpha);

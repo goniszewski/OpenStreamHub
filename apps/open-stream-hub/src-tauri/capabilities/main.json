@@ -15,6 +15,7 @@
     "allow-save-profile",
     "allow-delete-profile",
     "allow-import-mhz-profile",
+    "allow-create-pack-profile",
     "allow-allow-imported-profile-execution",
     "allow-mark-all-profiles-for-review",
     "allow-validate-profile",

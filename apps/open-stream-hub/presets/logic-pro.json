@@ -1,0 +1,305 @@
+{
+  "pack_version": 1,
+  "id": "logic-pro",
+  "name": "Logic Pro",
+  "description": "Transport and windows for Logic Pro: record, cycle and metronome on the 15-key module, the mixer, piano roll and editors one press away, and volume on the encoder and fader.",
+  "app": {
+    "name": "Logic Pro",
+    "bundle_id": "com.apple.logic10"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Logic Pro's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.apple.logic10"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Logic Pro",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "space",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Play / stop",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "space",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Record",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "r",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Cycle",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "c",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Metronome",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "k",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Go to start",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "return",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mixer",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "x",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Piano roll",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "p",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Editors",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "e",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mute track",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Solo track",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Split at playhead",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Screenshot",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "screenshot"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

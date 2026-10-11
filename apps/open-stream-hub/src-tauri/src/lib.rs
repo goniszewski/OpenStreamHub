@@ -390,6 +390,46 @@ impl AppState {
         })
     }
 
+    /// Creates one profile from an app preset pack as a new, dry-run-only saved profile. The app validates the pack
+    /// and names the profile; this validates the profile again, checks the store has room, flags the profile (by id and
+    /// content hash) before its file is written, and never overwrites anything.
+    fn create_pack_profile(
+        &self,
+        profile: Profile,
+        now_ms: u64,
+    ) -> Result<store::StoredProfile, String> {
+        replay::validate_profile(&profile)?;
+        self.with_store(|store| {
+            let listing = store.list()?;
+            if listing.profiles.len() + listing.unreadable.len() + 1 > store::MAX_PROFILES {
+                return Err(format!(
+                    "profile storage permits at most {} profiles; delete a profile before adding another",
+                    store::MAX_PROFILES
+                ));
+            }
+            let id = uuid::Uuid::new_v4().to_string();
+            let hash = tracked_hash(&profile, &import_flags::content_hash(&profile));
+            self.imports.update(&saved_hashes(store)?, |records| {
+                let _ = records.flag(&id, &hash, "pack", now_ms);
+                Ok(())
+            })?;
+            match store.create(&id, profile) {
+                Ok(stored) => Ok(stored),
+                Err(error) => {
+                    // A file that never reached the disk keeps no record (its hash stays flagged, which only ever
+                    // restricts).
+                    let _ = saved_hashes(store).and_then(|saved| {
+                        self.imports.update(&saved, |records| {
+                            records.profiles.remove(&id);
+                            Ok(())
+                        })
+                    });
+                    Err(error)
+                }
+            }
+        })
+    }
+
     /// Writes a JSON export. When the draft's source or content is dry-run
     /// only, the exported content's hash is flagged (and pinned) before the
     /// file is written, so importing that file again stays dry run only.
@@ -699,6 +739,16 @@ fn import_mhz_profile(
         return Err("the .mhz import expects the raw file bytes".into());
     };
     state.import_mhz(bytes, now_ms())
+}
+
+// A profile from an app preset pack (`preset-packs` in the app): created as a new saved profile that can run only as
+// a dry run until the user allows it to execute actions, like an imported .mhz profile.
+#[tauri::command(async)]
+fn create_pack_profile(
+    state: State<'_, AppState>,
+    profile: Profile,
+) -> Result<store::StoredProfile, String> {
+    state.create_pack_profile(profile, now_ms())
 }
 
 // The explicit "Allow this imported profile to execute actions" action. The
@@ -1623,6 +1673,7 @@ pub fn run() {
             save_profile,
             delete_profile,
             import_mhz_profile,
+            create_pack_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,
             validate_profile,
@@ -1870,6 +1921,107 @@ mod tests {
 
     fn refused() -> Option<String> {
         Some(import_flags::DRY_RUN_ONLY.to_string())
+    }
+
+    fn pack_profile(name: &str) -> Profile {
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "name": name,
+            "bindings": [{
+                "module": "m131e", "control": 0, "gesture": "pressed",
+                "action": {"type": "shortcut", "key": "space", "modifiers": []}
+            }]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_pack_profile_is_created_new_and_dry_run_only_and_its_copies_stay_so() {
+        let (directory, state) = open_state();
+        let existing = state.list().unwrap().profiles[0].clone();
+        let existing_path = directory
+            .path()
+            .join(format!("app/profiles/{}.json", existing.id));
+        let existing_bytes = std::fs::read(&existing_path).unwrap();
+
+        let created = state
+            .create_pack_profile(pack_profile("DaVinci Resolve"), 7)
+            .unwrap();
+        assert_eq!(created.profile.name, "DaVinci Resolve");
+        let listing = state.list().unwrap();
+        assert_eq!(listing.profiles.len(), 2);
+        let summary = listing
+            .profiles
+            .iter()
+            .find(|item| item.id == created.id)
+            .unwrap();
+        assert!(summary.dry_run_only);
+        assert!(
+            !listing
+                .profiles
+                .iter()
+                .find(|item| item.id == existing.id)
+                .unwrap()
+                .dry_run_only
+        );
+        assert_eq!(std::fs::read(&existing_path).unwrap(), existing_bytes);
+        let record = &state.imports.load().unwrap().profiles[&created.id];
+        assert_eq!(
+            (
+                record.source.as_str(),
+                record.dry_run_only,
+                record.imported_at_ms
+            ),
+            ("pack", true, 7)
+        );
+
+        // The same content saved as a copy stays flagged, whatever its name or id.
+        let copy = save(&state, None, &pack_profile("My copy"), None).unwrap();
+        assert!(
+            state
+                .list()
+                .unwrap()
+                .profiles
+                .iter()
+                .find(|item| item.id == copy.id)
+                .unwrap()
+                .dry_run_only
+        );
+        // A second pack creates a second profile; the first is untouched.
+        let second = state
+            .create_pack_profile(pack_profile("Audacity"), 8)
+            .unwrap();
+        assert_ne!(second.id, created.id);
+        assert_eq!(state.list().unwrap().profiles.len(), 4);
+    }
+
+    #[test]
+    fn every_bundled_preset_pack_holds_a_profile_the_service_accepts() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../presets");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let pack: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let profile: Profile = serde_json::from_value(pack["profile"].clone())
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            replay::validate_profile(&profile)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            checked += 1;
+        }
+        assert!(checked >= 7, "only {checked} packs found");
+    }
+
+    #[test]
+    fn an_invalid_pack_profile_creates_nothing() {
+        let (_directory, state) = open_state();
+        let mut bad = pack_profile("Bad");
+        bad.bindings[0].control = 99;
+        assert!(state.create_pack_profile(bad, 1).is_err());
+        assert_eq!(state.list().unwrap().profiles.len(), 1);
     }
 
     #[test]

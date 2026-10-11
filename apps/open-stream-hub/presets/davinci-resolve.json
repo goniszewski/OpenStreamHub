@@ -1,0 +1,367 @@
+{
+  "pack_version": 1,
+  "id": "davinci-resolve",
+  "name": "DaVinci Resolve",
+  "description": "Transport, edit tools and markers for DaVinci Resolve: the encoder steps frames, a knob shuttles with J, K and L, and the 15-key module holds blade, marks and tools.",
+  "app": {
+    "name": "DaVinci Resolve",
+    "bundle_id": "com.blackmagic-design.DaVinciResolve"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from DaVinci Resolve's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.blackmagic-design.DaVinciResolve"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "DaVinci Resolve",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_right",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_left",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "space",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "l",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "j",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "k",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_down",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_up",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "m",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Blade",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "b",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mark in",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "i",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mark out",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "o",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Marker",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Select tool",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "a",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Trim tool",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Blade tool",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "b",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Delete",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "delete",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Snapping",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "n",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Play / pause",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "space",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Stop",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "k",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Screenshot",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "screenshot"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

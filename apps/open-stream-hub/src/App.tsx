@@ -15,6 +15,8 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
+import { bundledPacks, parsePack } from './preset-packs';
+import type { PresetPack, RejectedPack } from './preset-packs';
 import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
@@ -281,6 +283,32 @@ export default function App() {
       : connectedModules > 0 ? 'connected' : 'disconnected';
 
   const focusHeader = focusStatus(focusState, state.profiles);
+  const [packReport, setPackReport] = useState<RejectedPack | null>(null);
+  // A preset pack becomes a new saved profile (dry run only until allowed). When it names an app, the notice offers a
+  // focused-app rule that switches to the profile whenever that app comes to the front.
+  function pickPack(pack: PresetPack) {
+    session.guard('switch to the preset profile', () => {
+      void session.createFromPack(pack.profile).then(failure => {
+        if (failure) { session.setError(`Could not create the profile from the preset: ${failure}`); return; }
+        setStarter(null);
+        setPackReport(null);
+        const profileId = session.getState().draft.profileId;
+        const bundleId = pack.focus_rule?.bundle_id;
+        if (profileId && bundleId) {
+          session.setNotice(`Created ${session.getState().draft.profile.name} from the ${pack.name} preset. It runs as a dry run until you review it and allow it to execute actions in the profile manager.`, {
+            label: `Switch to it when ${pack.app.name} is in front`,
+            run: () => { void focusRules.save({ id: null, app_bundle_id: bundleId, profile_id: profileId }).then(saved => { if (saved && !focusRules.getState().enabled) void focusRules.setEnabled(true); }); },
+          });
+        }
+      });
+    });
+  }
+  // A pack file the user picked is checked like a bundled one; a refused file shows why and creates nothing.
+  async function loadPackFile(file: File) {
+    if (file.size > 256 * 1024) { setPackReport({ file: file.name, issues: ['A preset file is a small JSON file; this one is larger than 256 KiB.'] }); return; }
+    const { pack, issues } = parsePack(await file.text());
+    if (pack) pickPack(pack); else setPackReport({ file: file.name, issues });
+  }
 
   useEffect(() => {
     const query = matchMedia('(prefers-color-scheme: dark)');
@@ -528,7 +556,8 @@ export default function App() {
         if (starter?.entry === 'module' && starter.module) startersDismissed.current.add(starter.module);
         setStarter(null);
       }}
-      onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }} />
+      onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }}
+      packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }} />
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>

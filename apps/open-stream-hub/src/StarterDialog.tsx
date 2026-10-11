@@ -1,5 +1,7 @@
 import type { Profile, ServiceModule } from './contracts';
 import { ModalDialog } from './controls';
+import { packModules } from './preset-packs';
+import type { PresetPack, RejectedPack } from './preset-packs';
 import { profileModules, starters, startersForModule } from './starter-model';
 import { modules } from './ui-model';
 
@@ -23,11 +25,16 @@ const closeLabel: Record<StarterEntry, string> = { 'first-run': 'Start with an e
 // the profile manager, and a module that was just connected (then only
 // starters that use that module are offered). Hook-free and controlled, so
 // tests render it as a function and invoke the handlers.
-export function StarterDialog({ open, entry, module, onPick, onClose, onGuide }: {
+export function StarterDialog({ open, entry, module, onPick, onClose, onGuide, packs = [], rejected = [], packReport = null, onPickPack = () => {}, onLoadPack }: {
   open: boolean; entry: StarterEntry; module: ServiceModule | null;
   onPick(profile: Profile): void; onClose(): void; onGuide(): void;
+  // App preset packs: the valid bundled ones, the bundled files that were refused, the report for a pack file the user
+  // picked, and the handlers for picking a pack and loading a file.
+  packs?: PresetPack[]; rejected?: RejectedPack[]; packReport?: RejectedPack | null;
+  onPickPack?(pack: PresetPack): void; onLoadPack?(file: File): void;
 }) {
   const offered = module ? startersForModule(module) : starters;
+  const offeredPacks = module ? packs.filter(pack => packModules(pack).includes(module)) : packs;
   const moduleName = modules.find(item => item.id === module)?.shortName;
   return <ModalDialog open={open} labelledBy="starter-title" describedBy="starter-body" onCancel={onClose} className="starter-dialog">
     <h2 id="starter-title">{entry === 'module' ? `${moduleName} connected` : heading[entry]}</h2>
@@ -39,6 +46,24 @@ export function StarterDialog({ open, entry, module, onPick, onClose, onGuide }:
         <small>Sets up: {profileModules(item.profile).map(id => modules.find(candidate => candidate.id === id)?.shortName ?? id).join(', ')}</small>
       </button>)}
     </div>
+    {(offeredPacks.length > 0 || onLoadPack || packReport) && <section className="pack-section" aria-labelledby="pack-heading">
+      <h3 id="pack-heading">App presets</h3>
+      <p className="fine-print">Shortcuts for an application. A preset becomes a new saved profile that runs only as a dry run until you review it and allow it to execute actions.</p>
+      <div className="starter-cards">
+        {offeredPacks.map(pack => <button key={pack.id} type="button" className="starter-card" data-pack={pack.id} title={`Source: ${pack.source}`} onClick={() => onPickPack(pack)}>
+          <strong>{pack.name}</strong>
+          <span>{pack.description}</span>
+          <small>Sets up: {packModules(pack).map(id => modules.find(candidate => candidate.id === id)?.shortName ?? id).join(', ')} · Licence {pack.license} · {pack.verified ? 'Checked on a Mac' : 'Not yet checked on a Mac'}</small>
+        </button>)}
+      </div>
+      {packReport && <div className="service-failure" role="alert"><strong>{packReport.file} was not loaded.</strong>
+        <ul>{packReport.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>}
+      {onLoadPack && <label className="button compact pack-file">Load a preset file…
+        <input type="file" accept=".json,application/json" className="sr-only" aria-label="Load a preset pack file"
+          onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) onLoadPack(file); }} /></label>}
+      {rejected.length > 0 && <details className="pack-rejected"><summary>{rejected.length} preset file{rejected.length === 1 ? ' was' : 's were'} not loaded</summary>
+        {rejected.map(item => <div key={item.file}><strong>{item.file}</strong><ul>{item.issues.map(issue => <li key={issue}>{issue}</li>)}</ul></div>)}</details>}
+    </section>}
     <p className="fine-print">Starters hold nothing that types into apps, opens programs or web pages. A run starts as a dry run that only logs what would happen; executing actions always asks for confirmation first.</p>
     <div className="dialog-actions">
       {entry === 'first-run' && <button type="button" className="button starter-guide" onClick={onGuide}>Getting started guide</button>}

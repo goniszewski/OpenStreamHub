@@ -9,6 +9,7 @@ fn main() {
             "save_profile",
             "delete_profile",
             "import_mhz_profile",
+            "create_pack_profile",
             "allow_imported_profile_execution",
             "mark_all_profiles_for_review",
             "validate_profile",

@@ -589,6 +589,8 @@ export class ProfileSession {
   private async createProfile(
     source: () => Promise<Profile> | Profile, busy: string, nameFor: (name: string, existing: string[]) => string, announce: (name: string) => string,
     copyOf: string | null = null,
+    // How the new profile reaches the store: an ordinary save by default, or the backend's own creator (a pack's profile).
+    create?: (profile: Profile) => Promise<StoredProfile>,
   ): Promise<string | null> {
     if (!this.state.ready || this.state.busy !== null) return 'Wait for the current profile operation to finish.';
     this.sequence.list += 1;
@@ -598,7 +600,7 @@ export class ProfileSession {
       const listing = await this.invoke<ProfileListing>('list_profiles');
       const profile = withName(upgradeKeypadProfile(structuredClone(original)), nameFor(original.name, listing.profiles.map(item => item.name)));
       // The source lets the backend keep a copy of an imported dry-run-only profile dry run only (it also matches by content).
-      const stored = await this.invoke<StoredProfile>('save_profile', { request: { id: null, profile, expectedModifiedAtMs: null, sourceProfileId: copyOf } });
+      const stored = create ? await create(profile) : await this.invoke<StoredProfile>('save_profile', { request: { id: null, profile, expectedModifiedAtMs: null, sourceProfileId: copyOf } });
       this.set({ ...this.adopt(stored), validation: 'valid', notice: announce(stored.profile.name) });
       await this.refreshAfterChange('Profile created');
       return null;
@@ -631,6 +633,14 @@ export class ProfileSession {
   // settle first.
   async createFromTemplate(profile: Profile): Promise<string | null> {
     return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`);
+  }
+
+  // Saves an app preset pack's profile as a NEW saved profile that can run only as a dry run until the user allows it
+  // to execute actions, and switches to it. The backend flags it before the file is written.
+  async createFromPack(profile: Profile): Promise<string | null> {
+    return this.createProfile(() => profile, 'Creating profile from a preset', starterName,
+      name => `Created ${name} from the preset. It runs as a dry run until you review it and allow it to execute actions in the profile manager.`,
+      null, created => this.invoke<StoredProfile>('create_pack_profile', { profile: created }));
   }
 
   setImportError(importError: string | null) { this.set({ importError }); }

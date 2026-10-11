@@ -5,6 +5,8 @@ import type { ReactNode } from 'react';
 import type { Profile } from './contracts';
 import { starters } from './starter-model';
 import { StarterDialog } from './StarterDialog';
+import { bundledPacks } from './preset-packs';
+import type { PresetPack } from './preset-packs';
 import type { StarterEntry } from './StarterDialog';
 
 // Follows the SSR test style: render as a function, walk the element tree,
@@ -79,5 +81,41 @@ describe('starter chooser', () => {
     resetPicks();
     elements.find(element => element.props.className?.includes('starter-guide'))?.props.onClick?.();
     expect(closed.guide).toBe(1);
+  });
+});
+
+describe('app presets in the chooser', () => {
+  const packs = bundledPacks.packs;
+  const renderPacks = (extra: Partial<Parameters<typeof StarterDialog>[0]> = {}, entry: StarterEntry = 'manager', module: DialogModule = null) =>
+    renderToStaticMarkup(<StarterDialog {...props(entry, module)} packs={packs} {...extra} />);
+
+  it('lists every pack with what it sets up, its licence and whether it was checked, and says it starts as a dry run', () => {
+    const markup = renderPacks();
+    expect(markup).toContain('App presets');
+    for (const pack of packs) {
+      expect(markup).toContain(`data-pack="${pack.id}"`);
+      expect(markup).toContain(pack.name);
+    }
+    expect(markup).toContain('Licence CC0-1.0 · Not yet checked on a Mac');
+    expect(markup).toContain('Source: Written for OpenStreamHub from DaVinci Resolve');
+    expect(markup).toContain('runs only as a dry run until you review it');
+  });
+  it('shows no section without packs or a file loader, and offers only the packs that use a connected module', () => {
+    expect(renderToStaticMarkup(<StarterDialog {...props('manager', null)} />)).not.toContain('App presets');
+    const rollers = renderPacks({}, 'module', 'm032le');
+    expect(rollers).toContain('data-pack="music-and-spotify"');
+    expect(rollers).not.toContain('data-pack="zoom"');
+  });
+  it('reports a picked pack and loads a file, and shows why a file was refused', () => {
+    const picked: PresetPack[] = [];
+    const tree = StarterDialog({ ...props('manager', null), packs, onPickPack: pack => picked.push(pack), onLoadPack: () => {} });
+    const card = elementsOf(tree).find(element => (element.props as { 'data-pack'?: string })['data-pack'] === 'zoom')!;
+    card.props.onClick!();
+    expect(picked.map(pack => pack.id)).toEqual(['zoom']);
+    const markup = renderPacks({ onLoadPack: () => {}, packReport: { file: 'mine.json', issues: ['id must be 2 to 40 lowercase letters.'] } });
+    expect(markup).toContain('aria-label="Load a preset pack file"');
+    expect(markup).toContain('mine.json was not loaded.');
+    expect(markup).toContain('id must be 2 to 40 lowercase letters.');
+    expect(renderPacks({ rejected: [{ file: 'old.json', issues: ['pack_version must be 1.'] }] })).toContain('1 preset file was not loaded');
   });
 });

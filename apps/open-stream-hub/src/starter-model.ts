@@ -147,12 +147,16 @@ export function markStartersOffered(storage: Pick<Storage, 'setItem'> | null) {
 // Local structural lint for the shipped starters: the same shapes the editor
 // checks locally, so a broken template fails here instead of in a save. The
 // service re-validates everything on save.
-export function starterIssue(profile: Profile): string | null {
+export type ActionCheck = (action: BindingAction) => string | null;
+
+// `check` decides which actions the profile may hold: the starters' dry-run-safe set by default, a pack's wider set
+// for an app preset pack. It is applied to flat bindings and keypad tiles alike.
+export function starterIssue(profile: Profile, check: ActionCheck = actionIssue): string | null {
   if (profile.schema_version !== 2) return 'Starters are schema-2 profiles.';
   if (!profile.name.trim()) return 'Profile name cannot be empty.';
   const flat = new Set<string>();
   for (const binding of profile.bindings) {
-    const issue = bindingIssue(binding);
+    const issue = bindingIssue(binding, check);
     if (issue) return issue;
     flat.add(`${binding.module}/${binding.control}/${binding.gesture}`);
   }
@@ -167,22 +171,24 @@ export function starterIssue(profile: Profile): string | null {
     if (slot.bindings.length !== 1) return 'A starter tile holds one binding.';
     for (const keypadBinding of slot.bindings) {
       if (keypadBinding.gesture !== 'pressed') return 'Starter tiles bind press only.';
+      const issue = check(keypadBinding.action);
+      if (issue) return issue;
     }
   }
   return null;
 }
 
-function bindingIssue(binding: Binding): string | null {
+function bindingIssue(binding: Binding, check: ActionCheck): string | null {
   if (!(binding.module in controlCounts)) return `Unknown module ${binding.module}.`;
   if (binding.module === 'm4315') return 'The 15-key module is bound through the keypad pages, not flat bindings.';
   if (binding.control < 0 || binding.control >= controlCounts[binding.module]) return `Control ${binding.control} is out of range for ${binding.module}.`;
   if (!gestures[binding.module].includes(binding.gesture)) return `Gesture ${binding.gesture} is unsupported for ${binding.module}.`;
-  return actionIssue(binding.action);
+  return check(binding.action);
 }
 
 // Starters stay dry-run safe: nothing that types into apps, launches or opens
 // anything, and no OBS action that names a scene or source of a set-up OBS.
-function actionIssue(action: BindingAction): string | null {
+export function actionIssue(action: BindingAction): string | null {
   switch (action.type) {
     case 'volume': return action.delta === 0 || action.delta < -100 || action.delta > 100 ? 'Volume must be nonzero and between -100 and 100.' : null;
     case 'timer':

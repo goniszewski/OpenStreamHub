@@ -47,7 +47,7 @@ export function ProfileManagerSheet({ session, state, desktop, disabled, confirm
     <VersionHistory session={session} state={state} disabled={disabled} now={Date.now()} />
     {flagged && <div className="service-banner paused attention dry-run-notice" role="status"><ShieldAlert size={20} /><div>
       <strong>Imported profile: dry run only</strong>
-      <span>This profile was imported from a MasterHUB .mhz file. It can run only as a dry run until you review its bindings and allow it to execute actions.</span>
+      <span>This profile was imported (from a MasterHUB .mhz file or an app preset). It can run only as a dry run until you review its bindings and allow it to execute actions.</span>
       <button type="button" className="button danger" disabled={disabled || unsaved || !contentHash} onClick={onAllow}>Allow this imported profile to execute actions…</button>
       {reportFor && <button type="button" className="button" onClick={() => session.showMhzImport()}>Show import report</button>}
       {unsaved && <small>Save or discard your changes first, so you review exactly what will run.</small>}

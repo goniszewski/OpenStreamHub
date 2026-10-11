@@ -1,0 +1,254 @@
+{
+  "pack_version": 1,
+  "id": "music-and-spotify",
+  "name": "Music and Spotify",
+  "description": "Playback for Spotify and Apple Music with the Mac's media keys: play, skip and volume on the encoder, knobs, fader and rollers, and playback keys on the 15-key module.",
+  "app": {
+    "name": "Spotify",
+    "bundle_id": "com.spotify.client"
+  },
+  "license": "CC0-1.0",
+  "source": "Original work for OpenStreamHub: it uses the Mac's play/pause, next and previous media keys and the system volume, which Spotify, Music and most players follow. Not yet checked with each player on a Mac.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.spotify.client"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Music and Spotify",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "media",
+          "command": "play_pause"
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "clockwise",
+        "action": {
+          "type": "media",
+          "command": "next_track"
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "media",
+          "command": "previous_track"
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 1,
+        "gesture": "pressed",
+        "action": {
+          "type": "media",
+          "command": "play_pause"
+        }
+      },
+      {
+        "module": "m032le",
+        "control": 0,
+        "gesture": "up",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m032le",
+        "control": 0,
+        "gesture": "down",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m032le",
+        "control": 1,
+        "gesture": "up",
+        "action": {
+          "type": "media",
+          "command": "next_track"
+        }
+      },
+      {
+        "module": "m032le",
+        "control": 1,
+        "gesture": "down",
+        "action": {
+          "type": "media",
+          "command": "previous_track"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Play / pause",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "media",
+                    "command": "play_pause"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Next track",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "media",
+                    "command": "next_track"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Previous track",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "media",
+                    "command": "previous_track"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mute",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "toggle_mute"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": 10
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": -10
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Screenshot",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "screenshot"
+                  }
+                }
+              ]
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        }
+      ]
+    }
+  }
+}

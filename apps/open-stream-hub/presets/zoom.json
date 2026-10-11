@@ -1,0 +1,212 @@
+{
+  "pack_version": 1,
+  "id": "zoom",
+  "name": "Zoom",
+  "description": "Meeting controls for Zoom: mute, camera, share screen, raise hand and local recording on the 15-key module, and the encoder mutes your microphone.",
+  "app": {
+    "name": "Zoom",
+    "bundle_id": "us.zoom.xos"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Zoom's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "us.zoom.xos"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Zoom",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "a",
+          "modifiers": [
+            "command",
+            "shift"
+          ]
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "v",
+          "modifiers": [
+            "command",
+            "shift"
+          ]
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Mute / unmute",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "a",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Camera",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "v",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Share screen",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Raise hand",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "y",
+                    "modifiers": [
+                      "option"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Record locally",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "r",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": -10
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": 10
+                  }
+                }
+              ]
+            },
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          ]
+        }
+      ]
+    }
+  }
+}

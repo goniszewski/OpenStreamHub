@@ -294,7 +294,7 @@ export function resolveServiceSelection(devices: LiveDevice[], runs: Record<stri
 
 // dryRunOnly: the open profile (saved, or a draft of it) was imported from a .mhz file and not yet allowed to execute
 // actions. Execute is unavailable; the session manager refuses it too.
-export const dryRunOnlyRunNote = 'This profile was imported from a MasterHUB .mhz file, so it runs only as a dry run. Open Manage profiles (next to the profile switcher) to review it and allow it to execute actions first.';
+export const dryRunOnlyRunNote = 'This profile was imported (from a MasterHUB .mhz file or an app preset), so it runs only as a dry run. Open Manage profiles (next to the profile switcher) to review it and allow it to execute actions first.';
 export const runBlockNotes = {
   imported: dryRunOnlyRunNote,
   deleted: 'The saved profile behind these unsaved changes was deleted. Save it to run it with actions.',

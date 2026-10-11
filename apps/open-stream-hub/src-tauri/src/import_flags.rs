@@ -50,13 +50,13 @@ pub const MAX_RECORDS: usize = 1024;
 pub const MAX_HASHES: usize = 4096;
 
 /// Refusal of an Execute run of a flagged profile.
-pub const DRY_RUN_ONLY: &str = "this profile was imported from a MasterHUB .mhz file (or derived from one) and can run only as a dry run until you allow it to execute actions in the Profiles page";
+pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file or an app preset pack) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
 const RECOVERY: &str = "actions stay off until you choose \"Mark all profiles as needing review\" in the Profiles page";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportRecord {
-    /// `mhz` (imported), `derived` (saved from a flagged profile) or
+    /// `mhz` (imported), `pack` (created from an app preset pack), `derived` (saved from a flagged profile) or
     /// `review` (marked by the recovery action).
     pub source: String,
     pub dry_run_only: bool,

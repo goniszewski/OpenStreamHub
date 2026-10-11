@@ -480,7 +480,7 @@ export default function App() {
         {drawerPage && <ModuleDrawer tiles={tiles} open={drawerOpen} onToggle={() => setDrawerOpen(open => { writeDrawerOpen(webStorage(), !open); return !open; })} onPick={pickModule} />}
         {page === 'workspace' && <div className={`device-layout${drop.dragging ? ' drop-target' : ''}`} {...drop.props}>
           <div className="workspace-column">
-            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} />
+            <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} onPickUnit={path => moduleSelection.select(path)} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
             <SampleTestPanel session={session} state={state} disabled={disabled} replayKind={replayKind} setReplayKind={setReplayKind} />
           </div>

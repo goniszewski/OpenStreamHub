@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
-import { ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
 import { ContextMenu } from './controls';
 import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
@@ -15,7 +15,8 @@ import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from 
 import type { KnobOrientation } from './knob-orientation';
 import { ModuleArtImage, ModuleGlass } from './ModuleArt';
 import { dialScreen, knobControls, moduleArtwork } from './module-controls';
-import { livePointer, livePressed, livePulse, RigPreview } from './RigPreview';
+import { livePointer, livePressed, livePulse } from './ModuleStage';
+import { RigPreview } from './RigPreview';
 import { ServicePanel } from './ServicePanel';
 import type { RunSession } from './ServicePanel';
 import { idleFeedState } from './device-feed';
@@ -57,24 +58,43 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
 // The middle column: the module image with its live input, the control pickers, then the run section.
 // Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
 // lives in the header Run control.
-export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore }) {
+export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState, pickedPath = null, onPickUnit = () => {} }: { editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore;
+  // The unit the shared pick names, and how a pick on the canvas reports its unit back.
+  pickedPath?: string | null; onPickUnit?(path: string): void }) {
   const { selected, selection, isKeypad, keypadPath, currentKeypadPage, binding, serialScope } = editor;
   const profile = state.draft.profile;
   const knobOrientation = useKnobOrientation();
   const isKnob = selected.id === 'm003k';
+  // Only the device list is read here (its identity changes only when a module joins or leaves), so live input
+  // re-renders the canvas and not this workspace.
+  const devices = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, () => (feed?.getState() ?? idleFeedState).devices, () => idleFeedState.devices);
+  // A connected module is edited where it sits on the base layout. Picking one that is not connected swaps the
+  // layout for that module's standalone view, with a way back.
+  const onBase = feed !== undefined && devices.some(device => device.module === selected.id);
+  const goBack = () => {
+    const target = devices.find(device => device.path_hex === pickedPath) ?? devices[0];
+    if (!target) return;
+    onPickUnit(target.path_hex);
+    editor.chooseModule(target.module);
+  };
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
-    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} />
-    <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} disabled={disabled} lighting={lighting} />
+    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} layout={onBase} pickedPath={pickedPath} onPickUnit={onPickUnit}
+      dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
+    {!onBase && devices.length > 0 && <div className="standalone-bar" role="status">
+      <button type="button" className="button compact" onClick={goBack}><ArrowLeft size={15} aria-hidden="true" />Go back to the base layout</button>
+      <span className="fine-print">{selected.shortName} is not connected, so it is shown on its own.</span>
+    </div>}
+    {!onBase && <HeroImage editor={editor} profile={profile} feed={feed} knobOrientation={knobOrientation} disabled={disabled} lighting={lighting} />}
     {isKnob && <KnobOrientationControl orientation={knobOrientation} onRotate={knobOrientationStore.rotate} />}
     {selected.supported ? <>
       {isKeypad && <KeypadScreen pages={editor.keypadPages} allPages={profile.keypad!.pages} path={keypadPath} selected={selection.control} onSelect={control => editor.changeSelection({ ...selection, control })} onNavigate={editor.navigateKeypad}
         onDropAction={disabled ? undefined : (control, type) => editor.dropAction('m4315', control, type)}
         onMoveKey={disabled ? undefined : editor.moveKey} onKeyContext={disabled ? undefined : editor.openKeyMenu} />}
-      {!isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
+      {!onBase && !isKeypad && controlCounts[selection.module] > 1 && <div className="control-picker" role="group" aria-label="Control selection">
         {Array.from({ length: controlCounts[selection.module] }, (_, index) => index).map(control => <button key={control} className={selection.control === control ? 'selected' : ''} aria-pressed={selection.control === control} onClick={() => editor.changeSelection({ ...selection, control })}>{controlLabel(selection.module, control)}</button>)}
       </div>}
-      <p className="hero-note">{moduleNote(selection.module)}</p>
+      {!onBase && <p className="hero-note">{moduleNote(selection.module)}</p>}
     </> : <div className="planned-panel"><h2>Not available yet</h2><p>{selected.name} is in the module catalog, but this app cannot yet read its input or edit its bindings. See Compatibility for what it supports.</p><button className="button" onClick={() => setPage('compatibility')}>See compatibility<ChevronRight size={17} /></button></div>}
     <ServicePanel run={run} />
     {editor.keyMenu && <ContextMenu x={editor.keyMenu.x} y={editor.keyMenu.y} label={`Key ${editor.keyMenu.control + 1} menu`} items={keyMenuItems(editor, mac)} onClose={editor.closeKeyMenu} />}

@@ -53,7 +53,7 @@ const areaStyle = (markup: string, label: string) => {
 describe('3-knob module orientation', () => {
   beforeEach(() => knobOrientationStore.set('single-top'));
 
-  it('rotates the hero and rig art through all four orientations and wraps', () => {
+  it('rotates the module art through all four orientations and wraps', () => {
     const steps: { label: string; rotation: number; single: { left: number; top: number }; first: { left: number; top: number } }[] = [
       { label: 'Single knob on top', rotation: 0, single: { left: 38.5, top: 26.5 }, first: { left: 22.5, top: 45.5 } },
       { label: 'Single knob on the right', rotation: 90, single: { left: 50.5, top: 38.5 }, first: { left: 31.5, top: 22.5 } },
@@ -66,12 +66,12 @@ describe('3-knob module orientation', () => {
       const markup = render();
       expect(markup).toContain(`aria-live="polite">${step.label}</span>`);
       expect(markup).toContain('aria-label="Rotate module 90 degrees clockwise"');
-      // Both the hero and the rig tile use the top-down art with the same rotation.
+      // The standalone module view uses the top-down art with the rotation.
       const images = markup.match(/<img src="data:image\/svg\+xml,[^"]*"[^>]*>/g) ?? [];
-      expect(images).toHaveLength(2);
+      expect(images).toHaveLength(1);
       for (const image of images) expect(image).toContain(`transform:rotate(${step.rotation}deg)`);
       expect(markup).not.toContain('/modules/knob.png" alt="" draggable');
-      for (const where of ['on module image', 'in rig']) {
+      for (const where of ['on module image']) {
         expect(areaStyle(markup, `Select Knob 3 ${where}`)).toEqual(step.single);
         expect(areaStyle(markup, `Select Knob 1 ${where}`)).toEqual(step.first);
         expect(areaStyle(markup, `Select Knob 2 ${where}`)).toBeDefined();

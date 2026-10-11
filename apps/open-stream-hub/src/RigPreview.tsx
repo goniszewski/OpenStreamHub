@@ -1,23 +1,19 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, PointerEvent } from 'react';
-import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown, X } from 'lucide-react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { emptyLightingState, kindLighting, litLedColours } from './lighting-state';
-import type { LightingStateStore } from './lighting-state';
-import type { ModuleLive } from './live-state';
-import { DialFace, KeyDisplayContent } from './DisplayContent';
+import { emptyLightingState, kindLighting } from './lighting-state';
+import type { LightingSnapshot, LightingStateStore } from './lighting-state';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
-import { keypadDepth, keypadIsBack } from './keypad-model';
 import { useKnobOrientation } from './knob-orientation';
-import { ModuleArtImage, ModuleGlass } from './ModuleArt';
+import type { KnobOrientation } from './knob-orientation';
+import { ModuleStage, livePointer, livePressed, livePulse } from './ModuleStage';
+import type { DropHandlers } from './ModuleStage';
 import { faderTrackInset } from './module-art';
-import { dialScreen, knobControls, moduleArtwork, moduleImage } from './module-controls';
-import { addRigModule, boundControlCount, controlAction, defaultFaderPosition, faderFromKey, faderFromPointer, isDeviceItem, moveRigModule, readRig, removeRigModule, syncDeviceRig, writeRig } from './rig-model';
-import type { RigItem } from './rig-model';
+import { defaultFaderPosition, faderFromPointer } from './rig-model';
 import type { SessionState } from './profile-session';
-import { controlLabel, faderMaximum, gestures, modules, replayLabels } from './ui-model';
-import type { LiveDevice, ReplayKind } from './contracts';
+import { faderMaximum, gestures, modules, replayLabels } from './ui-model';
+import type { LiveDevice, Profile, ReplayKind } from './contracts';
 import type { ModuleId } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -27,7 +23,6 @@ const demoKinds = Object.keys(replayLabels) as ReplayKind[];
 
 const webStorage = { getItem: (key: string) => globalThis.localStorage?.getItem(key) ?? null, setItem: (key: string, value: string) => globalThis.localStorage?.setItem(key, value) };
 
-const noDevices: LiveDevice[] = [];
 const devicePlacement = (device: LiveDevice) => placementOf(device.module, device.base_cell!);
 const deviceLocation = (device: LiveDevice) => {
   const placement = devicePlacement(device);
@@ -35,176 +30,102 @@ const deviceLocation = (device: LiveDevice) => {
   return `${placementLabel(placement)}${overhang ? ` (${overhang})` : ''}`;
 };
 
-function ConnectedBaseLayout({ devices, knobOrientation, selectedModule, onSelectModule }: {
+// The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
+// hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
+// kind, the shared pick names the unit). A module without a detected position stays reachable in a row beside the base.
+function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, pickedPath, onPickUnit, dropHandlers }: {
   devices: LiveDevice[];
-  knobOrientation: ReturnType<typeof useKnobOrientation>;
-  selectedModule: ModuleId;
-  onSelectModule(module: ModuleId): void;
+  editor: DeviceEditor;
+  profile: Profile;
+  feedState: ReturnType<DeviceFeed['getState']>;
+  lightingRecords: LightingSnapshot['records'];
+  knobOrientation: KnobOrientation;
+  pickedPath: string | null;
+  onPickUnit(path: string): void;
+  dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
+  const [faders, setFaders] = useState<Record<string, number>>({});
   if (devices.length === 0) return null;
+  const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
   const extent = layoutExtent(positioned.map(devicePlacement));
   const gridStyle = { '--cols': extent.cols, '--rows': extent.rows } as CSSProperties;
+  // The unit being edited: the shared pick when it is a unit of the editor's kind, else the first unit of that kind.
+  const ofKind = devices.filter(device => device.module === selection.module);
+  const activePath = (ofKind.find(device => device.path_hex === pickedPath) ?? ofKind[0])?.path_hex ?? null;
 
-  return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
-    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left</p></div><span>{baseColumns} × {baseRows} cells</span></div>
-    <div className="base-layout-frame">
-      <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ') || 'module positions not detected'}`}>
-        <div className="base-layout-base" aria-hidden="true" style={{ gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
-        {positioned.map(device => {
-          const module = modules.find(entry => entry.id === device.module)!;
-          const placement = devicePlacement(device);
-          const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
-          const image = moduleImage(module, device.module === 'm003k' ? knobOrientation : undefined);
-          return <button key={device.path_hex} type="button" className={`base-layout-module${overhangs ? ' overhangs' : ''}${selectedModule === device.module ? ' selected' : ''}`} style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }} aria-label={`Select ${module.shortName}, ${deviceLocation(device)} on base`} aria-pressed={selectedModule === device.module} onClick={() => onSelectModule(device.module)}>
-            <img src={image.src} style={image.style} alt="" draggable={false} />
-            <span>{module.shortName}</span>
-          </button>;
-        })}
-      </div>
-    </div>
-    {unpositioned.length > 0 && <p className="base-layout-unknown">Position not detected: {unpositioned.map(device => modules.find(module => module.id === device.module)?.shortName ?? device.module).join(', ')}</p>}
-  </section>;
-}
-
-// With auto-detect on, the rig mirrors connected devices (ids `device:<path>`, session-only, never persisted).
-export function useRig(devices: LiveDevice[] = noDevices, autoDetect = false) {
-  const mirrored = autoDetect ? devices : noDevices;
-  const [rig, setRig] = useState<RigItem[]>(() => syncDeviceRig(readRig(webStorage), mirrored));
-  useEffect(() => { setRig(current => syncDeviceRig(current, mirrored)); }, [mirrored]);
-  useEffect(() => { writeRig(webStorage, rig); }, [rig]);
-  return {
-    rig,
-    add: (module: ModuleId) => setRig(current => addRigModule(current, module, `rig-${crypto.randomUUID()}`)),
-    remove: (id: string) => setRig(current => removeRigModule(current, id)),
-    move: (id: string, offset: -1 | 1) => setRig(current => moveRigModule(current, id, offset)),
+  const select = (device: LiveDevice, control: number) => {
+    onPickUnit(device.path_hex);
+    editor.chooseModule(device.module);
+    editor.changeSelection({ module: device.module, control, gesture: gestures[device.module][0], serial: '' });
   };
-}
-
-// Every module in the rig is drawn from the draft profile, so edits appear as they are made.
-// Live input (when a feed is supplied) is read-only: it overrides what the artwork shows and runs no actions.
-// Dragging a fader while a feed runs still only moves the simulated value; the live value wins on screen.
-// The lighting the Lighting page applied lights the knob rings and the fader glow strips.
-export function RigPreview({ editor, state, feed, lighting = emptyLightingState }: { editor: DeviceEditor; state: SessionState; feed?: DeviceFeed; lighting?: LightingStateStore }) {
-  const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
-  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
-  const [source, setSource] = useState('off');
-  const { rig, add, remove, move } = useRig(feedState.devices, feed !== undefined && feedState.desktop && feedState.autoDetect);
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [faders, setFaders] = useState<Record<string, number>>({});
-  const profile = state.draft.profile;
-  const { selection } = editor;
-  const knobOrientation = useKnobOrientation();
-  const active = rig.find(item => item.id === activeId && item.module === selection.module)?.id ?? rig.find(item => item.module === selection.module)?.id;
-
-  function select(item: RigItem, control: number) {
-    setActiveId(item.id);
-    editor.chooseModule(item.module);
-    editor.changeSelection({ module: item.module, control, gesture: gestures[item.module][0], serial: '' });
-  }
-
-  function selectModule(module: ModuleId) {
-    editor.chooseModule(module);
-    editor.changeSelection({ module, control: 0, gesture: gestures[module][0], serial: '' });
-  }
-
-  function dragFader(item: RigItem, control: number, event: PointerEvent<HTMLElement>) {
+  const faderValue = (device: LiveDevice, control: number) =>
+    feedState.live[device.module]?.faders[control] ?? (device.path_hex === activePath && selection.control === control ? editor.faderPosition : faders[`${device.path_hex}:${control}`] ?? defaultFaderPosition);
+  function dragFader(device: LiveDevice, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
     // The hit area spans the whole slot; a cap's centre only travels the part between its stops.
     const inset = rect.height * faderTrackInset;
     const value = faderFromPointer(event.clientY - rect.top - inset, rect.height - 2 * inset, faderMaximum);
-    setFaders(current => ({ ...current, [`${item.id}:${control}`]: value }));
-    if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(item, control); }
-    if (active === item.id || event.type === 'pointerdown') editor.changeFaderPosition(value);
+    setFaders(current => ({ ...current, [`${device.path_hex}:${control}`]: value }));
+    if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(device, control); }
+    if (device.path_hex === activePath || event.type === 'pointerdown') editor.changeFaderPosition(value);
   }
+  const stage = (device: LiveDevice) => {
+    const stored = device.module === 'm003k' || device.module === 'm005s' ? kindLighting(lightingRecords, devices, device.module) : undefined;
+    return <ModuleStage module={device.module} where="on the base" editor={editor} profile={profile} live={feedState.live[device.module]} stored={stored}
+      knobOrientation={knobOrientation} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
+      onSelect={control => select(device, control)} onFaderPointer={(control, event) => dragFader(device, control, event)}
+      onFaderValue={(control, value) => editor.changeFaderPosition(value)} dropHandlers={dropHandlers && (control => dropHandlers(device.module, control))} />;
+  };
+  const caption = (device: LiveDevice) => {
+    const name = modules.find(module => module.id === device.module)?.shortName ?? device.module;
+    return <button type="button" className="base-layout-name" aria-pressed={device.path_hex === activePath} title={device.serial_number ?? undefined}
+      onClick={() => select(device, device.path_hex === activePath ? selection.control : 0)}>{name}{device.serial_number ? ` …${device.serial_number.slice(-4)}` : ''}</button>;
+  };
 
-  const faderValue = (item: RigItem, control: number) =>
-    feedState.live[item.module]?.faders[control] ?? (item.id === active && selection.control === control ? editor.faderPosition : faders[`${item.id}:${control}`] ?? defaultFaderPosition);
-  const showConnectedLayout = feedState.devices.some(device => device.base_cell !== undefined);
-
-  return <section className="rig" aria-label="Module rig">
-    {!showConnectedLayout && <div className="rig-heading"><h2>Rig</h2>
-      <label className="sr-only" htmlFor="rig-add">Add module to rig</label>
-      <select id="rig-add" className="rig-add" value="" onChange={event => { if (event.target.value) add(event.target.value as ModuleId); }}>
-        <option value="">Add module…</option>{modules.filter(module => module.supported).map(module => <option key={module.id} value={module.id}>{module.shortName}</option>)}
-      </select>
+  return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left · pick a control on a module to edit it</p></div><span>{baseColumns} × {baseRows} cells</span></div>
+    <div className="base-layout-frame">
+      <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
+        <div className="base-layout-base" aria-hidden="true" style={{ gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
+        {positioned.map(device => {
+          const placement = devicePlacement(device);
+          const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
+          return <div key={device.path_hex} className={`base-layout-module${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`}
+            style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
+            {stage(device)}
+            {caption(device)}
+          </div>;
+        })}
+      </div>
+    </div>
+    {unpositioned.length > 0 && <div className="base-layout-unknown"><p>Position not detected</p>
+      <div className="base-layout-extra">{unpositioned.map(device => <div key={device.path_hex} className={`base-layout-module loose${device.path_hex === activePath ? ' selected' : ''}`}>{stage(device)}{caption(device)}</div>)}</div>
     </div>}
-    {feed && <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />}
-    {feed && <ConnectedBaseLayout devices={feedState.devices} knobOrientation={knobOrientation} selectedModule={selection.module} onSelectModule={selectModule} />}
-    {!showConnectedLayout && (rig.length === 0 ? <p className="fine-print">Add a module to arrange your setup.</p> : <ol className="rig-row" style={{ '--stage-h': `${rig.length <= 3 ? 104 : rig.length <= 5 ? 96 : 76}px` } as CSSProperties}>
-      {rig.map((item, index) => {
-        const module = modules.find(entry => entry.id === item.module)!;
-        const art = moduleArtwork[item.module];
-        const isKnob = item.module === 'm003k';
-        const controls = isKnob ? knobControls(knobOrientation) : art.controls;
-        const isActive = item.id === active;
-        const connectedDevice = isDeviceItem(item)
-          ? feedState.devices.find(device => `device:${device.path_hex}` === item.id)
-          : undefined;
-        const bound = boundControlCount(profile, item.module);
-        const live = feedState.live[item.module];
-        // One stored look per module kind lights the tile: the first connected unit of the kind that has one.
-        const stored = item.module === 'm003k' || item.module === 'm005s'
-          ? kindLighting(lightingRecords, feedState.devices, item.module)
-          : undefined;
-        return <li key={item.id} className={`rig-item${isActive ? ' active' : ''}${isDeviceItem(item) ? ' connected' : ''}`}>
-          <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${module.name} in rig`}>
-            <ModuleArtImage module={module} orientation={knobOrientation} faders={item.module === 'm005s' ? [0, 1, 2, 3, 4].map(control => faderValue(item, control)) : undefined}
-              knobs={item.module === 'm003k' ? litLedColours(stored, 3) : undefined}
-              glows={item.module === 'm005s' ? litLedColours(stored, 5) : undefined} />
-            {item.module === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
-            {controls.map(area => {
-              const action = controlAction(profile, item.module, area.control);
-              const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
-              const picked = isActive && selection.control === area.control;
-              const label = `Select ${controlLabel(item.module, area.control)} in rig`;
-              if (item.module === 'm131e') return <button key={area.control} type="button" className={`image-control round${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>{livePointer(live, area.control, true)}</button>;
-              if (item.module === 'm4315') {
-                const page = editor.currentKeypadPage;
-                return <button key={area.control} type="button" className={`image-control key-display${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
-                  <KeyDisplayContent key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
-                </button>;
-              }
-              if (item.module === 'm005s') {
-                const value = faderValue(item, area.control);
-                return <div key={area.control} role="slider" tabIndex={0} className={`image-control fader${action ? ' bound' : ''}${picked ? ' selected' : ''}${live?.faders[area.control] !== undefined ? ' live' : ''}`} style={style}
-                  aria-label={controlLabel(item.module, area.control)} aria-orientation="vertical" aria-valuemin={0} aria-valuemax={faderMaximum} aria-valuenow={value}
-                  onPointerDown={event => dragFader(item, area.control, event)} onPointerMove={event => dragFader(item, area.control, event)}
-                  onKeyDown={event => { const next = faderFromKey(event.key, value, faderMaximum); if (next !== null) { event.preventDefault(); select(item, area.control); editor.changeFaderPosition(next); } }}>
-                </div>;
-              }
-              return <button key={area.control} type="button" className={`image-control${area.round ? ' round' : ''}${action ? ' bound' : ''}${picked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={picked} onClick={() => select(item, area.control)}>
-                {livePointer(live, area.control)}
-                {livePulse(live, area.control)}
-              </button>;
-            })}
-            <ModuleGlass module={item.module} />
-          </div>
-          <div className="rig-caption"><span title={module.shortName}>{module.shortName}</span><small>{connectedDevice?.base_cell ? `${deviceLocation(connectedDevice)} on base · ` : ''}{bound ? `${bound} bound` : 'No bindings'}{isDeviceItem(item) ? ' · connected' : ''}</small></div>
-          <div className="rig-tools">
-            <button type="button" className="icon-button" aria-label={`Move ${module.shortName} left`} disabled={index === 0} onClick={() => move(item.id, -1)}><ChevronLeft size={14} /></button>
-            <button type="button" className="icon-button" aria-label={`Move ${module.shortName} right`} disabled={index === rig.length - 1} onClick={() => move(item.id, 1)}><ChevronRight size={14} /></button>
-            <button type="button" className="icon-button" aria-label={`Remove ${module.shortName} from rig`} disabled={isDeviceItem(item)} title={isDeviceItem(item) ? 'Connected modules are removed by unplugging them' : undefined} onClick={() => remove(item.id)}><X size={14} /></button>
-          </div>
-        </li>;
-      })}
-    </ol>)}
-    {!showConnectedLayout && <p className="fine-print">Arrangement is a preview only. Modules of the same type share their bindings and live input. Live input is read-only and no actions run.</p>}
   </section>;
 }
 
-// Read-only live overlays, shared by the rig tiles and the Devices hero image.
-export const livePressed = (live: ModuleLive | undefined, control: number) => live?.keysDown.includes(control) ? ' pressed' : '';
-// `screen` fits the needle inside the encoder's glass: the dial's control area also covers the black ring around the screen,
-// so a full-radius needle would stick out over it.
-export const livePointer = (live: ModuleLive | undefined, control: number, screen = false) => live?.angles[control] === undefined ? null :
-  <span className={screen ? 'live-pointer screen' : 'live-pointer'} style={{ transform: `rotate(${live.angles[control]}deg)` }} aria-hidden="true" />;
-export function livePulse(live: ModuleLive | undefined, control: number) {
-  const pulse = live?.pulses[control];
-  return pulse && <span key={pulse.tick} className={`live-pulse ${pulse.direction}`} aria-hidden="true">{pulse.direction === 'up' ? <ChevronUp size={16} /> : <ChevronDown size={16} />}</span>;
+// The live-input controls and the base layout. With `layout` off (the picked module is not connected, so the
+// standalone module view is showing) only the live controls remain.
+export function RigPreview({ editor, state, feed, lighting = emptyLightingState, layout = true, pickedPath = null, onPickUnit = () => {}, dropHandlers }: {
+  editor: DeviceEditor; state: SessionState; feed?: DeviceFeed; lighting?: LightingStateStore; layout?: boolean;
+  pickedPath?: string | null; onPickUnit?(path: string): void; dropHandlers?(module: ModuleId, control: number): DropHandlers;
+}) {
+  const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
+  const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).records;
+  const [source, setSource] = useState('off');
+  const knobOrientation = useKnobOrientation();
+  if (!feed) return null;
+  return <section className="rig" aria-label="Module rig">
+    <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
+    {layout && <ConnectedBaseLayout devices={feedState.devices} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
+      knobOrientation={knobOrientation} pickedPath={pickedPath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
+  </section>;
 }
+
+export { livePointer, livePressed, livePulse };
 
 export function LiveControls({ feed, feedState, source, setSource }: { feed: DeviceFeed; feedState: ReturnType<DeviceFeed['getState']>; source: string; setSource(source: string): void }) {
   const running = isRunning(feedState);

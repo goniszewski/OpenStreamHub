@@ -32,6 +32,21 @@ Only the base image contains `G sensor communicate fail` and `G sensor write dat
 
 The desktop app reads feature report 0x35 of the base every two seconds (`read_base_orientation`, one read-only GET FEATURE) and, with the experimental "Follow sensor" switch on (off by default), turns the connected base layout when the state changes, taking 1 as lying down and 0 as standing. Because the byte did not move on the base tested, that switch is for trying other bases. The input report `01 2b …` is not listened for.
 
+## Why the orientation byte may not move (second pass, base 2.0.4.0)
+
+Read from the firmware only; none of this is confirmed on hardware yet.
+
+- **The sensor is an I²C accelerometer at address 0x18.** The start-up routine (file offset 0x1c10, called once from the entry wrapper at 0x405c) reads register 0 and expects 0x87, then writes six configuration registers (0x0f, 0x10, 0x34, 0x17, 0x1a, 0x20 and 0x21). That register map and chip ID match a Sensortek STK8BA5x-class part; the part number itself is not in the image. Samples are read from register 2 on, six bytes, with a "new data" flag in bit 0 of each low byte and a 12-bit signed value (`>> 4`).
+- **Its result is kept in a RAM block at 0x200002c0.** Byte 0 is the orientation state, byte 1 the start-up status (0 = started, -1 = ID mismatch or no answer, 1 = a configuration write failed), byte 2 "the last sample read failed", byte 3 "calibration mode", byte 4 the calibration sample counter. The two `G sensor …` strings are printed through `adr` references from the start-up routine (they are not unused): a non-zero status is logged and the poll routine (0x3c04) then returns at once, so **the orientation state is never updated when the sensor does not answer or is not configured.** A base without the part fitted, or with it unreachable, would behave exactly like the one tested.
+- **The poll runs from a timer interrupt** (0x1b5c, timer flag in the block at 0x40004000), and only when a global flag (0x20000010) is set and a small counter test on bytes at 0x2000000c, 0x20000220 and 0x20000221 passes. What sets those is not yet traced, so "the poll never runs" is not excluded either.
+- **A third state exists:** while a calibration is running the byte is 2 (set at 0x3c9c). Calibration averages 15 samples per axis, writes the offsets to flash (Nuvoton ISP unlock 0x59, 0x16, 0x88), and expects the base lying flat (z near +1 g; the code tests 1024 ± 500 counts).
+- **The input report is sent from the poll, not only on change.** After a threshold branch (state set to 1 or 0) the routine at 0x5430 builds `01 2b 01 00 <state>` in the transmit buffer unless the sample read failed; it is skipped while the previous report is still pending.
+- **Two ways to settle it on a real base** (both read-only): listen for input reports with first byte 0x01 and second 0x2b while moving the base (an event proves the sensor runs and the app's read is stale), and read feature 0x35 right after replugging. If no event ever arrives, the sensor is most likely not populated or not starting on this unit.
+
+## Command dispatch (second pass)
+
+The routine at 0x41d4 handles a 64-byte host buffer and switches on byte 1. A jump table at 0x41fc covers 0x2a to 0x30; 0x31, 0x32, 0x33, 0x49 and 0x4a are compared separately. Command 0x2a carries a 16-bit offset, a 16-bit length, a flag byte, an end flag and a 0x0e-byte header, and copies the data into a RAM staging area then computes a checksum and flash-writes it: it is the firmware **update** transfer, so the handler as a whole is the updater and not the lighting path. The other commands in the table (0x2b to 0x33, 0x49, 0x4a) are not decoded yet, so calling them update steps is an inference from 0x2a only. This part has **not** been mapped to the lighting commands the SDK uses (0x2c to 0x2e in report 2); that remains open, and nothing here is to be sent to a device.
+
 ## What else the images show
 
 - **Header fields.** After the 28-byte name: a little-endian length (24,232 for the base, 23,656 for the knobs; the dial's field reads 127,256 although its file is 355,802 bytes, so the dial file holds more than one block) and a four-byte word that is probably a checksum; the algorithm is not worked out.

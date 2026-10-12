@@ -55,8 +55,9 @@ export function press(game: Game, key: number, random: () => number = Math.rando
 // The computer opens a game in which it plays X.
 export const start = (game: Game, random: () => number = Math.random): Game => reply(game, random);
 
-export type Tone = 'empty' | 'x' | 'o' | 'win' | 'last' | 'button' | 'score' | 'blank';
-export interface Tile { tone: Tone; mark?: Mark; text?: string; sub?: string }
+export type Tone = 'empty' | 'x' | 'o' | 'win' | 'last' | 'button' | 'score' | 'blank' | 'fill';
+// `colour` is the whole key's colour for a 'fill' tile.
+export interface Tile { tone: Tone; mark?: Mark; text?: string; sub?: string; colour?: string }
 
 const blank: Tile = { tone: 'blank' };
 

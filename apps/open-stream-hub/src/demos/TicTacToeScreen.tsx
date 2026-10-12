@@ -81,4 +81,5 @@ export function TicTacToeScreen({ runtime, pathHex, onEnd }: { runtime: DemoRunt
   </section>;
 }
 
-export const demoTilePng = (tile: unknown) => tilePng(tile as Parameters<typeof tilePng>[0]);
+// A tile's picture; a string is a picture already drawn.
+export const demoTilePng = (tile: unknown) => typeof tile === 'string' ? tile : tilePng(tile as Parameters<typeof tilePng>[0]);

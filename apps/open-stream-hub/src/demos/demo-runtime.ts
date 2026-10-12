@@ -41,6 +41,17 @@ export class DemoRuntime {
 
   getPhase() { return this.phase; }
 
+  // Runs one pass of the display speed test on the demo's module (the backend times every write), reporting progress as
+  // it goes. Resolves with the pass's numbers.
+  async speedPass<T>(pass: 'grid' | 'single', seconds: number, onProgress: (progress: unknown) => void): Promise<T> {
+    if (this.phase !== 'running' || !this.serviceId) throw new Error('The demo is not running.');
+    const stop = await this.options.listen('demo://speed', event => { const [, progress] = (event.payload as [unknown, unknown]) ?? []; onProgress(progress); });
+    try { return await this.options.invoke<T>('demo_speed_pass', { serviceId: this.serviceId, pass, seconds }); }
+    finally { stop(); }
+  }
+
+  cancelSpeed() { return this.options.invoke<void>('demo_speed_cancel'); }
+
   // Starts a demo on the module at `pathHex`. Resolves once the module is ready to draw on, or rejects (and leaves
   // everything as it was: the session has its module back).
   async start(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void): Promise<void> {

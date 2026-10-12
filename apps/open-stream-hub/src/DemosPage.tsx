@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Gamepad2 } from 'lucide-react';
 import { demoAvailable, demoMissing, demoModuleName, demos, modulePresent } from './demos/demo-catalog';
 import type { DemoEnd, DemoRuntime } from './demos/demo-runtime';
+import { SpeedTestScreen } from './demos/SpeedTestScreen';
 import { TicTacToeScreen } from './demos/TicTacToeScreen';
 import { useT } from './i18n-react';
 
@@ -20,7 +21,9 @@ export function DemosPage({ desktop, devices, runtime }: { desktop: boolean; dev
   };
   if (playing && runtime) return <section className="page-content demos-page">
     <div className="page-title"><div><h1>{t('demos.title')}</h1><p>{t('demos.paused')}</p></div></div>
-    <TicTacToeScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />
+    {playing.demo === 'display-speed'
+      ? <SpeedTestScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />
+      : <TicTacToeScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />}
   </section>;
   return <section className="page-content demos-page">
     <div className="page-title"><div><h1>{t('demos.title')}</h1><p>{t('demos.intro')}</p></div></div>

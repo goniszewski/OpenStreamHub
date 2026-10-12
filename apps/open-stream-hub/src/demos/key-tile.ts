@@ -12,6 +12,7 @@ const palette: Record<Tone, { fill: string; ink: string; edge: string }> = {
   win: { fill: '#12331c', ink: '#7dff9a', edge: '#2fae52' },
   button: { fill: '#26262e', ink: '#f2f2f7', edge: '#55556a' },
   score: { fill: '#16161c', ink: '#f2f2f7', edge: '#2a2a33' },
+  fill: { fill: '#000000', ink: '#000000', edge: '#000000' },
 };
 
 // The part of a canvas context the drawing uses, so it can be checked without a canvas.
@@ -36,9 +37,9 @@ function drawMark(ctx: Drawing, mark: 'X' | 'O', ink: string) {
 
 export function drawTile(ctx: Drawing, tile: Tile) {
   const { fill, ink, edge } = palette[tile.tone];
-  ctx.fillStyle = fill;
+  ctx.fillStyle = tile.tone === 'fill' ? tile.colour ?? fill : fill;
   ctx.fillRect(0, 0, tileSize, tileSize);
-  if (tile.tone === 'blank') return;
+  if (tile.tone === 'blank' || tile.tone === 'fill') return;
   ctx.strokeStyle = edge;
   ctx.lineWidth = 4;
   ctx.strokeRect(4, 4, tileSize - 8, tileSize - 8);

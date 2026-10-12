@@ -8,6 +8,7 @@ afterEach(() => i18n.setLanguage('en'));
 const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<DemosPage desktop={desktop} devices={modules.map(module => ({ module }))} />);
 
 import { DemoKeys } from './DemoKeys';
+import { SpeedTestScreen } from './SpeedTestScreen';
 
 describe('DemoKeys', () => {
   it('shows the 15-key module with each key\'s picture and a name for every key', () => {
@@ -20,10 +21,23 @@ describe('DemoKeys', () => {
   });
 });
 
+describe('SpeedTestScreen', () => {
+  it('waits for the Start button before it takes the module, and offers Exit', () => {
+    const runtime = { getPhase: () => 'idle' } as unknown as DemoRuntime;
+    const markup = renderToStaticMarkup(<SpeedTestScreen runtime={runtime} pathHex="ab" onEnd={() => {}} />);
+    expect(markup).toContain('Display speed test');
+    expect(markup).toContain('Ready. The test takes about a minute.');
+    expect(markup).toContain('>Start the test<');
+    expect(markup).toContain('>Exit<');
+    expect(markup).not.toContain('<pre');
+  });
+});
+
 describe('DemosPage', () => {
   it('lists tic-tac-toe, says what it needs and that profile actions pause, and disables Play with no module', () => {
     const markup = render(true, ['m131e']);
     expect(markup).toContain('Tic-tac-toe');
+    expect(markup).toContain('Display speed test');
     expect(markup).toContain('Needs 15-key module: not connected: 15-key module.');
     expect(markup).toContain('class="demo-tag">15-key module');
     expect(markup).toContain('Your profile’s actions are paused while a demo runs.');

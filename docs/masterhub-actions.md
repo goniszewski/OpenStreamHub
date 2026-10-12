@@ -35,6 +35,24 @@ None of this has been checked on hardware or on a Mac with permissions granted. 
 
 Dry runs, replay and preview call the same `Action::validate_executable` as the backend, so a profile that previews cleanly passes the same checks that run before execution.
 
+## Live and Test mode
+
+The desktop app has one global mode, shown by one badge in the header, that decides what every press does on every running module:
+
+- **Live**: a press runs its action on the Mac. This is the default.
+- **Test**: a press is only logged ("Would run: …") and nothing happens on the Mac. The key on the module behaves as normal.
+
+Switching needs no stop or restart by you. The service takes no messages once started, so the app restarts each affected run in place (same session and device, a brief redraw of the display, nothing in flight survives). Saving an edited profile applies it to the running session the same way and keeps the current mode.
+
+Rules that keep Live safe:
+
+- **First launch.** A fresh install reads Live, but nothing executes until you answer the "what this profile will do" dialog once, after the starter chooser. Confirming saves Live, declining saves Test. The answer is stored and not asked again. Until it is answered, runs stay in Test and say why.
+- **While editing.** Presses are held in Test while a binding has unsaved changes or the action picker or bindings drawer is open. The badge reads "Test (editing)". Saving, undoing or closing the editor returns to the mode you chose. The hold is global, so it covers every module.
+- **Imported profiles.** A `.mhz` import stays Test-only until you allow it. The badge reads "Test (imported profile)" and Live cannot be chosen for it.
+- **macOS only.** Actions run only on macOS; on other systems Live is unavailable and Test logs what would happen.
+
+The earlier "Dry run / Execute actions" choice on the Run panel and the "Run actions automatically" setting are gone. A settings file from before reads as Live if automatic runs were on, and Test if they were off.
+
 ## open_url
 
 - Only lowercase `http://` or `https://`. Other schemes (`file:`, `javascript:`, `data:`, `ftp:`, custom schemes) are rejected.

@@ -13,6 +13,9 @@ const palette: Record<Tone, { fill: string; ink: string; edge: string }> = {
   button: { fill: '#26262e', ink: '#f2f2f7', edge: '#55556a' },
   score: { fill: '#16161c', ink: '#f2f2f7', edge: '#2a2a33' },
   fill: { fill: '#000000', ink: '#000000', edge: '#000000' },
+  mole: { fill: '#2a1d10', ink: '#c08a4f', edge: '#7a5428' },
+  hit: { fill: '#12331c', ink: '#7dff9a', edge: '#2fae52' },
+  miss: { fill: '#3a1414', ink: '#ff8a8a', edge: '#b03a3a' },
 };
 
 // The part of a canvas context the drawing uses, so it can be checked without a canvas.
@@ -21,7 +24,7 @@ export interface Drawing {
   fillRect(x: number, y: number, w: number, h: number): void;
   strokeRect(x: number, y: number, w: number, h: number): void;
   beginPath(): void; moveTo(x: number, y: number): void; lineTo(x: number, y: number): void;
-  arc(x: number, y: number, r: number, from: number, to: number): void; stroke(): void;
+  arc(x: number, y: number, r: number, from: number, to: number): void; stroke(): void; fill(): void;
   fillText(text: string, x: number, y: number): void;
 }
 
@@ -35,6 +38,31 @@ function drawMark(ctx: Drawing, mark: 'X' | 'O', ink: string) {
   ctx.stroke();
 }
 
+function disc(ctx: Drawing, x: number, y: number, r: number, colour: string) {
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// A mole peeking out of its hole: a round brown head, two eyes and a pink nose.
+function drawMole(ctx: Drawing, ink: string) {
+  disc(ctx, 72, 82, 46, ink);
+  disc(ctx, 50, 68, 8, '#16161c');
+  disc(ctx, 94, 68, 8, '#16161c');
+  disc(ctx, 72, 90, 12, '#e89aa8');
+}
+
+function drawVerdict(ctx: Drawing, hit: boolean, ink: string) {
+  ctx.strokeStyle = ink;
+  ctx.lineWidth = 16;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  if (hit) { ctx.moveTo(32, 76); ctx.lineTo(62, 106); ctx.lineTo(114, 40); }
+  else { ctx.moveTo(38, 38); ctx.lineTo(106, 106); ctx.moveTo(106, 38); ctx.lineTo(38, 106); }
+  ctx.stroke();
+}
+
 export function drawTile(ctx: Drawing, tile: Tile) {
   const { fill, ink, edge } = palette[tile.tone];
   ctx.fillStyle = tile.tone === 'fill' ? tile.colour ?? fill : fill;
@@ -45,7 +73,9 @@ export function drawTile(ctx: Drawing, tile: Tile) {
   ctx.strokeRect(4, 4, tileSize - 8, tileSize - 8);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  if (tile.tone === 'score') {
+  if (tile.tone === 'mole') drawMole(ctx, ink);
+  else if (tile.tone === 'hit' || tile.tone === 'miss') drawVerdict(ctx, tile.tone === 'hit', ink);
+  else if (tile.tone === 'score') {
     ctx.fillStyle = ink;
     ctx.font = 'bold 30px sans-serif';
     ctx.fillText(tile.mark ?? '', tileSize / 2, 40);

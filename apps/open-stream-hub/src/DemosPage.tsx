@@ -4,6 +4,7 @@ import { demoAvailable, demoMissing, demoModuleName, demos, modulePresent } from
 import type { DemoEnd, DemoRuntime } from './demos/demo-runtime';
 import { SpeedTestScreen } from './demos/SpeedTestScreen';
 import { TicTacToeScreen } from './demos/TicTacToeScreen';
+import { WhackScreen } from './demos/WhackScreen';
 import { useT } from './i18n-react';
 
 type Ended = DemoEnd | { reason: 'start-failed'; error: string };
@@ -23,7 +24,9 @@ export function DemosPage({ desktop, devices, runtime }: { desktop: boolean; dev
     <div className="page-title"><div><h1>{t('demos.title')}</h1><p>{t('demos.paused')}</p></div></div>
     {playing.demo === 'display-speed'
       ? <SpeedTestScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />
-      : <TicTacToeScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />}
+      : playing.demo === 'whack-a-mole'
+        ? <WhackScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />
+        : <TicTacToeScreen runtime={runtime} pathHex={playing.pathHex} onEnd={ended} />}
   </section>;
   return <section className="page-content demos-page">
     <div className="page-title"><div><h1>{t('demos.title')}</h1><p>{t('demos.intro')}</p></div></div>

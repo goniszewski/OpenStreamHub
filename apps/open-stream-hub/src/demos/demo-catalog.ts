@@ -15,6 +15,7 @@ export const demoModuleName: Record<DemoModule, MessageKey> = {
 
 export const demos: readonly Demo[] = [
   { id: 'tic-tac-toe', name: 'demos.ticTacToe.name', description: 'demos.ticTacToe.description', modules: ['m4315'] },
+  { id: 'whack-a-mole', name: 'demos.whack.name', description: 'demos.whack.description', modules: ['m4315'] },
   { id: 'display-speed', name: 'demos.speed.name', description: 'demos.speed.description', modules: ['m4315'] },
 ];
 

@@ -30,6 +30,18 @@ describe('key tiles', () => {
     expect(score.calls.filter(call => call.startsWith('fillText')).map(call => call.split(',')[0])).toEqual(['fillText(X', 'fillText(3']);
   });
 
+  it('draws a mole with eyes and nose, and a tick or a cross for the verdict', () => {
+    const mole = recorder();
+    drawTile(mole.ctx, { tone: 'mole' });
+    expect(mole.calls.filter(call => call.startsWith('fill()'))).toHaveLength(4);
+    const tick = recorder();
+    drawTile(tick.ctx, { tone: 'hit' });
+    expect(tick.calls.filter(call => call.startsWith('lineTo'))).toHaveLength(2);
+    const cross = recorder();
+    drawTile(cross.ctx, { tone: 'miss' });
+    expect(cross.calls.filter(call => call.startsWith('lineTo'))).toHaveLength(2);
+  });
+
   it('gives the page canvas picture as base64 and null where there is no canvas', () => {
     const { ctx } = recorder();
     const canvas = { getContext: () => ctx, toDataURL: () => 'data:image/png;base64,QUJD', width: 0, height: 0 } as unknown as HTMLCanvasElement;

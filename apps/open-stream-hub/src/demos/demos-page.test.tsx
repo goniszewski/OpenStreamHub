@@ -9,6 +9,7 @@ const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<De
 
 import { DemoKeys } from './DemoKeys';
 import { SpeedTestScreen } from './SpeedTestScreen';
+import { WhackScreen } from './WhackScreen';
 
 describe('DemoKeys', () => {
   it('shows the 15-key module with each key\'s picture and a name for every key', () => {
@@ -30,6 +31,18 @@ describe('SpeedTestScreen', () => {
     expect(markup).toContain('>Start the test<');
     expect(markup).toContain('>Exit<');
     expect(markup).not.toContain('<pre');
+  });
+});
+
+describe('WhackScreen', () => {
+  it('offers both modes and waits for Start before anything moves', () => {
+    const runtime = { getPhase: () => 'idle' } as unknown as DemoRuntime;
+    const markup = renderToStaticMarkup(<WhackScreen runtime={runtime} pathHex="ab" onEnd={() => {}} />);
+    expect(markup).toContain('>Reaction test<');
+    expect(markup).toContain('A 30-second round');
+    expect(markup).toContain('Score 0 · best 0');
+    expect(markup).toContain('>Exit<');
+    expect(markup.match(/image-control key-display demo-key/g)).toHaveLength(15);
   });
 });
 

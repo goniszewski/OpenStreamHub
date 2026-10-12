@@ -221,4 +221,4 @@ On the 15-key module with the desktop app (Module control App, "Dim a key while 
 
 - **Through the app (11 October 2026):** the same test card, chosen on the dial's Display tab ("Custom image") and drawn by a normal app run, showed on the dial (user-observed).
 - **Fit, rotation and background (12 October 2026):** through the app's dial Display tab with a 480×240 test picture (red square top-left, green top-right, blue bottom-left, a yellow F in the middle). Seven settings were tried in turn: contain, cover and stretch at 0°; contain at 90°, 180° and 270°; contain with a changed background colour. The user confirmed that each looked as expected on the dial. The direction each rotation turns was not written down separately. The service log showed no write errors.
-- **Not checked:** reopening the app to find the kept source picture and its controls.
+- **Reopen (12 October 2026):** after quitting and restarting the app, the same profile's dial Display tab still showed the fit, rotation and background controls, so the source picture was kept in the profile. Changing a setting updated the dial (user-observed).

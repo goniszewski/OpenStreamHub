@@ -3,11 +3,11 @@ import { baseOrientationStore } from './base-orientation';
 import type { BaseOrientation } from './base-orientation';
 import type { Invoke } from './profile-session';
 
-// The base has an accelerometer and reports one state byte, 0 or 1, from the firmware's own orientation check (feature
-// report 0x35). It tells lying down from standing up, not which end is up, so it picks the axis and the base's turn
-// within that axis stays the user's choice (0° or 180° lying down, 90° or 270° standing). It was read as 1 with the
-// base lying down in landscape; which value means standing up still has to be read from a standing base, so 0 is
-// taken as standing for now.
+// EXPERIMENTAL, off by default. The base firmware has an accelerometer routine that sets one state byte, 0 or 1 (feature
+// report 0x35). On a real base the byte read 1 lying flat in landscape and stayed 1 for 50 seconds of moving the base
+// between lying flat, turned a quarter on the desk, and standing in both turns, so it did not follow those positions
+// and what it means is not established. The code below assumes 1 is lying down and 0 standing, picks the axis only and
+// leaves the half turn to the user; it is kept so the byte can be tried on other bases and firmware.
 export const landscapeState = 1;
 export type SensorPosition = 'landscape' | 'standing';
 
@@ -58,8 +58,8 @@ export function createBaseSensorStore(storage: Pick<Storage, 'getItem' | 'setIte
   let current: SensorState | undefined;
   const listeners = new Set<() => void>();
   const read = (): SensorState => {
-    let follow = true;
-    try { follow = storage.getItem(sensorStorageKey) !== 'off'; } catch { /* follows by default */ }
+    let follow = false;
+    try { follow = storage.getItem(sensorStorageKey) === 'on'; } catch { /* off by default */ }
     return { follow, position: null };
   };
   const getSnapshot = () => current ??= read();

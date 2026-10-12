@@ -176,7 +176,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
       {sensor.position && <div className="base-pin-controls" role="group" aria-label="Base sensor">
-        <button type="button" className="mode-choice" aria-pressed={sensor.follow} title="Turn the layout with the base's own sensor when you lay it down or stand it up. You can still pick the turn by hand." onClick={() => baseSensorStore.setFollow(!sensor.follow)}>Follow sensor</button>
+        <button type="button" className="mode-choice" aria-pressed={sensor.follow} title="Experimental: turn the layout with the value the base's own sensor reports. On the base tested it did not change when the base was moved, so leave it off unless yours does. You can always pick the turn by hand." onClick={() => baseSensorStore.setFollow(!sensor.follow)}>Follow sensor (experimental)</button>
         <span className="base-layout-note">Sensor: {sensor.position === 'landscape' ? 'lying down' : 'standing'}</span>
       </div>}
       <div className="base-pin-controls" role="group" aria-label="Pogo pins">

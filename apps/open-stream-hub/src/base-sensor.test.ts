@@ -64,17 +64,17 @@ describe('base sensor', () => {
     t.observe(1);
     expect(reports).toEqual(['landscape', null, 'landscape']);
   });
-  it('remembers whether to follow the sensor', () => {
+  it('does not follow the sensor until it is switched on, and remembers the choice', () => {
     const storage = new FakeStorage();
     const store = createBaseSensorStore(storage);
-    expect(store.getSnapshot()).toEqual({ follow: true, position: null });
+    expect(store.getSnapshot()).toEqual({ follow: false, position: null });
     const listener = vi.fn();
     store.subscribe(listener);
-    store.setFollow(false);
-    store.setFollow(false);
+    store.setFollow(true);
+    store.setFollow(true);
     store.setPosition('standing');
     expect(listener).toHaveBeenCalledTimes(2);
-    expect(storage.getItem(sensorStorageKey)).toBe('off');
-    expect(createBaseSensorStore(storage).getSnapshot().follow).toBe(false);
+    expect(storage.getItem(sensorStorageKey)).toBe('on');
+    expect(createBaseSensorStore(storage).getSnapshot().follow).toBe(true);
   });
 });

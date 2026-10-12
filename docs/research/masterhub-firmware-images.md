@@ -26,10 +26,11 @@ Only the base image contains `G sensor communicate fail` and `G sensor write dat
 - When it changes the base sends an **input report** `01 2b 01 00 <state>` (report ID 1, event 0x2b).
 - The official app's vertical/horizontal base setting is a plausible consumer of this, and the base is printed with "VERTICAL" and "HORIZONTAL" marks. Which value means which is not in the firmware's strings; it needs one read per position on the module (see the hardware results).
 - The sensor distinguishes two states, not four rotations.
+- **On a real base the byte did not move.** It read 1 lying flat in landscape and stayed 1 for 50 seconds of moving the base through lying flat, a quarter turn on the desk, and standing in both turns. The routine above is therefore not a working orientation reading on this unit. The poll routine returns at once when a status byte (set by the sensor's start-up check, which logs the `G sensor communicate fail` strings) is not zero; whether the sensor started here is not known.
 
 ## How the app uses it
 
-The desktop app reads feature report 0x35 of the base every two seconds (`read_base_orientation`, one read-only GET FEATURE) and, with "Follow sensor" on, turns the connected base layout when the state changes. State 1 is taken as lying down (as measured); 0 is assumed to be standing. The sensor gives the axis only, so the choice between 0° and 180°, or 90° and 270°, stays with the user. The input report `01 2b …` is not listened for yet; the poll finds the same change within two seconds.
+The desktop app reads feature report 0x35 of the base every two seconds (`read_base_orientation`, one read-only GET FEATURE) and, with the experimental "Follow sensor" switch on (off by default), turns the connected base layout when the state changes, taking 1 as lying down and 0 as standing. Because the byte did not move on the base tested, that switch is for trying other bases. The input report `01 2b …` is not listened for.
 
 ## What else the images show
 

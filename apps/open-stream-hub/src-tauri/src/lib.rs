@@ -888,7 +888,9 @@ fn set_dial_lighting(
 }
 
 // Knob and fader lighting: one colour, effect and brightness for one LED or
-// every LED of each target module, written as output reports.
+// every LED of each target module, written as output reports. A module a run
+// holds is reached through that run's control channel, since the run owns its
+// handle; the rest are written through the app's own handle.
 #[tauri::command(async)]
 fn set_led_lighting(
     state: State<'_, AppState>,
@@ -898,22 +900,64 @@ fn set_led_lighting(
     mode: u8,
     brightness: u8,
 ) -> Result<usize, String> {
-    service::check_lighting_allowed(&state.services, &targets)?;
-    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
-        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
-    let look = lighting::LedLook {
-        colour,
-        mode,
-        brightness,
-    };
-    lighting::apply_led_lighting(&registry, &targets, led, look)
+    let (held, free) = service::split_held(&state.services, &targets)?;
+    let mut written = 0;
+    if !free.is_empty() {
+        let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+            .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+        let look = lighting::LedLook {
+            colour,
+            mode,
+            brightness,
+        };
+        written += lighting::apply_led_lighting(&registry, &free, led, look)?;
+    }
+    for pipe in held {
+        pipe.request(
+            serde_json::json!({"type":"led_look","led":led,"colour":colour,"mode":mode,"brightness":brightness}),
+            service::CONTROL_TIMEOUT,
+        )?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 // What a knob or fader module reports about its LEDs: live brightness and the
-// saved effect per LED, never a colour. Read only; the page uses it for a unit
-// it has no stored look for.
+// saved effect per LED, never a colour. Read only. A module a run holds
+// answers through that run's control channel.
 #[tauri::command(async)]
-fn read_led_state(target: String) -> Result<lighting::LedReadback, String> {
+fn read_led_state(
+    state: State<'_, AppState>,
+    target: String,
+) -> Result<lighting::LedReadback, String> {
+    let (held, free) = service::split_held(&state.services, std::slice::from_ref(&target))?;
+    if let Some(pipe) = held.first() {
+        let answer = pipe.request(
+            serde_json::json!({"type":"led_state"}),
+            service::CONTROL_TIMEOUT,
+        )?;
+        let bytes = |key: &str| -> Result<Vec<u8>, String> {
+            answer
+                .get(key)
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "the running module sent an unreadable LED report".to_string())?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(|value| u8::try_from(value).ok())
+                        .ok_or_else(|| {
+                            "the running module sent an unreadable LED report".to_string()
+                        })
+                })
+                .collect()
+        };
+        return Ok(lighting::LedReadback {
+            brightness: bytes("brightness")?,
+            modes: bytes("modes")?,
+        });
+    }
+    debug_assert_eq!(free.len(), 1);
     let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
         .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
     lighting::read_led_module(&registry, &target)
@@ -1073,6 +1117,24 @@ impl session::Runner for AppRunner {
     fn stop_many(&mut self, service_ids: &[String]) {
         let state = self.app.state::<AppState>();
         state.services.stop_many(service_ids, service::STOP_GRACE);
+    }
+
+    fn can_switch_mode(&self) -> bool {
+        true
+    }
+
+    fn set_profile(&mut self, service_id: &str, profile: &Profile) -> Result<(), String> {
+        self.app
+            .state::<AppState>()
+            .services
+            .set_profile(service_id, profile)
+    }
+
+    fn set_mode(&mut self, service_id: &str, execute: bool) -> Result<(), String> {
+        self.app
+            .state::<AppState>()
+            .services
+            .set_mode(service_id, execute)
     }
 
     fn closed(&self) -> bool {

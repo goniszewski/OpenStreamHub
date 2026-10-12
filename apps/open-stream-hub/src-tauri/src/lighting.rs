@@ -12,7 +12,8 @@ use cooltek_sdk_cli::{
     capture::encode_hex,
     device::{parse_path, select_device},
 };
-use cooltek_sdk_masterhub::lighting::{self as led, LedModule, LedTarget};
+use cooltek_sdk_masterhub::lighting::LedModule;
+pub use cooltek_sdk_masterhub::lighting::{LedLook, read_led_state, write_led_lighting};
 use cooltek_sdk_masterhub::{DeviceRegistry, ModuleIdentity, ModuleKind, ReportTransport, dial};
 
 /// Writes one dial's lighting in the order hardware verified: software mode,
@@ -120,14 +121,6 @@ pub fn reset_dial_lighting(registry: &DeviceRegistry, targets: &[String]) -> Res
     Ok(dials.len())
 }
 
-/// What one LED module is told: a colour, an effect number and a brightness.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LedLook {
-    pub colour: [u8; 3],
-    pub mode: u8,
-    pub brightness: u8,
-}
-
 /// The LED module a module kind is (knobs, faders and the base), or `None` for
 /// kinds the app cannot light per LED (the dial has its own feature-report lighting).
 pub fn led_module(kind: Option<ModuleKind>) -> Option<LedModule> {
@@ -139,92 +132,20 @@ pub fn led_module(kind: Option<ModuleKind>) -> Option<LedModule> {
     }
 }
 
-/// Writes one module's lighting the way the official app does, per LED:
-/// colour, then effect, then brightness, for one LED or each LED in turn
-/// (the app never sends the SDK's `0xff` index). Everything is validated
-/// before the first write, so a bad value or LED writes nothing; a transport
-/// failure stops at the failing write, and the next apply rewrites everything.
-pub fn write_led_lighting<T: ReportTransport + ?Sized>(
-    transport: &T,
-    module: LedModule,
-    led_index: Option<u8>,
-    look: LedLook,
-) -> Result<(), String> {
-    if look.mode > led::MAX_MODE {
-        return Err(format!(
-            "the effect must be between 0 and {}",
-            led::MAX_MODE
-        ));
-    }
-    if look.brightness > 100 {
-        return Err("the brightness must be between 0 and 100".into());
-    }
-    let leds: Vec<u8> = match led_index {
-        Some(index) if index < module.led_count() => vec![index],
-        Some(index) => {
-            return Err(format!(
-                "LED {} does not exist: this module has {}",
-                u16::from(index) + 1,
-                module.led_count()
-            ));
-        }
-        None => (0..module.led_count()).collect(),
-    };
-    for index in leds {
-        let target = LedTarget::Index(index);
-        let label = u16::from(index) + 1;
-        led::set_color(transport, module, target, look.colour, false)
-            .map_err(|error| format!("could not set the colour of LED {label}: {error}"))?;
-        led::set_mode(transport, module, target, look.mode, false)
-            .map_err(|error| format!("could not set the effect of LED {label}: {error}"))?;
-        led::set_brightness(transport, module, target, look.brightness)
-            .map_err(|error| format!("could not set the brightness of LED {label}: {error}"))?;
-    }
-    Ok(())
-}
-
-/// What a knob or fader module reports about its LEDs without being asked to
-/// change anything: the live brightness of each LED and the saved effect it
-/// starts with. The module reports no colour.
+/// What a knob or fader module reports about its LEDs, as the app's command returns it.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct LedReadback {
     pub brightness: Vec<u8>,
     pub modes: Vec<u8>,
 }
 
-const BRIGHTNESS_REPORT: u8 = 0x32;
-const MODE_REPORT: u8 = 0x34;
-
-fn read_led_values<T: ReportTransport + ?Sized>(
-    transport: &T,
-    id: u8,
-    count: usize,
-) -> Result<Vec<u8>, String> {
-    let mut buffer = [0u8; 32];
-    buffer[0] = id;
-    let read = transport
-        .get_feature_report(&mut buffer)
-        .map_err(|error| format!("could not read report {id:#04x}: {error}"))?;
-    if read < 2 || buffer[0] != id || usize::from(buffer[1]) < count || read < 2 + count {
-        return Err(format!("report {id:#04x} came back in an unknown shape"));
+impl From<cooltek_sdk_masterhub::lighting::LedReadback> for LedReadback {
+    fn from(report: cooltek_sdk_masterhub::lighting::LedReadback) -> Self {
+        Self {
+            brightness: report.brightness,
+            modes: report.modes,
+        }
     }
-    Ok(buffer[2..2 + count].to_vec())
-}
-
-/// Reads a knob or fader module's brightness and saved effect per LED, with
-/// feature reads only.
-pub fn read_led_state<T: ReportTransport + ?Sized>(
-    transport: &T,
-    module: LedModule,
-) -> Result<LedReadback, String> {
-    if module == LedModule::Base {
-        return Err("only knob and fader modules report their LEDs".into());
-    }
-    let count = usize::from(module.led_count());
-    Ok(LedReadback {
-        brightness: read_led_values(transport, BRIGHTNESS_REPORT, count)?,
-        modes: read_led_values(transport, MODE_REPORT, count)?,
-    })
 }
 
 /// Opens one knob or fader module and reads what it reports about its LEDs.
@@ -235,7 +156,7 @@ pub fn read_led_module(registry: &DeviceRegistry, target: &str) -> Result<LedRea
     let device = registry
         .open(selected)
         .map_err(|error| format!("could not open the module: {error}"))?;
-    read_led_state(&device, module)
+    read_led_state(&device, module).map(Into::into)
 }
 
 /// The one inventory entry an LED target must name: a knob or fader module, or the base.

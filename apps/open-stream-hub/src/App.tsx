@@ -146,7 +146,7 @@ export default function App() {
     }
     restoreChain.current = restoreChain.current
       .then(() => restoreLighting(lightingState, appeared, invokeCommand, device =>
-        device.module !== 'm0064' && runner.isActivePath(device.path_hex, { ...device, module: device.module } as LiveDevice)))
+        device.module === 'm131e' && runner.isActivePath(device.path_hex, { ...device, module: device.module } as LiveDevice)))
       .catch(() => {});
     // Everything the restore reads arrives with the app or the inventory key.
     // eslint-disable-next-line react-hooks/exhaustive-deps

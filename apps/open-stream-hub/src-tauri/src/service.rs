@@ -29,7 +29,7 @@ use std::{
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -224,6 +224,8 @@ pub fn service_args(
         "--path-hex".into(),
         path_hex.into(),
         "--exit-on-stdin-eof".into(),
+        // Lighting and the module's own LED report reach the module through the run that holds it.
+        "--control".into(),
     ];
     if execute {
         args.push("--execute".into());
@@ -477,13 +479,109 @@ fn kill_group(pid: u32) {
 
 struct ServiceHandle {
     child: Arc<Mutex<Child>>,
-    execute: bool,
+    /// Whether the run executes its actions now; a mode switch changes it in place.
+    execute: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     /// Set after `exited` is emitted, so the id can be reused.
     done: Arc<AtomicBool>,
     profile_path: Option<PathBuf>,
     emit: Emit,
     join: Option<JoinHandle<()>>,
+    control: Arc<ControlPipe>,
+}
+
+/// This app's end of a running service's control channel: its stdin pipe, which stays open until the child is
+/// reaped (so the pipe closes early only when this process dies), and the requests waiting for an answer.
+pub struct ControlPipe {
+    stdin: Mutex<Option<ChildStdin>>,
+    waiters: Mutex<HashMap<u64, mpsc::Sender<Value>>>,
+    next: AtomicU64,
+}
+
+/// The largest profile handed to a running service in place. The pipe holds 64 KiB, so a write this size never
+/// blocks the thread that makes it; a larger profile restarts the run, as before.
+pub const IN_PLACE_PROFILE_MAX: usize = 48 * 1024;
+
+/// How long a control request waits for the service's answer.
+pub const CONTROL_TIMEOUT: Duration = Duration::from_secs(3);
+
+impl ControlPipe {
+    fn new(stdin: Option<ChildStdin>) -> Self {
+        Self {
+            stdin: Mutex::new(stdin),
+            waiters: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
+        }
+    }
+
+    /// Closes the pipe: the child sees end of file, and later requests are refused.
+    fn close(&self) {
+        *self
+            .stdin
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+
+    /// Hands a `control_result` record to the request that is waiting for it.
+    fn deliver(&self, record: Value) {
+        let Some(id) = record.get("id").and_then(Value::as_u64) else {
+            return;
+        };
+        let waiter = self
+            .waiters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&id);
+        if let Some(waiter) = waiter {
+            let _ = waiter.send(record);
+        }
+    }
+
+    /// Sends one request (a JSON object with a `type`) and waits for its answer. An `ok: false` answer is an error
+    /// carrying the service's own message.
+    pub fn request(&self, mut body: Value, timeout: Duration) -> Result<Value, String> {
+        let id = self.next.fetch_add(1, Ordering::SeqCst);
+        body["id"] = id.into();
+        let (sender, receiver) = mpsc::channel();
+        self.waiters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, sender);
+        let forget = || {
+            self.waiters
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&id);
+        };
+        let written = {
+            let mut stdin = self
+                .stdin
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match stdin.as_mut() {
+                Some(pipe) => io::Write::write_all(pipe, format!("{body}\n").as_bytes())
+                    .and_then(|()| io::Write::flush(pipe))
+                    .map_err(|error| format!("could not reach the running module: {error}")),
+                None => Err("the run on this module has ended".to_string()),
+            }
+        };
+        if let Err(error) = written {
+            forget();
+            return Err(error);
+        }
+        match receiver.recv_timeout(timeout) {
+            Ok(record) if record.get("ok").and_then(Value::as_bool) == Some(true) => Ok(record),
+            Ok(record) => Err(record
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("the running module refused the request")
+                .to_string()),
+            Err(_) => {
+                forget();
+                Err("the running module did not answer in time".to_string())
+            }
+        }
+    }
 }
 
 impl ServiceHandle {
@@ -498,7 +596,7 @@ impl ServiceHandle {
             (self.emit)(ServiceMessage::Status(StatusPayload::new(
                 service_id,
                 ServiceState::Stopping,
-                self.execute,
+                self.execute.load(Ordering::SeqCst),
             )));
             interrupt(&mut child);
         }
@@ -559,6 +657,61 @@ impl Services {
         self.lock()
             .get(service_id)
             .is_some_and(|handle| !handle.finished())
+    }
+
+    /// The control channel of a running service, if one runs under this id.
+    pub fn control(&self, service_id: &str) -> Option<Arc<ControlPipe>> {
+        self.lock()
+            .get(service_id)
+            .filter(|handle| !handle.finished())
+            .map(|handle| Arc::clone(&handle.control))
+    }
+
+    /// Switches a running service between executing its actions and only logging them, in place: nothing restarts.
+    /// The run's recorded mode follows, and a fresh `running` status carries it to the frontend. An error leaves the
+    /// mode as it was, and the caller falls back to restarting the run.
+    pub fn set_mode(&self, service_id: &str, execute: bool) -> Result<(), String> {
+        let (pipe, flag, emit) = {
+            let services = self.lock();
+            let handle = services
+                .get(service_id)
+                .filter(|handle| !handle.finished())
+                .ok_or_else(|| format!("service {service_id} is not running"))?;
+            (
+                Arc::clone(&handle.control),
+                Arc::clone(&handle.execute),
+                Arc::clone(&handle.emit),
+            )
+        };
+        pipe.request(
+            serde_json::json!({"type":"mode","execute":execute}),
+            CONTROL_TIMEOUT,
+        )?;
+        flag.store(execute, Ordering::SeqCst);
+        emit(ServiceMessage::Status(StatusPayload::new(
+            service_id,
+            ServiceState::Running,
+            execute,
+        )));
+        Ok(())
+    }
+
+    /// Hands a running service a new profile, in place: nothing restarts, and the next input is planned with it. Only
+    /// for a profile small enough to cross the pipe without ever blocking this thread; the service refuses a run that
+    /// draws on its module. An error leaves the run as it was, and the caller falls back to restarting it.
+    pub fn set_profile(&self, service_id: &str, profile: &Profile) -> Result<(), String> {
+        let value = serde_json::to_value(profile).map_err(|error| error.to_string())?;
+        if value.to_string().len() > IN_PLACE_PROFILE_MAX {
+            return Err("the profile is too large to hand over in place".into());
+        }
+        let pipe = self
+            .control(service_id)
+            .ok_or_else(|| format!("service {service_id} is not running"))?;
+        pipe.request(
+            serde_json::json!({"type":"profile","profile":value}),
+            CONTROL_TIMEOUT,
+        )
+        .map(drop)
     }
 
     /// Ids of services whose child has not exited, sorted.
@@ -668,13 +821,15 @@ impl Services {
         emit(status(ServiceState::Running));
 
         let profile_path = profile.as_ref().map(|profile| profile.path().to_path_buf());
+        let control = Arc::new(ControlPipe::new(stdin_pipe));
+        let execute_now = Arc::new(AtomicBool::new(execute));
         let supervisor = Supervisor {
             service_id: service_id.clone(),
-            execute,
+            execute: Arc::clone(&execute_now),
             child: Arc::clone(&child),
             done: Arc::clone(&done),
             emit: Arc::clone(&emit),
-            stdin: stdin_pipe,
+            control: Arc::clone(&control),
         };
         let join = thread::Builder::new()
             .name(format!("supervise {service_id}"))
@@ -701,12 +856,13 @@ impl Services {
             service_id.clone(),
             ServiceHandle {
                 child,
-                execute,
+                execute: execute_now,
                 stopping: Arc::new(AtomicBool::new(false)),
                 done,
                 profile_path,
                 emit,
                 join: Some(join),
+                control,
             },
         );
         Ok(service_id)
@@ -790,13 +946,14 @@ impl Services {
 
 struct Supervisor {
     service_id: String,
-    execute: bool,
+    execute: Arc<AtomicBool>,
     child: Arc<Mutex<Child>>,
     done: Arc<AtomicBool>,
     emit: Emit,
-    /// This app's end of the child's stdin pipe, kept open until the child is
-    /// reaped, so the pipe closes early only when this process dies.
-    stdin: Option<ChildStdin>,
+    /// The child's stdin pipe and pending control requests; the pipe is kept
+    /// open until the child is reaped, so it closes early only when this
+    /// process dies.
+    control: Arc<ControlPipe>,
 }
 
 impl Supervisor {
@@ -812,16 +969,17 @@ impl Supervisor {
         let (drained_tx, drained_rx) = mpsc::channel::<()>();
         let mut readers = 0;
         if let Some(stdout) = stdout {
-            let (id, emit, closed, drained) = (
+            let (id, emit, closed, drained, control) = (
                 self.service_id.clone(),
                 Arc::clone(&self.emit),
                 Arc::clone(&closed),
                 drained_tx.clone(),
+                Arc::clone(&self.control),
             );
             let spawned = thread::Builder::new()
                 .name(format!("stdout {}", self.service_id))
                 .spawn(move || {
-                    relay_records(&id, stdout, &closed, &*emit);
+                    relay_records(&id, stdout, &closed, &control, &*emit);
                     let _ = drained.send(());
                 });
             readers += usize::from(spawned.is_ok());
@@ -840,7 +998,7 @@ impl Supervisor {
 
         let pid = lock_child(&self.child).id();
         let status = self.reap();
-        drop(self.stdin);
+        self.control.close();
         kill_group(pid);
         let deadline = Instant::now() + DRAIN_GRACE;
         for _ in 0..readers {
@@ -856,7 +1014,7 @@ impl Supervisor {
                 .into_owned();
         (self.emit)(ServiceMessage::Status(StatusPayload::exited(
             &self.service_id,
-            self.execute,
+            self.execute.load(Ordering::SeqCst),
             status.and_then(|status| status.code()),
             stderr_tail,
         )));
@@ -887,6 +1045,7 @@ fn relay_records(
     service_id: &str,
     stdout: impl Read,
     closed: &AtomicBool,
+    control: &ControlPipe,
     emit: &(dyn Fn(ServiceMessage) + Send + Sync),
 ) {
     let mut reader = BufReader::new(stdout);
@@ -896,6 +1055,11 @@ fn relay_records(
             return;
         }
         if let Some(record) = record_payload(service_id, &line, truncated) {
+            // Answers to control requests go to whoever asked, not to the record log.
+            if record.record.get("type").and_then(Value::as_str) == Some("control_result") {
+                control.deliver(record.record);
+                continue;
+            }
             emit(ServiceMessage::Record(record));
         }
     }
@@ -1039,6 +1203,23 @@ pub fn check_lighting_allowed(services: &Services, targets: &[String]) -> Result
     Ok(())
 }
 
+/// Splits lighting targets for a per-LED write or read: the ones a run holds, which are reached through that run's
+/// control channel (it owns the module's handle), and the free ones, which the app opens itself.
+pub fn split_held(
+    services: &Services,
+    targets: &[String],
+) -> Result<(Vec<Arc<ControlPipe>>, Vec<String>), String> {
+    let mut held = Vec::new();
+    let mut free = Vec::new();
+    for path_hex in targets {
+        match services.control(&service_id(path_hex)?) {
+            Some(pipe) => held.push(pipe),
+            None => free.push(path_hex.clone()),
+        }
+    }
+    Ok((held, free))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1160,6 +1341,7 @@ mod tests {
                 "--path-hex",
                 "4a",
                 "--exit-on-stdin-eof",
+                "--control",
                 "--execute"
             ]
             .map(OsString::from)
@@ -1633,11 +1815,11 @@ mod tests {
         assert_eq!(stopped_feed.as_deref(), Some("live:4a"));
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 7);
+        assert_eq!(record["argc"], 8);
         let args = record["args"].as_str().unwrap();
         assert!(
             args.starts_with("run --profile ")
-                && args.ends_with(" --path-hex 4a --exit-on-stdin-eof --software-mode")
+                && args.ends_with(" --path-hex 4a --exit-on-stdin-eof --control --software-mode")
         );
         assert_eq!(statuses(&messages).last().unwrap().exit_code, Some(Some(0)));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
@@ -1661,9 +1843,9 @@ mod tests {
         .unwrap();
         wait_done(&services, &id);
         let record = &records(&messages)[0];
-        assert_eq!(record["argc"], 10);
+        assert_eq!(record["argc"], 11);
         assert!(record["args"].as_str().unwrap().ends_with(
-            " --path-hex 4a --exit-on-stdin-eof --software-mode --display-sync --dial-content clock"
+            " --path-hex 4a --exit-on-stdin-eof --control --software-mode --display-sync --dial-content clock"
         ));
 
         // Execute off macOS and invalid profiles fail before spawning.
@@ -1844,17 +2026,16 @@ mod tests {
             record["args"]
                 .as_str()
                 .unwrap()
-                .ends_with(" --path-hex 4a --exit-on-stdin-eof --obs-endpoint 127.0.0.1:4455 --obs-password-stdin"),
+                .ends_with(" --path-hex 4a --exit-on-stdin-eof --control --obs-endpoint 127.0.0.1:4455 --obs-password-stdin"),
             "{record}"
         );
         // No password: the endpoint only, and stdin is still an open pipe.
         let record = run(Some(launch(None)));
         assert_eq!(record["stdin"], "pipe");
         assert!(
-            record["args"]
-                .as_str()
-                .unwrap()
-                .ends_with(" --path-hex 4a --exit-on-stdin-eof --obs-endpoint 127.0.0.1:4455"),
+            record["args"].as_str().unwrap().ends_with(
+                " --path-hex 4a --exit-on-stdin-eof --control --obs-endpoint 127.0.0.1:4455"
+            ),
             "{record}"
         );
         // OBS off: no OBS arguments, and the same open stdin pipe.
@@ -1864,7 +2045,7 @@ mod tests {
             record["args"]
                 .as_str()
                 .unwrap()
-                .ends_with(" --path-hex 4a --exit-on-stdin-eof")
+                .ends_with(" --path-hex 4a --exit-on-stdin-eof --control")
         );
     }
 
@@ -1998,6 +2179,50 @@ mod tests {
             .stop("service:4a", Duration::from_millis(200))
             .unwrap();
         assert!(check_feed_allowed(&services, &live("4A")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_running_service_answers_control_requests_and_they_stay_out_of_the_record_log() {
+        use process::*;
+        let services = Services::default();
+        let (emit, messages) = collector();
+        // Answers each request line with a `control_result` carrying the same id, until stdin closes.
+        let script = r#"while IFS= read -r line; do id=$(printf '%s' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/'); case "$line" in *refuse*) printf '{"type":"control_result","id":%s,"ok":false,"error":"no"}\n' "$id";; *) printf '{"type":"control_result","id":%s,"ok":true,"seen":1}\n' "$id";; esac; done"#;
+        start_script(&services, "service:4a", script, None, emit).unwrap();
+        let pipe = services
+            .control("service:4a")
+            .expect("the run is controllable");
+        let answer = pipe
+            .request(
+                serde_json::json!({"type":"led_state"}),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(answer["seen"], 1);
+        let error = pipe
+            .request(serde_json::json!({"type":"refuse"}), Duration::from_secs(5))
+            .unwrap_err();
+        assert_eq!(error, "no");
+        // Answers are not relayed as records.
+        assert!(
+            records(&messages)
+                .iter()
+                .all(|record| record["type"] != "control_result")
+        );
+        let (held, free) = split_held(&services, &["4a".to_string(), "4b".to_string()]).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(free, ["4b".to_string()]);
+        services.stop("service:4a", STOP_GRACE).unwrap();
+        // After the run, there is nothing to ask.
+        assert!(services.control("service:4a").is_none());
+        assert!(
+            pipe.request(
+                serde_json::json!({"type":"led_state"}),
+                Duration::from_millis(200)
+            )
+            .is_err()
+        );
     }
 
     #[cfg(unix)]

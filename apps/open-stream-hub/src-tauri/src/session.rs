@@ -288,6 +288,15 @@ pub enum Event {
         dry_run_reason: Option<String>,
         confirmed: bool,
     },
+    /// An in-place mode switch was not accepted by the process (it did not answer, refused, or is gone): the
+    /// switch is made the old way, by restarting the process in the new mode.
+    ModeSwitchFailed,
+    /// The running process took the stored request's new profile in place: the profile generation moves on, and
+    /// nothing is interrupted.
+    ProfileApplied {
+        profile_id: String,
+        profile_name: String,
+    },
     /// The stored request now carries another profile; the current process
     /// stops and the session restarts it under the usual safety rule.
     ProfileSwitched {
@@ -307,6 +316,12 @@ pub enum Action {
     /// Start the original request again on `path_hex`.
     StartService {
         path_hex: String,
+        execute: bool,
+    },
+    /// Switch the running process between executing and only logging, in place. A failure comes back as
+    /// `Event::ModeSwitchFailed`.
+    SetMode {
+        service_id: String,
         execute: bool,
     },
     Emit(SessionState),
@@ -359,6 +374,9 @@ pub struct Session {
     auto_start: Option<AutoStart>,
     auto_dry_run_reason: Option<String>,
     last_emitted: Option<SessionState>,
+    /// The running process takes mode switches over its control channel, so a switch changes it in place instead of
+    /// restarting it. Set when the process is ready, from what the runner supports; false in every other state.
+    live_control: bool,
 }
 
 fn blank_to_none(serial: Option<&str>) -> Option<String> {
@@ -498,6 +516,7 @@ impl Session {
             auto_start,
             auto_dry_run_reason,
             last_emitted: None,
+            live_control: false,
         };
         let mut actions = Vec::new();
         session.reconcile(now_ms, &mut actions);
@@ -699,14 +718,33 @@ impl Session {
                 self.pending_confirm = confirmed && execute;
                 if self.execute != execute {
                     self.execute = execute;
-                    if self
-                        .service
-                        .as_ref()
-                        .is_some_and(|process| !process.stopping)
+                    if let Some(process) = self.service.as_ref().filter(|process| !process.stopping)
                     {
-                        self.interrupt(Reason::RunMode);
-                        self.stop_process(actions);
+                        // Switching to Test is always safe in place; switching to Live is only in place when the
+                        // switch itself is confirmed (otherwise the restart asks first, as it always did).
+                        if self.live_control && process.ready && (!execute || confirmed) {
+                            self.pending_confirm = false;
+                            actions.push(Action::SetMode {
+                                service_id: process.service_id.clone(),
+                                execute,
+                            });
+                        } else {
+                            self.interrupt(Reason::RunMode);
+                            self.stop_process(actions);
+                        }
                     }
+                }
+            }
+            Event::ModeSwitchFailed if !stopped => {
+                if self
+                    .service
+                    .as_ref()
+                    .is_some_and(|process| !process.stopping)
+                {
+                    self.live_control = false;
+                    self.pending_confirm = self.execute;
+                    self.interrupt(Reason::RunMode);
+                    self.stop_process(actions);
                 }
             }
             Event::ModuleControlOff if !stopped => {
@@ -721,6 +759,14 @@ impl Session {
             Event::UserResume if self.phase == Phase::NeedsConfirmation => {
                 self.confirmed = true;
                 self.retry_at = None;
+            }
+            Event::ProfileApplied {
+                profile_id,
+                profile_name,
+            } if !stopped => {
+                self.profile_generation += 1;
+                self.profile_id = Some(profile_id);
+                self.profile_name = profile_name;
             }
             // Without a live process the next start already uses the new
             // profile; nothing is interrupted.
@@ -748,6 +794,8 @@ impl Session {
             | Event::UserResume
             | Event::ModuleControlOff
             | Event::RunModeChanged { .. }
+            | Event::ModeSwitchFailed
+            | Event::ProfileApplied { .. }
             | Event::ProfileSwitched { .. } => {}
         }
     }
@@ -875,6 +923,19 @@ pub trait Runner {
     /// True once app exit began; nothing may be started any more.
     fn closed(&self) -> bool {
         false
+    }
+    /// Whether a running process takes a mode switch in place (`set_mode`). A runner that does not gets the
+    /// restart, as before.
+    fn can_switch_mode(&self) -> bool {
+        false
+    }
+    /// Hands a running process a new profile without restarting it; an error means it did not take it.
+    fn set_profile(&mut self, _service_id: &str, _profile: &Profile) -> Result<(), String> {
+        Err("this runner cannot swap the profile in place".into())
+    }
+    /// Switches a running process between executing and only logging, without restarting it.
+    fn set_mode(&mut self, _service_id: &str, _execute: bool) -> Result<(), String> {
+        Err("this runner cannot switch the mode in place".into())
     }
     fn emit(&mut self, state: &SessionState);
     /// A fresh device inventory when the watcher has not reported the path.
@@ -1600,10 +1661,33 @@ impl<R: Runner> Driver<R> {
         let (module, serial) = (session.module, session.serial_number.clone());
         self.runner
             .remember_profile(module, serial.as_deref(), &profile_id);
-        let event = Event::ProfileSwitched {
-            profile_id,
-            profile_name,
-            reason,
+        // A ready process whose swap needs no new confirmation takes the profile in place: a dry run always, an
+        // executing run only when the swap adds nothing a confirmation did not cover. The process may refuse (a run
+        // that draws on its module, a profile too large for the pipe); it is then restarted as always.
+        let in_place_service = {
+            let session = &self.sessions[index].session;
+            session
+                .service
+                .as_ref()
+                .filter(|process| process.ready && !process.stopping)
+                .filter(|_| session.live_control && (!session.execute || covered))
+                .map(|process| process.service_id.clone())
+        };
+        let applied = in_place_service.is_some_and(|service_id| {
+            let profile = &self.sessions[index].request.profile;
+            self.runner.set_profile(&service_id, profile).is_ok()
+        });
+        let event = if applied {
+            Event::ProfileApplied {
+                profile_id,
+                profile_name,
+            }
+        } else {
+            Event::ProfileSwitched {
+                profile_id,
+                profile_name,
+                reason,
+            }
         };
         self.apply(index, event, now_ms);
         if covered {
@@ -1883,6 +1967,7 @@ impl<R: Runner> Driver<R> {
             .iter()
             .position(|managed| managed.session.service_id() == Some(service_id))
         {
+            self.sessions[index].session.live_control = self.runner.can_switch_mode();
             let event = Event::Ready {
                 service_id: service_id.into(),
             };
@@ -2182,6 +2267,14 @@ impl<R: Runner> Driver<R> {
                 Action::ScheduleTick(delay) => {
                     let id = self.sessions[index].session.session_id.clone();
                     self.timers.insert((now_ms + delay, id));
+                }
+                Action::SetMode {
+                    service_id,
+                    execute,
+                } => {
+                    if self.runner.set_mode(&service_id, execute).is_err() {
+                        self.apply(index, Event::ModeSwitchFailed, now_ms);
+                    }
                 }
                 Action::StopService { service_id } => match &mut self.deferred_stops {
                     Some(stops) => stops.push(service_id),
@@ -2647,9 +2740,40 @@ pub mod fake {
         pub remembered: Vec<(ServiceModule, Option<String>, String)>,
         /// Number of `display_settings` reads.
         pub display_reads: usize,
+        /// Whether the runner takes a mode switch in place.
+        pub in_place: bool,
+        /// Every in-place switch the runner was asked for, in order.
+        pub mode_switches: Vec<(String, bool)>,
+        /// Refuse the next in-place switches, so the restart fallback runs.
+        pub fail_set_mode: bool,
+        /// Every in-place profile hand-over the runner was asked for: service id and profile name.
+        pub profile_swaps: Vec<(String, String)>,
+        /// Refuse in-place profile hand-overs, so the restart fallback runs.
+        pub fail_set_profile: bool,
     }
 
     impl Runner for FakeRunner {
+        fn can_switch_mode(&self) -> bool {
+            self.in_place
+        }
+
+        fn set_profile(&mut self, service_id: &str, profile: &Profile) -> Result<(), String> {
+            if self.fail_set_profile {
+                return Err("refused".into());
+            }
+            self.profile_swaps
+                .push((service_id.into(), profile.name.clone()));
+            Ok(())
+        }
+
+        fn set_mode(&mut self, service_id: &str, execute: bool) -> Result<(), String> {
+            if self.fail_set_mode {
+                return Err("no answer".into());
+            }
+            self.mode_switches.push((service_id.into(), execute));
+            Ok(())
+        }
+
         fn check(&mut self, request: &StartRequest) -> Result<(), String> {
             let id = service::service_id(&request.path_hex)?;
             if self.alive.contains(&id) {
@@ -2762,6 +2886,7 @@ pub mod fake {
             module,
             serial_number: serial.map(str::to_owned),
             base_cell: None,
+            port_chain: None,
         }
     }
 
@@ -2886,7 +3011,6 @@ mod tests {
     }
 
     #[test]
-            port_chain: None,
     fn sleep_then_wake_restarts_a_dry_run_after_the_settle_delay() {
         let (mut driver, id) = running(false);
         driver.power(PowerEvent::Suspend, 100);
@@ -3641,6 +3765,89 @@ mod tests {
                 .apply_saved("other", renamed("Other"), 200)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_saved_profile_reaches_a_ready_run_without_restarting_it() {
+        let (mut driver, id) = running_saved(false, SAVED);
+        driver.runner().in_place = true;
+        let service = driver
+            .session(&id)
+            .unwrap()
+            .service_id()
+            .unwrap()
+            .to_string();
+        driver.ready(&service, 50);
+        let applied = driver.apply_saved(SAVED, renamed("Saved"), 100);
+        assert_eq!(
+            applied,
+            vec![AppliedSession {
+                session_id: id.clone(),
+                profile_generation: 1,
+                paused: false,
+                error: None,
+            }]
+        );
+        assert!(driver.runner().stops.is_empty());
+        assert_eq!(
+            driver.runner().profile_swaps,
+            [(service, "Saved".to_string())]
+        );
+        assert_eq!(starts(&mut driver), 1);
+        let state = last(&mut driver);
+        assert_eq!(
+            (state.phase, state.reason, state.profile_generation),
+            (Phase::Running, None, 1)
+        );
+        assert_eq!(state.profile_name, "Saved");
+    }
+
+    #[test]
+    fn an_executing_run_takes_a_saved_profile_in_place_only_when_nothing_is_new() {
+        if !CAN_EXECUTE {
+            return;
+        }
+        let (mut driver, id) = running_saved(true, SAVED);
+        driver.runner().in_place = true;
+        let service = driver
+            .session(&id)
+            .unwrap()
+            .service_id()
+            .unwrap()
+            .to_string();
+        driver.ready(&service, 50);
+        let applied = driver.apply_saved(SAVED, subset(), 100).remove(0);
+        assert_eq!(
+            (applied.profile_generation, applied.paused, applied.error),
+            (1, false, None)
+        );
+        assert!(driver.runner().stops.is_empty());
+        assert_eq!(driver.runner().profile_swaps.len(), 1);
+        // A saved profile that adds an action waits for the one confirmation, so it restarts as always.
+        let applied = driver.apply_saved(SAVED, with_paste(), 200).remove(0);
+        assert!(applied.paused && applied.error.is_none());
+        assert_eq!(driver.runner().profile_swaps.len(), 1);
+        assert_eq!(driver.runner().stops, [service]);
+    }
+
+    #[test]
+    fn a_refused_in_place_profile_falls_back_to_restarting_the_run() {
+        let (mut driver, id) = running_saved(false, SAVED);
+        driver.runner().in_place = true;
+        driver.runner().fail_set_profile = true;
+        let service = driver
+            .session(&id)
+            .unwrap()
+            .service_id()
+            .unwrap()
+            .to_string();
+        driver.ready(&service, 50);
+        let applied = driver.apply_saved(SAVED, renamed("Saved"), 100).remove(0);
+        assert_eq!(applied.error, None);
+        assert_eq!(driver.runner().stops, [service]);
+        exit(&mut driver, &id, "", 150);
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(driver.runner().starts[1].profile.name, "Saved");
     }
 
     #[test]
@@ -6266,6 +6473,104 @@ mod tests {
         driver.display_settings_changed(30);
         assert_eq!(driver.session(&id).unwrap().phase(), Phase::Running);
         assert!(!driver.session(&id).unwrap().execute);
+    }
+
+    #[test]
+    fn an_in_place_switch_changes_a_ready_run_without_restarting_it() {
+        if !CAN_EXECUTE {
+            return;
+        }
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.runner().in_place = true;
+        driver.inventory(vec![keypad("/k")], 0);
+        let auto_id = last(&mut driver).session_id;
+        driver.stop(&auto_id, true, 5);
+        exit(&mut driver, &auto_id, "", 6);
+        let id = driver.start(request(&keypad("/k"), false), 7).unwrap();
+        let service = driver
+            .session(&id)
+            .unwrap()
+            .service_id()
+            .unwrap()
+            .to_string();
+        driver.ready(&service, 8);
+        let starts_before = starts(&mut driver);
+        driver.runner().stops.clear();
+        // To Live (the saved mode is confirmed in the header): the process is told, nothing restarts.
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(10);
+        assert_eq!(driver.runner().mode_switches, [(service.clone(), true)]);
+        assert!(driver.runner().stops.is_empty());
+        assert_eq!(starts(&mut driver), starts_before);
+        assert_eq!(driver.session(&id).unwrap().phase(), Phase::Running);
+        assert!(driver.session(&id).unwrap().execute);
+        // It was never interrupted: no state of this run named the run mode as a reason.
+        assert!(
+            driver
+                .runner()
+                .emitted
+                .iter()
+                .all(|state| state.reason != Some(Reason::RunMode))
+        );
+        // And back to Test.
+        driver.runner().display = APP_CONTROL;
+        driver.display_settings_changed(20);
+        assert_eq!(
+            driver.runner().mode_switches,
+            [(service.clone(), true), (service, false)]
+        );
+        assert!(driver.runner().stops.is_empty());
+        assert!(!driver.session(&id).unwrap().execute);
+        assert_eq!(starts(&mut driver), starts_before);
+    }
+
+    #[test]
+    fn a_refused_in_place_switch_falls_back_to_restarting_the_run() {
+        if !CAN_EXECUTE {
+            return;
+        }
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.runner().in_place = true;
+        driver.inventory(vec![keypad("/k")], 0);
+        let auto_id = last(&mut driver).session_id;
+        driver.stop(&auto_id, true, 5);
+        exit(&mut driver, &auto_id, "", 6);
+        let id = driver.start(request(&keypad("/k"), false), 7).unwrap();
+        let service = driver
+            .session(&id)
+            .unwrap()
+            .service_id()
+            .unwrap()
+            .to_string();
+        driver.ready(&service, 8);
+        driver.runner().fail_set_mode = true;
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(10);
+        // The process did not take it: it is stopped, and it comes back executing without asking again.
+        assert!(driver.runner().stops.contains(&service));
+        exit(&mut driver, &id, "", 11);
+        assert!(driver.runner().starts.last().unwrap().execute);
+        assert_eq!(driver.session(&id).unwrap().phase(), Phase::Running);
+    }
+
+    #[test]
+    fn a_run_that_is_not_ready_or_not_confirmed_still_restarts() {
+        if !CAN_EXECUTE {
+            return;
+        }
+        let mut driver = auto_driver(APP_CONTROL);
+        driver.runner().in_place = true;
+        driver.inventory(vec![keypad("/k")], 0);
+        let auto_id = last(&mut driver).session_id;
+        driver.stop(&auto_id, true, 5);
+        exit(&mut driver, &auto_id, "", 6);
+        let id = driver.start(request(&keypad("/k"), false), 7).unwrap();
+        // No `service_start` yet: the control channel may not be listening, so the old restart runs.
+        driver.runner().display = APP_CONTROL_LIVE;
+        driver.display_settings_changed(10);
+        assert!(driver.runner().mode_switches.is_empty());
+        assert!(!driver.runner().stops.is_empty());
+        let _ = id;
     }
 
     #[test]

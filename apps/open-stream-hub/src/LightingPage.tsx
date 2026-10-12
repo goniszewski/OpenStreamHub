@@ -68,8 +68,9 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
     setColour(look?.colour ?? defaultColour);
     setBacklight(look?.backlight ?? defaultBacklight);
   }, [selectedPath, kind, led, records]);
-  // A base takes no input, so no run can own it.
-  const held = targets.filter(device => device.module !== 'm0064' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
+  // A run holds its module's handle, so only the dial's lighting (feature reports in software mode) is locked while
+  // one runs. A knob or fader module takes its lighting through the run itself, and the base takes no input.
+  const held = targets.filter(device => device.module === 'm131e' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
   const runOwned = held.length > 0;
   const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, heldNames: heldModuleNames(held), scope, selected, devices });
   // The base's edge strip can take a module's colour: the first lit knob or

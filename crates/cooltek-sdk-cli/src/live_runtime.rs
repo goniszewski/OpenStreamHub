@@ -30,6 +30,7 @@ use crate::service_events::{
     PlannedEvent, TimerCancelReason, Work, cancel_timers, dial_function_details, emit, end_record,
     log_alert_outcome, plan_report, process_due_timers, process_work,
 };
+use crate::timer_face::{CountdownKey, TimerFaces};
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, DeviceContext, Gesture, InputSession, KeypadLayout,
@@ -194,6 +195,8 @@ pub struct LiveDisplay {
     content: DisplayContent,
     pub(crate) write_gate: Arc<AtomicBool>,
     press_feedback: bool,
+    /// The countdowns of running timers, drawn on their keys (keys display).
+    timer_faces: TimerFaces,
 }
 
 /// What a [`LiveDisplay`] draws.
@@ -227,6 +230,7 @@ impl LiveDisplay {
             content: DisplayContent::Keys(Box::new(artwork)),
             write_gate,
             press_feedback: false,
+            timer_faces: TimerFaces::default(),
         }
     }
 
@@ -257,6 +261,7 @@ impl LiveDisplay {
             },
             write_gate,
             press_feedback: false,
+            timer_faces: TimerFaces::default(),
         }
     }
 
@@ -372,6 +377,7 @@ impl DisplayThread {
                     content,
                     write_gate: gate,
                     press_feedback,
+                    timer_faces,
                 } = display;
                 let mut press_feedback = press_feedback;
                 let gate_closed = Arc::clone(&gate);
@@ -403,6 +409,7 @@ impl DisplayThread {
                         let started = Instant::now();
                         let mut animate = true;
                         let mut last_sync: Option<Instant> = None;
+                        let faces_seen = std::cell::Cell::new(timer_faces.version());
                         loop {
                             // Frames are chosen from the run clock as of now, so a slow
                             // write never pushes later frames back; the gap is measured
@@ -414,7 +421,13 @@ impl DisplayThread {
                                         || {
                                             artwork.advance(page_of(request), started.elapsed());
                                             animation_wait(
-                                                artwork.next_frame_in(),
+                                                [
+                                                    artwork.next_frame_in(),
+                                                    timer_faces.next_change_in(Instant::now()),
+                                                ]
+                                                .into_iter()
+                                                .flatten()
+                                                .min(),
                                                 last_sync.map(|last| last.elapsed()),
                                                 ANIMATION_MIN_INTERVAL,
                                             )
@@ -436,7 +449,10 @@ impl DisplayThread {
                                 }
                                 _ => None,
                             };
-                            match next_display_request(&thread_slot, &abort, delay) {
+                            match next_display_request(&thread_slot, &abort, delay, &|| {
+                                let version = timer_faces.version();
+                                version != faces_seen.replace(version)
+                            }) {
                                 Wake::Stopped => return,
                                 Wake::Request(request) => current = Some(request),
                                 Wake::Tick => {
@@ -460,8 +476,14 @@ impl DisplayThread {
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                     artwork.advance(page_of(request), started.elapsed());
-                                    let shown = PressedKey {
+                                    let countdowns = timer_faces.snapshot();
+                                    let counted = CountdownKey {
                                         inner: &*artwork,
+                                        timers: &countdowns,
+                                        now: Instant::now(),
+                                    };
+                                    let shown = PressedKey {
+                                        inner: &counted,
                                         pressed: held,
                                     };
                                     sync_page(
@@ -533,7 +555,12 @@ impl DisplayThread {
                         let closed =
                             || gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst);
                         loop {
-                            match next_display_request(&thread_slot, &abort, Some(DIAL_TICK)) {
+                            match next_display_request(
+                                &thread_slot,
+                                &abort,
+                                Some(DIAL_TICK),
+                                &|| false,
+                            ) {
                                 Wake::Stopped => return,
                                 Wake::Request(request) => dial.requested(request),
                                 Wake::Tick => {}
@@ -718,6 +745,7 @@ fn next_display_request(
     slot: &(Mutex<DisplaySlot>, Condvar),
     abort: &AtomicBool,
     tick: Option<Duration>,
+    changed_elsewhere: &dyn Fn() -> bool,
 ) -> Wake {
     let deadline = tick.map(|tick| Instant::now() + tick);
     let (lock, changed) = slot;
@@ -728,6 +756,10 @@ fn next_display_request(
         }
         if let Some(request) = slot.pending.take() {
             return Wake::Request(request);
+        }
+        // Something outside the request slot (a countdown) needs a redraw.
+        if changed_elsewhere() {
+            return Wake::Tick;
         }
         let mut wait = Duration::from_millis(50);
         if let Some(deadline) = deadline {
@@ -1187,6 +1219,11 @@ where
         object.insert("dial_functions".into(), functions);
     }
     let abort = Arc::clone(&interrupted);
+    // The countdowns the worker publishes for a keys display to draw.
+    let timer_faces = display
+        .as_ref()
+        .filter(|display| !display.is_dial())
+        .map(|display| display.timer_faces.clone());
     // Started before the worker, so a failed spawn leaves nothing to clean up.
     // Fail closed: folder navigation must not run live without its display.
     let (display_records, display_thread) = match display {
@@ -1233,6 +1270,7 @@ where
                     options.profile_switch_requests,
                     details,
                     display_records,
+                    timer_faces,
                     factory,
                 )
             }))
@@ -1906,6 +1944,7 @@ fn worker<D, W, F>(
     profile_switch_requests: bool,
     details: Value,
     display_records: Option<Receiver<Value>>,
+    timer_faces: Option<TimerFaces>,
     factory: F,
 ) -> WorkerOutcome<W>
 where
@@ -1991,6 +2030,10 @@ where
                 abort.store(true, Ordering::SeqCst);
             }
         }
+        // Keys with a running countdown show it; one that ended or was cancelled gets its picture back.
+        if let Some(faces) = &timer_faces {
+            faces.publish(&timers, now());
+        }
         // Poll while display records, countdowns or alert results are pending;
         // otherwise block.
         let polling = display_records.is_some() || alerts.pending() > 0;
@@ -2058,6 +2101,9 @@ where
     };
     if let Err(error) = cancel_timers(&mut timers, reason, &mut output, &mut outcome.summary) {
         outcome.error = combine_errors(outcome.error.take(), Some(error));
+    }
+    if let Some(faces) = &timer_faces {
+        faces.publish(&timers, now());
     }
     // Queued alerts are skipped; a stop kills the one in flight at once, a
     // normal end after ALERT_GRACE. The thread is then joined.
@@ -4604,6 +4650,23 @@ mod tests {
         display: Option<LiveDisplay>,
         received: Arc<Mutex<Vec<Action>>>,
     ) -> DisplayRun {
+        run_display_with(
+            keypad_profile(),
+            steps,
+            options,
+            interrupted,
+            display,
+            received,
+        )
+    }
+    fn run_display_with(
+        session: ProfileSession,
+        steps: Vec<Step>,
+        options: LiveOptions,
+        interrupted: Arc<AtomicBool>,
+        display: Option<LiveDisplay>,
+        received: Arc<Mutex<Vec<Action>>>,
+    ) -> DisplayRun {
         let transport = Transport::new(steps);
         let clock = Arc::clone(&transport.clock);
         let writes = Arc::clone(&transport.writes);
@@ -4612,7 +4675,7 @@ mod tests {
         let actions = Arc::clone(&received);
         let result = run_inner(
             &mut InputReader::new(transport),
-            keypad_profile(),
+            session,
             keypad_device(),
             false,
             json!({"source":"synthetic"}),
@@ -4806,6 +4869,74 @@ mod tests {
                 assert_eq!(triggers, ["software_mode", "navigation"]);
             }
         }
+    }
+
+    #[test]
+    fn a_running_timer_key_counts_down_in_orange_and_gets_its_picture_back() {
+        let mut slots = vec![serde_json::Value::Null; 15];
+        slots[2] = json!({"type":"action","label":"Timer","bindings":[
+            {"gesture":"pressed","action":{"type":"timer","seconds":3,"sound":"none"}}]});
+        let profile = json!({"schema_version":2,"name":"timer","bindings":[],
+            "keypad":{"pages":[{"id":"root","name":"Keys","slots":slots}]}});
+        let session =
+            ProfileSession::new(Profile::from_json(profile.to_string().as_bytes()).unwrap())
+                .unwrap();
+        let orange_on_key_2 = |fake: &Arc<Mutex<FakeDisplaySink>>| {
+            fake.lock()
+                .unwrap()
+                .writes
+                .iter()
+                .filter(|write| write.target == DisplayTarget::Key(2))
+                .map(|write| {
+                    image::load_from_memory(&write.jpeg)
+                        .unwrap()
+                        .to_rgb8()
+                        .pixels()
+                        .filter(|pixel| {
+                            pixel.0[0] > 200 && (80..200).contains(&pixel.0[1]) && pixel.0[2] < 90
+                        })
+                        .count()
+                })
+                .collect::<Vec<_>>()
+        };
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let run = run_display_with(
+            session,
+            vec![
+                wait_for_writes(&fake, 15),
+                keys(&[2], 10),
+                keys(&[], 20),
+                // The countdown draws within a tick and then redraws as seconds pass.
+                Step::Run(Box::new({
+                    let fake = Arc::clone(&fake);
+                    let counts = orange_on_key_2;
+                    move || {
+                        assert!(
+                            wait_until(|| counts(&fake).iter().any(|&count| count > 40)),
+                            "a countdown frame"
+                        );
+                        // The timer ends after three seconds and the key's own picture returns.
+                        let deadline = Instant::now() + Duration::from_secs(6);
+                        while counts(&fake).last().is_none_or(|&count| count > 0)
+                            && Instant::now() < deadline
+                        {
+                            thread::sleep(Duration::from_millis(20));
+                        }
+                        assert_eq!(counts(&fake).last(), Some(&0), "the picture is back");
+                        assert!(
+                            counts(&fake).iter().filter(|&&count| count > 40).count() >= 2,
+                            "the countdown redrew as seconds passed"
+                        );
+                    }
+                })),
+                keys(&[], 30),
+            ],
+            keypad_options(3),
+            Arc::new(AtomicBool::new(false)),
+            Some(shared_display(&fake, None)),
+            Arc::default(),
+        );
+        run.result.unwrap();
     }
 
     #[test]

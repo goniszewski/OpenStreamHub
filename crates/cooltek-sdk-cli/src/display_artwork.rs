@@ -262,7 +262,7 @@ impl KeyImageProvider for PressedKey<'_> {
 }
 
 /// Encodes through the shared preparation path, then validates explicitly.
-fn encode(image: &RgbImage) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(image: &RgbImage) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();
     image
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)

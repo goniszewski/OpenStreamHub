@@ -189,6 +189,11 @@ impl TimerTable {
         self.running.iter().map(|timer| timer.deadline_micros).min()
     }
 
+    /// The running countdowns, in no particular order.
+    pub fn running(&self) -> &[RunningTimer] {
+        &self.running
+    }
+
     /// Number of running countdowns.
     pub fn len(&self) -> usize {
         self.running.len()

@@ -210,6 +210,10 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 - **Inspector readout (12 October 2026).** With a fader selected in the inspector, the user moved it on the real module: the "Fader now" value and its range followed the movement, as expected.
 - **Not checked:** a microphone with a readable software gain, and the range readout in the inspector.
 
+## Timer countdown on the key (12 October 2026, pending)
+
+A running `timer` key shows `M:SS` in orange in its bottom band and redraws each second; the key's picture returns when the timer ends or is pressed again. Built and tested against a fake display only. To check on the module: start a 1-minute timer on a key with an icon and a bottom label; the seconds should tick evenly without other keys flickering, and the picture should come back at the end and when pressed a second time. Needs the sidecar rebuilt (`npm run sidecar`).
+
 ## Key press feedback (12 October 2026)
 
 `masterhub-service run --profile examples/profiles/keypad-folders.json --software-mode --display-sync --press-feedback --duration-secs 60` on one M4315, without `--execute` (no action ran). The user pressed keys and folder keys: the held key dimmed, the keys stayed responsive. The log agrees: 12 `press` and 4 `navigation` redraws, all complete with no error; a press wrote only the held key (for example `[0]`, `[1]`, `[2]`), and opening a folder drew the new page with that key already dimmed (`[0,1,2]`, `[0,1]`). Session: 16 reports, all processed, 0 dropped or coalesced, 0 display failures. No per-write timing is logged, so the 150 ms cutoff was not measured; feedback never switched itself off during the run. The service refuses to write its output to a plain file (pipe it through `tee`).

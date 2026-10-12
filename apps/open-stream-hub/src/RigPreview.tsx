@@ -184,8 +184,9 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
   const status = running ? 'Receiving live input (read-only).' : feedState.error ?? (feedState.sessionModules.length ? 'Showing input from the running profile (read-only).' : enabled ? 'Live input is off.' : 'Live input needs the desktop app. Launch it to read hardware.');
   return <div className="live-controls">
     <label className="sr-only" htmlFor="rig-live-source">Live input source</label>
-    <select id="rig-live-source" value={source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
+    <select id="rig-live-source" value={running && source === 'off' ? 'running' : source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
       <option value="off">Live: Off</option>
+      {running && source === 'off' && <option value="running">Live: Auto-detected</option>}
       {demoKinds.map(kind => <option key={kind} value={`demo:${kind}`}>Demo: {replayLabels[kind]}</option>)}
       {feedState.devices.map(device => {
         const short = modules.find(entry => entry.id === device.module)?.shortName ?? device.module;

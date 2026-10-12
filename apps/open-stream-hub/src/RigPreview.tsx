@@ -59,6 +59,8 @@ function PogoPins({ cols, rows, baseOrientation, pins }: { cols: number; rows: n
   const dot = 0.03;
   const corner = pad * 0.34;
   return <svg className="base-pogo-pins" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" data-testid="pogo-pins">
+    <polygon points={layout.outline.map(([u, v]) => `${u * cols},${v * rows}`).join(' ')} fill="none" stroke="#2c2c34" strokeWidth={0.014} strokeLinejoin="round" />
+    <polygon points={layout.plate.map(([u, v]) => `${u * cols},${v * rows}`).join(' ')} fill="#000" stroke="#4a4a56" strokeWidth={0.02} strokeLinejoin="round" />
     {layout.pads.map(([u, v], index) => <g key={index} className="pogo-pad" transform={`translate(${u * cols} ${v * rows})`}>
       <rect x={-pad / 2} y={-pad / 2} width={pad} height={pad} rx={0.02} fill="#000" stroke="#6b6b78" strokeWidth={0.012} />
       {[-1, 1].flatMap(x => [-1, 1].map(y => <circle key={`${x}${y}`} cx={x * corner} cy={y * corner} r={dot} fill="#e0b84a" />))}

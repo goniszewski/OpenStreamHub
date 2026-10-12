@@ -11,7 +11,7 @@ describe('pogo pin layout', () => {
         for (const mirrored of [false, true]) {
           const layout = pinLayout(base, { show: true, turned, mirrored });
           expect(layout.pads.length).toBeGreaterThan(20);
-          expect([...layout.pads, ...layout.studs].every(inBox), `${base} ${turned} ${mirrored}`).toBe(true);
+          expect([...layout.pads, ...layout.studs, ...layout.outline, ...layout.plate].every(inBox), `${base} ${turned} ${mirrored}`).toBe(true);
         }
       }
     }

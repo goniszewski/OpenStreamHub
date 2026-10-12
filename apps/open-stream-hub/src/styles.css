@@ -784,5 +784,5 @@ html[data-mod-held] [data-shortcut]::before { display:block; }
 html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .inspector-clipboard { display:flex; gap:8px; margin:8px 0; }
 .settings-page .learn-more { margin:8px 0 12px; }
-.settings-page .learn-more summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }
-.settings-page .notes-list { margin:8px 0 0; padding-left:18px; display:grid; gap:5px; }
+.settings-page .learn-more summary { cursor:pointer; color:var(--muted); font-size:13px; font-weight:500; user-select:none; }
+.settings-page .notes-list { margin:8px 0 0; font-size:13px; line-height:1.55; padding-left:18px; display:grid; gap:5px; }

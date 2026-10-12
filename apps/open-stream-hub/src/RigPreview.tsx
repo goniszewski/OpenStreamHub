@@ -1,4 +1,4 @@
-import { useState, useSyncExternalStore } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { Info } from 'lucide-react';
 import type { CSSProperties, FocusEvent, MouseEvent, PointerEvent } from 'react';
@@ -7,6 +7,7 @@ import type { DeviceFeed } from './device-feed';
 import { baseGlow, emptyLightingState, kindLighting, lightMotion } from './lighting-state';
 import type { LightingSnapshot, LightingStateStore } from './lighting-state';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
+import { readFaderMemory, writeFaderMemory } from './fader-memory';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
 import { ModuleStage, livePointer, livePressed, livePulse } from './ModuleStage';
@@ -61,6 +62,18 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
   const [faders, setFaders] = useState<Record<string, number>>({});
+  // The last positions the faders reported, remembered across launches; shown until a fader moves again.
+  const storage = typeof localStorage === 'undefined' ? null : localStorage;
+  const [lastSeen, setLastSeen] = useState<number[] | null>(() => readFaderMemory(storage));
+  const liveFaders = feedState.live.m005s?.faders;
+  const liveKey = liveFaders && [0, 1, 2, 3, 4].every(at => typeof liveFaders[at] === 'number') ? [0, 1, 2, 3, 4].map(at => liveFaders[at]).join(',') : '';
+  useEffect(() => {
+    if (!liveKey) return;
+    const positions = liveKey.split(',').map(Number);
+    if (positions.length !== 5 || positions.some(value => !Number.isFinite(value))) return;
+    setLastSeen(positions);
+    writeFaderMemory(storage, positions);
+  }, [liveKey, storage]);
   if (devices.length === 0) return null;
   const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
@@ -81,7 +94,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     editor.changeSelection({ module: device.module, control, gesture: gestures[device.module][0], serial: '' });
   };
   const faderValue = (device: LiveDevice, control: number) =>
-    feedState.live[device.module]?.faders[control] ?? (device.path_hex === activePath && selection.control === control ? editor.faderPosition : faders[`${device.path_hex}:${control}`] ?? defaultFaderPosition);
+    feedState.live[device.module]?.faders[control] ?? (device.path_hex === activePath && selection.control === control ? editor.faderPosition : faders[`${device.path_hex}:${control}`] ?? (device.module === 'm005s' ? lastSeen?.[control] : undefined) ?? defaultFaderPosition);
   function dragFader(device: LiveDevice, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -113,7 +126,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
       <span>{name}</span>
       {device.serial_number && <InfoTip text={`Serial number ${device.serial_number}`} />}
-      {device.module === 'm005s' && !feedState.live.m005s && <span className="base-layout-note"> · positions not read</span>}
+      {device.module === 'm005s' && !feedState.live.m005s && <span className="base-layout-note">{lastSeen ? ' · last known positions' : ' · positions not read'}</span>}
     </div>;
   };
 

@@ -60,13 +60,13 @@ export interface Tile { tone: Tone; mark?: Mark; text?: string; sub?: string }
 
 const blank: Tile = { tone: 'blank' };
 
-// The picture on each of the 15 keys.
-export function tiles(game: Game): Tile[] {
+// The picture on each of the 15 keys. A won game's line blinks: `lit` is the half of the blink in which it shows.
+export function tiles(game: Game, lit = true): Tile[] {
   const won = winner(game.board);
   const result: Tile[] = Array.from({ length: keyCount }, () => blank);
   boardKeys.forEach((key, cell) => {
     const mark = game.board[cell];
-    const inLine = won?.line.includes(cell as never) ?? false;
+    const inLine = (won?.line.includes(cell as never) ?? false) && lit;
     result[key] = mark === null ? { tone: 'empty' } : { tone: inLine ? 'win' : game.last === cell ? 'last' : mark === 'X' ? 'x' : 'o', mark };
   });
   result[keys.newGame] = { tone: 'button', text: 'New', sub: 'game' };

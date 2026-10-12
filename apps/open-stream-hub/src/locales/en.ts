@@ -381,6 +381,7 @@ export const en = {
   'demos.ticTacToe.description': 'Three in a row on the keys, against the computer or a friend.',
   'demos.play': 'Play',
   'demos.module.keypad': '15-key module',
+  'demos.key': 'Key {number}',
   'demos.starting': 'Starting the demo…',
   'demos.exit': 'Exit',
   'demos.newGame': 'New game',

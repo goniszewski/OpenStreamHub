@@ -15,6 +15,8 @@ describe('tic-tac-toe on the keys', () => {
     expect(game.score.X).toBe(1);
     // The winning line is lit, and a finished game takes no more moves.
     expect(tiles(game).slice(0, 3).map(tile => tile.tone)).toEqual(['win', 'win', 'win']);
+    // The line blinks: lit, then back to plain marks, while the other cells stay as they are.
+    expect(tiles(game, false).slice(0, 3).map(tile => tile.tone)).toEqual(['x', 'x', 'last']);
     expect(press(game, board[8])).toBe(game);
     expect(tiles(press(game, keys.newGame))[board[0]].tone).toBe('empty');
   });

@@ -7,6 +7,19 @@ import type { DemoRuntime } from './demo-runtime';
 afterEach(() => i18n.setLanguage('en'));
 const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<DemosPage desktop={desktop} devices={modules.map(module => ({ module }))} />);
 
+import { DemoKeys } from './DemoKeys';
+
+describe('DemoKeys', () => {
+  it('shows the 15-key module with each key\'s picture and a name for every key', () => {
+    const markup = renderToStaticMarkup(<DemoKeys images={Array.from({ length: 15 }, (_, key) => key === 2 ? 'QUJD' : null)} label={key => `Key ${key + 1}`} onPress={() => {}} />);
+    expect(markup).toContain('15x Key IPS Display');
+    expect(markup.match(/image-control key-display demo-key/g)).toHaveLength(15);
+    expect(markup).toContain('aria-label="Key 15"');
+    expect(markup).toContain('src="data:image/png;base64,QUJD"');
+    expect(markup.match(/<img src="data:image/g)).toHaveLength(1);
+  });
+});
+
 describe('DemosPage', () => {
   it('lists tic-tac-toe, says what it needs and that profile actions pause, and disables Play with no module', () => {
     const markup = render(true, ['m131e']);

@@ -376,6 +376,7 @@ export const pl: Record<MessageKey, Message> = {
   'demos.ticTacToe.description': 'Trzy w jednej linii na przyciskach, z komputerem lub ze znajomym.',
   'demos.play': 'Graj',
   'demos.module.keypad': 'moduł z 15 przyciskami',
+  'demos.key': 'Przycisk {number}',
   'demos.starting': 'Uruchamianie dema…',
   'demos.exit': 'Wyjdź',
   'demos.newGame': 'Nowa gra',

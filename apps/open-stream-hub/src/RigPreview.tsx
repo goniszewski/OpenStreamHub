@@ -10,6 +10,8 @@ import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placeme
 import { readFaderMemory, writeFaderMemory } from './fader-memory';
 import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlacement, usbEdges, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
 import type { BaseOrientation } from './base-orientation';
+import type { BasePins } from './base-pins';
+import { basePinsStore, pinLayout, useBasePins } from './base-pins';
 import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, useModuleRotations } from './module-rotation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
@@ -50,6 +52,21 @@ function InfoTip({ text }: { text: string }) {
   </span>;
 }
 
+// The base's pogo-pin pads drawn on the bare base, in cell units so they scale with the layout.
+function PogoPins({ cols, rows, baseOrientation, pins }: { cols: number; rows: number; baseOrientation: BaseOrientation; pins: BasePins }) {
+  const layout = pinLayout(baseOrientation, pins);
+  const pad = 0.2;
+  const dot = 0.028;
+  return <svg className="base-pogo-pins" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" data-testid="pogo-pins">
+    {layout.pads.map(([u, v], index) => <g key={index} className="pogo-pad" transform={`translate(${u * cols} ${v * rows})`}>
+      <rect x={-pad / 2} y={-pad / 2} width={pad} height={pad} rx={0.02} />
+      {[-1, 1].flatMap(x => [-1, 1].map(y => <circle key={`${x}${y}`} cx={x * pad * 0.22} cy={y * pad * 0.22} r={dot} />))}
+    </g>)}
+    {layout.studs.map(([u, v], index) => <circle key={index} className="pogo-stud" cx={u * cols} cy={v * rows} r={0.06} />)}
+    <rect className="pogo-bus" x={layout.bus.x0 * cols} y={layout.bus.y0 * rows} width={(layout.bus.x1 - layout.bus.x0) * cols} height={(layout.bus.y1 - layout.bus.y0) * rows} rx={0.02} />
+  </svg>;
+}
+
 // The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
 // hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
 // kind, the shared pick names the unit). A module without a detected position stays reachable in a row beside the base.
@@ -83,6 +100,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
+  const pins = useBasePins();
   const rotations = useModuleRotations();
   const ownRotation = (device: LiveDevice) => rotations[moduleRotationId(device)] ?? null;
   const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device));
@@ -154,6 +172,11 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
+      <div className="base-pin-controls" role="group" aria-label="Pogo pins">
+        <button type="button" className="mode-choice" aria-pressed={pins.show} onClick={() => basePinsStore.set({ show: !pins.show })}>Pogo pins</button>
+        {pins.show && <><button type="button" className="mode-choice" aria-pressed={pins.turned} title="Turn the pins half way round if they do not match how your base is seated" onClick={() => basePinsStore.set({ turned: !pins.turned })}>Turn 180°</button>
+        <button type="button" className="mode-choice" aria-pressed={pins.mirrored} title="Mirror the pins if they do not match how your base is seated" onClick={() => basePinsStore.set({ mirrored: !pins.mirrored })}>Mirror</button></>}
+      </div>
       <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
     {pickedDevice && <div className="base-layout-rotation" role="group" aria-label="Rotation of the selected module">
       <label>Rotation of {nameOf(pickedDevice)}
@@ -166,7 +189,9 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     </div>}
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
-        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }} />
+        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }}>
+          {pins.show && <PogoPins cols={size.cols} rows={size.rows} baseOrientation={baseOrientation} pins={pins} />}
+        </div>
         {positioned.map(device => {
           const placement = turnedPlacement(device);
           const overhangs = Object.values(overhangOf(devicePlacement(device))).some(count => count > 0);

@@ -6,6 +6,7 @@ import { RigPreview } from './RigPreview';
 import { DeviceFeed } from './device-feed';
 import { baseOrientationStore } from './base-orientation';
 import { moduleRotationStore } from './module-rotation';
+import { basePinsStore } from './base-pins';
 import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -155,6 +156,23 @@ describe('RigPreview canvas', () => {
       expect(markup).not.toContain('rig-stage-turn r180');
     } finally { moduleRotationStore.set('path:rollers', null); }
     expect(await render()).not.toContain('Overridden');
+  });
+
+  it('draws the base\'s pogo pins under the modules, with controls to turn or mirror them and to hide them', async () => {
+    const state = stateFor();
+    const render = async () => renderToStaticMarkup(<RigPreview editor={editorFor(state)} state={state} feed={await feedOf(positioned)} />);
+    let markup = await render();
+    expect(markup).toContain('data-testid="pogo-pins"');
+    expect(markup).toContain('aria-label="Pogo pins"');
+    expect(markup).toContain('Turn 180°');
+    expect(markup).toContain('Mirror');
+    expect(markup.match(/class="pogo-pad"/g)).toHaveLength(27);
+    basePinsStore.set({ show: false });
+    try {
+      markup = await render();
+      expect(markup).not.toContain('data-testid="pogo-pins"');
+      expect(markup).not.toContain('Turn 180°');
+    } finally { basePinsStore.set({ show: true }); }
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

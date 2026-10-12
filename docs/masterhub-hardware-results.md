@@ -220,7 +220,9 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 **Write timing (12 October 2026):** keypad `display_sync` records now carry `elapsed_micros`. On the 15-key module with the service and `--press-feedback`, 35 press redraws took a median of 8 ms (maximum 15 ms), 15 navigation redraws a median of 26 ms (maximum 33 ms) and the first full draw 35 ms, so a press never came near the 150 ms cutoff. The user had reported a noticeable dimming delay and one blink at the start in the desktop app; the write time does not explain it, so the delay is not the key write.
 
-**Still pending:** the cause of the dimming delay seen in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
+**Desktop app (12 October 2026):** with the setting on, the first app run showed a noticeable dimming delay and one blink at the start; a standalone service run right after it was responsive and did not flicker. After restarting the app with the timing build, the user reported it looked fine, so the delay was not reproduced. The cause of the first run's delay and blink is unknown (the first run followed a fresh `tauri dev` build, and the app can restart a run in place at launch); the Run panel's `elapsed_micros` values were not read. The setting-off half was not recorded separately.
+
+**Still pending:** the dimming delay returning in the desktop app (then read `elapsed_micros` in the Run panel); the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
 
 The original checklist, for the remaining items:
 

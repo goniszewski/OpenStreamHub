@@ -381,6 +381,21 @@ export const en = {
   'demos.ticTacToe.description': 'Three in a row on the keys, against the computer or a friend.',
   'demos.play': 'Play',
   'demos.module.keypad': '15-key module',
+  'demos.starting': 'Starting the demo…',
+  'demos.exit': 'Exit',
+  'demos.newGame': 'New game',
+  'demos.exitHint': 'Exit with the Exit key on the module or Esc. Your profile starts again when the demo ends.',
+  'demos.ended.module-stopped': 'The module stopped answering, so the demo ended. Your profile starts again.',
+  'demos.ended.failed': 'The demo ended with an error: {error}',
+  'demos.startFailed': 'The demo could not start: {error}',
+  'demos.ticTacToe.turnYours': 'Your turn ({mark})',
+  'demos.ticTacToe.turn': '{mark} to play',
+  'demos.ticTacToe.wonYours': 'You win! ({mark})',
+  'demos.ticTacToe.wonTheirs': 'The computer wins ({mark})',
+  'demos.ticTacToe.won': '{mark} wins',
+  'demos.ticTacToe.draw': 'A draw',
+  'demos.ticTacToe.score': 'X {x} · O {o} · draws {draws}',
+  'demos.ticTacToe.cell': 'Row {row}, column {column}',
 } satisfies Record<string, Message>;
 
 export type MessageKey = keyof typeof en;

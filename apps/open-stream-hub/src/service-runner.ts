@@ -448,8 +448,12 @@ export class ServiceRunner {
     }
   }
 
+  // Processes that are not runs of the Run panel (a demo's), whose records and status the panel never shows.
+  private readonly ignored = new Set<string>();
+  ignore(serviceId: string, on: boolean) { if (on) this.ignored.add(serviceId); else this.ignored.delete(serviceId); }
+
   private onRecord(payload: ServiceRecordPayload) {
-    if (!payload || typeof payload.service_id !== 'string') return;
+    if (!payload || typeof payload.service_id !== 'string' || this.ignored.has(payload.service_id)) return;
     const id = this.sessionOf.get(payload.service_id) ?? payload.service_id;
     if (!this.runs()[id]) return;
     const run = this.runs()[id];
@@ -467,7 +471,7 @@ export class ServiceRunner {
   }
 
   private onStatus(payload: ServiceStatusPayload) {
-    if (!payload || typeof payload.service_id !== 'string' || typeof payload.state !== 'string') return;
+    if (!payload || typeof payload.service_id !== 'string' || typeof payload.state !== 'string' || this.ignored.has(payload.service_id)) return;
     const id = this.sessionOf.get(payload.service_id) ?? payload.service_id;
     if (!this.runs()[id]) {
       this.pending = { ...this.runs(), [id]: this.blankRun(id, payload.execute, 'Unknown profile', '', false) };

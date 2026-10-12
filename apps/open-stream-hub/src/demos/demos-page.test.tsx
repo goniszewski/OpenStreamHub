@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DemosPage } from '../DemosPage';
 import { i18n } from '../i18n-react';
+import type { DemoRuntime } from './demo-runtime';
 
 afterEach(() => i18n.setLanguage('en'));
 const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<DemosPage desktop={desktop} devices={modules.map(module => ({ module }))} />);
@@ -15,7 +16,8 @@ describe('DemosPage', () => {
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Play<\/button>/);
   });
   it('enables Play once a 15-key module is connected in the desktop app', () => {
-    const markup = render(true, ['m4315']);
+    const runtime = {} as DemoRuntime;
+    const markup = renderToStaticMarkup(<DemosPage desktop devices={[{ module: 'm4315', path_hex: 'ab' }]} runtime={runtime} />);
     expect(markup).toContain('Needs the 15-key module');
     expect(markup).not.toContain('none is connected');
     expect(markup).not.toMatch(/<button[^>]*disabled/);

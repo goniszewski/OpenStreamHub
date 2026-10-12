@@ -800,3 +800,13 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .settings-page .learn-more { margin:8px 0 12px; }
 .settings-page .learn-more summary { cursor:pointer; color:var(--muted); font-size:13px; font-weight:500; user-select:none; }
 .settings-page .notes-list { margin:8px 0 0; font-size:13px; line-height:1.55; padding-left:18px; display:grid; gap:5px; }
+
+/* Demos: tic-tac-toe */
+.demo-play { max-width:420px; display:grid; gap:14px; }
+.demo-status { font-size:15px; font-weight:600; margin:0; }
+.ttt-board { display:grid; grid-template-columns:repeat(3,72px); grid-template-rows:repeat(3,72px); gap:6px; }
+.ttt-cell { border:1px solid var(--line); border-radius:8px; background:var(--control); color:var(--text); font-size:30px; font-weight:700; cursor:pointer; }
+.ttt-cell:disabled { cursor:default; opacity:.6; }
+.ttt-cell.x { color:#c9b6ff; }
+.ttt-cell.o { color:#8be0d6; }
+.demo-actions { display:flex; gap:10px; }

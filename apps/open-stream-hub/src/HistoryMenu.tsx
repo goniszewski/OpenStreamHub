@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, History } from 'lucide-react';
-import { translateIn, useT } from './i18n-react';
+import { english, useT } from './i18n-react';
 import type { Translate } from './i18n-react';
 
 export const historyTipStorageKey = 'open-stream-hub.history-tip';
@@ -17,7 +17,7 @@ export function markHistoryTipShown(storage: Pick<Storage, 'setItem'> | null): v
 
 // The list the popover shows: redo entries above the current state, undo entries below it, each the label of a change.
 // Picking an undo entry goes back to just before that change, a redo entry forward through it.
-export function HistoryList({ undo, redo, onUndo, onRedo, undoHint, redoHint, showTip, t = translateIn('en') }: {
+export function HistoryList({ undo, redo, onUndo, onRedo, undoHint, redoHint, showTip, t = english }: {
   undo: string[]; redo: string[]; onUndo(steps: number): void; onRedo(steps: number): void;
   undoHint: string; redoHint: string; showTip: boolean;
   // Hook-free so tests can call it as a function; the menu passes its own translator.

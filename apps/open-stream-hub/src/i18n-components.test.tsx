@@ -1,95 +1,31 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { SessionView } from './ProfileManager';
+import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
-import { i18n, translateIn } from './i18n-react';
 import { SidebarNav } from './SidebarNav';
 import { ModuleDrawer } from './ModuleDrawer';
-import { HistoryList, HistoryMenu } from './HistoryMenu';
-import { LanguagePanel } from './InfoPages';
-import { RunHeaderControl, ServicePanel, idleRunSession } from './ServicePanel';
-import { TestResult } from './Inspector';
-import { FakeStorage } from './fake-storage';
+import { HistoryList } from './HistoryMenu';
+import { RunHeaderControl, idleRunSession } from './ServicePanel';
 import type { DrawerTile } from './module-drawer-model';
 
-afterEach(() => i18n.setLanguage('en'));
-
 const tile = (key: string, picked = false): DrawerTile => ({ key, module: 'm003k', path: key, serial: null, caption: 'caption', picked, marked: false, dimmed: false });
-const nav = () => renderToStaticMarkup(<SidebarNav page="workspace" setPage={() => {}} onGuide={() => {}} themePicker={null} collapsed={false} onToggle={() => {}} />);
-const drawer = (count: number, open = true) => renderToStaticMarkup(<ModuleDrawer tiles={Array.from({ length: count }, (_, index) => tile(`k${index}`, index === 0))} open={open} onToggle={() => {}} onPick={() => {}} />);
 
-describe('components in Polish', () => {
-  it('draw the sidebar in the chosen language and switch back without a restart', () => {
-    expect(nav()).toContain('Workspace');
-    i18n.setLanguage('pl');
-    const polish = nav();
-    for (const word of ['Obszar roboczy', 'Podświetlenie', 'Zgodność', 'Pierwsze kroki', 'O programie', 'Ustawienia', 'Zwiń']) expect(polish).toContain(word);
-    expect(polish).toContain('aria-label="Nawigacja główna"');
-    expect(polish).toContain('title="Małe gry i eksperymenty na module"');
-    expect(polish).not.toContain('Workspace');
-    i18n.setLanguage('en');
-    expect(nav()).toContain('Workspace');
+describe('components draw their messages', () => {
+  it('the sidebar', () => {
+    const nav = renderToStaticMarkup(<SidebarNav page="workspace" setPage={() => {}} onGuide={() => {}} themePicker={null} collapsed={false} onToggle={() => {}} />);
+    expect(nav).toContain('Workspace');
   });
-  it('draw the drawer with Polish plural forms for the connected count', () => {
-    i18n.setLanguage('pl');
-    expect(drawer(1)).toContain('1 podłączony');
-    expect(drawer(2)).toContain('2 podłączone');
-    expect(drawer(5)).toContain('5 podłączonych');
-    expect(drawer(22)).toContain('22 podłączone');
-    expect(drawer(1)).toContain('Moduły');
-    expect(drawer(1, false)).toContain('Pokaż listę modułów');
-    expect(renderToStaticMarkup(<ModuleDrawer tiles={[]} open onToggle={() => {}} onPick={() => {}} />)).toContain('Nie podłączono żadnych modułów.');
-    i18n.setLanguage('en');
+  it('the drawer, with the count in the right plural form', () => {
+    const drawer = (count: number) => renderToStaticMarkup(<ModuleDrawer tiles={Array.from({ length: count }, (_, index) => tile(`k${index}`, index === 0))} open onToggle={() => {}} onPick={() => {}} />);
+    expect(drawer(1)).toContain('1 connected');
     expect(drawer(2)).toContain('2 connected');
   });
-  it('draw the history menu and its list in Polish', () => {
-    i18n.setLanguage('pl');
-    const menu = renderToStaticMarkup(<HistoryMenu undo={['A']} redo={[]} disabled={false} onUndo={() => {}} onRedo={() => {}} storage={new FakeStorage()} undoHint="⌘Z" redoHint="⌘⇧Z" />);
-    expect(menu).toContain('aria-label="Historia zmian"');
-    expect(menu).toContain('data-tip="Historia zmian: zobacz ostatnie zmiany i cofnij się do wybranej"');
-    const list = renderToStaticMarkup(HistoryList({ undo: ['A'], redo: ['B'], showTip: true, undoHint: '⌘Z', redoHint: '⌘⇧Z', onUndo: () => {}, onRedo: () => {}, t: translateIn('pl') }));
-    expect(list).toContain('⌘Z cofa ostatnią zmianę, a ⌘⇧Z ją ponawia.');
-    expect(list).toContain('>Ponów<');
-    expect(list).toContain('>Cofnij<');
-    expect(renderToStaticMarkup(HistoryList({ undo: [], redo: [], showTip: false, undoHint: '', redoHint: '', onUndo: () => {}, onRedo: () => {}, t: translateIn('pl') }))).toContain('Nie ma jeszcze czego cofać.');
+  it('the history list', () => {
+    const list = renderToStaticMarkup(HistoryList({ undo: ['A'], redo: ['B'], showTip: true, undoHint: '⌘Z', redoHint: '⌘⇧Z', onUndo: () => {}, onRedo: () => {} }));
+    expect(list).toContain('>Redo<');
+    expect(list).toContain('>Undo<');
   });
-  it('offer the language picker in Settings with each language named in itself', () => {
-    const markup = renderToStaticMarkup(<LanguagePanel />);
-    expect(markup).toMatch(/<option value="system"[^>]*>System default<\/option>/);
-    expect(markup).toMatch(/<option value="en"[^>]*>English<\/option>/);
-    expect(markup).toMatch(/<option value="pl"[^>]*>Polski<\/option>/);
-    // The current setting is the selected one.
-    expect(markup).toMatch(/<option value="en" selected="">English<\/option>/);
-    i18n.setLanguage('pl');
-    expect(renderToStaticMarkup(<LanguagePanel />)).toContain('Domyślny systemowy');
-  });
-});
-
-describe('profile manager parts', () => {
-  it('draws the sample results in Polish when given the Polish translator', () => {
-    const idle = { status: 'idle' } as never;
-    expect(renderToStaticMarkup(<SessionView session={idle} t={translateIn('pl')} />)).toContain('Wyniki pojawią się tutaj');
-    expect(renderToStaticMarkup(<SessionView session={idle} />)).toContain('Results appear here');
-  });
-});
-
-describe('run controls', () => {
-  it('draw the run header and panel in Polish, and in English again', () => {
-    i18n.setLanguage('pl');
-    const header = renderToStaticMarkup(<RunHeaderControl run={idleRunSession} />);
-    expect(header).toContain('aria-label="Tryb testowy"');
-    expect(header).toContain('aria-label="Aktywność modułu"');
-    expect(renderToStaticMarkup(<ServicePanel />)).toContain('Aktywny profil');
-    i18n.setLanguage('en');
+  it('the run header', () => {
     expect(renderToStaticMarkup(<RunHeaderControl run={idleRunSession} />)).toContain('aria-label="Test mode"');
-  });
-});
-
-describe('inspector parts', () => {
-  it('words the test result in the translator it is given', () => {
-    const idle = { status: 'idle' } as never;
-    expect(renderToStaticMarkup(<TestResult t={translateIn('pl')} desktop preview={idle} keypadPreview={idle} isKeypad={false} />)).toContain('Uruchom test');
-    expect(renderToStaticMarkup(<TestResult desktop preview={idle} keypadPreview={idle} isKeypad={false} />)).toContain('Run a test to preview');
   });
 });
 

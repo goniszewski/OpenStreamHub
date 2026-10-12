@@ -1,5 +1,4 @@
-// English: the source catalogue. Every other language has exactly these keys (see pl.ts), each message either text with
-// {name} places or one text per plural category.
+// English: the app's message catalogue, each message either text with {name} places or one text per plural category.
 import type { Message } from '../i18n';
 
 export const en = {
@@ -60,12 +59,9 @@ export const en = {
   'theme.light': 'Light',
   'theme.dark': 'Dark',
   'settings.title': 'Settings',
-  'settings.intro': 'Language, appearance, notices, local profile storage, the display, OBS Studio and diagnostics.',
+  'settings.intro': 'Appearance, notices, local profile storage, the display, OBS Studio and diagnostics.',
   'settings.appearance': 'Appearance',
   'settings.appearanceNote': 'System follows the macOS appearance setting. Your choice is remembered locally.',
-  'settings.language': 'Language',
-  'settings.languageNote': 'The language of the app. System default follows the language of your Mac when the app has it, and English otherwise. The change applies at once and is remembered locally; profiles, key labels and anything you typed stay as you wrote them.',
-  'language.system': 'System default',
 
   // The profile manager, sample test and version list.
   'profiles.title': 'Profiles',

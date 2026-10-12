@@ -1,10 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { DemosPage } from '../DemosPage';
-import { i18n } from '../i18n-react';
 import type { DemoRuntime } from './demo-runtime';
 
-afterEach(() => i18n.setLanguage('en'));
 const render = (desktop: boolean, modules: string[]) => renderToStaticMarkup(<DemosPage desktop={desktop} devices={modules.map(module => ({ module }))} />);
 
 import { DemoKeys } from './DemoKeys';
@@ -68,11 +66,5 @@ describe('DemosPage', () => {
     const markup = render(false, ['m4315']);
     expect(markup).toContain('cannot play them');
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Play<\/button>/);
-  });
-  it('is translated', () => {
-    i18n.setLanguage('pl');
-    const markup = render(true, []);
-    expect(markup).toContain('Kółko i krzyżyk');
-    expect(markup).toContain('Akcje profilu są wstrzymane');
   });
 });

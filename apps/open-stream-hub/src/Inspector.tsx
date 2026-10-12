@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { translateIn, useT } from './i18n-react';
+import { english, useT } from './i18n-react';
 import type { Translate } from './i18n-react';
 import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Copy, ClipboardPaste, Play, Trash2 } from 'lucide-react';
 import type { Gesture, Profile } from './contracts';
@@ -106,7 +106,7 @@ export function DialEditorTabs({ tab, onTab, profile, session, state, disabled, 
 }
 
 // The one-line result of the inspector's Test button, for a gesture, a fader position or a key click.
-export function TestResult({ desktop, preview, keypadPreview, isKeypad, t = translateIn('en') }: { t?: Translate; desktop: boolean; preview: SessionState['preview']; keypadPreview: KeypadPreview; isKeypad: boolean }) {
+export function TestResult({ desktop, preview, keypadPreview, isKeypad, t = english }: { t?: Translate; desktop: boolean; preview: SessionState['preview']; keypadPreview: KeypadPreview; isKeypad: boolean }) {
   if (isKeypad) {
     if (keypadPreview.status === 'idle') return <><CircleHelp size={15} /><span>{t('inspector.keyIdle')}</span></>;
     if (keypadPreview.status === 'running') return <><LoaderCircle size={15} className="spinning" /><span>{t('inspector.resolvingKey')}</span></>;

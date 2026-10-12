@@ -9,7 +9,7 @@ import { ProfileTransfer, useImportDrop } from './ProfileTransfer';
 import { FocusRulesPanel } from './FocusRulesPanel';
 import { AutoSwitchRow } from './AutoSwitchRow';
 import type { FocusRulesStore } from './focus-rules';
-import { translateIn, useT } from './i18n-react';
+import { english, useT } from './i18n-react';
 import type { Translate } from './i18n-react';
 
 // The profile manager: a sheet opened by the header's Manage profiles button (next to the
@@ -85,7 +85,7 @@ export function ProfileManagerSheet({ session, state, desktop, disabled, confirm
 // opened. Hook-free and controlled by the session state, so tests can call
 // it as a function; the details element holds its own open state, and every
 // open fetches the list again, so versions kept while it was closed appear.
-export function VersionHistory({ session, state, disabled, now, t = translateIn('en') }: { session: ProfileSession; state: SessionState; disabled: boolean; now: number; t?: Translate }) {
+export function VersionHistory({ session, state, disabled, now, t = english }: { session: ProfileSession; state: SessionState; disabled: boolean; now: number; t?: Translate }) {
   const { profileId } = state.draft;
   const listed = profileId !== null && state.versionsId === profileId ? state.versions : null;
   // What the versions are compared with: the saved profile, not the unsaved draft on top of it.
@@ -108,7 +108,7 @@ export function VersionHistory({ session, state, disabled, now, t = translateIn(
   </details>;
 }
 
-export function SessionView({ session, t = translateIn('en') }: { session: ReplaySession; t?: Translate }) {
+export function SessionView({ session, t = english }: { session: ReplaySession; t?: Translate }) {
   if (session.status === 'idle') return <p className="empty-state">{t('session.idle')}</p>;
   if (session.status === 'running') return <div className="session-status" role="status"><LoaderCircle size={21} className="spinning" /><span>{t('session.running', { name: session.name })}</span></div>;
   if (session.status === 'failed') return <div className="session-status failed" role="alert"><CircleHelp size={21} /><div><strong>{t('session.failed')}</strong><p>{session.error}</p></div></div>;

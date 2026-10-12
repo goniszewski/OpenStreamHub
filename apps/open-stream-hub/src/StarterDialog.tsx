@@ -4,7 +4,7 @@ import { packModules } from './preset-packs';
 import type { PresetPack, RejectedPack } from './preset-packs';
 import { profileModules, starters, startersForModule } from './starter-model';
 import { modules } from './ui-model';
-import { translateIn } from './i18n-react';
+import { english } from './i18n-react';
 import type { Translate } from './i18n-react';
 
 export type StarterEntry = 'first-run' | 'manager' | 'module';
@@ -17,7 +17,7 @@ const closeKey = { 'first-run': 'starter.empty', manager: 'starter.cancel', modu
 // the profile manager, and a module that was just connected (then only
 // starters that use that module are offered). Hook-free and controlled, so
 // tests render it as a function and invoke the handlers.
-export function StarterDialog({ open, entry, module, onPick, onClose, onGuide, packs = [], rejected = [], packReport = null, onPickPack = () => {}, onLoadPack, t = translateIn('en') }: {
+export function StarterDialog({ open, entry, module, onPick, onClose, onGuide, packs = [], rejected = [], packReport = null, onPickPack = () => {}, onLoadPack, t = english }: {
   open: boolean; entry: StarterEntry; module: ServiceModule | null;
   onPick(profile: Profile): void; onClose(): void; onGuide(): void;
   // App preset packs: the valid bundled ones, the bundled files that were refused, the report for a pack file the user

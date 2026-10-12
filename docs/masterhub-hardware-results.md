@@ -210,6 +210,10 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 - **Inspector readout (12 October 2026).** With a fader selected in the inspector, the user moved it on the real module: the "Fader now" value and its range followed the movement, as expected.
 - **Not checked:** a microphone with a readable software gain, and the range readout in the inspector.
 
+## Base orientation byte (12 October 2026)
+
+The base firmware (see [firmware images](research/masterhub-firmware-images.md)) answers feature report 0x35 with one orientation byte. A read-only `masterhub-diag features --report-id 0x35` on the base (PID 502, serial `MHBS01AA…`, with the app running) returned `35 00 01 00 …`: state 1, with the base lying down in landscape with its USB-C ports at the top and left. **Pending:** read it again with the base stood up (and flat again) to see which value means which, and confirm the input report `01 2b 01 00 <state>` arrives when the base is turned.
+
 ## Timer countdown on the key (12 October 2026, pending)
 
 A running `timer` key shows `M:SS` in orange in its bottom band and redraws each second; the key's picture returns when the timer ends or is pressed again. Built and tested against a fake display only. To check on the module: start a 1-minute timer on a key with an icon and a bottom label; the seconds should tick evenly without other keys flickering, and the picture should come back at the end and when pressed a second time. Needs the sidecar rebuilt (`npm run sidecar`).

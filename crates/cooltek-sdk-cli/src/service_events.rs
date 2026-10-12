@@ -387,20 +387,23 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             emit(output, record)?;
             continue;
         }
-        if let Err(error) = dispatcher.dispatch(action) {
-            summary.failed_action_count += planned.coalesced;
-            let mut failed = json!({"type":"action_failed", "schema_version":1, "event":planned.event, "action":loggable(action), "error":error});
-            if let Some(function) = &planned.dial_function {
-                failed["dial_function"] = json!(function);
+        let executed = match dispatcher.dispatch_with_execution(action, execute) {
+            Ok(executed) => executed,
+            Err(error) => {
+                summary.failed_action_count += planned.coalesced;
+                let mut failed = json!({"type":"action_failed", "schema_version":1, "event":planned.event, "action":loggable(action), "error":error});
+                if let Some(function) = &planned.dial_function {
+                    failed["dial_function"] = json!(function);
+                }
+                emit(output, failed)?;
+                if stop_on_action_error {
+                    return Err(format!("action failed: {error}"));
+                }
+                continue;
             }
-            emit(output, failed)?;
-            if stop_on_action_error {
-                return Err(format!("action failed: {error}"));
-            }
-            continue;
-        }
+        };
         summary.action_count += planned.coalesced;
-        if execute {
+        if executed {
             let mut executed = json!({"type":"action_executed", "schema_version":1, "event":planned.event, "action":loggable(action)});
             if let Some(function) = &planned.dial_function {
                 executed["dial_function"] = json!(function);
@@ -1309,6 +1312,46 @@ mod tests {
             },
         ] {
             assert_eq!(loggable(&plain), json!(plain));
+        }
+    }
+    #[test]
+    fn action_records_follow_dispatch_outcome_in_both_mode_switch_directions() {
+        struct Outcome(bool);
+        impl ActionDispatcher for Outcome {
+            fn dispatch(&mut self, _: &Action) -> Result<(), String> {
+                panic!("use the dispatch outcome");
+            }
+            fn dispatch_with_execution(
+                &mut self,
+                action: &Action,
+                _: bool,
+            ) -> Result<bool, String> {
+                action.validate_executable()?;
+                Ok(self.0)
+            }
+        }
+        for (startup, current) in [(true, false), (false, true)] {
+            let mut output = Vec::new();
+            process_work(
+                press(0, 0, Action::ToggleMute),
+                &mut Outcome(current),
+                &mut output,
+                &AtomicBool::new(false),
+                startup,
+                false,
+                false,
+                &mut TimerTable::default(),
+                0,
+                &mut LiveSummary::default(),
+            )
+            .unwrap();
+            let logged = records(&output);
+            assert_eq!(
+                logged
+                    .iter()
+                    .any(|record| record["type"] == "action_executed"),
+                current
+            );
         }
     }
 }

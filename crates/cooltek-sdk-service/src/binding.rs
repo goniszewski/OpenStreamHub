@@ -137,6 +137,13 @@ pub trait ActionDispatcher {
     /// Executes one action or reports failure without an implicit retry.
     fn dispatch(&mut self, action: &Action) -> Result<(), String>;
 
+    /// Dispatches and returns whether the action executed, for activity records.
+    /// Fixed-mode dispatchers use the caller's mode; switchable dispatchers
+    /// override this to report the mode used for this particular action.
+    fn dispatch_with_execution(&mut self, action: &Action, execute: bool) -> Result<bool, String> {
+        self.dispatch(action).map(|()| execute)
+    }
+
     /// Why this dispatcher can never run `action` in this run (for example an
     /// `obs_scene` action without an OBS endpoint), or `None`. Callers check it
     /// before dispatching and log an unavailable action instead of a failure;

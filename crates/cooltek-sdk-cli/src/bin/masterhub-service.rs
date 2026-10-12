@@ -434,19 +434,22 @@ fn live_options(
     let stdin_closed = if exit_on_stdin_eof {
         // Control lines reach the handler once the device is open; one that arrives sooner is dropped (the
         // supervisor sends none before `service_start`).
-        cooltek_sdk_cli::interrupt::watch_stdin_lines(
-            stdin,
-            Arc::clone(interrupted),
-            closed,
-            move |line| {
-                if let Some(slot) = &control
-                    && let Ok(mut handler) = slot.lock()
-                    && let Some(handler) = handler.as_mut()
-                {
-                    handler(line);
-                }
-            },
-        )?;
+        if let Some(control) = control {
+            cooltek_sdk_cli::interrupt::watch_stdin_lines(
+                stdin,
+                Arc::clone(interrupted),
+                closed,
+                move |line| {
+                    if let Ok(mut handler) = control.lock()
+                        && let Some(handler) = handler.as_mut()
+                    {
+                        handler(line);
+                    }
+                },
+            )?;
+        } else {
+            cooltek_sdk_cli::interrupt::watch_stdin(stdin, Arc::clone(interrupted), closed)?;
+        }
         Some(closed)
     } else {
         None
@@ -608,6 +611,24 @@ impl Dispatcher {
 }
 
 impl ActionDispatcher for Dispatcher {
+    fn dispatch_with_execution(
+        &mut self,
+        action: &cooltek_sdk_service::Action,
+        execute: bool,
+    ) -> Result<bool, String> {
+        if let Self::Switchable { execute, macos, .. } = self {
+            let executing = execute.load(Ordering::SeqCst);
+            if executing {
+                macos.dispatch(action)?;
+            } else {
+                action.validate_executable()?;
+            }
+            Ok(executing)
+        } else {
+            self.dispatch(action).map(|()| execute)
+        }
+    }
+
     fn dispatch(&mut self, action: &cooltek_sdk_service::Action) -> Result<(), String> {
         match self {
             Self::Switchable { execute, macos, .. } => {
@@ -657,14 +678,32 @@ impl ActionDispatcher for Dispatcher {
 
     fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
         match self {
-            // The alerter of a timer is chosen when it starts, by the mode it starts in.
-            Self::Switchable { execute, macos, .. } => execute
-                .load(Ordering::SeqCst)
-                .then(|| macos.timer_alerter(cancel))
-                .flatten(),
+            Self::Switchable { execute, macos, .. } => macos.timer_alerter(cancel).map(|inner| {
+                Box::new(ModeAlerter {
+                    execute: Arc::clone(execute),
+                    inner,
+                }) as Box<dyn TimerAlerter>
+            }),
             // Validation only is instant, so preview alerts stay inline.
             Self::Preview { .. } => None,
             Self::MacOs(dispatcher) => dispatcher.timer_alerter(cancel),
+        }
+    }
+}
+
+/// Always stays on the alert thread, including when created in Test mode.
+/// Each expiry uses the current mode rather than the first expiry's mode.
+struct ModeAlerter {
+    execute: Arc<AtomicBool>,
+    inner: Box<dyn TimerAlerter>,
+}
+
+impl TimerAlerter for ModeAlerter {
+    fn alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
+        if self.execute.load(Ordering::SeqCst) {
+            self.inner.alert(alert)
+        } else {
+            alert.validate().map(|()| None)
         }
     }
 }
@@ -1288,7 +1327,7 @@ mod tests {
         assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert!(
             bare.timer_alerter(Arc::new(AtomicBool::new(false)))
-                .is_none()
+                .is_some()
         );
     }
 
@@ -1329,5 +1368,96 @@ mod tests {
             let device = device_context(0x2516, 0x0202, serial).unwrap();
             assert_eq!(device.serial_number, None);
         }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod control_regressions {
+    use super::*;
+    use cooltek_sdk_cli::live_runtime::LiveSummary;
+    use cooltek_sdk_cli::service_events::{PlannedEvent, Work, process_work};
+    use cooltek_sdk_service::{Action, Gesture, InputEvent, ProfileResolution};
+    #[test]
+    fn a_switch_to_test_does_not_log_execution() {
+        let mode = Arc::new(AtomicBool::new(true));
+        let mut d = Dispatcher::new(
+            true,
+            Some(mode.clone()),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
+        mode.store(false, Ordering::SeqCst);
+        let work = Work {
+            raw: vec![1],
+            timestamp_micros: 0,
+            status: "decoded",
+            error: None,
+            events: vec![PlannedEvent {
+                event: InputEvent {
+                    timestamp_micros: 0,
+                    control: 0,
+                    gesture: Gesture::Pressed,
+                    value: None,
+                },
+                binding: None,
+                resolution: ProfileResolution::Action {
+                    action: Action::ToggleMute,
+                    page_id: None,
+                    dial_function: None,
+                },
+                dial_function: None,
+                coalesced: 1,
+            }],
+            report_count: 1,
+            coalesced_parse_error_count: 0,
+            dropped_event_count: 0,
+            dropped_dial_function_count: 0,
+            merge_barrier: false,
+        };
+        let mut output = Vec::new();
+        process_work(
+            work,
+            &mut d,
+            &mut output,
+            &AtomicBool::new(false),
+            true,
+            false,
+            false,
+            &mut TimerTable::default(),
+            0,
+            &mut LiveSummary::default(),
+        )
+        .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(
+            !output.contains("action_executed"),
+            "Test action was reported as executed: {output}"
+        );
+    }
+    #[test]
+    fn every_timer_expiry_uses_the_current_mode() {
+        struct Recording(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+        impl TimerAlerter for Recording {
+            fn alert(&mut self, _: &TimerAlert) -> Result<Option<String>, String> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            }
+        }
+        let mode = Arc::new(AtomicBool::new(false));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut alerter = ModeAlerter {
+            execute: mode.clone(),
+            inner: Box::new(Recording(count.clone())),
+        };
+        let alert = TimerAlert {
+            seconds: 1,
+            label: None,
+            sound: cooltek_sdk_service::TimerSound::Ping,
+        };
+        for live in [false, true, false, true, false] {
+            mode.store(live, Ordering::SeqCst);
+            alerter.alert(&alert).unwrap();
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 }

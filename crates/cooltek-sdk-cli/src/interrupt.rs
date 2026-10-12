@@ -146,21 +146,44 @@ pub fn watch_stdin(
     interrupted: Arc<AtomicBool>,
     closed: &'static AtomicBool,
 ) -> Result<thread::JoinHandle<()>, String> {
-    watch_stdin_lines(stdin, interrupted, closed, |_| {})
+    watch_stdin_impl(stdin, interrupted, closed, None)
 }
 
 /// The longest control line the watchdog keeps; a longer one is dropped whole.
 pub const MAX_STDIN_LINE: usize = 64 * 1024;
 
 /// [`watch_stdin`] that also hands each complete line of stdin to `on_line`
-/// (without its newline), on the watchdog thread. Lines are bounded by
-/// [`MAX_STDIN_LINE`] and invalid UTF-8 is dropped, so nothing the supervisor
-/// sends can grow memory or stop the run; only end of file does.
+/// (without its newline), on a separate handler thread. The watchdog never
+/// waits for a handler, so a blocked HID call cannot hide parent death.
+/// Lines are bounded by [`MAX_STDIN_LINE`]; invalid UTF-8 is dropped. A full
+/// 16-line handler queue stops the run rather than blocking EOF detection.
 pub fn watch_stdin_lines(
     stdin: impl WatchedStdin,
     interrupted: Arc<AtomicBool>,
     closed: &'static AtomicBool,
     mut on_line: impl FnMut(&str) + Send + 'static,
+) -> Result<thread::JoinHandle<()>, String> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel::<String>(16);
+    let handler_stop = Arc::clone(&interrupted);
+    thread::Builder::new()
+        .name("stdin-control".into())
+        .spawn(move || {
+            while let Ok(line) = receiver.recv() {
+                if handler_stop.load(Ordering::SeqCst) {
+                    break;
+                }
+                on_line(&line);
+            }
+        })
+        .map_err(|error| format!("could not start the stdin control handler: {error}"))?;
+    watch_stdin_impl(stdin, interrupted, closed, Some(sender))
+}
+
+fn watch_stdin_impl(
+    stdin: impl WatchedStdin,
+    interrupted: Arc<AtomicBool>,
+    closed: &'static AtomicBool,
+    sender: Option<std::sync::mpsc::SyncSender<String>>,
 ) -> Result<thread::JoinHandle<()>, String> {
     thread::Builder::new()
         .name("stdin-watchdog".into())
@@ -175,8 +198,13 @@ pub fn watch_stdin_lines(
                     Ok(count) => {
                         for &byte in &chunk[..count] {
                             if byte == b'\n' {
-                                if !overflowed && let Ok(text) = std::str::from_utf8(&line) {
-                                    on_line(text);
+                                if !overflowed
+                                    && let Some(sender) = &sender
+                                    && let Ok(text) = std::str::from_utf8(&line)
+                                    && sender.try_send(text.to_owned()).is_err()
+                                {
+                                    interrupted.store(true, Ordering::SeqCst);
+                                    return;
                                 }
                                 line.clear();
                                 overflowed = false;
@@ -400,5 +428,65 @@ mod tests {
         let flag = AtomicBool::new(true);
         assert!(!signal_received(&signals, &flag));
         assert!(signal_received(&signals, &flag));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod control_regressions {
+    use super::*;
+    use std::{io::Write, os::unix::net::UnixStream, sync::mpsc, time::Duration};
+    #[test]
+    fn parent_death_is_seen_during_a_blocked_control_handler() {
+        let (reader, mut parent) = UnixStream::pair().unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let closed = Box::leak(Box::new(AtomicBool::new(false)));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = watch_stdin_lines(reader, stopped.clone(), closed, move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap(); // stands in for an outstanding HID operation
+        })
+        .unwrap();
+        parent
+            .write_all(b"{\"id\":1,\"type\":\"led_state\"}\n")
+            .unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(parent);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !stopped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let observed = stopped.load(Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        handle.join().unwrap();
+        assert!(
+            observed,
+            "parent death was not seen until the HID handler returned"
+        );
+    }
+    #[test]
+    fn a_full_handler_queue_stops_without_waiting_for_hardware() {
+        let (reader, mut parent) = UnixStream::pair().unwrap();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let closed = Box::leak(Box::new(AtomicBool::new(false)));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let handle = watch_stdin_lines(reader, stopped.clone(), closed, move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        })
+        .unwrap();
+        parent.write_all(b"first\n").unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        parent.write_all("queued\n".repeat(17).as_bytes()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !stopped.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(1));
+        }
+        let observed = stopped.load(Ordering::SeqCst);
+        release_tx.send(()).unwrap();
+        drop(parent);
+        handle.join().unwrap();
+        assert!(observed, "a full queue must not block the watchdog");
     }
 }

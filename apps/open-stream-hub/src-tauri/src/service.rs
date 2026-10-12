@@ -498,8 +498,9 @@ pub struct ControlPipe {
     next: AtomicU64,
 }
 
-/// The largest profile handed to a running service in place. The pipe holds 64 KiB, so a write this size never
-/// blocks the thread that makes it; a larger profile restarts the run, as before.
+/// The largest profile handed to a running service in place, leaving room for
+/// the envelope within the service's 64 KiB line bound. Writes have a deadline
+/// regardless of the platform's pipe capacity; larger profiles restart the run.
 pub const IN_PLACE_PROFILE_MAX: usize = 48 * 1024;
 
 /// How long a control request waits for the service's answer.
@@ -540,6 +541,7 @@ impl ControlPipe {
     /// Sends one request (a JSON object with a `type`) and waits for its answer. An `ok: false` answer is an error
     /// carrying the service's own message.
     pub fn request(&self, mut body: Value, timeout: Duration) -> Result<Value, String> {
+        let deadline = Instant::now() + timeout;
         let id = self.next.fetch_add(1, Ordering::SeqCst);
         body["id"] = id.into();
         let (sender, receiver) = mpsc::channel();
@@ -553,23 +555,39 @@ impl ControlPipe {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .remove(&id);
         };
-        let written = {
-            let mut stdin = self
-                .stdin
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            match stdin.as_mut() {
-                Some(pipe) => io::Write::write_all(pipe, format!("{body}\n").as_bytes())
-                    .and_then(|()| io::Write::flush(pipe))
-                    .map_err(|error| format!("could not reach the running module: {error}")),
+        let written = (|| {
+            let mut stdin = loop {
+                if Instant::now() >= deadline {
+                    return Err("the running module did not answer in time".to_string());
+                }
+                match self.stdin.try_lock() {
+                    Ok(stdin) => break stdin,
+                    Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        thread::sleep(Duration::from_millis(1))
+                    }
+                }
+            };
+            #[cfg(unix)]
+            let result = match stdin.as_mut() {
+                Some(pipe) => write_control_line(pipe, format!("{body}\n").as_bytes(), deadline),
                 None => Err("the run on this module has ended".to_string()),
+            };
+            #[cfg(not(unix))]
+            let result =
+                write_control_threaded(&mut stdin, format!("{body}\n").into_bytes(), deadline);
+            if result.is_err() {
+                // A partial line must never be followed by another request.
+                // EOF stops the child and the session manager can restart it.
+                *stdin = None;
             }
-        };
+            result
+        })();
         if let Err(error) = written {
             forget();
             return Err(error);
         }
-        match receiver.recv_timeout(timeout) {
+        match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(record) if record.get("ok").and_then(Value::as_bool) == Some(true) => Ok(record),
             Ok(record) => Err(record
                 .get("error")
@@ -581,6 +599,69 @@ impl ControlPipe {
                 Err("the running module did not answer in time".to_string())
             }
         }
+    }
+}
+
+#[cfg(unix)]
+fn write_control_line(
+    pipe: &mut ChildStdin,
+    mut bytes: &[u8],
+    deadline: Instant,
+) -> Result<(), String> {
+    use std::os::fd::AsRawFd;
+    let fd = pipe.as_raw_fd();
+    // SAFETY: only changes flags on the live pipe owned under the stdin lock.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(format!(
+            "could not make the control pipe non-blocking: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    while !bytes.is_empty() {
+        if Instant::now() >= deadline {
+            return Err("the running module did not answer in time".into());
+        }
+        match io::Write::write(pipe, bytes) {
+            Ok(0) => return Err("the control pipe closed during the request".into()),
+            Ok(written) => bytes = &bytes[written..],
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1))
+            }
+            Err(error) => return Err(format!("could not reach the running module: {error}")),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(not(unix), test))]
+fn write_control_threaded(
+    stdin: &mut Option<ChildStdin>,
+    bytes: Vec<u8>,
+    deadline: Instant,
+) -> Result<(), String> {
+    // Anonymous pipes have no portable non-blocking mode. Give ownership to
+    // one writer instead of letting a blocked OS write pin the caller. On a
+    // timeout the channel stays unusable; the supervisor can stop the child,
+    // and the detached writer drops the pipe when that write returns.
+    let mut pipe = stdin.take().ok_or("the run on this module has ended")?;
+    let (sender, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("control-pipe-write".into())
+        .spawn(move || {
+            let result = io::Write::write_all(&mut pipe, &bytes)
+                .map_err(|error| format!("could not reach the running module: {error}"));
+            let _ = sender.send((pipe, result));
+        })
+        .map_err(|error| format!("could not start the control writer: {error}"))?;
+    match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok((pipe, Ok(()))) => {
+            *stdin = Some(pipe);
+            Ok(())
+        }
+        Ok((_, Err(error))) => Err(error),
+        Err(_) => Err("the running module did not answer in time".into()),
     }
 }
 
@@ -2244,5 +2325,78 @@ mod tests {
             .stop("service:4a", Duration::from_millis(200))
             .unwrap();
         assert!(check_lighting_allowed(&services, &["4a".into()]).is_ok());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn control_deadline_covers_backpressure_and_closes_partial_lines() {
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 5"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let control = ControlPipe::new(child.stdin.take());
+        let body = serde_json::json!({"type":"profile","profile":{"name":"x".repeat(47 * 1024)}});
+        let start = Instant::now();
+        for _ in 0..3 {
+            assert!(
+                control
+                    .request(body.clone(), Duration::from_millis(30))
+                    .is_err()
+            );
+        }
+        let elapsed = start.elapsed();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "pipe write exceeded its deadline: {elapsed:?}"
+        );
+        assert!(
+            control.stdin.lock().unwrap().is_none(),
+            "a partial frame must close the channel"
+        );
+        assert!(control.waiters.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn control_deadline_also_covers_waiting_for_the_writer_lock() {
+        let control = ControlPipe::new(None);
+        let _held = control.stdin.lock().unwrap();
+        let start = Instant::now();
+        assert!(
+            control
+                .request(
+                    serde_json::json!({"type":"mode","execute":false}),
+                    Duration::from_millis(20)
+                )
+                .is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(control.waiters.lock().unwrap().is_empty());
+    }
+    #[cfg(unix)]
+    #[test]
+    fn portable_control_writer_does_not_pin_the_caller_on_a_full_pipe() {
+        let mut child = Command::new("sh")
+            .args(["-c", "exec sleep 5"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take();
+        let start = Instant::now();
+        let result = write_control_threaded(
+            &mut stdin,
+            vec![b'x'; 128 * 1024],
+            start + Duration::from_millis(30),
+        );
+        let elapsed = start.elapsed();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(result.is_err());
+        assert!(stdin.is_none());
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "writer exceeded its deadline: {elapsed:?}"
+        );
     }
 }

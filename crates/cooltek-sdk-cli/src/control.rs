@@ -15,6 +15,11 @@
 //!   report on, with the same checks as a start. Refused when the run draws on the module (display sync), which takes a
 //!   new profile by restarting; the dial's current function and a keypad's folder start again at the first.
 //!
+//! - `{"id":5,"type":"key_image","key":4,"jpeg":"<base64>"}` draws one 72×72 baseline JPEG on one key of an M4315
+//!   keypad, through the handle the run holds. Accepted only by a run that has the module in software mode and draws
+//!   nothing itself (no display sync), such as the one a demo starts; any other run refuses it, so a profile's own
+//!   key artwork is never overwritten. The image is checked as the SDK checks every key image before anything is written.
+//!
 //! Lighting, only for modules with per-LED lighting (the knobs and the faders):
 //!
 //! - `{"id":1,"type":"led_look","led":null,"colour":[255,0,0],"mode":1,"brightness":100}` writes one look to one
@@ -47,6 +52,8 @@ pub struct Hooks {
     pub mode: Option<RunMode>,
     /// The profile swap, when the run takes one.
     pub profile: Option<ProfileSwap>,
+    /// Whether the run accepts `key_image`: an M4315 in software mode that draws nothing of its own.
+    pub key_images: bool,
 }
 
 /// The run's execute flag, which the dispatcher reads for every action, and whether this platform can execute.
@@ -81,6 +88,28 @@ enum Request {
     Profile {
         profile: Value,
     },
+    KeyImage {
+        key: u8,
+        jpeg: String,
+    },
+}
+
+/// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
+const MAX_KEY_IMAGE: usize = 40 * 1024;
+
+fn draw_key<T: ReportTransport + ?Sized>(transport: &T, key: u8, jpeg: &str) -> Result<(), String> {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let jpeg = STANDARD
+        .decode(jpeg)
+        .map_err(|_| "the key image is not valid base64".to_string())?;
+    if jpeg.len() > MAX_KEY_IMAGE {
+        return Err("the key image is too large".into());
+    }
+    let length = cooltek_sdk_masterhub::output_report_length(transport, 0x02)
+        .map_err(|error| error.to_string())?;
+    cooltek_sdk_masterhub::keypad::display_jpeg(transport, key, &jpeg, length)
+        .map(drop)
+        .map_err(|error| error.to_string())
 }
 
 /// Answers one control line: the `control_result` record to write.
@@ -111,6 +140,13 @@ pub fn answer<T: ReportTransport + ?Sized>(
             }
             json!({"execute": execute})
         }),
+        (Request::KeyImage { key, jpeg }, _) => {
+            if hooks.key_images {
+                draw_key(transport, key, &jpeg).map(|()| json!({}))
+            } else {
+                Err("this run does not take key images".to_string())
+            }
+        }
         (_, None) => Err("this module has no per-LED lighting".to_string()),
         (
             Request::LedLook {
@@ -327,6 +363,7 @@ mod tests {
                 can_execute,
             }),
             profile: None,
+            ..Hooks::default()
         }
     }
 
@@ -386,6 +423,7 @@ mod tests {
         let recorder = Arc::clone(&seen);
         let hooks = Hooks {
             mode: None,
+            key_images: false,
             profile: Some(Box::new(move |profile: &Value| {
                 recorder.lock().unwrap().push(profile.to_string());
                 if profile["name"] == "bad" {
@@ -457,5 +495,71 @@ mod tests {
         first.write_all(b"1}\n").unwrap();
         let text = String::from_utf8(sink.lock().unwrap().clone()).unwrap();
         assert_eq!(text, "{\"b\":2}\n{\"a\":1}\n");
+    }
+
+    fn key_jpeg(side: u32) -> String {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 80)
+            .encode(
+                &vec![200; (side * side * 3) as usize],
+                side,
+                side,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        STANDARD.encode(bytes)
+    }
+
+    #[test]
+    fn a_key_image_is_drawn_only_by_a_run_that_takes_them() {
+        let device = fake();
+        let line = format!(
+            r#"{{"id":8,"type":"key_image","key":4,"jpeg":"{}"}}"#,
+            key_jpeg(72)
+        );
+        let refused = answer(&device, None, &Hooks::default(), &line);
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["id"], 8);
+        assert!(device.writes.borrow().is_empty());
+        let hooks = Hooks {
+            key_images: true,
+            ..Hooks::default()
+        };
+        let drawn = answer(&device, None, &hooks, &line);
+        assert_eq!(drawn["ok"], true, "{drawn}");
+        assert!(!device.writes.borrow().is_empty());
+        // The key index sits in the packet header after the report id and command.
+        assert!(
+            device
+                .writes
+                .borrow()
+                .iter()
+                .all(|report| report[0] == 0x02 && report[6] == 4)
+        );
+    }
+
+    #[test]
+    fn a_bad_key_image_is_refused_before_anything_is_written() {
+        let device = fake();
+        let hooks = Hooks {
+            key_images: true,
+            ..Hooks::default()
+        };
+        for line in [
+            r#"{"id":1,"type":"key_image","key":0,"jpeg":"not base64!"}"#.to_string(),
+            r#"{"id":2,"type":"key_image","key":0,"jpeg":"AAAA"}"#.to_string(),
+            format!(
+                r#"{{"id":3,"type":"key_image","key":0,"jpeg":"{}"}}"#,
+                key_jpeg(64)
+            ),
+            format!(
+                r#"{{"id":4,"type":"key_image","key":15,"jpeg":"{}"}}"#,
+                key_jpeg(72)
+            ),
+        ] {
+            assert_eq!(answer(&device, None, &hooks, &line)["ok"], false, "{line}");
+        }
+        assert!(device.writes.borrow().is_empty());
     }
 }

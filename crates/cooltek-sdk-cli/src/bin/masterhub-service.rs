@@ -311,6 +311,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 };
                 let module = device.module;
                 let hooks = cooltek_sdk_cli::control::Hooks {
+                    key_images: software_mode
+                        && !display_sync
+                        && device.module == ServiceModule::M4315,
                     mode: mode.map(|execute| cooltek_sdk_cli::control::RunMode {
                         execute,
                         can_execute: cfg!(target_os = "macos"),

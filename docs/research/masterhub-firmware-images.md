@@ -47,6 +47,60 @@ Read from the firmware only; none of this is confirmed on hardware yet.
 
 The routine at 0x41d4 handles a 64-byte host buffer and switches on byte 1. A jump table at 0x41fc covers 0x2a to 0x30; 0x31, 0x32, 0x33, 0x49 and 0x4a are compared separately. Command 0x2a carries a 16-bit offset, a 16-bit length, a flag byte, an end flag and a 0x0e-byte header, and copies the data into a RAM staging area then computes a checksum and flash-writes it: it is the firmware **update** transfer, so the handler as a whole is the updater and not the lighting path. The other commands in the table (0x2b to 0x33, 0x49, 0x4a) are not decoded yet, so calling them update steps is an inference from 0x2a only. This part has **not** been mapped to the lighting commands the SDK uses (0x2c to 0x2e in report 2); that remains open, and nothing here is to be sent to a device.
 
+## Output-report commands (third pass; read from firmware, base 2.0.4.0 and knobs 1.0.5.0)
+
+The handler at 0x41d4 (base; the knobs image has the same switch at 0x3ec0) reads byte 1 of the 64-byte report. Arguments follow byte 1, with two address bytes first (`[2]`, `[3]`): the command acts on the device itself only when both are 0; otherwise the base does not apply it here (the SDK sends other values to address a module). The commands the SDK already sends match this table, which confirms their layout:
+
+| Command | Firmware behaviour | SDK |
+| --- | --- | --- |
+| 0x2a | Firmware-image transfer: 16-bit offset, 16-bit length, flags, data from byte 14, checksum and flash write (the update path) | not used, never to be |
+| 0x2b | Sets a USB string (length in `[2]`, ASCII from `[3]`, checked by a validator, stored with a length and saved to flash); the serial-number write | not used |
+| 0x2c | Mode: value in `[4]`, saved to flash when `[5]` is non-zero | `MODE_COMMAND` |
+| 0x2d | Colour: three bytes `[4..6]`, saved when `[7]` is non-zero | `COLOR_COMMAND` |
+| 0x2e | Brightness: value in `[4]`, scaled through a lookup | `BRIGHTNESS_COMMAND` |
+| 0x2f | Sets the sensor's calibration-mode flag (base: starts an orientation calibration, which writes offsets to flash) | not used |
+| 0x30 | Takes a value 0 to 100, uses 100 minus it, and sets two LED output levels; not decoded further | not used |
+| 0x31 | Reboot-style sequence (flash and system registers, then a restart); not decoded | not used |
+| 0x32, 0x33 | Persist or clear a flag and restart; not decoded | not used |
+| 0x49, 0x4a | Clear an update-state word and reset (the loader hand-over); not decoded | not used |
+
+Anything else is ignored. These are read from code, not exercised; 0x2a, 0x2b, 0x2f and 0x31 to 0x4a write flash or restart the device and must not be sent to a real unit by this repository.
+
+## Feature reports (third pass)
+
+A jump table at 0x1e97 maps IDs 0x2d to 0x37 (0x37 and anything else fall through to the `no match` log). Byte 1 of a reply is a length or tag, the rest the payload:
+
+| ID | Reply (read from code) |
+| --- | --- |
+| 0x2d | tag 0x0f, 4 bytes from device block +0x2c, 11 bytes from +8 (a name) |
+| 0x2e | the same layout from +0x34 and a fixed 11-byte string |
+| 0x2f | the same layout from +0x5c and +0x40 |
+| 0x30 | four version-like bytes (one from each of four words at +0x30, +0x34, +0x38, +0x3c of the second block) and 11 bytes from +0x90 (the string set by command 0x2b, i.e. the serial) |
+| 0x31 | the four version bytes only |
+| 0x32 | a computed LED status byte per output |
+| 0x34 | the saved mode value (the byte the 0x2c command stored) |
+| 0x35 | the base's orientation byte (base only) |
+| 0x36 | tag 0x10: the stored image's checksum and length (header fields at +0x20 and +0x24) of two images, 16 bytes |
+
+All are read-only; there is no feature SET handler in these images except what the output commands cover.
+
+## Timings and limits (third pass)
+
+- **USB.** Both images declare one interface with an interrupt IN endpoint 0x81 and an interrupt OUT endpoint 0x02, 64 bytes each, **bInterval 3**: the host polls every 3 ms at full speed, so at most about 333 reports per second each way (about 21 kB/s of 63-byte payloads). The configuration is bus powered, 100 mA (descriptor value 0x32).
+- **Orientation sensor.** Samples are averaged over 16 readings; the thresholds are about 80 and 50 counts (see above); the retry count when reading the sensor is 10.
+- **Debounce, long-press and LED effect timing** were not isolated; they sit in tick-counter code that needs the dial-side or timer setup traced. Left open.
+
+## Dial display path (third pass)
+
+- The dial file is a 127,256-byte image followed by an **animation of 25 baseline JPEG frames, 240 × 240 pixels, 5.4 to 12 KB each** (about 228 KB in total, from file offset 0x1f14d). The default animation is therefore a stack of ordinary JPEGs, which supports the SDK's JPEG-per-frame approach and the 240 × 240 screen size.
+- The runtime has three tasks (`timer_task`, `process_event_task`, `update_screen_task`), a frame counter and a content-over-buffer guard. A frame that does not fit the buffer logs `ERR: content over buffer size!!` and is dropped.
+- At a 3 ms poll interval a 12 KB frame is about 190 reports of 63 bytes, so roughly 0.6 s of USB time at best; this is the lower bound for the speed-test results.
+
+## Other modules and the updater (third pass)
+
+- **Updater.** The container (name, checksum, length, image, plus the dial's block table) and the 0x2a transfer above match the official app's three downloads; the full command sequence is not reconstructed and this repository will not implement it.
+- **Other modules.** No firmware for the key module, faders or rollers has been seen in the update service (the official app maps only the base, knobs and dial), so their descriptors are known from the hardware only.
+
 ## What else the images show
 
 - **Header fields.** After the 28-byte name: a little-endian length (24,232 for the base, 23,656 for the knobs; the dial's field reads 127,256 although its file is 355,802 bytes, so the dial file holds more than one block) and a four-byte word that is probably a checksum; the algorithm is not worked out.

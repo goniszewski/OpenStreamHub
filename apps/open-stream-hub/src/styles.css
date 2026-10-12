@@ -783,3 +783,6 @@ html[data-mod-held] [data-shortcut]::before { display:block; }
 .sidebar.collapsed [data-shortcut]::before { top:3px; right:3px; transform:none; padding:0 4px; font-size:9px; line-height:14px; }
 html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .inspector-clipboard { display:flex; gap:8px; margin:8px 0; }
+.settings-page .learn-more { margin:8px 0 12px; }
+.settings-page .learn-more summary { cursor:pointer; color:var(--muted); font-size:12px; font-weight:500; user-select:none; }
+.settings-page .notes-list { margin:8px 0 0; padding-left:18px; display:grid; gap:5px; }

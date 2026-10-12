@@ -13,13 +13,29 @@ const idleRunner = () => idleServiceState;
 
 // What each Module control value does, shown under the choice.
 export const moduleControlNotes: Record<ModuleControl, string> = {
-  app: 'OpenStreamHub drives the 15-key module, the encoder dial and the knobs whenever it is open: when the app opens and whenever one of them is connected, it starts a run on it with the default profile below (otherwise the profile last run on that module, or a blank one). The 15-key module and the dial switch to software mode and go back to their built-in mode when the run stops normally or you quit; the knobs only have their input read, and nothing is written to them. What a press does on those runs — Live or Test — is the run mode shown by the badge in the header, not a setting here. Stopping a run leaves the module alone until it is connected again or the app is opened again. Switching this setting to App starts the modules that are connected; switching away from App stops the runs that started by themselves. On the 15-key module, Stop, Quit, a force-quit during a run, sleep and wake, and unplugging and replugging (the run reconnects) have been checked on hardware; on the dial, a force-quit, a normal Stop and unplugging and replugging have. A normal Quit and sleep and wake on the dial have not been checked. On the 15-key module it draws placeholder key images and folder pages; a flat (older) 15-key profile is drawn as one page, which has not been checked on hardware. The dial screen shows what the running profile picks in its dial editor: by default the active function name, or the analog clock for a profile with nothing on the dial (redrawn at most about once a second). Other modules are not affected.',
-  built_in_animation: 'The 15-key module and the dial keep their built-in animation, and nothing starts on them by itself. On this setting their keys and dial send no input unless you tick "Request device software mode" in the Run panel, nothing is drawn on their displays, and profiles with 15-key pages (folders) cannot run live.',
+  app: 'OpenStreamHub draws on the 15-key module and the dial, and starts a run on each module that is connected.',
+  built_in_animation: 'The 15-key module and the dial keep their built-in animation, and nothing starts on them by itself. Their keys and dial send no input unless you tick "Request device software mode" in the Run panel, nothing is drawn on their displays, and profiles with 15-key pages (folders) cannot run live.',
 };
-// The honest limits of what was tested on hardware (docs/masterhub-hardware-results.md).
-export const moduleControlCaveat = 'Tested on one 15-key module, one encoder dial and one knob module. Through this app, dry-run sessions on the 15-key module have been checked with Stop, Quit, force-quitting the app, sleep and wake, and unplugging and replugging (the run reconnects); dry-run dial sessions with force-quitting the app, a normal Stop, and unplugging and replugging. Not yet tested on real hardware: a run that starts by itself, one that runs actions by itself, a knob run that only reads input, the blank and flat (one-page) profiles on the 15-key module, a normal Quit on the dial, and sleep and wake on the dial. Key images are placeholders; only the first three keys have been confirmed to line up between what is drawn and what is pressed, and display latency has not been measured.';
+// The details behind the App choice, folded away under it.
+export const moduleControlDetails = [
+  'A run starts with the default profile below, otherwise the profile last run on that module, or a blank one.',
+  'The 15-key module and the dial use software mode and return to their built-in mode when a run stops normally or you quit. The knobs only have their input read.',
+  'What a press does, Live or Test, is the run mode in the header, not this setting.',
+  'Stopping a run leaves the module alone until it is connected again or the app is opened again.',
+  'Switching to App starts the connected modules; switching away stops the runs that started by themselves.',
+  'The dial shows the active function name, or the analog clock for a profile with nothing on the dial.',
+  'The 15-key module shows placeholder key images and folder pages; a flat (older) profile is drawn as one page.',
+];
+// The honest limits of what was tested on hardware (docs/masterhub-hardware-results.md), folded away.
+export const moduleControlCaveat = [
+  'Tested on one 15-key module, one encoder dial and one knob module.',
+  '15-key module, dry run through this app: Stop, Quit, force-quit, sleep and wake, unplugging and replugging.',
+  'Dial, dry run: force-quit, a normal Stop, unplugging and replugging.',
+  'Not yet tested: a run that starts by itself or runs actions by itself, a knob run, blank and flat (one-page) profiles on the 15-key module, a normal Quit on the dial, sleep and wake on the dial.',
+  'Key images are placeholders; only the first three keys have been confirmed to line up between what is drawn and what is pressed, and display latency has not been measured.',
+];
 
-export const defaultProfileNote = 'The profile every module that starts by itself uses (15-key module, encoder dial and knobs; a profile holds the bindings of each module). With No default, each module uses the profile last run on it, or a blank one. A default that is deleted or cannot be read is skipped the same way. Applies the next time a module starts by itself.';
+export const defaultProfileNote = 'Used by every module that starts by itself. With No default, each uses the profile last run on it, or a blank one. Applies the next time a module starts.';
 
 // The note shown while profiles run: module control is read when a profile
 // starts, never mid-run (the run mode, by contrast, reaches running modules
@@ -34,10 +50,10 @@ export function appliesNote(activeRuns: number): string {
 }
 
 // What the press feedback setting does, shown under the checkbox.
-export const pressFeedbackNote = 'The 15-key module draws a key dimmed while it is held down, so you can see the press was received: one extra key write when you press and one when you let go, never delaying the action itself. It switches itself off for the rest of a run if a key write turns out slow. Not yet checked on hardware. Applies the next time a profile starts.';
+export const pressFeedbackNote = 'Draws a key dimmed while it is held, so you can see the press was received. It never delays the action, and switches itself off for the rest of a run if a key write is slow. Applies the next time a profile starts.';
 
 // What "Switch to Test mode while editing" does, shown under the checkbox.
-export const testWhileEditingNote = 'While you are editing a binding — an open action picker, the bindings drawer, or a change you have not saved yet — presses are held in Test mode on every module, and the badge in the header reads “Test (editing)”. When you save, undo or close the editor, the mode goes back to what you chose. A switch you make yourself while editing stands.';
+export const testWhileEditingNote = 'While you edit a binding or have unsaved changes, presses run in Test mode and the header badge reads “Test (editing)”. It returns to your chosen mode when you save, undo or close the editor.';
 
 // Settings panel for Module control (App by default), the default profile and
 // the run mode's editing hold.
@@ -59,6 +75,7 @@ export function DisplaySettingsPanel({ store, runner, profiles = [], testWhileEd
       {moduleControlOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
     </SelectField>
     <p id="display-module-control-note" className="fine-print">{moduleControlNotes[moduleControl]}</p>
+    {moduleControl === 'app' && <details className="learn-more"><summary>More about App control</summary><ul className="fine-print notes-list">{moduleControlDetails.map(line => <li key={line}>{line}</li>)}</ul></details>}
     <label className="service-option" htmlFor="display-press-feedback">
       <input id="display-press-feedback" type="checkbox" checked={state.settings.press_feedback} disabled={off || moduleControl !== 'app'}
         aria-describedby="display-press-feedback-note" onChange={event => { void store?.setPressFeedback(event.target.checked); }} />
@@ -80,7 +97,7 @@ export function DisplaySettingsPanel({ store, runner, profiles = [], testWhileEd
     </SelectField>
     <p id="display-default-profile-note" className="fine-print">{defaultProfileNote}</p>
     {chosen.error && <div className="service-failure" role="alert"><span>{chosen.error}</span></div>}
-    <p className="fine-print">{moduleControlCaveat}</p>
+    <details className="learn-more"><summary>What has been tested on hardware</summary><ul className="fine-print notes-list">{moduleControlCaveat.map(line => <li key={line}>{line}</li>)}</ul></details>
     <p id="display-settings-applies" className="fine-print" role="status">{appliesNote(activeRuns)}</p>
     {!state.desktop && <p className="fine-print">This setting needs the desktop app.</p>}
     {state.error && <div className="service-failure" role="alert"><span>{state.error}</span><button type="button" className="icon-button" aria-label="Dismiss display settings error" onClick={() => store?.dismissError()}><X size={15} /></button></div>}

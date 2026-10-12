@@ -6,7 +6,7 @@ import { emptyKeypadPage } from './keypad-model';
 import { appControls, defaultDisplaySettings, displayFlags, DisplaySettingsStore, isDisplaySettings, moduleControlOptions } from './display-settings';
 import { dialDisplayArgs, dialDisplayOptions } from './dial-display-model';
 import type { DisplaySettingsState } from './display-settings';
-import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlNotes, pressFeedbackNote, testWhileEditingNote } from './DisplaySettingsPanel';
+import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlDetails, moduleControlNotes, pressFeedbackNote, testWhileEditingNote } from './DisplaySettingsPanel';
 import { emptyCounters } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
 
@@ -267,12 +267,13 @@ describe('DisplaySettingsPanel markup', () => {
     expect(markup).toContain(moduleControlNotes.app.replace(/"/g, '&quot;'));
     expect(markup).not.toContain('Experimental');
     expect(markup).not.toContain('never been tested');
-    expect(moduleControlCaveat).toContain('first three keys');
-    expect(moduleControlCaveat).toContain('latency has not been measured');
-    expect(markup).toContain(moduleControlCaveat);
+    expect(moduleControlCaveat.join(' ')).toContain('first three keys');
+    expect(moduleControlCaveat.join(' ')).toContain('latency has not been measured');
+    for (const line of moduleControlCaveat) expect(markup).toContain(line);
+    for (const line of moduleControlDetails) expect(markup).toContain(line);
     // The dial screen choice moved into the profile's dial editor.
     expect(markup).not.toContain('display-dial-content');
-    expect(moduleControlNotes.app).toContain('dial editor');
+    expect(moduleControlDetails.join(' ')).toContain('analog clock');
     expect(markup).toContain('Changes apply the next time a profile starts.');
     // The mode is the header badge's business; the panel has no toggle for it.
     expect(markup).not.toContain('Run actions automatically');

@@ -212,7 +212,7 @@ describe('automatic actions', () => {
     expect(markup).toContain('<option value="">No default</option>');
     expect(markup).toContain('<option value="p-1" selected="">Everyday</option>');
     expect(markup).toContain(defaultProfileNote);
-    expect(markup).toContain('the run mode shown by the badge in the header');
+    expect(markup).toContain('is the run mode in the header');
     expect(await store.setDefaultProfile(null)).toBe(true);
     expect(store.getState().defaultProfile.profileId).toBeNull();
     // A default that is no longer saved is shown as skipped.

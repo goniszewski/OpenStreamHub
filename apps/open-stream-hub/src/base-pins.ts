@@ -16,9 +16,6 @@ const studs: ReadonlyArray<readonly [number, number]> = [
   [73, 70], [345, 70], [208, 205], [480, 205], [73, 338], [345, 338], [208, 473], [480, 473], [73, 608], [345, 608], [208, 748], [480, 748],
 ];
 const bus = { x0: 108, y0: 528, x1: 138, y1: 600 };
-// The hexagon the middle of the base is marked with: a faint outline around a raised black plate.
-const outline: ReadonlyArray<readonly [number, number]> = [[275, 255], [465, 335], [465, 470], [275, 558], [85, 470], [85, 335]];
-const plate: ReadonlyArray<readonly [number, number]> = [[213, 405], [245, 357], [305, 357], [337, 405], [305, 453], [245, 453]];
 
 export interface BasePins { show: boolean; turned: boolean; mirrored: boolean }
 export const defaultBasePins: BasePins = { show: true, turned: false, mirrored: false };
@@ -42,8 +39,6 @@ export interface PinLayout {
   pads: Point[];
   studs: Point[];
   bus: { x0: number; y0: number; x1: number; y1: number };
-  outline: Point[];
-  plate: Point[];
 }
 
 // Where everything lies as fractions of the layout box (0 to 1 each way) for this base turn and correction.
@@ -53,8 +48,6 @@ export function pinLayout(base: BaseOrientation, pins: BasePins): PinLayout {
   return {
     pads: pads.map(at),
     studs: studs.map(at),
-    outline: outline.map(at),
-    plate: plate.map(at),
     bus: {
       x0: Math.min(corners[0][0], corners[1][0]), x1: Math.max(corners[0][0], corners[1][0]),
       y0: Math.min(corners[0][1], corners[1][1]), y1: Math.max(corners[0][1], corners[1][1]),

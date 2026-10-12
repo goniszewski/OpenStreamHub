@@ -218,7 +218,9 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 **Animated key, via the service (12 October 2026):** a temporary copy of the example profile with a two-frame animated key (400 ms frames, looping) on key 0 of the root page, run with `--press-feedback`. Three holds of about 4 s each on that key wrote `[0]` on every press and every release (6 writes), and the run's `display_sync_count` of 123 shows the animation kept redrawing alongside them. Presses on blank keys wrote nothing (`[]`), as designed. 32 reports, all processed, 0 dropped, 0 display failures. The log cannot show whether the animation visibly kept playing while dimmed; no problem was reported.
 
-**Still pending:** the setting off in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
+**Write timing (12 October 2026):** keypad `display_sync` records now carry `elapsed_micros`. On the 15-key module with the service and `--press-feedback`, 35 press redraws took a median of 8 ms (maximum 15 ms), 15 navigation redraws a median of 26 ms (maximum 33 ms) and the first full draw 35 ms, so a press never came near the 150 ms cutoff. The user had reported a noticeable dimming delay and one blink at the start in the desktop app; the write time does not explain it, so the delay is not the key write.
+
+**Still pending:** the cause of the dimming delay seen in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
 
 The original checklist, for the remaining items:
 

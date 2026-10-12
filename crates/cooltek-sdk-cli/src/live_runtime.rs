@@ -475,11 +475,16 @@ impl DisplayThread {
                             {
                                 press_feedback = false;
                             }
+                            let elapsed_micros =
+                                u64::try_from(began.elapsed().as_micros()).unwrap_or(u64::MAX);
                             let record = match record {
                                 // A Stop interrupted an animation frame and every failure was
                                 // its refusal: nothing is logged; no further sync may start.
                                 Ok(None) => return,
-                                Ok(Some(record)) => Ok(record),
+                                Ok(Some(mut record)) => {
+                                    record["elapsed_micros"] = json!(elapsed_micros);
+                                    Ok(record)
+                                }
                                 Err(payload) => Err(payload),
                             };
                             let clean = record.as_ref().is_ok_and(|record| {

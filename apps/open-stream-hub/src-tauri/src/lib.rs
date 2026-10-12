@@ -22,6 +22,7 @@ mod recorder;
 mod replay;
 mod service;
 mod session;
+mod speed;
 mod startup;
 mod store;
 #[cfg(test)]
@@ -953,7 +954,7 @@ fn demo_start(
         display: None,
         obs: None,
     };
-    run_service(&app, &request, None).inspect_err(|_| {
+    run_service(&app, &request, None, ServiceEvents::Demo).inspect_err(|_| {
         let _ = state.sessions.release(&path_hex);
     })
 }
@@ -969,6 +970,48 @@ fn demo_end(state: State<'_, AppState>, path_hex: String) -> Result<(), String> 
     };
     state.sessions.release(&path_hex)?;
     stopped
+}
+
+// Runs one pass of the display speed test on the module a demo holds (see `speed.rs`), reporting progress on
+// `demo://speed` and returning the numbers. `demo_speed_cancel` ends it early.
+#[tauri::command(async)]
+fn demo_speed_pass(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    service_id: String,
+    pass: speed::Pass,
+    seconds: u64,
+) -> Result<speed::PassResult, String> {
+    let pipe = state
+        .services
+        .control(&service_id)
+        .ok_or("the demo is not running")?;
+    let sink = speed::ControlSink {
+        pipe,
+        frames: speed::frames()?,
+    };
+    speed::CANCEL.store(false, std::sync::atomic::Ordering::SeqCst);
+    let clock = speed::SystemClock(Instant::now());
+    let mut last = Instant::now();
+    let result = speed::run_pass(
+        &sink,
+        &clock,
+        pass,
+        Duration::from_secs(seconds.clamp(1, speed::MAX_SECONDS)),
+        &speed::CANCEL,
+        &mut |progress| {
+            if last.elapsed() >= Duration::from_millis(250) {
+                last = Instant::now();
+                let _ = app.emit("demo://speed", (pass, progress));
+            }
+        },
+    );
+    Ok(result)
+}
+
+#[tauri::command(async)]
+fn demo_speed_cancel() {
+    speed::CANCEL.store(true, std::sync::atomic::Ordering::SeqCst);
 }
 
 // Draws one picture on one key of the module a demo holds. The picture is a PNG the webview drew; it is fitted to
@@ -1081,7 +1124,31 @@ fn start_service(
     {
         return Err(reason);
     }
-    run_service(&app, &request, None)
+    run_service(&app, &request, None, ServiceEvents::Run)
+}
+
+/// Which events a service process reports on: a run of the Run panel, or a demo's own process, whose events the Run
+/// panel never sees (its process shares the module's service id, so the same events would be taken for the module's run).
+#[derive(Clone, Copy)]
+enum ServiceEvents {
+    Run,
+    Demo,
+}
+
+impl ServiceEvents {
+    fn record(self) -> &'static str {
+        match self {
+            Self::Run => service::RECORD_EVENT,
+            Self::Demo => demo::RECORD_EVENT,
+        }
+    }
+
+    fn status(self) -> &'static str {
+        match self {
+            Self::Run => service::STATUS_EVENT,
+            Self::Demo => demo::STATUS_EVENT,
+        }
+    }
 }
 
 /// Starts one service process; `sessions` also receives its exit.
@@ -1089,6 +1156,7 @@ fn run_service(
     app: &tauri::AppHandle,
     request: &service::StartRequest,
     sessions: Option<mpsc::Sender<session::Input>>,
+    events: ServiceEvents,
 ) -> Result<String, String> {
     let handle = app.clone();
     // Profile key requests are asked for only for processes the session
@@ -1117,8 +1185,8 @@ fn run_service(
             forwarder.forward(&message);
         }
         let emitted = match message {
-            service::ServiceMessage::Record(payload) => handle.emit(service::RECORD_EVENT, payload),
-            service::ServiceMessage::Status(payload) => handle.emit(service::STATUS_EVENT, payload),
+            service::ServiceMessage::Record(payload) => handle.emit(events.record(), payload),
+            service::ServiceMessage::Status(payload) => handle.emit(events.status(), payload),
         };
         if let Err(error) = emitted {
             eprintln!("could not emit a service event: {error}");
@@ -1174,7 +1242,12 @@ impl session::Runner for AppRunner {
         if let Ok(id) = service::service_id(&request.path_hex) {
             self.still_running(&id);
         }
-        run_service(&self.app, request, Some(self.sessions.clone()))
+        run_service(
+            &self.app,
+            request,
+            Some(self.sessions.clone()),
+            ServiceEvents::Run,
+        )
     }
 
     fn stop(&mut self, service_id: &str) {
@@ -1834,6 +1907,8 @@ pub fn run() {
             read_led_state,
             demo_start,
             demo_end,
+            demo_speed_pass,
+            demo_speed_cancel,
             demo_key_image,
             start_service,
             stop_service,

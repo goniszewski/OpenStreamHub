@@ -37,7 +37,7 @@ use serde_json::{Value, json};
 use std::{
     io::{self, Write},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -54,6 +54,9 @@ pub struct Hooks {
     pub profile: Option<ProfileSwap>,
     /// Whether the run accepts `key_image`: an M4315 in software mode that draws nothing of its own.
     pub key_images: bool,
+    /// The key report length, read from the module's descriptor with the first key image only.
+    #[doc(hidden)]
+    pub key_report_length: OnceLock<usize>,
 }
 
 /// The run's execute flag, which the dispatcher reads for every action, and whether this platform can execute.
@@ -97,7 +100,12 @@ enum Request {
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
 const MAX_KEY_IMAGE: usize = 40 * 1024;
 
-fn draw_key<T: ReportTransport + ?Sized>(transport: &T, key: u8, jpeg: &str) -> Result<(), String> {
+fn draw_key<T: ReportTransport + ?Sized>(
+    transport: &T,
+    length: &OnceLock<usize>,
+    key: u8,
+    jpeg: &str,
+) -> Result<u128, String> {
     use base64::{Engine, engine::general_purpose::STANDARD};
     let jpeg = STANDARD
         .decode(jpeg)
@@ -105,11 +113,19 @@ fn draw_key<T: ReportTransport + ?Sized>(transport: &T, key: u8, jpeg: &str) -> 
     if jpeg.len() > MAX_KEY_IMAGE {
         return Err("the key image is too large".into());
     }
-    let length = cooltek_sdk_masterhub::output_report_length(transport, 0x02)
-        .map_err(|error| error.to_string())?;
+    let length = match length.get() {
+        Some(length) => *length,
+        None => {
+            let read = cooltek_sdk_masterhub::output_report_length(transport, 0x02)
+                .map_err(|error| error.to_string())?;
+            *length.get_or_init(|| read)
+        }
+    };
+    // Only the device write is timed: what the module needs for one image, without the request or the decode.
+    let started = std::time::Instant::now();
     cooltek_sdk_masterhub::keypad::display_jpeg(transport, key, &jpeg, length)
-        .map(drop)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok(started.elapsed().as_micros())
 }
 
 /// Answers one control line: the `control_result` record to write.
@@ -142,7 +158,8 @@ pub fn answer<T: ReportTransport + ?Sized>(
         }),
         (Request::KeyImage { key, jpeg }, _) => {
             if hooks.key_images {
-                draw_key(transport, key, &jpeg).map(|()| json!({}))
+                draw_key(transport, &hooks.key_report_length, key, &jpeg)
+                    .map(|micros| json!({"write_micros": micros}))
             } else {
                 Err("this run does not take key images".to_string())
             }
@@ -432,6 +449,7 @@ mod tests {
                     Ok(())
                 }
             })),
+            ..Hooks::default()
         };
         let good = answer(
             &fake(),
@@ -528,6 +546,7 @@ mod tests {
         };
         let drawn = answer(&device, None, &hooks, &line);
         assert_eq!(drawn["ok"], true, "{drawn}");
+        assert!(drawn["write_micros"].is_u64());
         assert!(!device.writes.borrow().is_empty());
         // The key index sits in the packet header after the report id and command.
         assert!(

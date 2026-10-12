@@ -11,15 +11,14 @@ export interface DemoEnd { reason: 'user' | 'module-stopped' | 'failed'; error?:
 export interface DemoRuntimeOptions {
   invoke: Invoke;
   listen: Listen;
-  // Keeps the Run panel from showing the demo's process as a run of its own.
-  ignore?(serviceId: string, on: boolean): void;
   // The picture of one tile as a base64 PNG, or null when it cannot be drawn.
   render(tile: unknown): string | null;
   setTimeout?: (callback: () => void, ms: number) => unknown;
   clearTimeout?: (handle: unknown) => void;
 }
 
-// One demo at a time on one module. The module's own session lets go of it (the backend holds it for the demo), the demo
+// One demo at a time on one module. Its process reports on the `demo://` events, which the Run panel does not read.
+// The module's own session lets go of it (the backend holds it for the demo), the demo
 // runs as a run with no bindings in Test mode, key presses arrive as the run's event records, and pictures are
 // drawn through its control channel. Ending hands the module back to its session.
 export class DemoRuntime {
@@ -65,7 +64,6 @@ export class DemoRuntime {
     this.onKey = onKey;
     this.onEnd = onEnd;
     this.drawn.clear();
-    this.options.ignore?.(this.serviceId, true);
     const timers = { set: this.options.setTimeout ?? ((callback, ms) => setTimeout(callback, ms)), clear: this.options.clearTimeout ?? (handle => clearTimeout(handle as ReturnType<typeof setTimeout>)) };
     let ready: () => void = () => {};
     let failed: (error: Error) => void = () => {};
@@ -75,8 +73,8 @@ export class DemoRuntime {
     const timeout = timers.set(() => failed(new Error('The module did not get ready for the demo.')), readyTimeoutMs);
     try {
       this.unlisten = await Promise.all([
-        this.options.listen('service://record', event => this.onRecord(event.payload, ready)),
-        this.options.listen('service://status', event => this.onStatus(event.payload, failed)),
+        this.options.listen('demo://record', event => this.onRecord(event.payload, ready)),
+        this.options.listen('demo://status', event => this.onStatus(event.payload, failed)),
       ]);
       await this.options.invoke<string>('demo_start', { pathHex });
       await readiness;
@@ -129,7 +127,6 @@ export class DemoRuntime {
     const pathHex = this.pathHex;
     try { if (pathHex) await this.options.invoke<void>('demo_end', { pathHex }); }
     finally {
-      if (this.serviceId) this.options.ignore?.(this.serviceId, false);
       this.phase = 'idle';
       this.pathHex = null;
       this.serviceId = null;

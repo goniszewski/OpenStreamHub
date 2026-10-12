@@ -25,6 +25,8 @@ fn main() {
             "read_led_state",
             "demo_start",
             "demo_end",
+            "demo_speed_pass",
+            "demo_speed_cancel",
             "demo_key_image",
             "list_base_modules",
             "reset_dial_lighting",

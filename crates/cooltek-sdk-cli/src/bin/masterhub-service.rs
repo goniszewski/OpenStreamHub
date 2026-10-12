@@ -336,6 +336,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                             Ok(())
                         }) as cooltek_sdk_cli::control::ProfileSwap
                     }),
+                    ..Default::default()
                 };
                 let handler =
                     cooltek_sdk_cli::control::serve(shared.clone(), led, hooks, control_out);

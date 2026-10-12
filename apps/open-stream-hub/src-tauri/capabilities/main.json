@@ -31,6 +31,8 @@
     "allow-read-led-state",
     "allow-demo-start",
     "allow-demo-end",
+    "allow-demo-speed-pass",
+    "allow-demo-speed-cancel",
     "allow-demo-key-image",
     "allow-list-base-modules",
     "allow-reset-dial-lighting",

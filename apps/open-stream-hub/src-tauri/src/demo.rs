@@ -3,6 +3,10 @@
 use crate::artwork::{Fit, PrepareRequest, Target, prepare_artwork};
 use cooltek_sdk_service::Profile;
 
+/// A demo's process reports here, not on the Run panel's `service://` events: it shares the module's service id.
+pub const RECORD_EVENT: &str = "demo://record";
+pub const STATUS_EVENT: &str = "demo://status";
+
 /// The profile a demo's run holds: no bindings, so nothing a key does reaches the Mac.
 pub fn blank_profile() -> Result<Profile, String> {
     let profile = Profile::from_json(br#"{"schema_version":1,"name":"Demo","bindings":[]}"#)

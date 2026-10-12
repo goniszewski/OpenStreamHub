@@ -19,6 +19,7 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
+image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
 tauri = { version = "2.12", features = [] }
 tauri-plugin-single-instance = "2.5"
 serde = { version = "1", features = ["derive"] }

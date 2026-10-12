@@ -103,7 +103,7 @@ export default function App() {
     return created;
   });
   const [runner] = useState(() => new ServiceRunner((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop));
-  const [demoRuntime] = useState(() => new DemoRuntime({ invoke: (command, args) => invoke(command, args), listen: (event, handler) => listen(event, handler), ignore: (id, on) => runner.ignore(id, on), render: demoTilePng }));
+  const [demoRuntime] = useState(() => new DemoRuntime({ invoke: (command, args) => invoke(command, args), listen: (event, handler) => listen(event, handler), render: demoTilePng }));
   const [notices] = useState(() => new NoticeStore());
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));

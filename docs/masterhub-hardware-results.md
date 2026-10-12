@@ -216,7 +216,9 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 **Feedback off, via the service (12 October 2026):** the same command without `--press-feedback`. The user pressed keys and folder keys and nothing dimmed. The log agrees: no `press` display records, only the initial `software_mode` redraw and 3 `navigation` redraws; 15 reports, all processed, 0 dropped, 0 display failures.
 
-**Still pending:** an animated key dimmed while it animates (the example profile has none); the setting off in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
+**Animated key, via the service (12 October 2026):** a temporary copy of the example profile with a two-frame animated key (400 ms frames, looping) on key 0 of the root page, run with `--press-feedback`. Three holds of about 4 s each on that key wrote `[0]` on every press and every release (6 writes), and the run's `display_sync_count` of 123 shows the animation kept redrawing alongside them. Presses on blank keys wrote nothing (`[]`), as designed. 32 reports, all processed, 0 dropped, 0 display failures. The log cannot show whether the animation visibly kept playing while dimmed; no problem was reported.
+
+**Still pending:** the setting off in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
 
 The original checklist, for the remaining items:
 

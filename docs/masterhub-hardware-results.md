@@ -210,7 +210,13 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 - **Inspector readout (12 October 2026).** With a fader selected in the inspector, the user moved it on the real module: the "Fader now" value and its range followed the movement, as expected.
 - **Not checked:** a microphone with a readable software gain, and the range readout in the inspector.
 
-## Key press feedback (pending)
+## Key press feedback (12 October 2026)
+
+`masterhub-service run --profile examples/profiles/keypad-folders.json --software-mode --display-sync --press-feedback --duration-secs 60` on one M4315, without `--execute` (no action ran). The user pressed keys and folder keys: the held key dimmed, the keys stayed responsive. The log agrees: 12 `press` and 4 `navigation` redraws, all complete with no error; a press wrote only the held key (for example `[0]`, `[1]`, `[2]`), and opening a folder drew the new page with that key already dimmed (`[0,1,2]`, `[0,1]`). Session: 16 reports, all processed, 0 dropped or coalesced, 0 display failures. No per-write timing is logged, so the 150 ms cutoff was not measured; feedback never switched itself off during the run. The service refuses to write its output to a plain file (pipe it through `tee`).
+
+**Still pending:** an animated key dimmed while it animates (the example profile has none); the setting off in the desktop app (nothing dims); the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
+
+The original checklist, for the remaining items:
 
 On the 15-key module with the desktop app (Module control App, "Dim a key while it is pressed" on): press and hold an action key and check it dims within a blink and returns to normal on release, while the action itself still runs without any delay compared with the setting off; hold a folder key and check the folder opens with that key dimmed until release; check an animated key keeps animating while dimmed. Turn the setting off, start the profile again, and check nothing dims. Watch the run log for `press` display records and see whether a press write ever exceeds 150 ms (feedback then switches itself off for the run). Applies at the next profile start.
 

@@ -4,7 +4,7 @@ import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
 import { RigPreview } from './RigPreview';
 import { DeviceFeed } from './device-feed';
-import { LightingStateStore } from './lighting-state';
+import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
 
 const stateFor = (bindings: unknown[] = []) => {
@@ -140,10 +140,16 @@ describe('RigPreview canvas', () => {
     expect(knobsMarkup).toContain('module-art-inline');
     expect(knobsMarkup).toContain('color="#ff0000"');
     const faders = new LightingStateStore(null);
-    faders.record(['ab12'], () => ({ kind: 'led', leds: [null, { colour: '#00ff00', effect: 5, brightness: 90 }, null, null, null] }));
+    faders.record(['ab12'], () => ({ kind: 'led', leds: [null, { colour: '#00ff00', effect: 1, brightness: 90 }, null, null, null] }));
     const fadersMarkup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={await make('m005s')} lighting={faders} />);
     expect(fadersMarkup).toContain('fill="#00ff00" opacity="1"');
     // An off LED keeps the art's resting look.
     expect(fadersMarkup).not.toContain('fill="#ff0000" opacity="1"');
+    // A colour-shifting effect is drawn from one saturated colour, whatever colour was stored (white would stay white).
+    const rainbow = new LightingStateStore(null);
+    rainbow.record(['ab12'], () => ({ kind: 'led', leds: [{ colour: '#ffffff', effect: 9, brightness: 100 }, null, null] }));
+    const rainbowMarkup = renderToStaticMarkup(<RigPreview editor={editor} state={state} feed={await make('m003k')} lighting={rainbow} />);
+    expect(rainbowMarkup).toContain(`color="${reportedCyclingColour}"`);
+    expect(rainbowMarkup).not.toContain('color="#ffffff"');
   });
 });

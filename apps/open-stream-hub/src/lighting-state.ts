@@ -28,6 +28,12 @@ export interface LightingSnapshot {
 export const reportedCyclingColour = '#ff2d55';
 export const reportedNeutralColour = '#d8d8e0';
 
+// The colour-shifting effects (5 and up) ignore the LED's colour on the hardware and move through every hue. The art
+// shows them from one saturated base colour: a stored white or grey would stay white under the hue shift.
+export function artColour(led: StoredLed): string {
+  return led.effect >= 5 ? reportedCyclingColour : led.colour;
+}
+
 export function lookFromReport(report: LedReadback, count: number): StoredLedModule {
   const leds = Array.from({ length: count }, (_, index) => {
     const effect = report.modes[index];
@@ -38,8 +44,26 @@ export function lookFromReport(report: LedReadback, count: number): StoredLedMod
   return { kind: 'led', leds };
 }
 
+// The knob module has one effect for all three knobs on the hardware; colour and brightness stay per knob. A record
+// whose knobs carry different effects (written before this was known) is drawn, and restored by the hardware's
+// last-write-wins, with the effect of the highest-numbered knob that has a look: restores write the knobs in order.
+const knobLedCount = ledCount('m003k');
+
+export function withSharedKnobEffect(record: StoredLighting): StoredLighting {
+  if (record.kind !== 'led' || record.leds.length !== knobLedCount) return record;
+  const last = [...record.leds].reverse().find(led => led !== null);
+  if (!last) return record;
+  // A colour-shifting effect runs on all three knobs, so a knob with no stored look is shown in it too.
+  const fillsGaps = last.effect >= 5 && record.leds.some(led => led === null);
+  if (!fillsGaps && record.leds.every(led => led === null || led.effect === last.effect)) return record;
+  return {
+    kind: 'led',
+    leds: record.leds.map(led => led ? { ...led, effect: last.effect } : fillsGaps ? { colour: reportedCyclingColour, effect: last.effect, brightness: last.brightness } : null),
+  };
+}
+
 function snapshotOf(records: Record<string, StoredLighting>, reported: Record<string, LedReadback>): LightingSnapshot {
-  const shown = { ...records };
+  const shown = Object.fromEntries(Object.entries(records).map(([path, record]) => [path, withSharedKnobEffect(record)]));
   for (const [path, report] of Object.entries(reported)) {
     if (!(path in shown)) shown[path] = lookFromReport(report, report.modes.length);
   }
@@ -73,7 +97,9 @@ export function withDialLook(_existing: StoredLighting | undefined, backlight: n
 }
 
 // `led` null means every LED; `ledCount` sizes a record made fresh. LEDs left
-// untouched keep their stored look, or stay unrecorded.
+// untouched keep their stored look, or stay unrecorded. On the knob module the
+// effect is shared, so a write moves every recorded knob to it (each keeps its
+// own colour and brightness); the faders and the base keep one effect per LED.
 export function withLedLook(existing: StoredLighting | undefined, led: number | null, ledCount: number, look: StoredLed): StoredLighting {
   const previous = existing && existing.kind === 'led' ? existing.leds : [];
   const leds: (StoredLed | null)[] = Array.from({ length: ledCount }, (_, index) => previous[index] ?? null);
@@ -85,6 +111,11 @@ export function withLedLook(existing: StoredLighting | undefined, led: number | 
       effect: Math.min(9, Math.max(0, Math.round(look.effect))),
       brightness: clampBacklight(look.brightness),
     };
+  }
+  if (ledCount === knobLedCount) {
+    for (const [index, stored] of leds.entries()) {
+      if (stored) leds[index] = { ...stored, effect: Math.min(9, Math.max(0, Math.round(look.effect))) };
+    }
   }
   return { kind: 'led', leds };
 }
@@ -122,7 +153,7 @@ export function litLedColours(record: StoredLighting | undefined, count: number)
     const led = record && record.kind === 'led' ? record.leds[index] : undefined;
     if (!led) return unknownLed;
     if (led.effect === 0 || led.brightness <= 0) return null;
-    return led.colour;
+    return artColour(led);
   });
 }
 
@@ -142,7 +173,7 @@ export function lightMotion(record: StoredLighting | undefined, count: number): 
 export function baseGlow(record: StoredLighting | undefined): { colour: string; brightness: number; motion: LightMotion | null } | null {
   const led = record && record.kind === 'led' ? record.leds[0] : undefined;
   if (!led || led.effect === 0 || led.brightness <= 0) return null;
-  return { colour: led.colour, brightness: led.brightness, motion: lightMotion(record, 1) };
+  return { colour: artColour(led), brightness: led.brightness, motion: lightMotion(record, 1) };
 }
 
 // The stored look the controls start from: a specific LED's own look, LED 0's
@@ -225,6 +256,8 @@ export class LightingStateStore {
 
   // Notes what a unit reports about its LEDs; the art uses it only where this app has stored nothing.
   setReported(path: string, report: LedReadback) {
+    const known = this.snapshot.reported[path];
+    if (known && known.brightness.join() === report.brightness.join() && known.modes.join() === report.modes.join()) return;
     this.snapshot = snapshotOf({ ...this.snapshot.records }, { ...this.snapshot.reported, [path]: report });
     this.listeners.forEach(listener => listener());
   }

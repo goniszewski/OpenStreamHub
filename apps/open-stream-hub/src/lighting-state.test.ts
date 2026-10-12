@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  baseGlow, lightMotion,
+  baseGlow, lightMotion, reportedCyclingColour,
   appearedTargets, controlsFromRecord, kindLighting, lightingStateStorageKey, litLedColours, LightingStateStore,
   matchedModuleColour, maxLightingRecords, readLightingRecords, recordFits, restoreLighting, withDialLook, withLedLook,
 } from './lighting-state';
@@ -21,12 +21,12 @@ describe('lighting state', () => {
   });
 
   it('records a LED look per LED and leaves the others untouched', () => {
-    const first = withLedLook(undefined, null, 3, knobLook);
-    expect(first).toEqual({ kind: 'led', leds: [knobLook, knobLook, knobLook] });
-    const second = withLedLook(first, 1, 3, { colour: '#00ff00', effect: 5, brightness: 40 });
-    expect(second).toEqual({ kind: 'led', leds: [knobLook, { colour: '#00ff00', effect: 5, brightness: 40 }, knobLook] });
+    const first = withLedLook(undefined, null, 5, knobLook);
+    expect(first).toEqual({ kind: 'led', leds: [knobLook, knobLook, knobLook, knobLook, knobLook] });
+    const second = withLedLook(first, 1, 5, { colour: '#00ff00', effect: 5, brightness: 40 });
+    expect(second).toEqual({ kind: 'led', leds: [knobLook, { colour: '#00ff00', effect: 5, brightness: 40 }, knobLook, knobLook, knobLook] });
     // An out-of-range LED writes nothing new but keeps a well-formed record.
-    expect(withLedLook(first, 7, 3, knobLook)).toEqual(first);
+    expect(withLedLook(first, 7, 5, knobLook)).toEqual(first);
     // A dial record is replaced, not merged.
     expect(withLedLook({ kind: 'dial', backlight: 10, colour: '#ffffff' }, 0, 5, knobLook).kind).toBe('led');
   });
@@ -159,14 +159,14 @@ describe('lighting state', () => {
 
   it('sends every stored LED of a module when they differ', async () => {
     const store = new LightingStateStore(null);
-    store.record(['kn'], existing => withLedLook(withLedLook(existing, 0, 3, knobLook), 1, 3, { colour: '#00ff00', effect: 5, brightness: 40 }));
+    store.record(['kn'], existing => withLedLook(withLedLook(existing, 0, 3, knobLook), 1, 3, { colour: '#00ff00', effect: 1, brightness: 40 }));
     const calls: Array<[string, unknown]> = [];
     const invoke = (async (command: string, args: unknown) => { calls.push([command, args]); return 1; }) as never;
     const restored = await restoreLighting(store, [unit('kn', 'm003k')], invoke, () => false);
     expect(restored).toBe(1);
     expect(calls).toEqual([
       ['set_led_lighting', { targets: ['kn'], led: 0, colour: [0xff, 0, 0], mode: 1, brightness: 80 }],
-      ['set_led_lighting', { targets: ['kn'], led: 1, colour: [0, 0xff, 0], mode: 5, brightness: 40 }],
+      ['set_led_lighting', { targets: ['kn'], led: 1, colour: [0, 0xff, 0], mode: 1, brightness: 40 }],
     ]);
   });
 });
@@ -264,6 +264,9 @@ describe('light motion and the base glow', () => {
     expect(baseGlow(record(led(1, 0)))).toBeNull();
     expect(baseGlow(record(led(1, 60, '#00ff00')))).toEqual({ colour: '#00ff00', brightness: 60, motion: null });
     expect(baseGlow(record(led(7)))?.motion).toBe('cycle');
+    // A colour-shifting effect ignores the stored colour on the hardware; a white one would stay white under the hue shift.
+    expect(baseGlow(record(led(9, 100, '#ffffff')))?.colour).toBe(reportedCyclingColour);
+    expect(litLedColours(record(led(9, 100, '#ffffff')), 1)).toEqual([reportedCyclingColour]);
   });
 });
 
@@ -281,5 +284,35 @@ describe('what modules report about themselves', () => {
   it('keeps every LED of a rainbow in step', () => {
     const colours = litLedColours({ kind: 'led', leds: Array.from({ length: 5 }, () => ({ colour: '#ff0000', effect: 9, brightness: 100 })) }, 5);
     expect(new Set(colours).size).toBe(1);
+  });
+});
+
+describe('the knob module shares one effect', () => {
+  const look = (colour: string, effect: number, brightness = 100) => ({ colour, effect, brightness });
+  it('moves every recorded knob to the written effect and leaves colours and brightness alone', () => {
+    const first = withLedLook(undefined, null, 3, look('#ffff00', 1, 80));
+    const next = withLedLook(first, 1, 3, look('#00ff00', 9, 40));
+    expect(next).toEqual({ kind: 'led', leds: [look('#ffff00', 9, 80), look('#00ff00', 9, 40), look('#ffff00', 9, 80)] });
+  });
+  it('does not touch unrecorded knobs, and keeps one effect per LED on faders', () => {
+    const one = withLedLook(undefined, 0, 3, look('#ff0000', 5));
+    expect(one).toEqual({ kind: 'led', leds: [look('#ff0000', 5), null, null] });
+    const faders = withLedLook(withLedLook(undefined, null, 5, look('#00ff00', 1)), 2, 5, look('#0000ff', 9));
+    expect(faders.kind === 'led' && faders.leds.map(led => led?.effect)).toEqual([1, 1, 9, 1, 1]);
+  });
+  it('draws an older record with differing effects using the last knob\'s effect, and keeps uniform records as they are', () => {
+    const store = new LightingStateStore(null);
+    store.record(['a'], () => ({ kind: 'led', leds: [look('#ffff00', 1), look('#00ff00', 1), look('#00ff00', 9)] }));
+    store.record(['b'], () => ({ kind: 'led', leds: [look('#ffff00', 2), null, null] }));
+    expect(store.getState().shown.a).toEqual({ kind: 'led', leds: [look('#ffff00', 9), look('#00ff00', 9), look('#00ff00', 9)] });
+    expect(store.getState().records.a).toEqual({ kind: 'led', leds: [look('#ffff00', 1), look('#00ff00', 1), look('#00ff00', 9)] });
+    expect(store.getState().shown.b).toBe(store.getState().records.b);
+  });
+  it('draws a knob with no stored look in the rainbow the other knobs run', () => {
+    const store = new LightingStateStore(null);
+    store.record(['a'], () => ({ kind: 'led', leds: [null, look('#00ff00', 9, 70), look('#00ff00', 9, 70)] }));
+    const colours = litLedColours(store.getState().shown.a, 3);
+    expect(new Set(colours)).toEqual(new Set([reportedCyclingColour]));
+    expect(store.getState().records.a).toEqual({ kind: 'led', leds: [null, look('#00ff00', 9, 70), look('#00ff00', 9, 70)] });
   });
 });

@@ -151,6 +151,24 @@ export default function App() {
     // Everything the restore reads arrives with the app or the inventory key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [desktop, deviceFeedState.inventoryLoaded, pickableKey, lightingState, runner]);
+  // A knob or fader module this app has stored nothing for is drawn from what the module reports, so the report is
+  // read again every few seconds (a run answers it too) and the art follows the hardware. Units with a stored look
+  // are the app's own writes and are not polled.
+  useEffect(() => {
+    if (!desktop || !deviceFeedState.inventoryLoaded) return;
+    const read = () => {
+      if (document.visibilityState === 'hidden') return;
+      for (const device of pickableModules) {
+        if ((device.module !== 'm003k' && device.module !== 'm005s') || lightingState.getState().records[device.path_hex]) continue;
+        void invokeCommand<{ brightness: number[]; modes: number[] }>('read_led_state', { target: device.path_hex })
+          .then(report => lightingState.setReported(device.path_hex, report)).catch(() => {});
+      }
+    };
+    const timer = window.setInterval(read, 4000);
+    return () => window.clearInterval(timer);
+    // The modules are read through the inventory key.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [desktop, deviceFeedState.inventoryLoaded, pickableKey, lightingState]);
   useEffect(() => { feed.setBlocker(runner.isActivePath); runner.setLiveSink(feed); feed.connect(); runner.connect(); void runner.syncSessions(); const stopNotices = notices.connect(feed, runner); const stopFocus = focusRules.connect(); return () => { stopFocus(); stopNotices(); runner.setLiveSink(null); feed.dispose(); runner.dispose(); }; }, [feed, runner, notices, focusRules]);
   // A save applies the saved profile to the running sessions that hold it,
   // through the run store that knows them.

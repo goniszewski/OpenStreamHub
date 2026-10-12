@@ -139,8 +139,12 @@ html,body { overflow:clip; }
 .image-control:hover { border-color:#b6a1ff; background:#a284ff20; }
 .image-control.selected { border-color:#b6a1ff; box-shadow:0 0 0 1px #211630,0 0 12px #a284ff70; background:#a284ff0d; }
 .image-control:focus-visible { outline:3px solid #fff; outline-offset:3px; border-color:#b6a1ff; background:#a284ff26; }
-.knob-image .image-control { border-width:2.5px; }
-.knob-image .image-control.selected { border-color:#ded2ff; background:transparent; box-shadow:0 0 0 1px #211630; }
+/* A knob's hit area lies on its LED ring, so its borders must not paint over the ring: hover, bound and selected
+   are drawn just outside it instead. */
+.knob-image .image-control, .rig-stage.knob-stage .image-control { border-width:2.5px; border-color:transparent; }
+.knob-image .image-control:hover, .rig-stage.knob-stage .image-control:hover { border-color:transparent; box-shadow:0 0 0 3px #b6a1ff; }
+.knob-image .image-control.selected, .rig-stage.knob-stage .image-control.selected { border-color:transparent; background:transparent; box-shadow:0 0 0 2px #211630, 0 0 0 4.5px #ded2ff; }
+.rig-stage.knob-stage .image-control.bound:not(.selected) { border-color:transparent; box-shadow:0 0 0 2px #a284ff80; }
 .knob-image .image-control:focus-visible { outline-width:2px; outline-offset:-4px; background:transparent; }
 /* The top-down knob art fills 8%..92% of its square, so 0.84 x 1.15 = 0.966 of the hero height fits; the photo's 1.28 would clip. */
 .hero.square .module-image.knob-image { transform:scale(1.15); }
@@ -748,9 +752,10 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .base-layout-base.fx-pulse { animation:fx-glow-pulse 3s ease-in-out infinite; }
 .base-layout-base.fx-blink { animation:fx-glow-blink 1s steps(1) infinite; }
 .base-layout-base.fx-cycle { animation:fx-hue 6s linear infinite; }
-.base-layout-module.fx-cycle .rig-stage { animation:fx-hue 6s linear infinite; }
-.base-layout-module.fx-pulse .rig-stage { animation:fx-brightness 3s ease-in-out infinite; }
-.base-layout-module.fx-blink .rig-stage { animation:fx-blink 1s steps(1) infinite; }
+/* Only the art moves with its lights: the selection border, pressed highlight and live pointer sit above it and keep their colours. */
+.base-layout-module.fx-cycle .rig-stage > .module-art-inline { animation:fx-hue 6s linear infinite; }
+.base-layout-module.fx-pulse .rig-stage > .module-art-inline { animation:fx-brightness 3s ease-in-out infinite; }
+.base-layout-module.fx-blink .rig-stage > .module-art-inline { animation:fx-blink 1s steps(1) infinite; }
 @keyframes fx-hue { to { filter:hue-rotate(360deg); } }
 @keyframes fx-brightness { 50% { filter:brightness(.7); } }
 @keyframes fx-blink { 50% { filter:brightness(.55); } }

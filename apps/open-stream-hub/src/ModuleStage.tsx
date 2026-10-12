@@ -48,7 +48,7 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
   const isKnob = module === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : art.controls;
   const selected = editor.selection.control;
-  return <div className="rig-stage" style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${info.name} ${where}`}>
+  return <div className={`rig-stage${isKnob ? ' knob-stage' : ''}`} style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${info.name} ${where}`}>
     <ModuleArtImage module={info} orientation={knobOrientation} faders={module === 'm005s' ? [0, 1, 2, 3, 4].map(faderValue) : undefined}
       knobs={isKnob ? litLedColours(stored, 3) : undefined}
       glows={module === 'm005s' ? litLedColours(stored, 5) : undefined} />

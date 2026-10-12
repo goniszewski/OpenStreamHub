@@ -8,6 +8,8 @@ import { baseGlow, emptyLightingState, kindLighting, lightMotion } from './light
 import type { LightingSnapshot, LightingStateStore } from './lighting-state';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
 import { readFaderMemory, writeFaderMemory } from './fader-memory';
+import { baseOrientationLabels, baseOrientationStore, baseOrientations, baseTurns, turnPlacement, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
+import type { BaseOrientation } from './base-orientation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
 import { ModuleStage, livePointer, livePressed, livePulse } from './ModuleStage';
@@ -49,7 +51,7 @@ function InfoTip({ text }: { text: string }) {
 // The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
 // hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
 // kind, the shared pick names the unit). A module without a detected position stays reachable in a row beside the base.
-function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, pickedPath, basePath, onPickUnit, dropHandlers }: {
+function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, baseOrientation, pickedPath, basePath, onPickUnit, dropHandlers }: {
   basePath: string | null;
   devices: LiveDevice[];
   editor: DeviceEditor;
@@ -57,6 +59,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   feedState: ReturnType<DeviceFeed['getState']>;
   lightingRecords: LightingSnapshot['records'];
   knobOrientation: KnobOrientation;
+  baseOrientation: BaseOrientation;
   pickedPath: string | null;
   onPickUnit(path: string): void;
   dropHandlers?(module: ModuleId, control: number): DropHandlers;
@@ -78,7 +81,10 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
-  const extent = layoutExtent(positioned.map(devicePlacement));
+  const turned = baseTurns(baseOrientation) > 0;
+  const turnedPlacement = (device: LiveDevice) => turnPlacement(devicePlacement(device), baseOrientation);
+  const size = turnedBase(baseOrientation);
+  const extent = layoutExtent(positioned.map(turnedPlacement), size);
   const glow = baseGlow(basePath ? lightingRecords[basePath] : undefined);
   const glowStyle = glow ? { '--glow': glow.colour, '--glow-strength': glow.brightness / 100 } as CSSProperties : {};
   const gridStyle = { '--cols': extent.cols, '--rows': extent.rows } as CSSProperties;
@@ -98,9 +104,12 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   function dragFader(device: LiveDevice, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    // The hit area spans the whole slot; a cap's centre only travels the part between its stops.
-    const inset = rect.height * faderTrackInset;
-    const value = faderFromPointer(event.clientY - rect.top - inset, rect.height - 2 * inset, faderMaximum);
+    // The hit area spans the whole slot; a cap's centre only travels the part between its stops. On a base standing
+    // vertical the track runs left to right and its top end is on the right.
+    const length = turned ? rect.width : rect.height;
+    const inset = length * faderTrackInset;
+    const along = turned ? rect.right - event.clientX : event.clientY - rect.top;
+    const value = faderFromPointer(along - inset, length - 2 * inset, faderMaximum);
     setFaders(current => ({ ...current, [`${device.path_hex}:${control}`]: value }));
     if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(device, control); }
     if (device.path_hex === activePath || event.type === 'pointerdown') editor.changeFaderPosition(value);
@@ -108,7 +117,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const stage = (device: LiveDevice) => {
     const stored = device.module === 'm003k' || device.module === 'm005s' ? kindLighting(lightingRecords, devices, device.module) : undefined;
     return <ModuleStage module={device.module} where="on the base" editor={editor} profile={profile} live={feedState.live[device.module]} stored={stored}
-      knobOrientation={knobOrientation} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
+      knobOrientation={turnedKnobOrientation(knobOrientation, baseOrientation)} turned={turned} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
       onSelect={control => select(device, control)} onFaderPointer={(control, event) => dragFader(device, control, event)}
       onFaderValue={(control, value) => editor.changeFaderPosition(value)} dropHandlers={dropHandlers && (control => dropHandlers(device.module, control))} />;
   };
@@ -131,13 +140,14 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   };
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
-    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and left · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span></div>
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and {turned ? 'right' : 'left'} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
+      <div className="mode-control base-orientation" role="group" aria-label="Base orientation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
-        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${baseColumns}`, gridRow: `${1 - extent.row} / span ${baseRows}` }} />
+        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }} />
         {positioned.map(device => {
-          const placement = devicePlacement(device);
-          const overhangs = Object.values(overhangOf(placement)).some(count => count > 0);
+          const placement = turnedPlacement(device);
+          const overhangs = Object.values(overhangOf(devicePlacement(device))).some(count => count > 0);
           return <div key={device.path_hex} className={`base-layout-module${motionOf(device) ? ` fx-${motionOf(device)}` : ''}${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
             style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
             {stage(device)}
@@ -162,11 +172,12 @@ export function RigPreview({ editor, state, feed, lighting = emptyLightingState,
   const lightingRecords = useSyncExternalStore(lighting.subscribe, lighting.getState, lighting.getState).shown;
   const [source, setSource] = useState('off');
   const knobOrientation = useKnobOrientation();
+  const baseOrientation = useBaseOrientation();
   if (!feed) return null;
   return <section className="rig" aria-label="Module rig">
     <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
     {layout && <ConnectedBaseLayout devices={feedState.devices} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
-      knobOrientation={knobOrientation} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
+      knobOrientation={knobOrientation} baseOrientation={baseOrientation} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
   </section>;
 }
 

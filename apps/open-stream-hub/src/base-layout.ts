@@ -27,13 +27,13 @@ export const overhangOf = (placement: Placement): Overhang => ({
 });
 
 // The row and column ranges to draw: the base plus any module parts beyond it.
-export function layoutExtent(placements: Placement[]) {
+export function layoutExtent(placements: Placement[], base = { cols: baseColumns, rows: baseRows }) {
   const col = Math.min(0, ...placements.map(placement => placement.col));
   const row = Math.min(0, ...placements.map(placement => placement.row));
   return {
     col, row,
-    cols: Math.max(baseColumns, ...placements.map(placement => placement.col + placement.cols)) - col,
-    rows: Math.max(baseRows, ...placements.map(placement => placement.row + placement.rows)) - row,
+    cols: Math.max(base.cols, ...placements.map(placement => placement.col + placement.cols)) - col,
+    rows: Math.max(base.rows, ...placements.map(placement => placement.row + placement.rows)) - row,
   };
 }
 

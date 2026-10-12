@@ -291,6 +291,9 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig { margin:18px 0 6px; padding:12px 14px; border:1px solid var(--line); border-radius:12px; }
 .rig-stage { position:relative; height:var(--stage-h,120px); max-width:100%; aspect-ratio:var(--art-aspect); }
 .rig-stage img { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none; }
+.rig-stage.turned { container-type:size; }
+.rig-stage-turn { position:absolute; left:50%; top:50%; width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(90deg); }
+.base-orientation { flex:none; }
 .rig-stage .display-label,.rig-stage .display-depth { display:none; }
 .rig-stage .image-control.bound:not(.selected) { border-color:#a284ff80; }
 .rig-stage .fader { touch-action:none; cursor:ns-resize; }
@@ -756,9 +759,9 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .base-layout-base.fx-blink { animation:fx-glow-blink 1s steps(1) infinite; }
 .base-layout-base.fx-cycle { animation:fx-hue 6s linear infinite; }
 /* Only the art moves with its lights: the selection border, pressed highlight and live pointer sit above it and keep their colours. */
-.base-layout-module.fx-cycle .rig-stage > .module-art-inline { animation:fx-hue 6s linear infinite; }
-.base-layout-module.fx-pulse .rig-stage > .module-art-inline { animation:fx-brightness 3s ease-in-out infinite; }
-.base-layout-module.fx-blink .rig-stage > .module-art-inline { animation:fx-blink 1s steps(1) infinite; }
+.base-layout-module.fx-cycle .rig-stage > .module-art-inline, .base-layout-module.fx-cycle .rig-stage > .rig-stage-turn > .module-art-inline { animation:fx-hue 6s linear infinite; }
+.base-layout-module.fx-pulse .rig-stage > .module-art-inline, .base-layout-module.fx-pulse .rig-stage > .rig-stage-turn > .module-art-inline { animation:fx-brightness 3s ease-in-out infinite; }
+.base-layout-module.fx-blink .rig-stage > .module-art-inline, .base-layout-module.fx-blink .rig-stage > .rig-stage-turn > .module-art-inline { animation:fx-blink 1s steps(1) infinite; }
 @keyframes fx-hue { to { filter:hue-rotate(360deg); } }
 @keyframes fx-brightness { 50% { filter:brightness(.7); } }
 @keyframes fx-blink { 50% { filter:brightness(.55); } }

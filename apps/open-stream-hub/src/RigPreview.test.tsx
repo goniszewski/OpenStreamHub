@@ -4,6 +4,7 @@ import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
 import { ProfileSession } from './profile-session';
 import { RigPreview } from './RigPreview';
 import { DeviceFeed } from './device-feed';
+import { baseOrientationStore } from './base-orientation';
 import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -120,6 +121,19 @@ describe('RigPreview canvas', () => {
     // A pick that is not a unit of the editor's kind falls back to the first unit of that kind.
     expect(markupFor('gone')).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module 1\/2<\/span><span[^>]*aria-label="Serial number MHKB03AA221252301179"/);
     expect(markupFor(null)).toMatch(/class="base-layout-name" data-picked="true"[^>]*><span>3-knob module 1\/2<\/span><span[^>]*aria-label="Serial number MHKB03AA221252301179"/);
+  });
+
+  it('stands the whole layout up when the base is vertical, turning each module with it', async () => {
+    const state = stateFor();
+    baseOrientationStore.set('vertical');
+    try {
+      const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state)} state={state} feed={await feedOf(positioned)} />);
+      expect(markup).toContain('USB-C ports at the top and right');
+      expect(markup).toContain('--cols:5');
+      expect(markup).toContain('--rows:6');
+      expect(markup).toContain('rig-stage-turn');
+      expect(markup).toMatch(/aria-pressed="true"[^>]*>Vertical</);
+    } finally { baseOrientationStore.set('horizontal'); }
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

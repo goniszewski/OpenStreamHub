@@ -32,9 +32,12 @@ export interface DropHandlers { onDragOver?: (event: DragEvent<HTMLElement>) => 
 // read-only and overrides what the art shows. Every area is a named button (or slider), so the stage works by
 // keyboard; a picked stage outlines the selected control. `where` completes each area's name ("in rig",
 // "on the base"). The caller owns what a pick means: this component reports it and draws the result.
-export function ModuleStage({ module, where, editor, profile, live, stored, knobOrientation, picked, faderValue, onSelect, onFaderPointer, onFaderValue, dropHandlers }: {
+export function ModuleStage({ module, where, editor, profile, live, stored, knobOrientation, turned = false, picked, faderValue, onSelect, onFaderPointer, onFaderValue, dropHandlers }: {
   module: ModuleId; where: string; editor: DeviceEditor; profile: Profile; live: ModuleLive | undefined; stored: StoredLighting | undefined;
   knobOrientation: KnobOrientation;
+  // The base stands vertical: the whole stage, controls and displays included, is turned a quarter clockwise. The 3-knob
+  // module's art turns through `knobOrientation` instead.
+  turned?: boolean;
   // This stage is the picked unit, so its selected control is outlined.
   picked: boolean;
   faderValue(control: number): number;
@@ -48,7 +51,8 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
   const isKnob = module === 'm003k';
   const controls = isKnob ? knobControls(knobOrientation) : art.controls;
   const selected = editor.selection.control;
-  return <div className={`rig-stage${isKnob ? ' knob-stage' : ''}`} style={{ '--art-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${info.name} ${where}`}>
+  const turn = turned && !isKnob;
+  const content = <>
     <ModuleArtImage module={info} orientation={knobOrientation} faders={module === 'm005s' ? [0, 1, 2, 3, 4].map(faderValue) : undefined}
       knobs={isKnob ? litLedColours(stored, 3) : undefined}
       glows={module === 'm005s' ? litLedColours(stored, 5) : undefined} />
@@ -80,5 +84,8 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       </button>;
     })}
     <ModuleGlass module={module} />
+  </>;
+  return <div className={`rig-stage${isKnob ? ' knob-stage' : ''}${turn ? ' turned' : ''}`} style={{ '--art-aspect': turn ? 1 / art.aspect : art.aspect, '--turn-aspect': art.aspect } as CSSProperties} role="group" aria-label={`${info.name} ${where}`}>
+    {turn ? <div className="rig-stage-turn">{content}</div> : content}
   </div>;
 }

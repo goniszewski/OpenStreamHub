@@ -77,8 +77,8 @@ A jump table at 0x1e97 maps IDs 0x2d to 0x37 (0x37 and anything else fall throug
 | 0x2d | tag 0x0f, 4 bytes from device block +0x2c, 11 bytes from +8 (a name) |
 | 0x2e | the same layout from +0x34 and a fixed 11-byte string |
 | 0x2f | the same layout from +0x5c and +0x40 |
-| 0x30 | Output level: takes a value 0 to 100, uses 100 minus it, scales to 0 to 255 in software floating point (constants 100.0 and 255.0 are in the image) and stores the result as the level of two LED outputs (an inverted duty cycle); which LEDs those are is not known | not used |
-| 0x31 | Saves the in-memory configuration to the **backup** flash block, then reads it back (no restart) | not used |
+| 0x30 | four version-like bytes (one from each of four words at +0x30, +0x34, +0x38, +0x3c of the second block) and 11 bytes from +0x90 (the string set by command 0x2b, i.e. the serial) |
+| 0x31 | the four version bytes only |
 | 0x32 | a computed LED status byte per output |
 | 0x34 | the saved mode value (the byte the 0x2c command stored) |
 | 0x35 | the base's orientation byte (base only) |

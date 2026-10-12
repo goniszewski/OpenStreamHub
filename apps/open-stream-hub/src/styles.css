@@ -213,8 +213,6 @@ html,body { overflow:clip; }
   .device-layout { grid-template-columns:minmax(310px,1fr) clamp(300px,28vw,415px); font-size:16px; }
   .workspace { padding:39px 26px 30px; }
   .workspace-column { --gutter:26px; }
-  .workspace h1 { font-size:36px; }
-  .workspace .status { font-size:16px; }
   .hero { margin-top:45px; }
   .hero-note,.device-layout .fine-print { font-size:13px; }
   .control-picker button { font-size:14px; }
@@ -829,3 +827,13 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .base-layout-options { margin:0 2px 8px; font-size:11px; color:var(--muted); }
 .base-layout-options summary { cursor:pointer; width:max-content; }
 .base-layout-options-body { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:6px; }
+
+/* Workspace hierarchy: a compact page title with the hardware status beside it, a one-row live toolbar, then the base layout as the main section. */
+.workspace .page-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:4px 16px; margin-bottom:6px; }
+.workspace .page-heading h1 { margin:0; font-size:26px; letter-spacing:-.6px; }
+.workspace .page-heading .status { font-size:12px; }
+.rig { margin-top:10px; padding:0; border:0; }
+.live-controls { margin-bottom:16px; }
+.live-controls .live-status { flex:1 1 auto; text-align:right; }
+.base-layout-heading h3 { font-size:15px; letter-spacing:-.2px; }
+.base-layout-heading p { font-size:11px; }

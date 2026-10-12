@@ -209,7 +209,7 @@ pub fn with_countdown(jpeg: &[u8], text: &str) -> Option<Vec<u8>> {
         }
     }
     let width = text_width(text);
-    let scale = (1..=3u32)
+    let scale = (1..=2u32)
         .rev()
         .find(|scale| width * scale <= MAX_TEXT_WIDTH)?;
     let left = (SIDE - width * scale) / 2;

@@ -821,7 +821,5 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .base-pin-controls .mode-choice { font-size:10px; }
 .base-pogo-pins { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
 .base-layout-base { position:relative; }
-.pogo-pad rect { fill:#17171c; stroke:#2c2c34; stroke-width:0.012; }
-.pogo-pad circle { fill:#b99a52; opacity:.8; }
 .pogo-stud { fill:#101014; stroke:#2c2c34; stroke-width:0.012; }
 .pogo-bus { fill:#17171c; stroke:#2c2c34; stroke-width:0.012; }

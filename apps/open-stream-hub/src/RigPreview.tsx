@@ -56,11 +56,12 @@ function InfoTip({ text }: { text: string }) {
 function PogoPins({ cols, rows, baseOrientation, pins }: { cols: number; rows: number; baseOrientation: BaseOrientation; pins: BasePins }) {
   const layout = pinLayout(baseOrientation, pins);
   const pad = 0.2;
-  const dot = 0.028;
+  const dot = 0.03;
+  const corner = pad * 0.34;
   return <svg className="base-pogo-pins" viewBox={`0 0 ${cols} ${rows}`} preserveAspectRatio="none" data-testid="pogo-pins">
     {layout.pads.map(([u, v], index) => <g key={index} className="pogo-pad" transform={`translate(${u * cols} ${v * rows})`}>
-      <rect x={-pad / 2} y={-pad / 2} width={pad} height={pad} rx={0.02} />
-      {[-1, 1].flatMap(x => [-1, 1].map(y => <circle key={`${x}${y}`} cx={x * pad * 0.22} cy={y * pad * 0.22} r={dot} />))}
+      <rect x={-pad / 2} y={-pad / 2} width={pad} height={pad} rx={0.02} fill="#000" stroke="#6b6b78" strokeWidth={0.012} />
+      {[-1, 1].flatMap(x => [-1, 1].map(y => <circle key={`${x}${y}`} cx={x * corner} cy={y * corner} r={dot} fill="#e0b84a" />))}
     </g>)}
     {layout.studs.map(([u, v], index) => <circle key={index} className="pogo-stud" cx={u * cols} cy={v * rows} r={0.06} />)}
     <rect className="pogo-bus" x={layout.bus.x0 * cols} y={layout.bus.y0 * rows} width={(layout.bus.x1 - layout.bus.x0) * cols} height={(layout.bus.y1 - layout.bus.y0) * rows} rx={0.02} />

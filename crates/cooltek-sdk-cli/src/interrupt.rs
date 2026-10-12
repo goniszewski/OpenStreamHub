@@ -203,6 +203,10 @@ fn watch_stdin_impl(
                                     && let Ok(text) = std::str::from_utf8(&line)
                                     && sender.try_send(text.to_owned()).is_err()
                                 {
+                                    // The last stderr line becomes the reason the app shows for the exit.
+                                    eprintln!(
+                                        "masterhub-service: control requests arrived faster than the module could take them; stopping the run"
+                                    );
                                     interrupted.store(true, Ordering::SeqCst);
                                     return;
                                 }

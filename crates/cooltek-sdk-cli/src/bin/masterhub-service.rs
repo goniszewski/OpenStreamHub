@@ -1379,12 +1379,18 @@ mod control_regressions {
     use cooltek_sdk_service::{Action, Gesture, InputEvent, ProfileResolution};
     #[test]
     fn a_switch_to_test_does_not_log_execution() {
+        // The run starts in Live and is switched to Test. The action is an OBS scene aimed at a local listener, so a
+        // regression that still executed would only open a connection to this port, never touch the machine.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint =
+            ObsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
         let mode = Arc::new(AtomicBool::new(true));
         let mut d = Dispatcher::new(
             true,
             Some(mode.clone()),
             Arc::new(AtomicBool::new(false)),
-            None,
+            Some(ObsClient::new(endpoint, None)),
         );
         mode.store(false, Ordering::SeqCst);
         let work = Work {
@@ -1401,7 +1407,9 @@ mod control_regressions {
                 },
                 binding: None,
                 resolution: ProfileResolution::Action {
-                    action: Action::ToggleMute,
+                    action: Action::ObsScene {
+                        scene: "Live".into(),
+                    },
                     page_id: None,
                     dial_function: None,
                 },
@@ -1432,6 +1440,10 @@ mod control_regressions {
         assert!(
             !output.contains("action_executed"),
             "Test action was reported as executed: {output}"
+        );
+        assert!(
+            listener.accept().is_err(),
+            "a switch to Test must not connect to OBS"
         );
     }
     #[test]

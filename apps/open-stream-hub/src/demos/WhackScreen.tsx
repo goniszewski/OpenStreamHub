@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useT } from '../i18n-react';
 import { DemoKeys } from './DemoKeys';
 import { demoTilePng } from './TicTacToeScreen';
-import { appear, clearFlash, escaped, flashMs, gapMs, hit, keepBest, light, moleDuration, newReaction, newWhack, randomWait, reactionDone, reactionPress, reactionRounds, reactionTiles, readBest, roundMs, summarise, whackTiles } from './whack-game';
+import { appear, clearFlash, clearLate, escaped, flashMs, gapMs, graceMs, hit, keepBest, light, moleDuration, newReaction, newWhack, randomWait, reactionDone, reactionPress, reactionRounds, reactionTiles, readBest, roundMs, summarise, whackTiles } from './whack-game';
 import type { Reaction, Whack } from './whack-game';
 import type { DemoEnd, DemoRuntime } from './demo-runtime';
 
@@ -50,14 +50,20 @@ export function WhackScreen({ runtime, pathHex, onEnd }: { runtime: DemoRuntime;
   const spawn = () => {
     if (phaseRef.current !== 'playing') return;
     const next = appear(whackRef.current);
-    showWhack(next);
-    moleTimer.current = later(() => {
-      moleTimer.current = null;
-      const missed = escaped(whackRef.current);
-      showWhack(missed);
-      clearLater(missed.flash);
-      later(spawn, gapMs);
-    }, moleDuration(performance.now() - startedAt.current));
+    whackRef.current = next;
+    setWhack(next);
+    // The mole's time starts once its picture is on the module, so a slow draw does not eat into it.
+    void runtime.render(whackTiles(next)).catch(() => {}).then(() => {
+      if (phaseRef.current !== 'playing' || whackRef.current !== next) return;
+      moleTimer.current = later(() => {
+        moleTimer.current = null;
+        const missed = escaped(whackRef.current);
+        showWhack(missed);
+        clearLater(missed.flash);
+        later(() => { if (whackRef.current.late === missed.late) whackRef.current = clearLate(whackRef.current); }, graceMs);
+        later(spawn, gapMs);
+      }, moleDuration(performance.now() - startedAt.current));
+    });
   };
 
   const finishWhack = () => {

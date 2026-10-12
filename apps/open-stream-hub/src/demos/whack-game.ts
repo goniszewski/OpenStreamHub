@@ -10,6 +10,8 @@ export const moleEndMs = 450;
 // The pause between one mole leaving and the next appearing, and how long a hit or miss mark stays on its key.
 export const gapMs = 250;
 export const flashMs = 300;
+// A press this soon after a mole left still counts: the key took time to draw and the press took time to arrive.
+export const graceMs = 200;
 
 // A key other than `previous`, so the same key never comes up twice in a row.
 export function pickKey(previous: number | null, random: () => number = Math.random): number {
@@ -28,24 +30,29 @@ export interface Whack {
   mole: number | null;
   last: number | null;
   flash: { key: number; kind: 'hit' | 'miss' } | null;
+  // The mole that has just escaped and the score before it cost a point, while a late press can still count.
+  late: { key: number; score: number } | null;
 }
 
-export const newWhack = (): Whack => ({ score: 0, hits: 0, misses: 0, mole: null, last: null, flash: null });
+export const newWhack = (): Whack => ({ score: 0, hits: 0, misses: 0, mole: null, last: null, flash: null, late: null });
 
 // A point is lost, but the score never drops below zero.
 const lose = (score: number) => Math.max(0, score - 1);
 
-export const appear = (whack: Whack, random: () => number = Math.random): Whack => ({ ...whack, mole: pickKey(whack.last, random), flash: null });
+export const appear = (whack: Whack, random: () => number = Math.random): Whack => ({ ...whack, mole: pickKey(whack.last, random), flash: null, late: null });
 
 // A press: the mole's key scores; any other key (or any key while no mole shows) costs a point.
 export function hit(whack: Whack, key: number): Whack {
+  if (whack.mole === null && whack.late?.key === key) return { ...whack, score: whack.late.score + 1, hits: whack.hits + 1, misses: whack.misses - 1, last: key, flash: { key, kind: 'hit' }, late: null };
   if (key === whack.mole) return { ...whack, score: whack.score + 1, hits: whack.hits + 1, mole: null, last: key, flash: { key, kind: 'hit' } };
   return { ...whack, score: lose(whack.score), misses: whack.misses + 1, flash: { key, kind: 'miss' } };
 }
 
 // The mole left before it was hit.
 export const escaped = (whack: Whack): Whack => whack.mole === null ? whack
-  : { ...whack, score: lose(whack.score), misses: whack.misses + 1, mole: null, last: whack.mole, flash: { key: whack.mole, kind: 'miss' } };
+  : { ...whack, score: lose(whack.score), misses: whack.misses + 1, mole: null, last: whack.mole, flash: { key: whack.mole, kind: 'miss' }, late: { key: whack.mole, score: whack.score } };
+
+export const clearLate = (whack: Whack): Whack => whack.late ? { ...whack, late: null } : whack;
 
 export const clearFlash = (whack: Whack): Whack => whack.flash ? { ...whack, flash: null } : whack;
 

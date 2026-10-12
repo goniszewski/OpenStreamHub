@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { appear, bestKey, clearFlash, escaped, hit, keepBest, light, moleDuration, moleEndMs, moleStartMs, newReaction, newWhack, pickKey, randomWait, reactionDone, reactionPress, reactionRounds, reactionTiles, readBest, roundMs, summarise, whackTiles } from './whack-game';
+import { appear, bestKey, clearFlash, clearLate, escaped, hit, keepBest, light, moleDuration, moleEndMs, moleStartMs, newReaction, newWhack, pickKey, randomWait, reactionDone, reactionPress, reactionRounds, reactionTiles, readBest, roundMs, summarise, whackTiles } from './whack-game';
 
 const memory = (initial: Record<string, string> = {}) => {
   const data = { ...initial };
@@ -79,6 +79,25 @@ describe('scoring', () => {
     expect(whackTiles(clearFlash(after)).every(tile => tile.tone === 'empty')).toBe(true);
     expect(whackTiles(hit(shown, 14))[14].tone).toBe('miss');
     expect(clearFlash(newWhack())).toEqual(newWhack());
+  });
+});
+
+describe('a press just after the mole left', () => {
+  it('still counts as a hit and takes back the point the escape cost', () => {
+    const scored = hit(appear(newWhack(), () => 0), 0);
+    const shown = appear(scored, () => 0.5);
+    const gone = escaped(shown);
+    expect(gone.score).toBe(0);
+    const late = hit(gone, shown.mole!);
+    expect(late).toMatchObject({ score: 2, hits: 2, misses: 0, late: null, flash: { key: shown.mole, kind: 'hit' } });
+  });
+
+  it('is not forgiven on another key, after the grace ends, or once the next mole is up', () => {
+    const gone = escaped(appear(newWhack(), () => 0));
+    expect(hit(gone, gone.late!.key + 1).misses).toBe(2);
+    expect(hit(clearLate(gone), gone.late!.key).misses).toBe(2);
+    expect(appear(gone, () => 0.5).late).toBeNull();
+    expect(clearLate(newWhack())).toEqual(newWhack());
   });
 });
 

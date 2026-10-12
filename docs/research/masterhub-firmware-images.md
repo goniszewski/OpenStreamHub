@@ -59,12 +59,14 @@ The handler at 0x41d4 (base; the knobs image has the same switch at 0x3ec0) read
 | 0x2d | Colour: three bytes `[4..6]`, saved when `[7]` is non-zero | `COLOR_COMMAND` |
 | 0x2e | Brightness: value in `[4]`, scaled through a lookup | `BRIGHTNESS_COMMAND` |
 | 0x2f | Sets the sensor's calibration-mode flag (base: starts an orientation calibration, which writes offsets to flash) | not used |
-| 0x30 | Takes a value 0 to 100, uses 100 minus it, and sets two LED output levels; not decoded further | not used |
-| 0x31 | Reboot-style sequence (flash and system registers, then a restart); not decoded | not used |
-| 0x32, 0x33 | Persist or clear a flag and restart; not decoded | not used |
-| 0x49, 0x4a | Clear an update-state word and reset (the loader hand-over); not decoded | not used |
+| 0x30 | Output level: takes a value 0 to 100, uses 100 minus it, scales to 0 to 255 in software floating point (constants 100.0 and 255.0 are in the image) and stores the result as the level of two LED outputs (an inverted duty cycle); which LEDs those are is not known | not used |
+| 0x31 | Saves the in-memory configuration to the **backup** flash block, then reads it back (no restart) | not used |
+| 0x32, 0x33 | Reload the in-memory configuration from flash: 0x32 from the primary block, 0x33 from the backup block; each sets a one-byte flag naming the source | not used |
+| 0x49, 0x4a | **Enter the loader**: clear a validity word in the saved configuration (0x49 in the structured config, 0x4a in the raw primary block, then write it back), wait for the flash controller, point the vector map at the loader ROM (address 0x100000) and issue a system reset (write 0x05FA0004 to the Cortex-M reset register). After this the device runs the loader, not the application, until an update completes | not used |
 
-Anything else is ignored. These are read from code, not exercised; 0x2a, 0x2b, 0x2f and 0x31 to 0x4a write flash or restart the device and must not be sent to a real unit by this repository.
+Anything else is ignored. These are read from code, not exercised.
+
+**Flash use (base, 2.0.4.0).** The commands share a small set of helpers: system-register unlock (the usual 0x59, 0x16, 0x88 key sequence), flash-controller enable and disable, erase in 512-byte pages, word read and word program. Two 2 KB blocks hold configuration: a primary block at 0x14000 and a backup block at 0x14800, each a 176-byte record (0xb0) with its length at +0x24 and a CRC at +0x20; the 0x36 feature report returns those two fields. The loader ROM is at 0x100000. Commands 0x2a, 0x2b, 0x2c, 0x2d, 0x2e (when saving), 0x2f, 0x31 and 0x49 or 0x4a write flash, and 0x49 and 0x4a restart the device into the loader, so none of them is to be sent by this repository to a real unit beyond the mode, colour and brightness commands it already uses. The knobs image carries the same switch (compares at 0x3ec2 to 0x3eec), so the table is expected to hold there too; only the base was traced to the end.
 
 ## Feature reports (third pass)
 
@@ -75,8 +77,8 @@ A jump table at 0x1e97 maps IDs 0x2d to 0x37 (0x37 and anything else fall throug
 | 0x2d | tag 0x0f, 4 bytes from device block +0x2c, 11 bytes from +8 (a name) |
 | 0x2e | the same layout from +0x34 and a fixed 11-byte string |
 | 0x2f | the same layout from +0x5c and +0x40 |
-| 0x30 | four version-like bytes (one from each of four words at +0x30, +0x34, +0x38, +0x3c of the second block) and 11 bytes from +0x90 (the string set by command 0x2b, i.e. the serial) |
-| 0x31 | the four version bytes only |
+| 0x30 | Output level: takes a value 0 to 100, uses 100 minus it, scales to 0 to 255 in software floating point (constants 100.0 and 255.0 are in the image) and stores the result as the level of two LED outputs (an inverted duty cycle); which LEDs those are is not known | not used |
+| 0x31 | Saves the in-memory configuration to the **backup** flash block, then reads it back (no restart) | not used |
 | 0x32 | a computed LED status byte per output |
 | 0x34 | the saved mode value (the byte the 0x2c command stored) |
 | 0x35 | the base's orientation byte (base only) |

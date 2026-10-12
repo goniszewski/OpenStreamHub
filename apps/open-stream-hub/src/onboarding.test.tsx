@@ -34,7 +34,7 @@ describe('onboarding steps', () => {
     expect(markup).toContain('offers the starters that use it');
     expect(markup).toContain('New from a starter');
     expect(markup).toContain('Nothing is typed into apps, and no app or web page is opened');
-    expect(markup).toContain('The app starts in Test mode: presses are only logged');
+    expect(markup).toContain('Live is the default, but the first time you use it the app asks once');
     expect(markup).toContain('Only run profiles you wrote or reviewed.');
   });
   it('merges editing, testing and saving on the second step', () => {

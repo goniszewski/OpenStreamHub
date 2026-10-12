@@ -96,6 +96,7 @@ All options of `masterhub-service run`, as defined in `crates/cooltek-sdk-cli/sr
 | `--obs-endpoint ADDR` | Loopback obs-websocket endpoint for `obs_scene` (`127.0.0.1:PORT`, `[::1]:PORT` or `localhost:PORT`). |
 | `--obs-password-stdin` | Read the OBS password from the first line of stdin. Requires `--obs-endpoint`. |
 | `--exit-on-stdin-eof` | End the session like SIGTERM when stdin reaches end of file (reason `stdin_closed`). stdin must be an open pipe or socket. Off by default. |
+| `--control` | Accept control requests as JSON lines on stdin after the OBS password line (needs `--exit-on-stdin-eof`, whose end-of-file stop is unchanged). See [the control channel](#the-control-channel). Off by default. |
 
 `validate` takes a profile path; `replay` takes `--profile PATH` and a capture path.
 
@@ -261,3 +262,16 @@ A failed action is logged as `action_failed` and never retried; later events sti
 The `cooltek-sdk-service` crate exposes `Profile`, `InputSession`, `BindingEngine`, `ProfileSession`, and `ActionDispatcher`. `ProfileSession::route` returns a `ProfileResolution` that reports keypad navigation and dial function switches separately from host actions. `ProfileSession::resolve` keeps returning a `KeypadResolution`, in which a function switch shows up as `Unbound`. Callers provide independently established module/serial identity, nondecreasing input timestamps, and a dispatcher. `DryRunDispatcher` records validated actions; `MacOsDispatcher` executes explicit actions and supports `with_cancellation(Arc<AtomicBool>)` for a shared stop flag. Use a separate input session per physical device and reset it on disconnect, suspension, or transport failure.
 
 The CLI loads its profile once and handles one interface per process. Automatic discovery/reconnection, profile reload, native sleep/wake observation, a menu-bar UI, and general image/display management are outside this service; the only display support is the opt-in [keypad](#keypad-display-sync-experimental) and [dial](#dial-display-sync-experimental) display sync, which the OpenStreamHub app passes by default and which has run on one module of each kind ([hardware results](masterhub-hardware-results.md)). Live timestamps represent host read arrival, not device-native event timing. Independent normalization and bounded queues do not establish sustained high-rate throughput, prevent HID/OS buffering loss, or verify physical press timing; those require hardware and runtime testing.
+
+## The control channel
+
+`--control` lets the supervising process change a running service without restarting it. The service owns its module's HID handle for the whole run, so this is how anything else reaches the module while a run holds it. Each request is one JSON line on stdin with a number `id` and a `type`; each is answered by one `control_result` record on stdout (`{"type":"control_result","id":1,"ok":true,...}`, or `ok:false` with an `error`), written through a line-atomic writer so it never interleaves with the service's other records. A line longer than 64 KiB, invalid UTF-8 or an unreadable request is dropped or answered `ok:false` with `id:null`; end of stdin still ends the run.
+
+| `type` | Fields | Effect |
+| --- | --- | --- |
+| `led_look` | `led` (a number, or `null` for every LED), `colour` `[r,g,b]`, `mode` 0–9, `brightness` 0–100 | Writes the colour, effect and brightness the way the official app does, for the knob and fader modules. Refused for other modules and for a bad value, with nothing written. |
+| `led_state` | none | Reads what the module reports about its LEDs: `brightness` and `modes` per LED (never a colour). |
+| `mode` | `execute` (bool) | Switches the run between executing its actions (Live) and only logging them (Test), from the next action on. Nothing restarts. A countdown already running keeps running, and its alert follows the mode it expires in. Refused where actions cannot execute (not macOS). |
+| `profile` | `profile` (a profile object) | Replaces the run's bindings, checked as a start checks them, from the next input report on. A dial's current function and a keypad's folder start again at the first. Refused for a run that draws on the module (`--display-sync`), which takes a new profile by restarting. |
+
+A `mode` or `profile` that the service refuses leaves the run exactly as it was. The desktop app falls back to restarting the run then.

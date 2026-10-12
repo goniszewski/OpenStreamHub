@@ -1,6 +1,7 @@
 //! Offline capture/image preparation and bounded live binding runtime.
 
 pub mod capture;
+pub mod control;
 pub mod cpu_usage;
 pub mod device;
 pub mod dial_artwork;

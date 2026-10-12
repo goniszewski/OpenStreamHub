@@ -93,6 +93,10 @@ pub struct LiveOptions {
     /// interrupt flag: a stop it requested ends with reason `stdin_closed`
     /// instead of `interrupted`. `None` (the default) keeps `interrupted`.
     pub stdin_closed: Option<&'static AtomicBool>,
+    /// A replacement profile engine, handed over by the supervisor's control channel. The input loop takes it
+    /// between reports, so the next report is planned with the new bindings. Not used by runs with a display, whose
+    /// own thread holds a copy of the engine and the artwork.
+    pub profile_updates: Option<&'static Mutex<Option<ProfileSession>>>,
 }
 
 impl Default for LiveOptions {
@@ -109,6 +113,7 @@ impl Default for LiveOptions {
             stop_on_action_error: false,
             profile_switch_requests: false,
             stdin_closed: None,
+            profile_updates: None,
         }
     }
 }
@@ -1275,6 +1280,12 @@ where
         loop {
             if interrupted.load(Ordering::SeqCst) {
                 return Ok("interrupted");
+            }
+            if let Some(updates) = options.profile_updates
+                && let Ok(mut slot) = updates.lock()
+                && let Some(next) = slot.take()
+            {
+                session = next;
             }
             if let Some(work) = pending.take() {
                 pending = offer(&sender, work, &mut counts)?;
@@ -3397,6 +3408,38 @@ mod tests {
             .unwrap();
         assert_eq!(executed["schema_version"], 1);
         assert_eq!(rows.last().unwrap()["reason"], "max_reports");
+    }
+
+    #[test]
+    fn a_profile_handed_over_by_the_supervisor_plans_the_next_report() {
+        let swapped = ProfileSession::new(
+            Profile::from_json(
+                br#"{"schema_version":1,"name":"swapped","bindings":[
+                {"module":"m131e","control":0,"gesture":"right","action":{"type":"volume","delta":9}}
+            ]}"#,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let slot: &'static Mutex<Option<ProfileSession>> =
+            Box::leak(Box::new(Mutex::new(Some(swapped))));
+        let transport = Transport::new([dial(3, 0, 10)]);
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let actions = Arc::clone(&received);
+        run_fake(
+            transport,
+            LiveOptions {
+                profile_updates: Some(slot),
+                ..options()
+            },
+            Arc::new(AtomicBool::new(false)),
+            Output::default(),
+            move |stop| simple_actions(stop, actions),
+        )
+        .unwrap();
+        // The turn that the original profile binds to +5 volume plans the swapped profile's +9, and the slot is used up.
+        assert_eq!(*received.lock().unwrap(), vec![Action::Volume { delta: 9 }]);
+        assert!(slot.lock().unwrap().is_none());
     }
 
     #[test]

@@ -146,15 +146,50 @@ pub fn watch_stdin(
     interrupted: Arc<AtomicBool>,
     closed: &'static AtomicBool,
 ) -> Result<thread::JoinHandle<()>, String> {
+    watch_stdin_lines(stdin, interrupted, closed, |_| {})
+}
+
+/// The longest control line the watchdog keeps; a longer one is dropped whole.
+pub const MAX_STDIN_LINE: usize = 64 * 1024;
+
+/// [`watch_stdin`] that also hands each complete line of stdin to `on_line`
+/// (without its newline), on the watchdog thread. Lines are bounded by
+/// [`MAX_STDIN_LINE`] and invalid UTF-8 is dropped, so nothing the supervisor
+/// sends can grow memory or stop the run; only end of file does.
+pub fn watch_stdin_lines(
+    stdin: impl WatchedStdin,
+    interrupted: Arc<AtomicBool>,
+    closed: &'static AtomicBool,
+    mut on_line: impl FnMut(&str) + Send + 'static,
+) -> Result<thread::JoinHandle<()>, String> {
     thread::Builder::new()
         .name("stdin-watchdog".into())
         .spawn(move || {
             let mut stdin = stdin;
-            let mut discard = [0u8; 256];
+            let mut chunk = [0u8; 1024];
+            let mut line: Vec<u8> = Vec::new();
+            let mut overflowed = false;
             loop {
-                match stdin.read(&mut discard) {
+                match stdin.read(&mut chunk) {
                     Ok(0) => break,
-                    Ok(_) => {}
+                    Ok(count) => {
+                        for &byte in &chunk[..count] {
+                            if byte == b'\n' {
+                                if !overflowed && let Ok(text) = std::str::from_utf8(&line) {
+                                    on_line(text);
+                                }
+                                line.clear();
+                                overflowed = false;
+                            } else if !overflowed {
+                                if line.len() >= MAX_STDIN_LINE {
+                                    overflowed = true;
+                                    line.clear();
+                                } else {
+                                    line.push(byte);
+                                }
+                            }
+                        }
+                    }
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         if !wait_readable(&stdin) {

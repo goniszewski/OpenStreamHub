@@ -4,7 +4,10 @@ use std::{
     io::{self, BufReader, Read, Write},
     path::PathBuf,
     process::ExitCode,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -13,6 +16,7 @@ use cooltek_sdk_cli::capture::{
     CaptureReader, EndReason, MAX_REPORT_BYTES, decode_hex, encode_hex,
 };
 use cooltek_sdk_cli::{
+    control::SharedRecords,
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     dial_artwork::{DialArtwork, DialContent, SystemClock},
     display_artwork::PreparedKeyArtwork,
@@ -25,7 +29,7 @@ use cooltek_sdk_cli::{
         plan_report, process_due_timers, process_work, start_record,
     },
 };
-use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind};
+use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind, lighting::LedModule};
 use cooltek_sdk_service::{
     ActionDispatcher, DeviceContext, InputSession, Profile, ProfileSession, ServiceModule,
     TimerAlert, TimerAlerter, TimerTable,
@@ -33,6 +37,9 @@ use cooltek_sdk_service::{
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
 };
 use serde_json::json;
+
+/// Where the control handler is installed once the device is open.
+type ControlSlot = Arc<Mutex<Option<Box<dyn FnMut(&str) + Send>>>>;
 
 #[derive(Parser)]
 #[command(
@@ -136,6 +143,14 @@ enum Command {
         /// is read first, and any later stdin data is ignored.
         #[arg(long)]
         exit_on_stdin_eof: bool,
+        /// Accept control requests as JSON lines on stdin after the OBS
+        /// password line, answering each on stdout with a `control_result`
+        /// record: per-LED lighting for the knobs and faders written through
+        /// the handle this run already holds, and a read of the module's own
+        /// LED report. See `cooltek_sdk_cli::control`. Requires
+        /// --exit-on-stdin-eof, whose end-of-file stop is unchanged.
+        #[arg(long, requires = "exit_on_stdin_eof")]
+        control: bool,
     },
 }
 
@@ -181,6 +196,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             obs_endpoint,
             obs_password_stdin,
             exit_on_stdin_eof,
+            control,
         } => {
             let profile = load_profile(profile)?;
             // Before the password read: a terminal, file or /dev/null stdin is
@@ -216,11 +232,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 )?)),
             };
             // Reject unsupported stdout (such as a regular file) before any HID access.
-            let stdout = TimedStdout::new(Duration::from_millis(500))?;
+            let stdout = SharedRecords::new(TimedStdout::new(Duration::from_millis(500))?);
             let stopped = cooltek_sdk_cli::interrupt::install()?;
             // `io::stdin()` shares the buffer the password was read through,
             // so bytes after the password line are neither lost nor reordered.
-            let options = live_options(
+            let control_slot: ControlSlot = Arc::new(Mutex::new(None));
+            // Where a new profile engine waits for the input loop; one per process, so it lives as long as it.
+            let profile_slot: Option<&'static Mutex<Option<ProfileSession>>> =
+                control.then(|| &*Box::leak(Box::new(Mutex::new(None))));
+            let mut options = live_options(
                 software_mode,
                 duration_secs,
                 max_reports,
@@ -231,7 +251,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 io::stdin(),
                 &stopped,
                 &cooltek_sdk_cli::interrupt::STDIN_CLOSED,
+                control.then(|| Arc::clone(&control_slot)),
             )?;
+            options.profile_updates = profile_slot;
             let registry = DeviceRegistry::new()?;
             let devices = registry.devices();
             let selected = select_device(&devices, &path_hex, software_mode)?;
@@ -267,24 +289,87 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             if let Some(obs) = &obs {
                 details["obs"] = obs_details(obs);
             }
-            let factory = move |abort| Ok((Dispatcher::new(execute, abort, obs), stdout));
+            let control_out = stdout.clone();
+            // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
+            // in place; without `--control` the dispatcher is fixed at start, as before.
+            let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
+            let switchable = mode.clone();
+            let factory =
+                move |abort| Ok((Dispatcher::new(execute, switchable, abort, obs), stdout));
+            // The handle is shared only when something else writes through it: the display, or control requests.
+            // A plain run keeps reading it directly, as before.
+            let (direct, shared) = if control || artwork.is_some() {
+                (None, Some(SharedTransport::new(opened)))
+            } else {
+                (Some(opened), None)
+            };
+            if control && let Some(shared) = &shared {
+                let led = match device.module {
+                    ServiceModule::M003K => Some(LedModule::Knob),
+                    ServiceModule::M005S => Some(LedModule::Slider),
+                    _ => None,
+                };
+                let module = device.module;
+                let hooks = cooltek_sdk_cli::control::Hooks {
+                    mode: mode.map(|execute| cooltek_sdk_cli::control::RunMode {
+                        execute,
+                        can_execute: cfg!(target_os = "macos"),
+                    }),
+                    profile: profile_slot.map(|slot| {
+                        Box::new(move |value: &serde_json::Value| {
+                            // A run that draws on the module holds the engine and the artwork on its display thread, so
+                            // it takes a new profile by restarting.
+                            if display_sync {
+                                return Err(
+                                    "this run draws on the module, so it takes a new profile by restarting"
+                                        .to_string(),
+                                );
+                            }
+                            let profile = Profile::from_json(value.to_string().as_bytes())
+                                .map_err(|error| error.to_string())?;
+                            let engine = live_bindings(profile, module, false, DialContent::Off)?;
+                            *slot.lock().map_err(|_| "the profile slot failed".to_string())? =
+                                Some(engine);
+                            Ok(())
+                        }) as cooltek_sdk_cli::control::ProfileSwap
+                    }),
+                };
+                let handler =
+                    cooltek_sdk_cli::control::serve(shared.clone(), led, hooks, control_out);
+                *control_slot
+                    .lock()
+                    .map_err(|_| "control handler lock failed")? = Some(Box::new(handler));
+            }
             match artwork {
                 None => {
-                    run_live(
-                        InputReader::new(opened),
-                        engine,
-                        device,
-                        execute,
-                        details,
-                        options,
-                        stopped,
-                        factory,
-                    )?;
+                    match (direct, shared) {
+                        (Some(opened), _) => run_live(
+                            InputReader::new(opened),
+                            engine,
+                            device,
+                            execute,
+                            details,
+                            options,
+                            stopped,
+                            factory,
+                        )?,
+                        (None, Some(shared)) => run_live(
+                            InputReader::new(shared),
+                            engine,
+                            device,
+                            execute,
+                            details,
+                            options,
+                            stopped,
+                            factory,
+                        )?,
+                        (None, None) => unreachable!("a run always has a handle"),
+                    };
                 }
                 // Hardware only: one opened handle shared by the input reader and
                 // the display thread. Never constructed in tests.
                 Some(artwork) => {
-                    let shared = SharedTransport::new(opened);
+                    let shared = shared.expect("display runs share the handle");
                     // Fail closed before software mode: folder navigation must
                     // not run live without its display.
                     let display = Some(match artwork {
@@ -344,9 +429,24 @@ fn live_options(
     stdin: impl WatchedStdin,
     interrupted: &Arc<AtomicBool>,
     closed: &'static AtomicBool,
+    control: Option<ControlSlot>,
 ) -> Result<LiveOptions, String> {
     let stdin_closed = if exit_on_stdin_eof {
-        cooltek_sdk_cli::interrupt::watch_stdin(stdin, Arc::clone(interrupted), closed)?;
+        // Control lines reach the handler once the device is open; one that arrives sooner is dropped (the
+        // supervisor sends none before `service_start`).
+        cooltek_sdk_cli::interrupt::watch_stdin_lines(
+            stdin,
+            Arc::clone(interrupted),
+            closed,
+            move |line| {
+                if let Some(slot) = &control
+                    && let Ok(mut handler) = slot.lock()
+                    && let Some(handler) = handler.as_mut()
+                {
+                    handler(line);
+                }
+            },
+        )?;
         Some(closed)
     } else {
         None
@@ -465,6 +565,14 @@ fn device_context(
 }
 
 enum Dispatcher {
+    /// A run whose supervisor may switch it between Live and Test while it runs (`--control`): each action checks the
+    /// shared flag. Only built on macOS, where actions can execute at all.
+    Switchable {
+        execute: Arc<AtomicBool>,
+        /// Whether the run has an OBS endpoint, so a Test action is reported as an executing one would be.
+        obs: bool,
+        macos: MacOsDispatcher,
+    },
     /// Dry run and replay: validates only. `obs` records whether the run has
     /// an OBS endpoint, so a dry run reports OBS actions exactly as an
     /// executing run would (planned, or unavailable); it never connects.
@@ -475,7 +583,21 @@ enum Dispatcher {
 }
 
 impl Dispatcher {
-    fn new(execute: bool, abort: Arc<AtomicBool>, obs: Option<ObsClient>) -> Self {
+    fn new(
+        execute: bool,
+        switchable: Option<Arc<AtomicBool>>,
+        abort: Arc<AtomicBool>,
+        obs: Option<ObsClient>,
+    ) -> Self {
+        if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
+            let has_obs = obs.is_some();
+            let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
+            return Self::Switchable {
+                execute: flag,
+                obs: has_obs,
+                macos: MacOsDispatcher::with_cancellation(abort).with_obs(obs),
+            };
+        }
         if execute {
             let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
             Self::MacOs(MacOsDispatcher::with_cancellation(abort).with_obs(obs))
@@ -488,6 +610,13 @@ impl Dispatcher {
 impl ActionDispatcher for Dispatcher {
     fn dispatch(&mut self, action: &cooltek_sdk_service::Action) -> Result<(), String> {
         match self {
+            Self::Switchable { execute, macos, .. } => {
+                if execute.load(Ordering::SeqCst) {
+                    macos.dispatch(action)
+                } else {
+                    action.validate_executable()
+                }
+            }
             Self::Preview { .. } => action.validate_executable(),
             Self::MacOs(dispatcher) => dispatcher.dispatch(action),
         }
@@ -495,6 +624,17 @@ impl ActionDispatcher for Dispatcher {
 
     fn unavailable(&self, action: &cooltek_sdk_service::Action) -> Option<&'static str> {
         match self {
+            Self::Switchable {
+                execute,
+                obs,
+                macos,
+            } => {
+                if execute.load(Ordering::SeqCst) {
+                    macos.unavailable(action)
+                } else {
+                    (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE)
+                }
+            }
             Self::Preview { obs } => (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE),
             Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
@@ -502,6 +642,13 @@ impl ActionDispatcher for Dispatcher {
 
     fn timer_alert(&mut self, alert: &TimerAlert) -> Result<Option<String>, String> {
         match self {
+            Self::Switchable { execute, macos, .. } => {
+                if execute.load(Ordering::SeqCst) {
+                    macos.timer_alert(alert)
+                } else {
+                    alert.validate().map(|()| None)
+                }
+            }
             // Dry runs and replay log the expiry and show or play nothing.
             Self::Preview { .. } => alert.validate().map(|()| None),
             Self::MacOs(dispatcher) => dispatcher.timer_alert(alert),
@@ -510,6 +657,11 @@ impl ActionDispatcher for Dispatcher {
 
     fn timer_alerter(&mut self, cancel: Arc<AtomicBool>) -> Option<Box<dyn TimerAlerter>> {
         match self {
+            // The alerter of a timer is chosen when it starts, by the mode it starts in.
+            Self::Switchable { execute, macos, .. } => execute
+                .load(Ordering::SeqCst)
+                .then(|| macos.timer_alerter(cancel))
+                .flatten(),
             // Validation only is instant, so preview alerts stay inline.
             Self::Preview { .. } => None,
             Self::MacOs(dispatcher) => dispatcher.timer_alerter(cancel),
@@ -869,6 +1021,12 @@ mod tests {
     }
 
     #[test]
+    fn control_needs_the_stdin_watchdog_that_keeps_its_end_of_file_stop() {
+        assert!(run_args(&["--control"]).is_err());
+        assert!(run_args(&["--control", "--exit-on-stdin-eof"]).is_ok());
+    }
+
+    #[test]
     fn obs_flags_accept_only_loopback_endpoints_and_no_password_value() {
         assert_eq!(run_args(&[]).unwrap(), (None, false));
         for (value, shown) in [
@@ -1026,6 +1184,7 @@ mod tests {
             stdin,
             interrupted,
             closed,
+            None,
         )
         .unwrap()
     }
@@ -1100,6 +1259,39 @@ mod tests {
         assert!(closed.load(std::sync::atomic::Ordering::SeqCst));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_switchable_run_in_test_mode_plans_without_executing_and_reports_like_a_dry_run() {
+        use cooltek_sdk_service::Action;
+        let scene = Action::ObsScene {
+            scene: "Live".into(),
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint =
+            ObsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
+        let mode = Arc::new(AtomicBool::new(false));
+        let mut run = Dispatcher::new(
+            false,
+            Some(Arc::clone(&mode)),
+            Arc::new(AtomicBool::new(false)),
+            Some(ObsClient::new(endpoint, None)),
+        );
+        assert_eq!(run.unavailable(&scene), None);
+        run.dispatch(&scene).unwrap();
+        assert!(
+            listener.accept().is_err(),
+            "Test mode never connects to OBS, whatever the dispatcher can do"
+        );
+        // Without OBS a Test action is reported as unavailable, as in a dry run.
+        let mut bare = Dispatcher::new(false, Some(mode), Arc::new(AtomicBool::new(false)), None);
+        assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
+        assert!(
+            bare.timer_alerter(Arc::new(AtomicBool::new(false)))
+                .is_none()
+        );
+    }
+
     #[test]
     fn dry_runs_report_obs_scene_like_executing_runs_without_connecting() {
         use cooltek_sdk_service::Action;
@@ -1107,7 +1299,7 @@ mod tests {
             scene: "Live".into(),
         };
         let abort = Arc::new(AtomicBool::new(false));
-        let mut without = Dispatcher::new(false, Arc::clone(&abort), None);
+        let mut without = Dispatcher::new(false, None, Arc::clone(&abort), None);
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
         // A closed port: a dry run must plan without any connection attempt.
@@ -1115,7 +1307,7 @@ mod tests {
         listener.set_nonblocking(true).unwrap();
         let endpoint =
             ObsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
-        let mut with = Dispatcher::new(false, abort, Some(ObsClient::new(endpoint, None)));
+        let mut with = Dispatcher::new(false, None, abort, Some(ObsClient::new(endpoint, None)));
         assert_eq!(with.unavailable(&scene), None);
         with.dispatch(&scene).unwrap();
         assert!(

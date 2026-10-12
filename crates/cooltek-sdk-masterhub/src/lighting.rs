@@ -221,6 +221,107 @@ pub fn set_mode<T: ReportTransport + ?Sized>(
     })
 }
 
+// What a module is told, and what it reports back, shared by the desktop app (when no run holds the module) and
+// `masterhub-service` (when one does).
+
+/// What one LED module is told: a colour, an effect number and a brightness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LedLook {
+    /// Red, green and blue.
+    pub colour: [u8; 3],
+    /// The effect number, 0 (off) to [`MAX_MODE`].
+    pub mode: u8,
+    /// 0 to 100.
+    pub brightness: u8,
+}
+
+/// Writes one module's lighting the way the official app does, per LED:
+/// colour, then effect, then brightness, for one LED or each LED in turn
+/// (the app never sends the SDK's `0xff` index). Everything is validated
+/// before the first write, so a bad value or LED writes nothing; a transport
+/// failure stops at the failing write, and the next apply rewrites everything.
+pub fn write_led_lighting<T: ReportTransport + ?Sized>(
+    transport: &T,
+    module: LedModule,
+    led_index: Option<u8>,
+    look: LedLook,
+) -> Result<(), String> {
+    if look.mode > MAX_MODE {
+        return Err(format!("the effect must be between 0 and {}", MAX_MODE));
+    }
+    if look.brightness > 100 {
+        return Err("the brightness must be between 0 and 100".into());
+    }
+    let leds: Vec<u8> = match led_index {
+        Some(index) if index < module.led_count() => vec![index],
+        Some(index) => {
+            return Err(format!(
+                "LED {} does not exist: this module has {}",
+                u16::from(index) + 1,
+                module.led_count()
+            ));
+        }
+        None => (0..module.led_count()).collect(),
+    };
+    for index in leds {
+        let target = LedTarget::Index(index);
+        let label = u16::from(index) + 1;
+        set_color(transport, module, target, look.colour, false)
+            .map_err(|error| format!("could not set the colour of LED {label}: {error}"))?;
+        set_mode(transport, module, target, look.mode, false)
+            .map_err(|error| format!("could not set the effect of LED {label}: {error}"))?;
+        set_brightness(transport, module, target, look.brightness)
+            .map_err(|error| format!("could not set the brightness of LED {label}: {error}"))?;
+    }
+    Ok(())
+}
+
+/// What a knob or fader module reports about its LEDs without being asked to
+/// change anything: the live brightness of each LED and the saved effect it
+/// starts with. The module reports no colour.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LedReadback {
+    /// The live brightness of each LED, 0 to 100.
+    pub brightness: Vec<u8>,
+    /// The saved effect of each LED.
+    pub modes: Vec<u8>,
+}
+
+const BRIGHTNESS_REPORT: u8 = 0x32;
+const MODE_REPORT: u8 = 0x34;
+
+fn read_led_values<T: ReportTransport + ?Sized>(
+    transport: &T,
+    id: u8,
+    count: usize,
+) -> Result<Vec<u8>, String> {
+    let mut buffer = [0u8; 32];
+    buffer[0] = id;
+    let read = transport
+        .get_feature_report(&mut buffer)
+        .map_err(|error| format!("could not read report {id:#04x}: {error}"))?;
+    if read < 2 || buffer[0] != id || usize::from(buffer[1]) < count || read < 2 + count {
+        return Err(format!("report {id:#04x} came back in an unknown shape"));
+    }
+    Ok(buffer[2..2 + count].to_vec())
+}
+
+/// Reads a knob or fader module's brightness and saved effect per LED, with
+/// feature reads only.
+pub fn read_led_state<T: ReportTransport + ?Sized>(
+    transport: &T,
+    module: LedModule,
+) -> Result<LedReadback, String> {
+    if module == LedModule::Base {
+        return Err("only knob and fader modules report their LEDs".into());
+    }
+    let count = usize::from(module.led_count());
+    Ok(LedReadback {
+        brightness: read_led_values(transport, BRIGHTNESS_REPORT, count)?,
+        modes: read_led_values(transport, MODE_REPORT, count)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;

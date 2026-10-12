@@ -17,7 +17,7 @@
     <rect x="268" y="265" width="720" height="720" rx="14" fill="url(#plate)" stroke="#050506" stroke-width="3"/>
   </g>
   <g id="knobs" color="#b36bff">
-    <g id="knob-0" transform="translate(429 715)">
+    <g id="knob-0" transform="translate(467 760) scale(.8)">
       <circle class="ring-glow" r="150" fill="url(#ringGlow)"/>
       <circle class="ring" r="132" fill="none" stroke="currentColor" stroke-width="22"/>
       <circle r="132" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="5"/>
@@ -31,7 +31,7 @@
         <circle r="100" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width="2"/>
       </g>
     </g>
-    <g id="knob-1" transform="translate(825 715)">
+    <g id="knob-1" transform="translate(787 760) scale(.8)">
       <circle class="ring-glow" r="150" fill="url(#ringGlow)"/>
       <circle class="ring" r="132" fill="none" stroke="currentColor" stroke-width="22"/>
       <circle r="132" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="5"/>
@@ -45,7 +45,7 @@
         <circle r="100" fill="none" stroke="#fff" stroke-opacity=".2" stroke-width="2"/>
       </g>
     </g>
-    <g id="knob-2" transform="translate(627 475)">
+    <g id="knob-2" transform="translate(627 470) scale(.8)">
       <circle class="ring-glow" r="150" fill="url(#ringGlow)"/>
       <circle class="ring" r="132" fill="none" stroke="currentColor" stroke-width="22"/>
       <circle r="132" fill="none" stroke="#fff" stroke-opacity=".6" stroke-width="5"/>

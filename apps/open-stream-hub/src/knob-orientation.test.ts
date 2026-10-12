@@ -15,13 +15,13 @@ describe('knob control positions', () => {
   it('puts the single knob on the named side and the pair on the expected corners', () => {
     const expected: Record<KnobOrientation, Record<number, { x: number; y: number }>> = {
       // Hardware: single knob on top, 0 bottom-left, 1 bottom-right.
-      'single-top': { 2: { x: 50, y: 38 }, 0: { x: 34, y: 57 }, 1: { x: 66, y: 57 } },
+      'single-top': { 2: { x: 50, y: 37.5 }, 0: { x: 37.2, y: 60.6 }, 1: { x: 62.8, y: 60.6 } },
       // One clockwise turn: the pair moves to the left, 0 top-left, 1 bottom-left.
-      'single-right': { 2: { x: 62, y: 50 }, 0: { x: 43, y: 34 }, 1: { x: 43, y: 66 } },
+      'single-right': { 2: { x: 62.5, y: 50 }, 0: { x: 39.4, y: 37.2 }, 1: { x: 39.4, y: 62.8 } },
       // Upside down: 0 top-right, 1 top-left.
-      'single-bottom': { 2: { x: 50, y: 62 }, 0: { x: 66, y: 43 }, 1: { x: 34, y: 43 } },
+      'single-bottom': { 2: { x: 50, y: 62.5 }, 0: { x: 62.8, y: 39.4 }, 1: { x: 37.2, y: 39.4 } },
       // Three turns: the pair on the right, 0 bottom-right, 1 top-right.
-      'single-left': { 2: { x: 38, y: 50 }, 0: { x: 57, y: 66 }, 1: { x: 57, y: 34 } },
+      'single-left': { 2: { x: 37.5, y: 50 }, 0: { x: 60.6, y: 62.8 }, 1: { x: 60.6, y: 37.2 } },
     };
     for (const orientation of knobOrientations) {
       const controls = knobControls(orientation);

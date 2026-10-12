@@ -13,11 +13,11 @@ export interface ImageControl {
 }
 
 // Canonical M003K hit areas on knob.svg (single knob on top), covering each cap, its knurled body and its light ring.
-// Cap centres: index 2 at (50, 38), index 0 at (34, 57), index 1 at (66, 57).
+// Cap centres: index 2 at (50, 37.5), index 0 at (37.2, 60.6), index 1 at (62.8, 60.6).
 const knobCanonical: ImageControl[] = [
-  { control: 0, left: 22.5, top: 45.5, width: 23, height: 23, round: true },
-  { control: 1, left: 54.5, top: 45.5, width: 23, height: 23, round: true },
-  { control: 2, left: 38.5, top: 26.5, width: 23, height: 23, round: true },
+  { control: 0, left: 28.2, top: 51.6, width: 18, height: 18, round: true },
+  { control: 1, left: 53.8, top: 51.6, width: 18, height: 18, round: true },
+  { control: 2, left: 41, top: 28.5, width: 18, height: 18, round: true },
 ];
 
 // Rotates the canonical areas 90 degrees clockwise per step about the square's centre,
@@ -33,7 +33,7 @@ export function knobControls(orientation: KnobOrientation): ImageControl[] {
       left = 100 - y - width / 2;
       top = x - height / 2;
     }
-    return { ...area, left, top, width, height };
+    return { ...area, left: round1(left), top: round1(top), width, height };
   });
 }
 

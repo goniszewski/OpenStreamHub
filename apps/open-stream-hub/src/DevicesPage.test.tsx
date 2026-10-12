@@ -55,11 +55,11 @@ describe('3-knob module orientation', () => {
 
   it('rotates the module art through all four orientations and wraps', () => {
     const steps: { label: string; rotation: number; single: { left: number; top: number }; first: { left: number; top: number } }[] = [
-      { label: 'Single knob on top', rotation: 0, single: { left: 38.5, top: 26.5 }, first: { left: 22.5, top: 45.5 } },
-      { label: 'Single knob on the right', rotation: 90, single: { left: 50.5, top: 38.5 }, first: { left: 31.5, top: 22.5 } },
-      { label: 'Single knob at the bottom', rotation: 180, single: { left: 38.5, top: 50.5 }, first: { left: 54.5, top: 31.5 } },
-      { label: 'Single knob on the left', rotation: 270, single: { left: 26.5, top: 38.5 }, first: { left: 45.5, top: 54.5 } },
-      { label: 'Single knob on top', rotation: 0, single: { left: 38.5, top: 26.5 }, first: { left: 22.5, top: 45.5 } },
+      { label: 'Single knob on top', rotation: 0, single: { left: 41, top: 28.5 }, first: { left: 28.2, top: 51.6 } },
+      { label: 'Single knob on the right', rotation: 90, single: { left: 53.5, top: 41 }, first: { left: 30.4, top: 28.2 } },
+      { label: 'Single knob at the bottom', rotation: 180, single: { left: 41, top: 53.5 }, first: { left: 53.8, top: 30.4 } },
+      { label: 'Single knob on the left', rotation: 270, single: { left: 28.5, top: 41 }, first: { left: 51.6, top: 53.8 } },
+      { label: 'Single knob on top', rotation: 0, single: { left: 41, top: 28.5 }, first: { left: 28.2, top: 51.6 } },
     ];
     steps.forEach((step, index) => {
       if (index) clickRotate();
@@ -136,7 +136,7 @@ describe('hero live input', () => {
     expect(knob3).not.toMatch(/class="[^"]*pressed/);
     expect(heroButton(markup, 'Select Knob 1 on module image')).toMatch(/class="image-control round selected pressed"/);
     // The needle sits inside an unrotated hit area, positioned by the computed percentages.
-    expect(knob3).toContain('style="left:38.5%;top:26.5%');
+    expect(knob3).toContain('style="left:41%;top:28.5%');
   });
 
   it('shows the live encoder needle and press on the hero without making it a control', async () => {

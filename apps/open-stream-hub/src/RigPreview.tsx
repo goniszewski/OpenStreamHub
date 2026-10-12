@@ -175,6 +175,9 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
+      <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+    <details className="base-layout-options"><summary>Base options</summary>
+<div className="base-layout-options-body">
       {sensor.position && <div className="base-pin-controls" role="group" aria-label="Base sensor">
         <button type="button" className="mode-choice" aria-pressed={sensor.follow} title="Experimental: turn the layout with the value the base's own sensor reports. On the base tested it did not change when the base was moved, so leave it off unless yours does. You can always pick the turn by hand." onClick={() => baseSensorStore.setFollow(!sensor.follow)}>Follow sensor (experimental)</button>
         <span className="base-layout-note">Sensor: {sensor.position === 'landscape' ? 'lying down' : 'standing'}</span>
@@ -184,7 +187,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
         {pins.show && <><button type="button" className="mode-choice" aria-pressed={pins.turned} title="Turn the pins half way round if they do not match how your base is seated" onClick={() => basePinsStore.set({ turned: !pins.turned })}>Turn 180°</button>
         <button type="button" className="mode-choice" aria-pressed={pins.mirrored} title="Mirror the pins if they do not match how your base is seated" onClick={() => basePinsStore.set({ mirrored: !pins.mirrored })}>Mirror</button></>}
       </div>
-      <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+</div></details>
     {pickedDevice && <div className="base-layout-rotation" role="group" aria-label="Rotation of the selected module">
       <label>Rotation of {nameOf(pickedDevice)}
         <SelectField value={ownRotation(pickedDevice) === null ? 'follow' : String(ownRotation(pickedDevice))} onChange={event => moduleRotationStore.set(moduleRotationId(pickedDevice), event.target.value === 'follow' ? null : Number(event.target.value) as BaseOrientation)}>

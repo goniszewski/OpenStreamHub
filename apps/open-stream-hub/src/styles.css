@@ -825,3 +825,7 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .base-layout-base { position:relative; }
 .pogo-stud { fill:#101014; stroke:#2c2c34; stroke-width:0.012; }
 .pogo-bus { fill:#17171c; stroke:#2c2c34; stroke-width:0.012; }
+
+.base-layout-options { margin:0 2px 8px; font-size:11px; color:var(--muted); }
+.base-layout-options summary { cursor:pointer; width:max-content; }
+.base-layout-options-body { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; margin-top:6px; }

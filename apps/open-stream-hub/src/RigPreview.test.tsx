@@ -125,15 +125,16 @@ describe('RigPreview canvas', () => {
 
   it('stands the whole layout up when the base is vertical, turning each module with it', async () => {
     const state = stateFor();
-    baseOrientationStore.set('vertical');
+    baseOrientationStore.set(90);
     try {
       const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state)} state={state} feed={await feedOf(positioned)} />);
       expect(markup).toContain('USB-C ports at the top and right');
       expect(markup).toContain('--cols:5');
       expect(markup).toContain('--rows:6');
       expect(markup).toContain('rig-stage-turn');
-      expect(markup).toMatch(/aria-pressed="true"[^>]*>Vertical</);
-    } finally { baseOrientationStore.set('horizontal'); }
+      expect(markup).toMatch(/aria-pressed="true"[^>]*>90°</);
+      expect(markup).toContain('rig-stage-turn r90');
+    } finally { baseOrientationStore.set(0); }
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

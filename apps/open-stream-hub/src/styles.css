@@ -292,7 +292,10 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage { position:relative; height:var(--stage-h,120px); max-width:100%; aspect-ratio:var(--art-aspect); }
 .rig-stage img { display:block; width:100%; height:100%; object-fit:contain; pointer-events:none; user-select:none; }
 .rig-stage.turned { container-type:size; }
-.rig-stage-turn { position:absolute; left:50%; top:50%; width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(90deg); }
+.rig-stage-turn { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); }
+.rig-stage-turn.r90 { width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(90deg); }
+.rig-stage-turn.r270 { width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(270deg); }
+.rig-stage-turn.r180 { width:100cqw; height:100cqh; transform:translate(-50%,-50%) rotate(180deg); }
 .base-orientation { flex:none; }
 .rig-stage .display-label,.rig-stage .display-depth { display:none; }
 .rig-stage .image-control.bound:not(.selected) { border-color:#a284ff80; }

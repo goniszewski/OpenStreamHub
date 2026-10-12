@@ -8,7 +8,7 @@ import { baseGlow, emptyLightingState, kindLighting, lightMotion } from './light
 import type { LightingSnapshot, LightingStateStore } from './lighting-state';
 import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placementLabel, placementOf } from './base-layout';
 import { readFaderMemory, writeFaderMemory } from './fader-memory';
-import { baseOrientationLabels, baseOrientationStore, baseOrientations, baseTurns, turnPlacement, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
+import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlacement, usbEdges, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
 import type { BaseOrientation } from './base-orientation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
@@ -81,7 +81,6 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
-  const turned = baseTurns(baseOrientation) > 0;
   const turnedPlacement = (device: LiveDevice) => turnPlacement(devicePlacement(device), baseOrientation);
   const size = turnedBase(baseOrientation);
   const extent = layoutExtent(positioned.map(turnedPlacement), size);
@@ -104,11 +103,11 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   function dragFader(device: LiveDevice, control: number, event: PointerEvent<HTMLElement>) {
     if (event.type === 'pointermove' && event.buttons !== 1) return;
     const rect = event.currentTarget.getBoundingClientRect();
-    // The hit area spans the whole slot; a cap's centre only travels the part between its stops. On a base standing
-    // vertical the track runs left to right and its top end is on the right.
-    const length = turned ? rect.width : rect.height;
+    // The hit area spans the whole slot; a cap's centre only travels the part between its stops. The track's top end is
+    // where the base's turn puts it: the top, the right, the bottom or the left.
+    const length = baseOrientation === 90 || baseOrientation === 270 ? rect.width : rect.height;
     const inset = length * faderTrackInset;
-    const along = turned ? rect.right - event.clientX : event.clientY - rect.top;
+    const along = { 0: event.clientY - rect.top, 90: rect.right - event.clientX, 180: rect.bottom - event.clientY, 270: event.clientX - rect.left }[baseOrientation];
     const value = faderFromPointer(along - inset, length - 2 * inset, faderMaximum);
     setFaders(current => ({ ...current, [`${device.path_hex}:${control}`]: value }));
     if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(device, control); }
@@ -117,7 +116,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const stage = (device: LiveDevice) => {
     const stored = device.module === 'm003k' || device.module === 'm005s' ? kindLighting(lightingRecords, devices, device.module) : undefined;
     return <ModuleStage module={device.module} where="on the base" editor={editor} profile={profile} live={feedState.live[device.module]} stored={stored}
-      knobOrientation={turnedKnobOrientation(knobOrientation, baseOrientation)} turned={turned} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
+      knobOrientation={turnedKnobOrientation(knobOrientation, baseOrientation)} rotation={baseOrientation} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
       onSelect={control => select(device, control)} onFaderPointer={(control, event) => dragFader(device, control, event)}
       onFaderValue={(control, value) => editor.changeFaderPosition(value)} dropHandlers={dropHandlers && (control => dropHandlers(device.module, control))} />;
   };
@@ -140,8 +139,8 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   };
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
-    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the top and {turned ? 'right' : 'left'} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
-      <div className="mode-control base-orientation" role="group" aria-label="Base orientation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+    <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
+      <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
         <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }} />

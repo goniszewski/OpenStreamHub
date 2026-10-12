@@ -270,6 +270,8 @@ export const en = {
   'service.executingBody': 'Key presses do what they are set to do. Pause to stop them.',
   'service.dryBanner': 'Dry run: actions are logged only. Nothing changes on this Mac.',
   'service.sleepTitle': 'Paused while your Mac sleeps',
+  'service.demoTitle': 'A demo is using this module',
+  'service.demoBody': 'Your profile is paused and starts again when the demo ends.',
   'service.sleepAuto': 'Actions resume automatically after wake.',
   'service.sleepAsk': 'Actions stay off. You will be asked before they resume.',
   'service.sleepDry': 'It resumes automatically in dry-run mode.',

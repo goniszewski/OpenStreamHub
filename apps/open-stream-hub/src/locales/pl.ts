@@ -265,6 +265,8 @@ export const pl: Record<MessageKey, Message> = {
   'service.executingBody': 'Przyciski robią to, co im przypisano. Wstrzymaj, aby je zatrzymać.',
   'service.dryBanner': 'Próba: akcje tylko się zapisują. Nic się nie zmienia na tym Macu.',
   'service.sleepTitle': 'Wstrzymano na czas uśpienia Maca',
+  'service.demoTitle': 'Z modułu korzysta demo',
+  'service.demoBody': 'Profil jest wstrzymany i wystartuje ponownie po zakończeniu dema.',
   'service.sleepAuto': 'Akcje wznowią się automatycznie po wybudzeniu.',
   'service.sleepAsk': 'Akcje pozostają wyłączone. Przed wznowieniem zostaniesz zapytany.',
   'service.sleepDry': 'Wznowi się automatycznie w trybie próby.',

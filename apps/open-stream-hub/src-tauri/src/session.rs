@@ -200,6 +200,9 @@ pub enum Reason {
     /// now refuses a profile it allowed, so a session restarts executing or
     /// as a dry run.
     RunMode,
+    /// A demo holds the module: the session's process stopped to free it, and
+    /// the session starts it again when the demo ends.
+    Demo,
 }
 
 /// Why the session manager started a session on its own (module control
@@ -262,6 +265,10 @@ pub enum Event {
     },
     Suspend,
     Resume,
+    /// A demo takes the module: the process stops and nothing restarts it until `Release`.
+    Hold,
+    /// The demo is over: the session starts again, without asking again when it was running before.
+    Release,
     Inventory(Vec<LiveDevice>),
     /// The current process ended (or could not be spawned).
     ServiceExited {
@@ -374,6 +381,11 @@ pub struct Session {
     auto_start: Option<AutoStart>,
     auto_dry_run_reason: Option<String>,
     last_emitted: Option<SessionState>,
+    /// A demo holds the module (`Event::Hold`): no process runs for the session meanwhile.
+    held: bool,
+    /// The session had a process when the demo took the module, so the restart afterwards needs no new
+    /// confirmation: the user confirmed this very run, and has not left it.
+    held_restart: bool,
     /// The running process takes mode switches over its control channel, so a switch changes it in place instead of
     /// restarting it. Set when the process is ready, from what the runner supports; false in every other state.
     live_control: bool,
@@ -516,6 +528,8 @@ impl Session {
             auto_start,
             auto_dry_run_reason,
             last_emitted: None,
+            held: false,
+            held_restart: false,
             live_control: false,
         };
         let mut actions = Vec::new();
@@ -649,6 +663,18 @@ impl Session {
                 self.asleep = false;
                 self.settle_until = Some(now_ms + SETTLE_DELAY_MS);
                 self.interrupt(Reason::Sleep);
+            }
+            Event::Hold if !stopped && !self.held => {
+                self.held_restart = self.service.is_some();
+                self.held = true;
+                self.interrupt(Reason::Demo);
+            }
+            Event::Release if self.held => {
+                self.held = false;
+                self.attempt = 0;
+                self.interrupt(Reason::Demo);
+                self.pending_confirm = self.held_restart && self.execute;
+                self.held_restart = false;
             }
             Event::Inventory(devices) => self.inventory = devices,
             Event::ServiceExited {
@@ -789,6 +815,8 @@ impl Session {
             }
             Event::Suspend
             | Event::Resume
+            | Event::Hold
+            | Event::Release
             | Event::Tick
             | Event::UserStop
             | Event::UserResume
@@ -812,7 +840,7 @@ impl Session {
             if settling.is_none() {
                 self.settle_until = None;
             }
-            if self.asleep || settling.is_some() {
+            if self.asleep || self.held || settling.is_some() {
                 // Sleep restores hardware mode through the service's SIGINT
                 // path; a wake seen without a prior suspend restarts cleanly.
                 self.stop_process(actions);
@@ -1474,6 +1502,30 @@ impl<R: Runner> Driver<R> {
     /// `profile_generation` is the generation of the profile the user saw
     /// when confirming. A later switch refuses the resume with
     /// `PROFILE_CHANGED` and emits the current state again.
+    /// A demo takes the module at `path_hex`: its session, if any, stops its process and waits. Returns once the
+    /// process is told to stop, so the caller still waits for the module to be free.
+    pub fn hold(&mut self, path_hex: &str, now_ms: u64) {
+        if let Some(index) = self.demo_session(path_hex) {
+            self.apply(index, Event::Hold, now_ms);
+        }
+    }
+
+    /// The demo is over: the session holding the module starts it again.
+    pub fn release(&mut self, path_hex: &str, now_ms: u64) {
+        if let Some(index) = self.demo_session(path_hex) {
+            self.apply(index, Event::Release, now_ms);
+        }
+    }
+
+    fn demo_session(&mut self, path_hex: &str) -> Option<usize> {
+        let device = self.lookup(path_hex)?;
+        self.sessions.iter().position(|managed| {
+            !managed.session.finished()
+                && (managed.session.same_identity(&device)
+                    || managed.session.awaits_serial_less(&device))
+        })
+    }
+
     pub fn resume(
         &mut self,
         session_id: &str,
@@ -2331,6 +2383,9 @@ pub enum Input {
         sessions_only: bool,
         done: Sender<()>,
     },
+    /// A demo takes the module at this path, and gives it back.
+    Hold(String, Sender<()>),
+    Release(String, Sender<()>),
     /// Session id and the confirmed profile generation.
     Resume(String, u64, Sender<Result<(), String>>),
     /// Session id, saved profile id and profile; answered with the new
@@ -2384,6 +2439,14 @@ impl<R: Runner> Driver<R> {
                 done,
             } => {
                 self.stop(&id, sessions_only, now_ms);
+                let _ = done.send(());
+            }
+            Input::Hold(path_hex, done) => {
+                self.hold(&path_hex, now_ms);
+                let _ = done.send(());
+            }
+            Input::Release(path_hex, done) => {
+                self.release(&path_hex, now_ms);
                 let _ = done.send(());
             }
             Input::Resume(id, generation, reply) => {
@@ -2617,6 +2680,18 @@ impl Manager {
             Some(Err(error)) if error == DRIVER_STOPPED && !sessions_only => Ok(false),
             Some(answer) => answer.map(|()| true),
         }
+    }
+
+    /// A demo takes the module at `path_hex`; without a driver there is no session to hold.
+    pub fn hold(&self, path_hex: &str) -> Result<(), String> {
+        self.request(|done| Input::Hold(path_hex.into(), done))
+            .unwrap_or(Ok(()))
+    }
+
+    /// The demo is over; the module's session starts again.
+    pub fn release(&self, path_hex: &str) -> Result<(), String> {
+        self.request(|done| Input::Release(path_hex.into(), done))
+            .unwrap_or(Ok(()))
     }
 
     pub fn resume(&self, session_id: &str, profile_generation: u64) -> Result<(), String> {
@@ -3068,6 +3143,42 @@ mod tests {
         assert_eq!(restarted.profile, crate::test_profiles::folders());
         assert_eq!(phase(&mut driver), Phase::Running);
         assert!(driver.resume("service:unknown", 0, 0).is_err());
+    }
+
+    #[test]
+    fn a_demo_holds_the_module_and_the_session_starts_again_without_asking() {
+        for execute in [false, true] {
+            let (mut driver, id) = running(execute);
+            driver.hold(&dial("/a").path_hex, 10);
+            // The process is told to stop and nothing starts while the demo plays, however long it takes.
+            exit(&mut driver, &id, "", 20);
+            driver.tick(1_000_000);
+            driver.inventory(vec![dial("/a")], 1_000_001);
+            let state = last(&mut driver);
+            assert_eq!(
+                (state.phase, state.reason, state.service_id),
+                (Phase::Suspended, Some(Reason::Demo), None)
+            );
+            assert_eq!(starts(&mut driver), 1);
+
+            driver.release(&dial("/a").path_hex, 2_000_000);
+            // The user confirmed this very run, so it is not asked again, and it keeps its mode.
+            assert_eq!(starts(&mut driver), 2);
+            assert_eq!(driver.runner().starts[1].execute, execute);
+            assert_eq!(phase(&mut driver), Phase::Running);
+        }
+    }
+
+    #[test]
+    fn holding_a_module_with_no_session_changes_nothing_and_a_stopped_session_stays_stopped() {
+        let (mut driver, id) = running(false);
+        driver.hold("no-such-path", 1);
+        assert_eq!(phase(&mut driver), Phase::Running);
+        driver.stop(&id, false, 2);
+        exit(&mut driver, &id, "", 3);
+        driver.hold(&dial("/a").path_hex, 4);
+        driver.release(&dial("/a").path_hex, 5);
+        assert_eq!(starts(&mut driver), 1);
     }
 
     #[test]

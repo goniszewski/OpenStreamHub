@@ -4,6 +4,7 @@ mod base_slots;
 mod capabilities;
 #[cfg(test)]
 mod contract_fixtures;
+mod demo;
 mod diagnostics;
 mod display;
 mod export;
@@ -922,6 +923,75 @@ fn set_led_lighting(
     Ok(written)
 }
 
+// A demo owns one 15-key module for as long as it plays. The module's own session, if it has one, lets go of it and
+// waits (`Reason::Demo`); the demo is an unmanaged run with no bindings, in software mode and in Test mode, so no key
+// press does anything on the Mac and no profile display is drawn over it. It draws on the keys through the run's
+// control channel (`demo_key_image`). `demo_end` stops it and the session starts again.
+#[tauri::command(async)]
+fn demo_start(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path_hex: String,
+) -> Result<String, String> {
+    if state.sessions.is_closed() || state.services.is_closed() {
+        return Err(service::SHUTTING_DOWN.into());
+    }
+    let service_id = service::service_id(&path_hex)?;
+    state.sessions.hold(&path_hex)?;
+    // The session's process is told to stop; the module is free once it has gone.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while state.services.is_running(&service_id) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let request = service::StartRequest {
+        profile: demo::blank_profile()?,
+        path_hex: path_hex.clone(),
+        execute: false,
+        software_mode: true,
+        profile_id: None,
+        source_profile_id: None,
+        display: None,
+        obs: None,
+    };
+    run_service(&app, &request, None).inspect_err(|_| {
+        let _ = state.sessions.release(&path_hex);
+    })
+}
+
+// Ends a demo: its run stops, which puts the module back in hardware mode, and the module's session starts again.
+#[tauri::command(async)]
+fn demo_end(state: State<'_, AppState>, path_hex: String) -> Result<(), String> {
+    let service_id = service::service_id(&path_hex)?;
+    let stopped = if state.services.is_running(&service_id) {
+        state.services.stop(&service_id, service::STOP_GRACE)
+    } else {
+        Ok(())
+    };
+    state.sessions.release(&path_hex)?;
+    stopped
+}
+
+// Draws one picture on one key of the module a demo holds. The picture is a PNG the webview drew; it is fitted to
+// the key and encoded here, as every key image is, before the run writes it.
+#[tauri::command(async)]
+fn demo_key_image(
+    state: State<'_, AppState>,
+    service_id: String,
+    key: u8,
+    image_base64: String,
+) -> Result<(), String> {
+    let jpeg = demo::key_jpeg(image_base64)?;
+    let pipe = state
+        .services
+        .control(&service_id)
+        .ok_or("the demo is not running")?;
+    pipe.request(
+        serde_json::json!({"type":"key_image","key":key,"jpeg":jpeg}),
+        service::CONTROL_TIMEOUT,
+    )
+    .map(drop)
+}
+
 // What a knob or fader module reports about its LEDs: live brightness and the
 // saved effect per LED, never a colour. Read only. A module a run holds
 // answers through that run's control channel.
@@ -1762,6 +1832,9 @@ pub fn run() {
             list_base_modules,
             reset_dial_lighting,
             read_led_state,
+            demo_start,
+            demo_end,
+            demo_key_image,
             start_service,
             stop_service,
             resume_session,

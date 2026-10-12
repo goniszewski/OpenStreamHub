@@ -177,7 +177,7 @@ export type SessionPhase = 'running' | 'suspended' | 'waiting_for_device' | 'rec
 // module_control: an automatic session ended because Module control is no longer App (or its file cannot be read).
 // run_mode: the Live/Test mode was switched (or the execution guard's answer for a profile changed), so the session
 // restarts with or without actions.
-export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'profile_saved' | 'module_control' | 'run_mode';
+export type SessionReason = 'sleep' | 'device_removed' | 'service_exited' | 'start_refused' | 'user' | 'profile_switch' | 'profile_action' | 'profile_saved' | 'module_control' | 'run_mode' | 'demo';
 // Set for the whole life of a session the session manager started on its own (Module control App): a dry run on the
 // 15-key module or the dial when the app opened, when the module was connected, or when Module control was switched to
 // App with the module connected. Absent for a user's Start.

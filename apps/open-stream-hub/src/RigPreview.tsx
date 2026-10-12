@@ -176,6 +176,22 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
       <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+    <div className="base-layout-frame">
+      <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
+        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }}>
+          {pins.show && <PogoPins cols={size.cols} rows={size.rows} baseOrientation={baseOrientation} pins={pins} />}
+        </div>
+        {positioned.map(device => {
+          const placement = turnedPlacement(device);
+          const overhangs = Object.values(overhangOf(devicePlacement(device))).some(count => count > 0);
+          return <div key={device.path_hex} className={`base-layout-module${motionOf(device) ? ` fx-${motionOf(device)}` : ''}${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
+            style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
+            {stage(device)}
+            {caption(device)}
+          </div>;
+        })}
+      </div>
+    </div>
     <details className="base-layout-options"><summary>Base options</summary>
 <div className="base-layout-options-body">
       {sensor.position && <div className="base-pin-controls" role="group" aria-label="Base sensor">
@@ -197,22 +213,6 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
       </label>
       {ownRotation(pickedDevice) !== null && <><span className="base-layout-overridden">Overridden</span><button type="button" className="button" onClick={() => moduleRotationStore.set(moduleRotationId(pickedDevice), null)}>Follow base</button></>}
     </div>}
-    <div className="base-layout-frame">
-      <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
-        <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }}>
-          {pins.show && <PogoPins cols={size.cols} rows={size.rows} baseOrientation={baseOrientation} pins={pins} />}
-        </div>
-        {positioned.map(device => {
-          const placement = turnedPlacement(device);
-          const overhangs = Object.values(overhangOf(devicePlacement(device))).some(count => count > 0);
-          return <div key={device.path_hex} className={`base-layout-module${motionOf(device) ? ` fx-${motionOf(device)}` : ''}${overhangs ? ' overhangs' : ''}${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}
-            style={{ gridColumn: `${placement.col - extent.col + 1} / span ${placement.cols}`, gridRow: `${placement.row - extent.row + 1} / span ${placement.rows}` }}>
-            {stage(device)}
-            {caption(device)}
-          </div>;
-        })}
-      </div>
-    </div>
     {unpositioned.length > 0 && <div className="base-layout-unknown"><p>Position not detected{unpositioned.some(device => device.port_chain) && <span className="base-layout-note"> · USB port chain {unpositioned.map(device => device.port_chain && `${device.port_chain}`).filter(Boolean).join(', ')}</span>}</p>
       <div className="base-layout-extra">{unpositioned.map(device => <div key={device.path_hex} className={`base-layout-module loose${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}>{stage(device)}{caption(device)}</div>)}</div>
     </div>}
@@ -232,9 +232,9 @@ export function RigPreview({ editor, state, feed, lighting = emptyLightingState,
   const baseOrientation = useBaseOrientation();
   if (!feed) return null;
   return <section className="rig" aria-label="Module rig">
-    <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
     {layout && <ConnectedBaseLayout devices={feedState.devices} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
       knobOrientation={knobOrientation} baseOrientation={baseOrientation} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
+    <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
   </section>;
 }
 

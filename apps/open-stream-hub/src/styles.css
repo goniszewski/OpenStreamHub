@@ -837,3 +837,5 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .live-controls .live-status { flex:1 1 auto; text-align:right; }
 .base-layout-heading h3 { font-size:15px; letter-spacing:-.2px; }
 .base-layout-heading p { font-size:11px; }
+.live-controls { margin:14px 0 0; padding:12px 0 0; border-bottom:0; border-top:1px solid var(--line); }
+.base-layout-options, .base-layout-rotation { margin-top:10px; }

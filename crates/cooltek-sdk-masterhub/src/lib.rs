@@ -4,6 +4,7 @@
 
 #![deny(missing_docs)]
 
+pub mod base_orientation;
 pub mod descriptor;
 pub mod dial;
 mod dial_session;

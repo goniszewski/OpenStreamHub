@@ -29,6 +29,7 @@ fn main() {
             "demo_speed_cancel",
             "demo_key_image",
             "list_base_modules",
+            "read_base_orientation",
             "reset_dial_lighting",
             "start_service",
             "stop_service",

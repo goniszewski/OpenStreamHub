@@ -212,7 +212,7 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 ## Base orientation byte (12 October 2026)
 
-The base firmware (see [firmware images](research/masterhub-firmware-images.md)) answers feature report 0x35 with one orientation byte. A read-only `masterhub-diag features --report-id 0x35` on the base (PID 502, serial `MHBS01AA…`, with the app running) returned `35 00 01 00 …`: state 1, with the base lying down in landscape with its USB-C ports at the top and left. **Pending:** read it again with the base stood up (and flat again) to see which value means which, and confirm the input report `01 2b 01 00 <state>` arrives when the base is turned.
+The base firmware (see [firmware images](research/masterhub-firmware-images.md)) answers feature report 0x35 with one orientation byte. A read-only `masterhub-diag features --report-id 0x35` on the base (PID 502, serial `MHBS01AA…`, with the app running) returned `35 00 01 00 …`: state 1, with the base lying down in landscape with its USB-C ports at the top and left. The desktop app now reads this report every two seconds and follows it (Settings of the layout: "Follow sensor"); state 1 is taken as lying down. **Pending:** read it again with the base stood up (and flat again) to see which value means which, and confirm the input report `01 2b 01 00 <state>` arrives when the base is turned.
 
 ## Timer countdown on the key (12 October 2026, pending)
 

@@ -27,6 +27,19 @@ Only the base image contains `G sensor communicate fail` and `G sensor write dat
 - The official app's vertical/horizontal base setting is a plausible consumer of this, and the base is printed with "VERTICAL" and "HORIZONTAL" marks. Which value means which is not in the firmware's strings; it needs one read per position on the module (see the hardware results).
 - The sensor distinguishes two states, not four rotations.
 
+## How the app uses it
+
+The desktop app reads feature report 0x35 of the base every two seconds (`read_base_orientation`, one read-only GET FEATURE) and, with "Follow sensor" on, turns the connected base layout when the state changes. State 1 is taken as lying down (as measured); 0 is assumed to be standing. The sensor gives the axis only, so the choice between 0° and 180°, or 90° and 270°, stays with the user. The input report `01 2b …` is not listened for yet; the poll finds the same change within two seconds.
+
+## What else the images show
+
+- **Header fields.** After the 28-byte name: a little-endian length (24,232 for the base, 23,656 for the knobs; the dial's field reads 127,256 although its file is 355,802 bytes, so the dial file holds more than one block) and a four-byte word that is probably a checksum; the algorithm is not worked out.
+- **Report handling.** The base and knobs images switch on feature report IDs 0x2d to 0x36 through a jump table; an unknown ID logs `no match feature report %d`. Report 0x2d returns four bytes at offset 0x2c of a device block and 0x2e to 0x32 return similar fixed fields (version-like data), which matches the 4-byte versions read from the rollers and knobs earlier; this was not decoded further. `SET_IDLE` is logged when the host sends that request.
+- **Version strings.** `__APVER_02.00.04.00` (base), `__APVER_01.00.05.00` (knobs) and, for the dial, `__APVER_01.00.04.00` plus `__LDVER_` (a separate loader version).
+- **Product strings.** The dial image carries `COOLER MASTER` and `1xDial w/ IPS, 2x2`, and checks the serial (`Invalid SN!`); the running base reports `Base, 4x6`.
+- **Knobs.** Their image logs `In Hard Fault Handler`, so a crash in the module's code is reported over its debug output.
+- **Dial runtime.** Tasks named `tmr_task`, `process_event_task` and `update_screen_task` with an event queue (`EventQue`, `procEvt`, `frame_cnt`) and a content-over-buffer-size guard (`ERR: content over buffer size!!`), an LCD initialisation, SPI flash identification and a jump to SRAM. A frame counter and event queue suggest the display is drawn from queued events, which fits the rate limits seen on hardware.
+
 ## Dial update flow (from strings)
 
 The dial image keeps a runtime copy and a backup of its firmware, its configuration and its animation, each with a length and CRC (`runtime animation crc`, `backup animation len`, `save backup fw...`, `Recovery AP...`, `Recovery animation...`, `Recovery config...`). A bad runtime copy is restored from the backup. This is the layout the official updater relies on; this repository does not implement firmware updates.

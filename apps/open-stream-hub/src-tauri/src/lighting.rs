@@ -208,6 +208,20 @@ pub fn base_modules(devices: &[ModuleIdentity]) -> Vec<BaseModule> {
     listed
 }
 
+/// Reads the base's orientation state (0 or 1) from the base at `target`: one GET FEATURE, nothing written.
+pub fn read_base_orientation(registry: &DeviceRegistry, target: &str) -> Result<u8, String> {
+    let inventory = registry.devices();
+    let path = parse_path(target)?;
+    let (selected, module) = select_led_identity(&inventory, &path)?;
+    if module != LedModule::Base {
+        return Err("only the base reports its orientation".into());
+    }
+    let device = registry
+        .open(selected)
+        .map_err(|error| format!("could not open the base: {error}"))?;
+    cooltek_sdk_masterhub::base_orientation::read_orientation_state(&device)
+}
+
 /// Applies one look to every target knob or fader module, in order, stopping at
 /// the first failure. All targets are opened first, so a wrong target never
 /// leaves an earlier one half-written. Returns the number of modules written.

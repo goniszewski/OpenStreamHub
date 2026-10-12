@@ -11,6 +11,7 @@ import { readFaderMemory, writeFaderMemory } from './fader-memory';
 import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlacement, usbEdges, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
 import type { BaseOrientation } from './base-orientation';
 import type { BasePins } from './base-pins';
+import { baseSensorStore, useBaseSensor } from './base-sensor';
 import { basePinsStore, pinLayout, useBasePins } from './base-pins';
 import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, useModuleRotations } from './module-rotation';
 import { useKnobOrientation } from './knob-orientation';
@@ -102,6 +103,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
   const pins = useBasePins();
+  const sensor = useBaseSensor();
   const rotations = useModuleRotations();
   const ownRotation = (device: LiveDevice) => rotations[moduleRotationId(device)] ?? null;
   const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device));
@@ -173,6 +175,10 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
 
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
+      {sensor.position && <div className="base-pin-controls" role="group" aria-label="Base sensor">
+        <button type="button" className="mode-choice" aria-pressed={sensor.follow} title="Turn the layout with the base's own sensor when you lay it down or stand it up. You can still pick the turn by hand." onClick={() => baseSensorStore.setFollow(!sensor.follow)}>Follow sensor</button>
+        <span className="base-layout-note">Sensor: {sensor.position === 'landscape' ? 'lying down' : 'standing'}</span>
+      </div>}
       <div className="base-pin-controls" role="group" aria-label="Pogo pins">
         <button type="button" className="mode-choice" aria-pressed={pins.show} onClick={() => basePinsStore.set({ show: !pins.show })}>Pogo pins</button>
         {pins.show && <><button type="button" className="mode-choice" aria-pressed={pins.turned} title="Turn the pins half way round if they do not match how your base is seated" onClick={() => basePinsStore.set({ turned: !pins.turned })}>Turn 180°</button>

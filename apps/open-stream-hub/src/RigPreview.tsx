@@ -105,7 +105,10 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     select(device, device.path_hex === activePath ? selection.control : 0);
   };
   const caption = (device: LiveDevice) => {
-    const name = modules.find(module => module.id === device.module)?.shortName ?? device.module;
+    const base = modules.find(module => module.id === device.module)?.shortName ?? device.module;
+    // Identical modules are told apart by their order in the inventory: "15-key 1/2".
+    const same = devices.filter(other => other.module === device.module);
+    const name = same.length > 1 ? `${base} ${same.indexOf(device) + 1}/${same.length}` : base;
     // A plain label, not a control: the tile and its own controls pick the unit. The serial number sits behind an info mark.
     return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
       <span>{name}</span>

@@ -10,8 +10,10 @@ import { baseColumns, baseRows, layoutExtent, overhangLabel, overhangOf, placeme
 import { readFaderMemory, writeFaderMemory } from './fader-memory';
 import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlacement, usbEdges, turnedBase, turnedKnobOrientation, useBaseOrientation } from './base-orientation';
 import type { BaseOrientation } from './base-orientation';
+import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, useModuleRotations } from './module-rotation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
+import { SelectField } from './controls';
 import { ModuleStage, livePointer, livePressed, livePulse } from './ModuleStage';
 import type { DropHandlers } from './ModuleStage';
 import { faderTrackInset } from './module-art';
@@ -81,7 +83,14 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const { selection } = editor;
   const positioned = devices.filter(device => device.base_cell);
   const unpositioned = devices.filter(device => !device.base_cell);
-  const turnedPlacement = (device: LiveDevice) => turnPlacement(devicePlacement(device), baseOrientation);
+  const rotations = useModuleRotations();
+  const ownRotation = (device: LiveDevice) => rotations[moduleRotationId(device)] ?? null;
+  const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device));
+  // A module's cell follows the base; one turned a quarter against the base keeps its corner and swaps its width and height.
+  const turnedPlacement = (device: LiveDevice) => {
+    const placed = turnPlacement(devicePlacement(device), baseOrientation);
+    return footprintSwaps(baseOrientation, ownRotation(device)) ? { ...placed, cols: placed.rows, rows: placed.cols } : placed;
+  };
   const size = turnedBase(baseOrientation);
   const extent = layoutExtent(positioned.map(turnedPlacement), size);
   const glow = baseGlow(basePath ? lightingRecords[basePath] : undefined);
@@ -105,9 +114,10 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     const rect = event.currentTarget.getBoundingClientRect();
     // The hit area spans the whole slot; a cap's centre only travels the part between its stops. The track's top end is
     // where the base's turn puts it: the top, the right, the bottom or the left.
-    const length = baseOrientation === 90 || baseOrientation === 270 ? rect.width : rect.height;
+    const turned = rotationOf(device);
+    const length = turned === 90 || turned === 270 ? rect.width : rect.height;
     const inset = length * faderTrackInset;
-    const along = { 0: event.clientY - rect.top, 90: rect.right - event.clientX, 180: rect.bottom - event.clientY, 270: event.clientX - rect.left }[baseOrientation];
+    const along = { 0: event.clientY - rect.top, 90: rect.right - event.clientX, 180: rect.bottom - event.clientY, 270: event.clientX - rect.left }[turned];
     const value = faderFromPointer(along - inset, length - 2 * inset, faderMaximum);
     setFaders(current => ({ ...current, [`${device.path_hex}:${control}`]: value }));
     if (event.type === 'pointerdown') { event.currentTarget.setPointerCapture?.(event.pointerId); select(device, control); }
@@ -116,7 +126,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const stage = (device: LiveDevice) => {
     const stored = device.module === 'm003k' || device.module === 'm005s' ? kindLighting(lightingRecords, devices, device.module) : undefined;
     return <ModuleStage module={device.module} where="on the base" editor={editor} profile={profile} live={feedState.live[device.module]} stored={stored}
-      knobOrientation={turnedKnobOrientation(knobOrientation, baseOrientation)} rotation={baseOrientation} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
+      knobOrientation={turnedKnobOrientation(knobOrientation, rotationOf(device))} rotation={rotationOf(device)} picked={device.path_hex === activePath} faderValue={control => faderValue(device, control)}
       onSelect={control => select(device, control)} onFaderPointer={(control, event) => dragFader(device, control, event)}
       onFaderValue={(control, value) => editor.changeFaderPosition(value)} dropHandlers={dropHandlers && (control => dropHandlers(device.module, control))} />;
   };
@@ -125,11 +135,15 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
     if ((event.target as HTMLElement).closest('.image-control')) return;
     select(device, device.path_hex === activePath ? selection.control : 0);
   };
-  const caption = (device: LiveDevice) => {
+  const nameOf = (device: LiveDevice) => {
     const base = modules.find(module => module.id === device.module)?.shortName ?? device.module;
     // Identical modules are told apart by their order in the inventory: "15-key 1/2".
     const same = devices.filter(other => other.module === device.module);
-    const name = same.length > 1 ? `${base} ${same.indexOf(device) + 1}/${same.length}` : base;
+    return same.length > 1 ? `${base} ${same.indexOf(device) + 1}/${same.length}` : base;
+  };
+  const pickedDevice = devices.find(device => device.path_hex === activePath) ?? null;
+  const caption = (device: LiveDevice) => {
+    const name = nameOf(device);
     // A plain label, not a control: the tile and its own controls pick the unit. The serial number sits behind an info mark.
     return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
       <span>{name}</span>
@@ -141,6 +155,15 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
       <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+    {pickedDevice && <div className="base-layout-rotation" role="group" aria-label="Rotation of the selected module">
+      <label>Rotation of {nameOf(pickedDevice)}
+        <SelectField value={ownRotation(pickedDevice) === null ? 'follow' : String(ownRotation(pickedDevice))} onChange={event => moduleRotationStore.set(moduleRotationId(pickedDevice), event.target.value === 'follow' ? null : Number(event.target.value) as BaseOrientation)}>
+          <option value="follow">Follow base ({baseOrientationLabels[baseOrientation]})</option>
+          {baseOrientations.map(value => <option key={value} value={value}>{baseOrientationLabels[value]}</option>)}
+        </SelectField>
+      </label>
+      {ownRotation(pickedDevice) !== null && <><span className="base-layout-overridden">Overridden</span><button type="button" className="button" onClick={() => moduleRotationStore.set(moduleRotationId(pickedDevice), null)}>Follow base</button></>}
+    </div>}
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
         <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }} />

@@ -1,18 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { baseColumns, baseRows, layoutExtent, placementOf } from './base-layout';
-import { baseOrientations, createBaseOrientationStore, effectiveRotation, readBaseOrientation, turnPlacement, turnedBase, turnedKnobOrientation } from './base-orientation';
+import { baseOrientations, createBaseOrientationStore, readBaseOrientation, turnPlacement, turnedBase, turnedKnobOrientation } from './base-orientation';
 
 const memory = (initial?: string) => { const data = new Map<string, string>(initial ? [['open-stream-hub.base-orientation', initial]] : []); return { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => void data.set(key, value) }; };
 
 describe('base orientation', () => {
-  it('turns every module by the base turn plus its own override', () => {
-    expect(effectiveRotation(0)).toBe(0);
-    expect(effectiveRotation(90)).toBe(90);
-    expect(effectiveRotation(90, 270)).toBe(0);
-    expect(effectiveRotation(180, 180)).toBe(0);
-    expect(effectiveRotation(0, -90)).toBe(270);
-  });
-
   it('turns the base from 6x4 to 4x6 and back', () => {
     expect(baseOrientations.map(turnedBase)).toEqual([{ cols: baseColumns, rows: baseRows }, { cols: 4, rows: 6 }, { cols: baseColumns, rows: baseRows }, { cols: 4, rows: 6 }]);
   });

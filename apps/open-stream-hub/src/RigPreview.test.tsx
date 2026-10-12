@@ -5,6 +5,7 @@ import { ProfileSession } from './profile-session';
 import { RigPreview } from './RigPreview';
 import { DeviceFeed } from './device-feed';
 import { baseOrientationStore } from './base-orientation';
+import { moduleRotationStore } from './module-rotation';
 import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -135,6 +136,25 @@ describe('RigPreview canvas', () => {
       expect(markup).toMatch(/aria-pressed="true"[^>]*>90°</);
       expect(markup).toContain('rig-stage-turn r90');
     } finally { baseOrientationStore.set(0); }
+  });
+
+  it('lets one module keep its own rotation while the others follow the base, with a mark and a reset', async () => {
+    const state = stateFor();
+    const render = async () => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm032le')} state={state} feed={await feedOf(positioned)} pickedPath="rollers" />);
+    let markup = await render();
+    expect(markup).toContain('Rotation of');
+    expect(markup).toContain('Follow base (0°)');
+    expect(markup).not.toContain('Overridden');
+    expect(markup).not.toContain('rig-stage-turn');
+    moduleRotationStore.set('path:rollers', 90);
+    try {
+      markup = await render();
+      expect(markup).toContain('Overridden');
+      // Only the rollers turn; the base and the other modules stay at 0°.
+      expect(markup.match(/rig-stage-turn r90/g)).toHaveLength(1);
+      expect(markup).not.toContain('rig-stage-turn r180');
+    } finally { moduleRotationStore.set('path:rollers', null); }
+    expect(await render()).not.toContain('Overridden');
   });
 
   it('keeps only the live controls when the layout is off (the standalone module view is showing)', async () => {

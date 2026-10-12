@@ -18,9 +18,6 @@ export const baseOrientationLabels: Record<BaseOrientation, string> = { 0: '0°'
 // Quarter turns clockwise that the base orientation applies to everything drawn on it.
 export const baseTurns = (orientation: BaseOrientation) => orientation / 90;
 
-// A module's effective rotation in degrees: the base's turn plus the module's own (an override; 0 follows the base).
-export const effectiveRotation = (orientation: BaseOrientation, override = 0) => (((orientation + override) % 360) + 360) % 360;
-
 // Which edges carry the USB-C ports once the base is turned.
 export const usbEdges: Record<BaseOrientation, string> = { 0: 'top and left', 90: 'top and right', 180: 'bottom and right', 270: 'bottom and left' };
 

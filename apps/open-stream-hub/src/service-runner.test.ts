@@ -329,7 +329,7 @@ describe('session manager', () => {
     session(t, 'running', { service_id: id2, execute: true });
     session(t, 'stopped', { service_id: null, reason: 'service_exited', detail: 'crashed', execute: true });
     expect(texts(t)).toEqual(['Mac went to sleep — actions paused', 'Paused: confirm to resume actions', 'Waiting for m131e to reconnect',
-      'Reconnecting (attempt 2/5)', 'Reconnected', 'Session stopped: the background helper exited (crashed)']);
+      'Reconnecting (attempt 2/5)', 'Reconnected', 'Paused: the background helper exited (crashed)']);
     expect(run(t).entries.at(-1)!.kind).toBe('error');
   });
   it('a refused start ends the run once, without reconnect attempts or the service sentence', async () => {
@@ -339,7 +339,7 @@ describe('session manager', () => {
     t.status('exited', { exit_code: 1, stderr_tail: `${raw}\n` });
     session(t, 'stopped', { service_id: null, reason: 'start_refused', detail: friendly });
     const entries = texts(t);
-    expect(entries.filter(text => text.startsWith('Session stopped'))).toEqual([`Session stopped: the profile could not start (${friendly})`]);
+    expect(entries.filter(text => text.startsWith('Paused'))).toEqual([`Paused: the profile could not start (${friendly})`]);
     expect(entries.some(text => text.startsWith('Reconnecting'))).toBe(false);
     expect(entries.join('\n')).not.toContain('--display-sync');
     expect(run(t).entries.at(-1)!.kind).toBe('error');
@@ -349,7 +349,7 @@ describe('session manager', () => {
   it('logs a user stop as info and unplug as stopped reason', async () => {
     const t = await started();
     session(t, 'stopped', { service_id: null, reason: 'user' });
-    expect(run(t).entries.at(-1)).toMatchObject({ kind: 'info', text: 'Session stopped: stopped by you' });
+    expect(run(t).entries.at(-1)).toMatchObject({ kind: 'info', text: 'Paused: stopped by you' });
     expect(run(t).state).toBe('exited');
   });
   it('turns next_attempt_in_ms into a deadline', async () => {
@@ -806,7 +806,7 @@ describe('session manager', () => {
       const runs = t.runner.getState().runs;
       expect(Object.keys(runs)).toEqual([t.id]);
       expect(runs[t.id]).toMatchObject({ serviceId: t.id, profileName: 'Fresh', state: 'running', counters: { events: 1 }, session: { serviceId: t.id, phase: 'running', serialNumber: 'SER-2' } });
-      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Session stopped: the module was unplugged');
+      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Paused: the module was unplugged');
       expect(t.runner.isActivePath('aabb')).toBe(true);
     };
     // `awaiting` is private; a stale entry has no other observable effect until a later start reuses the key.
@@ -879,7 +879,7 @@ describe('session manager', () => {
       expect(Object.keys(runs)).toEqual([t.id]);
       expect(runs[t.id]).toMatchObject({ profileName: 'Fresh', profileGeneration: 0, execute: true, session: { phase: 'needs_confirmation', profileGeneration: 0 } });
       expect(runs[t.id].profileSwitched).toBeFalsy();
-      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Session stopped: the module was unplugged');
+      expect(runs[t.id].entries.map(entry => entry.text)).not.toContain('Paused: the module was unplugged');
       expect(t.runner.isActivePath('aabb')).toBe(false);
       // Resume asks once, for the profile shown, and names generation 0.
       const shown: string[] = [];

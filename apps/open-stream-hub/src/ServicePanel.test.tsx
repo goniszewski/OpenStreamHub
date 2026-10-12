@@ -187,7 +187,7 @@ describe('ServicePanel markup', () => {
     const saved = render({ feed, runner });
     expect(saved).toContain('(the saved version)');
     expect(saved).not.toContain('(unsaved changes)');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
     expect(markup).toContain('role="log"');
     expect(markup).toContain('<time>now</time>');
   });
@@ -338,61 +338,70 @@ describe('header Run control', () => {
     expect(phaseLabel(undefined)).toBe('Stopped');
     // A dry run and an executing run are named by what they do, never just "Running".
     const dry = fixtures(false);
-    expect(render({ feed: dry.feed, runner: dry.runner })).toContain('run-state-pill running" role="status">Dry run</span>');
+    expect(render({ feed: dry.feed, runner: dry.runner })).toContain('run-state-pill running sr-only" role="status">Dry run</span>');
     const live = fixtures(true);
     const executing = render({ feed: live.feed, runner: live.runner });
-    expect(executing).toContain('run-state-pill running executing" role="status">Executing</span>');
+    expect(executing).toContain('run-state-pill running executing sr-only" role="status">Executing</span>');
     expect(executing).toContain('service-badge running executing" role="status">Executing</span>');
+    // Normal operation draws no chip in the header: the Pause button and the Test | Live switch carry it.
+    expect(executing).toContain('<span>Pause</span>');
+    expect(executing).toContain('<span>Live</span>');
+    expect(executing).toContain('<span>Test</span>');
+  });
+  it('dims the mode switch while the module is paused and draws a chip only for states that need attention', () => {
+    expect(render()).toContain('class="mode-control idle"');
+    const { feed, runner } = fixtures(false);
+    expect(render({ feed, runner })).toContain('class="mode-control"');
   });
   it('offers Run when stopped (disabled with its blocker) and Stop while a run is active', () => {
     const idle = render();
-    expect(idle).toContain('run-state-pill idle sr-only" role="status">Stopped</span>');
+    expect(idle).toContain('run-state-pill idle sr-only" role="status">Paused</span>');
     expect(idle).toMatch(/<button type="button" class="button icon-run primary" disabled="" aria-label="[^"]*" data-tip="[^"]*">/);
     const { feed, runner } = fixtures(false);
     const active = render({ feed, runner });
-    expect(active).toContain('aria-label="Stop"');
+    expect(active).toContain('aria-label="Pause"');
     expect(active).not.toMatch(/<button[^>]*class="button primary"[^>]*>/);
   });
   it('keeps Run and Stop out of the panel; the panel keeps device and mode selection', () => {
     const { feed, runner } = fixtures(false);
     const markup = render({ feed, runner });
-    expect(markup).toContain('aria-label="Run control"');
+    expect(markup).toContain('aria-label="Module activity"');
     expect(markup).toContain('id="service-device"');
-    expect(markup).toContain('aria-label="Run mode"');
+    expect(markup).toContain('aria-label="Mode"');
     // Exactly one Stop across header and panel.
-    expect(markup.match(/aria-label="Stop"/g)).toHaveLength(1);
+    expect(markup.match(/aria-label="Pause"/g)).toHaveLength(1);
   });
   it('offers Resume and Stop in the header for a paused run', () => {
     const { feed, runner } = fixtures(true, 'running', {
       session: { serviceId: null, phase: 'needs_confirmation', reason: 'sleep', attempt: 0, module: 'm131e', serialNumber: 'ABCDEF123456' } });
     const markup = render({ feed, runner });
     expect(markup).toContain('>Resume…</button>');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
     expect(markup).toContain('run-state-pill needs_confirmation" role="status">Needs confirmation</span>');
   });
   it('names the module a start would use on the Run button', () => {
     // A stopped run, so the header offers Run again.
     const { feed, runner } = fixtures(false, 'exited');
-    expect(render({ feed, runner, displaySettings: loadedSettings() })).toContain('aria-label="Run on encoder"');
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toContain('aria-label="Activate encoder"');
     // Without a device there is nothing to name.
-    expect(render()).toContain('aria-label="Run"');
+    expect(render()).toContain('aria-label="Activate"');
     // The tooltip still carries the full device name with its serial.
-    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/data-tip="Dry run on Encoder IPS display S1"/);
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/data-tip="Activate in Test mode on Encoder IPS display S1"/);
   });
   it('runs with actions in Live mode and stays primary in Test', () => {
     const { feed, runner } = fixtures(false, 'exited');
     const live = render({ feed, runner, displaySettings: loadedSettingsWith('live') });
-    expect(live).toContain('aria-label="Run with actions on encoder"');
-    expect(live).toMatch(/<button type="button" class="button icon-run danger"[^>]*data-tip="Run with actions on Encoder IPS display S1"/);
+    expect(live).toContain('aria-label="Activate with actions on encoder"');
+    expect(live).toMatch(/<button type="button" class="button icon-run danger"[^>]*data-tip="Activate with actions on Encoder IPS display S1"/);
     expect(live).toMatch(/run-mode-pill sr-only live" role="status">Live</);
     // Test stays primary.
-    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/<button type="button" class="button icon-run primary"[^>]*data-tip="Dry run on Encoder IPS display S1"/);
+    expect(render({ feed, runner, displaySettings: loadedSettings() })).toMatch(/<button type="button" class="button icon-run primary"[^>]*data-tip="Activate in Test mode on Encoder IPS display S1"/);
   });
   it('reads Test (imported profile) on the badge while the open profile may not execute', () => {
     const { feed, runner } = fixtures(false, 'exited');
     const imported = render({ feed, runner, displaySettings: loadedSettingsWith('live'), dryRunOnly: true, dryRunNote: 'imported' });
     expect(imported).toMatch(/run-mode-pill sr-only test" role="status">Test \(imported profile\)</);
-    expect(imported).toContain('aria-label="Run on encoder"');
+    expect(imported).toContain('aria-label="Activate encoder"');
     // The saved mode stays Live and its switch stays on: only this profile
     // is held back, which the badge says.
     expect(imported).toMatch(/<button type="button" class="mode-choice live" aria-pressed="true"[^>]*aria-label="Live mode" data-tip="Live mode[^>]*>/);
@@ -697,7 +706,7 @@ describe('session banners', () => {
     expect(markup).toContain('Actions are paused. Nothing will run until you resume.');
     expect(markup).toContain('Resume actions…');
     expect(markup).toContain(`id="${serviceResumeId}"`);
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
     expect(markup).toContain('>Needs confirmation<');
   });
   it('suspended in dry-run mode says it resumes automatically', () => {
@@ -705,7 +714,7 @@ describe('session banners', () => {
     const markup = render({ feed, runner });
     expect(markup).toContain('Paused while your Mac sleeps');
     expect(markup).toContain('resumes automatically in dry-run mode');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
   });
   it('explains that opted-in automatic actions resume without confirmation', () => {
     for (const [phase, expected] of [
@@ -722,7 +731,7 @@ describe('session banners', () => {
     const markup = render({ feed, runner });
     expect(markup).toContain('Waiting for Encoder IPS display …123456 to reconnect…');
     expect(markup).not.toContain(liveBanner);
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
   });
   it('reconnecting shows the attempt and countdown', () => {
     const { feed, runner } = sessionFor('reconnecting', { attempt: 3, nextAttemptAt: 6500 });
@@ -737,30 +746,30 @@ describe('session banners', () => {
   it('stopped shows reason and detail and no Stop', () => {
     const { feed, runner } = sessionFor('stopped', { reason: 'service_exited', detail: 'HID read failed' });
     const markup = render({ feed, runner });
-    expect(markup).toContain('Session stopped: the background helper exited');
+    expect(markup).toContain('Paused: the background helper exited');
     expect(markup).toContain('HID read failed');
     expect(markup).not.toContain(liveBanner);
-    expect(markup).not.toContain('aria-label="Stop"');
-    expect(markup).toContain('aria-label="Run on encoder"');
+    expect(markup).not.toContain('aria-label="Pause"');
+    expect(markup).toContain('aria-label="Activate encoder"');
   });
   it('a refused start shows its plain reason once, with no reconnect banner or raw service output', () => {
     const detail = 'This profile\'s 15-key pages run live only when OpenStreamHub controls the module. Module control in Settings is set to Built-in animation: set it to App, then start the profile again.';
     const { feed, runner } = sessionFor('stopped', { reason: 'start_refused', detail });
     setRun(runner, { state: 'exited', exitCode: 1, stderrTail: 'masterhub-service: nested keypad profiles run live only with --display-sync (which requires --software-mode); in OpenStreamHub, set Module control to App in Settings' });
     const markup = render({ feed, runner });
-    expect(markup).toContain('Session stopped: the profile could not start');
+    expect(markup).toContain('Paused: the profile could not start');
     // The backend refusal appears exactly once, as the session detail.
     expect(markup.split('Module control in Settings is set to Built-in animation').length).toBe(2);
     expect(markup).not.toContain('Reconnecting');
     expect(markup).not.toContain('--display-sync');
-    expect(markup).toContain('aria-label="Run on encoder"');
+    expect(markup).toContain('aria-label="Activate encoder"');
   });
   it('keeps showing the session when no device is connected', () => {
     const { runner } = sessionFor('waiting_for_device');
     const feed = new DeviceFeed(async () => [] as never, async () => () => {}, true);
     const markup = render({ feed, runner });
     expect(markup).toContain('to reconnect');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
   });
   it('a run paused by a focused-app switch resumes with the switched profile', () => {
     const { feed, runner } = sessionFor('needs_confirmation', { reason: 'profile_switch' });
@@ -959,7 +968,7 @@ describe('Run-panel selection across replug', () => {
     const markup = render({ feed, runner });
     expect(markup).toContain('>Waiting<');
     expect(markup).toContain('(disconnected)');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
     expect(markup).toContain('Everyday');
   });
   it('adopts a new active session after the retained session stopped', () => {
@@ -1045,7 +1054,7 @@ describe('ServicePanel variants', () => {
   it('stays out of the workspace when nothing needs attention, and is whole under Settings', () => {
     expect(renderToStaticMarkup(<ServicePanel variant="workspace" />)).toBe('');
     const full = renderToStaticMarkup(<ServicePanel />);
-    expect(full).toContain('Run profile');
+    expect(full).toContain('Active profile');
     expect(full).toContain('service-controls');
   });
 });

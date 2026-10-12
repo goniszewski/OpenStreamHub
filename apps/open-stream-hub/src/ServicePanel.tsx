@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { CircleHelp, FlaskConical, LoaderCircle, MoonStar, Play, Square, TriangleAlert, Zap } from 'lucide-react';
+import { CircleHelp, FlaskConical, LoaderCircle, MoonStar, Pause, Play, TriangleAlert, Zap } from 'lucide-react';
 import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } from './contracts';
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
@@ -526,17 +526,17 @@ export function ModeControl({ run }: { run: RunSession }) {
   const busy = display.busy || !display.loaded;
   // The switch itself shows the mode; the badge text stays for screen readers, because three holds
   // (imported profile, unconfirmed Live, editing) read as Test whatever the mode is.
-  return <div className="mode-control" role="group" aria-label={t('run.mode')}>
+  return <div className={`mode-control${run.active ? '' : ' idle'}`} role="group" aria-label={t('run.mode')}>
     <span className={`mode-pill run-mode-pill sr-only ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{(badge => badgeKeys[badge] ? t(badgeKeys[badge]) : badge)(runModeBadge(runMode, dryRunOnly, confirmed, editingHeld))}</span>
     <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy} aria-label={t('run.testMode')}
-      data-tip={editingHeld ? t('run.editingNote') : t('run.testTip')} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /></button>
+      data-tip={editingHeld ? t('run.editingNote') : t('run.testTip')} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /><span>{t('run.badge.test')}</span></button>
     <button type="button" className="mode-choice live" aria-pressed={live} disabled={!enabled || busy || !mac} aria-label={t('run.liveMode')}
       data-tip={mac ? t('run.liveTip') : t('run.macOnly')}
-      onClick={() => setRunMode('live')}><Zap size={16} aria-hidden="true" /></button>
+      onClick={() => setRunMode('live')}><Zap size={16} aria-hidden="true" /><span>{t('run.badge.live')}</span></button>
   </div>;
 }
 
-// The header Run control: the run state (Stopped / Dry run / Executing / Paused / …), the run-mode
+// The header Run control: the run state (Paused / Dry run / Executing / Paused / …), the run-mode
 // badge and switch, then the one primary action — Run, Stop, or, for a paused run, Resume. The
 // button names the module a start would use and turns danger when the mode would run with actions.
 // The confirmations live here too, so Run and the mode switch work from every page.
@@ -551,17 +551,19 @@ export function RunHeaderControl({ run }: { run: RunSession }) {
   const what = executeSelected ? t('run.runWithActions') : t('run.dryRun');
   const runTitle = blocker ?? (device ? t('run.on', { what, device: deviceName(device) }) : what);
   const runLabel = executeSelected ? target ? t('run.runWithActionsOn', { target }) : t('run.runWithActions') : target ? t('run.runOn', { target }) : t('run.run');
-  // An idle run says nothing visually (the Run button is the state); anything else gets a chip.
-  const quiet = pill.label === 'Stopped';
+  // Normal operation says nothing visually: the Pause / Activate button is the state and the Test | Live switch is the
+  // mode. Only a state that needs attention (waiting, reconnecting, paused by sleep, needs confirmation, failed) gets
+  // a chip; the others stay for screen readers.
+  const quiet = ['Stopped', 'Dry run', 'Executing', 'Running', 'Starting', 'Stopping'].includes(pill.label);
   return <div className="run-control" role="group" aria-label={t('run.control')}>
     <span className={`mode-pill run-state-pill ${pill.className}${quiet ? ' sr-only' : ''}`} role="status">{pillText(t, pill.label)}</span>
     <ModeControl run={run} />
     {needsConfirmation ? <>
       <button type="button" className="button compact danger" data-tip={t('run.resumeTip')} onClick={resume}>{t('run.resume')}</button>
-      <button type="button" className="button icon-run" aria-label={t('run.stop')} data-tip={t('run.stopWithout')} disabled={stopping} onClick={stop}><Square size={16} aria-hidden="true" /></button>
+      <button type="button" className="button icon-run" aria-label={t('run.stop')} data-tip={t('run.stopWithout')} disabled={stopping} onClick={stop}><Pause size={16} aria-hidden="true" /><span>{t('run.stop')}</span></button>
     </> : active
-      ? <button type="button" className="button icon-run" aria-label={stopping ? t('run.stoppingLabel') : t('run.stop')} data-tip={stopping ? t('run.stoppingTip') : t('run.stopTip')} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Square size={16} aria-hidden="true" />}</button>
-      : <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}</button>}
+      ? <button type="button" className="button icon-run" aria-label={stopping ? t('run.stoppingLabel') : t('run.stop')} data-tip={stopping ? t('run.stoppingTip') : t('run.stopTip')} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}<span>{stopping ? t('run.stoppingLabel') : t('run.stop')}</span></button>
+      : <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}<span>{starting ? t('run.pill.starting') : t('run.run')}</span></button>}
     <ExecuteDialog run={run} />
   </div>;
 }

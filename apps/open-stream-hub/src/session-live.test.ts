@@ -204,6 +204,6 @@ describe('session input in the live preview', () => {
     expect(t.runner.isActivePath('aabb')).toBe(true);
     await t.feed.startLive('aabb');
     expect(t.feedCalls).not.toContain('start_feed');
-    expect(t.feed.getState().error).toContain('Stop the running profile');
+    expect(t.feed.getState().error).toContain('Pause this module');
   });
 });

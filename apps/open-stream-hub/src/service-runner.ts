@@ -122,7 +122,7 @@ function sessionEntry(previous: SessionInfo | undefined, next: SessionInfo, at: 
     case 'reconnecting': return info(isProfileReason(next.reason) ? 'Restarting with the new profile' : next.reason === 'run_mode' ? 'Restarting: the run mode was switched' : `Reconnecting (attempt ${next.attempt}/${maxReconnectAttempts})`);
     case 'needs_confirmation': return info(isProfileReason(next.reason) ? 'Paused for the new profile: confirm to resume actions' : 'Paused: confirm to resume actions');
     case 'stopped': {
-      const text = `Session stopped: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
+      const text = `Paused: ${next.reason ? reasonLabels[next.reason] : 'ended'}${next.detail ? ` (${clip(next.detail)})` : ''}`;
       return { kind: next.reason === 'user' || next.reason === 'module_control' || next.reason === null ? 'info' : 'error', text, at };
     }
     default: return previous && previous.phase !== 'running' ? info('Reconnected') : null;

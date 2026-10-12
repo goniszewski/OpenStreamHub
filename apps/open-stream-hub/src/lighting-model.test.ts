@@ -49,8 +49,8 @@ describe('lightingBlockReason', () => {
     expect(gate({ desktop: false })).toBe('The browser preview cannot reach hardware.');
   });
   it('names a run that holds a target dial', () => {
-    expect(gate({ runOwnedTargets: true })).toBe('A run is using a module you are changing, so its lighting is locked. Stop the run to change it.');
-    expect(gate({ runOwnedTargets: true, heldNames: ['Encoder IPS display', '3-knob module'] })).toBe('A run is using Encoder IPS display and 3-knob module, so its lighting is locked. Stop the run to change it.');
+    expect(gate({ runOwnedTargets: true })).toBe('Lighting is locked while the module you are changing is active. Pause it to change the lighting.');
+    expect(gate({ runOwnedTargets: true, heldNames: ['Encoder IPS display', '3-knob module'] })).toBe('Lighting is locked while Encoder IPS display and 3-knob module are active. Pause them to change the lighting.');
   });
   it('asks for a module when nothing is connected', () => {
     expect(gate({ selected: undefined, devices: [] })).toBe('No modules are connected. Connect a module to change its lighting.');

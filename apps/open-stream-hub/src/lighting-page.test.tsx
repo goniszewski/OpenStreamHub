@@ -81,15 +81,15 @@ describe('LightingPage', () => {
 
   it('names a run that is driving a target dial', () => {
     const markup = render({ devices: [dial('aa')], runner: runOwned });
-    expect(markup).toContain('A run is using');
-    expect(markup).toContain('Stop the run to change it.');
-    expect(markup).toContain('>Stop run</button>');
+    expect(markup).toContain('Lighting is locked while');
+    expect(markup).toContain('Pause it to change the lighting.');
+    expect(markup).toContain('>Pause</button>');
     expect(markup).toContain('<fieldset class="lighting-controls" disabled="">');
   });
 
   it('does not claim a run-owned dial is skipped — the page locks instead', () => {
     const markup = render({ devices: [dial('aa')] });
-    expect(markup).toContain('While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting.');
+    expect(markup).toContain('While a dial is active, its lighting is locked and Whole kit is unavailable; pause it to change the lighting.');
     expect(markup).not.toContain('is left out');
   });
 

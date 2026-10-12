@@ -78,8 +78,8 @@ describe('run controls', () => {
     i18n.setLanguage('pl');
     const header = renderToStaticMarkup(<RunHeaderControl run={idleRunSession} />);
     expect(header).toContain('aria-label="Tryb testowy"');
-    expect(header).toContain('aria-label="Sterowanie uruchamianiem"');
-    expect(renderToStaticMarkup(<ServicePanel />)).toContain('Uruchamianie profilu');
+    expect(header).toContain('aria-label="Aktywność modułu"');
+    expect(renderToStaticMarkup(<ServicePanel />)).toContain('Aktywny profil');
     i18n.setLanguage('en');
     expect(renderToStaticMarkup(<RunHeaderControl run={idleRunSession} />)).toContain('aria-label="Test mode"');
   });

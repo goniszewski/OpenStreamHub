@@ -246,14 +246,14 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           {kind === 'led' ? <LightbulbOff size={16} /> : <RotateCcw size={16} />}{busy ? (kind === 'led' ? 'Turning off…' : 'Resetting…') : kind === 'led' ? 'Turn off' : 'Reset'}
         </button>
       </div>
-      {reason && <p className="fine-print lighting-reason" role="status">{reason}{runOwned && runner && <button type="button" className="button compact" onClick={() => runner.runsHolding(held as unknown as LiveDevice[]).forEach(id => void runner.stop(id))}>Stop run</button>}</p>}
+      {reason && <p className="fine-print lighting-reason" role="status">{reason}{runOwned && runner && <button type="button" className="button compact" onClick={() => runner.runsHolding(held as unknown as LiveDevice[]).forEach(id => void runner.stop(id))}>Pause</button>}</p>}
       {error && <div className="service-failure" role="alert"><strong>{kind === 'led' ? 'Could not reach the module.' : 'Could not reach the dial.'}</strong> {error}</div>}
       {!error && status && <p className="fine-print" role="status">{status}</p>}
       <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Turn off switches the picked LED, or every LED, back to Off.' : 'Reset hands the dial back to its built-in animation.'}</p>
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a run is driving any dial, Whole kit is unavailable. Stop the run to change lighting. Knob and fader modules take a colour, an effect and a brightness; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a dial is active, its lighting is locked and Whole kit is unavailable; pause it to change the lighting. Knob and fader modules take a colour, an effect and a brightness, even while they are active; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
       </details>
     </div>
   </section>;

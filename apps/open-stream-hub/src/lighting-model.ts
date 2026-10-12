@@ -84,7 +84,7 @@ export interface LightingGate {
 // disabled with the reason instead of hiding them.
 export function lightingBlockReason({ desktop, runOwnedTargets, heldNames = [], scope, selected, devices }: LightingGate): string | null {
   if (!desktop) return 'The browser preview cannot reach hardware.';
-  if (runOwnedTargets) return `A run is using ${heldNames.length ? joinNames(heldNames) : 'a module you are changing'}, so its lighting is locked. Stop the run to change it.`;
+  if (runOwnedTargets) return `Lighting is locked while ${heldNames.length ? joinNames(heldNames) : 'the module you are changing'} ${heldNames.length > 1 ? 'are' : 'is'} active. Pause ${heldNames.length > 1 ? 'them' : 'it'} to change the lighting.`;
   if (devices.length === 0) return 'No modules are connected. Connect a module to change its lighting.';
   const kind = selected ? lightingKind(selected.module) : 'dial';
   if (scope === 'kit') {

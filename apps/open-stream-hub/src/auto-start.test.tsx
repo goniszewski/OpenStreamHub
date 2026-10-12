@@ -83,7 +83,7 @@ describe('automatically started sessions', () => {
     expect(markup).toContain(autoStartNote('app_opened', true));
     expect(markup).toContain('Live: actions run on this Mac');
     expect(markup).not.toContain('Profile changed since start');
-    expect(markup).toContain('aria-label="Stop"');
+    expect(markup).toContain('aria-label="Pause"');
   });
   it('hide the automatic-start line once the session stopped, with its own reason', async () => {
     const device: LiveDevice = { path_hex: dialState.service_id!.replace('service:', ''), module: 'm131e', serial_number: dialState.serial_number };
@@ -94,10 +94,10 @@ describe('automatically started sessions', () => {
     t.state({ ...dialState, phase: 'stopped', service_id: null, reason: 'module_control' });
     const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
     expect(markup).not.toContain(autoStartNote('app_opened'));
-    expect(markup).toContain('Session stopped: OpenStreamHub no longer drives the display');
+    expect(markup).toContain('Paused: OpenStreamHub no longer drives the display');
     expect(reasonLabels.module_control).toBe('OpenStreamHub no longer drives the display');
     // Stopped by a settings change the user made: an info line, not an error.
-    expect(t.runner.getState().runs[dialState.session_id].entries.at(-1)).toMatchObject({ kind: 'info', text: 'Session stopped: OpenStreamHub no longer drives the display' });
+    expect(t.runner.getState().runs[dialState.session_id].entries.at(-1)).toMatchObject({ kind: 'info', text: 'Paused: OpenStreamHub no longer drives the display' });
   });
   it('never merge into a Run the backend refused because an automatic session owns the module', async () => {
     const pathHex = keypadState.service_id!.replace('service:', '');

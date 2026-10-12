@@ -521,6 +521,15 @@ describe('session manager', () => {
       { command: 'resume_session', args: { sessionId: t.id, profileGeneration: 2 } },
     ]);
   });
+  it('remembers who made a switch the running process took in place', async () => {
+    const t = setup(); t.runner.connect(); await tick();
+    // An in-place swap leaves the session's own reason empty; the switch reason still names the key.
+    session(t, 'running', { reason: null, profile_generation: 1, profile_id: 'p-editor', profile_name: 'Editor', profile_switch_reason: 'profile_action' });
+    expect(run(t)).toMatchObject({ profileName: 'Editor', profileGeneration: 1, profileSwitched: true, profileSwitchedBy: 'key' });
+    // A save is not a switch away from the saved profile.
+    session(t, 'running', { reason: null, profile_generation: 2, profile_id: 'p-editor', profile_name: 'Editor', profile_switch_reason: 'profile_saved' });
+    expect(run(t)).toMatchObject({ profileGeneration: 2, profileSwitched: false });
+  });
   it('a profile key switch resyncs the run and is remembered as a key switch', async () => {
     const t = setup(); t.runner.connect(); await tick();
     const { record, states } = profileActionEvents;

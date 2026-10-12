@@ -190,6 +190,8 @@ export interface SessionStatePayload {
   // The profile of profile_generation: profile_id is the saved profile a switch put in place (null while the session
   // still runs the profile it was started with), profile_name its name. The runner resyncs its confirmation copy from them.
   profile_id: string | null; profile_name: string;
+  // What made the latest profile switch, also when the running process took it in place (then `reason` stays null).
+  profile_switch_reason?: SessionReason;
   detail?: string; next_attempt_in_ms?: number; auto_start?: SessionAutoStart;
   // Why this session runs as a dry run although the run mode is Live (the execution guard's refusal).
   auto_dry_run_reason?: string;

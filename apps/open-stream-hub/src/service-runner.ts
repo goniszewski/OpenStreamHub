@@ -137,14 +137,16 @@ function adoptProfile(run: ServiceRun, payload: SessionStatePayload): Partial<Se
   if (typeof payload.profile_name !== 'string' || generation < (run.profileGeneration ?? 0)) return {};
   // A save (profile_saved) keeps the run on its saved profile: the run is not
   // switched away from it, so its copy is the saved version again.
-  const saved = payload.reason === 'profile_saved';
+  const cause = payload.profile_switch_reason ?? payload.reason;
+  const saved = cause === 'profile_saved';
+  const switchedBy = cause === 'profile_action' ? 'key' as const : cause === 'profile_switch' ? 'rule' as const : undefined;
   const switched = generation > 0 && typeof payload.profile_id === 'string';
   const newer = generation > (run.profileGeneration ?? 0);
   return {
     profileName: payload.profile_name, profileGeneration: generation,
     ...(switched ? { profileId: payload.profile_id, profileSwitched: !saved, draftUnsaved: false } : {}),
     // A newer switch says who made it when the event carries the reason; otherwise who switched is not known.
-    ...(switched && newer ? { snapshot: unknownSnapshot, ...(saved ? {} : { profileSwitchedBy: payload.reason === 'profile_action' ? 'key' as const : payload.reason === 'profile_switch' ? 'rule' as const : undefined }) } : {}),
+    ...(switched && newer ? { snapshot: unknownSnapshot, ...(saved ? {} : { profileSwitchedBy: switchedBy }) } : {}),
   };
 }
 const normalSerial = (serial: string | null | undefined) => serial?.trim() || null;

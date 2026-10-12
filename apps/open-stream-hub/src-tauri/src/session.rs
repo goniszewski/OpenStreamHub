@@ -238,6 +238,10 @@ pub struct SessionState {
     /// Name of the profile of `profile_generation`, so the frontend can resync
     /// the confirmation copy after a lost switch reply or a reload.
     pub profile_name: String,
+    /// What made the latest profile switch (`profile_switch`, `profile_action` or `profile_saved`), also when the
+    /// running process took it in place and `reason` stays empty. Omitted until a switch happened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_switch_reason: Option<Reason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,6 +307,7 @@ pub enum Event {
     ProfileApplied {
         profile_id: String,
         profile_name: String,
+        reason: Reason,
     },
     /// The stored request now carries another profile; the current process
     /// stops and the session restarts it under the usual safety rule.
@@ -378,6 +383,7 @@ pub struct Session {
     profile_generation: u64,
     profile_id: Option<String>,
     profile_name: String,
+    profile_switch_reason: Option<Reason>,
     auto_start: Option<AutoStart>,
     auto_dry_run_reason: Option<String>,
     last_emitted: Option<SessionState>,
@@ -525,6 +531,7 @@ impl Session {
             profile_generation: 0,
             profile_id: None,
             profile_name,
+            profile_switch_reason: None,
             auto_start,
             auto_dry_run_reason,
             last_emitted: None,
@@ -586,6 +593,7 @@ impl Session {
             profile_generation: self.profile_generation,
             profile_id: self.profile_id.clone(),
             profile_name: self.profile_name.clone(),
+            profile_switch_reason: self.profile_switch_reason,
             detail: self.detail.clone(),
             next_attempt_in_ms,
             auto_start: self.auto_start,
@@ -789,8 +797,10 @@ impl Session {
             Event::ProfileApplied {
                 profile_id,
                 profile_name,
+                reason,
             } if !stopped => {
                 self.profile_generation += 1;
+                self.profile_switch_reason = Some(reason);
                 self.profile_id = Some(profile_id);
                 self.profile_name = profile_name;
             }
@@ -802,6 +812,7 @@ impl Session {
                 reason,
             } if !stopped => {
                 self.profile_generation += 1;
+                self.profile_switch_reason = Some(reason);
                 self.profile_id = Some(profile_id);
                 self.profile_name = profile_name;
                 if self
@@ -1733,6 +1744,7 @@ impl<R: Runner> Driver<R> {
             Event::ProfileApplied {
                 profile_id,
                 profile_name,
+                reason,
             }
         } else {
             Event::ProfileSwitched {
@@ -3058,6 +3070,7 @@ mod tests {
                 profile_generation: 0,
                 profile_id: None,
                 profile_name: crate::test_profiles::folders().name,
+                profile_switch_reason: None,
                 detail: None,
                 next_attempt_in_ms: None,
                 auto_start: None,
@@ -3911,6 +3924,8 @@ mod tests {
             (Phase::Running, None, 1)
         );
         assert_eq!(state.profile_name, "Saved");
+        // The in-place swap still names what made it, though the run's own reason stays empty.
+        assert_eq!(state.profile_switch_reason, Some(Reason::ProfileSaved));
     }
 
     #[test]

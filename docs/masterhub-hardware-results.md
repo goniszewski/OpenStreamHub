@@ -214,7 +214,9 @@ On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut
 
 `masterhub-service run --profile examples/profiles/keypad-folders.json --software-mode --display-sync --press-feedback --duration-secs 60` on one M4315, without `--execute` (no action ran). The user pressed keys and folder keys: the held key dimmed, the keys stayed responsive. The log agrees: 12 `press` and 4 `navigation` redraws, all complete with no error; a press wrote only the held key (for example `[0]`, `[1]`, `[2]`), and opening a folder drew the new page with that key already dimmed (`[0,1,2]`, `[0,1]`). Session: 16 reports, all processed, 0 dropped or coalesced, 0 display failures. No per-write timing is logged, so the 150 ms cutoff was not measured; feedback never switched itself off during the run. The service refuses to write its output to a plain file (pipe it through `tee`).
 
-**Still pending:** an animated key dimmed while it animates (the example profile has none); the setting off in the desktop app (nothing dims); the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
+**Feedback off, via the service (12 October 2026):** the same command without `--press-feedback`. The user pressed keys and folder keys and nothing dimmed. The log agrees: no `press` display records, only the initial `software_mode` redraw and 3 `navigation` redraws; 15 reports, all processed, 0 dropped, 0 display failures.
+
+**Still pending:** an animated key dimmed while it animates (the example profile has none); the setting off in the desktop app; the action latency compared with the setting off (run without `--execute`); and the check through the desktop app rather than the service.
 
 The original checklist, for the remaining items:
 

@@ -11,7 +11,7 @@ export const moleEndMs = 450;
 export const gapMs = 250;
 export const flashMs = 300;
 // A press this soon after a mole left still counts: the key took time to draw and the press took time to arrive.
-export const graceMs = 200;
+export const graceMs = 100;
 
 // A key other than `previous`, so the same key never comes up twice in a row.
 export function pickKey(previous: number | null, random: () => number = Math.random): number {

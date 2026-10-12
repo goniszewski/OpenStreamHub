@@ -31,7 +31,7 @@ export function TicTacToeScreen({ runtime, pathHex, onEnd }: { runtime: DemoRunt
     const finish = (end: Parameters<typeof onEnd>[0]) => { if (!ended.current) { ended.current = true; onEnd(end); } };
     runtime.start(pathHex, key => { if (live) play(key); }, end => finish(end)).then(
       () => { if (!live) return; setReady(true); void runtime.render(tiles(current.current)).catch(() => {}); },
-      reason => finish({ reason: 'start-failed', error: reason instanceof Error ? reason.message : String(reason) }),
+      reason => { if (live) finish({ reason: 'start-failed', error: reason instanceof Error ? reason.message : String(reason) }); },
     );
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') void runtime.end('user'); };
     window.addEventListener('keydown', onKey);

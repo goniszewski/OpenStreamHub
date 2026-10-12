@@ -31,6 +31,12 @@ export class DemoRuntime {
   private chain: Promise<unknown> = Promise.resolve();
   private onKey: (key: number) => void = () => {};
   private onEnd: (end: DemoEnd) => void = () => {};
+  // Starts and their clean-ups run one after the other, so a start made right after a cancelled one (a page that
+  // mounts twice) finds the module handed back first.
+  private lifecycle: Promise<unknown> = Promise.resolve();
+  private cancelStart: ((error: Error) => void) | null = null;
+  // The start that is queued or in progress, so an end right behind it can cancel it.
+  private pending: { cancelled: boolean } | null = null;
 
   constructor(private readonly options: DemoRuntimeOptions) {}
 
@@ -39,6 +45,19 @@ export class DemoRuntime {
   // Starts a demo on the module at `pathHex`. Resolves once the module is ready to draw on, or rejects (and leaves
   // everything as it was: the session has its module back).
   async start(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void): Promise<void> {
+    const request = { cancelled: false };
+    this.pending = request;
+    const previous = this.lifecycle;
+    let release: () => void = () => {};
+    this.lifecycle = new Promise<void>(resolve => { release = resolve; });
+    await previous.catch(() => {});
+    try {
+      if (request.cancelled) throw new Error('The demo was cancelled.');
+      await this.begin(pathHex, onKey, onEnd);
+    } finally { if (this.pending === request) this.pending = null; release(); }
+  }
+
+  private async begin(pathHex: string, onKey: (key: number) => void, onEnd: (end: DemoEnd) => void): Promise<void> {
     if (this.phase !== 'idle') throw new Error('A demo is already running.');
     this.phase = 'starting';
     this.pathHex = pathHex;
@@ -51,6 +70,8 @@ export class DemoRuntime {
     let ready: () => void = () => {};
     let failed: (error: Error) => void = () => {};
     const readiness = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject; });
+    readiness.catch(() => {});
+    this.cancelStart = error => failed(error);
     const timeout = timers.set(() => failed(new Error('The module did not get ready for the demo.')), readyTimeoutMs);
     try {
       this.unlisten = await Promise.all([
@@ -61,10 +82,12 @@ export class DemoRuntime {
       await readiness;
     } catch (reason) {
       timers.clear(timeout);
+      this.cancelStart = null;
       await this.finish(false);
       throw reason instanceof Error ? reason : new Error(String(reason));
     }
     timers.clear(timeout);
+    this.cancelStart = null;
     this.phase = 'running';
   }
 
@@ -86,7 +109,14 @@ export class DemoRuntime {
 
   // Ends the demo and gives the module back.
   async end(reason: DemoEnd['reason'] = 'user', error?: string) {
-    if (this.phase === 'idle' || this.phase === 'ending') return;
+    // A demo still starting is cancelled: its start gives the module back and rejects.
+    if (this.pending && this.phase !== 'running') {
+      this.pending.cancelled = true;
+      this.cancelStart?.(new Error('The demo was cancelled.'));
+      await this.lifecycle.catch(() => {});
+      return;
+    }
+    if (this.phase !== 'running') return;
     const wasRunning = this.phase === 'running';
     await this.finish(true);
     if (wasRunning) this.onEnd({ reason, ...(error ? { error } : {}) });

@@ -87,4 +87,17 @@ describe('DemoRuntime', () => {
     expect(slow.commands()).toEqual(['demo_start', 'demo_end']);
     expect(slow.ignored.at(-1)).toEqual(['service:ab', false]);
   });
+
+  it('survives a page that mounts, cleans up and mounts again at once', async () => {
+    const { runtime, commands, ends, begin } = setup();
+    const first = begin();
+    const cancelled = runtime.end();
+    await expect(first).rejects.toThrow('cancelled');
+    await cancelled;
+    await begin();
+    expect(runtime.getPhase()).toBe('running');
+    // The cancelled start never touched the module.
+    expect(commands()).toEqual(['demo_start']);
+    expect(ends).toEqual([]);
+  });
 });

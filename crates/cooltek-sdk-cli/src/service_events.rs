@@ -301,7 +301,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
     }
     emit(output, report)?;
     summary.processed_report_count += work.report_count;
-    for planned in work.events {
+    for planned in &work.events {
         if abort.load(Ordering::SeqCst) {
             break;
         }
@@ -334,7 +334,14 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         if planned.is_dial_function_switch() {
             summary.dial_function_switch_count += planned.coalesced;
         }
-        let Some(action) = action else {
+    }
+    // Every event of the work item is on the record before the first action runs, so a slow action (a volume
+    // change takes a moment) never holds back what the events after it show, such as the app's knob needle.
+    for planned in &work.events {
+        if abort.load(Ordering::SeqCst) {
+            break;
+        }
+        let ProfileResolution::Action { action, .. } = &planned.resolution else {
             continue;
         };
         if abort.load(Ordering::SeqCst) {
@@ -351,7 +358,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             continue;
         }
         if let Action::Timer { .. } = action {
-            let key = timer_key(&planned);
+            let key = timer_key(planned);
             let record = match timers.toggle(key.clone(), action, now_micros) {
                 Ok(TimerToggle::Started { running, .. }) => {
                     summary.timer_started_count += 1;
@@ -1353,5 +1360,63 @@ mod tests {
                 current
             );
         }
+    }
+
+    #[test]
+    fn every_event_of_a_work_item_is_logged_before_its_first_action_runs() {
+        struct Watch<'a>(
+            &'a std::cell::RefCell<Vec<u8>>,
+            std::cell::RefCell<Vec<usize>>,
+        );
+        impl ActionDispatcher for Watch<'_> {
+            fn dispatch(&mut self, _: &Action) -> Result<(), String> {
+                // Records written so far, when this action runs.
+                self.1.borrow_mut().push(self.0.borrow().len());
+                Ok(())
+            }
+        }
+        struct Shared<'a>(&'a std::cell::RefCell<Vec<u8>>);
+        impl Write for Shared<'_> {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.borrow_mut().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut work = press(0, 1, Action::ToggleMute);
+        let mut second = work.events[0].clone();
+        second.event.timestamp_micros = 2;
+        second.event.control = 1;
+        work.events.push(second);
+        let written = std::cell::RefCell::new(Vec::new());
+        let mut watch = Watch(&written, Default::default());
+        process_work(
+            work,
+            &mut watch,
+            &mut Shared(&written),
+            &AtomicBool::new(false),
+            true,
+            false,
+            false,
+            &mut TimerTable::default(),
+            0,
+            &mut LiveSummary::default(),
+        )
+        .unwrap();
+        let all = records(&written.borrow());
+        let events = all
+            .iter()
+            .filter(|record| record["type"] == "event")
+            .count();
+        assert_eq!(events, 2);
+        // Both event records were already written when the first action ran.
+        let first_run = watch.1.borrow()[0];
+        assert_eq!(
+            records(&written.borrow()[..first_run]).len(),
+            3,
+            "report and both events"
+        );
     }
 }

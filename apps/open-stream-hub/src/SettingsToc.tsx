@@ -43,7 +43,15 @@ export function SettingsToc({ label }: { label: string }) {
 
   const go = (id: string) => {
     setActive(id);
-    document.getElementById(id)?.scrollIntoView({ behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+    const target = document.getElementById(id);
+    if (!target) return;
+    const behavior = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+    // Scroll only the content pane: scrollIntoView also moves the clipped ancestors (the app shell and the
+    // sidebar), which slides the header and navigation out of reach.
+    const pane = target.closest<HTMLElement>('.main-content');
+    if (!pane) { target.scrollIntoView({ behavior, block: 'start' }); return; }
+    const top = target.getBoundingClientRect().top - pane.getBoundingClientRect().top + pane.scrollTop - 24;
+    pane.scrollTo({ top: Math.max(0, top), behavior });
   };
 
   return <nav ref={nav} className="settings-toc" aria-label={label} hidden={items.length === 0}>

@@ -1,5 +1,6 @@
 mod app_icon;
 mod artwork;
+mod base_slots;
 mod capabilities;
 #[cfg(test)]
 mod contract_fixtures;

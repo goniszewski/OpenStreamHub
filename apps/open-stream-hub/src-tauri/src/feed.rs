@@ -4,12 +4,15 @@
 //! A feed never enables software mode, sends feature/output reports, loads a
 //! profile, or plans/dispatches actions. It only reads and decodes input.
 
+use crate::base_slots;
 use crate::replay::{self, DemoKind};
 use cooltek_sdk_cli::{
     capture::encode_hex,
     device::{parse_path, select_device},
 };
-use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleIdentity, ReportTransport};
+use cooltek_sdk_masterhub::{
+    DeviceRegistry, InputReader, ModuleIdentity, ModuleKind, ReportTransport,
+};
 use cooltek_sdk_service::{InputEvent, InputSession, InputUpdate, ServiceModule};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -94,6 +97,9 @@ pub struct LiveDevice {
     pub serial_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_cell: Option<BaseCell>,
+    /// The USB port chain the module enumerated on (macOS only), for diagnostics when its position is not known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_chain: Option<String>,
 }
 
 /// Top-left cell a module occupies on the 4x6 MasterHUB base, counted from the
@@ -154,6 +160,12 @@ fn live_devices_with_locations(
                 && device.usage_page >= VENDOR_USAGE_PAGE
         })
     };
+    // The base's own interface gives the chain of its hub; every module's slot is read below it.
+    let hub = devices
+        .iter()
+        .filter(|device| device.module == Some(ModuleKind::M0064))
+        .find_map(|device| location_ids.get(device.path.as_bytes()))
+        .and_then(|location_id| base_slots::hub_prefix(&base_slots::port_chain(*location_id)));
     let mut listed: Vec<LiveDevice> = Vec::new();
     for (device, module) in &supported {
         if device.usage_page < VENDOR_USAGE_PAGE && has_vendor_page(device) {
@@ -169,42 +181,24 @@ fn live_devices_with_locations(
             serial_number: device.serial_number.clone(),
             base_cell: location_ids
                 .get(device.path.as_bytes())
-                .and_then(|location_id| base_cell(*module, *location_id)),
+                .and_then(|location_id| base_cell(*module, *location_id, hub.as_deref())),
+            port_chain: location_ids
+                .get(device.path.as_bytes())
+                .map(|location_id| base_slots::chain_text(&base_slots::port_chain(*location_id))),
         });
     }
     sort_devices(&mut listed);
     listed
 }
 
-/// Resolves the currently documented MasterHUB USB topology to the cell a
-/// module starts at. The high location-ID byte identifies the host bus; the
-/// trailing port chain is stable across bus-number changes. Footprints are
-/// M4315 4x3, M005S 4x2, M032LE 4x1, M131E and M003K 2x2 (columns by rows
-/// here, as in the product names). Observed suffixes: M4315 `[1,2,2]` (top-left),
-/// `[1,1,1,1,1]` (top-left with its top row 1 cell above the base, 11 October
-/// 2026, the keys and faders together being 5 rows tall) and `[1,1,2,3]`
-/// (bottom-left, 10 October 2026 arrangement with the rollers above it);
-/// M032LE `[1,1,1,4]`; M005S `[1,1,2,3]`; M131E `[1,1,4,3]`; M003K `[1,1,3,4]`.
-/// Unknown chains stay unset.
-pub fn base_cell(module: ServiceModule, location_id: u32) -> Option<BaseCell> {
-    let mut ports: Vec<u8> = (0..6)
-        .map(|index| ((location_id >> (20 - 4 * index)) & 0x0f) as u8)
-        .collect();
-    while ports.last() == Some(&0) {
-        ports.pop();
-    }
-
-    let ends_with = |suffix: &[u8]| ports.ends_with(suffix);
-    match module {
-        ServiceModule::M4315 if ends_with(&[1, 2, 2]) => cell(0, 0),
-        ServiceModule::M4315 if ends_with(&[1, 1, 1, 1, 1]) => cell(0, -1),
-        ServiceModule::M4315 if ends_with(&[1, 1, 2, 3]) => cell(0, 1),
-        ServiceModule::M032LE if ends_with(&[1, 1, 1, 4]) => cell(0, 3),
-        ServiceModule::M005S if ends_with(&[1, 1, 2, 3]) => cell(0, 2),
-        ServiceModule::M131E if ends_with(&[1, 1, 4, 3]) => cell(4, 0),
-        ServiceModule::M003K if ends_with(&[1, 1, 3, 4]) => cell(4, 2),
-        _ => None,
-    }
+/// Resolves a module's macOS location ID to the cell its footprint starts at, from the slot table
+/// (`base_slots`), given the chain of the base's hub. The high location-ID byte identifies the host bus; the port
+/// chain after it is stable across bus-number changes. Without a hub chain (the base is not visible) or for a
+/// connector the table does not know, the position stays unset and the chain is shown in diagnostics.
+pub fn base_cell(module: ServiceModule, location_id: u32, hub: Option<&[u8]>) -> Option<BaseCell> {
+    let slot = base_slots::slot_name(&base_slots::port_chain(location_id), hub?)?;
+    let found = base_slots::lookup(module, &slot)?;
+    cell(found.col, found.row)
 }
 
 #[cfg(target_os = "macos")]
@@ -219,7 +213,10 @@ fn read_location_ids(
     api.set_open_exclusive(false);
     let locations = devices
         .iter()
-        .filter(|device| replay::service_module(device.module).is_some())
+        .filter(|device| {
+            replay::service_module(device.module).is_some()
+                || device.module == Some(ModuleKind::M0064)
+        })
         .filter(|device| !known.contains_key(device.path.as_bytes()))
         .filter_map(|device| {
             let location_id = api
@@ -728,36 +725,63 @@ impl Feeds {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn faders_on_the_observed_port_chain_sit_bottom_left() {
-        // macOS location ID 0x02112300, read from a connected 5-fader module.
+    fn modules_are_placed_by_their_slot_below_the_bases_hub() {
+        // Location IDs read on 10 and 11 October 2026: the base at 1.1.1.4.4, the 15-key module and the faders both
+        // at 1.1.2.3 (arrangement two), and keys at 1.1.1.1.1 (arrangement three).
+        let hub: Option<&[u8]> = Some(&[1, 1]);
         assert_eq!(
-            super::base_cell(ServiceModule::M005S, 0x0211_2300),
-            super::cell(0, 2)
+            base_cell(ServiceModule::M005S, 0x0211_2300, hub),
+            cell(0, 2)
         );
-        assert_eq!(super::base_cell(ServiceModule::M005S, 0x0211_1340), None);
+        assert_eq!(
+            base_cell(ServiceModule::M4315, 0x0211_2300, hub),
+            cell(0, 1)
+        );
+        assert_eq!(
+            base_cell(ServiceModule::M4315, 0x0211_1110, hub),
+            cell(0, -1)
+        );
+        // Without the base's hub, or on a connector the table does not know, nothing is guessed.
+        assert_eq!(base_cell(ServiceModule::M005S, 0x0211_2300, None), None);
+        assert_eq!(base_cell(ServiceModule::M4315, 0x0211_9900, hub), None);
+        // Another host port moves the whole chain, and the table follows it.
+        assert_eq!(
+            base_cell(ServiceModule::M005S, 0x0221_2300, Some(&[2, 1])),
+            cell(0, 2)
+        );
     }
 
     #[test]
-    fn keys_on_the_bottom_left_port_chain_sit_bottom_left() {
-        // macOS location ID 0x02112300, read from a connected 15-key module.
-        assert_eq!(
-            super::base_cell(ServiceModule::M4315, 0x0211_2300),
-            super::cell(0, 1)
-        );
-    }
-
-    #[test]
-    fn keys_overhanging_the_top_edge_start_above_the_base() {
-        // macOS location ID 0x02111110, read from a connected 15-key module
-        // whose top row hangs off the base above the five-fader module.
-        assert_eq!(
-            super::base_cell(ServiceModule::M4315, 0x0211_1110),
-            super::cell(0, -1)
-        );
+    fn the_inventory_finds_the_hub_from_the_base_and_keeps_the_chain_of_unplaced_modules() {
+        let devices = [
+            identity("base", 0x01f6, None, 0xff00),
+            identity("faders", 0x0200, Some("F1"), 0xff00),
+            identity("keys", 0x01fe, Some("K1"), 0xff00),
+        ];
+        let locations: HashMap<Vec<u8>, u32> = [
+            (b"base".to_vec(), 0x0211_1440),   // 1.1.1.4.4
+            (b"faders".to_vec(), 0x0211_2300), // 1.1.2.3
+            (b"keys".to_vec(), 0x0211_9900),   // not in the table
+        ]
+        .into();
+        let listed = live_devices_with_locations(&devices, &locations);
+        let faders = listed
+            .iter()
+            .find(|device| device.module == ServiceModule::M005S)
+            .unwrap();
+        assert_eq!(faders.base_cell, cell(0, 2));
+        let keys = listed
+            .iter()
+            .find(|device| device.module == ServiceModule::M4315)
+            .unwrap();
+        assert_eq!(keys.base_cell, None);
+        assert_eq!(keys.port_chain.as_deref(), Some("1.1.9.9"));
+        // Without the base in the inventory nothing is placed.
+        let without_base = live_devices_with_locations(&devices[1..], &locations);
+        assert!(without_base.iter().all(|device| device.base_cell.is_none()));
     }
 
     use super::*;
-    use cooltek_sdk_masterhub::ModuleKind;
     use cooltek_sdk_masterhub::hidapi::{HidError, HidResult};
     use cooltek_sdk_service::{Gesture, InputValue};
     use std::{cell::RefCell, collections::VecDeque, ffi::CString, sync::mpsc};
@@ -1148,6 +1172,7 @@ mod tests {
             module,
             serial_number: serial.map(str::to_owned),
             base_cell: None,
+            port_chain: None,
         }
     }
 
@@ -1308,18 +1333,21 @@ mod tests {
                     module: ServiceModule::M003K,
                     serial_number: Some("K1".into()),
                     base_cell: None,
+                    port_chain: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"faders"),
                     module: ServiceModule::M005S,
                     serial_number: None,
                     base_cell: None,
+                    port_chain: None,
                 },
                 LiveDevice {
                     path_hex: encode_hex(b"keys"),
                     module: ServiceModule::M4315,
                     serial_number: Some("K2".into()),
                     base_cell: None,
+                    port_chain: None,
                 },
             ]
         );

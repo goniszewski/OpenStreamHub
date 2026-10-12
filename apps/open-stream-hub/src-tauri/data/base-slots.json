@@ -1,0 +1,476 @@
+{
+ "source": "official app 1.0.0.113, Baseboard.vue (geometry only)",
+ "frame": "landscape 6 columns x 4 rows, USB-C edges at the top and left",
+ "modules": {
+  "M4315": {
+   "22": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "23": {
+    "col": 0,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "24": {
+    "col": 3,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "33": {
+    "col": 1,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "41": {
+    "col": 1,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "42": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "112": {
+    "col": 1,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "122": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "132": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "134": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "141": {
+    "col": 3,
+    "row": 0,
+    "official_rotation": 180
+   }
+  },
+  "M032LE": {
+   "21": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "23": {
+    "col": 3,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "31": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 90
+   },
+   "32": {
+    "col": 0,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "33": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "42": {
+    "col": 2,
+    "row": 3,
+    "official_rotation": 90
+   },
+   "43": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "44": {
+    "col": 1,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "112": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "114": {
+    "col": 0,
+    "row": 3,
+    "official_rotation": 270
+   },
+   "121": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "122": {
+    "col": 0,
+    "row": 3,
+    "official_rotation": 90
+   },
+   "123": {
+    "col": 0,
+    "row": 1,
+    "official_rotation": 90
+   },
+   "124": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "131": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "133": {
+    "col": 2,
+    "row": 3,
+    "official_rotation": 270
+   },
+   "134": {
+    "col": 5,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "141": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "142": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 270
+   }
+  },
+  "M005S": {
+   "22": {
+    "col": 0,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "23": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "24": {
+    "col": 3,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "33": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "41": {
+    "col": 1,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "42": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "111": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "112": {
+    "col": 1,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "113": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "122": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "132": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "134": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "141": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "143": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 270
+   }
+  },
+  "M131E": {
+   "21": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 180
+   },
+   "22": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "23": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "24": {
+    "col": 3,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "31": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "32": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 180
+   },
+   "33": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "34": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "41": {
+    "col": 1,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "42": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "43": {
+    "col": 1,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "44": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "111": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "112": {
+    "col": 3,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "121": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "122": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "123": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "124": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "131": {
+    "col": 4,
+    "row": 2,
+    "official_rotation": 180
+   },
+   "132": {
+    "col": 4,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "134": {
+    "col": 4,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "141": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "142": {
+    "col": 4,
+    "row": 1,
+    "official_rotation": 180
+   },
+   "143": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 270
+   }
+  },
+  "M003K": {
+   "21": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 180
+   },
+   "22": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "23": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "24": {
+    "col": 3,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "31": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "32": {
+    "col": 2,
+    "row": 1,
+    "official_rotation": 180
+   },
+   "33": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "34": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "41": {
+    "col": 1,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "42": {
+    "col": 2,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "43": {
+    "col": 1,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "44": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "111": {
+    "col": 2,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "112": {
+    "col": 3,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "113": {
+    "col": 4,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "122": {
+    "col": 0,
+    "row": 2,
+    "official_rotation": 0
+   },
+   "123": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 0
+   },
+   "124": {
+    "col": 0,
+    "row": 0,
+    "official_rotation": 270
+   },
+   "131": {
+    "col": 4,
+    "row": 2,
+    "official_rotation": 180
+   },
+   "132": {
+    "col": 4,
+    "row": 1,
+    "official_rotation": 270
+   },
+   "134": {
+    "col": 4,
+    "row": 2,
+    "official_rotation": 270
+   },
+   "141": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 180
+   },
+   "142": {
+    "col": 4,
+    "row": 1,
+    "official_rotation": 180
+   },
+   "143": {
+    "col": 4,
+    "row": 0,
+    "official_rotation": 270
+   }
+  }
+ }
+}

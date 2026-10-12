@@ -2886,6 +2886,7 @@ mod tests {
     }
 
     #[test]
+            port_chain: None,
     fn sleep_then_wake_restarts_a_dry_run_after_the_settle_delay() {
         let (mut driver, id) = running(false);
         driver.power(PowerEvent::Suspend, 100);

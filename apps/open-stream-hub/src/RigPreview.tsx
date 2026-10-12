@@ -146,7 +146,7 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
         })}
       </div>
     </div>
-    {unpositioned.length > 0 && <div className="base-layout-unknown"><p>Position not detected</p>
+    {unpositioned.length > 0 && <div className="base-layout-unknown"><p>Position not detected{unpositioned.some(device => device.port_chain) && <span className="base-layout-note"> · USB port chain {unpositioned.map(device => device.port_chain && `${device.port_chain}`).filter(Boolean).join(', ')}</span>}</p>
       <div className="base-layout-extra">{unpositioned.map(device => <div key={device.path_hex} className={`base-layout-module loose${device.path_hex === activePath ? ' selected' : ''}`} onClick={pickTile(device)}>{stage(device)}{caption(device)}</div>)}</div>
     </div>}
   </section>;

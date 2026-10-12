@@ -74,11 +74,19 @@ describe('RigPreview canvas', () => {
     expect(markup).toContain('Stop');
   });
 
+  it('names the USB port chain of modules whose position is not detected', async () => {
+    const state = stateFor();
+    const feed = await feedOf([{ path_hex: 'ab12', module: 'm005s', serial_number: 'S9', port_chain: '1.1.9.9' }]);
+    const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={feed} />);
+    expect(markup).toContain('USB port chain 1.1.9.9');
+  });
+
   it('shows modules without a detected position in a row beside the base, with the same controls', async () => {
     const state = stateFor();
     const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state}
       feed={await feedOf([{ path_hex: 'ab12', module: 'm005s', serial_number: 'S9' }])} />);
     expect(markup).toContain('Position not detected');
+    expect(markup).not.toContain('USB port chain');
     expect(markup).toContain('base-layout-module loose selected');
     expect(markup).toContain('5x Fader Precision on the base');
     // Faders are vertical sliders with a value, not toggle buttons.

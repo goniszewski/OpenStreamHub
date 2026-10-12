@@ -199,9 +199,13 @@ On a Mac, with the desktop app and a saved profile open: in the profile manager,
 
 On a Mac, for each pack in the chooser's App presets (DaVinci Resolve, Final Cut Pro, Logic Pro, Audacity, Zoom, Microsoft Teams, Music and Spotify): create the profile from the preset, check the profile manager flags it as imported (dry run only), allow it to execute, run it in Live mode with the application in front, and press each control: the shortcuts should do what the key label says in that application (Resolve and Final Cut Pro: blade, marks, tools and J, K, L; Logic: record, cycle, metronome, windows; Audacity: record, pause, split, silence, trim and zoom; Zoom and Teams: mute, camera, share, raise hand and hang up; Spotify: play, skip and volume). Note every shortcut that differs in the installed version, correct the pack file and set `verified` to true for that pack. Check that the notice's "Switch to it when the app is in front" creates the focused-app rule and turns automatic switching on.
 
-## Microphone volume fader (pending)
+## Microphone volume fader (12 October 2026)
 
-On a Mac with the 5-fader module: bind a fader to "Microphone volume follows position", start the profile in Live, move the fader and check the input level in System Settings > Sound > Input follows it from 0 to 100; try the built-in microphone and a USB one (some have no software gain and ignore it). In Test mode nothing changes and the run log reads "Would run: set microphone volume …". Record the fader's range and jitter from the inspector's "Fader now" readout (live position, range seen, changes, and one-point back-and-forth steps since Reset): sweep the fader end to end, then leave it resting and note whether the count of back-and-forth steps grows (see the fader range checks in the parity doc).
+`masterhub-service run --execute` with a one-binding profile (fader 1, "Microphone volume follows position"), two 60-second runs on the 5-fader module, with the Mac's default input a USB webcam microphone (Microsoft LifeCam VX-2000). `osascript` reports no readable input volume for that device (`missing value`), yet setting it worked: the Input level slider in System Settings followed the fader (user-observed).
+
+- **Delay found.** In the first run every fader report ran its own `osascript` call (about 0.18 s each), one after another: 64 reports gave 64 calls, and the slider lagged behind the hand. The worker only merged positions when the queue was full, and the microphone action had no merge rule.
+- **Fix.** The worker now folds queued absolute positions into the latest one, and microphone volume has a merge rule. The second run showed 347 fader reports served by 72 action records, and the user found the slider "somewhat smooth".
+- **Not checked:** a microphone with a readable software gain, the fader's jitter at rest, and the range readout in the inspector.
 
 ## Key press feedback (pending)
 

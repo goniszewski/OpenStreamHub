@@ -1588,6 +1588,34 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     }
 }
 
+/// Folds already-queued work into `work` while each next item is one absolute
+/// position (a fader) that merges into the last event (see [`merge_event`]). The first item
+/// that does not merge is parked in `carried` so the order of everything else
+/// is unchanged.
+fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option<Work>) -> Work {
+    while let Ok(next) = receiver.try_recv() {
+        let mergeable = !work.merge_barrier
+            && next.dropped_event_count == 0
+            && next.dropped_dial_function_count == 0
+            && next.coalesced_parse_error_count == 0
+            && next.status == "decoded"
+            && next
+                .events
+                .iter()
+                .all(|planned| planned.event.gesture == Gesture::PositionChanged)
+            && matches!(next.events.as_slice(), [planned]
+            if work.events.last().is_some_and(|last| {
+                last.event.control == planned.event.control && merge_event(last, planned).is_some()
+            }));
+        if !mergeable {
+            *carried = Some(next);
+            break;
+        }
+        coalesce(&mut work, next, &mut Finish::default());
+    }
+    work
+}
+
 /// Merges two consecutive continuous inputs on one control, if they are equivalent.
 ///
 /// Relative volume steps sum (clamped to the valid ±100 range), absolute
@@ -1644,6 +1672,19 @@ fn merge_event(earlier: &PlannedEvent, later: &PlannedEvent) -> Option<PlannedEv
             },
             ProfileResolution::Action {
                 action: Action::SetVolume { .. },
+                page_id: None,
+                dial_function: second_function,
+            },
+        ) if first_function == second_function => later.resolution.clone(),
+        // A fader backlog on the microphone keeps only the latest level.
+        (
+            ProfileResolution::Action {
+                action: Action::SetMicInputVolume { .. },
+                page_id: None,
+                dial_function: first_function,
+            },
+            ProfileResolution::Action {
+                action: Action::SetMicInputVolume { .. },
                 page_id: None,
                 dial_function: second_function,
             },
@@ -1888,6 +1929,8 @@ where
     // one, so a playing sound never delays the next action.
     let mut timers = TimerTable::default();
     let mut alerts = Alerts::Unstarted;
+    // A work item read ahead that did not merge; it runs next.
+    let mut carried: Option<Work> = None;
     let origin = Instant::now();
     let now = || u64::try_from(origin.elapsed().as_micros()).unwrap_or(u64::MAX);
     loop {
@@ -1949,17 +1992,24 @@ where
                 Some(wait.max(Duration::from_millis(1)))
             }
         };
-        let work = match wait {
-            Some(wait) => match receiver.recv_timeout(wait) {
-                Ok(work) => work,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
-            None => match receiver.recv() {
-                Ok(work) => work,
-                Err(_) => break,
+        let work = match carried.take() {
+            Some(work) => work,
+            None => match wait {
+                Some(wait) => match receiver.recv_timeout(wait) {
+                    Ok(work) => work,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                },
+                None => match receiver.recv() {
+                    Ok(work) => work,
+                    Err(_) => break,
+                },
             },
         };
+        // While this work was waiting, a slow action (a volume change takes
+        // about 0.2 s) may have let more of the same continuous input queue
+        // up. Fold those into it so only the latest value runs.
+        let work = absorb_queued(work, &receiver, &mut carried);
         if abort.load(Ordering::SeqCst) {
             continue;
         }
@@ -3508,6 +3558,39 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
         }
+    }
+
+    #[test]
+    fn a_waiting_worker_folds_queued_positions_and_parks_the_first_other_item() {
+        let position = |percent| {
+            work(vec![planned(
+                0,
+                Gesture::PositionChanged,
+                action(Action::SetMicInputVolume { percent }),
+            )])
+        };
+        let (sender, receiver) = mpsc::sync_channel(8);
+        for percent in [20, 30, 40] {
+            sender.send(position(percent)).unwrap();
+        }
+        let press = work(vec![planned(
+            0,
+            Gesture::Pressed,
+            action(Action::ToggleMute),
+        )]);
+        sender.send(press).unwrap();
+        sender.send(position(90)).unwrap();
+        let mut carried = None;
+        let folded = absorb_queued(position(10), &receiver, &mut carried);
+        assert_eq!(folded.report_count, 4);
+        assert_eq!(
+            folded.events[0].resolution,
+            action(Action::SetMicInputVolume { percent: 40 })
+        );
+        let parked = carried.expect("the button press is parked, not merged");
+        assert_eq!(parked.events[0].event.gesture, Gesture::Pressed);
+        // The later position stays queued behind it, in order.
+        assert!(receiver.try_recv().is_ok());
     }
 
     #[test]

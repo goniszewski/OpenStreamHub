@@ -70,7 +70,7 @@ macOS asks for permission the first time an action needs it. Allow OpenStreamHub
 | Automation | Controlling System Events and media players (Music, Spotify) from actions. |
 | Input Monitoring | Reading the modules' input, and the key recorder. |
 
-Profiles are stored locally on your Mac. The app does not update itself; install a newer build over the old one. Because the app is unsigned, macOS may ask you to allow these permissions again after an update.
+**Settings → Startup** can start the app at login and check these permissions each time it opens, with a short prompt that takes you to the right pane. Profiles are stored locally on your Mac. The app does not update itself: use **Settings → Updates** to see whether a newer release exists, then install it over the old one. Because the app is unsigned, macOS may ask you to allow these permissions again after an update.
 
 ## Quick start
 
@@ -121,7 +121,7 @@ OpenStreamHub has no telemetry, analytics, automatic crash reporting, account or
 
 The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password stays in memory and must be entered again after launching the app. Configured actions can open apps or web addresses when executed.
 
-The app does not check for updates or contact a remote service on its own. Building from source downloads dependencies from npm and crates.io. See the [diagnostic bundle guide](docs/masterhub-diagnostic-bundle.md) for what local diagnostics contain.
+The app does not contact a remote service on its own. **Settings → Updates** has a **Check for updates** button that asks GitHub for the latest release (an anonymous request that sends nothing but the app's name and version); an optional daily check on launch is off by default. The app never downloads or installs anything itself. Building from source downloads dependencies from npm and crates.io. See the [diagnostic bundle guide](docs/masterhub-diagnostic-bundle.md) for what local diagnostics contain.
 
 ## Documentation
 

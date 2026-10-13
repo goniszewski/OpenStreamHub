@@ -64,6 +64,10 @@ fn main() {
             "macro_record_state",
             "macro_record_stop",
             "input_permissions",
+            "autostart_status",
+            "check_for_updates",
+            "open_release_page",
+            "set_autostart",
             "open_permission_settings",
         ]),
     ))

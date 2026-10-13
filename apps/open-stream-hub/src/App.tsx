@@ -9,7 +9,11 @@ import { DisplaySettingsStore } from './display-settings';
 import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
-import { PermissionsPanel } from './PermissionsPanel';
+import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
+import { PermissionsPrompt } from './PermissionsPrompt';
+import { StartupPanel } from './StartupPanel';
+import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
+import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
 import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
@@ -24,7 +28,7 @@ import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStart
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
-import type { DialDisplayContent, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
+import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { LightingPage } from './LightingPage';
@@ -56,7 +60,7 @@ import { useModifierHeld } from './modifier-held';
 import { hint, installShortcuts, isMacPlatform, redoHint, shortcutPages, withHint } from './shortcuts';
 import { bindingSearchId } from './BindingsPanel';
 import { editKeypadBinding } from './keypad-model';
-import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, readTestWhileEditingSetting, writeAutosaveSetting, writeTestWhileEditingSetting } from './ui-model';
+import { appearanceStorageKey, browserProfile, errorMessage, readAppearance, readAutosaveSetting, markUpdateChecked, markUpdateSeen, readPermissionCheckSetting, readTestWhileEditingSetting, readUpdateCheckSetting, updateAlreadySeen, updateCheckDue, writeUpdateCheckSetting, writeAutosaveSetting, writePermissionCheckSetting, writeTestWhileEditingSetting } from './ui-model';
 import type { Appearance, Page } from './ui-model';
 import { useDeviceEditor } from './useDeviceEditor';
 import type { ConfirmRequest } from './useDeviceEditor';
@@ -258,6 +262,34 @@ export default function App() {
   const [allowExecutionOpen, setAllowExecutionOpen] = useState(false);
   // "Switch to Test mode while editing" (on by default, kept in local storage
   // like automatic saving): the setting the editing hold of the run mode obeys.
+  const [checkPermissions, setCheckPermissions] = useState(() => readPermissionCheckSetting(webStorage()));
+  const [permissionPrompt, setPermissionPrompt] = useState(false);
+  // Once per launch: ask only when macOS reports a permission as off. A failed check asks nothing.
+  useEffect(() => {
+    if (!desktop || !checkPermissions) return;
+    let cancelled = false;
+    invoke<InputPermissions>('input_permissions').then(result => { if (!cancelled && missingPermissions(result).length > 0) setPermissionPrompt(true); }).catch(() => {});
+    return () => { cancelled = true; };
+    // Only at launch: turning the setting on later does not interrupt the user.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const [dailyUpdateCheck, setDailyUpdateCheck] = useState(() => readUpdateCheckSetting(webStorage()));
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [updatePrompt, setUpdatePrompt] = useState<UpdateInfo | null>(null);
+  // Opt-in, at most once a day, and one message per release. A failed check is silent here; the button shows errors.
+  useEffect(() => {
+    if (!desktop) return;
+    import('@tauri-apps/api/app').then(app => app.getVersion()).then(setAppVersion).catch(() => {});
+    const storage = webStorage();
+    if (!readUpdateCheckSetting(storage) || !updateCheckDue(storage)) return;
+    let cancelled = false;
+    invoke<UpdateInfo>('check_for_updates').then(info => {
+      markUpdateChecked(storage);
+      if (!cancelled && info.available && !updateAlreadySeen(storage, info.latest)) { markUpdateSeen(storage, info.latest); setUpdatePrompt(info); }
+    }).catch(() => {});
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [testWhileEditing, setTestWhileEditing] = useState(() => readTestWhileEditingSetting(webStorage()));
   const switcherRef = useRef<HTMLDivElement>(null);
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
@@ -562,7 +594,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
@@ -589,6 +621,8 @@ export default function App() {
       }}
       onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }}
       packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }} />
+    {updatePrompt && <UpdatePrompt info={updatePrompt} onOpen={() => { void invoke('open_release_page').catch(() => {}); }} onClose={() => setUpdatePrompt(null)} />}
+    {permissionPrompt && <PermissionsPrompt invoke={(command, args) => invoke(command, args)} onClose={() => setPermissionPrompt(false)} />}
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>
       <h2 id="delete-title">{confirmation?.title}</h2><p id="delete-message">{confirmation?.description}</p>
       <div className="dialog-actions"><button className="button" autoFocus onClick={() => setConfirmation(null)}>Cancel</button><button className="button danger" onClick={() => { const request = confirmation; setConfirmation(null); request?.run(); }}>{confirmation?.confirmLabel}</button></div>

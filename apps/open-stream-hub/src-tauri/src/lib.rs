@@ -1,5 +1,6 @@
 mod app_icon;
 mod artwork;
+mod autostart;
 mod base_slots;
 mod capabilities;
 #[cfg(test)]
@@ -27,6 +28,7 @@ mod startup;
 mod store;
 #[cfg(test)]
 mod test_profiles;
+mod updates;
 
 use cooltek_sdk_service::{
     Gesture, InputValue, Profile, ServiceModule,
@@ -1461,6 +1463,26 @@ fn input_permissions() -> Result<recorder::InputPermissions, String> {
 }
 
 #[tauri::command]
+fn autostart_status() -> Result<autostart::AutostartStatus, String> {
+    autostart::status()
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<autostart::AutostartStatus, String> {
+    autostart::set(enabled)
+}
+
+#[tauri::command(async)]
+fn check_for_updates() -> Result<updates::UpdateInfo, String> {
+    updates::check()
+}
+
+#[tauri::command]
+fn open_release_page() -> Result<(), String> {
+    updates::open_release_page()
+}
+
+#[tauri::command]
 fn open_permission_settings(target: recorder::PermissionTarget) -> Result<(), String> {
     recorder::open_permission_settings(target)
 }
@@ -1955,6 +1977,10 @@ pub fn run() {
             macro_record_state,
             macro_record_stop,
             input_permissions,
+            autostart_status,
+            check_for_updates,
+            open_release_page,
+            set_autostart,
             open_permission_settings
         ])
         .build(tauri::generate_context!())

@@ -855,3 +855,5 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .permission-status.granted { color:var(--green); background:var(--soft-green); }
 .permission-status.missing { color:var(--red, #e5484d); }
 .permission-error { color:var(--red, #e5484d); }
+.prompt-row { grid-template-columns:minmax(0,1fr) auto; }
+.permission-done { display:flex; align-items:center; gap:8px; color:var(--green); }

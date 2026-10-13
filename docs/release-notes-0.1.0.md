@@ -12,6 +12,8 @@ First public build. An unofficial macOS app for Cooler Master MasterHUB modules,
 - **Displays.** Key images and animations on the 15-key module; dial faces (clock, CPU usage, custom picture, function labels). Per-profile **screen brightness** for the dial and the key screens (the keys are dimmed in software).
 - **Lighting.** A Lighting page for the base, knobs and faders, and screen backlight and colour for the dial, usable while a profile runs.
 - **Actions.** Volume and mute, microphone volume, shortcuts, text snippets, app launch, URLs, media controls, system actions, multi-action sequences, a key macro recorder, countdown timers with a notification and sound, and OBS Studio actions.
+- **Startup.** An option to start at login, and a permission check on every launch that walks you to the right System Settings pane when something is missing. Settings → Permissions shows the same status any time.
+- **Updates.** A Check for updates button in Settings, and an optional daily check on launch (off by default). It only tells you; you download and replace the app yourself.
 - **Focused-app rules** that switch a running profile when an app comes to the front.
 - **Official `.mhz` profile import** with a compatibility report and review before anything runs.
 - **Diagnostics.** On-demand diagnostic bundles with sensitive fields redacted, raw capture and offline replay. No telemetry, accounts or automatic updates.

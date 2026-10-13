@@ -38,6 +38,53 @@ export function writeTestWhileEditingSetting(storage: Pick<Storage, 'setItem'> |
   try { storage?.setItem(testWhileEditingStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
 }
 
+// "Check permissions on launch" is on unless it was turned off: a missing macOS
+// permission otherwise shows up later as an action that silently does nothing.
+export const permissionCheckStorageKey = 'open-stream-hub.permission-check';
+
+export function readPermissionCheckSetting(storage: Pick<Storage, 'getItem'> | null): boolean {
+  try { return storage?.getItem(permissionCheckStorageKey) !== 'off'; } catch { return true; }
+}
+
+export function writePermissionCheckSetting(storage: Pick<Storage, 'setItem'> | null, on: boolean) {
+  try { storage?.setItem(permissionCheckStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
+}
+
+// The update check is off unless the user turns it on: the app contacts no one by itself. Pressing "Check for
+// updates" always works. The time of the last automatic check and the version the user already heard about are
+// kept so a launch asks at most once a day and never repeats itself for the same release.
+export const updateCheckStorageKey = 'open-stream-hub.update-check';
+export const updateLastCheckStorageKey = 'open-stream-hub.update-last-check';
+export const updateSeenStorageKey = 'open-stream-hub.update-seen';
+export const dayMs = 24 * 60 * 60 * 1000;
+
+export function readUpdateCheckSetting(storage: Pick<Storage, 'getItem'> | null): boolean {
+  try { return storage?.getItem(updateCheckStorageKey) === 'on'; } catch { return false; }
+}
+
+export function writeUpdateCheckSetting(storage: Pick<Storage, 'setItem'> | null, on: boolean) {
+  try { storage?.setItem(updateCheckStorageKey, on ? 'on' : 'off'); } catch { /* the toggle still works for this session */ }
+}
+
+export function updateCheckDue(storage: Pick<Storage, 'getItem'> | null, now = Date.now()): boolean {
+  try {
+    const last = Number(storage?.getItem(updateLastCheckStorageKey));
+    return !Number.isFinite(last) || last <= 0 || now - last >= dayMs || now < last;
+  } catch { return true; }
+}
+
+export function markUpdateChecked(storage: Pick<Storage, 'setItem'> | null, now = Date.now()) {
+  try { storage?.setItem(updateLastCheckStorageKey, String(now)); } catch { /* the next launch checks again */ }
+}
+
+export function updateAlreadySeen(storage: Pick<Storage, 'getItem'> | null, version: string): boolean {
+  try { return storage?.getItem(updateSeenStorageKey) === version; } catch { return false; }
+}
+
+export function markUpdateSeen(storage: Pick<Storage, 'setItem'> | null, version: string) {
+  try { storage?.setItem(updateSeenStorageKey, version); } catch { /* it may be shown once more */ }
+}
+
 // When a version was saved, for the "Earlier versions" list: a clock time
 // today, otherwise the date and the clock time.
 export function versionTimeLabel(modifiedAtMs: number, now = Date.now()): string {

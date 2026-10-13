@@ -5,16 +5,22 @@ import type { Invoke } from './profile-session';
 
 export type Target = 'post_events' | 'listen_events' | 'automation';
 
-const rows: { target: Target; title: string; detail: string }[] = [
-  { target: 'post_events', title: 'Accessibility', detail: 'Needed to send keyboard shortcuts, text and media keys to other apps.' },
-  { target: 'listen_events', title: 'Input Monitoring', detail: 'Needed to record key macros. Reading the modules\' own input may need it too.' },
-  { target: 'automation', title: 'Automation', detail: 'Needed to control System Events and media players such as Music and Spotify. macOS cannot report this one: it asks the first time an action needs it, and the list in System Settings shows what you allowed.' },
+export const permissionRows: { target: Target; title: string; detail: string; why: string }[] = [
+  { target: 'post_events', title: 'Accessibility', detail: 'Needed to send keyboard shortcuts, text and media keys to other apps.', why: 'Sends shortcuts, text and media keys.' },
+  { target: 'listen_events', title: 'Input Monitoring', detail: 'Needed to record key macros. Reading the modules\' own input may need it too.', why: 'Records key macros and reads module input.' },
+  { target: 'automation', title: 'Automation', detail: 'Needed to control System Events and media players such as Music and Spotify. macOS cannot report this one: it asks the first time an action needs it, and the list in System Settings shows what you allowed.', why: 'Controls other apps.' },
 ];
 
 export type PermissionStatus = 'granted' | 'missing' | 'unknown' | 'ask';
 export const permissionLabels: Record<PermissionStatus, string> = { granted: 'Granted', missing: 'Not granted', unknown: 'Checking', ask: 'Asked when used' };
 
 // Automation has no passive check, so it is never reported as granted or missing.
+// The permissions macOS can report that are off, in list order. Automation has no passive check, so it never counts.
+export function missingPermissions(permissions: InputPermissions | null): Target[] {
+  if (!permissions) return [];
+  return permissionRows.map(row => row.target).filter(target => permissionState(target, permissions) === 'missing');
+}
+
 export function permissionState(target: Target, permissions: InputPermissions | null): PermissionStatus {
   if (target === 'automation') return 'ask';
   if (!permissions) return 'unknown';
@@ -69,7 +75,7 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
     <h2>Permissions</h2>
     <p>macOS keeps these per app. Allow OpenStreamHub in System Settings, then come back; this list updates by itself.</p>
     {!available && <p className="fine-print">Permissions can be checked in the desktop app only.</p>}
-    {available && <ul className="permission-list">{rows.map(row => {
+    {available && <ul className="permission-list">{permissionRows.map(row => {
       const status = permissionState(row.target, permissions);
       return <li key={row.target}>
         <div><strong>{row.title}</strong><small>{row.detail}</small></div>

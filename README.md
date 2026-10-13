@@ -53,7 +53,14 @@ See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol refe
 
 Download the `.dmg` for your Mac (Apple Silicon or Intel), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
 
-The first builds are **not signed or notarized**, so macOS will not open them with a double-click. Right-click the app, choose **Open**, then confirm. If macOS still refuses, open **System Settings → Privacy & Security** and choose **Open Anyway** for OpenStreamHub.
+OpenStreamHub is **not signed or notarized**: signing needs a paid Apple Developer account, and this is a free, independent project. macOS therefore warns about it on first launch. The app is open source, so you can read the code or build it yourself ([Quick start](#quick-start)).
+
+To open it anyway:
+
+1. Open the app once. macOS says it cannot verify it and does not open it.
+2. Open **System Settings → Privacy & Security**, scroll to the message about OpenStreamHub and choose **Open Anyway**, then confirm.
+
+On macOS 14 and earlier, right-clicking the app and choosing **Open** also works. If you prefer the terminal, `xattr -dr com.apple.quarantine /Applications/OpenStreamHub.app` removes the download flag.
 
 macOS asks for permission the first time an action needs it. Allow OpenStreamHub in **System Settings → Privacy & Security**. **Settings → Permissions** in the app shows what is granted and opens the right pane:
 
@@ -63,7 +70,7 @@ macOS asks for permission the first time an action needs it. Allow OpenStreamHub
 | Automation | Controlling System Events and media players (Music, Spotify) from actions. |
 | Input Monitoring | Reading the modules' input, and the key recorder. |
 
-Profiles are stored locally on your Mac. The app does not update itself; install a newer build over the old one. Until builds are signed with a Developer ID, macOS may ask you to allow these permissions again after an update.
+Profiles are stored locally on your Mac. The app does not update itself; install a newer build over the old one. Because the app is unsigned, macOS may ask you to allow these permissions again after an update.
 
 ## Quick start
 

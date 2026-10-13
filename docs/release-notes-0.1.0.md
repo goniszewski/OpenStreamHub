@@ -3,7 +3,7 @@
 First public build. An unofficial macOS app for Cooler Master MasterHUB modules, independent of and not endorsed by Cooler Master.
 
 > [!IMPORTANT]
-> This build is **not signed or notarized**. Right-click the app, choose **Open**, then confirm. See [Install](../README.md#install). macOS asks for Accessibility, Automation and Input Monitoring permission the first time an action needs it.
+> This build is **not signed or notarized** (that needs a paid Apple Developer account). On first launch, use **System Settings → Privacy & Security → Open Anyway**. See [Install](../README.md#install). macOS asks for Accessibility, Automation and Input Monitoring permission the first time an action needs it.
 
 ## What it does
 

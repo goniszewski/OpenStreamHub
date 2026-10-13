@@ -101,7 +101,22 @@ jobs:
       # APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID are set.
       - name: Build Tauri bundle
         working-directory: apps/open-stream-hub
-        run: npx tauri build --bundles app,dmg
+        # Creating the DMG mounts a disk image and is occasionally flaky on
+        # hosted runners (it failed once on the Intel runner with no detail).
+        # Retry, cleaning up a half-made image in between; the compiled app is
+        # cached by then, so a retry takes seconds.
+        run: |
+          for attempt in 1 2 3; do
+            if npx tauri build --bundles app,dmg; then exit 0; fi
+            echo "::warning::tauri build failed (attempt $attempt of 3)"
+            hdiutil info || true
+            for volume in /Volumes/OpenStreamHub*; do
+              [ -d "$volume" ] && hdiutil detach "$volume" -force || true
+            done
+            rm -f src-tauri/target/release/bundle/macos/rw.*.dmg
+            sleep 10
+          done
+          exit 1
 
       # Fail the signed path if the sidecar or app is not validly signed.
       - name: Verify signatures

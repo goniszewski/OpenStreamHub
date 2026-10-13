@@ -1,21 +1,21 @@
 # Release process
 
-This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Nothing here has been run.** The workflows were only syntax-checked as YAML; no GitHub Actions run, signing, or notarization has happened.
+This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Run so far (13 October 2026):** unsigned builds for both architectures through the release workflow, with the DMG and zip. **Not run:** signing, notarization, and a launch of the packaged app on a Mac with no dev build running.
 
 ## Workflows
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | pull request, push to `master` | `cargo fmt --check`, clippy (`-D warnings`) and tests for the root workspace and `src-tauri`; `tsc --noEmit` and `npm test` for the frontend. Runs on `macos-15` (arm64) and `macos-15-intel` (x86_64). |
-| `.github/workflows/release.yml` | `workflow_dispatch`, tags `v*` | Builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist, uploads a zip as a workflow artifact. |
+| `.github/workflows/ci.yml` | pull request, push to `master`, manual | `cargo fmt --check`, clippy (`-D warnings`) and tests for the root workspace and `src-tauri`; `tsc --noEmit` and `npm test` for the frontend. Push and PR runs use `macos-15` (arm64) only; a manual run adds `macos-15-intel`. |
+| `.github/workflows/release.yml` | `workflow_dispatch`, tags `v*` | Builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist, uploads a zip and a DMG as one workflow artifact. |
 
 Both use `permissions: contents: read`. The release workflow does not create a GitHub release; publish by hand after checking the artifact.
 
-Intel runner label: `macos-13` has been retired by GitHub, so `macos-15-intel` is used. Confirm the label is still available when you first run it.
+Intel runner label: `macos-13` has been retired by GitHub, so `macos-15-intel` is used (it ran successfully on 13 October 2026). The Intel job takes about 6 minutes with a warm cache and about 16 without.
 
 ## Per-architecture, not universal
 
-The release builds one app per architecture on native runners. A universal build is not used because `scripts/prepare-sidecar.mjs` builds a single `masterhub-service-<triple>` file, while Tauri would need `masterhub-service-universal-apple-darwin` for `--target universal-apple-darwin`. Supporting universal means extending that script to build both triples and `lipo` them. Artifacts are named `OpenStreamHub-<aarch64|x86_64>-signed` or `-UNSIGNED`.
+The release builds one app per architecture on native runners. A universal build is not used because `scripts/prepare-sidecar.mjs` builds a single `masterhub-service-<triple>` file, while Tauri would need `masterhub-service-universal-apple-darwin` for `--target universal-apple-darwin`. Supporting universal means extending that script to build both triples and `lipo` them. Each artifact holds the `.zip` and the `.dmg`, and is named `OpenStreamHub-<aarch64|x86_64>-signed` or `-UNSIGNED`.
 
 ## Prerequisites
 

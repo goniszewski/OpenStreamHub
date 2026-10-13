@@ -35,7 +35,6 @@
     "allow-demo-speed-cancel",
     "allow-demo-key-image",
     "allow-list-base-modules",
-    "allow-read-base-orientation",
     "allow-reset-dial-lighting",
     "allow-start-service",
     "allow-stop-service",

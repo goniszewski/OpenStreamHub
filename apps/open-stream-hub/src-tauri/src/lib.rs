@@ -1096,14 +1096,6 @@ fn list_base_modules() -> Result<Vec<lighting::BaseModule>, String> {
     Ok(lighting::base_modules(&registry.devices()))
 }
 
-// The base's orientation state (0 or 1) from its accelerometer: one read-only GET FEATURE.
-#[tauri::command(async)]
-fn read_base_orientation(target: String) -> Result<u8, String> {
-    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
-        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
-    lighting::read_base_orientation(&registry, &target)
-}
-
 #[tauri::command(async)]
 fn reset_dial_lighting(state: State<'_, AppState>, targets: Vec<String>) -> Result<usize, String> {
     service::check_lighting_allowed(&state.services, &targets)?;
@@ -1922,7 +1914,6 @@ pub fn run() {
             set_dial_lighting,
             set_led_lighting,
             list_base_modules,
-            read_base_orientation,
             reset_dial_lighting,
             read_led_state,
             demo_start,

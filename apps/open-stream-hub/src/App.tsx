@@ -35,7 +35,6 @@ import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
-import { useBaseSensorPolling } from './base-sensor';
 import { createModuleSelection } from './module-selection';
 import { Inspector } from './Inspector';
 import { DiagnosticsPanel } from './DiagnosticsPanel';
@@ -122,7 +121,6 @@ export default function App() {
   // The picked module, shared by every page that acts on one module.
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
-  useBaseSensorPolling(desktop ? invokeCommand : undefined, bases[0]?.path_hex ?? null);
   const pickableModules = [...bases, ...deviceFeedState.devices];
   useModifierHeld(mac);
   const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);

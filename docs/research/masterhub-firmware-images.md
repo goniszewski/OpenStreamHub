@@ -30,7 +30,7 @@ Only the base image contains `G sensor communicate fail` and `G sensor write dat
 
 ## How the app uses it
 
-The desktop app reads feature report 0x35 of the base every two seconds (`read_base_orientation`, one read-only GET FEATURE) and, with the experimental "Follow sensor" switch on (off by default), turns the connected base layout when the state changes, taking 1 as lying down and 0 as standing. Because the byte did not move on the base tested, that switch is for trying other bases. The input report `01 2b …` is not listened for.
+The desktop app does not read feature report 0x35 (it once did, behind an experimental switch, and the byte did not move on the base tested; the SDK function `base_orientation::read_orientation_state` remains). The input report `01 2b …` is not listened for.
 
 ## Why the orientation byte may not move (second pass, base 2.0.4.0)
 

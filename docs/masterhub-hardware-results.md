@@ -236,6 +236,15 @@ The original checklist, for the remaining items:
 
 On the 15-key module with the desktop app (Module control App, "Dim a key while it is pressed" on): press and hold an action key and check it dims within a blink and returns to normal on release, while the action itself still runs without any delay compared with the setting off; hold a folder key and check the folder opens with that key dimmed until release; check an animated key keeps animating while dimmed. Turn the setting off, start the profile again, and check nothing dims. Watch the run log for `press` display records and see whether a press write ever exceeds 150 ms (feedback then switches itself off for the run). Applies at the next profile start.
 
+## In-place mode and profile switch (13 October 2026)
+
+Desktop app with three runs executing (the 15-key module with key display sync, the other two in software mode), keys module with a timer key and a second bound key. The user pressed keys by hand; the service output was not read.
+
+- **Mode:** a bound key ran its action in Live, did nothing but report a test result after switching to Test, and ran again after switching back to Live.
+- **Profile swap:** after changing that key's action and waiting for the autosave, the key did the new action, and the key images did not flash or redraw.
+- **Timer across a switch:** a timer started in Live and switched to Test while counting kept its countdown on the key without a redraw and, on expiry, only logged (no notification, sound or action).
+- **Not checked:** whether the swap on the display run was taken in place or by a restart. The service log was not read, so the absence of a flash does not by itself show which path ran. A profile change that alters key artwork was not tried.
+
 ## Fader input (11 October 2026)
 
 `masterhub-diag record` on the M005S (product ID 512), default mode, nothing sent, 60 seconds, the faders moved by hand. The module sends input reports in default mode, unlike the roller module. A first capture (45 reports, the faders only partly moved) showed the frame: each report is `01 2a 07 00 02 05` followed by five position bytes, and the first report carries all five positions. `replay` decodes only the faders that changed after that.

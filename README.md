@@ -3,6 +3,7 @@
   <h1>OpenStreamHub</h1>
   <p>Unofficial macOS support for Cooler Master MasterHUB.</p>
   <p>
+    <a href="#install">Install</a> ·
     <a href="#quick-start">Quick start</a> ·
     <a href="#hardware-support">Hardware support</a> ·
     <a href="#documentation">Documentation</a> ·
@@ -32,18 +33,37 @@ Feature parity is incomplete. The comparison below uses the official **MasterHUB
 | Key images and animations | Per-key static artwork and animation sequences implemented. Static artwork tested on hardware; animation playback still needs hardware acceptance. |
 | Dial display and function switching | Image uploads, function labels, clocks and CPU display implemented and tested on hardware. Full display parity is incomplete. |
 | Volume, mute, shortcuts, text, apps, URLs and media controls | Implemented; execution and macOS permission validation vary by action. See the [action catalogue](docs/masterhub-actions.md). |
-| Multi-action and recorded key macros | Multi-action sequences implemented; macro recording missing. |
+| Multi-action and recorded key macros | Multi-action sequences and the key macro recorder implemented; the recorder still needs a hardware-session check. |
 | Countdown timers | Implemented with notification and sound; remaining time is not displayed on the key. |
 | OBS Studio actions | Partial implementation, tested against a fake server. Real OBS validation and remaining actions are pending. |
 | Twitch, Discord, Streamlabs and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually. |
 | Official `.mhz` profile import/export | Import implemented with a compatibility report and review before execution; real export compatibility remains to be validated. `.mhz` export missing. Own-format JSON import/export implemented. |
-| Lighting and brightness | Dial backlight and solid color tested through the CLI; app controls and base/knob lighting remain gaps. |
+| Lighting and brightness | Lighting page for the base, knobs and faders, and screen backlight and colour for the dial, including while a profile runs. Per-profile screen brightness for the dial and the key screens (software dimming on keys) tested on hardware. Base, knob and fader lighting in the app still needs more hardware checks. |
 | Firmware updates | Not supported. |
 | Suspend/resume and reconnect | Session handling implemented; dial dry-run reconnect tested. Sleep/wake and other lifecycle paths still need hardware validation. |
 
 OpenStreamHub also includes dry-run action previews, raw capture and offline replay, local diagnostic bundles, and optional focused-app profile rules. These are additional tools rather than Windows parity requirements.
 
 See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol references and outstanding work. Some entries there describe earlier implementation stages; the [hardware results](docs/masterhub-hardware-results.md) record subsequent device tests.
+
+## Install
+
+> [!NOTE]
+> Release builds are not published yet. Until they are, [build from source](#quick-start). The notes below describe the downloadable app for when they are.
+
+Download the `.dmg` for your Mac (Apple Silicon or Intel), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
+
+The first builds are **not signed or notarized**, so macOS will not open them with a double-click. Right-click the app, choose **Open**, then confirm. If macOS still refuses, open **System Settings → Privacy & Security** and choose **Open Anyway** for OpenStreamHub.
+
+macOS asks for permission the first time an action needs it. Allow OpenStreamHub in **System Settings → Privacy & Security**:
+
+| Permission | Needed for |
+| --- | --- |
+| Accessibility | Keyboard shortcuts, text, undo/redo and media keys sent to other apps. |
+| Automation | Controlling System Events and media players (Music, Spotify) from actions. |
+| Input Monitoring | Reading the modules' input, and the key recorder. |
+
+Profiles are stored locally on your Mac. The app does not update itself; install a newer build over the old one. Until builds are signed with a Developer ID, macOS may ask you to allow these permissions again after an update.
 
 ## Quick start
 

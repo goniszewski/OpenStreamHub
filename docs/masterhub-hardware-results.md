@@ -243,7 +243,8 @@ Desktop app with three runs executing (the 15-key module with key display sync, 
 - **Mode:** a bound key ran its action in Live, did nothing but report a test result after switching to Test, and ran again after switching back to Live.
 - **Profile swap:** after changing that key's action and waiting for the autosave, the key did the new action, and the key images did not flash or redraw.
 - **Timer across a switch:** a timer started in Live and switched to Test while counting kept its countdown on the key without a redraw and, on expiry, only logged (no notification, sound or action).
-- **Not checked:** whether the swap on the display run was taken in place or by a restart. The service log was not read, so the absence of a flash does not by itself show which path ran. A profile change that alters key artwork was not tried.
+- **Which path ran:** the service output is not logged outside the app, but the three service processes (the keys display run, the dial display run and one run without display sync) kept the same process IDs and the same profile files (unchanged since 08:21) through the whole check, so none of them was restarted. By the code, a profile swap on a display run must restart it, so the edited key was probably on the run without display sync; this was not confirmed.
+- **Not checked:** a profile swap on the keys display run itself, and a change to key artwork.
 
 ## Fader input (11 October 2026)
 

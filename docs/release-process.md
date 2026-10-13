@@ -55,7 +55,8 @@ The workflow exports these to the job environment only if **all six** are non-em
 
 1. Bump the version in `apps/open-stream-hub/package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they are kept in sync by hand; the app is currently `0.1.0`). Commit.
 2. Tag `vX.Y.Z` and push the tag, or start the workflow from the Actions tab.
-3. Download the artifacts, verify them locally (below), and attach them to a release manually.
+3. Write `docs/release-notes-X.Y.Z.md` and use it as the release notes. The README needs no edit: its release badge and Install link follow the latest published release.
+4. Download the artifacts, verify them locally (below), and attach them to a release manually.
 
 ## Sidecar signing
 

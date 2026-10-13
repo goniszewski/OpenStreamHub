@@ -13,7 +13,7 @@
 </div>
 
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue.svg)](#license)
-[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-green.svg)](https://github.com/goniszewski/OpenStreamHub/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/goniszewski/OpenStreamHub?label=release&color=green)](https://github.com/goniszewski/OpenStreamHub/releases/latest)
 ![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 
@@ -92,7 +92,7 @@ See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol refe
 
 ## Install
 
-**Latest release: [v0.1.0](https://github.com/goniszewski/OpenStreamHub/releases/latest)** ([release notes](docs/release-notes-0.1.0.md)). Download the `.dmg` for your Mac (`aarch64` for Apple Silicon, `x86_64` for Intel; check the SHA-256 in `SHA256SUMS.txt`), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
+Get the newest version from the **[latest release](https://github.com/goniszewski/OpenStreamHub/releases/latest)**; its page has the release notes and the downloads. Download the `.dmg` for your Mac (`aarch64` for Apple Silicon, `x86_64` for Intel; check the SHA-256 in `SHA256SUMS.txt`), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
 
 OpenStreamHub is **not signed or notarized**: signing needs a paid Apple Developer account, and this is a free, independent project. macOS therefore warns about it on first launch. The app is open source, so you can read the code or build it yourself ([Quick start](#quick-start)).
 

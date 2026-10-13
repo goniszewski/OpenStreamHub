@@ -847,3 +847,11 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .screen-brightness-row { display:flex; align-items:center; gap:12px; }
 .screen-brightness-row input[type=range] { flex:1 1 auto; min-width:0; }
 .screen-brightness-value { min-width:38px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); font-size:12px; }
+
+.permission-list { list-style:none; margin:14px 0 0; padding:0; }
+.permission-list li { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:14px; align-items:center; padding:13px 0; border-top:1px solid var(--line); }
+.permission-list small { display:block; color:var(--muted); margin-top:4px; font-size:11px; line-height:1.4; }
+.permission-status { font-size:11px; border:1px solid var(--line); padding:3px 8px; border-radius:6px; white-space:nowrap; color:var(--muted); }
+.permission-status.granted { color:var(--green); background:var(--soft-green); }
+.permission-status.missing { color:var(--red, #e5484d); }
+.permission-error { color:var(--red, #e5484d); }

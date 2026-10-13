@@ -55,7 +55,7 @@ Download the `.dmg` for your Mac (Apple Silicon or Intel), open it and drag **Op
 
 The first builds are **not signed or notarized**, so macOS will not open them with a double-click. Right-click the app, choose **Open**, then confirm. If macOS still refuses, open **System Settings → Privacy & Security** and choose **Open Anyway** for OpenStreamHub.
 
-macOS asks for permission the first time an action needs it. Allow OpenStreamHub in **System Settings → Privacy & Security**:
+macOS asks for permission the first time an action needs it. Allow OpenStreamHub in **System Settings → Privacy & Security**. **Settings → Permissions** in the app shows what is granted and opens the right pane:
 
 | Permission | Needed for |
 | --- | --- |

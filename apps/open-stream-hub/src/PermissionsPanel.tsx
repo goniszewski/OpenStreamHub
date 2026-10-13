@@ -1,0 +1,83 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { LoaderCircle, RefreshCw } from 'lucide-react';
+import type { InputPermissions } from './contracts';
+import type { Invoke } from './profile-session';
+
+export type Target = 'post_events' | 'listen_events' | 'automation';
+
+const rows: { target: Target; title: string; detail: string }[] = [
+  { target: 'post_events', title: 'Accessibility', detail: 'Needed to send keyboard shortcuts, text and media keys to other apps.' },
+  { target: 'listen_events', title: 'Input Monitoring', detail: 'Needed to record key macros. Reading the modules\' own input may need it too.' },
+  { target: 'automation', title: 'Automation', detail: 'Needed to control System Events and media players such as Music and Spotify. macOS cannot report this one: it asks the first time an action needs it, and the list in System Settings shows what you allowed.' },
+];
+
+export type PermissionStatus = 'granted' | 'missing' | 'unknown' | 'ask';
+export const permissionLabels: Record<PermissionStatus, string> = { granted: 'Granted', missing: 'Not granted', unknown: 'Checking', ask: 'Asked when used' };
+
+// Automation has no passive check, so it is never reported as granted or missing.
+export function permissionState(target: Target, permissions: InputPermissions | null): PermissionStatus {
+  if (target === 'automation') return 'ask';
+  if (!permissions) return 'unknown';
+  return (target === 'post_events' ? permissions.post_events : permissions.listen_events) ? 'granted' : 'missing';
+}
+
+// Settings panel that shows which macOS privacy permissions OpenStreamHub has and opens the matching System Settings pane.
+// Accessibility and Input Monitoring are read without prompting; Automation has no passive check.
+export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke?: Invoke }) {
+  const [permissions, setPermissions] = useState<InputPermissions | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const available = desktop && !!invoke;
+  // The parent passes a new function on every render; keep the latest in a ref so a re-render never re-runs the check.
+  const call = useRef(invoke);
+  call.current = invoke;
+  // The check takes a moment of osascript; a button press holds the busy state a little longer so it reads as done.
+  const check = useCallback(async (manual = false) => {
+    const run = call.current;
+    if (!run) return;
+    // Only a button press shows the busy state; the automatic checks stay silent.
+    if (manual) setBusy(true);
+    const minimum = manual ? new Promise<void>(resolve => setTimeout(resolve, 500)) : Promise.resolve();
+    try {
+      setPermissions(await run<InputPermissions>('input_permissions'));
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      await minimum;
+      if (manual) setBusy(false);
+    }
+  }, []);
+  useEffect(() => {
+    if (!available) return;
+    void check();
+    // The user changes a permission in System Settings and comes back to the app.
+    const onFocus = () => { void check(); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [available, check]);
+  const open = async (target: Target) => {
+    if (!call.current) return;
+    try {
+      await call.current('open_permission_settings', { target });
+      setError(null);
+    } catch (reason) {
+      setError(String(reason));
+    }
+  };
+  return <section className="panel permissions-panel">
+    <h2>Permissions</h2>
+    <p>macOS keeps these per app. Allow OpenStreamHub in System Settings, then come back; this list updates by itself.</p>
+    {!available && <p className="fine-print">Permissions can be checked in the desktop app only.</p>}
+    {available && <ul className="permission-list">{rows.map(row => {
+      const status = permissionState(row.target, permissions);
+      return <li key={row.target}>
+        <div><strong>{row.title}</strong><small>{row.detail}</small></div>
+        <span className={`permission-status ${status}`} role="status">{permissionLabels[status]}</span>
+        <button className="button" onClick={() => void open(row.target)}>Open</button>
+      </li>;
+    })}</ul>}
+    {available && <div className="settings-actions"><button className="button" disabled={busy} aria-busy={busy} onClick={() => void check(true)}>{busy ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}{busy ? 'Checking…' : 'Check again'}</button></div>}
+    {error && <p className="fine-print permission-error" role="alert">{error}</p>}
+  </section>;
+}

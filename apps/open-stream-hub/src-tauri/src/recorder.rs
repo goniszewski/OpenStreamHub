@@ -46,6 +46,8 @@ pub enum PermissionTarget {
     PostEvents,
     /// Privacy & Security > Input Monitoring (listening to keyboard events).
     ListenEvents,
+    /// Privacy & Security > Automation (controlling System Events and players).
+    Automation,
 }
 
 /// The two permission preflights the macro flow needs.
@@ -414,6 +416,8 @@ const ACCESSIBILITY_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 const LISTEN_PANE: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent";
+const AUTOMATION_PANE: &str =
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation";
 /// Bounded subprocesses: the checks are one-shot tools, so 5 s is generous.
 const TOOL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -504,6 +508,7 @@ pub fn open_permission_settings(target: PermissionTarget) -> Result<(), String> 
     let pane = match target {
         PermissionTarget::PostEvents => ACCESSIBILITY_PANE,
         PermissionTarget::ListenEvents => LISTEN_PANE,
+        PermissionTarget::Automation => AUTOMATION_PANE,
     };
     let output = run_tool(OPEN, &["-u", pane])?;
     if output.success {

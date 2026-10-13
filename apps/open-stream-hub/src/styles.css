@@ -839,3 +839,5 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .base-layout-heading p { font-size:11px; }
 .live-controls { margin:14px 0 0; padding:12px 0 0; border-bottom:0; border-top:1px solid var(--line); }
 .base-layout-options, .base-layout-rotation { margin-top:10px; }
+.lighting-colour-fieldset { margin:0; padding:0; border:0; min-width:0; }
+.lighting-colour-fieldset:disabled { opacity:.45; }

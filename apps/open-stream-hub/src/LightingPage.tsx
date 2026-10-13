@@ -79,8 +79,8 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
   const matched = selected?.module === 'm0064' && scope === 'module' ? matchedModuleColour(records, devices) : null;
   // The apply queue reads the latest values and gate from this ref, not from
   // a render closure; a trailing apply runs after the state that scheduled it.
-  const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led, lighting });
-  latest.current = { invoke, reason, targets, backlight, colour, kind, effect, led, lighting };
+  const latest = useRef({ invoke, reason, targets, backlight, colour, kind, effect, led, lighting, runOwned });
+  latest.current = { invoke, reason, targets, backlight, colour, kind, effect, led, lighting, runOwned };
   // One write at a time, and a change landing during a write re-applies once
   // with the latest values, so a dragged slider is never silently dropped —
   // even while a slow Whole kit write is running. Recreated per mount cycle:
@@ -103,7 +103,8 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           setStatus(appliedLedStatus(written));
         } else {
           const written = await applyLighting(current.invoke, { targets: paths, backlight: current.backlight, colour: current.colour });
-          current.lighting.record(paths, existing => withDialLook(existing, current.backlight, current.colour));
+          // A dial a run draws on takes the backlight only: the colour fills the screen and would wipe the run's picture.
+          current.lighting.record(paths, existing => withDialLook(existing, current.backlight, current.runOwned && existing?.kind === 'dial' ? existing.colour : current.colour));
           setStatus(appliedStatus(written));
         }
       } catch (reason) { setError(errorMessage(reason)); }
@@ -222,9 +223,12 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
         <div className="lighting-row">
           <label htmlFor="lighting-colour">Colour</label>
           <div className="lighting-colour">
-            <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue}>
-              <button type="button" className="button compact" onClick={saveFavourite}><Star size={15} />Save colour</button>
-            </ColourPicker>
+            <fieldset className="lighting-colour-fieldset" disabled={kind === 'dial' && runOwned}>
+              <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue}>
+                <button type="button" className="button compact" onClick={saveFavourite}><Star size={15} />Save colour</button>
+              </ColourPicker>
+            </fieldset>
+            {kind === 'dial' && runOwned && <p className="fine-print">The colour fills the whole screen, which would wipe the picture the running dial shows. Pause the dial to change it.</p>}
           </div>
         </div>
         {favourites.length > 0 && <div className="lighting-favourites" role="group" aria-label="Favourite colours">

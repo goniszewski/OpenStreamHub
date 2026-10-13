@@ -84,6 +84,8 @@ describe('LightingPage', () => {
     expect(markup).not.toContain('Lighting is locked while');
     expect(markup).toContain('<fieldset class="lighting-controls">');
     expect(markup).toContain('Pause it to reset.');
+    expect(markup).toContain('<fieldset class="lighting-colour-fieldset" disabled="">');
+    expect(markup).toContain('would wipe the picture the running dial shows');
     expect(markup).toContain('>Pause</button>');
     expect(markup).toMatch(/<button type="button" class="button" disabled=""[^>]*><svg[^>]*lucide-rotate-ccw/);
   });

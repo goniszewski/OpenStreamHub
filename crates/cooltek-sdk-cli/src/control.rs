@@ -28,9 +28,9 @@
 //!
 //! The dial's lighting, only for a run that holds an M131E dial in software mode:
 //!
-//! - `{"id":6,"type":"dial_look","backlight":60,"colour":[0,128,255]}` sets the dial's backlight (0 to 100) and its solid
-//!   colour through the run's handle. The run already holds the dial in software mode, so nothing else is sent and
-//!   the picture on the dial is not redrawn.
+//! - `{"id":6,"type":"dial_look","backlight":60}` sets the dial's backlight (0 to 100) through the run's handle. The
+//!   run already holds the dial in software mode, so nothing else is sent. There is no colour: the dial's solid
+//!   colour is a fill of the whole screen, which would wipe the picture the run draws.
 //!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
@@ -105,7 +105,6 @@ enum Request {
     },
     DialLook {
         backlight: u8,
-        colour: [u8; 3],
     },
 }
 
@@ -141,17 +140,14 @@ fn draw_key<T: ReportTransport + ?Sized>(
 }
 
 // The backlight is checked before anything is written, as the app's own dial write does.
-fn set_dial_look<T: ReportTransport + ?Sized>(
+fn set_dial_backlight<T: ReportTransport + ?Sized>(
     transport: &T,
     backlight: u8,
-    colour: [u8; 3],
 ) -> Result<(), String> {
     cooltek_sdk_masterhub::dial::backlight_report(backlight)
         .map_err(|error| format!("the backlight must be between 0 and 100: {error}"))?;
     cooltek_sdk_masterhub::dial::set_backlight(transport, backlight)
-        .map_err(|error| format!("could not set the dial backlight: {error}"))?;
-    cooltek_sdk_masterhub::dial::set_color(transport, colour)
-        .map_err(|error| format!("could not set the dial colour: {error}"))
+        .map_err(|error| format!("could not set the dial backlight: {error}"))
 }
 
 /// Answers one control line: the `control_result` record to write.
@@ -190,9 +186,9 @@ pub fn answer<T: ReportTransport + ?Sized>(
                 Err("this run does not take key images".to_string())
             }
         }
-        (Request::DialLook { backlight, colour }, _) => {
+        (Request::DialLook { backlight }, _) => {
             if hooks.dial_lighting {
-                set_dial_look(transport, backlight, colour).map(|()| json!({}))
+                set_dial_backlight(transport, backlight).map(|()| json!({}))
             } else {
                 Err("this run does not take dial lighting".to_string())
             }
@@ -358,8 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn a_dial_look_writes_the_backlight_and_colour_only_for_a_dial_run() {
-        let line = r#"{"id":8,"type":"dial_look","backlight":60,"colour":[0,128,255]}"#;
+    fn a_dial_look_writes_only_the_backlight_and_only_for_a_dial_run() {
+        let line = r#"{"id":8,"type":"dial_look","backlight":60}"#;
         let device = fake();
         let hooks = Hooks {
             dial_lighting: true,
@@ -368,8 +364,8 @@ mod tests {
         let result = answer(&device, None, &hooks, line);
         assert_eq!(result["ok"], true);
         assert_eq!(result["id"], 8);
-        // Backlight and colour; software mode is already held by the run.
-        assert_eq!(device.features.borrow().len(), 2);
+        // The backlight alone: software mode is already held, and a colour would wipe the picture.
+        assert_eq!(device.features.borrow().len(), 1);
         let other = fake();
         let refused = answer(&other, None, &Hooks::default(), line);
         assert_eq!(refused["ok"], false);
@@ -387,7 +383,7 @@ mod tests {
             &device,
             None,
             &hooks,
-            r#"{"id":9,"type":"dial_look","backlight":101,"colour":[0,0,0]}"#,
+            r#"{"id":9,"type":"dial_look","backlight":101}"#,
         );
         assert_eq!(result["ok"], false);
         assert!(device.features.borrow().is_empty());

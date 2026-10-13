@@ -873,7 +873,8 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
 }
 
 // Dial lighting (the Lighting page): a dial a run holds is reached through that run's control channel, which
-// already has it in software mode; the others are written through the app's own handle, like the CLI's dial
+// already has it in software mode, and takes the backlight only (the colour fills the screen and would wipe the
+// run's picture); the others are written through the app's own handle, like the CLI's dial
 // commands, which puts them in software mode first. Reset still needs the dial free: it leaves software mode.
 #[tauri::command(async)]
 fn set_dial_lighting(
@@ -891,7 +892,7 @@ fn set_dial_lighting(
     }
     for pipe in held {
         pipe.request(
-            serde_json::json!({"type":"dial_look","backlight":backlight,"colour":colour}),
+            serde_json::json!({"type":"dial_look","backlight":backlight}),
             service::CONTROL_TIMEOUT,
         )?;
         written += 1;

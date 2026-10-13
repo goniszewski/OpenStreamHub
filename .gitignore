@@ -23,3 +23,4 @@
 docs/tasks/
 
 node_modules/
+dist-release/

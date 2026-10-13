@@ -189,7 +189,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
   const controlsLocked = reason !== null;
 
   return <section className="page-content lighting-page">
-    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s backlight and colour, and the knob and fader modules’ colour, effect and brightness, applied to the hardware as you adjust them and kept across a replug.</p></div></div>
+    <div className="page-title"><div><h1>Lighting</h1><p>The encoder dial’s screen backlight and fill colour, and the knob and fader modules’ colour, effect and brightness, applied to the hardware as you adjust them and kept across a replug.</p></div></div>
     <div className="panel lighting-panel">
       <div className="theme-picker lighting-scope" role="group" aria-label="Lighting scope">
         {(Object.keys(lightingScopeLabels) as LightingScope[]).map(value => <button key={value} type="button"
@@ -213,7 +213,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           </SelectField>
         </div>}
         <div className="lighting-row">
-          <label htmlFor="lighting-backlight">{kind === 'led' ? 'Brightness' : 'Backlight'}</label>
+          <label htmlFor="lighting-backlight">{kind === 'led' ? 'Brightness' : 'Screen backlight'}</label>
           <div className="lighting-backlight">
             <input id="lighting-backlight" type="range" min={0} max={100} step={1} value={backlight}
               onChange={event => setBacklightValue(Number(event.target.value))} />
@@ -221,7 +221,7 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           </div>
         </div>
         <div className="lighting-row">
-          <label htmlFor="lighting-colour">Colour</label>
+          <label htmlFor="lighting-colour">{kind === 'led' ? 'Colour' : 'Screen colour'}</label>
           <div className="lighting-colour">
             <fieldset className="lighting-colour-fieldset" disabled={kind === 'dial' && runOwned}>
               <ColourPicker id="lighting-colour" value={colour} onChange={setColourValue}>
@@ -258,8 +258,8 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
       <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Turn off switches the picked LED, or every LED, back to Off.' : 'Reset hands the dial back to its built-in animation.'}</p>
       <details className="learn-more">
         <summary>Learn more</summary>
-        <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. A dial takes its backlight and colour while it is active too, but Reset needs it paused. Knob and fader modules take a colour, an effect and a brightness, even while they are active; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
+        <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the screen backlight and fill colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. The colour is what the screen is filled with when nothing is drawn on it. A dial that is running its display takes the backlight but not the colour, which fills the screen and would wipe the picture; Reset needs it paused too. Knob and fader modules take a colour, an effect and a brightness, even while they are active; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
       </details>
     </div>
   </section>;

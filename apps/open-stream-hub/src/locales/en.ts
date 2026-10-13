@@ -11,7 +11,7 @@ export const en = {
   'nav.guide': 'Getting started',
   'nav.about': 'About',
   'nav.settings': 'Settings',
-  'nav.hint.lighting': 'Dial backlight and colour, and knob, fader and base lighting',
+  'nav.hint.lighting': 'Dial screen backlight and colour, and knob, fader and base lighting',
   'nav.hint.demos': 'Small games and experiments that play on a module',
   'nav.collapse': 'Collapse',
   'nav.collapseTip': 'Collapse sidebar',

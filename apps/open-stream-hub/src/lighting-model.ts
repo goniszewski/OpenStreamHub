@@ -128,7 +128,7 @@ export function lightingDeviceLabel(device: LightingDevice): string {
 // What lighting a module takes, for the picker tiles: a short capability line.
 export function lightingCapability(module: LightingModule): string {
   const kind = lightingKind(module);
-  if (kind === 'dial') return 'Backlight and colour';
+  if (kind === 'dial') return 'Screen backlight and colour';
   return kind === 'led' ? `Colour, effect and brightness · ${ledCount(module) === 1 ? '1 LED' : `${ledCount(module)} LEDs`}` : 'Not lit yet';
 }
 

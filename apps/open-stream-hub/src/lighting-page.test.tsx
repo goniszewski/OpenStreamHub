@@ -75,7 +75,7 @@ describe('LightingPage', () => {
     expect(fadersMarkup).not.toContain('LED 6');
     const dialMarkup = render({ devices: [dial('aa')] });
     expect(dialMarkup).not.toContain('id="lighting-effect"');
-    expect(dialMarkup).toContain('>Backlight</label>');
+    expect(dialMarkup).toContain('>Screen backlight</label>');
     expect(dialMarkup).toContain('lucide-rotate-ccw');
   });
 
@@ -92,7 +92,7 @@ describe('LightingPage', () => {
 
   it('says a dial takes its lighting while active', () => {
     const markup = render({ devices: [dial('aa')] });
-    expect(markup).toContain('A dial takes its backlight and colour while it is active too, but Reset needs it paused.');
+    expect(markup).toContain('A dial that is running its display takes the backlight but not the colour');
     expect(markup).not.toContain('is left out');
   });
 

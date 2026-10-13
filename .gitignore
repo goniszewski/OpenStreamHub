@@ -21,3 +21,5 @@
 
 # Task files (local only)
 docs/tasks/
+
+node_modules/

@@ -41,6 +41,10 @@ pub struct KeyArtworkDesign {
     pub text: String,
     /// Studio text size, 0 (small) through 3 (extra large).
     pub text_size: u8,
+    /// Studio icon size, 0 (small) through 2 (large). Artwork saved before the
+    /// setting existed reads as medium, the size it was drawn at; large fills the key.
+    #[serde(default = "default_icon_size")]
+    pub icon_size: u8,
     /// Where the label sits relative to the icon.
     pub align: KeyArtworkTextAlign,
     /// Label colour as typed: `#rgb`, `rgb`, `#rrggbb`, or `rrggbb`.
@@ -92,7 +96,13 @@ impl KeyArtworkFrame {
     }
 }
 
+fn default_icon_size() -> u8 {
+    1
+}
+
 impl KeyArtworkDesign {
+    /// Highest icon size index; the studio offers small, medium and large.
+    pub const MAX_ICON_SIZE: u8 = 2;
     /// Longest stored icon id: a catalog id, or `app:` plus a bundle id.
     pub const MAX_ICON_ID_BYTES: usize = 128;
     /// Longest stored label text, matching the key label limit.
@@ -120,6 +130,9 @@ impl KeyArtworkDesign {
         }
         if self.text_size > Self::MAX_TEXT_SIZE {
             return Err("key artwork text size must be 0 through 3".into());
+        }
+        if self.icon_size > Self::MAX_ICON_SIZE {
+            return Err("key artwork icon size must be 0 through 2".into());
         }
         for (field, colour) in [
             ("text colour", &self.text_colour),
@@ -362,6 +375,7 @@ pub(crate) mod tests {
             icon_id: Some("volume-2".into()),
             text: "Mute".into(),
             text_size: 1,
+            icon_size: 1,
             align: KeyArtworkTextAlign::Bottom,
             text_colour: "#ffffff".into(),
             icon_colour: "#fff".into(),
@@ -388,7 +402,7 @@ pub(crate) mod tests {
         assert_eq!(
             value["design"],
             json!({
-                "icon_id": "volume-2", "text": "Mute", "text_size": 1, "align": "bottom",
+                "icon_id": "volume-2", "text": "Mute", "text_size": 1, "icon_size": 1, "align": "bottom",
                 "text_colour": "#ffffff", "icon_colour": "#fff", "background": "204060",
             })
         );
@@ -457,6 +471,7 @@ pub(crate) mod tests {
         let mut broken = artwork(vec![frame(&jpeg(72, 40), 100)]);
         broken.design = Some(KeyArtworkDesign {
             text_size: 9,
+            icon_size: 1,
             ..design()
         });
         assert!(broken.validate().unwrap_err().contains("0 through 3"));

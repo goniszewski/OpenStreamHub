@@ -128,11 +128,11 @@ describe('prepared-image requests', () => {
 
 describe('stored designs', () => {
   const spec: KeyArtworkDesignSpec = {
-    icon_id: 'volume-2', text: 'Mute', text_size: 2, align: 'top',
+    icon_id: 'volume-2', text: 'Mute', text_size: 2, icon_size: 1, align: 'top',
     text_colour: '#ff8000', icon_colour: '0af', background: '#123456',
   };
   const designed: KeyArtworkDesign = {
-    ...defaultKeyArtworkDesign, iconId: 'volume-2', text: 'Mute', textSize: 2, align: 'top',
+    ...defaultKeyArtworkDesign, iconId: 'volume-2', text: 'Mute', textSize: 2, iconSize: 1, align: 'top',
     textColour: '#ff8000', iconColour: '0af', background: '#123456',
   };
 
@@ -143,6 +143,15 @@ describe('stored designs', () => {
     const first = buildKeyArtworkDesignRequest(designed, 'QUJD');
     const again = buildKeyArtworkDesignRequest(keyDesignFromSpec(spec)!, 'QUJD');
     expect(again).toEqual(first);
+  });
+
+  it('reads artwork saved before icon sizes as large and sizes the icon from the choice', () => {
+    expect(keyDesignFromSpec({ ...spec, icon_size: undefined })!.iconSize).toBe(1);
+    expect(keyDesignFromSpec({ ...spec, icon_size: 7 })!.iconSize).toBe(1);
+    const icon = (iconSize: 0 | 1 | 2) => keyDesignLayout({ ...designed, text: '', iconSize }, measure).icon!.size;
+    expect([icon(0), icon(1), icon(2)]).toEqual([28, 44, 72]);
+    // Large has no padding: the icon covers the key, and the label stays where its alignment puts it, over the icon.
+    expect(keyDesignLayout({ ...designed, text: 'Mute', iconSize: 2 }, measure).icon).toEqual({ x: 0, y: 0, size: 72 });
   });
 
   it('reopens text-only designs with a null or absent icon id', () => {

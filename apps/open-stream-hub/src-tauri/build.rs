@@ -41,6 +41,8 @@ fn main() {
             "set_focus_rules_enabled",
             "focus_current_app",
             "list_running_apps",
+            "choose_app",
+            "app_name",
             "display_settings",
             "set_display_settings",
             "default_profile",

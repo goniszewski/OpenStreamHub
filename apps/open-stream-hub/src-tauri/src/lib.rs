@@ -1,4 +1,5 @@
 mod app_icon;
+mod app_lookup;
 mod artwork;
 mod autostart;
 mod base_slots;
@@ -1739,6 +1740,18 @@ fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
     state.focus.current_app()
 }
 
+// The system's app picker for the "Open app" action: the chosen app's bundle id and everyday name, or none on cancel.
+#[tauri::command(async)]
+fn choose_app() -> Result<Option<app_lookup::AppInfo>, String> {
+    app_lookup::choose()
+}
+
+// The everyday name of an installed app by bundle id, or none when it is not found.
+#[tauri::command(async)]
+fn app_name(bundle_id: String) -> Option<String> {
+    app_lookup::name_for(&bundle_id)
+}
+
 // The apps running now, for the focused-app rule picker.
 #[tauri::command(async)]
 fn list_running_apps(app: tauri::AppHandle) -> Vec<focus::RunningApp> {
@@ -1954,6 +1967,8 @@ pub fn run() {
             set_focus_rules_enabled,
             focus_current_app,
             list_running_apps,
+            choose_app,
+            app_name,
             display_settings,
             set_display_settings,
             default_profile,

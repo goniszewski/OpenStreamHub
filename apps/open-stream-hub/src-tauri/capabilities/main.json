@@ -48,6 +48,8 @@
     "allow-set-focus-rules-enabled",
     "allow-focus-current-app",
     "allow-list-running-apps",
+    "allow-choose-app",
+    "allow-app-name",
     "allow-display-settings",
     "allow-set-display-settings",
     "allow-default-profile",

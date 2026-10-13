@@ -53,7 +53,7 @@ export function isAutoDrawn(artwork: KeyArtwork | undefined): boolean {
   const icon = design.icon_id ?? '';
   const plan: AutoPlan | null = icon.startsWith('app:') && icon.length > 4 ? { kind: 'app', bundleId: icon.slice(4) }
     : icon === 'globe' && design.text ? { kind: 'url', host: design.text } : null;
-  return plan !== null && stableStringify(design) === stableStringify(storedKeyArtworkDesign(autoDesign(plan)));
+  return plan !== null && stableStringify({ icon_size: defaultKeyArtworkDesign.iconSize, ...design }) === stableStringify(storedKeyArtworkDesign(autoDesign(plan)));
 }
 
 /** Whether a key's artwork may be replaced by an automatic one: it has none,

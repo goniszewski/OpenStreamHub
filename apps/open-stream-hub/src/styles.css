@@ -572,6 +572,8 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .key-icon-library input[type="search"] { width:100%; min-height:35px; padding:7px 10px; border:1px solid var(--line); border-radius:8px; background:var(--control); font:inherit; font-size:12px; color:inherit; margin-bottom:4px; }
 .key-icon-grid { display:grid; grid-template-columns:repeat(7,32px); gap:6px; margin:4px 0 2px; }
 .key-design-apply { display:grid; gap:7px; justify-items:start; }
+.key-design-apply.dirty { position:sticky; bottom:0; z-index:2; padding:10px 12px; margin:0 -12px; background:var(--panel, Canvas); border-top:1px solid var(--accent, currentColor); box-shadow:0 -6px 12px rgba(0,0,0,.25); }
+.key-design-unsaved { margin:0; font-size:12px; font-weight:600; }
 
 /* Earlier versions: the collapsed history panel in the profile manager and its rows. */
 .version-history { margin-top:22px; }

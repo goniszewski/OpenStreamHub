@@ -30,6 +30,14 @@ export const keyTextSizes = [
 ] as const;
 export type KeyTextSize = 0 | 1 | 2 | 3;
 
+/** Three icon sizes. Medium is the size icons were always drawn at; large fills the key edge to edge, with the label over it. */
+export const keyIconSizes = [
+  { label: 'Small', px: 28 },
+  { label: 'Medium', px: 44 },
+  { label: 'Large', px: 72 },
+] as const;
+export type KeyIconSize = 0 | 1 | 2;
+
 export const keyTextAligns = ['top', 'middle', 'bottom'] as const;
 export type KeyTextAlign = (typeof keyTextAligns)[number];
 export const keyTextAlignLabels: Record<KeyTextAlign, string> = { top: 'Top', middle: 'Middle', bottom: 'Bottom' };
@@ -39,6 +47,7 @@ export interface KeyArtworkDesign {
   iconId: string | null;
   text: string;
   textSize: KeyTextSize;
+  iconSize: KeyIconSize;
   align: KeyTextAlign;
   /** As typed: `#rrggbb`, `rrggbb`, `#rgb` or `rgb`. */
   textColour: string;
@@ -47,7 +56,7 @@ export interface KeyArtworkDesign {
 }
 
 export const defaultKeyArtworkDesign: KeyArtworkDesign = {
-  iconId: null, text: '', textSize: 1, align: 'bottom', textColour: '#ffffff', iconColour: '#ffffff', background: '#000000',
+  iconId: null, text: '', textSize: 1, iconSize: 1, align: 'bottom', textColour: '#ffffff', iconColour: '#ffffff', background: '#000000',
 };
 
 /** The design a studio opens with: the key's label as text and the first
@@ -62,7 +71,7 @@ export function initialKeyArtworkDesign(action?: BindingAction | null, label = '
     on valid hex. */
 export function storedKeyArtworkDesign(design: KeyArtworkDesign): KeyArtworkDesignSpec {
   return {
-    icon_id: design.iconId, text: design.text, text_size: design.textSize, align: design.align,
+    icon_id: design.iconId, text: design.text, text_size: design.textSize, icon_size: design.iconSize, align: design.align,
     text_colour: design.textColour, icon_colour: design.iconColour, background: design.background,
   };
 }
@@ -85,10 +94,12 @@ export function keyDesignFromSpec(spec: KeyArtworkDesignSpec | undefined, action
     iconId = suggestedIconIds(action).find(id => !isAppIconId(id)) ?? null;
   }
   const size = spec.text_size;
+  const iconSize = spec.icon_size;
   return {
     iconId,
     text: designTextIssue(spec.text) === null ? spec.text : defaultKeyArtworkDesign.text,
     textSize: Number.isInteger(size) && size >= 0 && size < keyTextSizes.length ? size as KeyArtworkDesign['textSize'] : defaultKeyArtworkDesign.textSize,
+    iconSize: Number.isInteger(iconSize) && iconSize! >= 0 && iconSize! < keyIconSizes.length ? iconSize as KeyIconSize : defaultKeyArtworkDesign.iconSize,
     align: (keyTextAligns as readonly string[]).includes(spec.align) ? spec.align : defaultKeyArtworkDesign.align,
     textColour: parseHexColour(spec.text_colour) !== null ? spec.text_colour : defaultKeyArtworkDesign.textColour,
     iconColour: parseHexColour(spec.icon_colour) !== null ? spec.icon_colour : defaultKeyArtworkDesign.iconColour,
@@ -101,7 +112,6 @@ export function keyDesignFromSpec(spec: KeyArtworkDesignSpec | undefined, action
 export const keyCanvasSize = 72;
 export const keyPadding = 6;
 const keyGap = 3;
-const maxIconSize = 44;
 const lineHeightFactor = 1.2;
 
 /** Line counts fall as the text grows, so large text never wraps forever. */
@@ -143,6 +153,8 @@ export function wrapKeyText(text: string, px: number, maxLines: number, measure:
 
 /** Where the icon and each text line (top edges) sit on the 72×72 canvas. */
 export function keyDesignLayout(design: KeyArtworkDesign, measure: KeyTextMeasure): KeyDesignLayout {
+  const maxIconSize = keyIconSizes[design.iconSize].px;
+  const fullBleed = maxIconSize >= keyCanvasSize;
   const px = keyTextSizes[design.textSize].px;
   const lineHeight = px * lineHeightFactor;
   const lines = wrapKeyText(design.text.trim(), px, keyTextMaxLines(px), measure);
@@ -154,6 +166,7 @@ export function keyDesignLayout(design: KeyArtworkDesign, measure: KeyTextMeasur
     : design.align === 'bottom' ? keyCanvasSize - keyPadding - textHeight
     : (keyCanvasSize - textHeight) / 2;
   if (!design.iconId) return { icon: null, lines: lines.map((text, index) => ({ text, y: textTop + index * lineHeight })) };
+  if (fullBleed) return { icon: { x: 0, y: 0, size: keyCanvasSize }, lines: lines.map((text, index) => ({ text, y: textTop + index * lineHeight })) };
   const band = design.align === 'top'
     ? { from: textTop + textHeight + keyGap, to: keyCanvasSize - keyPadding }
     : { from: keyPadding, to: textTop - keyGap };

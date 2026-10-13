@@ -5,10 +5,11 @@ import { dataUrl, formatHexColour, parseHexColour, readSourceFile } from './artw
 import { keyArtworkFrame, setKeyArtwork } from './key-artwork';
 import {
   appIconPrefix, buildKeyArtworkDesignRequest, designTextIssue, initialKeyArtworkDesign, isAppIconId,
-  keyCanvasSize, keyDesignFromSpec, keyTextAlignLabels, keyTextAligns, keyTextSizes, keyDesignLayout,
+  keyCanvasSize, keyDesignFromSpec, keyTextAlignLabels, keyTextAligns, keyIconSizes, keyTextSizes, keyDesignLayout,
   readRecentKeyIcons, recordRecentKeyIcon, searchKeyIcons, storedKeyArtworkDesign, suggestedIconIds,
 } from './key-artwork-design';
 import type { DesignStorage, KeyArtworkDesign, KeyTextMeasure } from './key-artwork-design';
+import { stableStringify } from './draft-model';
 import { keyIconById } from './key-icons';
 import { applyAutoArtwork, planAutoArtwork, planKey } from './auto-key-artwork';
 import type { Invoke, ProfileSession } from './profile-session';
@@ -137,6 +138,8 @@ export interface KeyDesignStudioProps {
   libraryOpen: boolean;
   onLibraryOpen(open: boolean): void;
   preview: React.ReactNode;
+  /** The studio differs from what the key currently shows: the apply bar stays in view and says so. */
+  dirty?: boolean;
   disabled: boolean;
   busy: boolean;
   prepareAvailable: boolean;
@@ -153,7 +156,7 @@ const designColourIssue = (design: KeyArtworkDesign): string | null => {
 /** The icon-and-label studio shown above the file picker in the key artwork
     editor. Hook-free and controlled: all state lives in KeyArtworkEditor, so
     tests call this directly and walk the element tree. */
-export function KeyDesignStudio({ design, onDesign, action, appIcon, appIconFailed, recents, query, onQuery, libraryOpen, onLibraryOpen, preview, disabled, busy, prepareAvailable, onApply }: KeyDesignStudioProps) {
+export function KeyDesignStudio({ design, onDesign, action, appIcon, appIconFailed, recents, query, onQuery, libraryOpen, onLibraryOpen, preview, dirty = false, disabled, busy, prepareAvailable, onApply }: KeyDesignStudioProps) {
   const set = <K extends keyof KeyArtworkDesign>(key: K, value: KeyArtworkDesign[K]) => onDesign({ ...design, [key]: value });
   const issue = designTextIssue(design.text) ?? designColourIssue(design);
   const suggestions = suggestedIconIds(action).filter(id => !isAppIconId(id) || (appIcon && appIcon.bundleId === id.slice(appIconPrefix.length)));
@@ -192,6 +195,14 @@ export function KeyDesignStudio({ design, onDesign, action, appIcon, appIconFail
       <input id="key-design-text" type="text" value={design.text} disabled={disabled || busy} maxLength={128}
         aria-invalid={designTextIssue(design.text) !== null} onChange={event => set('text', event.target.value)} />
     </div>
+    {design.iconId && <div className="artwork-field">
+      <span className="picker-group-label">Icon size</span>
+      <div className="artwork-seg" role="group" aria-label="Icon size">
+        {keyIconSizes.map((size, index) => <button key={size.label} type="button" aria-pressed={design.iconSize === index}
+          className={design.iconSize === index ? 'active' : ''} disabled={disabled || busy}
+          onClick={() => set('iconSize', index as KeyArtworkDesign['iconSize'])}>{size.label}</button>)}
+      </div>
+    </div>}
     <div className="artwork-field">
       <span className="picker-group-label">Text size</span>
       <div className="artwork-seg" role="group" aria-label="Text size">
@@ -211,7 +222,8 @@ export function KeyDesignStudio({ design, onDesign, action, appIcon, appIconFail
     {colourRow('key-design-text-colour', 'Text colour', design.textColour, disabled || busy, value => set('textColour', value))}
     {colourRow('key-design-icon-colour', 'Icon colour', design.iconColour, disabled || busy, value => set('iconColour', value))}
     {colourRow('key-design-background', 'Background colour', design.background, disabled || busy, value => set('background', value))}
-    <div className="key-design-apply">
+    <div className={`key-design-apply${dirty ? ' dirty' : ''}`}>
+      {dirty && !busy && <p className="key-design-unsaved" role="status">Not applied yet. The key still shows its previous artwork.</p>}
       <button type="button" className="button primary compact" disabled={disabled || busy || !prepareAvailable || issue !== null
         || (isAppIconId(design.iconId ?? '') && (!appIcon || appIcon.bundleId !== (design.iconId ?? '').slice(appIconPrefix.length)))}
         onClick={onApply}>{busy ? 'Preparing…' : 'Set key artwork'}</button>
@@ -241,6 +253,10 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     // An automatic drawing lands as saved artwork with a design: the studio follows it.
     setDesign((artwork?.design && keyDesignFromSpec(artwork.design, action)) || initialKeyArtworkDesign(action, initialText ?? ''));
   }, [action, initialText, artwork]);
+  // Whether the studio shows something the key does not: unlike an upload, a design only reaches the key when applied.
+  const saved = artwork?.design ? keyDesignFromSpec(artwork.design, action) : null;
+  const dirty = saved ? stableStringify(storedKeyArtworkDesign(design)) !== stableStringify(storedKeyArtworkDesign(saved))
+    : touched.current && stableStringify(design) !== stableStringify(initialKeyArtworkDesign(action, initialText ?? ''));
   const [query, setQuery] = useState('');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [recents, setRecents] = useState(() => readRecentKeyIcons(keyDesignStorage));
@@ -341,7 +357,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   return <section className="key-artwork-editor" aria-label="Key artwork">
     <KeyDesignStudio design={design} onDesign={editDesign} action={action} appIcon={appIcon} appIconFailed={appIconFailed}
       recents={recents} query={query} onQuery={setQuery} libraryOpen={libraryOpen} onLibraryOpen={setLibraryOpen}
-      preview={<KeyDesignCanvasPreview design={design} appIconPng={appIcon?.pngBase64} />}
+      preview={<KeyDesignCanvasPreview design={design} appIconPng={appIcon?.pngBase64} />} dirty={dirty}
       disabled={disabled} busy={busy} prepareAvailable={!!invoke} onApply={() => { void applyDesign(); }} />
     <div className="inspector-divider" />
     <label className="key-artwork-upload-title" htmlFor="key-artwork-file">Image or GIF file</label>

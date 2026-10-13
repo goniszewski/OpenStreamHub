@@ -1,4 +1,4 @@
-import { Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
@@ -173,7 +173,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'macro' && <MacroFields steps={action.steps} disabled={false} onChange={steps => onChange({ type: 'macro', steps }, 'macro-steps')} invoke={invoke} />}
-    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
+    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
         {(Object.keys(profileDirectionLabels) as ProfileDirection[]).map(direction => <option key={direction} value={direction}>{profileDirectionLabels[direction]}</option>)}
@@ -183,7 +183,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
     {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">Each position change sets the default input device's volume (the microphone gain) from 0% to 100%. Some microphones have no software gain, and macOS then ignores it.</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
     {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
-      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} />}
+      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
   </>;
 }
 
@@ -224,7 +224,7 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
   </div>;
 }
 
-function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView }) {
+function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, invoke }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
   const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
   return <div className="action-fields">
     <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
@@ -248,8 +248,49 @@ function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog }
   </div>;
 }
 
-function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog }: {
-  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void; catalog?: ObsCatalogView;
+// "Open app": choose an app with the system's picker (or type its bundle ID) and see its everyday name under the field.
+// Without a desktop backend (`invoke` absent) it stays the plain field.
+function LaunchAppFields({ inputId, bundleId, invoke, onChange }: { inputId: string; bundleId: string; invoke?: Invoke; onChange(bundleId: string): void }) {
+  const [name, setName] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const call = useRef(invoke);
+  call.current = invoke;
+  const trimmed = bundleId.trim();
+  useEffect(() => {
+    setName(null);
+    if (!call.current || trimmed === '') return;
+    let current = true;
+    const timer = setTimeout(() => {
+      call.current?.<string | null>('app_name', { bundleId: trimmed }).then(found => { if (current) setName(found); }, () => {});
+    }, 300);
+    return () => { current = false; clearTimeout(timer); };
+  }, [trimmed]);
+  const choose = async () => {
+    if (!invoke || choosing) return;
+    setChoosing(true);
+    setError(null);
+    try {
+      const app = await invoke<{ bundle_id: string; name: string } | null>('choose_app');
+      if (app) { setName(app.name); onChange(app.bundle_id); }
+    } catch (reason) {
+      setError(typeof reason === 'string' ? reason : 'Could not open the app picker. Type the bundle ID instead.');
+    } finally { setChoosing(false); }
+  };
+  return <div className="action-fields">
+    <label htmlFor={inputId}>Application bundle ID</label>
+    <div className="focus-bundle-row">
+      <input id={inputId} spellCheck={false} value={bundleId} onChange={event => onChange(event.target.value)} />
+      {invoke && <button type="button" className="button" disabled={choosing} onClick={() => { void choose(); }}><FolderOpen size={16} aria-hidden="true" />{choosing ? 'Choosing…' : 'Choose app…'}</button>}
+    </div>
+    {trimmed !== '' && invoke && <p className="fine-print" role="status">{name ? <>App: <strong>{name}</strong></> : 'No installed app found with this ID.'}</p>}
+    {error && <p className="field-error" role="alert">{error}</p>}
+    <p className="fine-print">Choose an app, or type its bundle ID, for example com.apple.finder. The app checks the identifier; tests do not open it.</p>
+  </div>;
+}
+
+function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, invoke }: {
+  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
 }) {
   const id = (name: string) => `${prefix}${name}`;
   switch (action.type) {
@@ -268,7 +309,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog }:
           : 'Focus the field and press the keys, or choose every key from the list without pressing it: letters, digits, named keys, F1–F20, the keypad and the media keys. A chord holds at most 5 keys (4 modifiers plus the key). Media keys need macOS Accessibility permission.'}</p>
       </div>;
     }
-    case 'launch_app': return <div className="action-fields"><label htmlFor={id('app-bundle-id')}>Application bundle ID</label><input id={id('app-bundle-id')} spellCheck={false} value={action.bundle_id} onChange={event => onChange({ type: 'launch_app', bundle_id: event.target.value }, 'bundle-id')} /><p className="fine-print">For example, com.apple.finder. The app checks the identifier; tests do not open it.</p></div>;
+    case 'launch_app': return <LaunchAppFields inputId={id('app-bundle-id')} bundleId={action.bundle_id} invoke={invoke} onChange={bundleId => onChange({ type: 'launch_app', bundle_id: bundleId }, 'bundle-id')} />;
     case 'open_url': {
       const issue = urlIssue(action.url);
       return <div className="action-fields"><label htmlFor={id('open-url')}>Web address</label><input id={id('open-url')} type="url" spellCheck={false} value={action.url} aria-invalid={!!issue} aria-describedby={issue ? id('open-url-error') : undefined} onChange={event => onChange({ type: 'open_url', url: event.target.value }, 'open-url')} />{issue && <p id={id('open-url-error')} className="field-error" role="alert">{issue}</p>}<p className="fine-print">http and https only, opened in the default browser. Replay does not open it.</p></div>;

@@ -206,8 +206,10 @@ export function modeSwitchCopy(runs: ServiceRun[], bodies: (Profile | null)[]): 
   const checked = capabilities.filter(entry => entry.caps !== null).map(entry => entry.caps!);
   const unknown = capabilities.length - checked.length;
   const risk: RiskLevel = unknown > 0 || checked.some(caps => caps.risk === 'high') ? 'high' : 'elevated';
-  const names = entries.map(entry => `"${entry.name}"`).join(', ');
-  const subject = entries.length === 1 ? `the running profile ${names}` : `the running profiles ${names}`;
+  // Several modules often run the same profile; name it once.
+  const nameList = [...new Set(entries.map(entry => entry.name))];
+  const names = nameList.map(name => `"${name}"`).join(', ');
+  const subject = nameList.length === 1 ? `the running profile ${names}` : `the running profiles ${names}`;
   const lines = [...new Set(checked.flatMap(caps => capabilityLines(caps)))];
   const reasons = checked.filter(caps => caps.risk === 'high').flatMap(caps => caps.riskReasons);
   return {

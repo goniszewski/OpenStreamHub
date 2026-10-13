@@ -451,6 +451,7 @@ describe('the run mode', () => {
     expect(single.lines).toContain('No actions are bound yet, so nothing will run until you add some.');
     const both = modeSwitchCopy([named('Everyday'), named('Streaming')], [flat, null]);
     expect(both.message).toContain('the running profiles "Everyday", "Streaming"');
+    expect(modeSwitchCopy([named('Everyday'), named('Everyday'), named('Everyday')], [null, null, null]).message).toContain('the running profile "Everyday" runs');
     expect(both.risk).toBe('high');
     expect(both.warning).toContain('could not be checked');
     expect(both.acknowledge).toBe('I reviewed these profiles and trust their sources');

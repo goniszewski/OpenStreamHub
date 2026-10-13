@@ -39,7 +39,7 @@ jobs:
           - os: macos-15-intel
             arch: x86_64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install Rust toolchain
         run: |
@@ -52,7 +52,7 @@ jobs:
             . -> target
             apps/open-stream-hub/src-tauri -> target
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22.12"
           cache: npm
@@ -134,7 +134,7 @@ jobs:
             echo "EOF_PATHS"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.path }}

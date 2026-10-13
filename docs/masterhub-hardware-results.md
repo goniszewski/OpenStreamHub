@@ -246,6 +246,13 @@ Desktop app with three runs executing (the 15-key module with key display sync, 
 - **Which path ran:** the service output is not logged outside the app, but the three service processes (the keys display run, the dial display run and one run without display sync) kept the same process IDs and the same profile files (unchanged since 08:21) through the whole check, so none of them was restarted. By the code, a profile swap on a display run must restart it, so the edited key was probably on the run without display sync; this was not confirmed.
 - **Not checked:** a profile swap on the keys display run itself, and a change to key artwork.
 
+## Dial backlight during a run and screen brightness (13 October 2026)
+
+Desktop app, dial running its display and the 15-key module running its keys.
+
+- **Dial lighting through a run:** the Lighting page's dial write first sent the backlight and the colour. The colour fills the whole screen, so it wiped the dial's picture (the screen went grey). A running dial now takes only the backlight, through the run's control channel (`dial_look`), and the page disables the colour picker and Reset for it. The user then confirmed the backlight changes with the picture kept (user-observed).
+- **Screen brightness per profile:** a "Dial backlight" slider on the dial's Display tab and a "Key screen brightness" slider in the keypad inspector (10 to 100 percent, stored in the profile as `screen_brightness`). The dial's value is the backlight report `03 44`, sent right after software mode; the 15 keys have no known brightness command, so their pictures are drawn dimmer. Both worked on the real modules (user-observed); no measurements were taken.
+
 ## Fader input (11 October 2026)
 
 `masterhub-diag record` on the M005S (product ID 512), default mode, nothing sent, 60 seconds, the faders moved by hand. The module sends input reports in default mode, unlike the roller module. A first capture (45 reports, the faders only partly moved) showed the frame: each report is `01 2a 07 00 02 05` followed by five position bytes, and the first report carries all five positions. `replay` decodes only the faders that changed after that.

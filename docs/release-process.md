@@ -1,6 +1,16 @@
 # Release process
 
-This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Run so far (13 October 2026):** unsigned builds for both architectures through the release workflow, with the DMG and zip. **Not run:** signing, notarization, and a launch of the packaged app on a Mac with no dev build running.
+This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Run so far (13 October 2026):** unsigned builds for both architectures through the release workflow, and local release builds of both (see below). **Not run:** signing, notarization, and a launch of the Intel app.
+
+## Local builds (how the 0.1.0 release was made)
+
+CI was blocked by GitHub billing, so 0.1.0 was built on an Apple Silicon Mac and attached to a draft release by hand.
+
+- **Apple Silicon:** `cd apps/open-stream-hub && npx tauri build --bundles app,dmg`. `bundle_dmg.sh` is flaky; a retry works. Unmount stale `/Volumes/OpenStreamHub*` first.
+- **Intel:** Homebrew Rust ships only the arm64 standard library, so install `rustup` (brew, keg-only), `rustup target add x86_64-apple-darwin`, then `PATH=/opt/homebrew/opt/rustup/bin:$PATH APPLE_SIGNING_IDENTITY="-" npx tauri build --bundles app,dmg --target x86_64-apple-darwin`. Without `APPLE_SIGNING_IDENTITY="-"` the cross-built binaries are not signed at all, and macOS refuses them. With it they are ad-hoc signed (the arm64 build is ad-hoc signed by the linker).
+- **Check:** `codesign --verify --deep --strict` on each app and its `masterhub-service` sidecar; write `SHA256SUMS.txt` for the four files.
+- **Publish:** keep the files in `dist-release/` (gitignored), move the tag, and `gh release create v0.1.0 --draft --notes-file docs/release-notes-0.1.0.md <files>`. Publishing is left to the owner. While the repo is private the in-app update check cannot see a release.
+- **Not tested:** the Intel app has not been launched on Intel hardware or under Rosetta.
 
 ## Workflows
 
@@ -95,6 +105,5 @@ Zips downloaded from Actions carry a quarantine attribute, which is what Gatekee
 - Signing, notarization, stapling and the `spctl` check have never been exercised.
 - Tauri's documented sidecar signing and hardened-runtime behaviour has not been exercised here; the workflow's explicit `codesign` check will show it on the first signed run.
 - The Intel build has not run; `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
-- `npx tauri build --bundles app,dmg` (release) has not been run; the repo's `desktop:build` script is a debug build.
 - `cargo test` for `src-tauri` on a headless runner is assumed to work.
 - Stapling is not done separately; Tauri is expected to staple after notarizing. The workflow does not fail if `stapler validate` fails.

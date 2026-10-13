@@ -3,6 +3,7 @@
   <h1>OpenStreamHub</h1>
   <p>Unofficial macOS support for Cooler Master MasterHUB.</p>
   <p>
+    <a href="#screenshots">Screenshots</a> ·
     <a href="#install">Install</a> ·
     <a href="#quick-start">Quick start</a> ·
     <a href="#hardware-support">Hardware support</a> ·
@@ -12,7 +13,8 @@
 </div>
 
 [![License: MIT or Apache-2.0](https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-blue.svg)](#license)
-![Status: in development](https://img.shields.io/badge/status-in%20development-orange.svg)
+[![Release: v0.1.0](https://img.shields.io/badge/release-v0.1.0-green.svg)](https://github.com/goniszewski/OpenStreamHub/releases/latest)
+![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)
 
 OpenStreamHub is a macOS desktop app, Rust SDK and set of diagnostic tools for **Cooler Master MasterHUB**. The goal is to provide the device controls, profiles, displays and actions available in the official Windows application, and extend them with more capabilities, supported apps and integrations.
@@ -21,6 +23,48 @@ Feature parity is incomplete. The comparison below uses the official **MasterHUB
 
 > [!NOTE]
 > Supports **MasterHUB only**. This is an independent project, not affiliated with or endorsed by Cooler Master. Hardware results currently cover one rig; this is not yet a fully validated replacement for the Windows app.
+
+## Screenshots
+
+Tap or click any screenshot to open it at full size. They follow your light or dark theme.
+
+<a href="docs/screenshots/light-1-workspace.png"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-1-workspace.png">
+  <img src="docs/screenshots/light-1-workspace.png" alt="Workspace: your modules, live key and dial artwork, and the editor for the selected control." width="100%">
+</picture></a>
+
+<details>
+<summary>More views: lighting, demos, compatibility and settings</summary>
+
+**Lighting**
+
+<a href="docs/screenshots/light-2-lighting.png"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-2-lighting.png">
+  <img src="docs/screenshots/light-2-lighting.png" alt="Lighting: colour, effect and brightness for the knob and fader modules, and the dial's screen." width="100%">
+</picture></a>
+
+**Demos**
+
+<a href="docs/screenshots/light-3-demos.png"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-3-demos.png">
+  <img src="docs/screenshots/light-3-demos.png" alt="Demos: small games and a display speed test that run on the modules." width="100%">
+</picture></a>
+
+**Compatibility**
+
+<a href="docs/screenshots/light-4-compatibility.png"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-4-compatibility.png">
+  <img src="docs/screenshots/light-4-compatibility.png" alt="Compatibility: what each module and action supports, and what has been tested on hardware." width="100%">
+</picture></a>
+
+**Settings**
+
+<a href="docs/screenshots/light-5-settings.png"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-5-settings.png">
+  <img src="docs/screenshots/light-5-settings.png" alt="Settings: display control, run mode, profile storage, OBS, startup, permissions and updates." width="100%">
+</picture></a>
+
+</details>
 
 ## Feature parity
 
@@ -48,10 +92,7 @@ See the [detailed parity tracker](docs/windows-parity-gaps.md) for protocol refe
 
 ## Install
 
-> [!NOTE]
-> Release builds are not published yet. Until they are, [build from source](#quick-start). The notes below describe the downloadable app for when they are.
-
-Download the `.dmg` for your Mac (Apple Silicon or Intel), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
+**Latest release: [v0.1.0](https://github.com/goniszewski/OpenStreamHub/releases/latest)** ([release notes](docs/release-notes-0.1.0.md)). Download the `.dmg` for your Mac (`aarch64` for Apple Silicon, `x86_64` for Intel; check the SHA-256 in `SHA256SUMS.txt`), open it and drag **OpenStreamHub** to **Applications**. It needs **macOS 12.3 or later**.
 
 OpenStreamHub is **not signed or notarized**: signing needs a paid Apple Developer account, and this is a free, independent project. macOS therefore warns about it on first launch. The app is open source, so you can read the code or build it yourself ([Quick start](#quick-start)).
 

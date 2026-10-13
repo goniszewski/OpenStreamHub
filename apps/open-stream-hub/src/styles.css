@@ -841,3 +841,9 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .base-layout-options, .base-layout-rotation { margin-top:10px; }
 .lighting-colour-fieldset { margin:0; padding:0; border:0; min-width:0; }
 .lighting-colour-fieldset:disabled { opacity:.45; }
+
+.screen-brightness { margin:0 0 14px; }
+.screen-brightness label { display:block; margin-bottom:6px; }
+.screen-brightness-row { display:flex; align-items:center; gap:12px; }
+.screen-brightness-row input[type=range] { flex:1 1 auto; min-width:0; }
+.screen-brightness-value { min-width:38px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); font-size:12px; }

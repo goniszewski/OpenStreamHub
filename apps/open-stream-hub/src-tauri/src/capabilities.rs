@@ -200,6 +200,7 @@ mod tests {
             keypad: None,
             dial_functions: None,
             dial_display: None,
+            screen_brightness: None,
         }
     }
 

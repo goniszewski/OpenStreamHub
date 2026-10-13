@@ -47,6 +47,7 @@ pub fn blank_profile() -> Profile {
         keypad: None,
         dial_functions: None,
         dial_display: None,
+        screen_brightness: None,
     }
 }
 

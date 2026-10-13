@@ -223,10 +223,10 @@ impl KeyImageProvider for PreparedKeyArtwork {
 /// Brightness a pressed key keeps, in percent.
 const PRESSED_PERCENT: u16 = 55;
 
-/// The same key image dimmed, as shown while the key is held down. `None`
+/// The same key image at `percent` of its brightness (0 through 100). `None`
 /// when the bytes cannot be decoded or re-encoded, or the image is already
 /// black (a blank key): the caller then keeps the normal image.
-pub fn dimmed(jpeg: &[u8]) -> Option<Vec<u8>> {
+pub fn scaled(jpeg: &[u8], percent: u8) -> Option<Vec<u8>> {
     let mut image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
         .ok()?
         .to_rgb8();
@@ -238,10 +238,56 @@ pub fn dimmed(jpeg: &[u8]) -> Option<Vec<u8>> {
     }
     for pixel in image.pixels_mut() {
         for channel in &mut pixel.0 {
-            *channel = (u16::from(*channel) * PRESSED_PERCENT / 100) as u8;
+            *channel = (u16::from(*channel) * u16::from(percent.min(100)) / 100) as u8;
         }
     }
     encode(&image).ok()
+}
+
+/// The same key image dimmed, as shown while the key is held down.
+pub fn dimmed(jpeg: &[u8]) -> Option<Vec<u8>> {
+    scaled(jpeg, PRESSED_PERCENT as u8)
+}
+
+/// A key artwork provider chosen at run time (full brightness or dimmed).
+pub struct BoxedKeys(pub Box<dyn KeyImageProvider + Send>);
+
+impl KeyImageProvider for BoxedKeys {
+    fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        self.0.key_image(request)
+    }
+
+    fn advance(&mut self, page_id: &str, elapsed: std::time::Duration) {
+        self.0.advance(page_id, elapsed);
+    }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.0.next_frame_in()
+    }
+}
+
+/// Wraps a provider so every key it draws is shown at `percent` of its
+/// brightness: the screens of the 15-key module have no backlight command, so
+/// a dimmer screen is a dimmer picture. Animation timing is the inner
+/// provider's.
+pub struct BrightKeys<P> {
+    pub inner: P,
+    pub percent: u8,
+}
+
+impl<P: KeyImageProvider> KeyImageProvider for BrightKeys<P> {
+    fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        let image = self.inner.key_image(request)?;
+        Some(scaled(&image, self.percent).unwrap_or(image))
+    }
+
+    fn advance(&mut self, page_id: &str, elapsed: std::time::Duration) {
+        self.inner.advance(page_id, elapsed);
+    }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.inner.next_frame_in()
+    }
 }
 
 /// Wraps a provider so one held key shows dimmed; every other key, and the
@@ -367,6 +413,46 @@ pub(crate) mod tests {
         assert_ne!(art.blank(), art.action());
         assert_ne!(art.blank(), art.folder());
         assert_ne!(art.action(), art.folder());
+    }
+
+    #[test]
+    fn bright_keys_draws_every_image_dimmer_and_leaves_blank_keys_alone() {
+        let art = PreparedKeyArtwork::prepare().unwrap();
+        let mean = |jpeg: &[u8]| {
+            let image = image::load_from_memory(jpeg).unwrap().to_rgb8();
+            image.as_raw().iter().map(|&c| u64::from(c)).sum::<u64>() / image.as_raw().len() as u64
+        };
+        let action = art.action().to_vec();
+        let (full, dim) = (mean(&action), mean(&scaled(&action, 40).unwrap()));
+        assert!(dim < full * 6 / 10, "{dim} against {full}");
+        struct One(Vec<u8>);
+        impl KeyImageProvider for One {
+            fn key_image(&self, _: &KeyImageRequest) -> Option<Vec<u8>> {
+                Some(self.0.clone())
+            }
+        }
+        let request = KeyImageRequest {
+            key_index: 0,
+            content: KeyContent::Empty {
+                page_id: "root".into(),
+            },
+        };
+        let shown = BrightKeys {
+            inner: One(action.clone()),
+            percent: 40,
+        }
+        .key_image(&request)
+        .unwrap();
+        keypad::validate_jpeg(&shown).unwrap();
+        assert!(mean(&shown) < full * 6 / 10);
+        // Full brightness changes nothing a viewer can see.
+        let same = BrightKeys {
+            inner: One(action.clone()),
+            percent: 100,
+        }
+        .key_image(&request)
+        .unwrap();
+        assert!(mean(&same).abs_diff(full) <= 2);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use cooltek_sdk_cli::{
     control::SharedRecords,
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     dial_artwork::{DialArtwork, DialContent, SystemClock},
-    display_artwork::PreparedKeyArtwork,
+    display_artwork::{BoxedKeys, BrightKeys, PreparedKeyArtwork},
     display_sink::{SharedTransport, live_dial_display, live_display},
     interrupt::WatchedStdin,
     live_output::TimedStdout,
@@ -33,6 +33,7 @@ use cooltek_sdk_masterhub::{DeviceRegistry, InputReader, ModuleKind, lighting::L
 use cooltek_sdk_service::{
     ActionDispatcher, DeviceContext, InputSession, Profile, ProfileSession, ServiceModule,
     TimerAlert, TimerAlerter, TimerTable,
+    display_sync::KeyImageProvider,
     macos::MacOsDispatcher,
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
 };
@@ -213,6 +214,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 cooltek_sdk_cli::interrupt::check_stdin_open(io::stdin())?;
             }
             let profile_name = profile.name.clone();
+            // How bright the module screens are (the profile's own setting); read before the profile is consumed.
+            let brightness = profile.screen_brightness.unwrap_or_default();
             check_display_sync(display_sync, software_mode, dial_content, &profile)?;
             if execute && !cfg!(target_os = "macos") {
                 return Err("--execute is supported only on macOS".into());
@@ -222,9 +225,16 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // sampled at most once a second, on the display thread).
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
-                (true, DialContent::Off) => Some(Artwork::Keys(
-                    PreparedKeyArtwork::prepare_profile(&profile)?,
-                )),
+                (true, DialContent::Off) => Some(Artwork::Keys(BoxedKeys(
+                    match brightness.keys.filter(|&percent| percent < 100) {
+                        Some(percent) => Box::new(BrightKeys {
+                            inner: PreparedKeyArtwork::prepare_profile(&profile)?,
+                            percent,
+                        })
+                            as Box<dyn KeyImageProvider + Send>,
+                        None => Box::new(PreparedKeyArtwork::prepare_profile(&profile)?),
+                    },
+                ))),
                 (true, content) => Some(Artwork::Dial(DialArtwork::prepare(
                     content,
                     &profile,
@@ -254,6 +264,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 control.then(|| Arc::clone(&control_slot)),
             )?;
             options.profile_updates = profile_slot;
+            options.dial_backlight =
+                (display_sync && software_mode && dial_content != DialContent::Off)
+                    .then_some(brightness.dial)
+                    .flatten();
             let registry = DeviceRegistry::new()?;
             let devices = registry.devices();
             let selected = select_device(&devices, &path_hex, software_mode)?;
@@ -479,7 +493,7 @@ fn obs_details(obs: &ObsClient) -> serde_json::Value {
 
 /// Prepared display artwork, chosen before any HID access.
 enum Artwork {
-    Keys(PreparedKeyArtwork),
+    Keys(BoxedKeys),
     Dial(DialArtwork),
 }
 

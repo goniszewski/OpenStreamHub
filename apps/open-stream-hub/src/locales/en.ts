@@ -323,6 +323,7 @@ export const en = {
   'inspector.aria': 'Selected control settings',
   'inspector.folder': 'Folder · L{depth}',
   'inspector.rootPage': 'Root page',
+  'inspector.keyBrightness': 'Key screen brightness',
   'inspector.copy': 'Copy',
   'inspector.copyTip': 'Copy the key or binding of this control',
   'inspector.paste': 'Paste',

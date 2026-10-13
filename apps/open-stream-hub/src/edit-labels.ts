@@ -64,6 +64,7 @@ export function describeEdit(before: Profile, after: Profile): string {
   else if (pages.length > 1) phrases.push(`Changed ${pages.length} key pages`);
   if (!same(before.dial_functions, after.dial_functions)) phrases.push('Changed the dial functions');
   if (!same(before.dial_display, after.dial_display)) phrases.push('Changed the dial display');
+  if (!same(before.screen_brightness, after.screen_brightness)) phrases.push('Changed the screen brightness');
   if (phrases.length === 0) return 'Edited the profile';
   return phrases.length === 1 ? phrases[0] : `${phrases[0]} and ${phrases.length - 1} more change${phrases.length === 2 ? '' : 's'}`;
 }

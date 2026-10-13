@@ -99,7 +99,10 @@ export interface DialSource { image: string; fit: 'contain' | 'cover' | 'stretch
 export interface DialDisplay { content: DialDisplayContent; image?: string; source?: DialSource }
 // dial_functions and dial_display are edited in the dial editor of the inspector or imported; edit paths that do not
 // touch them must carry them through untouched.
-export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay }
+// How bright the module screens are while the profile runs and the app drives them, in percent (10 to 100); a screen left
+// out is at full brightness. Mirrors ScreenBrightness in crates/cooltek-sdk-service/src/profile.rs.
+export interface ScreenBrightness { keys?: number; dial?: number }
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness }
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }

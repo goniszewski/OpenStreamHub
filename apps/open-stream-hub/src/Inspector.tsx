@@ -4,6 +4,7 @@ import type { Translate } from './i18n-react';
 import { CheckCircle2, CircleHelp, Folder, LoaderCircle, Copy, ClipboardPaste, Play, Trash2 } from 'lucide-react';
 import type { Gesture, Profile } from './contracts';
 import { DialDisplayPanel } from './DialDisplayPanel';
+import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { ActionFields } from './ActionFields';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
@@ -47,6 +48,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   return <aside className="inspector" aria-label={t('inspector.aria')}>
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? t('inspector.folder', { depth: keypadDepth(keypadPath) }) : t('inspector.rootPage')}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />{t('inspector.deleteFolder')}</button>}<div className="inspector-divider" /></>}
+      {isKeypad && <><ScreenBrightnessControl screen="keys" label={t('inspector.keyBrightness')} profile={profile} session={session} disabled={disabled} /><div className="inspector-divider" /></>}
       <h2>{isBack ? t('inspector.back', { depth: keypadDepth(keypadPath) }) : controlLabel(selection.module, selection.control)}</h2>
       {!isBack && !folderPage && <div className="inspector-clipboard">
         <button type="button" className="button compact" disabled={disabled || (isKeypad ? !keypadSlot : !binding)} data-shortcut={hint('C', mac)} title={withHint(t('inspector.copyTip'), 'C', mac)} onClick={() => { editor.copySelection(); }}><Copy size={16} />{t('inspector.copy')}</button>

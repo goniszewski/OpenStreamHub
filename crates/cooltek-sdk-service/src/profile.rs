@@ -1312,6 +1312,42 @@ pub struct Profile {
     /// existing profiles serialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dial_display: Option<DialDisplay>,
+    /// How bright the module screens are while this profile runs and the app
+    /// drives them. Absent means full brightness. Omitted when absent, so
+    /// existing profiles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_brightness: Option<ScreenBrightness>,
+}
+
+/// The brightness of the module screens, in percent. A screen left out shows at full brightness.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenBrightness {
+    /// The 15 key screens: each key picture is drawn at this share of its brightness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<u8>,
+    /// The dial screen's own backlight.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dial: Option<u8>,
+}
+
+impl ScreenBrightness {
+    /// The dimmest accepted setting; a darker screen cannot be read.
+    pub const MIN: u8 = 10;
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, value) in [("keys", self.keys), ("dial", self.dial)] {
+            if let Some(value) = value
+                && !(Self::MIN..=100).contains(&value)
+            {
+                return Err(format!(
+                    "screen_brightness: {name} must be between {} and 100",
+                    Self::MIN
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Profile {
@@ -1369,6 +1405,9 @@ impl Profile {
         }
         if let Some(display) = &self.dial_display {
             crate::dial::validate_display(display)?;
+        }
+        if let Some(brightness) = &self.screen_brightness {
+            brightness.validate()?;
         }
         if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
@@ -1496,6 +1535,7 @@ mod tests {
             keypad: None,
             dial_functions: None,
             dial_display: None,
+            screen_brightness: None,
         }
     }
 
@@ -1524,6 +1564,45 @@ mod tests {
             .encode_image(&image)
             .unwrap();
         STANDARD.encode(jpeg)
+    }
+
+    #[test]
+    fn screen_brightness_is_optional_bounded_and_strict() {
+        let plain =
+            Profile::from_json(br#"{"schema_version":1,"name":"Desk","bindings":[]}"#).unwrap();
+        assert_eq!(plain.screen_brightness, None);
+        assert!(
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("screen_brightness")
+        );
+        let set = Profile::from_json(
+            br#"{"schema_version":1,"name":"Desk","bindings":[],"screen_brightness":{"keys":60,"dial":10}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            set.screen_brightness,
+            Some(ScreenBrightness {
+                keys: Some(60),
+                dial: Some(10)
+            })
+        );
+        let half = Profile::from_json(
+            br#"{"schema_version":1,"name":"Desk","bindings":[],"screen_brightness":{"keys":100}}"#,
+        )
+        .unwrap();
+        assert_eq!(half.screen_brightness.unwrap().dial, None);
+        for bad in [
+            r#"{"keys":9}"#,
+            r#"{"dial":101}"#,
+            r#"{"dial":0}"#,
+            r#"{"keys":50,"other":1}"#,
+        ] {
+            let json = format!(
+                r#"{{"schema_version":1,"name":"Desk","bindings":[],"screen_brightness":{bad}}}"#
+            );
+            assert!(Profile::from_json(json.as_bytes()).is_err(), "{bad}");
+        }
     }
 
     #[test]

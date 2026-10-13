@@ -9,6 +9,7 @@ import { DialFace } from './DisplayContent';
 import { dialDisplayOptions, maxDialImageBytes, setDialDisplayContent, setDialImage } from './dial-display-model';
 import type { Invoke, ProfileSession } from './profile-session';
 import { SelectField } from './controls';
+import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { errorMessage } from './ui-model';
 
 export const dialDisplayHeadingId = 'dial-display-heading';
@@ -99,6 +100,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     <SelectField id="dial-display-mode" value={content} disabled={disabled || busy} onChange={event => run(latest => setDialDisplayContent(latest, event.target.value as DialDisplayContent), 'dial-display')}>
       {dialDisplayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
     </SelectField>
+    <ScreenBrightnessControl screen="dial" label="Dial backlight" profile={profile} session={session} disabled={disabled} />
     {content === 'cpu' && <p className="fine-print">CPU usage is measured on this Mac; elsewhere the dial shows “--”. The preview below shows an illustrative value.</p>}
     {content === 'image' && <>
       {image

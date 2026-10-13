@@ -98,6 +98,9 @@ pub struct LiveOptions {
     /// between reports, so the next report is planned with the new bindings. Not used by runs with a display, whose
     /// own thread holds a copy of the engine and the artwork.
     pub profile_updates: Option<&'static Mutex<Option<ProfileSession>>>,
+    /// The dial's backlight (percent), set right after software mode is entered. Only for an M131E run in software
+    /// mode; `None` leaves the backlight as the module has it.
+    pub dial_backlight: Option<u8>,
 }
 
 impl Default for LiveOptions {
@@ -115,6 +118,7 @@ impl Default for LiveOptions {
             profile_switch_requests: false,
             stdin_closed: None,
             profile_updates: None,
+            dial_backlight: None,
         }
     }
 }
@@ -1310,6 +1314,10 @@ where
         if options.software_mode {
             mode_attempted = true;
             crate::mode::set(reader.transport(), mode_module(device.module), true)?;
+            if let Some(percent) = options.dial_backlight {
+                // A failed backlight write is not a failed run: the dial just keeps its own brightness.
+                let _ = cooltek_sdk_masterhub::dial::set_backlight(reader.transport(), percent);
+            }
             if let Some(display) = &display_thread {
                 display.request(&session, "software_mode");
             }
@@ -5745,6 +5753,39 @@ mod tests {
             // Fail closed: no mode command was sent.
             assert!(writes.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn the_dials_backlight_is_set_right_after_software_mode() {
+        let clock = ManualClock::new(WallTime::new(9, 0));
+        let harness = dial_harness(
+            clock_artwork(DialContent::Function, clock),
+            Duration::from_millis(20),
+            None,
+        );
+        let fake = Arc::clone(&harness.fake);
+        let transport = Transport::new([wait_for_writes(&fake, 1), dial(3, 0, 5)]);
+        let run = run_dial(
+            transport,
+            two_functions(),
+            LiveOptions {
+                software_mode: true,
+                max_reports: Some(1),
+                dial_backlight: Some(40),
+                ..options()
+            },
+            Some(harness.display),
+            Arc::default(),
+        );
+        run.result.unwrap();
+        assert_eq!(
+            run.mode_writes,
+            vec![
+                dial::software_mode_report(true).to_vec(),
+                dial::backlight_report(40).unwrap().to_vec(),
+                dial::software_mode_report(false).to_vec(),
+            ]
+        );
     }
 
     #[test]

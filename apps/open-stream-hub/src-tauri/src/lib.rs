@@ -872,10 +872,9 @@ fn stop_feed(state: State<'_, AppState>, feed_id: String) -> Result<(), String> 
     state.feeds.stop(&feed_id)
 }
 
-// Lighting writes (the Lighting page) go straight to the dials through the
-// app's own HID handle, like the CLI's dial commands: a feature-report write
-// needs no service session. A run that owns a dial refuses the write, so a
-// live display run is never fought over the dial's mode.
+// Dial lighting (the Lighting page): a dial a run holds is reached through that run's control channel, which
+// already has it in software mode; the others are written through the app's own handle, like the CLI's dial
+// commands, which puts them in software mode first. Reset still needs the dial free: it leaves software mode.
 #[tauri::command(async)]
 fn set_dial_lighting(
     state: State<'_, AppState>,
@@ -883,10 +882,21 @@ fn set_dial_lighting(
     backlight: u8,
     colour: [u8; 3],
 ) -> Result<usize, String> {
-    service::check_lighting_allowed(&state.services, &targets)?;
-    let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
-        .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
-    lighting::apply_dial_lighting(&registry, &targets, backlight, colour)
+    let (held, free) = service::split_held(&state.services, &targets)?;
+    let mut written = 0;
+    if !free.is_empty() {
+        let registry = cooltek_sdk_masterhub::DeviceRegistry::new()
+            .map_err(|error| format!("could not enumerate HID devices: {error}"))?;
+        written += lighting::apply_dial_lighting(&registry, &free, backlight, colour)?;
+    }
+    for pipe in held {
+        pipe.request(
+            serde_json::json!({"type":"dial_look","backlight":backlight,"colour":colour}),
+            service::CONTROL_TIMEOUT,
+        )?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 // Knob and fader lighting: one colour, effect and brightness for one LED or

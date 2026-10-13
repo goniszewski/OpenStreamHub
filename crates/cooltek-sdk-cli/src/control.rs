@@ -26,6 +26,12 @@
 //!   LED (`led` a number) or to every LED (`null`), as the official app does.
 //! - `{"id":2,"type":"led_state"}` reads what the module reports about its LEDs.
 //!
+//! The dial's lighting, only for a run that holds an M131E dial in software mode:
+//!
+//! - `{"id":6,"type":"dial_look","backlight":60,"colour":[0,128,255]}` sets the dial's backlight (0 to 100) and its solid
+//!   colour through the run's handle. The run already holds the dial in software mode, so nothing else is sent and
+//!   the picture on the dial is not redrawn.
+//!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
 use cooltek_sdk_masterhub::{
@@ -54,6 +60,8 @@ pub struct Hooks {
     pub profile: Option<ProfileSwap>,
     /// Whether the run accepts `key_image`: an M4315 in software mode that draws nothing of its own.
     pub key_images: bool,
+    /// Whether the run accepts `dial_look`: an M131E held in software mode.
+    pub dial_lighting: bool,
     /// The key report length, read from the module's descriptor with the first key image only.
     #[doc(hidden)]
     pub key_report_length: OnceLock<usize>,
@@ -95,6 +103,10 @@ enum Request {
         key: u8,
         jpeg: String,
     },
+    DialLook {
+        backlight: u8,
+        colour: [u8; 3],
+    },
 }
 
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
@@ -126,6 +138,20 @@ fn draw_key<T: ReportTransport + ?Sized>(
     cooltek_sdk_masterhub::keypad::display_jpeg(transport, key, &jpeg, length)
         .map_err(|error| error.to_string())?;
     Ok(started.elapsed().as_micros())
+}
+
+// The backlight is checked before anything is written, as the app's own dial write does.
+fn set_dial_look<T: ReportTransport + ?Sized>(
+    transport: &T,
+    backlight: u8,
+    colour: [u8; 3],
+) -> Result<(), String> {
+    cooltek_sdk_masterhub::dial::backlight_report(backlight)
+        .map_err(|error| format!("the backlight must be between 0 and 100: {error}"))?;
+    cooltek_sdk_masterhub::dial::set_backlight(transport, backlight)
+        .map_err(|error| format!("could not set the dial backlight: {error}"))?;
+    cooltek_sdk_masterhub::dial::set_color(transport, colour)
+        .map_err(|error| format!("could not set the dial colour: {error}"))
 }
 
 /// Answers one control line: the `control_result` record to write.
@@ -162,6 +188,13 @@ pub fn answer<T: ReportTransport + ?Sized>(
                     .map(|micros| json!({"write_micros": micros}))
             } else {
                 Err("this run does not take key images".to_string())
+            }
+        }
+        (Request::DialLook { backlight, colour }, _) => {
+            if hooks.dial_lighting {
+                set_dial_look(transport, backlight, colour).map(|()| json!({}))
+            } else {
+                Err("this run does not take dial lighting".to_string())
             }
         }
         (_, None) => Err("this module has no per-LED lighting".to_string()),
@@ -271,6 +304,7 @@ mod tests {
 
     struct Fake {
         writes: RefCell<Vec<Vec<u8>>>,
+        features: RefCell<Vec<Vec<u8>>>,
     }
 
     impl ReportTransport for Fake {
@@ -285,7 +319,8 @@ mod tests {
             }
             Ok(32)
         }
-        fn send_feature_report(&self, _: &[u8]) -> HidResult<()> {
+        fn send_feature_report(&self, data: &[u8]) -> HidResult<()> {
+            self.features.borrow_mut().push(data.to_vec());
             Ok(())
         }
         fn write_output(&self, data: &[u8]) -> HidResult<usize> {
@@ -306,6 +341,7 @@ mod tests {
     fn fake() -> Fake {
         Fake {
             writes: RefCell::new(Vec::new()),
+            features: RefCell::new(Vec::new()),
         }
     }
 
@@ -319,6 +355,42 @@ mod tests {
         assert_eq!(result["id"], 7);
         assert_eq!(result["ok"], true);
         assert_eq!(device.writes.borrow().len(), 3);
+    }
+
+    #[test]
+    fn a_dial_look_writes_the_backlight_and_colour_only_for_a_dial_run() {
+        let line = r#"{"id":8,"type":"dial_look","backlight":60,"colour":[0,128,255]}"#;
+        let device = fake();
+        let hooks = Hooks {
+            dial_lighting: true,
+            ..Hooks::default()
+        };
+        let result = answer(&device, None, &hooks, line);
+        assert_eq!(result["ok"], true);
+        assert_eq!(result["id"], 8);
+        // Backlight and colour; software mode is already held by the run.
+        assert_eq!(device.features.borrow().len(), 2);
+        let other = fake();
+        let refused = answer(&other, None, &Hooks::default(), line);
+        assert_eq!(refused["ok"], false);
+        assert!(other.features.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_dial_look_with_a_backlight_over_100_writes_nothing() {
+        let device = fake();
+        let hooks = Hooks {
+            dial_lighting: true,
+            ..Hooks::default()
+        };
+        let result = answer(
+            &device,
+            None,
+            &hooks,
+            r#"{"id":9,"type":"dial_look","backlight":101,"colour":[0,0,0]}"#,
+        );
+        assert_eq!(result["ok"], false);
+        assert!(device.features.borrow().is_empty());
     }
 
     #[test]

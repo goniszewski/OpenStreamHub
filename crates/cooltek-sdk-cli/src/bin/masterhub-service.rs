@@ -311,6 +311,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 };
                 let module = device.module;
                 let hooks = cooltek_sdk_cli::control::Hooks {
+                    dial_lighting: software_mode && device.module == ServiceModule::M131E,
                     key_images: software_mode
                         && !display_sync
                         && device.module == ServiceModule::M4315,

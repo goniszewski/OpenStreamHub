@@ -68,11 +68,12 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
     setColour(look?.colour ?? defaultColour);
     setBacklight(look?.backlight ?? defaultBacklight);
   }, [selectedPath, kind, led, records]);
-  // A run holds its module's handle, so only the dial's lighting (feature reports in software mode) is locked while
-  // one runs. A knob or fader module takes its lighting through the run itself, and the base takes no input.
+  // A run holds its module's handle, so a write to a module a run holds goes through that run (the dial's backlight and
+  // colour as well); the base takes no input. Only Reset on a dial stays locked while its run lives, since it leaves
+  // software mode, which the run needs.
   const held = targets.filter(device => device.module === 'm131e' && (runner?.isActivePath(device.path_hex, { ...device, module: device.module }) ?? false));
   const runOwned = held.length > 0;
-  const reason = lightingBlockReason({ desktop, runOwnedTargets: runOwned, heldNames: heldModuleNames(held), scope, selected, devices });
+  const reason = lightingBlockReason({ desktop, runOwnedTargets: false, scope, selected, devices });
   // The base's edge strip can take a module's colour: the first lit knob or
   // fader LED, or nothing to match when no module is lit.
   const matched = selected?.module === 'm0064' && scope === 'module' ? matchedModuleColour(records, devices) : null;
@@ -242,18 +243,19 @@ export function LightingPage({ desktop, invoke, devices, selection, runner, stor
           onClick={() => { if (matched !== null) setColourValue(matched); }}>
           <Palette size={16} />Match modules
         </button>}
-        <button type="button" className="button" disabled={controlsLocked || busy} onClick={() => { void reset(); }}>
+        <button type="button" className="button" disabled={controlsLocked || busy || runOwned} onClick={() => { void reset(); }}>
           {kind === 'led' ? <LightbulbOff size={16} /> : <RotateCcw size={16} />}{busy ? (kind === 'led' ? 'Turning off…' : 'Resetting…') : kind === 'led' ? 'Turn off' : 'Reset'}
         </button>
       </div>
-      {reason && <p className="fine-print lighting-reason" role="status">{reason}{runOwned && runner && <button type="button" className="button compact" onClick={() => runner.runsHolding(held as unknown as LiveDevice[]).forEach(id => void runner.stop(id))}>Pause</button>}</p>}
+      {reason && <p className="fine-print lighting-reason" role="status">{reason}</p>}
+      {!reason && runOwned && <p className="fine-print lighting-reason" role="status">Reset returns the dial to its built-in animation, which ends the mode {heldModuleNames(held).join(' and ')} {held.length > 1 ? 'are' : 'is'} running in. Pause {held.length > 1 ? 'them' : 'it'} to reset.{runner && <button type="button" className="button compact" onClick={() => runner.runsHolding(held as unknown as LiveDevice[]).forEach(id => void runner.stop(id))}>Pause</button>}</p>}
       {error && <div className="service-failure" role="alert"><strong>{kind === 'led' ? 'Could not reach the module.' : 'Could not reach the dial.'}</strong> {error}</div>}
       {!error && status && <p className="fine-print" role="status">{status}</p>}
       <p className="fine-print">Changes apply the moment you adjust them. {kind === 'led' ? 'Turn off switches the picked LED, or every LED, back to Off.' : 'Reset hands the dial back to its built-in animation.'}</p>
       <details className="learn-more">
         <summary>Learn more</summary>
         <p>Applying lighting puts the dial in software mode — the mode profiles also run in. The dial’s built-in animation stops and its screen stays dark until a run draws on it; the backlight and colour take effect in this mode. Reset leaves software mode, and the built-in animation returns.</p>
-        <p>Whole kit applies the same backlight and colour to every connected encoder dial. While a dial is active, its lighting is locked and Whole kit is unavailable; pause it to change the lighting. Knob and fader modules take a colour, an effect and a brightness, even while they are active; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
+        <p>Whole kit applies the same backlight and colour to every connected encoder dial. A dial takes its backlight and colour while it is active too, but Reset needs it paused. Knob and fader modules take a colour, an effect and a brightness, even while they are active; pick one LED or all of them, and Whole kit reaches every knob and fader module and the base’s edge strip. Match modules copies the colour of the first lit knob or fader LED onto the base’s edge strip. Turn off switches the picked LED, or every LED of the module, to Off. What you applied is sent again when the module replugs, so its lighting survives a reconnect.</p>
       </details>
     </div>
   </section>;

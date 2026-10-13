@@ -79,17 +79,18 @@ describe('LightingPage', () => {
     expect(dialMarkup).toContain('lucide-rotate-ccw');
   });
 
-  it('names a run that is driving a target dial', () => {
+  it('lets a dial that a run drives take its lighting, and locks only Reset', () => {
     const markup = render({ devices: [dial('aa')], runner: runOwned });
-    expect(markup).toContain('Lighting is locked while');
-    expect(markup).toContain('Pause it to change the lighting.');
+    expect(markup).not.toContain('Lighting is locked while');
+    expect(markup).toContain('<fieldset class="lighting-controls">');
+    expect(markup).toContain('Pause it to reset.');
     expect(markup).toContain('>Pause</button>');
-    expect(markup).toContain('<fieldset class="lighting-controls" disabled="">');
+    expect(markup).toMatch(/<button type="button" class="button" disabled=""[^>]*><svg[^>]*lucide-rotate-ccw/);
   });
 
-  it('does not claim a run-owned dial is skipped — the page locks instead', () => {
+  it('says a dial takes its lighting while active', () => {
     const markup = render({ devices: [dial('aa')] });
-    expect(markup).toContain('While a dial is active, its lighting is locked and Whole kit is unavailable; pause it to change the lighting.');
+    expect(markup).toContain('A dial takes its backlight and colour while it is active too, but Reset needs it paused.');
     expect(markup).not.toContain('is left out');
   });
 

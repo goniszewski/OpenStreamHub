@@ -101,7 +101,7 @@ jobs:
       # APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID are set.
       - name: Build Tauri bundle
         working-directory: apps/open-stream-hub
-        run: npx tauri build --bundles app
+        run: npx tauri build --bundles app,dmg
 
       # Fail the signed path if the sidecar or app is not validly signed.
       - name: Verify signatures
@@ -112,6 +112,7 @@ jobs:
           codesign --verify --deep --strict --verbose=2 OpenStreamHub.app
           spctl --assess --type execute --verbose=4 OpenStreamHub.app
           xcrun stapler validate OpenStreamHub.app || true
+          codesign --verify --strict --verbose=2 ../dmg/*.dmg
 
       - name: Archive bundle
         id: archive
@@ -123,8 +124,15 @@ jobs:
             name="OpenStreamHub-${{ matrix.arch }}-UNSIGNED"
           fi
           ditto -c -k --keepParent OpenStreamHub.app "$RUNNER_TEMP/$name.zip"
+          dmg=$(ls ../dmg/*.dmg | head -n 1)
+          cp "$dmg" "$RUNNER_TEMP/$name.dmg"
           echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "path=$RUNNER_TEMP/$name.zip" >> "$GITHUB_OUTPUT"
+          {
+            echo "path<<EOF_PATHS"
+            echo "$RUNNER_TEMP/$name.zip"
+            echo "$RUNNER_TEMP/$name.dmg"
+            echo "EOF_PATHS"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
         with:

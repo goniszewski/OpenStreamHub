@@ -29,11 +29,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": ["app", "dmg"],
     "externalBin": ["binaries/masterhub-service"],
     "category": "Productivity",
     "shortDescription": "Configure OpenStreamHub profiles and preview input actions.",
     "icon": ["icons/icon.png", "icons/icon.icns"],
-    "macOS": { "minimumSystemVersion": "12.3" }
+    "macOS": { "minimumSystemVersion": "12.3", "entitlements": "Entitlements.plist" }
   }
 }

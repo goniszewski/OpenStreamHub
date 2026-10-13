@@ -53,12 +53,14 @@ The workflow exports these to the job environment only if **all six** are non-em
 
 ## Permissions and entitlements
 
-`tauri.conf.json` sets no entitlements and no `Info.plist` additions (`bundle.macOS` has only `minimumSystemVersion`), and the app is not sandboxed. What the bundled code does that macOS may gate:
+`src-tauri/Info.plist` (merged into the bundle's `Info.plist` by Tauri) adds `NSAppleEventsUsageDescription`, and `src-tauri/Entitlements.plist` (set as `bundle.macOS.entitlements`, applied only when signing) grants `com.apple.security.automation.apple-events`. Nothing else is declared and the app is not sandboxed. No JIT or library-validation entitlements are needed: there is no JIT, and every dylib is a system one. What the bundled code does that macOS may gate:
 
 - **Local networking.** `obs_scene` opens a plain TCP connection from the `masterhub-service` sidecar to a loopback address (`TcpStream` in `crates/cooltek-sdk-service/src/obs.rs`). The webview's CSP does not apply to it. An unsandboxed app needs no network entitlement for this; a future App Sandbox build would need `com.apple.security.network.client`. Not verified on a signed build.
 - **Notifications and sounds.** A timer runs `/usr/bin/osascript` (`display notification`) and `/usr/bin/afplay`. Whether macOS shows the notification, and for which application it asks, is unverified on a real Mac; the service logs `timer_alert_warning` when it is refused.
-- **Accessibility and Automation.** Shortcut, text and undo/redo actions drive System Events through `osascript`. Whether a hardened-runtime build also needs `com.apple.security.automation.apple-events` and an `NSAppleEventsUsageDescription` string for the Automation prompt to appear has not been checked; do not claim it either way until a signed build has been tried.
+- **Accessibility and Automation.** Shortcut, text and undo/redo actions drive System Events through `osascript`. Both the Automation entitlement and the usage string are declared (hardened-runtime apps need them for the prompt to appear), but whether the prompt names OpenStreamHub rather than osascript has not been checked on a signed build.
 - **Input Monitoring.** Reading HID input may need it for the launching application (see the [first hardware session](masterhub-first-hardware-session.md), step 8).
+- **Key recorder and posting keys.** The recorder's event tap needs Input Monitoring for OpenStreamHub itself, and posting keys or the media key needs Accessibility. Neither has a usage string; macOS asks on first use.
+- **Updates and grants.** An ad-hoc build gets a new identity every build, so macOS forgets the Accessibility, Input Monitoring and Automation grants on each update. Only a stable Developer ID signature keeps them.
 - **CPU usage.** The `cpu` dial face calls the Mach `host_processor_info` function in-process, which needs no permission or entitlement; it is drawn only when the dial screen is set to CPU usage (Settings > Module control, App).
 
 Record the outcome of each in the first signed run and update this list.
@@ -93,6 +95,6 @@ Zips downloaded from Actions carry a quarantine attribute, which is what Gatekee
 - Signing, notarization, stapling and the `spctl` check have never been exercised.
 - Tauri's documented sidecar signing and hardened-runtime behaviour has not been exercised here; the workflow's explicit `codesign` check will show it on the first signed run.
 - The Intel build has not run; `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
-- `npx tauri build --bundles app` (release) has not been run; the repo's `desktop:build` script is a debug build.
+- `npx tauri build --bundles app,dmg` (release) has not been run; the repo's `desktop:build` script is a debug build.
 - `cargo test` for `src-tauri` on a headless runner is assumed to work.
 - Stapling is not done separately; Tauri is expected to staple after notarizing. The workflow does not fail if `stapler validate` fails.

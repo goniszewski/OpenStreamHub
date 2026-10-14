@@ -11,7 +11,9 @@ import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
+import { SquareEye } from './SquareEye';
 import { StartupPanel } from './StartupPanel';
+import { keepRunningInMenubar, setKeepRunningInMenubar } from './menubar';
 import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
 import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
@@ -27,7 +29,7 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
+import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
@@ -518,15 +520,36 @@ export default function App() {
     if (!desktop) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const destroy = () => {
+      getCurrentWindow().destroy().catch(reason => session.setError(`Could not close the window: ${errorMessage(reason)}`));
+    };
     getCurrentWindow().onCloseRequested(event => {
-      const allowed = session.requestClose(() => {
-        getCurrentWindow().destroy().catch(reason => session.setError(`Could not close the window: ${errorMessage(reason)}`));
-      });
-      if (!allowed) event.preventDefault();
+      // In the menu bar mode the backend hides the window; quitting arrives as its own event below.
+      if (keepRunningInMenubar()) { event.preventDefault(); return; }
+      if (!session.requestClose(destroy)) event.preventDefault();
     }).then(remove => { if (disposed) remove(); else unlisten = remove; }).catch(reason => {
       if (!disposed) session.setError(`Could not enable the unsaved-draft close guard: ${errorMessage(reason)}`);
     });
-    return () => { disposed = true; unlisten?.(); };
+    let unlistenQuit: (() => void) | undefined;
+    // Quit (menu bar, app menu or system) runs the same unsaved-draft guard, then ends the app.
+    listen('app://quit-requested', () => { if (session.requestClose(destroy)) destroy(); }).then(remove => { if (disposed) remove(); else unlistenQuit = remove; }).catch(() => {});
+    invoke<boolean>('menubar_status').then(setKeepRunningInMenubar).catch(() => {});
+    return () => { disposed = true; unlisten?.(); unlistenQuit?.(); };
+  }, [session]);
+
+  // The menu bar icon's Workspace, Lighting, Demos and Settings items, and its update check.
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    const removers: (() => void)[] = [];
+    const add = (name: string, handler: (payload: unknown) => void) => {
+      listen(name, event => handler(event.payload)).then(remove => { if (disposed) remove(); else removers.push(remove); }).catch(() => {});
+    };
+    add('app://navigate', page => { if (page === 'workspace' || page === 'lighting' || page === 'demos' || page === 'settings') setPage(page); });
+    add('app://check-updates', () => {
+      invoke<UpdateInfo>('check_for_updates').then(setUpdatePrompt).catch(reason => session.setError(`Could not check for updates: ${errorMessage(reason)}`));
+    });
+    return () => { disposed = true; removers.forEach(remove => remove()); };
   }, [session]);
 
   const themePicker = <div className="theme-picker" role="group" aria-label={t('theme.group')}>
@@ -540,7 +563,7 @@ export default function App() {
   return <div className="app-shell">
     <header className="app-header">
       <div className="header-row">
-        <div className="brand"><Grid2X2 size={23} /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
+        <div className="brand"><SquareEye /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
         <div className="profile-switcher" ref={switcherRef}><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
           {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
             const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });

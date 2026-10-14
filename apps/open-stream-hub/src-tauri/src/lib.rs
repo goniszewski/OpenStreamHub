@@ -14,6 +14,7 @@ mod feed;
 mod focus;
 mod import_flags;
 mod lighting;
+mod menubar;
 mod mhz;
 mod migration;
 mod obs;
@@ -1469,6 +1470,16 @@ fn autostart_status() -> Result<autostart::AutostartStatus, String> {
 }
 
 #[tauri::command]
+fn menubar_status(state: State<'_, menubar::MenubarState>) -> bool {
+    state.enabled()
+}
+
+#[tauri::command]
+fn set_menubar(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    menubar::set_enabled(&app, enabled)
+}
+
+#[tauri::command]
 fn set_autostart(enabled: bool) -> Result<autostart::AutostartStatus, String> {
     autostart::set(enabled)
 }
@@ -1853,17 +1864,28 @@ pub fn run() {
     // editor over the same profile files.
     let builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
         |app, _arguments, _working_directory| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            menubar::show_window(app);
         },
     ));
     #[cfg(target_os = "macos")]
     let builder = builder.menu(quit::menu).on_menu_event(quit::on_menu_event);
 
     let app = builder
+        .on_window_event(|window, event| {
+            // With "Keep running in the menu bar" on, the close button hides
+            // the window; quitting goes through `menubar::request_quit`, which
+            // asks the frontend to close the window itself.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event
+                && window.label() == "main"
+                && window
+                    .app_handle()
+                    .state::<menubar::MenubarState>()
+                    .enabled()
+            {
+                api.prevent_close();
+                menubar::hide_window(window.app_handle());
+            }
+        })
         .setup(|app| {
             let app_data = app
                 .path()
@@ -1872,7 +1894,9 @@ pub fn run() {
             if let Ok(app_data) = &app_data {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
             }
+            app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(AppState::open(app_data));
+            menubar::init(app.handle());
             let state = app.state::<AppState>();
             let sessions = state.sessions.sender();
             let runner = AppRunner {
@@ -1996,6 +2020,8 @@ pub fn run() {
             check_for_updates,
             open_release_page,
             set_autostart,
+            menubar_status,
+            set_menubar,
             open_permission_settings
         ])
         .build(tauri::generate_context!())
@@ -2017,19 +2043,30 @@ pub fn run() {
         // Only user/system exit requests (code None) are routed through the
         // draft guard. An explicit app.exit(code) proceeds as requested.
         if let tauri::RunEvent::ExitRequested {
-            api, code: None, ..
+            ref api,
+            code: None,
+            ..
         } = event
-            && let Some(window) = app.get_webview_window("main")
+            && app.get_webview_window("main").is_some()
         {
             // Tauri exit requests pass through the same draft guard as the
-            // close button. Closing queues CloseRequested; the frontend can cancel
-            // it or destroy the window after the user's decision. Once the
-            // last window is destroyed, Tauri removes it before requesting
-            // exit again, so that final request proceeds without a loop.
+            // close button. The frontend can cancel it or destroy the window
+            // after the user's decision. Once the last window is destroyed,
+            // Tauri removes it before requesting exit again, so that final
+            // request proceeds without a loop.
             api.prevent_exit();
-            if let Err(error) = window.close() {
-                eprintln!("could not request closing the OpenStreamHub window: {error}");
-            }
+            menubar::request_quit(app);
+            return;
+        }
+        // Clicking the Dock icon (or opening the app again) while the window
+        // is hidden in the menu bar brings it back.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = event
+        {
+            menubar::show_window(app);
         }
     });
 }

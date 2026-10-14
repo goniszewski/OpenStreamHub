@@ -27,7 +27,7 @@ html,body { overflow:clip; }
 .run-blocker-strip svg { flex:none; color:var(--accent); margin-top:1px; }
 .run-blocker-strip span { min-width:0; overflow-wrap:anywhere; }
 .brand { display:flex; align-items:center; gap:11px; min-width:240px; font-weight:700; font-size:20px; letter-spacing:-.55px; white-space:nowrap; }
-.brand svg { color:var(--accent); }
+.brand svg { color:var(--accent); flex-shrink:0; }
 .version-label { color:var(--muted); font-size:11px; font-weight:500; letter-spacing:0; padding-top:4px; }
 .profile-switcher { position: relative; display:flex; align-items:center; min-width:200px; max-width:300px; gap:10px; border:1px solid var(--line); border-radius:10px; padding:0 8px 0 12px; height:42px; background:var(--control); }
 .profile-switcher svg { flex:none; color:var(--muted); }

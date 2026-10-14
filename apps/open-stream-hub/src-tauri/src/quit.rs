@@ -1,5 +1,5 @@
 use tauri::{
-    AppHandle, Manager,
+    AppHandle,
     menu::{Menu, MenuEvent, MenuItem, MenuItemKind},
 };
 
@@ -40,16 +40,10 @@ pub fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     if event.id().as_ref() != QUIT_ID {
         return;
     }
-    if let Some(window) = app.get_webview_window("main") {
-        // A predefined macOS Quit item calls Cocoa terminate: directly and
-        // bypasses Tauri's ExitRequested event. This custom item instead
-        // follows the same CloseRequested path as the window close button.
-        if let Err(error) = window.close() {
-            eprintln!("could not request closing the OpenStreamHub window: {error}");
-        }
-    } else {
-        app.exit(0);
-    }
+    // A predefined macOS Quit item calls Cocoa terminate: directly and
+    // bypasses Tauri's ExitRequested event. This custom item instead follows
+    // the same draft-guarded path as the window close button.
+    crate::menubar::request_quit(app);
 }
 
 fn invalid_menu(message: &str) -> tauri::Error {

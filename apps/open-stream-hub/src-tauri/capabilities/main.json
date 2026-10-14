@@ -77,6 +77,8 @@
     "allow-check-for-updates",
     "allow-open-release-page",
     "allow-set-autostart",
+    "allow-menubar-status",
+    "allow-set-menubar",
     "allow-open-permission-settings"
   ]
 }

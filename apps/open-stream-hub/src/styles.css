@@ -862,6 +862,7 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .prompt-row { grid-template-columns:minmax(0,1fr) auto; }
 .permission-done { display:flex; align-items:center; gap:8px; color:var(--green); }
 
-.run-profile-on { margin:0 0 12px; }
-.run-profile-on label { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--muted); }
-.run-profile-on select { min-width:260px; }
+.running-profile { padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
+.running-profile label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+.running-profile select { width:100%; }
+.running-profile .fine-print { margin:0; }

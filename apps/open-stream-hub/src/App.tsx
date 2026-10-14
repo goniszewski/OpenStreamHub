@@ -41,6 +41,7 @@ import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
+import { RunningProfile, applyRunningProfile } from './RunningProfile';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
@@ -212,6 +213,8 @@ export default function App() {
   // recorded as shown only then.
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
   const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
+  // The sidebar's running-profile choice shows the default profile while nothing runs.
+  useEffect(() => { if (desktop && !display.defaultProfile.loaded && !display.defaultProfile.busy && !display.defaultProfile.error) void displaySettings.loadDefaultProfile(); }, [desktop, display.defaultProfile.loaded, display.defaultProfile.busy, display.defaultProfile.error, displaySettings]);
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
   useEffect(() => {
     if (previewRunModeSeed === null) return;
@@ -603,7 +606,9 @@ export default function App() {
     </header>
     <div className="app-body">
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
-        onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })} />
+        onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
+        runningProfile={<RunningProfile profiles={state.profiles} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
+          onChoose={profileId => applyRunningProfile(profileId, runSession.service.runs, { setDefaultProfile: id => displaySettings.setDefaultProfile(id), switchProfile: (sessionId, id, why) => runner.switchProfile(sessionId, id, why) })} />} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}

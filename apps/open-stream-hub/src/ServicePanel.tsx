@@ -4,7 +4,7 @@ import type { LiveDevice, ModuleControl, Profile, ServiceModule, ServiceState } 
 import { SelectField, ModalDialog } from './controls';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
-import { autoStartLabel, findRun, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, staleNote, unknownSnapshot } from './service-runner';
+import { autoStartLabel, idleServiceState, isActiveRun, isStale, maxReconnectAttempts, serviceIdFor, staleNote, unknownSnapshot } from './service-runner';
 import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, macroLabel, macroStepLabel, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';import type { RiskLevel } from './profile-capabilities';
@@ -250,7 +250,7 @@ const noopSubscribe = () => () => {};
 const idleFeed = () => idleFeedState;
 const idleRunner = () => idleServiceState;
 const idleDisplay = () => idleDisplaySettingsState;
-export const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
+const deviceName = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ?? device.path_hex.slice(-6)}`;
 
 // Retain the selected identity and stable run key while inventory paths disappear or change.
 export interface ServiceSelection { device: LiveDevice; sessionId?: string }
@@ -444,18 +444,14 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
   // A start that settles the draft first must use the settled identity, not
   // the values captured when this closure was created (an automatic save can
   // save the draft while it waits, and the run then carries the profile id).
-  const latest = useRef({ runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings, loaded: display.loaded, moduleControl: display.settings.module_control, softwareMode });
-  latest.current = { runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings, loaded: display.loaded, moduleControl: display.settings.module_control, softwareMode };
-  // Starts the open profile on the selected module, or on `target` (the module the user named: the software mode box
-  // is read for that module's kind, and the confirmation names it because the selection moved to it first).
-  const begin = async (target?: LiveDevice) => {
+  const latest = useRef({ runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings });
+  latest.current = { runner, profile, profileId, sourceProfileId, unsaved, executeSelected, box, device, displaySettings };
+  const begin = async () => {
     let settled: SettledDraft | void = undefined;
     try { settled = await beforeStart?.(); } catch { /* the start uses the draft as it is */ }
     const atStart = settled ?? latest.current;
     const current = latest.current;
-    const onDevice = target ?? current.device;
-    const onBox = target ? softwareModeBox({ module: target.module, loaded: current.loaded, moduleControl: current.moduleControl, ticked: current.softwareMode }) : current.box;
-    if (!current.runner || !onDevice) return;
+    if (!current.runner || !current.device) return;
     const confirmExecute = current.executeSelected ? async () => {
       const ok = await new Promise<boolean>(resolve => { setConfirmKind('start'); setConfirm(() => resolve); });
       // Running actions once confirms the mode on a fresh install.
@@ -464,25 +460,9 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     } : undefined;
     void current.runner.start({
       profile: atStart.profile, profileId: atStart.profileId, sourceProfileId: atStart.sourceProfileId,
-      pathHex: onDevice.path_hex, execute: current.executeSelected, softwareMode: onBox.requested,
-      draftUnsaved: atStart.unsaved, device: onDevice,
+      pathHex: current.device.path_hex, execute: current.executeSelected, softwareMode: current.box.requested,
+      draftUnsaved: atStart.unsaved, device: current.device,
     }, confirmExecute);
-  };
-  // "Run this profile on…": starts the open profile on a module nothing runs on, or switches the profile a module's
-  // session already runs to the open one, which has to be saved for the backend to name it. Returns why nothing
-  // happened, or null.
-  const runOn = (target: LiveDevice): string | null => {
-    if (!runner) return 'Running a profile needs the desktop app.';
-    const existing = findRun(service.runs, target);
-    if (existing?.session && existing.session.phase !== 'stopped') {
-      if (!profileId || unsaved) return `Save "${profile.name}" first: ${deviceName(target)} already runs a profile, and a running module switches to a saved profile.`;
-      if (existing.profileId === profileId) return `${deviceName(target)} already runs "${profile.name}".`;
-      void runner.switchProfile(existing.serviceId, profileId, 'chosen on the base layout');
-      return null;
-    }
-    setChosen({ device: target });
-    void begin(target);
-    return null;
   };
   const resume = () => {
     if (!runner || !run) return;
@@ -512,7 +492,7 @@ export function useRunSession({ runner, feed, profile, profileId = null, sourceP
     device, run, session, phase, active, blocker, box, stale, now, executeSelected, editingHeld, applyEditingHold,
     // The open draft, for the panel's stale note (what the run holds against it).
     draftProfile: profile,
-    begin: () => begin(), runOn, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
+    begin, resume, stop: () => { if (runner && run) void runner.stop(run.serviceId); },
     confirm, confirmKind, resumeGone, acknowledged, setAcknowledged, answer,
     copy: modeCopy ?? dialog ?? startCopy, dialogOpen: modeCopy !== null || (confirm !== null && !resumeGone),
   };
@@ -532,7 +512,7 @@ export const idleRunSession: RunSession = {
   box: softwareModeBox({ module: undefined, loaded: false, moduleControl: 'app', ticked: false }),
   stale: false, now: 0, executeSelected: false, editingHeld: false, applyEditingHold: noop,
   draftProfile: { schema_version: 1, name: '', bindings: [] },
-  begin: async () => {}, runOn: () => null, resume: noop, stop: noop,
+  begin: async () => {}, resume: noop, stop: noop,
   confirm: null, confirmKind: 'start', resumeGone: false, acknowledged: false, setAcknowledged: noop, answer: noop,
   copy: confirmCopy('start', '', 'the selected module'), dialogOpen: false,
 };

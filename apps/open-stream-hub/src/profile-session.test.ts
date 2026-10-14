@@ -614,19 +614,17 @@ describe('saving and deleting', () => {
     expect(session.unsaved).toBe(false);
   });
 
-  it('numbers a starter whose name is already taken, and reports a failure without changing the draft', async () => {
-    const { session, take } = await ready(stored('a', 'Mac basics'));
+  it('opens the saved profile a starter was made into instead of making a copy', async () => {
+    const { session, take } = await ready(stored('a', 'Alpha'));
     const created = session.createFromTemplate(starterProfile('Mac basics'));
     await flush();
-    take('list_profiles').resolve(listing(stored('a', 'Mac basics')));
+    take('list_profiles').resolve(listing(stored('m', 'Mac basics'), stored('a', 'Alpha')));
     await flush();
-    const save = take('save_profile');
-    expect((save.args!.request as { profile: Profile }).profile.name).toBe('Mac basics 2');
-    save.reject('profile storage is read-only');
-    expect(await created).toBe('profile storage is read-only');
+    take('load_profile').resolve(stored('m', 'Mac basics', 3000));
+    expect(await created).toBeNull();
     const state = session.getState();
-    expect(state.draft.profileId).toBe('a');
-    expect(state.draft.profile.name).toBe('Mac basics');
+    expect(state.draft.profileId).toBe('m');
+    expect(state.notice).toBe('Opened Mac basics, which you already have.');
     expect(state.busy).toBeNull();
   });
 

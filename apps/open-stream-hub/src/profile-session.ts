@@ -599,6 +599,8 @@ export class ProfileSession {
     copyOf: string | null = null,
     // How the new profile reaches the store: an ordinary save by default, or the backend's own creator (a pack's profile).
     create?: (profile: Profile) => Promise<StoredProfile>,
+    // A saved profile that already is what this would create: it is opened instead and nothing is saved.
+    existing?: (name: string, saved: ProfileListing['profiles']) => ProfileListing['profiles'][number] | undefined,
   ): Promise<string | null> {
     if (!this.state.ready || this.state.busy !== null) return 'Wait for the current profile operation to finish.';
     this.sequence.list += 1;
@@ -606,6 +608,13 @@ export class ProfileSession {
     try {
       const original = await source();
       const listing = await this.invoke<ProfileListing>('list_profiles');
+      const reused = existing?.(original.name, listing.profiles);
+      if (reused) {
+        this.set({ busy: null });
+        await this.load(reused.id);
+        this.set({ notice: `Opened ${reused.name}, which you already have.` });
+        return null;
+      }
       const profile = withName(upgradeKeypadProfile(structuredClone(original)), nameFor(original.name, listing.profiles.map(item => item.name)));
       // The source lets the backend keep a copy of an imported dry-run-only profile dry run only (it also matches by content).
       const stored = create ? await create(profile) : await this.invoke<StoredProfile>('save_profile', { request: { id: null, profile, expectedModifiedAtMs: null, sourceProfileId: copyOf } });
@@ -640,7 +649,8 @@ export class ProfileSession {
   // one) and switches to it. The guard decides whether unsaved changes must
   // settle first.
   async createFromTemplate(profile: Profile): Promise<string | null> {
-    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`);
+    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`,
+      null, undefined, (name, saved) => saved.find(item => item.name === name));
   }
 
   // Saves an app preset pack's profile as a NEW saved profile that can run only as a dry run until the user allows it

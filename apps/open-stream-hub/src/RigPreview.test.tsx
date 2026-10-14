@@ -139,6 +139,24 @@ describe('RigPreview canvas', () => {
     } finally { baseOrientationStore.set(0); }
   });
 
+  it('stands a module up when its connector turns it a quarter, keeping it on the base', async () => {
+    const state = stateFor();
+    // The fader module on a connector the official drawing turns (14 October 2026, hardware: top-right, standing up).
+    const feed = await feedOf([
+      { path_hex: 'keys', module: 'm4315', serial_number: null, base_cell: { col: 0, row: -1 }, base_turn: 0 },
+      { path_hex: 'faders', module: 'm005s', serial_number: null, base_cell: { col: 4, row: 0 }, base_turn: 90 },
+    ]);
+    const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={feed} />);
+    // 2 columns by 4 rows at columns 4 and 5: the base stays 6 columns wide and nothing hangs off the right edge.
+    expect(markup).toContain('--cols:6');
+    expect(markup).toContain('rig-stage-turn r90');
+    expect(markup).toContain('5-fader precision module at Right side');
+    expect(markup).not.toContain('past the right edge');
+    // Without the turn the same cell would take 4 columns and reach past the base.
+    const flat = await feedOf([{ path_hex: 'faders', module: 'm005s', serial_number: null, base_cell: { col: 4, row: 0 } }]);
+    expect(renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={flat} />)).toContain('past the right edge');
+  });
+
   it('lets one module keep its own rotation while the others follow the base, with a mark and a reset', async () => {
     const state = stateFor();
     const render = async () => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm032le')} state={state} feed={await feedOf(positioned)} pickedPath="rollers" />);

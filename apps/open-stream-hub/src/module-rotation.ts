@@ -17,6 +17,14 @@ export const moduleRotation = (base: BaseOrientation, own: BaseOrientation | nul
 // Whether the module's footprint on the base is turned a quarter against the base's own turn, so its cells swap.
 export const footprintSwaps = (base: BaseOrientation, own: BaseOrientation | null | undefined) => (baseTurns(moduleRotation(base, own)) + baseTurns(base)) % 2 === 1;
 
+// The rotation the base connector a module sits on gives it (`base_turn`, degrees clockwise from upright, 0 when the
+// connector keeps it upright): the base's own turn plus the connector's. Null when the connector adds nothing.
+export const slotRotation = (base: BaseOrientation, turn: number | null | undefined): BaseOrientation | null =>
+  turn ? baseOrientations[(baseTurns(base) + turn / 90) % 4] : null;
+
+// A connector that turns a module a quarter stands its footprint up (a 4 x 2 module takes 2 columns and 4 rows).
+export const slotStandsUp = (turn: number | null | undefined) => !!turn && (turn / 90) % 2 === 1;
+
 const isRotation = (value: unknown): value is BaseOrientation => baseOrientations.includes(value as BaseOrientation);
 
 export function readModuleRotations(storage: Pick<Storage, 'getItem'>): ModuleRotations {

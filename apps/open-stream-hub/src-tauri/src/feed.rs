@@ -97,6 +97,10 @@ pub struct LiveDevice {
     pub serial_number: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_cell: Option<BaseCell>,
+    /// Degrees clockwise (0, 90, 180 or 270) the slot turns the module from upright; a quarter turn swaps its
+    /// columns and rows. Absent with `base_cell`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_turn: Option<u16>,
     /// The USB port chain the module enumerated on (macOS only), for diagnostics when its position is not known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port_chain: Option<String>,
@@ -182,6 +186,10 @@ fn live_devices_with_locations(
             base_cell: location_ids
                 .get(device.path.as_bytes())
                 .and_then(|location_id| base_cell(*module, *location_id, hub.as_deref())),
+            base_turn: location_ids
+                .get(device.path.as_bytes())
+                .and_then(|location_id| base_slot(*module, *location_id, hub.as_deref()))
+                .map(|slot| slot.turn()),
             port_chain: location_ids
                 .get(device.path.as_bytes())
                 .map(|location_id| base_slots::chain_text(&base_slots::port_chain(*location_id))),
@@ -196,9 +204,18 @@ fn live_devices_with_locations(
 /// chain after it is stable across bus-number changes. Without a hub chain (the base is not visible) or for a
 /// connector the table does not know, the position stays unset and the chain is shown in diagnostics.
 pub fn base_cell(module: ServiceModule, location_id: u32, hub: Option<&[u8]>) -> Option<BaseCell> {
-    let slot = base_slots::slot_name(&base_slots::port_chain(location_id), hub?)?;
-    let found = base_slots::lookup(module, &slot)?;
+    let found = base_slot(module, location_id, hub)?;
     cell(found.col, found.row)
+}
+
+/// The slot-table entry for a module's location ID, given the chain of the base's hub.
+fn base_slot(
+    module: ServiceModule,
+    location_id: u32,
+    hub: Option<&[u8]>,
+) -> Option<base_slots::Slot> {
+    let slot = base_slots::slot_name(&base_slots::port_chain(location_id), hub?)?;
+    base_slots::lookup(module, &slot)
 }
 
 #[cfg(target_os = "macos")]
@@ -1172,6 +1189,7 @@ mod tests {
             module,
             serial_number: serial.map(str::to_owned),
             base_cell: None,
+            base_turn: None,
             port_chain: None,
         }
     }
@@ -1333,6 +1351,7 @@ mod tests {
                     module: ServiceModule::M003K,
                     serial_number: Some("K1".into()),
                     base_cell: None,
+                    base_turn: None,
                     port_chain: None,
                 },
                 LiveDevice {
@@ -1340,6 +1359,7 @@ mod tests {
                     module: ServiceModule::M005S,
                     serial_number: None,
                     base_cell: None,
+                    base_turn: None,
                     port_chain: None,
                 },
                 LiveDevice {
@@ -1347,6 +1367,7 @@ mod tests {
                     module: ServiceModule::M4315,
                     serial_number: Some("K2".into()),
                     base_cell: None,
+                    base_turn: None,
                     port_chain: None,
                 },
             ]

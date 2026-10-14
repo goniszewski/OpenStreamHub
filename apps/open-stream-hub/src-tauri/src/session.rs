@@ -2973,6 +2973,7 @@ pub mod fake {
             module,
             serial_number: serial.map(str::to_owned),
             base_cell: None,
+            base_turn: None,
             port_chain: None,
         }
     }

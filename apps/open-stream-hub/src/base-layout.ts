@@ -39,8 +39,10 @@ export function layoutExtent(placements: Placement[], base = { cols: baseColumns
 
 // Named by where the module's centre sits on the base.
 export function placementLabel(placement: Placement) {
-  const vertical = placement.row + placement.rows / 2 < baseRows / 2 ? 'Top' : 'Bottom';
   const horizontal = placement.col + placement.cols / 2 < baseColumns / 2 ? 'left' : 'right';
+  // A module standing the whole height of the base has no top or bottom.
+  if (placement.rows >= baseRows) return `${horizontal === 'left' ? 'Left' : 'Right'} side`;
+  const vertical = placement.row + placement.rows / 2 < baseRows / 2 ? 'Top' : 'Bottom';
   return `${vertical}-${horizontal}`;
 }
 

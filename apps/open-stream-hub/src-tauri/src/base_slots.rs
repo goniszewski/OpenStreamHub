@@ -15,9 +15,17 @@ const BASE_SLOT: [u8; 3] = [1, 4, 4];
 pub struct Slot {
     pub col: i8,
     pub row: i8,
-    /// Quarter turns the official drawing applies to the module in its own (portrait) frame; carried for module
-    /// orientation (task 37), not used for placement.
+    /// The turn the official drawing applies to the module, in degrees, in its own (portrait) frame.
     pub official_rotation: u16,
+}
+
+impl Slot {
+    /// How far the module's artwork is turned clockwise from upright in our landscape frame, which is the official
+    /// portrait drawing turned a quarter: 270 in the official drawing is upright here. A quarter or three-quarter
+    /// turn also stands the footprint up, so a 4 x 2 module takes 2 columns and 4 rows.
+    pub fn turn(&self) -> u16 {
+        (self.official_rotation + 90) % 360
+    }
 }
 
 #[derive(Deserialize)]
@@ -39,6 +47,20 @@ fn observed(module: &str, slot: &str) -> Option<Slot> {
         // 11 October 2026: the 15-key module's top row one cell above the base, over the faders.
         ("M4315", "111") => Some(Slot {
             col: 0,
+            row: -1,
+            official_rotation: 270,
+        }),
+        // 14 October 2026: connectors the official drawing has no 15-key entry for. On the 11 connectors both tables
+        // share, the 15-key module and the 5-fader module line up on one edge for the same connector (bottom when
+        // flat, left when standing up, right when upside down), and the entry above follows that too. The fader
+        // entries for these connectors (`113`: column 4 standing up, `143`: column 2, row 0, flat) therefore give:
+        ("M4315", "113") => Some(Slot {
+            col: 4,
+            row: 0,
+            official_rotation: 0,
+        }),
+        ("M4315", "143") => Some(Slot {
+            col: 2,
             row: -1,
             official_rotation: 270,
         }),
@@ -114,6 +136,84 @@ mod tests {
         assert_eq!(hub_prefix(&[2, 1, 1, 4, 4]), Some(vec![2, 1]));
         assert_eq!(hub_prefix(&[1, 4, 4]), None);
         assert_eq!(hub_prefix(&[1, 1, 2, 3]), None);
+    }
+
+    #[test]
+    fn a_slot_turns_the_module_from_upright_in_the_landscape_frame() {
+        let turn = |module, chain: &[u8]| {
+            lookup(module, &slot_name(chain, &HUB).unwrap()).map(|slot| slot.turn())
+        };
+        // Placed flat before (official 270): upright here.
+        assert_eq!(turn(ServiceModule::M005S, &[1, 1, 2, 3]), Some(0));
+        assert_eq!(turn(ServiceModule::M4315, &[1, 1, 1, 1, 1]), Some(0));
+        // Official 0: standing up, 2 columns by 4 rows (hardware, 14 October 2026: faders top-right).
+        assert_eq!(turn(ServiceModule::M005S, &[1, 1, 1, 1, 3]), Some(90));
+        // Official 180.
+        assert_eq!(turn(ServiceModule::M003K, &[1, 1, 2, 1]), Some(270));
+        // The 15-key module standing up on the connector the faders stood up on.
+        assert_eq!(turn(ServiceModule::M4315, &[1, 1, 1, 1, 3]), Some(90));
+    }
+
+    #[test]
+    fn every_slot_fits_on_the_base_once_a_quarter_turn_stands_the_footprint_up() {
+        for (module, name, columns, rows) in [
+            (ServiceModule::M4315, "M4315", 4, 3),
+            (ServiceModule::M032LE, "M032LE", 4, 1),
+            (ServiceModule::M005S, "M005S", 4, 2),
+            (ServiceModule::M131E, "M131E", 2, 2),
+            (ServiceModule::M003K, "M003K", 2, 2),
+        ] {
+            assert_eq!(module_key(module), name);
+            for (slot, found) in &table().modules[name] {
+                let (width, height) = if found.turn().is_multiple_of(180) {
+                    (columns, rows)
+                } else {
+                    (rows, columns)
+                };
+                assert!(
+                    found.col >= 0
+                        && found.row >= 0
+                        && found.col + width <= 6
+                        && found.row + height <= 4,
+                    "{name} slot {slot} leaves the base"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_15_key_module_lines_up_with_the_faders_on_their_connectors() {
+        let edge = |module, slot: &str| {
+            let found = lookup(module, slot).unwrap();
+            let (columns, rows) = if module == ServiceModule::M4315 {
+                (4, 3)
+            } else {
+                (4, 2)
+            };
+            let (width, height) = if found.turn().is_multiple_of(180) {
+                (columns, rows)
+            } else {
+                (rows, columns)
+            };
+            match found.official_rotation {
+                270 => found.row + height,
+                0 => found.col,
+                180 => found.col + width,
+                _ => found.row,
+            }
+        };
+        // The connectors both tables have, plus the ones inferred from the faders.
+        for slot in [
+            "22", "23", "24", "33", "41", "42", "111", "112", "113", "122", "132", "134", "141",
+            "143",
+        ] {
+            assert_eq!(
+                edge(ServiceModule::M4315, slot),
+                edge(ServiceModule::M005S, slot),
+                "slot {slot}"
+            );
+        }
+        assert_eq!(at(ServiceModule::M4315, &[1, 1, 1, 1, 3]), Some((4, 0)));
     }
 
     #[test]

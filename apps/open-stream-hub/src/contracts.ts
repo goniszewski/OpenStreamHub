@@ -159,7 +159,7 @@ export type FeedState = 'running' | 'finished' | 'stopped' | 'failed';
 export interface DeviceStatusPayload { feed_id: string; state: FeedState; source: 'demo' | 'live'; module: ServiceModule | null; error?: string }
 // Top-left cell of a module on the 6 × 4 base; negative when the module starts beyond the top or left edge.
 export interface BaseCell { col: number; row: number }
-export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null; base_cell?: BaseCell; port_chain?: string }
+export interface LiveDevice { path_hex: string; module: ServiceModule; serial_number: string | null; base_cell?: BaseCell; base_turn?: number; port_chain?: string }
 export interface DeviceInventoryPayload { devices: LiveDevice[] }
 export type FeedSource = { kind: 'demo'; demo: ReplayKind } | { kind: 'live'; path_hex: string };
 

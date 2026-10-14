@@ -12,7 +12,7 @@ import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlac
 import type { BaseOrientation } from './base-orientation';
 import type { BasePins } from './base-pins';
 import { basePinsStore, pinLayout, useBasePins } from './base-pins';
-import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, useModuleRotations } from './module-rotation';
+import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, slotRotation, slotStandsUp, useModuleRotations } from './module-rotation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
 import { SelectField } from './controls';
@@ -32,7 +32,12 @@ const demoKinds = Object.keys(replayLabels) as ReplayKind[];
 
 const webStorage = { getItem: (key: string) => globalThis.localStorage?.getItem(key) ?? null, setItem: (key: string, value: string) => globalThis.localStorage?.setItem(key, value) };
 
-const devicePlacement = (device: LiveDevice) => placementOf(device.module, device.base_cell!);
+// The module's cells on the base lying down. A connector that turns a module a quarter stands its footprint up (a 4 x 2
+// module takes 2 columns and 4 rows) unless the user chose a rotation of their own.
+const devicePlacement = (device: LiveDevice, userTurned = false) => {
+  const placement = placementOf(device.module, device.base_cell!);
+  return !userTurned && slotStandsUp(device.base_turn) ? { ...placement, cols: placement.rows, rows: placement.cols } : placement;
+};
 const deviceLocation = (device: LiveDevice) => {
   const placement = devicePlacement(device);
   const overhang = overhangLabel(overhangOf(placement));
@@ -103,12 +108,15 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const unpositioned = devices.filter(device => !device.base_cell);
   const pins = useBasePins();
   const rotations = useModuleRotations();
+  // The rotation the user chose for a module, if any; without one a module follows the base and the connector it sits on.
   const ownRotation = (device: LiveDevice) => rotations[moduleRotationId(device)] ?? null;
-  const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device));
-  // A module's cell follows the base; one turned a quarter against the base keeps its corner and swaps its width and height.
+  const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device) ?? slotRotation(baseOrientation, device.base_turn));
+  // A module's cell follows the base (and the connector's own turn); one the user turned a quarter against the base
+  // keeps its corner and swaps its width and height.
   const turnedPlacement = (device: LiveDevice) => {
-    const placed = turnPlacement(devicePlacement(device), baseOrientation);
-    return footprintSwaps(baseOrientation, ownRotation(device)) ? { ...placed, cols: placed.rows, rows: placed.cols } : placed;
+    const own = ownRotation(device);
+    const placed = turnPlacement(devicePlacement(device, own !== null), baseOrientation);
+    return footprintSwaps(baseOrientation, own) ? { ...placed, cols: placed.rows, rows: placed.cols } : placed;
   };
   const size = turnedBase(baseOrientation);
   const extent = layoutExtent(positioned.map(turnedPlacement), size);

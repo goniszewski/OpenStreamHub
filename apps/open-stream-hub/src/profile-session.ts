@@ -217,6 +217,7 @@ export class ProfileSession {
   private observeDraft() {
     const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
     const worthKeeping = this.unsaved && (profileId !== null || stableStringify(profile) !== stableStringify(upgradeKeypadProfile(emptyProfile)));
+    if (profileId) this.drafts?.store.setLastOpened(profileId);
     this.drafts?.observe({ key: profileId ?? newDraftKey, profile, baseModifiedAtMs: modifiedAtMs, dirty: worthKeeping, sourceId: sourceId ?? null });
     this.syncAutosaveTimer();
   }
@@ -431,15 +432,22 @@ export class ProfileSession {
     try {
       const value = await this.invoke<AppBootstrap>('bootstrap');
       if (sequence !== this.sequence.bootstrap) return;
-      const draft = value.profile ? storedDraft(value.profile) : newDraft(emptyProfile);
+      // The store offers the most recently saved profile; come back to the one that was open instead, when it is still there.
+      let opened = value.profile;
+      const remembered = this.drafts?.store.lastOpened();
+      if (opened && remembered && remembered !== opened.id && value.profiles.some(item => item.id === remembered)) {
+        try { opened = await this.invoke<StoredProfile>('load_profile', { id: remembered }); } catch { /* the most recent one stays */ }
+        if (sequence !== this.sequence.bootstrap) return;
+      }
+      const draft = opened ? storedDraft(opened) : newDraft(emptyProfile);
       this.drafts?.store.purge(value.profiles.map(item => item.id));
       let restorePrompt = this.restoreOffer(draft);
       // A never-saved draft is offered only when the opened profile has nothing to restore.
-      if (!restorePrompt && value.profile) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
+      if (!restorePrompt && opened) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
       this.set({
         ...this.invalidateResults(), ...this.resetHistory(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable, importFlagsError: value.import_flags_error ?? null,
         storagePath: value.storage_path, ready: true, busy: null,
-        notice: value.profile ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
+        notice: opened ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
       });
     } catch (reason) {
       if (sequence !== this.sequence.bootstrap) return;

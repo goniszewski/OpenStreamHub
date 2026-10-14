@@ -30,6 +30,7 @@ mod startup;
 mod store;
 #[cfg(test)]
 mod test_profiles;
+mod turns;
 mod updates;
 
 use cooltek_sdk_service::{
@@ -1343,6 +1344,10 @@ impl session::Runner for AppRunner {
         self.app.state::<AppState>().display.for_new_session()
     }
 
+    fn display_turn(&mut self, device: &feed::LiveDevice) -> u16 {
+        self.app.state::<turns::ModuleTurns>().turn_of(device)
+    }
+
     fn obs_launch(&mut self) -> Option<obs::ObsLaunch> {
         self.app.state::<AppState>().obs.for_new_session()
     }
@@ -1467,6 +1472,16 @@ fn input_permissions() -> Result<recorder::InputPermissions, String> {
 #[tauri::command]
 fn autostart_status() -> Result<autostart::AutostartStatus, String> {
     autostart::status()
+}
+
+// The base's rotation and any rotation the user chose for single modules, for what the module screens draw
+// (`turns.rs`). Applies to runs that start later.
+#[tauri::command]
+fn set_module_turns(
+    state: State<'_, turns::ModuleTurns>,
+    preferences: turns::Preferences,
+) -> Result<(), String> {
+    state.set(preferences)
 }
 
 #[tauri::command]
@@ -1895,6 +1910,7 @@ pub fn run() {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
             }
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
+            app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
             app.manage(AppState::open(app_data));
             menubar::init(app.handle());
             let state = app.state::<AppState>();
@@ -2022,6 +2038,7 @@ pub fn run() {
             set_autostart,
             menubar_status,
             set_menubar,
+            set_module_turns,
             open_permission_settings
         ])
         .build(tauri::generate_context!())

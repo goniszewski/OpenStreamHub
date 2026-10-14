@@ -362,6 +362,8 @@ pub struct DialArtwork {
     cpu: Option<Box<RefCell<CpuGauge>>>,
     /// The last clock or CPU face drawn: its request key and bytes.
     cached: RefCell<Option<(String, Vec<u8>)>>,
+    /// Quarter turns clockwise applied to every face served, so a dial sitting turned on the base reads upright.
+    quarter_turns: u8,
 }
 
 impl fmt::Debug for DialArtwork {
@@ -423,6 +425,7 @@ impl DialArtwork {
             cpu: (content == DialContent::Cpu)
                 .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
             cached: RefCell::new(None),
+            quarter_turns: 0,
         };
         // A clock or CPU face cannot be prepared in advance; prove the path works.
         match content {
@@ -442,6 +445,12 @@ impl DialArtwork {
         if let Some(gauge) = &self.cpu {
             gauge.borrow_mut().source = source;
         }
+        self
+    }
+
+    /// Turns every face served by `quarter_turns` quarter turns clockwise (0 to 3).
+    pub fn with_turn(mut self, quarter_turns: u8) -> Self {
+        self.quarter_turns = quarter_turns % 4;
         self
     }
 
@@ -557,6 +566,33 @@ fn parse_time(text: &str) -> Option<WallTime> {
 
 impl DialImageProvider for DialArtwork {
     fn dial_image(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
+        let face = self.face(request)?;
+        Some(turned(&face, self.quarter_turns).unwrap_or(face))
+    }
+}
+
+/// `jpeg` turned `quarter_turns` quarter turns clockwise; `None` when it cannot be decoded or re-encoded.
+fn turned(jpeg: &[u8], quarter_turns: u8) -> Option<Vec<u8>> {
+    if quarter_turns.is_multiple_of(4) {
+        return Some(jpeg.to_vec());
+    }
+    let image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
+        .ok()?
+        .to_rgb8();
+    if image.dimensions() != (SIDE, SIDE) {
+        return None;
+    }
+    let image = match quarter_turns % 4 {
+        1 => image::imageops::rotate90(&image),
+        2 => image::imageops::rotate180(&image),
+        _ => image::imageops::rotate270(&image),
+    };
+    encode(&image).ok()
+}
+
+impl DialArtwork {
+    /// The face for `request`, upright as drawn.
+    fn face(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
         let face = request.function.as_deref()?;
         if face == "image" && self.content == DialContent::Image {
             return self.image.clone();
@@ -999,6 +1035,39 @@ mod tests {
         image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
             .unwrap()
             .to_rgb8()
+    }
+
+    #[test]
+    fn a_turned_dial_serves_every_face_turned_clockwise() {
+        let face = |turns: u8| {
+            let art = artwork(DialContent::Function, &clock(9, 5)).with_turn(turns);
+            let request = DialImageRequest {
+                profile: "Pictures".into(),
+                function: Some("function:0".into()),
+            };
+            art.dial_image(&request).unwrap()
+        };
+        let upright = decoded(&face(0));
+        for (turns, expected) in [
+            (1, image::imageops::rotate90(&upright)),
+            (2, image::imageops::rotate180(&upright)),
+            (3, image::imageops::rotate270(&upright)),
+        ] {
+            let served = decoded(&face(turns));
+            // Re-encoding is lossy, so compare the average difference per channel.
+            let total: u64 = served
+                .as_raw()
+                .iter()
+                .zip(expected.as_raw())
+                .map(|(a, b)| u64::from(a.abs_diff(*b)))
+                .sum();
+            assert!(
+                total / served.as_raw().len() as u64 <= 3,
+                "{turns} quarter turns"
+            );
+        }
+        // More than three turns wrap around.
+        assert_eq!(face(4), face(0));
     }
 
     #[test]

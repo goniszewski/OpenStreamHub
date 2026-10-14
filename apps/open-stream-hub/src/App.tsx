@@ -14,6 +14,8 @@ import { PermissionsPrompt } from './PermissionsPrompt';
 import { SquareEye } from './SquareEye';
 import { StartupPanel } from './StartupPanel';
 import { keepRunningInMenubar, setKeepRunningInMenubar } from './menubar';
+import { useModuleRotations } from './module-rotation';
+import { useBaseOrientation } from './base-orientation';
 import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
 import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
@@ -129,6 +131,15 @@ export default function App() {
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
   const pickableModules = [...bases, ...deviceFeedState.devices];
+  // Tell the backend the base's rotation and the rotations the user chose for single modules; it adds each module's
+  // connector turn itself, so what a module's screen draws reads upright (applies to runs that start later).
+  const baseTurn = useBaseOrientation();
+  const rotations = useModuleRotations();
+  const turnsKey = JSON.stringify({ base: baseTurn, overrides: rotations });
+  useEffect(() => {
+    if (!desktop) return;
+    invoke('set_module_turns', { preferences: JSON.parse(turnsKey) }).catch(() => {});
+  }, [desktop, turnsKey]);
   useModifierHeld(mac);
   const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);
   // A module that appears — the first inventory after a launch, or a replug —

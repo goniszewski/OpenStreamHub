@@ -4,10 +4,12 @@ import { isUnsaved, ProfileSession } from './profile-session';
 import type { Invoke } from './profile-session';
 import { upgradeKeypadProfile } from './keypad-model';
 import { browserProfile } from './ui-model';
+import { DraftPersister, DraftStore } from './draft-store';
+import { FakeStorage } from './fake-storage';
 
 interface Call { command: string; args?: Record<string, unknown>; resolve(value: unknown): void; reject(reason: unknown): void }
 
-function harness(desktop = true) {
+function harness(desktop = true, drafts: DraftPersister | null = null) {
   const calls: Call[] = [];
   const invoke: Invoke = <T,>(command: string, args?: Record<string, unknown>) => new Promise<T>((resolve, reject) => {
     calls.push({ command, args, resolve: resolve as (value: unknown) => void, reject });
@@ -18,7 +20,7 @@ function harness(desktop = true) {
     scheduled.push(action);
     return () => { const index = scheduled.indexOf(action); if (index >= 0) scheduled.splice(index, 1); };
   };
-  const session = new ProfileSession(invoke, browserProfile, desktop, null, Date.now, schedule);
+  const session = new ProfileSession(invoke, browserProfile, desktop, drafts, Date.now, schedule);
   // Takes the oldest pending call for a command.
   const take = (command: string) => {
     const index = calls.findIndex(call => call.command === command);
@@ -51,6 +53,42 @@ async function ready(profile = stored('a', 'Alpha')) {
 }
 
 describe('bootstrap', () => {
+  const idA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  const idB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+  const open = (remembered: string | null) => {
+    const store = new DraftStore(new FakeStorage() as unknown as Storage);
+    if (remembered) store.setLastOpened(remembered);
+    return harness(true, new DraftPersister(store));
+  };
+  const newest = stored(idA, 'Showcase', 2000);
+  const wanted = stored(idB, 'Everyday', 1000);
+  const both = bootstrapValue(newest, { profiles: [summary(newest), summary(wanted)] });
+
+  it('comes back to the profile that was open, not the one saved most recently', async () => {
+    const { session, take } = open(idB);
+    const started = session.bootstrap();
+    take('bootstrap').resolve(both);
+    await flush();
+    const load = take('load_profile');
+    expect(load.args).toEqual({ id: idB });
+    load.resolve(wanted);
+    await started;
+    expect(session.getState().draft.profileId).toBe(idB);
+    expect(session.getState().draft.profile.name).toBe('Everyday');
+  });
+
+  it('opens the most recent profile when nothing is remembered, the remembered one is gone, or it already is the one offered', async () => {
+    for (const remembered of [null, 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', idA]) {
+      const { session, take, calls } = open(remembered);
+      const started = session.bootstrap();
+      take('bootstrap').resolve(both);
+      await started;
+      expect(calls.some(call => call.command === 'load_profile')).toBe(false);
+      expect(session.getState().draft.profileId).toBe(idA);
+    }
+  });
+
   it('starts clean so the close guard does not fire while opening', () => {
     const { session } = harness();
     expect(session.getState().busy).toBe('Opening profiles');

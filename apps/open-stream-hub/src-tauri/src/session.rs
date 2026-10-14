@@ -995,6 +995,11 @@ pub trait Runner {
     fn display_settings(&mut self) -> DisplaySettings {
         DisplaySettings::UNREADABLE
     }
+    /// Degrees clockwise (0, 90, 180 or 270) a module sits turned on the base,
+    /// kept by a session started now for its whole life like the settings.
+    fn display_turn(&mut self, _device: &LiveDevice) -> u16 {
+        0
+    }
     /// The OBS endpoint and in-memory password a session started now keeps
     /// for its whole life. Read once per user Start; `None` when OBS is off
     /// or its settings are unreadable.
@@ -1431,6 +1436,7 @@ impl<R: Runner> Driver<R> {
             request.display = Some(DisplayLaunch {
                 settings,
                 module: device.module,
+                turn: self.runner.display_turn(device),
             });
         } else {
             // Without a backend-known module we cannot authorize a mode
@@ -5029,6 +5035,7 @@ mod tests {
         let expected = Some(DisplayLaunch {
             settings: APP_CONTROL,
             module: DIAL,
+            turn: 0,
         });
         assert_eq!(launched(&mut driver, 0), expected);
         // Changing the setting mid-run changes nothing and restarts nothing.
@@ -5065,6 +5072,7 @@ mod tests {
         let built_in = Some(DisplayLaunch {
             settings: BUILT_IN,
             module: DIAL,
+            turn: 0,
         });
         assert_eq!(launched(&mut driver, 4), built_in);
         assert!(spawned_args(&mut driver, 4).is_empty());

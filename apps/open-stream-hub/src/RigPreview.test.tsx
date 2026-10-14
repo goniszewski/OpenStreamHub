@@ -157,6 +157,20 @@ describe('RigPreview canvas', () => {
     expect(renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={flat} />)).toContain('past the right edge');
   });
 
+  it('turns the pictures on a turned module screen back, as the module itself draws them upright', async () => {
+    const state = stateFor();
+    const render = async (turn: number) => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm4315')} state={state} feed={await feedOf([
+      { path_hex: 'keys', module: 'm4315', serial_number: null, base_cell: { col: 0, row: 0 }, base_turn: turn },
+      { path_hex: 'dial', module: 'm131e', serial_number: null, base_cell: { col: 4, row: 2 }, base_turn: turn },
+    ])} />);
+    const turned = await render(90);
+    expect(turned).toContain('class="key-upright" style="transform:rotate(270deg)"');
+    expect(turned).toMatch(/class="single-display"[^>]*transform:rotate\(270deg\)/);
+    const upright = await render(0);
+    expect(upright).toContain('class="key-upright"');
+    expect(upright).not.toContain('rotate(');
+  });
+
   it('lets one module keep its own rotation while the others follow the base, with a mark and a reset', async () => {
     const state = stateFor();
     const render = async () => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm032le')} state={state} feed={await feedOf(positioned)} pickedPath="rollers" />);

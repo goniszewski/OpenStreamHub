@@ -53,11 +53,14 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
   const selected = editor.selection.control;
   const turn = rotation !== 0 && !isKnob;
   const sideways = rotation === 90 || rotation === 270;
+  // The module's screens draw upright whatever its turn (the service turns what it sends the other way), so the
+  // pictures on a turned stage are turned back.
+  const upright = turn ? { transform: `rotate(${360 - rotation}deg)` } : undefined;
   const content = <>
     <ModuleArtImage module={info} orientation={knobOrientation} faders={module === 'm005s' ? [0, 1, 2, 3, 4].map(faderValue) : undefined}
       knobs={isKnob ? litLedColours(stored, 3) : undefined}
       glows={module === 'm005s' ? litLedColours(stored, 5) : undefined} />
-    {module === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%` }}><DialFace profile={profile} /></div>}
+    {module === 'm131e' && <div className="single-display" style={{ left: `${dialScreen.left}%`, top: `${dialScreen.top}%`, width: `${dialScreen.width}%`, height: `${dialScreen.height}%`, ...upright }}><DialFace profile={profile} /></div>}
     {controls.map(area => {
       const action = controlAction(profile, module, area.control);
       const style = { left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` };
@@ -68,7 +71,9 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
       if (module === 'm4315') {
         const page = editor.currentKeypadPage;
         return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
-          <KeyDisplayContent key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
+          <span className="key-upright" style={upright}>
+            <KeyDisplayContent key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
+          </span>
         </button>;
       }
       if (module === 'm005s') {

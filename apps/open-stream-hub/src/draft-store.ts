@@ -6,6 +6,7 @@ import { stableStringify } from './draft-model';
 
 export const draftKeyPrefix = 'openstreamhub.draft.';
 export const newDraftKey = 'new';
+export const lastOpenedKey = 'openstreamhub.last-profile';
 export const maximumDraftBytes = 1024 * 1024;
 export const draftWriteDelayMs = 400;
 
@@ -49,6 +50,16 @@ export class DraftStore {
   }
 
   clear(key: string) { this.access(storage => storage.removeItem(draftKeyPrefix + key), undefined); }
+
+  // The saved profile the editor last had open, so a refresh or a relaunch comes back to it.
+  lastOpened(): string | null {
+    const id = this.access(storage => storage.getItem(lastOpenedKey), null);
+    return id !== null && canonicalUuid.test(id) ? id : null;
+  }
+
+  setLastOpened(id: string) {
+    if (canonicalUuid.test(id) && this.lastOpened() !== id) this.access(storage => storage.setItem(lastOpenedKey, id), undefined);
+  }
 
   keys(): string[] {
     return this.access(storage => {

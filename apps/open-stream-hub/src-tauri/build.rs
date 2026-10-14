@@ -72,6 +72,7 @@ fn main() {
             "set_autostart",
             "menubar_status",
             "set_menubar",
+            "set_module_turns",
             "open_permission_settings",
         ]),
     ))

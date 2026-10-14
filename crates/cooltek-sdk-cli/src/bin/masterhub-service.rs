@@ -19,7 +19,7 @@ use cooltek_sdk_cli::{
     control::SharedRecords,
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     dial_artwork::{DialArtwork, DialContent, SystemClock},
-    display_artwork::{BoxedKeys, BrightKeys, PreparedKeyArtwork},
+    display_artwork::{BoxedKeys, BrightKeys, PreparedKeyArtwork, TurnedKeys},
     display_sink::{SharedTransport, live_dial_display, live_display},
     interrupt::WatchedStdin,
     live_output::TimedStdout,
@@ -116,6 +116,11 @@ enum Command {
         /// draws nothing; any other value requires --display-sync and an M131E.
         #[arg(long, value_enum, default_value_t = DialContent::Off)]
         dial_content: DialContent,
+        /// With --display-sync: how far the module sits turned clockwise from upright on the
+        /// base (0, 90, 180 or 270 degrees). Everything drawn on its screen is turned the other
+        /// way, so key pictures and dial faces read upright. Key positions are unchanged.
+        #[arg(long, requires = "display_sync", value_parser = clap::builder::PossibleValuesParser::new(["0", "90", "180", "270"]), default_value = "0")]
+        display_turn: String,
         /// Report `profile` (next/previous) actions as `profile_switch_requested`
         /// records for a supervising session manager, such as the OpenStreamHub
         /// desktop app, which owns the saved profiles. Without it a `profile`
@@ -193,6 +198,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             display_sync,
             press_feedback,
             dial_content,
+            display_turn,
             profile_switch_requests,
             obs_endpoint,
             obs_password_stdin,
@@ -223,23 +229,32 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // Prepared before any HID access, so nothing is encoded per input
             // event (clock faces are drawn once per minute, and CPU usage is
             // sampled at most once a second, on the display thread).
+            // Quarter turns clockwise that undo the module's own turn on the base.
+            let undo_turn = (4 - display_turn.parse::<u8>().unwrap_or(0) / 90) % 4;
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
-                (true, DialContent::Off) => Some(Artwork::Keys(BoxedKeys(
-                    match brightness.keys.filter(|&percent| percent < 100) {
+                (true, DialContent::Off) => {
+                    let keys = match brightness.keys.filter(|&percent| percent < 100) {
                         Some(percent) => Box::new(BrightKeys {
                             inner: PreparedKeyArtwork::prepare_profile(&profile)?,
                             percent,
                         })
                             as Box<dyn KeyImageProvider + Send>,
                         None => Box::new(PreparedKeyArtwork::prepare_profile(&profile)?),
-                    },
-                ))),
-                (true, content) => Some(Artwork::Dial(DialArtwork::prepare(
-                    content,
-                    &profile,
-                    Box::new(SystemClock),
-                )?)),
+                    };
+                    Some(Artwork::Keys(BoxedKeys(if undo_turn == 0 {
+                        keys
+                    } else {
+                        Box::new(TurnedKeys {
+                            inner: BoxedKeys(keys),
+                            quarter_turns: undo_turn,
+                        })
+                    })))
+                }
+                (true, content) => Some(Artwork::Dial(
+                    DialArtwork::prepare(content, &profile, Box::new(SystemClock))?
+                        .with_turn(undo_turn),
+                )),
             };
             // Reject unsupported stdout (such as a regular file) before any HID access.
             let stdout = SharedRecords::new(TimedStdout::new(Duration::from_millis(500))?);
@@ -937,6 +952,39 @@ mod tests {
         // Off is the default and changes nothing.
         assert!(check_display_sync(false, false, DialContent::Off, &dial).is_ok());
         assert!(live_bindings(dial, ServiceModule::M131E, false, DialContent::Off).is_ok());
+    }
+
+    #[test]
+    fn display_turn_takes_the_four_quarter_turns_and_needs_display_sync() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec![
+                "masterhub-service",
+                "run",
+                "--profile",
+                "p.json",
+                "--path-hex",
+                "41",
+            ];
+            args.extend_from_slice(extra);
+            Cli::try_parse_from(args).map(|cli| match cli.command {
+                Command::Run { display_turn, .. } => display_turn,
+                _ => unreachable!(),
+            })
+        };
+        assert_eq!(parse(&[]).unwrap(), "0");
+        for turn in ["0", "90", "180", "270"] {
+            assert_eq!(
+                parse(&["--software-mode", "--display-sync", "--display-turn", turn]).unwrap(),
+                turn
+            );
+        }
+        for bad in ["45", "360", "-90", "", "ninety"] {
+            assert!(
+                parse(&["--display-sync", "--display-turn", bad]).is_err(),
+                "{bad}"
+            );
+        }
+        assert!(parse(&["--display-turn", "90"]).is_err());
     }
 
     #[test]

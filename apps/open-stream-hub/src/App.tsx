@@ -42,6 +42,8 @@ import { HistoryMenu } from './HistoryMenu';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { RunningProfile, applyRunningProfile } from './RunningProfile';
+import { BuiltInProfiles } from './BuiltInProfilesPanel';
+import { builtInOf, profileChoices, useHiddenBuiltIns } from './builtin-profiles';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
@@ -216,15 +218,27 @@ export default function App() {
   // The header's profile picker and the sidebar's running-profile choice are one choice: the profile opens in the editor
   // (after the unsaved-changes check) and becomes the profile of every module.
   const [runningBusy, setRunningBusy] = useState(false);
-  const chooseProfile = (id: string) => session.guard('switch profiles', () => {
-    const loaded = session.load(id);
-    if (!desktop) return;
+  const hiddenBuiltIns = useHiddenBuiltIns();
+  const applyEverywhere = (id: string, name: string, loaded: Promise<unknown>) => {
     setRunningBusy(true);
-    const name = state.profiles.find(item => item.id === id)?.name ?? 'The profile';
     const applied = applyRunningProfile(id, name, runner.getState().runs, { setDefaultProfile: next => displaySettings.setDefaultProfile(next), switchProfile: (sessionId, next, why) => runner.switchProfile(sessionId, next, why) })
       .catch(() => 'The profile could not be applied to the modules.');
     // After the editor's own "Loaded …" notice, so the result of the switch is the one left on screen.
     void Promise.all([loaded, applied]).then(([, notice]) => session.setNotice(notice)).finally(() => setRunningBusy(false));
+  };
+  const chooseProfile = (id: string) => session.guard('switch profiles', () => {
+    const template = builtInOf(id);
+    if (template) {
+      void session.createFromTemplate(template.profile).then(failure => {
+        if (failure) { session.setError(`Could not create the profile: ${failure}`); return; }
+        const created = session.getState().draft;
+        if (desktop && created.profileId) applyEverywhere(created.profileId, created.profile.name, Promise.resolve());
+      });
+      return;
+    }
+    const loaded = session.load(id);
+    if (!desktop) return;
+    applyEverywhere(id, state.profiles.find(item => item.id === id)?.name ?? 'The profile', loaded);
   });
   // The sidebar's running-profile choice shows the default profile while nothing runs.
   useEffect(() => { if (desktop && !display.defaultProfile.loaded && !display.defaultProfile.busy && !display.defaultProfile.error) void displaySettings.loadDefaultProfile(); }, [desktop, display.defaultProfile.loaded, display.defaultProfile.busy, display.defaultProfile.error, displaySettings]);
@@ -587,6 +601,10 @@ export default function App() {
     </button>)}
   </div>;
 
+  // What the pickers list: the saved profiles and the built-in ones not saved yet. The open profile and the ones that run
+  // stay listed even when hidden, so a picker can always show its own value.
+  const kept = new Set([...(profileId ? [profileId] : []), ...Object.values(runSession.service.runs).flatMap(run => run.profileId ? [run.profileId] : [])]);
+  const choices = profileChoices(state.profiles, hiddenBuiltIns, kept);
   return <div className="app-shell">
     <header className="app-header">
       <div className="header-row">
@@ -597,7 +615,7 @@ export default function App() {
           }}>
             {!profileId && <option value="__new">{profile.name}</option>}
             {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
-            {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {choices.map(item => <option key={item.value} value={item.value}>{item.builtIn ? `${item.name} (built-in)` : item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
           <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
@@ -620,7 +638,7 @@ export default function App() {
     <div className="app-body">
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
-        runningProfile={<RunningProfile profiles={state.profiles} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
+        runningProfile={<RunningProfile profiles={choices.map(item => ({ id: item.value, name: item.builtIn ? `${item.name} (built-in)` : item.name }))} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
           busy={runningBusy} onChoose={chooseProfile} />} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
@@ -646,7 +664,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

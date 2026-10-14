@@ -40,7 +40,7 @@ export async function applyRunningProfile(profileId: string, profileName: string
 // The sidebar's profile choice, above the separator over the help links. It is linked to the header's profile picker:
 // choosing a profile in either opens it in the editor and makes it the profile of every module, so `onChoose` does both.
 export function RunningProfile({ profiles, runs, defaultId, enabled, busy, onChoose }: {
-  profiles: ProfileSummary[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; busy: boolean; onChoose(profileId: string): void;
+  profiles: Pick<ProfileSummary, 'id' | 'name'>[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; busy: boolean; onChoose(profileId: string): void;
 }) {
   if (!enabled) return null;
   const value = runningProfileValue(runs, defaultId);

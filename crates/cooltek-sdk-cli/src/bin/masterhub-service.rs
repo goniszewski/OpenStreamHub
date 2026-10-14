@@ -230,7 +230,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // event (clock faces are drawn once per minute, and CPU usage is
             // sampled at most once a second, on the display thread).
             // Quarter turns clockwise that undo the module's own turn on the base.
-            let undo_turn = (4 - display_turn.parse::<u8>().unwrap_or(0) / 90) % 4;
+            let undo_turn = undo_quarter_turns(&display_turn);
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
                 (true, DialContent::Off) => {
@@ -850,6 +850,12 @@ fn combine(primary: Result<(), String>, secondary: Result<(), String>) -> Result
     }
 }
 
+/// Quarter turns clockwise that undo a module turn of 0, 90, 180 or 270 degrees (anything else: none).
+fn undo_quarter_turns(display_turn: &str) -> u8 {
+    let quarters = (display_turn.parse::<u16>().unwrap_or(0) / 90 % 4) as u8;
+    (4 - quarters) % 4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -952,6 +958,12 @@ mod tests {
         // Off is the default and changes nothing.
         assert!(check_display_sync(false, false, DialContent::Off, &dial).is_ok());
         assert!(live_bindings(dial, ServiceModule::M131E, false, DialContent::Off).is_ok());
+    }
+
+    #[test]
+    fn the_four_module_turns_undo_with_the_opposite_quarter_turns() {
+        let undo: Vec<u8> = ["0", "90", "180", "270"].map(undo_quarter_turns).to_vec();
+        assert_eq!(undo, [0, 3, 2, 1]);
     }
 
     #[test]

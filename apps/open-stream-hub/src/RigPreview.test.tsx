@@ -9,6 +9,7 @@ import { moduleRotationStore } from './module-rotation';
 import { basePinsStore } from './base-pins';
 import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
+import type { ServiceRun } from './service-runner';
 
 const stateFor = (bindings: unknown[] = []) => {
   const profile = upgradeKeypadProfile({ schema_version: 1, name: 'Rig', bindings } as never);
@@ -169,6 +170,31 @@ describe('RigPreview canvas', () => {
     const upright = await render(0);
     expect(upright).toContain('class="key-upright"');
     expect(upright).not.toContain('rotate(');
+  });
+
+  it('names the profile each module runs under its picture, or says nothing runs', async () => {
+    const state = stateFor();
+    const devices = [
+      { path_hex: 'keys', module: 'm4315', serial_number: 'K1', base_cell: { col: 0, row: 0 } },
+      { path_hex: 'dial', module: 'm131e', serial_number: 'D1', base_cell: { col: 4, row: 0 } },
+      { path_hex: 'faders', module: 'm005s', serial_number: 'F1', base_cell: { col: 0, row: 3 } },
+    ];
+    const run = (phase: 'running' | 'suspended' | 'stopped', execute: boolean, profileName: string): ServiceRun => ({
+      serviceId: 'session-1', state: 'running', execute, entries: [], counters: { actions: 0, failures: 0, ignored: 0 } as never, startedAt: 0, profileName, snapshot: '', draftUnsaved: false,
+      session: { serviceId: 'p', phase, reason: null, attempt: 0, module: 'm4315', serialNumber: 'K1' },
+    });
+    const render = async (runs: Record<string, ServiceRun>) => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm4315')} state={state} feed={await feedOf(devices)} runs={runs} />);
+    const running = await render({ a: run('running', false, 'Everyday') });
+    expect(running).toContain('· Everyday · Dry run');
+    // The dial has no run, and the fader module is not one a run starts on by itself.
+    expect(running.match(/No profile running/g)).toHaveLength(1);
+    expect(await render({ a: run('running', true, 'Studio') })).toContain('· Studio · Executing');
+    expect(await render({ a: run('suspended', true, 'Studio') })).toContain('· Studio · Paused');
+    // A stopped run is not a profile running.
+    const stopped = await render({ a: run('stopped', false, 'Everyday') });
+    expect(stopped).not.toContain('Everyday');
+    expect(stopped.match(/No profile running/g)).toHaveLength(2);
+    expect(await render({})).not.toContain('Everyday');
   });
 
   it('lets one module keep its own rotation while the others follow the base, with a mark and a reset', async () => {

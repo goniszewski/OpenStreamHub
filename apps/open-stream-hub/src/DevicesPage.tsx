@@ -79,7 +79,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   };
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
-    <RigPreview editor={editor} state={state} feed={feed} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
+    <RigPreview editor={editor} state={state} feed={feed} runs={run?.service.runs} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
       dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
     {!onBase && devices.length > 0 && <div className="standalone-bar" role="status">
       <button type="button" className="button compact" onClick={goBack}><ArrowLeft size={15} aria-hidden="true" />Go back to the base layout</button>

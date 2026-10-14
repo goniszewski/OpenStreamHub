@@ -307,6 +307,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 /* The stage fits its cell whatever the cell's shape: as wide as the cell allows, and no taller than it leaves room for. */
 .base-layout-module .rig-stage { width:min(100cqw, calc((100cqh - 20px) * var(--art-aspect))); height:auto; max-width:none; aspect-ratio:var(--art-aspect); margin:auto 0; }
 .base-layout-name { position:absolute; right:4px; bottom:3px; left:4px; display:flex; align-items:center; justify-content:center; gap:5px; overflow:hidden; padding:2px 5px; border-radius:4px; background:#101014d9; color:var(--muted); font-size:9px; white-space:nowrap; pointer-events:none; }
+.base-layout-running { min-width:0; overflow:hidden; text-overflow:ellipsis; }
 .base-layout-name[data-picked="true"] { color:#ded2ff; }
 .base-layout-info { display:inline-flex; pointer-events:auto; cursor:help; opacity:.7; }
 .base-layout-info:hover { opacity:1; }

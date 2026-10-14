@@ -858,7 +858,7 @@ fn draw_cpu(percent: Option<u8>) -> RgbImage {
 }
 
 /// 5×7 glyph rows, bit 4 is the leftmost column. Unknown characters map to `?`.
-fn glyph(character: char) -> [u8; 7] {
+pub(crate) fn glyph(character: char) -> [u8; 7] {
     match character.to_ascii_uppercase() {
         'A' => [14, 17, 17, 31, 17, 17, 17],
         'B' => [30, 17, 17, 30, 17, 17, 30],

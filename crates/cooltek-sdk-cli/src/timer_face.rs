@@ -369,6 +369,7 @@ mod tests {
             content: KeyContent::Action {
                 page_id: page.into(),
                 label: "Timer".into(),
+                icon: cooltek_sdk_service::display_sync::TileIcon::Timer,
             },
         }
     }

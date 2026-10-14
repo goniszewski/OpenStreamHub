@@ -11,10 +11,12 @@
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use cooltek_sdk_masterhub::keypad;
-use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest};
+use cooltek_sdk_service::KeypadTile;
+use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest, TileIcon};
 use image::{ImageFormat, Rgb, RgbImage};
 
 use crate::image_prep::{PrepareOptions, prepare_keypad_image};
+use crate::tile_artwork;
 
 /// Key image side in pixels.
 const SIDE: u32 = keypad::IMAGE_WIDTH as u32;
@@ -150,6 +152,28 @@ impl PreparedKeyArtwork {
                             cycle_ms: delays.iter().sum(),
                             delays,
                             loop_count: artwork.loop_count,
+                        },
+                    );
+                }
+                // An action tile without artwork of its own gets its icon over its label, drawn once here.
+                for (index, slot) in page.slots.iter().enumerate() {
+                    let Some(KeypadTile::Action { label, bindings }) = slot else {
+                        continue;
+                    };
+                    let key = u8::try_from(index).map_err(|_| "invalid slot index")?;
+                    if page.artwork.contains_key(&index.to_string()) {
+                        continue;
+                    }
+                    let icon = bindings
+                        .first()
+                        .map_or(TileIcon::Generic, |binding| TileIcon::of(&binding.action));
+                    prepared.custom.insert(
+                        (page.id.clone(), key),
+                        KeySequence {
+                            frames: vec![encode(&tile_artwork::draw(icon, label))?],
+                            delays: vec![0],
+                            cycle_ms: 0,
+                            loop_count: 0,
                         },
                     );
                 }
@@ -593,7 +617,8 @@ pub(crate) mod tests {
         assert_eq!(
             art.key_image(&request(KeyContent::Action {
                 page_id: page_id.clone(),
-                label: "Mute".into()
+                label: "Mute".into(),
+                icon: TileIcon::Mute
             })),
             Some(art.action().to_vec())
         );

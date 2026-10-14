@@ -11,7 +11,11 @@ import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
+import { SquareEye } from './SquareEye';
 import { StartupPanel } from './StartupPanel';
+import { keepRunningInMenubar, setKeepRunningInMenubar } from './menubar';
+import { useModuleRotations } from './module-rotation';
+import { useBaseOrientation } from './base-orientation';
 import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
 import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
@@ -27,7 +31,7 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, Grid2X2, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
+import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
@@ -37,6 +41,9 @@ import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
+import { RunningProfile, applyRunningProfile } from './RunningProfile';
+import { BuiltInProfiles } from './BuiltInProfilesPanel';
+import { builtInOf, profileChoices, useHiddenBuiltIns } from './builtin-profiles';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
 import type { DrawerPage, DrawerTile } from './module-drawer-model';
 import { useBaseModules } from './base-modules';
@@ -127,6 +134,15 @@ export default function App() {
   const [moduleSelection] = useState(() => createModuleSelection(webStorage()));
   const bases = useBaseModules(desktop ? invokeCommand : undefined, deviceFeedState.devices.map(device => device.path_hex).join(','));
   const pickableModules = [...bases, ...deviceFeedState.devices];
+  // Tell the backend the base's rotation and the rotations the user chose for single modules; it adds each module's
+  // connector turn itself, so what a module's screen draws reads upright (applies to runs that start later).
+  const baseTurn = useBaseOrientation();
+  const rotations = useModuleRotations();
+  const turnsKey = JSON.stringify({ base: baseTurn, overrides: rotations });
+  useEffect(() => {
+    if (!desktop) return;
+    invoke('set_module_turns', { preferences: JSON.parse(turnsKey) }).catch(() => {});
+  }, [desktop, turnsKey]);
   useModifierHeld(mac);
   const pick = useSyncExternalStore(moduleSelection.subscribe, moduleSelection.getState);
   // A module that appears — the first inventory after a launch, or a replug —
@@ -199,6 +215,33 @@ export default function App() {
   // recorded as shown only then.
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
   const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
+  // The header's profile picker and the sidebar's running-profile choice are one choice: the profile opens in the editor
+  // (after the unsaved-changes check) and becomes the profile of every module.
+  const [runningBusy, setRunningBusy] = useState(false);
+  const hiddenBuiltIns = useHiddenBuiltIns();
+  const applyEverywhere = (id: string, name: string, loaded: Promise<unknown>) => {
+    setRunningBusy(true);
+    const applied = applyRunningProfile(id, name, runner.getState().runs, { setDefaultProfile: next => displaySettings.setDefaultProfile(next), switchProfile: (sessionId, next, why) => runner.switchProfile(sessionId, next, why) })
+      .catch(() => 'The profile could not be applied to the modules.');
+    // After the editor's own "Loaded …" notice, so the result of the switch is the one left on screen.
+    void Promise.all([loaded, applied]).then(([, notice]) => session.setNotice(notice)).finally(() => setRunningBusy(false));
+  };
+  const chooseProfile = (id: string) => session.guard('switch profiles', () => {
+    const template = builtInOf(id);
+    if (template) {
+      void session.createFromTemplate(template.profile).then(failure => {
+        if (failure) { session.setError(`Could not create the profile: ${failure}`); return; }
+        const created = session.getState().draft;
+        if (desktop && created.profileId) applyEverywhere(created.profileId, created.profile.name, Promise.resolve());
+      });
+      return;
+    }
+    const loaded = session.load(id);
+    if (!desktop) return;
+    applyEverywhere(id, state.profiles.find(item => item.id === id)?.name ?? 'The profile', loaded);
+  });
+  // The sidebar's running-profile choice shows the default profile while nothing runs.
+  useEffect(() => { if (desktop && !display.defaultProfile.loaded && !display.defaultProfile.busy && !display.defaultProfile.error) void displaySettings.loadDefaultProfile(); }, [desktop, display.defaultProfile.loaded, display.defaultProfile.busy, display.defaultProfile.error, displaySettings]);
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
   useEffect(() => {
     if (previewRunModeSeed === null) return;
@@ -518,15 +561,36 @@ export default function App() {
     if (!desktop) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    const destroy = () => {
+      getCurrentWindow().destroy().catch(reason => session.setError(`Could not close the window: ${errorMessage(reason)}`));
+    };
     getCurrentWindow().onCloseRequested(event => {
-      const allowed = session.requestClose(() => {
-        getCurrentWindow().destroy().catch(reason => session.setError(`Could not close the window: ${errorMessage(reason)}`));
-      });
-      if (!allowed) event.preventDefault();
+      // In the menu bar mode the backend hides the window; quitting arrives as its own event below.
+      if (keepRunningInMenubar()) { event.preventDefault(); return; }
+      if (!session.requestClose(destroy)) event.preventDefault();
     }).then(remove => { if (disposed) remove(); else unlisten = remove; }).catch(reason => {
       if (!disposed) session.setError(`Could not enable the unsaved-draft close guard: ${errorMessage(reason)}`);
     });
-    return () => { disposed = true; unlisten?.(); };
+    let unlistenQuit: (() => void) | undefined;
+    // Quit (menu bar, app menu or system) runs the same unsaved-draft guard, then ends the app.
+    listen('app://quit-requested', () => { if (session.requestClose(destroy)) destroy(); }).then(remove => { if (disposed) remove(); else unlistenQuit = remove; }).catch(() => {});
+    invoke<boolean>('menubar_status').then(setKeepRunningInMenubar).catch(() => {});
+    return () => { disposed = true; unlisten?.(); unlistenQuit?.(); };
+  }, [session]);
+
+  // The menu bar icon's Workspace, Lighting, Demos and Settings items, and its update check.
+  useEffect(() => {
+    if (!desktop) return;
+    let disposed = false;
+    const removers: (() => void)[] = [];
+    const add = (name: string, handler: (payload: unknown) => void) => {
+      listen(name, event => handler(event.payload)).then(remove => { if (disposed) remove(); else removers.push(remove); }).catch(() => {});
+    };
+    add('app://navigate', page => { if (page === 'workspace' || page === 'lighting' || page === 'demos' || page === 'settings') setPage(page); });
+    add('app://check-updates', () => {
+      invoke<UpdateInfo>('check_for_updates').then(setUpdatePrompt).catch(reason => session.setError(`Could not check for updates: ${errorMessage(reason)}`));
+    });
+    return () => { disposed = true; removers.forEach(remove => remove()); };
   }, [session]);
 
   const themePicker = <div className="theme-picker" role="group" aria-label={t('theme.group')}>
@@ -537,17 +601,21 @@ export default function App() {
     </button>)}
   </div>;
 
+  // What the pickers list: the saved profiles and the built-in ones not saved yet. The open profile and the ones that run
+  // stay listed even when hidden, so a picker can always show its own value.
+  const kept = new Set([...(profileId ? [profileId] : []), ...Object.values(runSession.service.runs).flatMap(run => run.profileId ? [run.profileId] : [])]);
+  const choices = profileChoices(state.profiles, hiddenBuiltIns, kept);
   return <div className="app-shell">
     <header className="app-header">
       <div className="header-row">
-        <div className="brand"><Grid2X2 size={23} /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
+        <div className="brand"><SquareEye /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
         <div className="profile-switcher" ref={switcherRef}><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
           {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
-            const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });
+            const id = event.target.value; if (id !== '__new') chooseProfile(id);
           }}>
             {!profileId && <option value="__new">{profile.name}</option>}
             {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
-            {state.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
+            {choices.map(item => <option key={item.value} value={item.value}>{item.builtIn ? `${item.name} (built-in)` : item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
           <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
@@ -569,7 +637,9 @@ export default function App() {
     </header>
     <div className="app-body">
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
-        onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })} />
+        onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
+        runningProfile={<RunningProfile profiles={choices.map(item => ({ id: item.value, name: item.builtIn ? `${item.name} (built-in)` : item.name }))} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
+          busy={runningBusy} onChoose={chooseProfile} />} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
@@ -594,7 +664,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

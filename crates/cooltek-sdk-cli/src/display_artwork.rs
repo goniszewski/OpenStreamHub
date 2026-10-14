@@ -11,10 +11,12 @@
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use cooltek_sdk_masterhub::keypad;
-use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest};
+use cooltek_sdk_service::KeypadTile;
+use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest, TileIcon};
 use image::{ImageFormat, Rgb, RgbImage};
 
 use crate::image_prep::{PrepareOptions, prepare_keypad_image};
+use crate::tile_artwork;
 
 /// Key image side in pixels.
 const SIDE: u32 = keypad::IMAGE_WIDTH as u32;
@@ -153,6 +155,28 @@ impl PreparedKeyArtwork {
                         },
                     );
                 }
+                // An action tile without artwork of its own gets its icon over its label, drawn once here.
+                for (index, slot) in page.slots.iter().enumerate() {
+                    let Some(KeypadTile::Action { label, bindings }) = slot else {
+                        continue;
+                    };
+                    let key = u8::try_from(index).map_err(|_| "invalid slot index")?;
+                    if page.artwork.contains_key(&index.to_string()) {
+                        continue;
+                    }
+                    let icon = bindings
+                        .first()
+                        .map_or(TileIcon::Generic, |binding| TileIcon::of(&binding.action));
+                    prepared.custom.insert(
+                        (page.id.clone(), key),
+                        KeySequence {
+                            frames: vec![encode(&tile_artwork::draw(icon, label))?],
+                            delays: vec![0],
+                            cycle_ms: 0,
+                            loop_count: 0,
+                        },
+                    );
+                }
             }
         }
         Ok(prepared)
@@ -247,6 +271,47 @@ pub fn scaled(jpeg: &[u8], percent: u8) -> Option<Vec<u8>> {
 /// The same key image dimmed, as shown while the key is held down.
 pub fn dimmed(jpeg: &[u8]) -> Option<Vec<u8>> {
     scaled(jpeg, PRESSED_PERCENT as u8)
+}
+
+/// The same key image turned `quarter_turns` quarter turns clockwise. `None` when the bytes cannot be decoded or
+/// re-encoded; the caller then keeps the normal image.
+pub fn turned(jpeg: &[u8], quarter_turns: u8) -> Option<Vec<u8>> {
+    let image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
+        .ok()?
+        .to_rgb8();
+    if image.dimensions() != (SIDE, SIDE) {
+        return None;
+    }
+    let image = match quarter_turns % 4 {
+        0 => return Some(jpeg.to_vec()),
+        1 => image::imageops::rotate90(&image),
+        2 => image::imageops::rotate180(&image),
+        _ => image::imageops::rotate270(&image),
+    };
+    encode(&image).ok()
+}
+
+/// Wraps a provider so every key image is turned `quarter_turns` quarter turns clockwise: the module sits turned on
+/// the base, and turning what it draws the other way makes the pictures read upright. Animation timing is the inner
+/// provider's.
+pub struct TurnedKeys<P> {
+    pub inner: P,
+    pub quarter_turns: u8,
+}
+
+impl<P: KeyImageProvider> KeyImageProvider for TurnedKeys<P> {
+    fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        let image = self.inner.key_image(request)?;
+        Some(turned(&image, self.quarter_turns).unwrap_or(image))
+    }
+
+    fn advance(&mut self, page_id: &str, elapsed: std::time::Duration) {
+        self.inner.advance(page_id, elapsed);
+    }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.inner.next_frame_in()
+    }
 }
 
 /// A key artwork provider chosen at run time (full brightness or dimmed).
@@ -382,6 +447,63 @@ pub(crate) mod tests {
     use base64::Engine;
     use cooltek_sdk_service::{KeyArtwork, KeyArtworkFrame};
 
+    /// A 72 x 72 key image with a red top-left quarter on a dark background.
+    fn red_corner() -> Vec<u8> {
+        let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb([20, 20, 20]));
+        for y in 0..SIDE / 2 {
+            for x in 0..SIDE / 2 {
+                image.put_pixel(x, y, Rgb([230, 30, 30]));
+            }
+        }
+        encode(&image).unwrap()
+    }
+
+    /// Which quarter (0 top-left, 1 top-right, 2 bottom-right, 3 bottom-left) is red.
+    fn red_quarter(jpeg: &[u8]) -> usize {
+        let image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb8();
+        let red = |x: u32, y: u32| image.get_pixel(x, y).0[0] > 150;
+        let quarters = [(18, 18), (54, 18), (54, 54), (18, 54)];
+        let found: Vec<usize> = (0..4)
+            .filter(|&i| red(quarters[i].0, quarters[i].1))
+            .collect();
+        assert_eq!(found.len(), 1, "exactly one red quarter, got {found:?}");
+        found[0]
+    }
+
+    #[test]
+    fn key_images_turn_clockwise_by_quarter_turns() {
+        let upright = red_corner();
+        assert_eq!(red_quarter(&upright), 0);
+        for (turns, quarter) in [(0, 0), (1, 1), (2, 2), (3, 3)] {
+            assert_eq!(red_quarter(&turned(&upright, turns).unwrap()), quarter);
+        }
+        assert_eq!(turned(b"not a jpeg", 1), None);
+    }
+
+    #[test]
+    fn turned_keys_turn_every_image_and_keep_the_inner_timing() {
+        struct One(Vec<u8>);
+        impl KeyImageProvider for One {
+            fn key_image(&self, _: &KeyImageRequest) -> Option<Vec<u8>> {
+                Some(self.0.clone())
+            }
+        }
+        let provider = TurnedKeys {
+            inner: One(red_corner()),
+            quarter_turns: 3,
+        };
+        let request = KeyImageRequest {
+            key_index: 0,
+            content: KeyContent::Empty {
+                page_id: "root".into(),
+            },
+        };
+        assert_eq!(red_quarter(&provider.key_image(&request).unwrap()), 3);
+        assert_eq!(provider.next_frame_in(), None);
+    }
+
     fn decoded_side(jpeg: &[u8]) -> (u32, u32) {
         let image = image::load_from_memory_with_format(jpeg, ImageFormat::Jpeg).unwrap();
         (image.width(), image.height())
@@ -495,7 +617,8 @@ pub(crate) mod tests {
         assert_eq!(
             art.key_image(&request(KeyContent::Action {
                 page_id: page_id.clone(),
-                label: "Mute".into()
+                label: "Mute".into(),
+                icon: TileIcon::Mute
             })),
             Some(art.action().to_vec())
         );

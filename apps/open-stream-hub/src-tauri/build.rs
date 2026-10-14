@@ -70,6 +70,9 @@ fn main() {
             "check_for_updates",
             "open_release_page",
             "set_autostart",
+            "menubar_status",
+            "set_menubar",
+            "set_module_turns",
             "open_permission_settings",
         ]),
     ))

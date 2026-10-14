@@ -27,8 +27,8 @@ const pages: { page: Page; label: MessageKey; icon: LucideIcon; hint?: MessageKe
 // The primary navigation. Collapsed, it shrinks to a column of icons whose names appear as tooltips
 // beside them (the label stays as each button's accessible name), and the appearance picker moves to
 // Settings, which has its own copy.
-export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onToggle }: {
-  page: Page; setPage(page: Page): void; onGuide(): void; themePicker: ReactNode; collapsed: boolean; onToggle(): void;
+export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onToggle, runningProfile }: {
+  page: Page; setPage(page: Page): void; onGuide(): void; themePicker: ReactNode; collapsed: boolean; onToggle(): void; runningProfile?: ReactNode;
 }) {
   const t = useT();
   const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
@@ -48,6 +48,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
       {pages.map(({ page: target, label, icon: Icon, hint }) => <button key={target} className={page === target ? 'active' : ''} {...current(target)} {...chip(target)}
         {...tip(t(label))} title={collapsed || !hint ? undefined : t(hint)} onClick={() => setPage(target)}><Icon size={22} aria-hidden="true" />{labelOf(t(label))}</button>)}
     </nav>
+    {!collapsed && runningProfile}
     <div className="sidebar-bottom">
       <div className="sidebar-help">
         <button className="help-link" {...tip(t('nav.guide'))} onClick={onGuide}><CircleHelp size={22} aria-hidden="true" />{labelOf(t('nav.guide'))}</button>

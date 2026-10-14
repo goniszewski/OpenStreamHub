@@ -217,6 +217,7 @@ export class ProfileSession {
   private observeDraft() {
     const { profile, profileId, modifiedAtMs, sourceId } = this.state.draft;
     const worthKeeping = this.unsaved && (profileId !== null || stableStringify(profile) !== stableStringify(upgradeKeypadProfile(emptyProfile)));
+    if (profileId) this.drafts?.store.setLastOpened(profileId);
     this.drafts?.observe({ key: profileId ?? newDraftKey, profile, baseModifiedAtMs: modifiedAtMs, dirty: worthKeeping, sourceId: sourceId ?? null });
     this.syncAutosaveTimer();
   }
@@ -431,15 +432,22 @@ export class ProfileSession {
     try {
       const value = await this.invoke<AppBootstrap>('bootstrap');
       if (sequence !== this.sequence.bootstrap) return;
-      const draft = value.profile ? storedDraft(value.profile) : newDraft(emptyProfile);
+      // The store offers the most recently saved profile; come back to the one that was open instead, when it is still there.
+      let opened = value.profile;
+      const remembered = this.drafts?.store.lastOpened();
+      if (opened && remembered && remembered !== opened.id && value.profiles.some(item => item.id === remembered)) {
+        try { opened = await this.invoke<StoredProfile>('load_profile', { id: remembered }); } catch { /* the most recent one stays */ }
+        if (sequence !== this.sequence.bootstrap) return;
+      }
+      const draft = opened ? storedDraft(opened) : newDraft(emptyProfile);
       this.drafts?.store.purge(value.profiles.map(item => item.id));
       let restorePrompt = this.restoreOffer(draft);
       // A never-saved draft is offered only when the opened profile has nothing to restore.
-      if (!restorePrompt && value.profile) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
+      if (!restorePrompt && opened) restorePrompt = this.restoreOffer(newDraft(emptyProfile));
       this.set({
         ...this.invalidateResults(), ...this.resetHistory(), draft, restorePrompt, draftGeneration: this.state.draftGeneration + 1, profiles: value.profiles, unreadable: value.unreadable, importFlagsError: value.import_flags_error ?? null,
         storagePath: value.storage_path, ready: true, busy: null,
-        notice: value.profile ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
+        notice: opened ? null : 'No readable profiles were found. Unreadable files are kept unchanged; save this new profile to continue.',
       });
     } catch (reason) {
       if (sequence !== this.sequence.bootstrap) return;
@@ -591,6 +599,8 @@ export class ProfileSession {
     copyOf: string | null = null,
     // How the new profile reaches the store: an ordinary save by default, or the backend's own creator (a pack's profile).
     create?: (profile: Profile) => Promise<StoredProfile>,
+    // A saved profile that already is what this would create: it is opened instead and nothing is saved.
+    existing?: (name: string, saved: ProfileListing['profiles']) => ProfileListing['profiles'][number] | undefined,
   ): Promise<string | null> {
     if (!this.state.ready || this.state.busy !== null) return 'Wait for the current profile operation to finish.';
     this.sequence.list += 1;
@@ -598,6 +608,13 @@ export class ProfileSession {
     try {
       const original = await source();
       const listing = await this.invoke<ProfileListing>('list_profiles');
+      const reused = existing?.(original.name, listing.profiles);
+      if (reused) {
+        this.set({ busy: null });
+        await this.load(reused.id);
+        this.set({ notice: `Opened ${reused.name}, which you already have.` });
+        return null;
+      }
       const profile = withName(upgradeKeypadProfile(structuredClone(original)), nameFor(original.name, listing.profiles.map(item => item.name)));
       // The source lets the backend keep a copy of an imported dry-run-only profile dry run only (it also matches by content).
       const stored = create ? await create(profile) : await this.invoke<StoredProfile>('save_profile', { request: { id: null, profile, expectedModifiedAtMs: null, sourceProfileId: copyOf } });
@@ -632,7 +649,8 @@ export class ProfileSession {
   // one) and switches to it. The guard decides whether unsaved changes must
   // settle first.
   async createFromTemplate(profile: Profile): Promise<string | null> {
-    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`);
+    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`,
+      null, undefined, (name, saved) => saved.find(item => item.name === name));
   }
 
   // Saves an app preset pack's profile as a NEW saved profile that can run only as a dry run until the user allows it

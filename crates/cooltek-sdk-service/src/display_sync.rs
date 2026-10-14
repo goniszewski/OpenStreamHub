@@ -20,7 +20,7 @@
 //! (reconnect) and [`DisplaySync::resume`] (wake) forget everything drawn and
 //! force a full redraw.
 
-use crate::{KeypadLayout, KeypadTile, ProfileSession};
+use crate::{Action, KeypadLayout, KeypadTile, MediaCommand, ProfileSession, SystemCommand};
 use cooltek_sdk_masterhub::{dial, keypad};
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -115,6 +115,91 @@ pub trait DisplaySink {
     ) -> Result<(), SinkError>;
 }
 
+/// The picture a tile without artwork of its own is drawn with, chosen from what its first binding does.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TileIcon {
+    /// Any action without a picture of its own.
+    #[default]
+    Generic,
+    /// Output or input volume.
+    Volume,
+    /// Mute toggle.
+    Mute,
+    /// Play or pause.
+    Play,
+    /// Next track.
+    Next,
+    /// Previous track.
+    Previous,
+    /// Stop playback.
+    Stop,
+    /// Screenshot.
+    Screenshot,
+    /// Undo.
+    Undo,
+    /// Redo.
+    Redo,
+    /// Timer.
+    Timer,
+    /// Open a web address.
+    Web,
+    /// Launch an application.
+    Application,
+    /// Type text.
+    Text,
+    /// Several actions in a row.
+    Sequence,
+    /// Switch profile.
+    Profile,
+    /// Any OBS action.
+    Obs,
+}
+
+impl TileIcon {
+    /// The picture for an action.
+    #[must_use]
+    pub fn of(action: &Action) -> Self {
+        match action {
+            Action::Volume { .. }
+            | Action::SetVolume { .. }
+            | Action::VolumeFromPosition
+            | Action::SetMicInputVolume { .. }
+            | Action::MicInputVolumeFromPosition => Self::Volume,
+            Action::ToggleMute => Self::Mute,
+            Action::Media { command } => match command {
+                MediaCommand::PlayPause => Self::Play,
+                MediaCommand::NextTrack => Self::Next,
+                MediaCommand::PreviousTrack => Self::Previous,
+                MediaCommand::Stop => Self::Stop,
+            },
+            Action::System { command } => match command {
+                SystemCommand::Undo => Self::Undo,
+                SystemCommand::Redo => Self::Redo,
+                SystemCommand::Screenshot => Self::Screenshot,
+            },
+            Action::OpenUrl { .. } => Self::Web,
+            Action::LaunchApp { .. } => Self::Application,
+            Action::Text { .. } => Self::Text,
+            Action::MultiAction { .. } | Action::Macro { .. } => Self::Sequence,
+            Action::Profile { .. } => Self::Profile,
+            Action::Timer { .. } => Self::Timer,
+            Action::ObsScene { .. }
+            | Action::ObsVirtualCamera { .. }
+            | Action::ObsReplayBuffer { .. }
+            | Action::ObsStudioMode { .. }
+            | Action::ObsTransition
+            | Action::ObsFilter { .. }
+            | Action::ObsSourceVisibility { .. }
+            | Action::ObsSceneCollection { .. }
+            | Action::ObsProfile { .. }
+            | Action::ObsSetInputVolume { .. }
+            | Action::ObsInputVolumeFromPosition { .. } => Self::Obs,
+            Action::Shortcut { .. } => Self::Generic,
+        }
+    }
+}
+
 /// What one key shows on the current page; the provider turns it into artwork.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -131,6 +216,8 @@ pub enum KeyContent {
         page_id: String,
         /// The tile's label.
         label: String,
+        /// The picture for the tile's first binding.
+        icon: TileIcon,
     },
     /// A folder tile opening a child page.
     Folder {
@@ -338,9 +425,12 @@ impl DisplayPlan {
                     None => KeyContent::Empty {
                         page_id: page.id.clone(),
                     },
-                    Some(KeypadTile::Action { label, .. }) => KeyContent::Action {
+                    Some(KeypadTile::Action { label, bindings }) => KeyContent::Action {
                         page_id: page.id.clone(),
                         label: label.clone(),
+                        icon: bindings
+                            .first()
+                            .map_or(TileIcon::Generic, |binding| TileIcon::of(&binding.action)),
                     },
                     Some(KeypadTile::Folder { page_id: target }) => KeyContent::Folder {
                         page_id: page.id.clone(),

@@ -12,7 +12,10 @@ import { baseOrientationLabels, baseOrientationStore, baseOrientations, turnPlac
 import type { BaseOrientation } from './base-orientation';
 import type { BasePins } from './base-pins';
 import { basePinsStore, pinLayout, useBasePins } from './base-pins';
-import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, useModuleRotations } from './module-rotation';
+import { findRun } from './service-runner';
+import type { ServiceRun } from './service-runner';
+import { phaseLabel } from './ServicePanel';
+import { footprintSwaps, moduleRotation, moduleRotationId, moduleRotationStore, slotRotation, slotStandsUp, useModuleRotations } from './module-rotation';
 import { useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
 import { SelectField } from './controls';
@@ -22,7 +25,7 @@ import { faderTrackInset } from './module-art';
 import { defaultFaderPosition, faderFromPointer } from './rig-model';
 import type { SessionState } from './profile-session';
 import { faderMaximum, gestures, modules, replayLabels } from './ui-model';
-import type { LiveDevice, Profile, ReplayKind } from './contracts';
+import type { LiveDevice, Profile, ReplayKind, ServiceModule } from './contracts';
 import type { ModuleId } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -32,7 +35,22 @@ const demoKinds = Object.keys(replayLabels) as ReplayKind[];
 
 const webStorage = { getItem: (key: string) => globalThis.localStorage?.getItem(key) ?? null, setItem: (key: string, value: string) => globalThis.localStorage?.setItem(key, value) };
 
-const devicePlacement = (device: LiveDevice) => placementOf(device.module, device.base_cell!);
+// The module's cells on the base lying down. A connector that turns a module a quarter stands its footprint up (a 4 x 2
+// module takes 2 columns and 4 rows) unless the user chose a rotation of their own.
+// What a module's caption says about its run: the profile it runs and what the run is doing. A module a run can start on
+// by itself says so when nothing runs; the others stay quiet.
+const autoRunModules = new Set<ServiceModule>(['m4315', 'm131e', 'm003k']);
+export function runningProfile(runs: Record<string, ServiceRun>, device: LiveDevice): { text: string; title: string } | null {
+  const run = findRun(runs, device);
+  if (!run || run.session?.phase === 'stopped') return autoRunModules.has(device.module) ? { text: ' · No profile running', title: 'No run is active on this module. Start one from the Run button.' } : null;
+  const state = phaseLabel(run);
+  return { text: ` · ${run.profileName || 'Unnamed profile'} · ${state}`, title: `Running the profile "${run.profileName}" (${state})` };
+}
+
+const devicePlacement = (device: LiveDevice, userTurned = false) => {
+  const placement = placementOf(device.module, device.base_cell!);
+  return !userTurned && slotStandsUp(device.base_turn) ? { ...placement, cols: placement.rows, rows: placement.cols } : placement;
+};
 const deviceLocation = (device: LiveDevice) => {
   const placement = devicePlacement(device);
   const overhang = overhangLabel(overhangOf(placement));
@@ -71,8 +89,9 @@ function PogoPins({ cols, rows, baseOrientation, pins }: { cols: number; rows: n
 // The base layout is the editing canvas: every connected module sits where it is on the base and carries its own
 // hit areas, so a control is picked where it is. `picked` is the one unit being edited (the editor holds a module
 // kind, the shared pick names the unit). A module without a detected position stays reachable in a row beside the base.
-function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingRecords, knobOrientation, baseOrientation, pickedPath, basePath, onPickUnit, dropHandlers }: {
+function ConnectedBaseLayout({ devices, runs, editor, profile, feedState, lightingRecords, knobOrientation, baseOrientation, pickedPath, basePath, onPickUnit, dropHandlers }: {
   basePath: string | null;
+  runs: Record<string, ServiceRun>;
   devices: LiveDevice[];
   editor: DeviceEditor;
   profile: Profile;
@@ -103,12 +122,15 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const unpositioned = devices.filter(device => !device.base_cell);
   const pins = useBasePins();
   const rotations = useModuleRotations();
+  // The rotation the user chose for a module, if any; without one a module follows the base and the connector it sits on.
   const ownRotation = (device: LiveDevice) => rotations[moduleRotationId(device)] ?? null;
-  const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device));
-  // A module's cell follows the base; one turned a quarter against the base keeps its corner and swaps its width and height.
+  const rotationOf = (device: LiveDevice) => moduleRotation(baseOrientation, ownRotation(device) ?? slotRotation(baseOrientation, device.base_turn));
+  // A module's cell follows the base (and the connector's own turn); one the user turned a quarter against the base
+  // keeps its corner and swaps its width and height.
   const turnedPlacement = (device: LiveDevice) => {
-    const placed = turnPlacement(devicePlacement(device), baseOrientation);
-    return footprintSwaps(baseOrientation, ownRotation(device)) ? { ...placed, cols: placed.rows, rows: placed.cols } : placed;
+    const own = ownRotation(device);
+    const placed = turnPlacement(devicePlacement(device, own !== null), baseOrientation);
+    return footprintSwaps(baseOrientation, own) ? { ...placed, cols: placed.rows, rows: placed.cols } : placed;
   };
   const size = turnedBase(baseOrientation);
   const extent = layoutExtent(positioned.map(turnedPlacement), size);
@@ -163,11 +185,13 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
   const pickedDevice = devices.find(device => device.path_hex === activePath) ?? null;
   const caption = (device: LiveDevice) => {
     const name = nameOf(device);
+    const running = runningProfile(runs, device);
     // A plain label, not a control: the tile and its own controls pick the unit. The serial number sits behind an info mark.
     return <div className="base-layout-name" data-picked={device.path_hex === activePath}>
       <span>{name}</span>
       {device.serial_number && <InfoTip text={`Serial number ${device.serial_number}`} />}
       {device.module === 'm005s' && !feedState.live.m005s && <span className="base-layout-note">{lastSeen ? ' · last known positions' : ' · positions not read'}</span>}
+      {running && <span className="base-layout-running" title={running.title}>{running.text}</span>}
     </div>;
   };
 
@@ -215,8 +239,10 @@ function ConnectedBaseLayout({ devices, editor, profile, feedState, lightingReco
 
 // The live-input controls and the base layout. With `layout` off (the picked module is not connected, so the
 // standalone module view is showing) only the live controls remain.
-export function RigPreview({ editor, state, feed, lighting = emptyLightingState, layout = true, pickedPath = null, basePath = null, onPickUnit = () => {}, dropHandlers }: {
+export function RigPreview({ editor, state, feed, runs = {}, lighting = emptyLightingState, layout = true, pickedPath = null, basePath = null, onPickUnit = () => {}, dropHandlers }: {
   editor: DeviceEditor; state: SessionState; feed?: DeviceFeed; lighting?: LightingStateStore; layout?: boolean;
+  // The runs the app holds, so each module's caption can name the profile it runs.
+  runs?: Record<string, ServiceRun>;
   pickedPath?: string | null; basePath?: string | null; onPickUnit?(path: string): void; dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
   const feedState = useSyncExternalStore(feed?.subscribe ?? noopSubscribe, feed?.getState ?? idleState, feed?.getState ?? idleState);
@@ -226,7 +252,7 @@ export function RigPreview({ editor, state, feed, lighting = emptyLightingState,
   const baseOrientation = useBaseOrientation();
   if (!feed) return null;
   return <section className="rig" aria-label="Module rig">
-    {layout && <ConnectedBaseLayout devices={feedState.devices} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
+    {layout && <ConnectedBaseLayout devices={feedState.devices} runs={runs} editor={editor} profile={state.draft.profile} feedState={feedState} lightingRecords={lightingRecords}
       knobOrientation={knobOrientation} baseOrientation={baseOrientation} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit} dropHandlers={dropHandlers} />}
     <LiveControls feed={feed} feedState={feedState} source={source} setSource={setSource} />
   </section>;

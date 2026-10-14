@@ -360,6 +360,9 @@ pub fn software_mode(settings: DisplaySettings, module: ServiceModule, requested
 pub struct DisplayLaunch {
     pub settings: DisplaySettings,
     pub module: ServiceModule,
+    /// Degrees clockwise (0, 90, 180 or 270) the module sits turned on the base; what its screen draws is turned the
+    /// other way (`--display-turn`).
+    pub turn: u16,
 }
 
 /// True when `profile` binds anything on the M131E dial.
@@ -385,6 +388,15 @@ fn dial_content(profile: &Profile) -> DialDisplayContent {
         DialDisplayContent::AnalogClock
     } else {
         content
+    }
+}
+
+/// `--display-turn` for a module turned on the base; nothing for an upright one.
+fn turn_args(turn: u16) -> Vec<OsString> {
+    if turn == 0 {
+        Vec::new()
+    } else {
+        vec!["--display-turn".into(), turn.to_string().into()]
     }
 }
 
@@ -416,13 +428,18 @@ pub fn display_args(
             if launch.settings.press_feedback {
                 args.push("--press-feedback".into());
             }
+            args.extend(turn_args(launch.turn));
             args
         }
-        ServiceModule::M131E if dial_content(profile) != DialDisplayContent::Off => vec![
-            "--display-sync".into(),
-            "--dial-content".into(),
-            dial_arg(dial_content(profile)).into(),
-        ],
+        ServiceModule::M131E if dial_content(profile) != DialDisplayContent::Off => {
+            let mut args: Vec<OsString> = vec![
+                "--display-sync".into(),
+                "--dial-content".into(),
+                dial_arg(dial_content(profile)).into(),
+            ];
+            args.extend(turn_args(launch.turn));
+            args
+        }
         _ => Vec::new(),
     }
 }
@@ -632,7 +649,11 @@ mod tests {
     };
 
     fn launch(module: ServiceModule, settings: DisplaySettings) -> DisplayLaunch {
-        DisplayLaunch { settings, module }
+        DisplayLaunch {
+            settings,
+            module,
+            turn: 0,
+        }
     }
 
     fn flat() -> Profile {
@@ -1016,6 +1037,7 @@ mod tests {
                 ..APP
             },
             module: ServiceModule::M4315,
+            turn: 0,
         };
         assert_eq!(
             display_args(Some(&launch(true)), true, &keypad),
@@ -1029,6 +1051,7 @@ mod tests {
         let dial = DisplayLaunch {
             settings: APP,
             module: ServiceModule::M131E,
+            turn: 0,
         };
         assert!(
             !display_args(Some(&dial), true, &keypad)
@@ -1043,6 +1066,39 @@ mod tests {
                 .press_feedback
         );
         assert!(DisplaySettings::default().press_feedback);
+    }
+
+    #[test]
+    fn a_module_turned_on_the_base_gets_display_turn_and_an_upright_one_does_not() {
+        let keypad = Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/keypad-folders.json"
+        ))
+        .unwrap();
+        let launch = |module, turn| DisplayLaunch {
+            settings: APP,
+            module,
+            turn,
+        };
+        assert_eq!(
+            display_args(Some(&launch(ServiceModule::M4315, 0)), true, &keypad),
+            ["--display-sync", "--press-feedback"]
+        );
+        assert_eq!(
+            display_args(Some(&launch(ServiceModule::M4315, 90)), true, &keypad),
+            ["--display-sync", "--press-feedback", "--display-turn", "90"]
+        );
+        let dial_profile = Profile::from_json(include_bytes!(
+            "../../../../examples/profiles/dial-functions.json"
+        ))
+        .unwrap();
+        let args = display_args(
+            Some(&launch(ServiceModule::M131E, 270)),
+            true,
+            &dial_profile,
+        );
+        assert_eq!(&args[args.len() - 2..], ["--display-turn", "270"]);
+        // The knobs never draw, whatever turn they have.
+        assert!(display_args(Some(&launch(ServiceModule::M003K, 90)), true, &keypad).is_empty());
     }
 
     #[test]

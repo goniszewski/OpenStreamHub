@@ -9,6 +9,7 @@ import { moduleRotationStore } from './module-rotation';
 import { basePinsStore } from './base-pins';
 import { LightingStateStore, reportedCyclingColour } from './lighting-state';
 import type { DeviceEditor } from './useDeviceEditor';
+import type { ServiceRun } from './service-runner';
 
 const stateFor = (bindings: unknown[] = []) => {
   const profile = upgradeKeypadProfile({ schema_version: 1, name: 'Rig', bindings } as never);
@@ -137,6 +138,63 @@ describe('RigPreview canvas', () => {
       expect(markup).toMatch(/aria-pressed="true"[^>]*>90°</);
       expect(markup).toContain('rig-stage-turn r90');
     } finally { baseOrientationStore.set(0); }
+  });
+
+  it('stands a module up when its connector turns it a quarter, keeping it on the base', async () => {
+    const state = stateFor();
+    // The fader module on a connector the official drawing turns (14 October 2026, hardware: top-right, standing up).
+    const feed = await feedOf([
+      { path_hex: 'keys', module: 'm4315', serial_number: null, base_cell: { col: 0, row: -1 }, base_turn: 0 },
+      { path_hex: 'faders', module: 'm005s', serial_number: null, base_cell: { col: 4, row: 0 }, base_turn: 90 },
+    ]);
+    const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={feed} />);
+    // 2 columns by 4 rows at columns 4 and 5: the base stays 6 columns wide and nothing hangs off the right edge.
+    expect(markup).toContain('--cols:6');
+    expect(markup).toContain('rig-stage-turn r90');
+    expect(markup).toContain('5-fader precision module at Right side');
+    expect(markup).not.toContain('past the right edge');
+    // Without the turn the same cell would take 4 columns and reach past the base.
+    const flat = await feedOf([{ path_hex: 'faders', module: 'm005s', serial_number: null, base_cell: { col: 4, row: 0 } }]);
+    expect(renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm005s')} state={state} feed={flat} />)).toContain('past the right edge');
+  });
+
+  it('turns the pictures on a turned module screen back, as the module itself draws them upright', async () => {
+    const state = stateFor();
+    const render = async (turn: number) => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm4315')} state={state} feed={await feedOf([
+      { path_hex: 'keys', module: 'm4315', serial_number: null, base_cell: { col: 0, row: 0 }, base_turn: turn },
+      { path_hex: 'dial', module: 'm131e', serial_number: null, base_cell: { col: 4, row: 2 }, base_turn: turn },
+    ])} />);
+    const turned = await render(90);
+    expect(turned).toContain('class="key-upright" style="transform:rotate(270deg)"');
+    expect(turned).toMatch(/class="single-display"[^>]*transform:rotate\(270deg\)/);
+    const upright = await render(0);
+    expect(upright).toContain('class="key-upright"');
+    expect(upright).not.toContain('rotate(');
+  });
+
+  it('names the profile each module runs under its picture, or says nothing runs', async () => {
+    const state = stateFor();
+    const devices = [
+      { path_hex: 'keys', module: 'm4315', serial_number: 'K1', base_cell: { col: 0, row: 0 } },
+      { path_hex: 'dial', module: 'm131e', serial_number: 'D1', base_cell: { col: 4, row: 0 } },
+      { path_hex: 'faders', module: 'm005s', serial_number: 'F1', base_cell: { col: 0, row: 3 } },
+    ];
+    const run = (phase: 'running' | 'suspended' | 'stopped', execute: boolean, profileName: string): ServiceRun => ({
+      serviceId: 'session-1', state: 'running', execute, entries: [], counters: { actions: 0, failures: 0, ignored: 0 } as never, startedAt: 0, profileName, snapshot: '', draftUnsaved: false,
+      session: { serviceId: 'p', phase, reason: null, attempt: 0, module: 'm4315', serialNumber: 'K1' },
+    });
+    const render = async (runs: Record<string, ServiceRun>) => renderToStaticMarkup(<RigPreview editor={editorFor(state, 'm4315')} state={state} feed={await feedOf(devices)} runs={runs} />);
+    const running = await render({ a: run('running', false, 'Everyday') });
+    expect(running).toContain('· Everyday · Dry run');
+    // The dial has no run, and the fader module is not one a run starts on by itself.
+    expect(running.match(/No profile running/g)).toHaveLength(1);
+    expect(await render({ a: run('running', true, 'Studio') })).toContain('· Studio · Executing');
+    expect(await render({ a: run('suspended', true, 'Studio') })).toContain('· Studio · Paused');
+    // A stopped run is not a profile running.
+    const stopped = await render({ a: run('stopped', false, 'Everyday') });
+    expect(stopped).not.toContain('Everyday');
+    expect(stopped.match(/No profile running/g)).toHaveLength(2);
+    expect(await render({})).not.toContain('Everyday');
   });
 
   it('lets one module keep its own rotation while the others follow the base, with a mark and a reset', async () => {

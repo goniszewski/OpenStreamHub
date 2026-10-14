@@ -53,6 +53,11 @@ export function UpdatesPanel({ desktop, invoke, version, daily, onDaily }: {
 
 // Shown at most once per release when the daily check finds one.
 export function UpdatePrompt({ info, onOpen, onClose }: { info: UpdateInfo; onOpen(): void; onClose(): void }) {
+  if (!info.available) return <ModalDialog open labelledBy="update-title" describedBy="update-message" onCancel={onClose}>
+    <h2 id="update-title">You are up to date</h2>
+    <p id="update-message">{updateResultText(info)}</p>
+    <div className="dialog-actions"><button className="button primary" autoFocus onClick={onClose}>OK</button></div>
+  </ModalDialog>;
   return <ModalDialog open labelledBy="update-title" describedBy="update-message" onCancel={onClose}>
     <h2 id="update-title">OpenStreamHub {info.latest} is available</h2>
     <p id="update-message">You have {info.current}. Download the new version from the release page and replace the app in Applications.</p>

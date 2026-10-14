@@ -40,7 +40,7 @@ The slot table also gives each connector's turn for a module (the official drawi
 
 ### Key pictures on a turned 15-key module (14 October 2026)
 
-The 15-key module on a connector that turns it 90 degrees clockwise (`1.1.1.2.2`, slot `122`), its run started with `--display-turn 90` by the app. The user reports the key pictures read upright on the device. The first run after the module was moved started with a stale turn of 0 (the app had kept the turn from the module's previous connector; seen in the service's arguments, the screen was not looked at); the app now keeps only the base rotation and any rotation the user chose, and adds the connector's turn at each start. Not checked: the dial and the 180 and 270 turns on a device.
+The 15-key module on a connector that turns it 90 degrees clockwise (`1.1.1.2.2`, slot `122`), its run started with `--display-turn 90` by the app. The user reports the key pictures read upright on the device. The first run after the module was moved started with a stale turn of 0 (the app had kept the turn from the module's previous connector; seen in the service's arguments, the screen was not looked at); the app now keeps only the base rotation and any rotation the user chose, and adds the connector's turn at each start. The 270 degree turn was checked too (module on connector `33`): the first try drew the pictures unturned because the service read the turn as an 8-bit number, which cannot hold 270; with that fixed the pictures read upright. A module turned 180 degrees (its COOLER MASTER text upside down) does not connect to the base at all, so only 0, 90 and 270 are physical positions. Not checked: the dial.
 
 ## M4315 keys
 

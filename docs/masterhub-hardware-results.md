@@ -30,6 +30,10 @@ The following maps the read-only macOS `ioreg` location IDs to the user's report
 
 Interpreting the product-name dimensions as module footprints, they total 24 cells (12 + 4 + 4 + 4), matching the 4x6 base. With the base in landscape and its USB-C port edges used as the top/left reference, the reported arrangement tiles the base: keypad and rollers occupy the left 4x4 area; dial and knobs occupy the right 2x4 area. The user reports no free module space. The physical positions come from the user's description; the paths come from the earlier read-only `ioreg` inventory. In the third arrangement the keypad (4x3) and the faders (4x2) are 5 rows tall on a 4-row base, so a module may overhang the base; the app places each module by its top-left cell and the rig preview draws the part outside the base (the rollers were not on the bus, so they were not placed). No slot information has been read from a base or module HID feature report, and a second arrangement has not been tested.
 
+### Fourth arrangement: placed from the slot table (14 October 2026)
+
+Slot-table placement (derived from the official app's base layout, no per-module rules) checked on the connected base. Modules (rollers not on the bus): 15-key `1.1.1.1.1`, 5-fader `1.1.2.3`, dial `1.1.1.4.3`, knobs `1.1.1.3.4`, base `1.1.1.4.4`, so the base's hub is `1.1` and the slots are `111`, `23`, `143` and `134`. The table placed the 15-key module top-left (hanging above the base, from the observed entry for `111`), the fader module bottom-left, the dial top-right and the knobs bottom-right. The user compared the app's base layout with the real arrangement and reports a 1:1 match; no code change was needed for the new arrangement. Still unconfirmed: the rest of the roughly 80 table entries that have not been seen on this base, and a second base.
+
 ## M4315 keys
 
 - **Default mode.** A passive 30 s capture recorded 0 reports. The keys report only after software mode (`--software-mode`, which writes `03 3a 01` and restores hardware mode on exit).

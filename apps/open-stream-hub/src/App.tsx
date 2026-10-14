@@ -213,6 +213,17 @@ export default function App() {
   // recorded as shown only then.
   const [controlNotice, setControlNotice] = useState(() => shouldShowModuleControlNotice(webStorage(), desktop));
   const display = useSyncExternalStore(displaySettings.subscribe, displaySettings.getState);
+  // The header's profile picker and the sidebar's running-profile choice are one choice: the profile opens in the editor
+  // (after the unsaved-changes check) and becomes the profile of every module.
+  const [runningBusy, setRunningBusy] = useState(false);
+  const [runningNote, setRunningNote] = useState<string | null>(null);
+  const chooseProfile = (id: string) => session.guard('switch profiles', () => {
+    void session.load(id);
+    if (!desktop) return;
+    setRunningBusy(true);
+    applyRunningProfile(id, runner.getState().runs, { setDefaultProfile: next => displaySettings.setDefaultProfile(next), switchProfile: (sessionId, next, why) => runner.switchProfile(sessionId, next, why) })
+      .then(setRunningNote, () => setRunningNote('The profile could not be applied to the modules.')).finally(() => setRunningBusy(false));
+  });
   // The sidebar's running-profile choice shows the default profile while nothing runs.
   useEffect(() => { if (desktop && !display.defaultProfile.loaded && !display.defaultProfile.busy && !display.defaultProfile.error) void displaySettings.loadDefaultProfile(); }, [desktop, display.defaultProfile.loaded, display.defaultProfile.busy, display.defaultProfile.error, displaySettings]);
   useEffect(() => { if (controlNotice && display.desktop && !display.loaded && !display.busy && !display.error) void displaySettings.load(); }, [controlNotice, displaySettings, display.desktop, display.loaded, display.busy, display.error]);
@@ -580,7 +591,7 @@ export default function App() {
         <div className="brand"><SquareEye /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
         <div className="profile-switcher" ref={switcherRef}><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
           {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
-            const id = event.target.value; if (id !== '__new') session.guard('switch profiles', () => { void session.load(id); });
+            const id = event.target.value; if (id !== '__new') chooseProfile(id);
           }}>
             {!profileId && <option value="__new">{profile.name}</option>}
             {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
@@ -608,7 +619,7 @@ export default function App() {
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
         runningProfile={<RunningProfile profiles={state.profiles} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
-          onChoose={profileId => applyRunningProfile(profileId, runSession.service.runs, { setDefaultProfile: id => displaySettings.setDefaultProfile(id), switchProfile: (sessionId, id, why) => runner.switchProfile(sessionId, id, why) })} />} />
+          busy={runningBusy} note={runningNote} onChoose={chooseProfile} />} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}

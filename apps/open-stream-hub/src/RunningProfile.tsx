@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import type { ProfileSummary } from './contracts';
 import { SelectField } from './controls';
 import { isActiveRun } from './service-runner';
@@ -35,20 +34,17 @@ export async function applyRunningProfile(profileId: string, runs: Record<string
   return `${switched} running ${switched === 1 ? 'module' : 'modules'} switched${failed ? `, ${failed} could not be` : ''}. Modules that start by themselves use it from now on.`;
 }
 
-// The sidebar's profile choice, above the help links: one profile for all the modules.
-export function RunningProfile({ profiles, runs, defaultId, enabled, onChoose }: {
-  profiles: ProfileSummary[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; onChoose(profileId: string): Promise<string>;
+// The sidebar's profile choice, above the separator over the help links. It is linked to the header's profile picker:
+// choosing a profile in either opens it in the editor and makes it the profile of every module, so `onChoose` does both.
+export function RunningProfile({ profiles, runs, defaultId, enabled, busy, note, onChoose }: {
+  profiles: ProfileSummary[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; busy: boolean; note: string | null; onChoose(profileId: string): void;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
   if (!enabled) return null;
   const value = runningProfileValue(runs, defaultId);
   return <div className="running-profile">
     <label htmlFor="running-profile">Running profile</label>
     <SelectField id="running-profile" value={value} disabled={busy || profiles.length === 0} onChange={event => {
-      if (!event.target.value || event.target.value === mixed) return;
-      setBusy(true);
-      onChoose(event.target.value).then(setNote, () => setNote('The profile could not be applied.')).finally(() => setBusy(false));
+      if (event.target.value && event.target.value !== mixed) onChoose(event.target.value);
     }}>
       {value === '' && <option value="">Choose a profile</option>}
       {value === mixed && <option value={mixed}>Different profiles</option>}

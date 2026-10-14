@@ -216,13 +216,15 @@ export default function App() {
   // The header's profile picker and the sidebar's running-profile choice are one choice: the profile opens in the editor
   // (after the unsaved-changes check) and becomes the profile of every module.
   const [runningBusy, setRunningBusy] = useState(false);
-  const [runningNote, setRunningNote] = useState<string | null>(null);
   const chooseProfile = (id: string) => session.guard('switch profiles', () => {
-    void session.load(id);
+    const loaded = session.load(id);
     if (!desktop) return;
     setRunningBusy(true);
-    applyRunningProfile(id, runner.getState().runs, { setDefaultProfile: next => displaySettings.setDefaultProfile(next), switchProfile: (sessionId, next, why) => runner.switchProfile(sessionId, next, why) })
-      .then(setRunningNote, () => setRunningNote('The profile could not be applied to the modules.')).finally(() => setRunningBusy(false));
+    const name = state.profiles.find(item => item.id === id)?.name ?? 'The profile';
+    const applied = applyRunningProfile(id, name, runner.getState().runs, { setDefaultProfile: next => displaySettings.setDefaultProfile(next), switchProfile: (sessionId, next, why) => runner.switchProfile(sessionId, next, why) })
+      .catch(() => 'The profile could not be applied to the modules.');
+    // After the editor's own "Loaded …" notice, so the result of the switch is the one left on screen.
+    void Promise.all([loaded, applied]).then(([, notice]) => session.setNotice(notice)).finally(() => setRunningBusy(false));
   });
   // The sidebar's running-profile choice shows the default profile while nothing runs.
   useEffect(() => { if (desktop && !display.defaultProfile.loaded && !display.defaultProfile.busy && !display.defaultProfile.error) void displaySettings.loadDefaultProfile(); }, [desktop, display.defaultProfile.loaded, display.defaultProfile.busy, display.defaultProfile.error, displaySettings]);
@@ -619,7 +621,7 @@ export default function App() {
       <SidebarNav page={page} setPage={setPage} onGuide={() => setGuide({ open: true, step: 0 })} themePicker={themePicker} collapsed={navCollapsed}
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
         runningProfile={<RunningProfile profiles={state.profiles} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
-          busy={runningBusy} note={runningNote} onChoose={chooseProfile} />} />
+          busy={runningBusy} onChoose={chooseProfile} />} />
       <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}

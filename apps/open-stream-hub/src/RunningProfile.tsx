@@ -24,20 +24,23 @@ export interface RunningProfileActions {
 
 // Makes `profileId` the profile of every module: it becomes the default that modules starting by themselves use, and
 // every running module switches to it (the usual safe switch: an executing run pauses for confirmation when the profile
-// adds anything). A module that is not running stays as it is. Returns what to tell the user.
-export async function applyRunningProfile(profileId: string, runs: Record<string, ServiceRun>, actions: RunningProfileActions): Promise<string> {
+// adds anything). A module that is not running stays as it is. Returns the notice to show.
+export async function applyRunningProfile(profileId: string, profileName: string, runs: Record<string, ServiceRun>, actions: RunningProfileActions): Promise<string> {
   await actions.setDefaultProfile(profileId);
-  const targets = liveRuns(runs).filter(run => run.profileId !== profileId);
+  const live = liveRuns(runs);
+  const targets = live.filter(run => run.profileId !== profileId);
+  if (live.length === 0) return `Nothing is running yet. Modules start with ${profileName}.`;
+  if (targets.length === 0) return `Every running module already runs ${profileName}.`;
   const switched = (await Promise.all(targets.map(run => actions.switchProfile(run.serviceId, profileId, 'chosen in the sidebar')))).filter(Boolean).length;
   const failed = targets.length - switched;
-  if (targets.length === 0) return liveRuns(runs).length === 0 ? 'Nothing is running. Modules start with this profile.' : 'Every running module already has it.';
-  return `${switched} running ${switched === 1 ? 'module' : 'modules'} switched${failed ? `, ${failed} could not be` : ''}. Modules that start by themselves use it from now on.`;
+  const done = `${profileName} now runs on ${switched} ${switched === 1 ? 'module' : 'modules'}.`;
+  return failed ? `${done} ${failed} could not be switched.` : done;
 }
 
 // The sidebar's profile choice, above the separator over the help links. It is linked to the header's profile picker:
 // choosing a profile in either opens it in the editor and makes it the profile of every module, so `onChoose` does both.
-export function RunningProfile({ profiles, runs, defaultId, enabled, busy, note, onChoose }: {
-  profiles: ProfileSummary[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; busy: boolean; note: string | null; onChoose(profileId: string): void;
+export function RunningProfile({ profiles, runs, defaultId, enabled, busy, onChoose }: {
+  profiles: ProfileSummary[]; runs: Record<string, ServiceRun>; defaultId: string | null; enabled: boolean; busy: boolean; onChoose(profileId: string): void;
 }) {
   if (!enabled) return null;
   const value = runningProfileValue(runs, defaultId);
@@ -50,6 +53,5 @@ export function RunningProfile({ profiles, runs, defaultId, enabled, busy, note,
       {value === mixed && <option value={mixed}>Different profiles</option>}
       {profiles.map(profile => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
     </SelectField>
-    {note && <p className="fine-print" role="status">{note}</p>}
   </div>;
 }

@@ -2371,11 +2371,23 @@ impl<R: Runner> Driver<R> {
                     let started = if busy {
                         Err("the device is in use by another session".to_string())
                     } else {
-                        let request = StartRequest {
+                        let mut request = StartRequest {
                             path_hex,
                             execute,
                             ..self.sessions[index].request.clone()
                         };
+                        // The module may sit on another connector now (moved and plugged back in): its turn is read
+                        // again for every spawn, while the other display settings stay as the session started.
+                        let moved = self.inventory.as_ref().and_then(|devices| {
+                            devices
+                                .iter()
+                                .find(|device| device.path_hex == request.path_hex)
+                                .cloned()
+                        });
+                        if let (Some(launch), Some(device)) = (request.display.as_mut(), moved) {
+                            launch.turn = self.runner.display_turn(&device);
+                            self.sessions[index].request.display = request.display;
+                        }
                         self.runner.start(&request)
                     };
                     let event = match started {
@@ -2816,6 +2828,8 @@ pub mod fake {
         pub saved_reads: usize,
         /// What `display_settings` returns.
         pub display: DisplaySettings,
+        /// What `display_turn` returns.
+        pub turn: u16,
         /// What `obs_launch` returns.
         pub obs: Option<crate::obs::ObsLaunch>,
         /// Number of `obs_launch` reads.
@@ -2934,6 +2948,10 @@ pub mod fake {
         fn display_settings(&mut self) -> DisplaySettings {
             self.display_reads += 1;
             self.display
+        }
+
+        fn display_turn(&mut self, _device: &LiveDevice) -> u16 {
+            self.turn
         }
 
         fn obs_launch(&mut self) -> Option<crate::obs::ObsLaunch> {
@@ -5076,6 +5094,33 @@ mod tests {
         });
         assert_eq!(launched(&mut driver, 4), built_in);
         assert!(spawned_args(&mut driver, 4).is_empty());
+    }
+
+    #[test]
+    fn a_respawn_reads_the_modules_turn_again_but_keeps_the_other_display_settings() {
+        let mut driver = Driver::new(FakeRunner {
+            display: APP_CONTROL,
+            turn: 90,
+            ..FakeRunner::default()
+        });
+        driver.inventory(vec![dial("/a")], 0);
+        let id = driver.start(request(&dial("/a"), false), 0).unwrap();
+        assert_eq!(launched(&mut driver, 0).map(|launch| launch.turn), Some(90));
+        // The module is moved to another connector and plugged back in: the session respawns on the same path
+        // with its own display settings, and the module's new turn.
+        driver.runner().turn = 0;
+        driver.runner().display = BUILT_IN;
+        exit(&mut driver, &id, "boom", 3_000);
+        driver.tick(3_000 + backoff_ms(1));
+        assert_eq!(starts(&mut driver), 2);
+        assert_eq!(
+            launched(&mut driver, 1),
+            Some(DisplayLaunch {
+                settings: APP_CONTROL,
+                module: DIAL,
+                turn: 0,
+            })
+        );
     }
 
     #[test]

@@ -7,7 +7,11 @@ import { DeviceFeed } from './device-feed';
 import { ModuleDrawer } from './ModuleDrawer';
 import { drawerTiles } from './module-drawer-model';
 import type { LightingDevice } from './lighting-model';
-import { DeviceWorkspace, HeroImage, KnobOrientationControl } from './DevicesPage';
+import { DeviceWorkspace, HeroImage, KnobOrientationControl, RunProfileOn } from './DevicesPage';
+import { idleRunSession } from './ServicePanel';
+import { idleServiceState } from './service-runner';
+import type { ServiceRun } from './service-runner';
+import type { LiveDevice } from './contracts';
 import { Inspector } from './Inspector';
 import { CompatibilityPage } from './InfoPages';
 import { keypadRoot, upgradeKeypadProfile } from './keypad-model';
@@ -327,3 +331,29 @@ describe('encoder inspector with dial functions', () => {
     expect(markup).toContain('Add dial functions');
   });
 });
+
+describe('Run this profile on…', () => {
+  const devices = [
+    { path_hex: 'aa', module: 'm4315', serial_number: 'K1' },
+    { path_hex: 'bb', module: 'm131e', serial_number: 'D1' },
+  ] as LiveDevice[];
+  const running = (module: 'm4315' | 'm131e', serial: string, profileId: string | null, profileName: string): ServiceRun => ({
+    serviceId: `s-${serial}`, state: 'running', execute: false, entries: [], counters: { actions: 0, failures: 0, ignored: 0 } as never, startedAt: 0, profileName, profileId, snapshot: '', draftUnsaved: false,
+    session: { serviceId: `p-${serial}`, phase: 'running', reason: null, attempt: 0, module, serialNumber: serial },
+  });
+  const markup = (runs: Record<string, ServiceRun>, profileId: string | null = 'p1') => renderToStaticMarkup(
+    <RunProfileOn run={{ ...idleRunSession, enabled: true, devices, service: { ...idleServiceState, runs } }} profileName="Everyday" profileId={profileId} />);
+
+  it('lists every connected module with what it runs now', () => {
+    const html = markup({ a: running('m4315', 'K1', 'other', 'Studio'), b: running('m131e', 'D1', 'p1', 'Everyday') });
+    expect(html).toContain('Run “Everyday” on…');
+    expect(html).toContain('runs Studio');
+    expect(html).toContain('already runs this profile');
+    expect(markup({})).toContain('(nothing running)');
+  });
+
+  it('is not offered without the desktop app or a module', () => {
+    expect(renderToStaticMarkup(<RunProfileOn run={idleRunSession} profileName="Everyday" profileId={null} />)).toBe('');
+  });
+});
+

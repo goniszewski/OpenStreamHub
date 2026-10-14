@@ -1,11 +1,11 @@
-import { useSyncExternalStore } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent } from 'react';
 import { ArrowLeft, ChevronDown, ChevronRight, RotateCw, Trash2, TriangleAlert } from 'lucide-react';
-import { ContextMenu } from './controls';
+import { ContextMenu, SelectField } from './controls';
 import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
-import type { Profile, ServiceModule } from './contracts';
+import type { LiveDevice, Profile, ServiceModule } from './contracts';
 import { bindingWarnings } from './binding-model';
 import { BindingsPanel } from './BindingsPanel';
 import { profileBindingCount } from './keypad-model';
@@ -17,7 +17,8 @@ import { ModuleArtImage, ModuleGlass } from './ModuleArt';
 import { dialScreen, knobControls, moduleArtwork } from './module-controls';
 import { livePointer, livePressed, livePulse } from './ModuleStage';
 import { RigPreview } from './RigPreview';
-import { ServicePanel } from './ServicePanel';
+import { deviceName, ServicePanel } from './ServicePanel';
+import { findRun, isActiveRun } from './service-runner';
 import type { RunSession } from './ServicePanel';
 import { idleFeedState } from './device-feed';
 import type { DeviceFeed } from './device-feed';
@@ -58,6 +59,32 @@ function HardwareStatus({ feed, desktop }: { feed?: DeviceFeed; desktop: boolean
 // The middle column: the module image with its live input, the control pickers, then the run section.
 // Testing a binding lives in the inspector (Test button and its result); starting and stopping a run
 // lives in the header Run control.
+// "Run this profile on…": one choice per connected module, naming what it runs now. A module nothing runs on starts the
+// open profile (through the same confirmation as the Run button); one that already runs a profile switches to it, which
+// needs the profile saved. A refusal is said under the choice.
+export function RunProfileOn({ run, profileName, profileId }: { run: RunSession; profileName: string; profileId: string | null }) {
+  const [refusal, setRefusal] = useState<string | null>(null);
+  if (!run.enabled || run.devices.length === 0) return null;
+  const label = (device: LiveDevice) => {
+    const existing = findRun(run.service.runs, device);
+    const active = existing && isActiveRun(existing) && existing.session?.phase !== 'stopped';
+    if (!active) return `${deviceName(device)} (nothing running)`;
+    return `${deviceName(device)} (${existing.profileId !== null && existing.profileId === profileId ? 'already runs this profile' : `runs ${existing.profileName}`})`;
+  };
+  return <div className="run-profile-on">
+    <label>Run “{profileName}” on…
+      <SelectField value="" onChange={event => {
+        const device = run.devices.find(item => item.path_hex === event.target.value);
+        setRefusal(device ? run.runOn(device) : null);
+      }}>
+        <option value="">Choose a module</option>
+        {run.devices.map(device => <option key={device.path_hex} value={device.path_hex}>{label(device)}</option>)}
+      </SelectField>
+    </label>
+    {refusal && <p className="fine-print" role="status">{refusal}</p>}
+  </div>;
+}
+
 export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, feed, run, mac = false, lighting = emptyLightingState, pickedPath = null, basePath = null, onPickUnit = () => {} }: { basePath?: string | null; editor: DeviceEditor; state: SessionState; desktop: boolean; feed?: DeviceFeed; run?: RunSession; disabled: boolean; setPage(page: Page): void; mac?: boolean; lighting?: LightingStateStore;
   // The unit the shared pick names, and how a pick on the canvas reports its unit back.
   pickedPath?: string | null; onPickUnit?(path: string): void }) {
@@ -79,6 +106,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
   };
   return <section className="workspace" aria-label="Device controls">
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
+    {run && desktop && <RunProfileOn run={run} profileName={state.draft.profile.name} profileId={state.draft.profileId} />}
     <RigPreview editor={editor} state={state} feed={feed} runs={run?.service.runs} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
       dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
     {!onBase && devices.length > 0 && <div className="standalone-bar" role="status">

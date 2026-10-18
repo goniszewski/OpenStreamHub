@@ -185,6 +185,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
       case 'obs_record': obsOutputs.add(`recording ${opWord(action.op, 'obs_record')}`); liveOutput = true; break;
       case 'obs_studio_mode': obsOutputs.add(`studio mode ${opWord(action.op, 'obs_studio_mode')}`); break;
       case 'obs_transition': obsOutputs.add('studio transition'); break;
+      // The one OBS action that writes a file (a PNG in Pictures): elevated.
+      case 'obs_screenshot': obsOutputs.add('screenshot to Pictures'); liveOutput = true; break;
       // Names are user text: shown clipped, and a very long one is a reason to look closer.
       case 'obs_filter':
       case 'obs_source_visibility':
@@ -321,6 +323,7 @@ export function stepLabel(step: StepAction): string {
     }
     case 'obs_studio_mode': return `OBS studio mode: ${opWord(step.op, 'obs_studio_mode')}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_screenshot': return 'OBS screenshot: save a PNG of the program scene to Pictures';
     case 'obs_filter': case 'obs_source_visibility': return obsItemLine(step);
     case 'obs_set_input_volume': case 'obs_adjust_input_volume': case 'obs_input_mute': case 'obs_media_source': return obsInputVolumeLine(step);
     case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;

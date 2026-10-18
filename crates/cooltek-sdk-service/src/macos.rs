@@ -700,6 +700,7 @@ impl MacOsDispatcher {
             | Action::ObsReplayBuffer { .. }
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition
+            | Action::ObsScreenshot
             | Action::ObsFilter { .. }
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }

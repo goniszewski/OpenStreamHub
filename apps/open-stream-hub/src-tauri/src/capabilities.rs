@@ -133,6 +133,9 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsStudioMode { op } => {
             set.insert(format!("obs_studio_mode\0{op:?}"));
         }
+        Action::ObsScreenshot => {
+            set.insert("obs_screenshot".into());
+        }
         Action::ObsTransition => {
             set.insert("obs_transition".into());
         }

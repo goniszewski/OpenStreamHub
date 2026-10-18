@@ -648,6 +648,10 @@ pub enum Action {
     /// Trigger the studio-mode transition (preview to program). OBS refuses
     /// it when studio mode is off. Needs an OBS endpoint like `obs_scene`.
     ObsTransition,
+    /// Save a PNG of the current OBS program scene into the Pictures folder
+    /// as `OBS Screenshot <date time>.png`. The location is fixed: a profile
+    /// can never name a path. Needs an OBS endpoint like `obs_scene`.
+    ObsScreenshot,
     /// Turn a source filter on or off. Both names are matched exactly by OBS.
     ObsFilter {
         /// Exact name of the source (or scene) that owns the filter.
@@ -957,6 +961,7 @@ impl<'de> Deserialize<'de> for Action {
                 op: ObsSwitchOp,
             },
             ObsTransition {},
+            ObsScreenshot {},
             ObsFilter {
                 source: String,
                 filter: String,
@@ -1025,6 +1030,7 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
             Shape::ObsStudioMode { op } => Self::ObsStudioMode { op },
             Shape::ObsTransition {} => Self::ObsTransition,
+            Shape::ObsScreenshot {} => Self::ObsScreenshot,
             Shape::ObsFilter { source, filter, op } => Self::ObsFilter { source, filter, op },
             Shape::ObsSourceVisibility { scene, source, op } => {
                 Self::ObsSourceVisibility { scene, source, op }
@@ -1101,6 +1107,7 @@ impl Action {
             Self::ObsReplayBuffer { .. } => "obs_replay_buffer",
             Self::ObsStudioMode { .. } => "obs_studio_mode",
             Self::ObsTransition => "obs_transition",
+            Self::ObsScreenshot => "obs_screenshot",
             Self::ObsFilter { .. } => "obs_filter",
             Self::ObsSourceVisibility { .. } => "obs_source_visibility",
             Self::ObsSceneCollection { .. } => "obs_scene_collection",
@@ -1123,6 +1130,7 @@ impl Action {
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition
+            | Self::ObsScreenshot
             | Self::ObsFilter { .. }
             | Self::ObsSourceVisibility { .. }
             | Self::ObsSceneCollection { .. }
@@ -1368,7 +1376,8 @@ impl Action {
             | Self::ObsRecord { .. }
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
-            | Self::ObsTransition => Ok(()),
+            | Self::ObsTransition
+            | Self::ObsScreenshot => Ok(()),
         }
     }
 

@@ -323,7 +323,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'stop'
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
-    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_stream': case 'obs_record': case 'obs_studio_mode': case 'obs_transition':
+    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_stream': case 'obs_record': case 'obs_studio_mode': case 'obs_transition': case 'obs_screenshot':
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
     case 'obs_input_mute': case 'obs_adjust_input_volume': case 'obs_media_source':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
@@ -380,6 +380,9 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
       fields = <><label htmlFor={id('obs-studio-mode-op')}>Action</label>
         <ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op }, 'obs-studio-mode-op')} />
         <Hint hint={obsSwitchHint}>{obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_screenshot':
+      fields = <p className="fine-print">Saves a PNG of the current OBS program scene to your Pictures folder as “OBS Screenshot” with the date and time. The location is fixed. OBS must be allowed to write there.</p>;
       break;
     case 'obs_transition':
       fields = <p className="fine-print">Triggers the studio-mode transition from the preview to the program scene. OBS refuses it while studio mode is off, and the press is logged as failed.</p>;

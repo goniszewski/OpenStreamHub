@@ -139,7 +139,7 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
-  ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
+  ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_screenshot', 'OBS screenshot'], ['obs_filter', 'OBS filter'],
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
   ['obs_input_mute', 'OBS input mute'], ['obs_adjust_input_volume', 'Change OBS input volume'], ['obs_media_source', 'OBS media source'],
@@ -163,6 +163,7 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_record': return { type, op: 'toggle' };
     case 'obs_studio_mode': return { type, op: 'toggle' };
     case 'obs_transition': return { type };
+    case 'obs_screenshot': return { type };
     case 'obs_filter': return { type, source: 'Source', filter: 'Filter', op: 'toggle' };
     case 'obs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
     case 'obs_scene_collection': return { type, name: 'Scene collection' };
@@ -185,7 +186,7 @@ export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
 
 export const obsOperationLabels: Record<ObsStepType, string> = {
   obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer', obs_stream: 'Stream', obs_record: 'Recording',
-  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
+  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_screenshot: 'Screenshot', obs_filter: 'Filter',
   obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
   obs_input_mute: 'Input mute', obs_adjust_input_volume: 'Input volume step', obs_media_source: 'Media source',
 };

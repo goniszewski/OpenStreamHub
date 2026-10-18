@@ -1172,6 +1172,7 @@ mod tests {
                 json!({"type":"obs_studio_mode","op":"toggle"}),
             ),
             (Action::ObsTransition, json!({"type":"obs_transition"})),
+            (Action::ObsScreenshot, json!({"type":"obs_screenshot"})),
             (
                 Action::ObsFilter {
                     source: "Private cam".into(),

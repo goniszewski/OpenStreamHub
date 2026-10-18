@@ -398,6 +398,9 @@
       "type": "obs_media_source",
       "input": "Intro",
       "op": "stop"
+    },
+    {
+      "type": "obs_screenshot"
     }
   ],
   "invalid": [
@@ -843,6 +846,10 @@
     {
       "type": "obs_media_source",
       "op": "stop"
+    },
+    {
+      "type": "obs_screenshot",
+      "path": "/tmp/x.png"
     }
   ]
 }

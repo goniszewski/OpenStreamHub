@@ -492,6 +492,98 @@ fn response_flag(data: &Value, field: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("OBS response has no {field}"))
 }
 
+/// Local date and time fields, for a file name.
+struct Stamp {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
+#[cfg(target_os = "macos")]
+fn local_stamp(seconds: i64) -> Option<Stamp> {
+    // SAFETY: an all-zero `tm` (null `tm_zone` pointer included) is a valid
+    // value that `localtime_r` overwrites; `time` outlives the call.
+    let (time, mut tm) = (seconds as libc::time_t, unsafe {
+        std::mem::zeroed::<libc::tm>()
+    });
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(Stamp {
+        year: tm.tm_year + 1900,
+        month: u32::try_from(tm.tm_mon + 1).ok()?,
+        day: u32::try_from(tm.tm_mday).ok()?,
+        hour: u32::try_from(tm.tm_hour).ok()?,
+        minute: u32::try_from(tm.tm_min).ok()?,
+        second: u32::try_from(tm.tm_sec).ok()?,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_stamp(seconds: i64) -> Option<Stamp> {
+    Some(utc_stamp(seconds))
+}
+
+/// UTC fields of a Unix time (days-from-civil, Howard Hinnant's algorithm).
+/// The local-time fallback off macOS; on macOS only the tests use it.
+#[cfg(any(test, not(target_os = "macos")))]
+fn utc_stamp(seconds: i64) -> Stamp {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    Stamp {
+        year: year as i32,
+        month: month as u32,
+        day: (day_of_year - (153 * month_index + 2) / 5 + 1) as u32,
+        hour: (rest / 3_600) as u32,
+        minute: (rest % 3_600 / 60) as u32,
+        second: (rest % 60) as u32,
+    }
+}
+
+/// `<pictures>/OBS Screenshot YYYY-MM-DD HH.MM.SS.png`: no colon, which Finder
+/// shows as a slash.
+fn screenshot_file(pictures: &std::path::Path, stamp: &Stamp) -> String {
+    pictures
+        .join(format!(
+            "OBS Screenshot {:04}-{:02}-{:02} {:02}.{:02}.{:02}.png",
+            stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Where `obs_screenshot` saves: `~/Pictures`, fixed. OBS runs on this Mac
+/// (loopback only), so it writes the file itself; nothing is ever read back.
+fn screenshot_path() -> Result<String, String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or("the home folder is unknown; no screenshot was taken")?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "the clock is before 1970; no screenshot was taken")?
+        .as_secs();
+    let stamp = local_stamp(i64::try_from(seconds).unwrap_or(0))
+        .ok_or("the local time is unavailable; no screenshot was taken")?;
+    Ok(screenshot_file(&home.join("Pictures"), &stamp))
+}
+
 /// The volume after a step: held between -100 dB and 0 dB. (The official app
 /// lets a downward step pass -100 dB; OBS would reject or clamp that.)
 fn adjusted_db(current: f64, step_db: i8) -> f64 {
@@ -567,6 +659,20 @@ fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), Strin
                 .request(&ObsRequest::with_data(
                     "SetSceneItemEnabled",
                     json!({"sceneName":scene, "sceneItemId":item, "sceneItemEnabled":enabled}),
+                ))
+                .map(drop)
+        }
+        Action::ObsScreenshot => {
+            let scene = session.request(&ObsRequest::new("GetCurrentProgramScene"))?;
+            let name = scene
+                .get("currentProgramSceneName")
+                .and_then(Value::as_str)
+                .ok_or("OBS response has no currentProgramSceneName")?;
+            let path = screenshot_path()?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SaveSourceScreenshot",
+                    json!({"sourceName":name, "imageFormat":"png", "imageFilePath":path}),
                 ))
                 .map(drop)
         }
@@ -1710,6 +1816,49 @@ mod tests {
     }
 
     // ---- Endpoint validation ----
+
+    #[test]
+    fn screenshot_names_use_civil_time_without_colons() {
+        let stamp = utc_stamp(0);
+        assert_eq!(
+            screenshot_file(std::path::Path::new("/Users/me/Pictures"), &stamp),
+            "/Users/me/Pictures/OBS Screenshot 1970-01-01 00.00.00.png"
+        );
+        let stamp = utc_stamp(1_760_790_245); // 2025-10-18 12:24:05 UTC
+        assert_eq!(
+            (
+                stamp.year,
+                stamp.month,
+                stamp.day,
+                stamp.hour,
+                stamp.minute,
+                stamp.second
+            ),
+            (2025, 10, 18, 12, 24, 5)
+        );
+        let leap = utc_stamp(1_709_164_799); // 2024-02-28 23:59:59 UTC
+        assert_eq!((leap.year, leap.month, leap.day), (2024, 2, 28));
+        let leap = utc_stamp(1_709_164_800); // 2024-02-29 00:00:00 UTC
+        assert_eq!((leap.year, leap.month, leap.day), (2024, 2, 29));
+    }
+
+    #[test]
+    fn a_screenshot_reads_the_program_scene_then_saves_a_png_in_pictures() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"currentProgramSceneName":"Live \"A\""})),
+            done(),
+        ]));
+        client(endpoint, None).run(&Action::ObsScreenshot).unwrap();
+        let seen = requests(&server.join().unwrap());
+        assert_eq!(seen[0], ("GetCurrentProgramScene".to_string(), Value::Null));
+        assert_eq!(seen[1].0, "SaveSourceScreenshot");
+        let data = &seen[1].1;
+        assert_eq!(data["sourceName"], "Live \"A\"");
+        assert_eq!(data["imageFormat"], "png");
+        let path = data["imageFilePath"].as_str().unwrap();
+        assert!(path.contains("/Pictures/OBS Screenshot "), "{path}");
+        assert!(path.ends_with(".png"), "{path}");
+    }
 
     #[test]
     fn an_input_mute_toggles_or_sets_the_state() {

@@ -43,6 +43,8 @@ export type StepAction =
   // (the same rules as obs_scene.scene).
   | { type: 'obs_studio_mode'; op: ObsSwitchOp }
   | { type: 'obs_transition' }
+  // Saves a PNG of the program scene into ~/Pictures (a fixed place; a profile cannot name a path).
+  | { type: 'obs_screenshot' }
   | { type: 'obs_filter'; source: string; filter: string; op: ObsSwitchOp }
   | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp }
   // Switch the OBS scene collection or OBS profile by exact name. OBS reloads, which can interrupt a live output.

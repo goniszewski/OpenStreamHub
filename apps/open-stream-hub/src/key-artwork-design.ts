@@ -192,7 +192,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   multi_action: ['list-ordered'],
   profile: ['arrow-left-right'],
   timer: ['timer', 'alarm-clock'],
-  obs_scene: ['clapperboard'], obs_virtual_camera: ['video', 'video-off'], obs_replay_buffer: ['film'], obs_stream: ['radio', 'cast'], obs_input_mute: ['mic-off', 'volume-x'], obs_adjust_input_volume: ['volume-2'], obs_media_source: ['play', 'pause'], obs_record: ['circle', 'pause'],
+  obs_scene: ['clapperboard'], obs_virtual_camera: ['video', 'video-off'], obs_replay_buffer: ['film'], obs_stream: ['radio', 'cast'], obs_screenshot: ['camera'], obs_input_mute: ['mic-off', 'volume-x'], obs_adjust_input_volume: ['volume-2'], obs_media_source: ['play', 'pause'], obs_record: ['circle', 'pause'],
   obs_studio_mode: ['columns-2'], obs_transition: ['film', 'arrow-left-right'], obs_filter: ['sparkles'],
   obs_source_visibility: ['eye', 'eye-off'], obs_scene_collection: ['layers'], obs_profile: ['arrow-left-right'],
 };

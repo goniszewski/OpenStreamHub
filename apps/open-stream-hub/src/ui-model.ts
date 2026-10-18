@@ -200,6 +200,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
     case 'obs_studio_mode': return `OBS studio mode: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_screenshot': return 'OBS screenshot';
     case 'obs_filter': return `OBS filter “${clipLabel(action.filter)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_source_visibility': return `OBS source “${clipLabel(action.source)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_scene_collection': return `OBS scene collection “${clipLabel(action.name)}”`;

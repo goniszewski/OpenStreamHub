@@ -49,8 +49,14 @@ export type StepAction =
   | { type: 'obs_scene_collection'; name: string }
   | { type: 'obs_profile'; name: string }
   // Set an OBS input's volume to an absolute percentage (100 is unity gain, 0 dB). The input is an exact OBS name.
-  | { type: 'obs_set_input_volume'; input: string; percent: number };
+  | { type: 'obs_set_input_volume'; input: string; percent: number }
+  // Mute an input, step its volume by dB (held between -100 and 0 dB), or play/pause/restart/stop a media source.
+  | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }
+  | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
+  | { type: 'obs_media_source'; input: string; op: ObsMediaOp };
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
+export type ObsMuteOp = 'toggle' | 'mute' | 'unmute';
+export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';

@@ -1,4 +1,4 @@
-import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -122,6 +122,8 @@ export function macroIssue(steps: MacroStep[]): string | null {
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
 export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
 export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: 'Toggle', on: 'Turn on', off: 'Turn off' };
+export const obsMuteOpLabels: Record<ObsMuteOp, string> = { toggle: 'Toggle', mute: 'Mute', unmute: 'Unmute' };
+export const obsMediaOpLabels: Record<ObsMediaOp, string> = { play_pause: 'Play / pause', play_stop: 'Play / stop', play_restart: 'Play / restart', stop: 'Stop' };
 export const obsRecordOpLabels: Record<ObsRecordOp, string> = { ...obsOutputOpLabels, pause: 'Pause', resume: 'Resume', toggle_pause: 'Pause or resume' };
 export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
 
@@ -140,6 +142,7 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
+  ['obs_input_mute', 'OBS input mute'], ['obs_adjust_input_volume', 'Change OBS input volume'], ['obs_media_source', 'OBS media source'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -165,6 +168,9 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_scene_collection': return { type, name: 'Scene collection' };
     case 'obs_profile': return { type, name: 'Profile' };
     case 'obs_set_input_volume': return { type, input: 'Mic/Aux', percent: 100 };
+    case 'obs_input_mute': return { type, input: 'Mic/Aux', op: 'toggle' };
+    case 'obs_adjust_input_volume': return { type, input: 'Mic/Aux', step_db: 3 };
+    case 'obs_media_source': return { type, input: 'Media Source', op: 'play_pause' };
   }
 }
 
@@ -181,6 +187,7 @@ export const obsOperationLabels: Record<ObsStepType, string> = {
   obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer', obs_stream: 'Stream', obs_record: 'Recording',
   obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
   obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
+  obs_input_mute: 'Input mute', obs_adjust_input_volume: 'Input volume step', obs_media_source: 'Media source',
 };
 
 // Switching operation starts from the new operation's defaults and keeps the names the two

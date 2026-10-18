@@ -485,6 +485,21 @@ pub fn loggable(action: &Action) -> Value {
             "input_chars":input.chars().count(),
             "percent":percent,
         }),
+        Action::ObsInputMute { input, op } => json!({
+            "type":"obs_input_mute",
+            "input_chars":input.chars().count(),
+            "op":op,
+        }),
+        Action::ObsAdjustInputVolume { input, step_db } => json!({
+            "type":"obs_adjust_input_volume",
+            "input_chars":input.chars().count(),
+            "step_db":step_db,
+        }),
+        Action::ObsMediaSource { input, op } => json!({
+            "type":"obs_media_source",
+            "input_chars":input.chars().count(),
+            "op":op,
+        }),
         Action::ObsInputVolumeFromPosition { input } => json!({
             "type":"obs_input_volume_from_position",
             "input_chars":input.chars().count(),

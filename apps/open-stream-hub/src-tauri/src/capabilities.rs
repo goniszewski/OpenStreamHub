@@ -153,6 +153,15 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsInputVolumeFromPosition { input } => {
             set.insert(format!("obs_input_volume\0{input}"));
         }
+        Action::ObsInputMute { input, op } => {
+            set.insert(format!("obs_input_mute\0{input}\0{op:?}"));
+        }
+        Action::ObsAdjustInputVolume { input, step_db } => {
+            set.insert(format!("obs_adjust_input_volume\0{input}\0{step_db}"));
+        }
+        Action::ObsMediaSource { input, op } => {
+            set.insert(format!("obs_media_source\0{input}\0{op:?}"));
+        }
         Action::ObsSetInputVolume { input, percent } => {
             set.insert(format!("obs_set_input_volume\0{input}\0{percent}"));
         }

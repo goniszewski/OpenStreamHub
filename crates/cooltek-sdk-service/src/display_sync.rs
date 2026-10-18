@@ -195,6 +195,9 @@ impl TileIcon {
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }
             | Action::ObsProfile { .. }
+            | Action::ObsInputMute { .. }
+            | Action::ObsAdjustInputVolume { .. }
+            | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. }
             | Action::ObsInputVolumeFromPosition { .. } => Self::Obs,
             Action::Shortcut { .. } => Self::Generic,

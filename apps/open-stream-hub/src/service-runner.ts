@@ -195,6 +195,9 @@ function describeAction(action: unknown): string {
     case 'obs_record': return `OBS recording ${str(action.op) ?? '?'}`;
     case 'obs_studio_mode': return `OBS studio mode ${str(action.op) ?? '?'}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_input_mute': return `OBS input ${str(action.op) ?? '?'} (${nameChars(action, 'input')} characters)`;
+    case 'obs_adjust_input_volume': return `OBS input volume ${typeof action.step_db === 'number' ? `${action.step_db > 0 ? '+' : ''}${action.step_db} dB` : '?'} (${nameChars(action, 'input')} characters)`;
+    case 'obs_media_source': return `OBS media source ${str(action.op) ?? '?'} (${nameChars(action, 'input')} characters)`;
     case 'obs_set_input_volume': return `OBS input volume ${typeof action.percent === 'number' ? `${action.percent}%` : '?'} (${nameChars(action, 'input')} characters)`;
     case 'obs_input_volume_from_position': return `OBS input volume follows the fader (${nameChars(action, 'input')} characters)`;
     case 'obs_filter': return `OBS filter ${str(action.op) ?? '?'} (${nameChars(action, 'source')} + ${nameChars(action, 'filter')} characters)`;

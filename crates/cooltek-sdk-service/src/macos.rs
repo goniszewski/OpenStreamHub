@@ -704,6 +704,9 @@ impl MacOsDispatcher {
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }
             | Action::ObsProfile { .. }
+            | Action::ObsInputMute { .. }
+            | Action::ObsAdjustInputVolume { .. }
+            | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let count = actions.len();

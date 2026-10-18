@@ -291,6 +291,15 @@ describe('obs outputs', () => {
     expect(ops('obs_record').sort()).toEqual(Object.keys(obsRecordOpLabels).sort());
   });
 
+  it('offers mute, volume step and media source steps with their defaults and labels', () => {
+    expect(defaultStepAction('obs_input_mute')).toMatchObject({ type: 'obs_input_mute', op: 'toggle' });
+    expect(defaultStepAction('obs_adjust_input_volume')).toMatchObject({ type: 'obs_adjust_input_volume', step_db: 3 });
+    expect(defaultStepAction('obs_media_source')).toMatchObject({ type: 'obs_media_source', op: 'play_pause' });
+    expect(actionLabel({ type: 'obs_input_mute', input: 'Mic', op: 'mute' })).toBe('OBS input “Mic”: Mute');
+    expect(actionLabel({ type: 'obs_adjust_input_volume', input: 'Mic', step_db: -3 })).toBe('OBS input “Mic” -3 dB');
+    expect(actionLabel({ type: 'obs_media_source', input: 'Intro', op: 'play_stop' })).toBe('OBS media “Intro”: Play / stop');
+  });
+
   it('offers the stream and the recording as steps with their own operation sets', () => {
     expect(defaultStepAction('obs_stream')).toEqual({ type: 'obs_stream', op: 'toggle' });
     expect(defaultStepAction('obs_record')).toEqual({ type: 'obs_record', op: 'toggle' });

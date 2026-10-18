@@ -31,7 +31,9 @@
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
 
-use crate::profile::{Action, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp};
+use crate::profile::{
+    Action, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -490,6 +492,32 @@ fn response_flag(data: &Value, field: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("OBS response has no {field}"))
 }
 
+/// The volume after a step: held between -100 dB and 0 dB. (The official app
+/// lets a downward step pass -100 dB; OBS would reject or clamp that.)
+fn adjusted_db(current: f64, step_db: i8) -> f64 {
+    (current + f64::from(step_db)).clamp(-100.0, 0.0)
+}
+
+/// The `TriggerMediaInputAction` to send for a media source in `state`
+/// (`OBS_MEDIA_STATE_*`), following the official app's four modes. An
+/// unknown state is treated like stopped, so the source starts.
+fn media_action(op: ObsMediaOp, state: &str) -> &'static str {
+    const PLAY: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY";
+    const PAUSE: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE";
+    const RESTART: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART";
+    const STOP: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP";
+    let playing = state == "OBS_MEDIA_STATE_PLAYING";
+    let paused = state == "OBS_MEDIA_STATE_PAUSED";
+    match op {
+        ObsMediaOp::PlayPause if playing => PAUSE,
+        ObsMediaOp::PlayPause | ObsMediaOp::PlayRestart if paused => PLAY,
+        ObsMediaOp::PlayPause => RESTART,
+        ObsMediaOp::PlayStop if playing => STOP,
+        ObsMediaOp::PlayStop | ObsMediaOp::PlayRestart => RESTART,
+        ObsMediaOp::Stop => STOP,
+    }
+}
+
 fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), String> {
     match action {
         Action::ObsStudioMode { op } => {
@@ -539,6 +567,53 @@ fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), Strin
                 .request(&ObsRequest::with_data(
                     "SetSceneItemEnabled",
                     json!({"sceneName":scene, "sceneItemId":item, "sceneItemEnabled":enabled}),
+                ))
+                .map(drop)
+        }
+        Action::ObsInputMute { input, op } => match op {
+            ObsMuteOp::Toggle => session
+                .request(&ObsRequest::with_data(
+                    "ToggleInputMute",
+                    json!({"inputName":input}),
+                ))
+                .map(drop),
+            ObsMuteOp::Mute | ObsMuteOp::Unmute => session
+                .request(&ObsRequest::with_data(
+                    "SetInputMute",
+                    json!({"inputName":input, "inputMuted":*op == ObsMuteOp::Mute}),
+                ))
+                .map(drop),
+        },
+        Action::ObsAdjustInputVolume { input, step_db } => {
+            let current = session.request(&ObsRequest::with_data(
+                "GetInputVolume",
+                json!({"inputName":input}),
+            ))?;
+            let db = current
+                .get("inputVolumeDb")
+                .and_then(Value::as_f64)
+                .ok_or("OBS response has no inputVolumeDb")?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SetInputVolume",
+                    json!({"inputName":input, "inputVolumeDb":adjusted_db(db, *step_db)}),
+                ))
+                .map(drop)
+        }
+        Action::ObsMediaSource { input, op } => {
+            let status = session.request(&ObsRequest::with_data(
+                "GetMediaInputStatus",
+                json!({"inputName":input}),
+            ))?;
+            let state = status
+                .get("mediaState")
+                .and_then(Value::as_str)
+                .ok_or("OBS response has no mediaState")?;
+            let media_action = media_action(*op, state);
+            session
+                .request(&ObsRequest::with_data(
+                    "TriggerMediaInputAction",
+                    json!({"inputName":input, "mediaAction":media_action}),
                 ))
                 .map(drop)
         }
@@ -906,7 +981,15 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
         ("SetCurrentProgramScene", 600) => "no scene with that name".into(),
         ("SetCurrentSceneCollection", 600) => "no scene collection with that name".into(),
         ("SetCurrentProfile", 600) => "no profile with that name".into(),
-        ("SetInputVolume", 600) => "no input with that name".into(),
+        (
+            "SetInputVolume"
+            | "GetInputVolume"
+            | "ToggleInputMute"
+            | "SetInputMute"
+            | "GetMediaInputStatus"
+            | "TriggerMediaInputAction",
+            600,
+        ) => "no input with that name".into(),
         (_, 207) => "OBS is not ready yet".into(),
         (_, 500) => "the output is already running".into(),
         (_, 501) => "the output is not running".into(),
@@ -1627,6 +1710,134 @@ mod tests {
     }
 
     // ---- Endpoint validation ----
+
+    #[test]
+    fn an_input_mute_toggles_or_sets_the_state() {
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None)
+            .run(&Action::ObsInputMute {
+                input: "Mic \"1\"".into(),
+                op: ObsMuteOp::Toggle,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [(
+                "ToggleInputMute".to_string(),
+                json!({"inputName":"Mic \"1\""})
+            )]
+        );
+        for (op, muted) in [(ObsMuteOp::Mute, true), (ObsMuteOp::Unmute, false)] {
+            let (endpoint, server) = serve(scripted_obs(vec![done()]));
+            client(endpoint, None)
+                .run(&Action::ObsInputMute {
+                    input: "Mic".into(),
+                    op,
+                })
+                .unwrap();
+            assert_eq!(
+                requests(&server.join().unwrap()),
+                [(
+                    "SetInputMute".to_string(),
+                    json!({"inputName":"Mic", "inputMuted":muted})
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn a_volume_step_is_held_between_minus_100_and_0_db() {
+        assert_eq!(adjusted_db(-10.0, 3), -7.0);
+        assert_eq!(adjusted_db(-2.0, 5), 0.0);
+        assert_eq!(adjusted_db(-98.0, -5), -100.0);
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"inputVolumeDb":-98.0, "inputVolumeMul":0.0})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&Action::ObsAdjustInputVolume {
+                input: "Mic".into(),
+                step_db: -5,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [
+                ("GetInputVolume".to_string(), json!({"inputName":"Mic"})),
+                (
+                    "SetInputVolume".to_string(),
+                    json!({"inputName":"Mic", "inputVolumeDb":-100.0})
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn media_modes_follow_the_official_state_table() {
+        use ObsMediaOp::{PlayPause, PlayRestart, PlayStop, Stop};
+        let a = |name: &str| format!("OBS_WEBSOCKET_MEDIA_INPUT_ACTION_{name}");
+        let s = |name: &str| format!("OBS_MEDIA_STATE_{name}");
+        for (op, state, expected) in [
+            (PlayPause, "PLAYING", "PAUSE"),
+            (PlayPause, "PAUSED", "PLAY"),
+            (PlayPause, "STOPPED", "RESTART"),
+            (PlayPause, "ENDED", "RESTART"),
+            (PlayStop, "PLAYING", "STOP"),
+            (PlayStop, "PAUSED", "RESTART"),
+            (PlayStop, "ENDED", "RESTART"),
+            (PlayRestart, "PLAYING", "RESTART"),
+            (PlayRestart, "PAUSED", "PLAY"),
+            (PlayRestart, "STOPPED", "RESTART"),
+            (Stop, "PLAYING", "STOP"),
+            (Stop, "ENDED", "STOP"),
+        ] {
+            assert_eq!(media_action(op, &s(state)), a(expected), "{op:?} {state}");
+        }
+        assert_eq!(
+            media_action(PlayPause, "OBS_MEDIA_STATE_NONE"),
+            a("RESTART")
+        );
+    }
+
+    #[test]
+    fn a_media_source_reads_its_state_then_triggers_one_action() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"mediaState":"OBS_MEDIA_STATE_PLAYING"})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&Action::ObsMediaSource {
+                input: "Intro".into(),
+                op: ObsMediaOp::PlayPause,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [
+                (
+                    "GetMediaInputStatus".to_string(),
+                    json!({"inputName":"Intro"})
+                ),
+                (
+                    "TriggerMediaInputAction".to_string(),
+                    json!({"inputName":"Intro", "mediaAction":"OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE"})
+                ),
+            ]
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600,"comment":"No input called Secret"}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsMediaSource {
+                input: "Secret".into(),
+                op: ObsMediaOp::Stop,
+            })
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("no input with that name"), "{error}");
+        assert!(!error.contains("Secret"), "{error}");
+    }
 
     #[test]
     fn stream_and_record_actions_map_to_the_v5_requests() {
@@ -2360,13 +2571,13 @@ mod tests {
         )]));
         let error = client(endpoint, None)
             .request(&ObsRequest::with_data(
-                "SetInputMute",
-                json!({"inputName":"Mic","inputMuted":true}),
+                "GetInputSettings",
+                json!({"inputName":"Mic"}),
             ))
             .unwrap_err();
         server.join().unwrap();
         assert!(
-            error.contains("refused SetInputMute (not found)"),
+            error.contains("refused GetInputSettings (not found)"),
             "{error}"
         );
         assert!(!error.contains("scene"), "{error}");

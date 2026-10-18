@@ -1,7 +1,7 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
@@ -14,7 +14,7 @@ import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
   defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
-  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
+  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -325,6 +325,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
     case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_stream': case 'obs_record': case 'obs_studio_mode': case 'obs_transition':
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
+    case 'obs_input_mute': case 'obs_adjust_input_volume': case 'obs_media_source':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
@@ -430,6 +431,34 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
         <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB). To follow a fader instead, bind a fader.</p></>;
       break;
     }
+    case 'obs_input_mute':
+      fields = <>
+        <ObsNameRow id={id('obs-input-mute-input')} label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-input-mute-input')} />
+        <label className="spaced-label" htmlFor={id('obs-input-mute-op')}>Action</label>
+        <SelectField id={id('obs-input-mute-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsMuteOp }, 'obs-input-mute-op')}>
+          {(Object.keys(obsMuteOpLabels) as ObsMuteOp[]).map(op => <option key={op} value={op}>{obsMuteOpLabels[op]}</option>)}
+        </SelectField>
+        <p className="fine-print">Mutes or unmutes this OBS input. Mute and Unmute do not depend on the current state, which makes them safe inside a multi-action.</p></>;
+      break;
+    case 'obs_adjust_input_volume':
+      fields = <>
+        <ObsNameRow id={id('obs-adjust-volume-input')} label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-adjust-volume-input')} />
+        <label className="spaced-label" htmlFor={id('obs-adjust-volume-step')}>Step (dB)</label>
+        <IntegerField id={id('obs-adjust-volume-step')} value={action.step_db} minimum={-20} maximum={20} onCommit={step_db => onChange({ ...action, step_db }, 'obs-adjust-volume-step')} />
+        <p className="fine-print">Changes the input's volume by this many decibels per press (negative is quieter, zero is not allowed). The result is held between -100 dB and 0 dB.</p></>;
+      break;
+    case 'obs_media_source':
+      fields = <>
+        <ObsNameRow id={id('obs-media-input')} label="OBS media source name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-media-input')} />
+        <label className="spaced-label" htmlFor={id('obs-media-op')}>Action</label>
+        <SelectField id={id('obs-media-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsMediaOp }, 'obs-media-op')}>
+          {(Object.keys(obsMediaOpLabels) as ObsMediaOp[]).map(op => <option key={op} value={op}>{obsMediaOpLabels[op]}</option>)}
+        </SelectField>
+        <p className="fine-print">Reads the source's play state first. Play / pause pauses a playing source and plays a paused one; Play / stop stops a playing source; Play / restart restarts it; a stopped or ended source always restarts.</p></>;
+      break;
     case 'obs_scene': {
       fields = <>
         <ObsNameRow id={id('obs-scene')} label="OBS scene name" value={action.scene} entry={scenes} what="scene"

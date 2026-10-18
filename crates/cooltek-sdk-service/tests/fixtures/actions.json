@@ -353,6 +353,51 @@
     {
       "type": "obs_record",
       "op": "toggle_pause"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "mute"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "unmute"
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": -3
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 5
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_pause"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_stop"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_restart"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "stop"
     }
   ],
   "invalid": [
@@ -770,6 +815,34 @@
       "type": "obs_record",
       "op": "toggle",
       "endpoint": "127.0.0.1:4455"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "on"
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 0
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 21
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play"
+    },
+    {
+      "type": "obs_media_source",
+      "op": "stop"
     }
   ]
 }

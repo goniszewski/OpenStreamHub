@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -176,6 +176,9 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'volume_from_position': return 'Follow fader position for output volume';
     case 'mic_input_volume_from_position': return 'Follow fader position for microphone volume';
     case 'obs_input_volume_from_position': return `Follow fader position for OBS input “${clipLabel(action.input)}”`;
+    case 'obs_input_mute': return `OBS input “${clipLabel(action.input)}”: ${obsMuteOpLabels[action.op] ?? action.op}`;
+    case 'obs_adjust_input_volume': return `OBS input “${clipLabel(action.input)}” ${action.step_db > 0 ? '+' : ''}${action.step_db} dB`;
+    case 'obs_media_source': return `OBS media “${clipLabel(action.input)}”: ${obsMediaOpLabels[action.op] ?? action.op}`;
     case 'obs_set_input_volume': return `Set OBS input “${clipLabel(action.input)}” to ${action.percent}%`;
     case 'set_volume': return `Set output volume to ${action.percent}%`;
     case 'open_url': return `Open ${action.url}`;

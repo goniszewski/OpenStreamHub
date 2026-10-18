@@ -346,6 +346,33 @@ pub enum ObsRecordOp {
     TogglePause,
 }
 
+/// What an `obs_input_mute` action does to an OBS input's mute state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsMuteOp {
+    /// Mute the input when it is audible and unmute it when it is muted.
+    Toggle,
+    /// Mute the input.
+    Mute,
+    /// Unmute the input.
+    Unmute,
+}
+
+/// What an `obs_media_source` action does to a media source (the official
+/// app's four modes). Each reads the source's play state first.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsMediaOp {
+    /// Pause a playing source, play a paused one, restart a stopped or ended one.
+    PlayPause,
+    /// Stop a playing source, restart any other.
+    PlayStop,
+    /// Restart a playing, stopped or ended source, play a paused one.
+    PlayRestart,
+    /// Stop the source.
+    Stop,
+}
+
 /// What an OBS action does to something that is either on or off (studio
 /// mode, a filter, a source's visibility). `toggle` reads the current state
 /// from OBS first; `on` and `off` do not depend on it, which makes them safe
@@ -659,6 +686,29 @@ pub enum Action {
         /// Absolute volume percentage, between 0 and 100 inclusive.
         percent: u8,
     },
+    /// Mute, unmute or toggle an OBS input. Needs an OBS endpoint like `obs_scene`.
+    ObsInputMute {
+        /// Exact input (source) name.
+        input: String,
+        /// What to do with the mute state.
+        op: ObsMuteOp,
+    },
+    /// Change an OBS input's volume by a step in decibels, held between -100
+    /// dB and 0 dB. Needs an OBS endpoint like `obs_scene`.
+    ObsAdjustInputVolume {
+        /// Exact input (source) name.
+        input: String,
+        /// Step in dB: nonzero, between -20 and 20 inclusive.
+        step_db: i8,
+    },
+    /// Play, pause, restart or stop an OBS media source. Needs an OBS
+    /// endpoint like `obs_scene`.
+    ObsMediaSource {
+        /// Exact input (source) name.
+        input: String,
+        /// What to do with the media source.
+        op: ObsMediaOp,
+    },
     /// Resolve a fader's absolute position into an absolute OBS input volume.
     ///
     /// Like [`Action::VolumeFromPosition`] this is a binding template that
@@ -927,6 +977,18 @@ impl<'de> Deserialize<'de> for Action {
                 input: String,
                 percent: u8,
             },
+            ObsInputMute {
+                input: String,
+                op: ObsMuteOp,
+            },
+            ObsAdjustInputVolume {
+                input: String,
+                step_db: i8,
+            },
+            ObsMediaSource {
+                input: String,
+                op: ObsMediaOp,
+            },
             ObsInputVolumeFromPosition {
                 input: String,
             },
@@ -972,6 +1034,11 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsSetInputVolume { input, percent } => {
                 Self::ObsSetInputVolume { input, percent }
             }
+            Shape::ObsInputMute { input, op } => Self::ObsInputMute { input, op },
+            Shape::ObsAdjustInputVolume { input, step_db } => {
+                Self::ObsAdjustInputVolume { input, step_db }
+            }
+            Shape::ObsMediaSource { input, op } => Self::ObsMediaSource { input, op },
             Shape::ObsInputVolumeFromPosition { input } => {
                 Self::ObsInputVolumeFromPosition { input }
             }
@@ -1039,6 +1106,9 @@ impl Action {
             Self::ObsSceneCollection { .. } => "obs_scene_collection",
             Self::ObsProfile { .. } => "obs_profile",
             Self::ObsSetInputVolume { .. } => "obs_set_input_volume",
+            Self::ObsInputMute { .. } => "obs_input_mute",
+            Self::ObsAdjustInputVolume { .. } => "obs_adjust_input_volume",
+            Self::ObsMediaSource { .. } => "obs_media_source",
             Self::ObsInputVolumeFromPosition { .. } => "obs_input_volume_from_position",
         }
     }
@@ -1058,6 +1128,9 @@ impl Action {
             | Self::ObsSceneCollection { .. }
             | Self::ObsProfile { .. }
             | Self::ObsSetInputVolume { .. }
+            | Self::ObsInputMute { .. }
+            | Self::ObsAdjustInputVolume { .. }
+            | Self::ObsMediaSource { .. }
             | Self::ObsInputVolumeFromPosition { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
@@ -1188,6 +1261,17 @@ impl Action {
             }
             Self::ObsInputVolumeFromPosition { input } => {
                 validate_obs_name("obs_input_volume_from_position", "input", input)
+            }
+            Self::ObsInputMute { input, .. } => validate_obs_name("obs_input_mute", "input", input),
+            Self::ObsMediaSource { input, .. } => {
+                validate_obs_name("obs_media_source", "input", input)
+            }
+            Self::ObsAdjustInputVolume { input, step_db } => {
+                validate_obs_name("obs_adjust_input_volume", "input", input)?;
+                if *step_db == 0 || !(-20..=20).contains(step_db) {
+                    return Err("OBS volume step must be nonzero and between -20 and 20 dB".into());
+                }
+                Ok(())
             }
             Self::ObsSourceVisibility { scene, source, .. } => {
                 validate_obs_name("obs_source_visibility", "scene", scene)?;
@@ -2534,6 +2618,49 @@ mod tests {
                 .unwrap_err()
                 .starts_with("binding 0: obs_scene")
         );
+    }
+
+    #[test]
+    fn obs_audio_and_media_actions_have_a_closed_json_shape() {
+        for json in [
+            r#"{"type":"obs_input_mute","input":"Mic","op":"toggle"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"mute"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"unmute"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":-3}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":20}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_pause"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_stop"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_restart"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"stop"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs());
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_input_mute","input":"Mic"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"on"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play"}"#,
+            r#"{"type":"obs_media_source","op":"stop"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":1.5}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":300}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        for step_db in [0, 21, -21, i8::MIN] {
+            let action = Action::ObsAdjustInputVolume {
+                input: "Mic".into(),
+                step_db,
+            };
+            assert!(action.validate().is_err(), "{step_db}");
+        }
+        let empty = Action::ObsMediaSource {
+            input: " ".into(),
+            op: ObsMediaOp::Stop,
+        };
+        assert!(empty.validate().is_err());
     }
 
     #[test]

@@ -107,14 +107,21 @@ const quoted = (name: unknown) => `“${snippetPreview(String(name ?? '')).text}
 const obsItemLine = (action: Record<string, unknown>) => action.type === 'obs_filter'
   ? `OBS filter ${quoted(action.filter)} on ${quoted(action.source)}: ${opWord(action.op, 'obs_filter')}`
   : `OBS source ${quoted(action.source)} in scene ${quoted(action.scene)}: ${opWord(action.op, 'obs_source_visibility')}`;
-const obsInputVolumeLine = (action: Record<string, unknown>) => action.type === 'obs_set_input_volume'
-  ? `OBS input ${quoted(action.input)}: set volume to ${String(action.percent)}%`
-  : `OBS input ${quoted(action.input)}: volume follows the fader`;
+const obsInputVolumeLine = (action: Record<string, unknown>) => {
+  switch (action.type) {
+    case 'obs_set_input_volume': return `OBS input ${quoted(action.input)}: set volume to ${String(action.percent)}%`;
+    case 'obs_adjust_input_volume': return `OBS input ${quoted(action.input)}: change volume by ${String(action.step_db)} dB`;
+    case 'obs_input_mute': return `OBS input ${quoted(action.input)}: ${opWord(action.op, 'obs_input_mute')}`;
+    case 'obs_media_source': return `OBS media source ${quoted(action.input)}: ${opWord(action.op, 'obs_media_source')}`;
+    default: return `OBS input ${quoted(action.input)}: volume follows the fader`;
+  }
+};
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
 const obsOpSets: Record<string, string[]> = {
   obs_virtual_camera: outputOps, obs_replay_buffer: [...outputOps, 'save'],
+  obs_input_mute: ['toggle', 'mute', 'unmute'], obs_media_source: ['play_pause', 'play_stop', 'play_restart', 'stop'],
   obs_stream: outputOps, obs_record: [...outputOps, 'pause', 'resume', 'toggle_pause'],
   obs_studio_mode: ['toggle', 'on', 'off'], obs_filter: ['toggle', 'on', 'off'], obs_source_visibility: ['toggle', 'on', 'off'],
 };
@@ -186,6 +193,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         break;
       // A fader (or a fixed level) driving an OBS input's volume: a local OBS effect, shown by input name.
       case 'obs_input_volume_from_position':
+      case 'obs_input_mute':
+      case 'obs_adjust_input_volume':
+      case 'obs_media_source':
       case 'obs_set_input_volume':
         obsItems.add(obsInputVolumeLine(action));
         if (codePoints(String(action.input ?? '')) > maxShownChars) reasons.add(tooLongReason);
@@ -312,7 +322,7 @@ export function stepLabel(step: StepAction): string {
     case 'obs_studio_mode': return `OBS studio mode: ${opWord(step.op, 'obs_studio_mode')}`;
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_filter': case 'obs_source_visibility': return obsItemLine(step);
-    case 'obs_set_input_volume': return obsInputVolumeLine(step);
+    case 'obs_set_input_volume': case 'obs_adjust_input_volume': case 'obs_input_mute': case 'obs_media_source': return obsInputVolumeLine(step);
     case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op, 'obs_virtual_camera')}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;

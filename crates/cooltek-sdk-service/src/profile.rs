@@ -328,6 +328,24 @@ pub enum ObsOutputOp {
     Stop,
 }
 
+/// What an `obs_record` action does to the OBS recording.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsRecordOp {
+    /// Start recording when it is stopped and stop it when it runs.
+    Toggle,
+    /// Start recording (OBS refuses when it already runs).
+    Start,
+    /// Stop recording (OBS refuses when it is not running).
+    Stop,
+    /// Pause a running recording (OBS refuses when it is not recording or already paused).
+    Pause,
+    /// Resume a paused recording (OBS refuses when it is not paused).
+    Resume,
+    /// Pause a running recording and resume a paused one.
+    TogglePause,
+}
+
 /// What an OBS action does to something that is either on or off (studio
 /// mode, a filter, a source's visibility). `toggle` reads the current state
 /// from OBS first; `on` and `off` do not depend on it, which makes them safe
@@ -576,6 +594,18 @@ pub enum Action {
     ObsVirtualCamera {
         /// What to do with the virtual camera.
         op: ObsOutputOp,
+    },
+    /// Start, stop or toggle the OBS stream, which goes live or ends a
+    /// broadcast. Needs an OBS endpoint like `obs_scene`.
+    ObsStream {
+        /// What to do with the stream.
+        op: ObsOutputOp,
+    },
+    /// Start, stop, pause or resume the OBS recording. Needs an OBS endpoint
+    /// like `obs_scene`.
+    ObsRecord {
+        /// What to do with the recording.
+        op: ObsRecordOp,
     },
     /// Start, stop, toggle or save the OBS replay buffer over the local
     /// obs-websocket v5 server. Needs an OBS endpoint like `obs_scene`.
@@ -864,6 +894,12 @@ impl<'de> Deserialize<'de> for Action {
             ObsVirtualCamera {
                 op: ObsOutputOp,
             },
+            ObsStream {
+                op: ObsOutputOp,
+            },
+            ObsRecord {
+                op: ObsRecordOp,
+            },
             ObsReplayBuffer {
                 op: ObsReplayBufferOp,
             },
@@ -922,6 +958,8 @@ impl<'de> Deserialize<'de> for Action {
             },
             Shape::ObsScene { scene } => Self::ObsScene { scene },
             Shape::ObsVirtualCamera { op } => Self::ObsVirtualCamera { op },
+            Shape::ObsStream { op } => Self::ObsStream { op },
+            Shape::ObsRecord { op } => Self::ObsRecord { op },
             Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
             Shape::ObsStudioMode { op } => Self::ObsStudioMode { op },
             Shape::ObsTransition {} => Self::ObsTransition,
@@ -991,6 +1029,8 @@ impl Action {
             Self::Timer { .. } => "timer",
             Self::ObsScene { .. } => "obs_scene",
             Self::ObsVirtualCamera { .. } => "obs_virtual_camera",
+            Self::ObsStream { .. } => "obs_stream",
+            Self::ObsRecord { .. } => "obs_record",
             Self::ObsReplayBuffer { .. } => "obs_replay_buffer",
             Self::ObsStudioMode { .. } => "obs_studio_mode",
             Self::ObsTransition => "obs_transition",
@@ -1008,6 +1048,8 @@ impl Action {
         match self {
             Self::ObsScene { .. }
             | Self::ObsVirtualCamera { .. }
+            | Self::ObsStream { .. }
+            | Self::ObsRecord { .. }
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition
@@ -1238,6 +1280,8 @@ impl Action {
             | Self::System { .. }
             | Self::Profile { .. }
             | Self::ObsVirtualCamera { .. }
+            | Self::ObsStream { .. }
+            | Self::ObsRecord { .. }
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition => Ok(()),
@@ -2490,6 +2534,48 @@ mod tests {
                 .unwrap_err()
                 .starts_with("binding 0: obs_scene")
         );
+    }
+
+    #[test]
+    fn obs_stream_and_record_actions_have_a_closed_json_shape() {
+        for json in [
+            r#"{"type":"obs_stream","op":"toggle"}"#,
+            r#"{"type":"obs_stream","op":"start"}"#,
+            r#"{"type":"obs_stream","op":"stop"}"#,
+            r#"{"type":"obs_record","op":"toggle"}"#,
+            r#"{"type":"obs_record","op":"start"}"#,
+            r#"{"type":"obs_record","op":"stop"}"#,
+            r#"{"type":"obs_record","op":"pause"}"#,
+            r#"{"type":"obs_record","op":"resume"}"#,
+            r#"{"type":"obs_record","op":"toggle_pause"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs());
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_stream"}"#,
+            r#"{"type":"obs_stream","op":"pause"}"#,
+            r#"{"type":"obs_stream","op":"toggle","endpoint":"127.0.0.1:4455"}"#,
+            r#"{"type":"obs_record"}"#,
+            r#"{"type":"obs_record","op":"save"}"#,
+            r#"{"type":"obs_record","op":"Toggle"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        let nested = Action::MultiAction {
+            actions: vec![
+                Action::ObsRecord {
+                    op: ObsRecordOp::Start,
+                },
+                Action::ObsStream {
+                    op: ObsOutputOp::Start,
+                },
+            ],
+        };
+        assert!(nested.uses_obs());
+        nested.validate_executable().unwrap();
     }
 
     #[test]

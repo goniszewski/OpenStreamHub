@@ -36,6 +36,9 @@ export type StepAction =
   // WebSocket. No names are involved; the op is a closed set (ObsOutputOp, ObsReplayBufferOp in profile.rs).
   | { type: 'obs_virtual_camera'; op: ObsOutputOp }
   | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp }
+  // Going live or ending a broadcast (obs_stream), and the recording including pause and resume (obs_record).
+  | { type: 'obs_stream'; op: ObsOutputOp }
+  | { type: 'obs_record'; op: ObsRecordOp }
   // Studio mode, its transition, a source filter and a source's visibility in a scene. The names are exact OBS names
   // (the same rules as obs_scene.scene).
   | { type: 'obs_studio_mode'; op: ObsSwitchOp }
@@ -50,6 +53,7 @@ export type StepAction =
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
+export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }

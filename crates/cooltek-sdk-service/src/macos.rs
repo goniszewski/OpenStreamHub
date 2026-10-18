@@ -695,6 +695,8 @@ impl MacOsDispatcher {
             }
             Action::ObsScene { .. }
             | Action::ObsVirtualCamera { .. }
+            | Action::ObsStream { .. }
+            | Action::ObsRecord { .. }
             | Action::ObsReplayBuffer { .. }
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition

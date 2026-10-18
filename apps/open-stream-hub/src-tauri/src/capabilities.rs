@@ -121,6 +121,12 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsVirtualCamera { op } => {
             set.insert(format!("obs_camera\0{op:?}"));
         }
+        Action::ObsStream { op } => {
+            set.insert(format!("obs_stream\0{op:?}"));
+        }
+        Action::ObsRecord { op } => {
+            set.insert(format!("obs_record\0{op:?}"));
+        }
         Action::ObsReplayBuffer { op } => {
             set.insert(format!("obs_replay\0{op:?}"));
         }

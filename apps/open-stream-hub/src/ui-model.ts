@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -192,6 +192,8 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
+    case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}`;
+    case 'obs_record': return `OBS recording: ${obsRecordOpLabels[action.op] ?? action.op}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
     case 'obs_studio_mode': return `OBS studio mode: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_transition': return 'OBS studio transition';

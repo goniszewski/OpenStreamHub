@@ -1,4 +1,4 @@
-import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -122,6 +122,7 @@ export function macroIssue(steps: MacroStep[]): string | null {
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
 export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
 export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: 'Toggle', on: 'Turn on', off: 'Turn off' };
+export const obsRecordOpLabels: Record<ObsRecordOp, string> = { ...obsOutputOpLabels, pause: 'Pause', resume: 'Resume', toggle_pause: 'Pause or resume' };
 export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
 
 export type StepActionType = StepAction['type'];
@@ -135,6 +136,7 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
+  ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
   ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
@@ -154,6 +156,8 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_scene': return { type, scene: 'Scene' };
     case 'obs_virtual_camera': return { type, op: 'toggle' };
     case 'obs_replay_buffer': return { type, op: 'save' };
+    case 'obs_stream': return { type, op: 'toggle' };
+    case 'obs_record': return { type, op: 'toggle' };
     case 'obs_studio_mode': return { type, op: 'toggle' };
     case 'obs_transition': return { type };
     case 'obs_filter': return { type, source: 'Source', filter: 'Filter', op: 'toggle' };
@@ -168,13 +172,13 @@ export function defaultProfileAction(): Action {
   return { type: 'profile', direction: 'next' };
 }
 
-// The nine OBS operations of the one OBS editor, in the Operation list's order. The picker keeps
+// The OBS operations of the one OBS editor, in the Operation list's order. The picker keeps
 // one entry per operation; the editor groups them behind this dropdown.
 export type ObsStepType = Extract<StepActionType, `obs_${string}`>;
 export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
 
 export const obsOperationLabels: Record<ObsStepType, string> = {
-  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer',
+  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer', obs_stream: 'Stream', obs_record: 'Recording',
   obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
   obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
 };

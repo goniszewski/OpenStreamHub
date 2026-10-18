@@ -317,6 +317,42 @@
       "type": "shortcut",
       "key": "play_pause",
       "modifiers": []
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_stream",
+      "op": "start"
+    },
+    {
+      "type": "obs_stream",
+      "op": "stop"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_record",
+      "op": "start"
+    },
+    {
+      "type": "obs_record",
+      "op": "stop"
+    },
+    {
+      "type": "obs_record",
+      "op": "pause"
+    },
+    {
+      "type": "obs_record",
+      "op": "resume"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle_pause"
     }
   ],
   "invalid": [
@@ -711,6 +747,29 @@
       "modifiers": [
         "command"
       ]
+    },
+    {
+      "type": "obs_stream"
+    },
+    {
+      "type": "obs_stream",
+      "op": "pause"
+    },
+    {
+      "type": "obs_stream",
+      "op": "Toggle"
+    },
+    {
+      "type": "obs_record"
+    },
+    {
+      "type": "obs_record",
+      "op": "save"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle",
+      "endpoint": "127.0.0.1:4455"
     }
   ]
 }

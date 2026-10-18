@@ -31,7 +31,7 @@
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
 
-use crate::profile::{Action, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp};
+use crate::profile::{Action, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -569,6 +569,19 @@ impl ObsRequest {
                 ObsOutputOp::Toggle => "ToggleVirtualCam",
                 ObsOutputOp::Start => "StartVirtualCam",
                 ObsOutputOp::Stop => "StopVirtualCam",
+            }),
+            Action::ObsStream { op } => Self::new(match op {
+                ObsOutputOp::Toggle => "ToggleStream",
+                ObsOutputOp::Start => "StartStream",
+                ObsOutputOp::Stop => "StopStream",
+            }),
+            Action::ObsRecord { op } => Self::new(match op {
+                ObsRecordOp::Toggle => "ToggleRecord",
+                ObsRecordOp::Start => "StartRecord",
+                ObsRecordOp::Stop => "StopRecord",
+                ObsRecordOp::Pause => "PauseRecord",
+                ObsRecordOp::Resume => "ResumeRecord",
+                ObsRecordOp::TogglePause => "ToggleRecordPause",
             }),
             Action::ObsTransition => Self::new("TriggerStudioModeTransition"),
             Action::ObsSceneCollection { name } => Self::with_data(
@@ -1614,6 +1627,28 @@ mod tests {
     }
 
     // ---- Endpoint validation ----
+
+    #[test]
+    fn stream_and_record_actions_map_to_the_v5_requests() {
+        let name = |action: Action| ObsRequest::for_action(&action).unwrap().request_type;
+        for (op, expected) in [
+            (ObsOutputOp::Toggle, "ToggleStream"),
+            (ObsOutputOp::Start, "StartStream"),
+            (ObsOutputOp::Stop, "StopStream"),
+        ] {
+            assert_eq!(name(Action::ObsStream { op }), expected);
+        }
+        for (op, expected) in [
+            (ObsRecordOp::Toggle, "ToggleRecord"),
+            (ObsRecordOp::Start, "StartRecord"),
+            (ObsRecordOp::Stop, "StopRecord"),
+            (ObsRecordOp::Pause, "PauseRecord"),
+            (ObsRecordOp::Resume, "ResumeRecord"),
+            (ObsRecordOp::TogglePause, "ToggleRecordPause"),
+        ] {
+            assert_eq!(name(Action::ObsRecord { op }), expected);
+        }
+    }
 
     #[test]
     fn endpoints_are_loopback_only_with_a_strict_port() {

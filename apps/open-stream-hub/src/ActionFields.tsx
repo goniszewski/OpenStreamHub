@@ -1,7 +1,7 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
@@ -14,7 +14,7 @@ import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
   defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
-  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
+  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -323,7 +323,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'stop'
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
-    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_studio_mode': case 'obs_transition':
+    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_stream': case 'obs_record': case 'obs_studio_mode': case 'obs_transition':
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
@@ -352,6 +352,21 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
           {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
         </SelectField>
         <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_stream':
+      fields = <><label htmlFor={id('obs-stream-op')}>Action</label>
+        <SelectField id={id('obs-stream-op')} value={action.op} onChange={event => onChange({ type: 'obs_stream', op: event.target.value as ObsOutputOp }, 'obs-stream-op')}>
+          {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
+        </SelectField>
+        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. Pressing the key does this at once, with no further confirmation.</p>
+        <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_record':
+      fields = <><label htmlFor={id('obs-record-op')}>Action</label>
+        <SelectField id={id('obs-record-op')} value={action.op} onChange={event => onChange({ type: 'obs_record', op: event.target.value as ObsRecordOp }, 'obs-record-op')}>
+          {(Object.keys(obsRecordOpLabels) as ObsRecordOp[]).map(op => <option key={op} value={op}>{obsRecordOpLabels[op]}</option>)}
+        </SelectField>
+        <Hint hint={`Pause and Resume need a running recording in OBS. ${obsSwitchHint}`}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
     case 'obs_replay_buffer':
       fields = <><label htmlFor={id('obs-replay-buffer-op')}>Action</label>

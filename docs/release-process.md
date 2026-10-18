@@ -2,6 +2,10 @@
 
 This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Run so far (13 October 2026):** unsigned builds for both architectures through the release workflow, and local release builds of both (see below). **Not run:** signing, notarization, and a launch of the Intel app.
 
+## Decision: releases stay unsigned
+
+No Apple Developer Program membership is planned (decided 18 October 2026), so releases are ad-hoc signed only: no Developer ID, no notarization, no stapling. Consequences, all already told to users in the README [Install](../README.md#install) section and the release notes: first launch needs **Open Anyway** (or `xattr -dr com.apple.quarantine`), and every update counts as a new app, so macOS asks again for Accessibility, Automation and Input Monitoring. The signed path in `release.yml`, the secrets table and the sidecar signing notes below are kept for anyone who forks with their own certificate; they have never run.
+
 ## Local builds (how the 0.1.0 release was made)
 
 CI was blocked by GitHub billing, so 0.1.0 was built on an Apple Silicon Mac and attached to a draft release by hand.

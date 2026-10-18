@@ -4,7 +4,7 @@ import type { Action } from './contracts';
 import {
   defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
-  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels,
+  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -287,6 +287,15 @@ describe('obs outputs', () => {
     const ops = (type: string) => fixture.valid.filter(action => action.type === type).flatMap(action => ('op' in action ? [String(action.op)] : []));
     expect(ops('obs_virtual_camera').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
     expect(ops('obs_replay_buffer').sort()).toEqual(Object.keys(obsReplayBufferOpLabels).sort());
+    expect(ops('obs_stream').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
+    expect(ops('obs_record').sort()).toEqual(Object.keys(obsRecordOpLabels).sort());
+  });
+
+  it('offers the stream and the recording as steps with their own operation sets', () => {
+    expect(defaultStepAction('obs_stream')).toEqual({ type: 'obs_stream', op: 'toggle' });
+    expect(defaultStepAction('obs_record')).toEqual({ type: 'obs_record', op: 'toggle' });
+    expect(actionLabel({ type: 'obs_stream', op: 'start' })).toBe('OBS stream: Start');
+    expect(actionLabel({ type: 'obs_record', op: 'toggle_pause' })).toBe('OBS recording: Pause or resume');
   });
 });
 

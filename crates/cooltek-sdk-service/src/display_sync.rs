@@ -186,6 +186,8 @@ impl TileIcon {
             Action::Timer { .. } => Self::Timer,
             Action::ObsScene { .. }
             | Action::ObsVirtualCamera { .. }
+            | Action::ObsStream { .. }
+            | Action::ObsRecord { .. }
             | Action::ObsReplayBuffer { .. }
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition

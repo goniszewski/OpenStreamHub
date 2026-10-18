@@ -191,6 +191,8 @@ function describeAction(action: unknown): string {
     // The op is a closed word (toggle, start, stop, save), never user text.
     case 'obs_virtual_camera': case 'obs_replay_buffer': return `${action.type === 'obs_virtual_camera' ? 'OBS virtual camera' : 'OBS replay buffer'} ${str(action.op) ?? '?'}`;
     // Names are user text: only their lengths are shown (the service logs *_chars; older records carry the names).
+    case 'obs_stream': return `OBS stream ${str(action.op) ?? '?'}`;
+    case 'obs_record': return `OBS recording ${str(action.op) ?? '?'}`;
     case 'obs_studio_mode': return `OBS studio mode ${str(action.op) ?? '?'}`;
     case 'obs_transition': return 'OBS studio transition';
     case 'obs_set_input_volume': return `OBS input volume ${typeof action.percent === 'number' ? `${action.percent}%` : '?'} (${nameChars(action, 'input')} characters)`;

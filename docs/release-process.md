@@ -102,9 +102,9 @@ Zips downloaded from Actions carry a quarantine attribute, which is what Gatekee
 
 ## Untested
 
-- No workflow has run in GitHub Actions; runner labels, cache settings and action versions (`actions/*@v4`, `Swatinem/rust-cache@v2`) are unconfirmed.
+- The workflows have run unsigned on GitHub Actions (the v0.2.0 tag build succeeded on 14 October 2026), so runner labels, cache settings and action versions are confirmed for the unsigned path only.
 - Signing, notarization, stapling and the `spctl` check have never been exercised.
 - Tauri's documented sidecar signing and hardened-runtime behaviour has not been exercised here; the workflow's explicit `codesign` check will show it on the first signed run.
-- The Intel build has not run; `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
+- `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
 - `cargo test` for `src-tauri` on a headless runner is assumed to work.
 - Stapling is not done separately; Tauri is expected to staple after notarizing. The workflow does not fail if `stapler validate` fails.

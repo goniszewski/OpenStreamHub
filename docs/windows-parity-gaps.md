@@ -47,7 +47,7 @@ The protocol analysis documents cover the device (discovery, input, display, mod
 | Lifecycle: reconnect | Not documented beyond startup (unverified) | Partial | `session.rs` backoff 1/2/4/8/8 s, `needs_confirmation` for Execute runs | Hardware lifecycle gate |
 | Lifecycle: multi-module live | Official handles all modules (unverified) | Partial | One service per interface in `session.rs`; feed reads many; README "multi-module live action routing" milestone | Route several modules in one session |
 | Platform: Windows and Linux | Official is Windows-only | Out of scope | macOS plan scope; `macos.rs` non-macOS stub; power clock-gap fallback untested | None planned |
-| Packaging: installer | WiX Burn installer, Electron | Partial | `tauri.conf.json` targets only `app`; `building-the-desktop-app.md` unsigned | Developer ID signing, notarization, DMG, CI |
+| Packaging: installer | WiX Burn installer, Electron | Partial | `tauri.conf.json` targets `app` and `dmg`; releases are still unsigned (`building-the-desktop-app.md`) | Developer ID signing, notarization, DMG, CI |
 | Diagnostics | Not documented for the official app (unverified) | Done (ours) | `diagnostics.rs`; [diagnostic bundle](masterhub-diagnostic-bundle.md); `masterhub-diag` CLI | Use in first hardware session |
 
 ## Device discovery and modules
@@ -106,7 +106,7 @@ Implemented: sleep/wake observers on macOS, clock-gap fallback elsewhere, reconn
 
 ## Packaging and signing
 
-`tauri.conf.json` builds only an unsigned `.app` (`targets: ["app"]`), with the sidecar as `externalBin`. `.github/workflows/ci.yml` (macOS arm64 and Intel) and `release.yml` (signs and notarizes only when all six Apple secrets exist, otherwise an artifact labeled UNSIGNED) are on `master` with [release process](release-process.md) notes. No workflow has run on GitHub yet, and signing, notarization and sidecar signing have never been exercised. Intel Mac, Windows and Linux builds are untested.
+`tauri.conf.json` builds an `.app` and a DMG (`targets: ["app", "dmg"]`), with the sidecar as `externalBin`. `.github/workflows/ci.yml` (macOS arm64 and Intel) and `release.yml` (signs and notarizes only when all six Apple secrets exist, otherwise an artifact labeled UNSIGNED) are on `master` with [release process](release-process.md) notes. Both workflows have run on GitHub (unsigned, arm64 and Intel). Signing, notarization and sidecar signing have never been exercised: no Apple secrets are set. The Intel app has not been launched; Windows and Linux builds are untested.
 
 ## Diagnostics
 
@@ -125,7 +125,7 @@ Ahead of the documented official software: passive descriptor/input diagnostic b
 6. GIF frame splitting in offline artwork prep; EXIF orientation handling. A timer countdown face on the key needs a key image path that is hardware-verified first.
 7. Mostly done (hardware-unverified): sink trait, `HidDisplaySink`, redraw planner and coordinator, key artwork provider with Back-key depth badges, dial artwork provider (function name, digital and analog clock, CPU usage on macOS), wiring into `live_runtime.rs` behind `--display-sync` (`--dial-content` for the dial), and an off-by-default experimental app toggle ([display sync](masterhub-display-sync.md)). Remaining without hardware: GPU and temperature sensors (out of scope: private IOKit or SMC interfaces), and a Tauri resume hook if the service is ever kept alive across sleep.
 8. Lighting controls in the app against a fake transport, flagged unverified until color order is known. Not started.
-9. Release engineering: CI and release workflows exist but have never run; remaining are a DMG target, a real signed dry run with Apple secrets, and the sidecar signing check.
+9. Release engineering: CI and the release workflow have run on GitHub (unsigned arm64 and Intel app and DMG, 0.2.0 tag build green on 14 October 2026), and the DMG target exists. Remaining: a signed dry run, which needs the six Apple secrets (none are set on `goniszewski/OpenStreamHub`), and the sidecar signing check that run will perform.
 10. Browser cards and user scripts: not in the official app; optional extensions, threat model first, no runtime until needed.
 11. Multi-module single-session routing, tested with simulated inventories.
 

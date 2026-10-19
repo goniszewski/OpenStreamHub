@@ -105,13 +105,13 @@ pub struct PreparedKeyArtwork {
 /// One composited and fitted animation frame.
 #[derive(Debug)]
 pub struct PreparedKeyArtworkFrame {
-    /// Complete 72×72 baseline JPEG.
+    /// Complete baseline JPEG: 72×72 for a key, 240×240 for the dial.
     pub jpeg: Vec<u8>,
-    /// Playback delay, between 100 and 60,000 milliseconds.
+    /// Playback delay in milliseconds: 100 to 60,000 for a key, 200 to 60,000 for the dial.
     pub delay_ms: u32,
 }
 
-/// Prepares PNG/JPEG or GIF artwork offline, enforcing bounds before decoding.
+/// Prepares PNG/JPEG/BMP or GIF artwork offline, enforcing bounds before decoding.
 pub fn prepare_keypad_artwork(
     input: &[u8],
     options: PrepareOptions,
@@ -191,11 +191,30 @@ pub fn prepare_dial_animation(
     prepare_gif(input, options, DIAL_GIF)
 }
 
+/// Prepares a GIF's frames, then steps the JPEG quality of the whole GIF down
+/// while the frames together exceed the target's total budget, so a long
+/// photographic GIF is compressed to fit instead of refused at the first try.
 fn prepare_gif(
+    input: &[u8],
+    mut options: PrepareOptions,
+    gif: GifTarget,
+) -> Result<PreparedKeyArtwork, String> {
+    loop {
+        match prepare_gif_pass(input, options, gif)? {
+            Ok(prepared) => return Ok(prepared),
+            Err(too_big) if options.quality <= 10 => return Err(too_big),
+            Err(_) => options.quality = options.quality.saturating_sub(15).max(10),
+        }
+    }
+}
+
+/// One pass at one quality. The inner error is the total-size overflow, which a
+/// lower quality can cure; any other failure is the outer error.
+fn prepare_gif_pass(
     input: &[u8],
     options: PrepareOptions,
     gif: GifTarget,
-) -> Result<PreparedKeyArtwork, String> {
+) -> Result<Result<PreparedKeyArtwork, String>, String> {
     let (count, loop_count) = gif_preflight(input)?;
     if count > gif.max_frames {
         return Err(format!(
@@ -230,18 +249,19 @@ fn prepare_gif(
         })?;
         output_bytes += jpeg.len();
         if output_bytes > gif.max_bytes {
-            return Err(format!(
-                "Prepared {} animation exceeds {} KiB",
+            return Ok(Err(format!(
+                "Prepared {} animation exceeds {} KiB even at JPEG quality {}",
                 gif.name,
-                gif.max_bytes / 1024
-            ));
+                gif.max_bytes / 1024,
+                options.quality
+            )));
         }
         frames.push(PreparedKeyArtworkFrame { jpeg, delay_ms });
     }
     if frames.len() != count {
         return Err("GIF did not decode all declared frames".into());
     }
-    Ok(PreparedKeyArtwork { frames, loop_count })
+    Ok(Ok(PreparedKeyArtwork { frames, loop_count }))
 }
 
 /// Encodes at the requested quality, then steps the quality down until the
@@ -1320,10 +1340,17 @@ mod keypad_animation_tests {
                     .unwrap();
             }
         }
-        assert!(
-            prepare_keypad_artwork(&bytes, PrepareOptions::default())
-                .unwrap_err()
-                .contains("512 KiB")
-        );
+        // At quality 100 the frames together are over the 512 KiB budget; the
+        // whole GIF is re-encoded at lower quality until it fits.
+        let prepared = prepare_keypad_artwork(&bytes, PrepareOptions::default()).unwrap();
+        assert_eq!(prepared.frames.len(), 120);
+        let total: usize = prepared.frames.iter().map(|frame| frame.jpeg.len()).sum();
+        assert!(total <= KEYPAD_GIF.max_bytes, "{total} bytes");
+        let at_full_quality = match prepare_gif_pass(&bytes, PrepareOptions::default(), KEYPAD_GIF)
+        {
+            Ok(result) => result,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(at_full_quality.unwrap_err().contains("512 KiB"));
     }
 }

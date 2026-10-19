@@ -50,7 +50,7 @@ export function setDialImage(profile: Profile, image: string, source?: DialSourc
 }
 
 // `profile` with a prepared animation on the dial (content already image). The still image is the first frame,
-// which previews and older readers show; there is no kept source, so the look cannot change after a reopen.
+// which previews show (older readers refuse the file: it is an additive field); there is no kept source, so the look cannot change after a reopen.
 export function setDialAnimation(profile: Profile, animation: DialAnimation): Profile {
   return { ...profile, dial_display: { content: 'image', image: animation.frames[0].jpeg_base64, animation } };
 }

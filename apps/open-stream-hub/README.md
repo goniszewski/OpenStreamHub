@@ -87,7 +87,7 @@ Frontend code is under `src/`, the narrow desktop command bridge is under `src-t
 
 Still open:
 
-- Sending images to the module displays is experimental and unverified on hardware; GIF animation, dial backlight and colour, and firmware controls are not implemented.
+- Sending images to the module displays is experimental and unverified on hardware; key and dial GIF animation exist but are unchecked by eye on hardware; firmware controls are not implemented.
 - Remaining OBS actions (recording, streaming, studio mode, transitions, sources, audio, replay buffer, virtual camera) and Keychain storage for the OBS password; Twitch, Discord and Streamlabs integrations.
 - Macro recording. Media keys and media stop (Apple Music and Spotify only) execute but are unverified on a real Mac.
 - Official `.mhz` export (a nice-to-have), and checking the importer against a real user export.

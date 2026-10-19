@@ -10,7 +10,7 @@ The roller module is a separate issue: the owner confirmed it works in the offic
 
 - Add optional `artwork` to each schema-2 keypad page: canonical wire-index strings `"0"` through `"14"` map to `{frames: [{jpeg_base64, delay_ms}], loop_count}`. Zero loop count means infinite playback; positive values mean total plays. Existing profiles omit the field and retain generated tiles. Child-page Back (wire 0) remains generated.
 - Prepared frames live inside the profile so save, export, import, recovery and session snapshots remain portable. Keep the existing 1 MiB serialized profile limit. Reject artwork that exceeds it rather than silently dropping frames.
-- Accept PNG/JPEG and GIF sources up to 8 MiB. GIF canvas dimensions are at most 512×512, with at most 120 composited frames and 32 MiB cumulative decoded RGBA pixel work. Prepare at most 32 KiB of JPEG bytes per frame, 512 KiB per asset and 700 KiB across a profile; the JSON limit can be tighter.
+- Accept PNG/JPEG/BMP and GIF sources up to 8 MiB. GIF canvas dimensions are at most 512×512, with at most 120 composited frames and 32 MiB cumulative decoded RGBA pixel work. Prepare at most 32 KiB of JPEG bytes per frame, 512 KiB per asset and 700 KiB across a profile; the JSON limit can be tighter.
 - Frame delays are 100–60,000 ms. Clamp shorter GIF delays to 100 ms (conservative 10 FPS ceiling); reject longer ones. Preserve loop metadata. Static artwork has one frame and one play. Preserve transparency/disposal through the GIF decoder, then apply the existing fit/matte/rotation pipeline to each full frame.
 
 ## Implementation

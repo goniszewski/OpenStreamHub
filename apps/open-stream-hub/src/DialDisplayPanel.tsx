@@ -50,10 +50,12 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
 
   // Prepares the source as the exact 240×240 JPEG the dial receives, lowering the quality until it fits the
   // profile budget, then stores it in the profile. Never applies across a draft change (undo, switch or save).
-  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }, keep: string | null) => {
-    if (!invoke) return;
+  // Resolves false when the picture could not be used (an error is shown or the profile moved on), so the caller can
+  // keep the previous source instead of one that only fails.
+  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }, keep: string | null): Promise<boolean> => {
+    if (!invoke) return false;
     const rgb = parseHexColour(look.background);
-    if (!rgb) return;
+    if (!rgb) return false;
     const id = ++requestId.current;
     const before = session.getState();
     setBusy(true); setError(null);
@@ -61,14 +63,15 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
       if (isGif(base64)) {
         // The backend steps the JPEG quality down itself until every frame fits the dial's per-frame budget.
         const animation = await invoke<DialAnimation>('prepare_dial_animation', { request: { image_base64: base64, target: 'dial', quality: 85, fit: look.fit, quarter_turns: look.turns, background: rgb } });
-        if (id !== requestId.current) return;
+        if (id !== requestId.current) return true;
         const current = session.getState();
         if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
           setError('The profile changed while preparing the image. Choose the file again.');
-          return;
+          return false;
         }
-        session.edit(setDialAnimation(current.draft.profile, animation));
-        return;
+        // A one-frame GIF is a still picture.
+        session.edit(animation.frames.length === 1 ? setDialImage(current.draft.profile, animation.frames[0].jpeg_base64) : setDialAnimation(current.draft.profile, animation));
+        return true;
       }
       let prepared: PrepareResult | null = null;
       for (const quality of dialImageQualities) {
@@ -78,15 +81,17 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
       if (!prepared || prepared.bytes > maxDialImageBytes) {
         throw new Error('This picture does not fit the dial even at the lowest quality. Choose a simpler one.');
       }
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) return true;
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
         setError('The profile changed while preparing the image. Choose the file again.');
-        return;
+        return false;
       }
       session.edit(setDialImage(current.draft.profile, prepared.jpeg_base64, keep ? { image: keep, fit: look.fit, quarter_turns: look.turns, background: rgb } : undefined));
+      return true;
     } catch (reason) {
       if (id === requestId.current) setError(errorMessage(reason));
+      return id !== requestId.current;
     } finally {
       if (id === requestId.current) setBusy(false);
     }
@@ -96,9 +101,10 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     setBusy(true); setError(null);
     const read = await readSourceFile(file);
     if (!read.ok) { setBusy(false); setError(read.error); return; }
+    const previous = source;
     setSource(read.base64);
     const kept = isGif(read.base64) ? null : await sourceToKeep(read.base64, read.mime, background);
-    await prepare(read.base64, { fit, turns, background }, kept?.image ?? null);
+    if (!await prepare(read.base64, { fit, turns, background }, kept?.image ?? null)) setSource(previous);
   };
 
   // A change of look re-prepares the chosen picture.

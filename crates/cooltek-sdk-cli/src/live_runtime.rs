@@ -183,13 +183,21 @@ const DISPLAY_ERROR_CHARS: usize = 240;
 /// Display records waiting for the action worker; later records are dropped and counted.
 const DISPLAY_RECORD_QUEUE: usize = 32;
 
-/// Shortest time between two dial writes: the dial is redrawn at most about once a second.
+/// Shortest time between two dial writes: the dial is redrawn at most about once a second
+/// (an animated picture uses [`DIAL_ANIMATION_INTERVAL`]).
 pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
-/// Shortest time between two dial writes while an animated picture plays. The
-/// pacing of dial writes is unmeasured on hardware, so this stays conservative.
+/// Shortest time between two dial writes while an animated picture plays. A
+/// frame near the size limit took 86 to 121 ms to write on a real M131E, so
+/// this leaves about half the interval spare.
 pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(200);
 /// Trigger of a dial write started by an animation frame coming due.
 const DIAL_ANIMATION_TRIGGER: &str = "animation";
+/// How long a failed animation frame holds the animation back before the next
+/// try, so a failing dial logs once in a while instead of at every frame.
+const DIAL_ANIMATION_RETRY: Duration = Duration::from_secs(5);
+/// One clean animation frame in this many is logged, with its write time; the
+/// rest are counted in `syncs` only, as the keypad's timed frames are.
+const DIAL_ANIMATION_LOG_EVERY: u32 = 50;
 /// How often the dial thread re-checks its clock and a rate-limited request.
 const DIAL_TICK: Duration = Duration::from_millis(100);
 /// Shortest wait while an animation plays, so a frame due in a moment does not
@@ -570,7 +578,7 @@ impl DisplayThread {
                             match next_display_request(
                                 &thread_slot,
                                 &abort,
-                                Some(dial.tick(&artwork, min_interval)),
+                                Some(dial.tick(&artwork, min_interval, closed())),
                                 &|| false,
                             ) {
                                 Wake::Stopped => return,
@@ -609,6 +617,25 @@ impl DisplayThread {
                                 };
                                 (request, "panic")
                             });
+                            // Clean animation frames are counted in `syncs` and mostly
+                            // not logged: at five a second they would flood the log.
+                            if trigger == DIAL_ANIMATION_TRIGGER
+                                && outcome == DialOutcome::Done
+                                && !record
+                                    .as_ref()
+                                    .is_ok_and(|(record, _)| record["error"].is_string())
+                            {
+                                dial.finished(outcome);
+                                if !dial.logs_clean_frame() {
+                                    continue;
+                                }
+                                // This one is the logged sample.
+                                let Ok((record, _)) = record else { continue };
+                                if finish(Ok(record), Value::Null) {
+                                    return;
+                                }
+                                continue;
+                            }
                             let failed =
                                 dial_record(trigger, &request, None, false, Some(DISPLAY_PANIC));
                             if finish(record.map(|(record, _)| record), failed) {
@@ -819,9 +846,12 @@ struct DialState {
     retry_pending: Option<Option<String>>,
     /// The newest attempt drew an animation frame.
     last_was_animation: bool,
-    /// An animation frame failed: no more frames are tried until the next
-    /// request, so a failing dial logs once instead of every frame.
-    animation_paused: bool,
+    /// An animation frame failed: no more frames are tried until this moment
+    /// or the next request, so a failing dial logs once in a while instead of
+    /// at every frame.
+    animation_paused_until: Option<Instant>,
+    /// Clean animation frames drawn since one was last logged.
+    animation_unlogged: u32,
 }
 
 /// How one dial attempt ended, for the retry bookkeeping.
@@ -843,8 +873,8 @@ impl DialState {
     /// would draw each frame up to a tick late, and the lateness would pile up
     /// until a frame was skipped. A paused animation waits at the usual tick
     /// for the next request.
-    fn tick(&self, artwork: &DialArtwork, min_interval: Duration) -> Duration {
-        if !self.started || self.animation_paused {
+    fn tick(&self, artwork: &DialArtwork, min_interval: Duration, closed: bool) -> Duration {
+        if !self.started || closed || self.animation_paused() {
             return DIAL_TICK;
         }
         let Some(until_frame) = artwork.next_frame_in() else {
@@ -863,11 +893,24 @@ impl DialState {
         wait.clamp(DIAL_ANIMATION_TICK_FLOOR, DIAL_TICK)
     }
 
+    fn animation_paused(&self) -> bool {
+        self.animation_paused_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Whether a clean animation frame's record is written to the log: the
+    /// first, then one in [`DIAL_ANIMATION_LOG_EVERY`].
+    fn logs_clean_frame(&mut self) -> bool {
+        let log = self.animation_unlogged == 0;
+        self.animation_unlogged = (self.animation_unlogged + 1) % DIAL_ANIMATION_LOG_EVERY;
+        log
+    }
+
     fn requested(&mut self, request: DisplayRequest) {
         self.started = true;
         self.dial_function = request.dial_function;
         self.trigger = Some(request.trigger);
-        self.animation_paused = false;
+        self.animation_paused_until = None;
     }
 
     /// The request to draw now, if the face changed and the rate limit allows.
@@ -895,7 +938,7 @@ impl DialState {
             self.trigger = None;
             return None;
         }
-        if animation && self.animation_paused && self.trigger.is_none() {
+        if animation && self.animation_paused() && self.trigger.is_none() {
             return None;
         }
         let min_interval = dial_interval(artwork, min_interval);
@@ -941,7 +984,7 @@ impl DialState {
     /// another face resets it.
     fn finished(&mut self, outcome: DialOutcome) {
         if self.last_was_animation && outcome != DialOutcome::Done {
-            self.animation_paused = true;
+            self.animation_paused_until = Some(Instant::now() + DIAL_ANIMATION_RETRY);
         }
         match outcome {
             DialOutcome::Done => self.retried = None,

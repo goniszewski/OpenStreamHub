@@ -24,7 +24,7 @@
 //! `docs/masterhub-display-sync.md`.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     f64::consts::PI,
     fmt,
@@ -374,8 +374,24 @@ struct Animation {
     frames: Vec<Vec<u8>>,
     delays_ms: Vec<u32>,
     loop_count: u32,
-    /// When playback began: frame 0 is up at this moment.
-    started: Instant,
+    /// When playback began: frame 0 is up at this moment. Set by the first
+    /// request, not when the artwork is prepared, so a slow device setup does
+    /// not eat into a short or single-play animation.
+    started: Cell<Option<Instant>>,
+}
+
+impl Animation {
+    /// Time since playback began, starting it now on the first call.
+    fn elapsed(&self) -> Duration {
+        self.started
+            .get()
+            .unwrap_or_else(|| {
+                let now = Instant::now();
+                self.started.set(Some(now));
+                now
+            })
+            .elapsed()
+    }
 }
 
 /// The frame showing `elapsed` after playback began. A positive `loop_count`
@@ -464,7 +480,7 @@ impl DialArtwork {
                     .map(|frame| frame.delay_ms)
                     .collect(),
                 loop_count: animation.loop_count,
-                started: Instant::now(),
+                started: Cell::new(None),
             })),
             _ => None,
         };
@@ -522,7 +538,22 @@ impl DialArtwork {
 
     /// Turns every face served by `quarter_turns` quarter turns clockwise (0 to 3).
     pub fn with_turn(mut self, quarter_turns: u8) -> Self {
-        self.quarter_turns = quarter_turns % 4;
+        let quarter_turns = quarter_turns % 4;
+        if self.content == DialContent::Image {
+            // Turn the stored picture once, by the change from the turn already
+            // applied, so serving a frame never decodes and re-encodes it.
+            let delta = (quarter_turns + 4 - self.quarter_turns) % 4;
+            let turn = |jpeg: &mut Vec<u8>| {
+                if let Some(turned) = turned(jpeg, delta) {
+                    *jpeg = turned;
+                }
+            };
+            self.image.iter_mut().for_each(turn);
+            if let Some(animation) = &mut self.animation {
+                animation.frames.iter_mut().for_each(turn);
+            }
+        }
+        self.quarter_turns = quarter_turns;
         self
     }
 
@@ -552,7 +583,7 @@ impl DialArtwork {
                     animation_frame(
                         &animation.delays_ms,
                         animation.loop_count,
-                        animation.started.elapsed()
+                        animation.elapsed()
                     )
                 ),
                 None => "image".into(),
@@ -581,11 +612,9 @@ impl DialArtwork {
     /// a still picture and for an animation that has played its last time.
     pub fn next_frame_in(&self) -> Option<Duration> {
         let animation = self.animation.as_ref()?;
-        frame_remaining(
-            &animation.delays_ms,
-            animation.loop_count,
-            animation.started.elapsed(),
-        )
+        // Playback begins with the first request, so nothing is due before it.
+        let elapsed = animation.started.get()?.elapsed();
+        frame_remaining(&animation.delays_ms, animation.loop_count, elapsed)
     }
 
     /// True when the dial picture plays frames, so the face changes with time.
@@ -665,6 +694,10 @@ fn parse_time(text: &str) -> Option<WallTime> {
 impl DialImageProvider for DialArtwork {
     fn dial_image(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
         let face = self.face(request)?;
+        if self.content == DialContent::Image {
+            // The stored picture was turned when the turn was set.
+            return Some(face);
+        }
         Some(turned(&face, self.quarter_turns).unwrap_or(face))
     }
 }
@@ -747,7 +780,7 @@ fn decode_profile_dial_image(profile: &Profile) -> Result<Vec<u8>, String> {
     Ok(jpeg)
 }
 
-/// A profile whose dial plays `delays_ms.len()` solid-colour frames, for tests.
+/// A profile whose dial plays `delays_ms.len()` frames, each a solid colour with a corner block, for tests.
 #[cfg(test)]
 pub(crate) fn animated_test_profile(delays_ms: &[u32], loop_count: u32) -> Profile {
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -756,7 +789,10 @@ pub(crate) fn animated_test_profile(delays_ms: &[u32], loop_count: u32) -> Profi
         .enumerate()
         .map(|(index, delay)| {
             let shade = (40 + index * 30).min(255) as u8;
-            let jpeg = encode(&RgbImage::from_pixel(SIDE, SIDE, Rgb([shade, 20, 200]))).unwrap();
+            // A bright corner block, so turning a frame changes it.
+            let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb([shade, 20, 200]));
+            fill(&mut image, 0, 0, 60, 60, [255, 255, 0]);
+            let jpeg = encode(&image).unwrap();
             serde_json::json!({"jpeg_base64": STANDARD.encode(jpeg), "delay_ms": delay})
         })
         .collect();
@@ -1341,6 +1377,41 @@ mod tests {
         assert_eq!(frame_remaining(&delays, 2, ms(1999)), Some(ms(1)));
         assert_eq!(frame_remaining(&delays, 2, ms(2000)), None);
         assert_eq!(frame_remaining(&[], 0, ms(5)), None);
+    }
+
+    #[test]
+    fn playback_starts_at_the_first_request_not_at_preparation() {
+        let profile = animated_test_profile(&[200, 200], 1);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        // Nothing is due before playback has begun.
+        assert_eq!(art.next_frame_in(), None);
+        std::thread::sleep(Duration::from_millis(450));
+        // A single play of 400 ms would be over by now had it run from preparation.
+        assert_eq!(art.request(None).function.as_deref(), Some("image:0"));
+        assert!(art.next_frame_in().is_some());
+    }
+
+    #[test]
+    fn a_turned_animation_is_turned_once_and_served_as_stored() {
+        let profile = animated_test_profile(&[200, 200, 200], 0);
+        let upright =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        let turned_art = DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41)))
+            .unwrap()
+            .with_turn(1)
+            .with_turn(1);
+        let request = |index: usize| DialImageRequest {
+            profile: "Moving".into(),
+            function: Some(format!("image:{index}")),
+        };
+        for index in 0..3 {
+            let plain = upright.dial_image(&request(index)).unwrap();
+            let served = turned_art.dial_image(&request(index)).unwrap();
+            // Setting the same turn twice turns the frames once, not twice.
+            assert_eq!(served, turned(&plain, 1).unwrap(), "frame {index}");
+            assert_ne!(served, plain);
+        }
     }
 
     #[test]

@@ -222,8 +222,16 @@ pub fn prepare_dial_animation(
         loop_count: prepared.loop_count,
     };
     // The same check a saved profile gets, so the editor never holds frames
-    // that the profile would then refuse. A one-frame GIF fails it here.
-    animation.jpegs()?;
+    // that the profile would then refuse. A one-frame GIF is not an animation:
+    // it comes back as its single frame, which the editor stores as a still.
+    if let [only] = animation.frames.as_slice() {
+        let jpeg = STANDARD
+            .decode(&only.jpeg_base64)
+            .map_err(|error| error.to_string())?;
+        dial::validate_jpeg(&jpeg).map_err(|error| error.to_string())?;
+    } else {
+        animation.jpegs()?;
+    }
     Ok(animation)
 }
 
@@ -393,9 +401,13 @@ mod tests {
 
     /// Two 1×1 frames, 250 ms each, repeating forever.
     fn tiny_gif() -> Vec<u8> {
+        tiny_gif_of(2)
+    }
+
+    fn tiny_gif_of(frames: usize) -> Vec<u8> {
         let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
         gif.extend_from_slice(b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00");
-        for _ in 0..2 {
+        for _ in 0..frames {
             gif.extend_from_slice(b"\x21\xf9\x04\x00\x19\x00\x00\x00");
             gif.extend_from_slice(b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00");
         }
@@ -416,6 +428,15 @@ mod tests {
         assert!(prepare_dial_animation(&keypad).is_err());
         let still = request(&png(&RgbImage::new(4, 4)), Target::Dial, Fit::Cover, 0);
         assert!(prepare_dial_animation(&still).unwrap_err().contains("GIF"));
+    }
+
+    #[test]
+    fn a_one_frame_gif_comes_back_as_its_single_frame_for_a_still() {
+        let asked = request(&tiny_gif_of(1), Target::Dial, Fit::Cover, 0);
+        let animation = prepare_dial_animation(&asked).unwrap();
+        assert_eq!(animation.frames.len(), 1);
+        let jpeg = STANDARD.decode(&animation.frames[0].jpeg_base64).unwrap();
+        assert!(dial::validate_jpeg(&jpeg).is_ok());
     }
 
     #[test]

@@ -1549,10 +1549,17 @@ impl Profile {
                 ));
             }
         }
-        if self
+        // Key artwork and a dial animation are the bulky parts; the encoded
+        // size is checked as a whole whenever either is present.
+        let has_media = self
             .keypad
             .as_ref()
             .is_some_and(|layout| layout.pages.iter().any(|page| !page.artwork.is_empty()))
+            || self
+                .dial_display
+                .as_ref()
+                .is_some_and(|display| display.animation.is_some());
+        if has_media
             && serde_json::to_vec(self)
                 .map_err(|error| error.to_string())?
                 .len()
@@ -1911,7 +1918,7 @@ mod tests {
         let many: Vec<String> = (0..31).map(|_| frame(&first, 200)).collect();
         let source = format!(
             r#","source":{{"image":"{}","fit":"contain","quarter_turns":0,"background":[0,0,0]}}"#,
-            STANDARD.encode(b"\x89PNG")
+            STANDARD.encode(b"\x89PNG\r\n\x1a\n")
         );
         for (label, result) in [
             ("one frame", profile("image", &first, &two[..1], "")),
@@ -1959,6 +1966,9 @@ mod tests {
         ] {
             assert!(result.is_err(), "{label} should be refused");
         }
+        // The source rule itself is what refuses a source beside an animation.
+        let error = profile("image", &first, &two, &source).unwrap_err();
+        assert!(error.to_string().contains("no source picture"), "{error}");
     }
 
     #[test]

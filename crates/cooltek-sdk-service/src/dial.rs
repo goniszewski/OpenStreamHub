@@ -97,10 +97,11 @@ impl DialAnimation {
     /// Most decoded bytes in one frame.
     pub const MAX_FRAME_BYTES: usize = 48 * 1024;
     /// Most decoded bytes across all frames, which keeps the profile well
-    /// under its 1 MiB JSON limit once base64 encoded.
+    /// under its 1 MiB JSON limit once base64 encoded (alone: with key artwork
+    /// the profile as a whole is still checked against that limit).
     pub const MAX_BYTES: usize = 384 * 1024;
-    /// Shortest frame time. A dial image takes many reports to write and its
-    /// pacing has not been measured on hardware, so the floor is conservative.
+    /// Shortest frame time. A frame near the size limit took 86 to 121 ms to
+    /// write on a real M131E, so 200 ms leaves about half the time spare.
     pub const MIN_DELAY_MS: u32 = 200;
     /// Longest frame time.
     pub const MAX_DELAY_MS: u32 = 60_000;
@@ -230,6 +231,15 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
         }
         validate_source(source)?;
     }
+    // The still is checked (and size-bounded) before anything decodes it below.
+    match (display.content, display.image.as_deref()) {
+        (DialDisplayContent::Image, Some(image)) => validate_display_image(image)?,
+        (DialDisplayContent::Image, None) => {
+            return Err("dial_display: image content requires the image field".into());
+        }
+        (_, Some(_)) => return Err("dial_display: only image content carries an image".into()),
+        (_, None) => {}
+    }
     if let Some(animation) = &display.animation {
         use base64::{Engine, engine::general_purpose::STANDARD};
         if display.content != DialDisplayContent::Image || display.image.is_none() {
@@ -239,7 +249,7 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
             return Err("dial_display: an animation has no source picture".into());
         }
         let jpegs = animation.jpegs()?;
-        // Validated above for image content, so the still decodes.
+        // Validated above, so the still is bounded and decodes.
         let still = STANDARD
             .decode(display.image.as_deref().unwrap_or_default())
             .map_err(|_| "dial_display: the image is not valid base64".to_string())?;
@@ -247,14 +257,7 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
             return Err("dial_display: the image must be the animation's first frame".into());
         }
     }
-    match (display.content, display.image.as_deref()) {
-        (DialDisplayContent::Image, Some(image)) => validate_display_image(image),
-        (DialDisplayContent::Image, None) => {
-            Err("dial_display: image content requires the image field".into())
-        }
-        (_, Some(_)) => Err("dial_display: only image content carries an image".into()),
-        (_, None) => Ok(()),
-    }
+    Ok(())
 }
 
 fn validate_source(source: &DialSource) -> Result<(), String> {

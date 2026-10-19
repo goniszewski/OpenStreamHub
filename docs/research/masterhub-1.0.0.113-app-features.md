@@ -77,6 +77,21 @@ Focused-app rules, browser-tab cards, user scripts and a plugin SDK do not exist
 | 14 | OBS/Twitch/Discord/etc. | Medium | High each | OBS first |
 | 15 | Master ID backup | Low | High | Proprietary backend; skip |
 
+## GIF playback and frame timing (source-map pass, 19 October 2026)
+
+Read from the renderer map (`src/App.vue`, `src/store/module/knobs.js`, `views/stack/base15key/editicon.vue`) and the minified main process (`background.js`, `resizeAndExportFramesGif`). Static reading only; nothing was run, and the native addon was not opened.
+
+- **The host plays the GIF.** Import turns it into JPEG frames; a renderer loop, `universalGifInterval` (`App.vue` ~3144), sends one frame at a time. The device never sees a GIF.
+- **Loop.** A `setTimeout` loop: 30 ms between passes while any key or dial GIF is playing, 1000 ms otherwise. Each pass adds the time since the last pass to a per-key (and per-dial) counter. If the gap since the last pass exceeds 200 ms (the app was stalled), the pass is skipped and the counter reset.
+- **Per-frame delay.** The target is `max(frame delay, 66 ms)` for keys and the dial, so the nominal ceiling is about 15 frames a second. Keys additionally wait until the counter reaches `gifStableDuration` (100 ms), so a key frame lasts at least 100 ms (10 a second). The dial has no such extra floor. When more time has passed than one frame, the loop advances through several frames and draws only the last (frames are skipped, not queued). Playback is paused while a countdown is running on the same control.
+- **Delays.** They come from `gifsicle --info` (`delay N.NNs` per frame, times 1000). If none are found, every frame gets 100 ms.
+- **Loop count is not honoured.** On import the main process runs `gifsicle --loopcount=0` on the file (unless it is an internal asset), and the player wraps to frame 0 after the last frame. Every GIF loops forever.
+- **Frames.** `gifsicle --resize` to 240×240 for the dial or 72×72 for a key. For the dial, a non-square GIF keeps its aspect ratio and is centred on a black 240×240 canvas (no crop to fill); frames are re-encoded to JPEG with Jimp. No frame-count or byte limit appeared in these code paths.
+- **Dial write.** Each frame is one `Display_Picture_On_Screen_CM_M131E` call in the main process (`Kr.…(buffer, length, serial)`), with no host-side pacing beyond the loop above. How long the call blocks is the native addon's business.
+- **Storage.** The profile keeps `frames[]` and `framesDelay[]` per dial or key; key GIFs are also cached by file hash in `gifPool`.
+
+For OpenStreamHub: the official dial floor (66 ms nominal) is about three times faster than ours (200 ms). A frame near the size limit took 86 to 121 ms to write on a real M131E, so the official app is limited in practice by the write time, at roughly 8 to 10 frames a second, if its frames are as large. Ours also keeps the GIF's loop count, where the official app always loops. A 150 ms dial floor would still leave room over the measured worst case; whether it looks better is unchecked.
+
 ## Open items
 
 - ~~`.mhz` schema.~~ Done 7 October 2026: [`.mhz` format](masterhub-mhz-format.md). It is a standard ZIP holding one cleartext JSON profile entry plus optional `uploadImages/` and `gifPools/`, with no encryption, signature or version field. Images are stored as JSON `Buffer` byte arrays. Serials are remapped by position on import. Still open from it: folder Back tile, multi-task `app-files` path field, volume step size, knob/dial/roller directions, and the `7z.exe` zip-slip behaviour.

@@ -79,7 +79,7 @@ Tap or click any screenshot to open it at full size. They follow your light or d
 | Volume, mute, shortcuts, text, apps, URLs and media controls | Implemented; execution and macOS permission validation vary by action. See the [action catalogue](docs/masterhub-actions.md). |
 | Multi-action and recorded key macros | Multi-action sequences and the key macro recorder implemented; the recorder still needs a hardware-session check. |
 | Countdown timers | Implemented with notification and sound; remaining time is not displayed on the key. |
-| OBS Studio actions | All 17 official OBS actions are implemented: scenes, scene collection and profile, virtual camera, replay buffer, recording (including pause), streaming, studio mode and transition, filter and source visibility, input mute, volume (absolute, step and fader-driven), media sources and screenshots to `~/Pictures`. Tested against a fake server; against a real OBS 5.7.4, only the connection and a fader driving an input's volume have been checked so far. |
+| OBS Studio actions | All 17 official OBS actions are implemented: scenes, scene collection and profile, virtual camera, replay buffer, recording (including pause), streaming, studio mode and transition, filter and source visibility, input mute, volume (absolute, step and fader-driven), media sources and screenshots to `~/Pictures`. Checked on a real OBS 5.7.4: the connection, a fader driving an input's volume, and recording, pause, screenshot, virtual camera, replay buffer, studio mode and transition, mute, volume step and media-source keys. Streaming, scenes, collections, profiles, filters and source visibility are only tested against a fake server. |
 | Modules start by themselves | While module control is App, every connected control module (keys, dial, knobs, faders, rollers) starts a session on its own. |
 | Twitch, Discord, Streamlabs and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually. |
 | Official `.mhz` profile import/export | Import implemented with a compatibility report and review before execution; real export compatibility remains to be validated. `.mhz` export missing. Own-format JSON import/export implemented. |
@@ -155,7 +155,7 @@ Support below describes the current macOS work. A decoder or editor alone does n
 | 5-fader module · M005S | Input tested on all five faders (0 to 100); drives an OBS input's volume along OBS's slider scale. Starts automatically like the other modules. |
 | Base · M0064 | Discovered and recorded; observed reports are a constant heartbeat. |
 
-These results come from one rig. Sleep/wake recovery, some lifecycle paths and most real-OBS actions still need validation. See [hardware results](docs/masterhub-hardware-results.md) for the exact tests and limits, and the [parity tracker](docs/windows-parity-gaps.md) for gaps against the official Windows app.
+These results come from one rig. Sleep/wake recovery, some lifecycle paths and some real-OBS actions still need validation. See [hardware results](docs/masterhub-hardware-results.md) for the exact tests and limits, and the [parity tracker](docs/windows-parity-gaps.md) for gaps against the official Windows app.
 
 ## Privacy and telemetry
 

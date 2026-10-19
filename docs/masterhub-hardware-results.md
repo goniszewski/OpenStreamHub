@@ -284,6 +284,10 @@ Desktop app, dial running its display and the 15-key module running its keys.
 - **Not done:** the move was by hand and not timed; jitter and a fader's resolution at rest are not measured, and the microphone-volume behaviour is the separate pending check.
 - **Not asked of the module:** there is no read-on-demand for positions; a position becomes known with the first report after a fader moves, which carries all five.
 
+## Dial GIF playback (pending)
+
+Built and tested against a fake sink only. In the app's dial **Display** tab choose **Custom image**, then a GIF (up to 8 MiB, at most 30 frames; shorter frame times are raised to 200 ms), and run the profile on an M131E with Module control set to App. Check: the frames play in order without tearing or blank flashes; the dial still answers a click and a turn while it plays; the loop count is respected (`loop_count` 0 loops, a positive count stops on the last frame); the run's `display_sync` records (`trigger: "animation"`) show `elapsed_micros` well under the frame time, and no failures. If writes take longer than 200 ms, raise `DialAnimation::MIN_DELAY_MS`. Then stop the run: the dial returns to hardware mode as for any other face. Needs the sidecar rebuilt (`npm run sidecar`).
+
 ## Custom dial picture (11 October 2026)
 
 `masterhub-service run --software-mode --display-sync --dial-content image` on the M131E with a profile whose `dial_display` held a prepared 240×240 JPEG (7 KB, `dial prepare-image` at quality 85): a test card of four coloured quadrants, a white cross and a black tab in the top-left corner. The app and its helpers were closed first. Two runs of 25 and 45 seconds: the service reported one display sync with the face `image`, written, no failures, and ended on schedule. The user saw the card on the dial, upright; the black tab sat just outside the round border, as expected for a corner of a square picture on a round screen. After each run the dial returned to its built-in animation.

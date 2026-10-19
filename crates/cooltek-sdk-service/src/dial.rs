@@ -63,6 +63,93 @@ pub struct DialDisplay {
     /// reopen. Refused unless an image is present; the dial never reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DialSource>,
+    /// Frames that play on the dial instead of the still `image`, which then
+    /// holds the first frame as the picture shown in lists and previews.
+    /// Refused with any other content, without an image, or with a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation: Option<DialAnimation>,
+}
+
+/// One pre-encoded dial frame and how long it stays up.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialAnimationFrame {
+    /// Canonical standard base64 of a complete 240×240 baseline JFIF.
+    pub jpeg_base64: String,
+    /// Display time in milliseconds, [`DialAnimation::MIN_DELAY_MS`] through
+    /// [`DialAnimation::MAX_DELAY_MS`].
+    pub delay_ms: u32,
+}
+
+/// An ordered, bounded sequence of dial frames.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialAnimation {
+    /// At least two frames; the first equals the display's `image`.
+    pub frames: Vec<DialAnimationFrame>,
+    /// Zero loops forever; a positive value counts total plays, then holds the last frame.
+    pub loop_count: u32,
+}
+
+impl DialAnimation {
+    /// Most frames in one animation.
+    pub const MAX_FRAMES: usize = 30;
+    /// Most decoded bytes in one frame.
+    pub const MAX_FRAME_BYTES: usize = 48 * 1024;
+    /// Most decoded bytes across all frames, which keeps the profile well
+    /// under its 1 MiB JSON limit once base64 encoded.
+    pub const MAX_BYTES: usize = 384 * 1024;
+    /// Shortest frame time. A dial image takes many reports to write and its
+    /// pacing has not been measured on hardware, so the floor is conservative.
+    pub const MIN_DELAY_MS: u32 = 200;
+    /// Longest frame time.
+    pub const MAX_DELAY_MS: u32 = 60_000;
+
+    /// The decoded, validated JPEG of every frame.
+    pub fn jpegs(&self) -> Result<Vec<Vec<u8>>, String> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        if !(2..=Self::MAX_FRAMES).contains(&self.frames.len()) {
+            return Err(format!(
+                "dial_display: an animation needs 2 through {} frames",
+                Self::MAX_FRAMES
+            ));
+        }
+        let mut total = 0usize;
+        let mut jpegs = Vec::with_capacity(self.frames.len());
+        for frame in &self.frames {
+            if !(Self::MIN_DELAY_MS..=Self::MAX_DELAY_MS).contains(&frame.delay_ms) {
+                return Err(format!(
+                    "dial_display: an animation frame lasts {} through {} ms",
+                    Self::MIN_DELAY_MS,
+                    Self::MAX_DELAY_MS
+                ));
+            }
+            if frame.jpeg_base64.len() > Self::MAX_FRAME_BYTES.div_ceil(3) * 4 {
+                return Err(format!(
+                    "dial_display: an animation frame exceeds {} KiB",
+                    Self::MAX_FRAME_BYTES / 1024
+                ));
+            }
+            let jpeg = STANDARD
+                .decode(&frame.jpeg_base64)
+                .map_err(|_| "dial_display: an animation frame is not valid base64".to_string())?;
+            if STANDARD.encode(&jpeg) != frame.jpeg_base64 {
+                return Err("dial_display: animation frames must use canonical base64".into());
+            }
+            total += jpeg.len();
+            if jpeg.len() > Self::MAX_FRAME_BYTES || total > Self::MAX_BYTES {
+                return Err(format!(
+                    "dial_display: an animation frame exceeds {} KiB or the frames exceed {} KiB together",
+                    Self::MAX_FRAME_BYTES / 1024,
+                    Self::MAX_BYTES / 1024
+                ));
+            }
+            cooltek_sdk_masterhub::dial::validate_jpeg(&jpeg)
+                .map_err(|error| format!("dial_display: {error}"))?;
+            jpegs.push(jpeg);
+        }
+        Ok(jpegs)
+    }
 }
 
 /// How a source picture is fitted onto the round screen.
@@ -142,6 +229,23 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
             return Err("dial_display: a source picture belongs to image content".into());
         }
         validate_source(source)?;
+    }
+    if let Some(animation) = &display.animation {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        if display.content != DialDisplayContent::Image || display.image.is_none() {
+            return Err("dial_display: an animation belongs to image content".into());
+        }
+        if display.source.is_some() {
+            return Err("dial_display: an animation has no source picture".into());
+        }
+        let jpegs = animation.jpegs()?;
+        // Validated above for image content, so the still decodes.
+        let still = STANDARD
+            .decode(display.image.as_deref().unwrap_or_default())
+            .map_err(|_| "dial_display: the image is not valid base64".to_string())?;
+        if jpegs.first() != Some(&still) {
+            return Err("dial_display: the image must be the animation's first frame".into());
+        }
     }
     match (display.content, display.image.as_deref()) {
         (DialDisplayContent::Image, Some(image)) => validate_display_image(image),

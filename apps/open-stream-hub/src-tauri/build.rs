@@ -60,6 +60,7 @@ fn main() {
             "create_diagnostics",
             "prepare_artwork",
             "prepare_key_artwork",
+            "prepare_dial_animation",
             "save_artwork",
             "app_icon",
             "macro_record_start",

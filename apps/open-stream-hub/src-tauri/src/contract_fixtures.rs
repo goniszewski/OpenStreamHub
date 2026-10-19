@@ -737,11 +737,13 @@ fn display_settings_payloads_match_the_shared_fixture() {
                 content: DialDisplayContent::Image,
                 image: Some("AAAA".into()),
                 source: None,
+                animation: None,
             },
             "dial_display_function_json": cooltek_sdk_service::DialDisplay {
                 content: DialDisplayContent::Function,
                 image: None,
                 source: None,
+                animation: None,
             },
             "module_controls": [ModuleControl::App, ModuleControl::BuiltInAnimation],
             // The global default profile for automatic starts. Tauri maps

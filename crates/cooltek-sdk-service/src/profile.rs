@@ -1876,6 +1876,92 @@ mod tests {
     }
 
     #[test]
+    fn a_dial_animation_is_bounded_and_starts_with_the_still_image() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let first = dial_jpeg();
+        let other = {
+            let image = image::RgbImage::from_pixel(240, 240, image::Rgb([200, 20, 30]));
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+                .encode_image(&image)
+                .unwrap();
+            STANDARD.encode(jpeg)
+        };
+        let frame =
+            |jpeg: &str, delay: u32| format!(r#"{{"jpeg_base64":"{jpeg}","delay_ms":{delay}}}"#);
+        let profile = |content: &str, image: &str, frames: &[String], extra: &str| {
+            let image = if image.is_empty() {
+                String::new()
+            } else {
+                format!(r#","image":"{image}""#)
+            };
+            Profile::from_json(
+                format!(
+                    r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"{content}"{image}{extra},"animation":{{"frames":[{}],"loop_count":0}}}}}}"#,
+                    frames.join(",")
+                )
+                .as_bytes(),
+            )
+        };
+        let two = [frame(&first, 200), frame(&other, 60_000)];
+        let ok = profile("image", &first, &two, "").unwrap();
+        // Serializing and reading it back changes nothing.
+        let again = Profile::from_json(&serde_json::to_vec(&ok).unwrap()).unwrap();
+        assert_eq!(again, ok);
+        let many: Vec<String> = (0..31).map(|_| frame(&first, 200)).collect();
+        let source = format!(
+            r#","source":{{"image":"{}","fit":"contain","quarter_turns":0,"background":[0,0,0]}}"#,
+            STANDARD.encode(b"\x89PNG")
+        );
+        for (label, result) in [
+            ("one frame", profile("image", &first, &two[..1], "")),
+            ("31 frames", profile("image", &first, &many, "")),
+            (
+                "too short",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 199), frame(&other, 200)],
+                    "",
+                ),
+            ),
+            (
+                "too long",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame(&other, 60_001)],
+                    "",
+                ),
+            ),
+            ("still differs", profile("image", &other, &two, "")),
+            ("no still", profile("image", "", &two, "")),
+            ("wrong content", profile("clock", &first, &two, "")),
+            ("with a source", profile("image", &first, &two, &source)),
+            (
+                "not a jpeg",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame("AAAA", 200)],
+                    "",
+                ),
+            ),
+            (
+                "bad base64",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame("!!!!", 200)],
+                    "",
+                ),
+            ),
+        ] {
+            assert!(result.is_err(), "{label} should be refused");
+        }
+    }
+
+    #[test]
     fn a_dial_source_picture_is_kept_only_with_the_image_it_made() {
         use base64::Engine as _;
         let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);

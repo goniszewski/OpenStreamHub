@@ -355,6 +355,9 @@ pub struct DialArtwork {
     functions: Vec<Vec<u8>>,
     /// Only for [`DialContent::Image`]: the profile's validated dial picture.
     image: Option<Vec<u8>>,
+    /// Only for [`DialContent::Image`] with an animation in the profile.
+    /// Boxed for the same reason as `cpu`.
+    animation: Option<Box<Animation>>,
     clock: Box<dyn Clock>,
     /// Only for [`DialContent::Cpu`].
     /// Boxed: inline, it makes `DialArtwork` large enough to trip clippy's
@@ -364,6 +367,38 @@ pub struct DialArtwork {
     cached: RefCell<Option<(String, Vec<u8>)>>,
     /// Quarter turns clockwise applied to every face served, so a dial sitting turned on the base reads upright.
     quarter_turns: u8,
+}
+
+/// The frames of an animated dial picture and the clock they play against.
+struct Animation {
+    frames: Vec<Vec<u8>>,
+    delays_ms: Vec<u32>,
+    loop_count: u32,
+    /// When playback began: frame 0 is up at this moment.
+    started: Instant,
+}
+
+/// The frame showing `elapsed` after playback began. A positive `loop_count`
+/// is the number of plays; after the last the final frame stays up.
+fn animation_frame(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> usize {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let mut at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 {
+        return 0;
+    }
+    if loop_count > 0 && at >= cycle * u64::from(loop_count) {
+        return delays_ms.len() - 1;
+    }
+    at %= cycle;
+    let mut index = 0;
+    for (frame, &delay) in delays_ms.iter().enumerate() {
+        index = frame;
+        if at < u64::from(delay) {
+            break;
+        }
+        at -= u64::from(delay);
+    }
+    index
 }
 
 impl fmt::Debug for DialArtwork {
@@ -397,6 +432,23 @@ impl DialArtwork {
         } else {
             None
         };
+        let animation = match profile
+            .dial_display
+            .as_ref()
+            .and_then(|d| d.animation.as_ref())
+        {
+            Some(animation) if content == DialContent::Image => Some(Box::new(Animation {
+                frames: animation.jpegs()?,
+                delays_ms: animation
+                    .frames
+                    .iter()
+                    .map(|frame| frame.delay_ms)
+                    .collect(),
+                loop_count: animation.loop_count,
+                started: Instant::now(),
+            })),
+            _ => None,
+        };
         let names: Vec<&str> = profile
             .dial_functions
             .iter()
@@ -421,6 +473,7 @@ impl DialArtwork {
                 .transpose()?,
             functions,
             image,
+            animation,
             clock,
             cpu: (content == DialContent::Cpu)
                 .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
@@ -474,7 +527,17 @@ impl DialArtwork {
                     None => "profile".into(),
                 })
             }
-            DialContent::Image => Some("image".into()),
+            DialContent::Image => Some(match &self.animation {
+                Some(animation) => format!(
+                    "image:{}",
+                    animation_frame(
+                        &animation.delays_ms,
+                        animation.loop_count,
+                        animation.started.elapsed()
+                    )
+                ),
+                None => "image".into(),
+            }),
             DialContent::Cpu => Some(match self.cpu_percent(Instant::now()) {
                 Some(percent) => format!("cpu:{percent}"),
                 None => "cpu:--".into(),
@@ -493,6 +556,11 @@ impl DialArtwork {
             profile: self.profile_name.clone(),
             function,
         }
+    }
+
+    /// True when the dial picture plays frames, so the face changes with time.
+    pub fn is_animated(&self) -> bool {
+        self.animation.is_some()
     }
 
     /// Prepared bytes of the profile face (function content only).
@@ -597,6 +665,14 @@ impl DialArtwork {
         if face == "image" && self.content == DialContent::Image {
             return self.image.clone();
         }
+        if let (Some(index), Some(animation)) = (face.strip_prefix("image:"), &self.animation)
+            && self.content == DialContent::Image
+        {
+            if index.starts_with('+') || (index.len() > 1 && index.starts_with('0')) {
+                return None;
+            }
+            return animation.frames.get(index.parse::<usize>().ok()?).cloned();
+        }
         if face == "profile" && self.content == DialContent::Function {
             return self.profile_face.clone();
         }
@@ -639,6 +715,30 @@ fn decode_profile_dial_image(profile: &Profile) -> Result<Vec<u8>, String> {
     dial::validate_jpeg(&jpeg)
         .map_err(|error| format!("the profile's dial image is not a valid dial image: {error}"))?;
     Ok(jpeg)
+}
+
+/// A profile whose dial plays `delays_ms.len()` solid-colour frames, for tests.
+#[cfg(test)]
+pub(crate) fn animated_test_profile(delays_ms: &[u32], loop_count: u32) -> Profile {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let frames: Vec<serde_json::Value> = delays_ms
+        .iter()
+        .enumerate()
+        .map(|(index, delay)| {
+            let shade = (40 + index * 30).min(255) as u8;
+            let jpeg = encode(&RgbImage::from_pixel(SIDE, SIDE, Rgb([shade, 20, 200]))).unwrap();
+            serde_json::json!({"jpeg_base64": STANDARD.encode(jpeg), "delay_ms": delay})
+        })
+        .collect();
+    let json = serde_json::json!({
+        "schema_version": 1, "name": "Moving", "bindings": [],
+        "dial_display": {
+            "content": "image",
+            "image": frames[0]["jpeg_base64"],
+            "animation": {"frames": frames, "loop_count": loop_count},
+        }
+    });
+    Profile::from_json(serde_json::to_vec(&json).unwrap().as_slice()).unwrap()
 }
 
 /// Encodes through the shared preparation path, then validates explicitly.
@@ -1150,6 +1250,7 @@ mod tests {
                 content: cooltek_sdk_service::DialDisplayContent::Image,
                 image: None,
                 source: None,
+                animation: None,
             }),
             ..profile(serde_json::Value::Null)
         };
@@ -1158,6 +1259,80 @@ mod tests {
         }
         // The same profiles start fine with the content they declare.
         DialArtwork::prepare(DialContent::Clock, &without_setting, Box::new(clock(9, 41))).unwrap();
+    }
+
+    #[test]
+    fn the_animation_frame_follows_the_elapsed_time() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, 0),
+            (199, 0),
+            (200, 1),
+            (499, 1),
+            (500, 2),
+            (999, 2),
+            // Looping forever wraps around.
+            (1000, 0),
+            (1200, 1),
+            (12_000_000, 0),
+        ] {
+            assert_eq!(
+                animation_frame(&delays, 0, ms(elapsed)),
+                expected,
+                "{elapsed} ms"
+            );
+        }
+        // Two plays, then the last frame holds.
+        assert_eq!(animation_frame(&delays, 2, ms(1999)), 2);
+        assert_eq!(animation_frame(&delays, 2, ms(1499)), 1);
+        assert_eq!(animation_frame(&delays, 2, ms(2000)), 2);
+        assert_eq!(animation_frame(&delays, 2, ms(u64::MAX)), 2);
+    }
+
+    #[test]
+    fn an_animated_picture_serves_each_frame_under_its_own_face() {
+        let profile = animated_test_profile(&[200, 200, 200], 0);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        assert!(art.is_animated());
+        // Just prepared: playback is at frame 0.
+        assert_eq!(art.request(None).function.as_deref(), Some("image:0"));
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|index| {
+                art.dial_image(&DialImageRequest {
+                    profile: "Moving".into(),
+                    function: Some(format!("image:{index}")),
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_ne!(frames[0], frames[1]);
+        assert_ne!(frames[1], frames[2]);
+        for bad in ["image:3", "image:+1", "image:01", "image:", "image:x"] {
+            let request = DialImageRequest {
+                profile: "Moving".into(),
+                function: Some(bad.into()),
+            };
+            assert_eq!(art.dial_image(&request), None, "{bad}");
+        }
+        // A still picture is not animated and keeps its single face.
+        let still = Profile::from_json(
+            serde_json::to_vec(&{
+                let mut json = serde_json::to_value(&profile).unwrap();
+                json["dial_display"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("animation");
+                json
+            })
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        let art = DialArtwork::prepare(DialContent::Image, &still, Box::new(clock(9, 41))).unwrap();
+        assert!(!art.is_animated());
+        assert_eq!(art.request(None).function.as_deref(), Some("image"));
     }
 
     #[test]

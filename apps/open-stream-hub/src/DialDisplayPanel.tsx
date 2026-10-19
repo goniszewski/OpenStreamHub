@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RotateCcw, RotateCw, Trash2 } from 'lucide-react';
-import type { DialDisplayContent, Profile } from './contracts';
+import type { DialAnimation, DialDisplayContent, Profile } from './contracts';
 import { fitInfo, formatHexColour, parseHexColour, prepareArtwork, readSourceFile, rotationLabel } from './artwork-model';
 import type { ArtworkFit, PrepareResult } from './artwork-model';
 import { ColourSwatchPicker } from './ColourPicker';
 import { sourceToKeep } from './dial-source';
 import { DialFace } from './DisplayContent';
-import { dialDisplayOptions, maxDialImageBytes, setDialDisplayContent, setDialImage } from './dial-display-model';
+import { dialDisplayOptions, maxDialImageBytes, setDialAnimation, setDialDisplayContent, setDialImage } from './dial-display-model';
 import type { Invoke, ProfileSession } from './profile-session';
 import { SelectField } from './controls';
 import { ScreenBrightnessControl } from './ScreenBrightnessControl';
@@ -17,6 +17,8 @@ export const dialDisplayHeadingId = 'dial-display-heading';
 // Qualities tried in order until the prepared picture fits the profile's dial
 // image budget; the profile would refuse anything bigger.
 const dialImageQualities = [85, 70, 55, 40, 25];
+// Base64 of "GIF8", which starts both GIF87a and GIF89a. A GIF becomes dial frames; other pictures a still.
+const isGif = (base64: string) => base64.startsWith('R0lGOD');
 
 // The "Display" tab of the dial editor: what the M131E screen shows while this
 // profile runs and OpenStreamHub drives the display. The choice is a profile
@@ -40,6 +42,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   }, [stored]);
   const content = profile.dial_display?.content ?? 'function';
   const image = profile.dial_display?.image;
+  const animation = profile.dial_display?.animation;
 
   const run = (change: (latest: Profile) => Profile, key?: string) => {
     try { session.update(change, key); } catch (reason) { session.setError(errorMessage(reason)); }
@@ -55,6 +58,18 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     const before = session.getState();
     setBusy(true); setError(null);
     try {
+      if (isGif(base64)) {
+        // The backend steps the JPEG quality down itself until every frame fits the dial's per-frame budget.
+        const animation = await invoke<DialAnimation>('prepare_dial_animation', { request: { image_base64: base64, target: 'dial', quality: 85, fit: look.fit, quarter_turns: look.turns, background: rgb } });
+        if (id !== requestId.current) return;
+        const current = session.getState();
+        if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
+          setError('The profile changed while preparing the image. Choose the file again.');
+          return;
+        }
+        session.edit(setDialAnimation(current.draft.profile, animation));
+        return;
+      }
       let prepared: PrepareResult | null = null;
       for (const quality of dialImageQualities) {
         prepared = await prepareArtwork(invoke, { image_base64: base64, target: 'dial', quality, fit: look.fit, quarter_turns: look.turns, background: rgb });
@@ -82,7 +97,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     const read = await readSourceFile(file);
     if (!read.ok) { setBusy(false); setError(read.error); return; }
     setSource(read.base64);
-    const kept = await sourceToKeep(read.base64, read.mime, background);
+    const kept = isGif(read.base64) ? null : await sourceToKeep(read.base64, read.mime, background);
     await prepare(read.base64, { fit, turns, background }, kept?.image ?? null);
   };
 
@@ -95,7 +110,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
 
   return <section className="dial-display" aria-labelledby={dialDisplayHeadingId}>
     <h3 id={dialDisplayHeadingId}>Dial screen <span className="small-label">{dialDisplayOptions.find(option => option.value === content)?.label ?? 'Default'}</span></h3>
-    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second.</p>
+    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second; an animated picture plays at up to five frames a second.</p>
     <label htmlFor="dial-display-mode">Dial screen shows</label>
     <SelectField id="dial-display-mode" value={content} disabled={disabled || busy} onChange={event => run(latest => setDialDisplayContent(latest, event.target.value as DialDisplayContent), 'dial-display')}>
       {dialDisplayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -105,9 +120,10 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     {content === 'image' && <>
       {image
         ? <div className="dial-display-image" aria-label="Custom dial image"><img src={`data:image/jpeg;base64,${image}`} alt="" draggable={false} /><button type="button" className="button compact" disabled={disabled || busy} onClick={() => { setSource(null); run(latest => setDialDisplayContent(latest, 'function'), 'dial-display'); }}><Trash2 size={16} />Remove image</button></div>
-        : <p className="fine-print">Choose a picture to show; it is cropped to fill the round screen.</p>}
-      <label className="spaced-label" htmlFor="dial-display-image-file">Dial picture</label>
-      <input id="dial-display-image-file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" disabled={disabled || busy || !invoke} onChange={event => { const file = event.target.files?.[0]; if (file) void choose(file); event.target.value = ''; }} />
+        : <p className="fine-print">Choose a picture or a GIF to show; it is cropped to fill the round screen.</p>}
+      {animation && <p className="fine-print">Plays {animation.frames.length} frames{animation.loop_count === 0 ? ', looping' : animation.loop_count === 1 ? ' once' : `, ${animation.loop_count} times`}. The preview shows the first frame.</p>}
+      <label className="spaced-label" htmlFor="dial-display-image-file">Dial picture or GIF</label>
+      <input id="dial-display-image-file" type="file" accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif" disabled={disabled || busy || !invoke} onChange={event => { const file = event.target.files?.[0]; if (file) void choose(file); event.target.value = ''; }} />
       {source ? <div className="dial-image-look">
         <label htmlFor="dial-image-fit">Fit</label>
         <SelectField id="dial-image-fit" value={fit} disabled={disabled || busy} onChange={event => adjust({ fit: event.target.value as ArtworkFit })}>
@@ -128,7 +144,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         </div>
         <p className="fine-print">Fills the margins when the picture does not cover the whole screen.</p>
       </div> : image && <p className="fine-print">To change the fit, rotation or background, choose the picture again.</p>}
-      {source && !stored && image && <p className="fine-print">This picture is too large to keep in the profile, so these controls work only until the app closes.</p>}
+      {source && !stored && image && !animation && <p className="fine-print">This picture is too large to keep in the profile, so these controls work only until the app closes.</p>}
       {busy && <p className="fine-print" role="status"><LoaderCircle size={15} className="spinning" /> Preparing the image…</p>}
       {!invoke && <p className="fine-print">Preparing the dial picture needs the desktop app.</p>}
     </>}

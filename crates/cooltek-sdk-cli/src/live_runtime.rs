@@ -185,6 +185,11 @@ const DISPLAY_RECORD_QUEUE: usize = 32;
 
 /// Shortest time between two dial writes: the dial is redrawn at most about once a second.
 pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Shortest time between two dial writes while an animated picture plays. The
+/// pacing of dial writes is unmeasured on hardware, so this stays conservative.
+pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(200);
+/// Trigger of a dial write started by an animation frame coming due.
+const DIAL_ANIMATION_TRIGGER: &str = "animation";
 /// How often the dial thread re-checks its clock and a rate-limited request.
 const DIAL_TICK: Duration = Duration::from_millis(100);
 
@@ -799,6 +804,11 @@ struct DialState {
     retried: Option<Option<String>>,
     /// The face waiting for its one retry after a plain transport failure.
     retry_pending: Option<Option<String>>,
+    /// The newest attempt drew an animation frame.
+    last_was_animation: bool,
+    /// An animation frame failed: no more frames are tried until the next
+    /// request, so a failing dial logs once instead of every frame.
+    animation_paused: bool,
 }
 
 /// How one dial attempt ended, for the retry bookkeeping.
@@ -817,6 +827,7 @@ impl DialState {
         self.started = true;
         self.dial_function = request.dial_function;
         self.trigger = Some(request.trigger);
+        self.animation_paused = false;
     }
 
     /// The request to draw now, if the face changed and the rate limit allows.
@@ -836,10 +847,22 @@ impl DialState {
         if artwork.awaiting_first_sample() {
             return None;
         }
+        let animation = request
+            .function
+            .as_deref()
+            .is_some_and(|face| face.starts_with("image:"));
         if self.last_face.as_ref() == Some(&request.function) {
             self.trigger = None;
             return None;
         }
+        if animation && self.animation_paused && self.trigger.is_none() {
+            return None;
+        }
+        let min_interval = if artwork.is_animated() {
+            min_interval.min(DIAL_ANIMATION_INTERVAL)
+        } else {
+            min_interval
+        };
         if self
             .last_attempt
             .is_some_and(|last| last.elapsed() < min_interval)
@@ -853,6 +876,7 @@ impl DialState {
         let retrying = self.retry_pending.take() == face;
         self.last_face = face;
         self.last_attempt = Some(Instant::now());
+        self.last_was_animation = animation;
         // What changes a face without a request: the clock's minute or a new
         // CPU percentage.
         let timed = match request.function.as_deref() {
@@ -860,6 +884,7 @@ impl DialState {
                 Some("clock")
             }
             Some(face) if face.starts_with("cpu:") => Some("cpu"),
+            Some(face) if face.starts_with("image:") => Some(DIAL_ANIMATION_TRIGGER),
             _ => None,
         };
         let trigger = match (self.trigger.take(), timed) {
@@ -879,6 +904,9 @@ impl DialState {
     /// already used its retry is left alone until a successful write or
     /// another face resets it.
     fn finished(&mut self, outcome: DialOutcome) {
+        if self.last_was_animation && outcome != DialOutcome::Done {
+            self.animation_paused = true;
+        }
         match outcome {
             DialOutcome::Done => self.retried = None,
             DialOutcome::TransportFailed
@@ -6273,6 +6301,43 @@ mod tests {
         assert!(records.iter().all(|record| record["written"] == true));
         assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 3);
         assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn an_animated_dial_picture_redraws_each_frame_faster_than_the_default_interval() {
+        let profile = crate::dial_artwork::animated_test_profile(&[250, 250, 250], 0);
+        let artwork = DialArtwork::prepare(
+            DialContent::Image,
+            &profile,
+            Box::new(ManualClock::new(WallTime::new(9, 0))),
+        )
+        .unwrap();
+        // The default one-second dial interval would allow one write here.
+        let harness = dial_harness(artwork, DIAL_MIN_INTERVAL, None);
+        let fake = Arc::clone(&harness.fake);
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        thread::sleep(Duration::from_millis(1400));
+        assert!(display.finish(Duration::from_secs(2)));
+        let writes = dial_writes(&fake);
+        assert!(writes.len() >= 4, "{} writes", writes.len());
+        // Frames cycle: neighbours differ, and the loop comes back to frame 0.
+        assert!(writes.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(writes.iter().skip(3).any(|write| *write == writes[0]));
+        let triggers: Vec<String> = records
+            .try_iter()
+            .map(|record| record["trigger"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(triggers[0], "software_mode");
+        assert!(triggers[1..].iter().all(|trigger| trigger == "animation"));
     }
 
     #[test]

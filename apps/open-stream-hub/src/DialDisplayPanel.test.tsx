@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Profile } from './contracts';
-import { setDialDisplayContent, setDialImage } from './dial-display-model';
+import { setDialAnimation, setDialDisplayContent, setDialImage } from './dial-display-model';
 import { DialDisplayPanel } from './DialDisplayPanel';
 import { DialEditorTabs } from './Inspector';
 import { ProfileSession } from './profile-session';
@@ -49,6 +49,16 @@ describe('DialDisplayPanel markup', () => {
     expect(html).toContain('value="#ff0000"');
     expect(html).toContain('>90°<');
     expect(html).not.toContain('choose the picture again');
+  });
+  it('describes an animated picture and takes GIF files', () => {
+    const frames = [{ jpeg_base64: 'AAAA', delay_ms: 200 }, { jpeg_base64: 'BBBB', delay_ms: 300 }];
+    const { html } = render(setDialAnimation(flat, { frames, loop_count: 0 }));
+    expect(html).toContain('Plays 2 frames, looping.');
+    expect(html).toContain('<img src="data:image/jpeg;base64,AAAA"');
+    expect(html).toMatch(/<input id="dial-display-image-file"[^>]*accept="[^"]*image\/gif/);
+    expect(render(setDialAnimation(flat, { frames, loop_count: 1 })).html).toContain('Plays 2 frames once.');
+    expect(render(setDialAnimation(flat, { frames, loop_count: 3 })).html).toContain('Plays 2 frames, 3 times.');
+    expect(render(pictured).html).not.toContain('Plays ');
   });
   it('asks for CPU honestly and only on the CPU face', () => {
     const { html } = render(setDialDisplayContent(flat, 'cpu'));

@@ -10,7 +10,7 @@
 use std::io::Cursor;
 
 use cooltek_sdk_masterhub::{dial, keypad};
-use cooltek_sdk_service::KeyArtwork;
+use cooltek_sdk_service::{DialAnimation, KeyArtwork};
 use image::{
     AnimationDecoder, DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat,
     Limits, Rgb, RgbImage,
@@ -130,7 +130,78 @@ pub fn prepare_keypad_artwork(
             loop_count: 1,
         });
     }
+    prepare_gif(input, options, KEYPAD_GIF)
+}
+
+/// What a GIF's frames are held to for one target.
+#[derive(Clone, Copy)]
+struct GifTarget {
+    target: ImageTarget,
+    /// Most frames accepted.
+    max_frames: usize,
+    /// Shortest frame time; shorter GIF delays are raised to it.
+    min_delay_ms: u32,
+    /// Most bytes in one prepared frame.
+    max_frame_bytes: usize,
+    /// Most bytes across the prepared frames.
+    max_bytes: usize,
+    /// What the target is called in errors.
+    name: &'static str,
+}
+
+const KEYPAD_GIF: GifTarget = GifTarget {
+    target: ImageTarget::Keypad,
+    max_frames: KeyArtwork::MAX_FRAMES,
+    min_delay_ms: KeyArtwork::MIN_DELAY_MS,
+    max_frame_bytes: KeyArtwork::MAX_FRAME_BYTES,
+    max_bytes: KeyArtwork::MAX_BYTES,
+    name: "key",
+};
+
+const DIAL_GIF: GifTarget = GifTarget {
+    target: ImageTarget::Dial,
+    max_frames: DialAnimation::MAX_FRAMES,
+    min_delay_ms: DialAnimation::MIN_DELAY_MS,
+    max_frame_bytes: DialAnimation::MAX_FRAME_BYTES,
+    max_bytes: DialAnimation::MAX_BYTES,
+    name: "dial",
+};
+
+/// Prepares a GIF as a bounded 240×240 dial animation, offline.
+///
+/// Fits and rotates every composited frame as [`prepare_image`] does a still,
+/// lowers the JPEG quality of a frame that is over the dial's per-frame budget,
+/// raises delays under 200 ms to 200 ms, and keeps the loop count (zero is
+/// infinite). Only GIF input is accepted: a still goes through
+/// [`prepare_image`].
+pub fn prepare_dial_animation(
+    input: &[u8],
+    options: PrepareOptions,
+) -> Result<PreparedKeyArtwork, String> {
+    if input.is_empty() || input.len() > 8 * 1024 * 1024 {
+        return Err("Dial animation source must contain 1 byte through 8 MiB".into());
+    }
+    if !(1..=100).contains(&options.quality) || options.quarter_turns > 3 {
+        return Err("Invalid JPEG quality or clockwise rotation".into());
+    }
+    if image::guess_format(input).ok() != Some(ImageFormat::Gif) {
+        return Err("A dial animation needs a GIF".into());
+    }
+    prepare_gif(input, options, DIAL_GIF)
+}
+
+fn prepare_gif(
+    input: &[u8],
+    options: PrepareOptions,
+    gif: GifTarget,
+) -> Result<PreparedKeyArtwork, String> {
     let (count, loop_count) = gif_preflight(input)?;
+    if count > gif.max_frames {
+        return Err(format!(
+            "A {} animation holds at most {} frames; this GIF has {count}",
+            gif.name, gif.max_frames
+        ));
+    }
     let mut decoder =
         GifDecoder::new(Cursor::new(input)).map_err(|e| format!("Could not read GIF: {e}"))?;
     let mut limits = Limits::default();
@@ -148,17 +219,21 @@ pub fn prepare_keypad_artwork(
         }
         let frame = frame.map_err(|e| format!("Could not decode GIF frame: {e}"))?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
-        let delay_ms = numerator.div_ceil(denominator).max(100);
+        let delay_ms = numerator.div_ceil(denominator).max(gif.min_delay_ms);
         if delay_ms > 60_000 {
             return Err("GIF frame delay exceeds 60 seconds".into());
         }
         let source = DynamicImage::ImageRgba8(frame.into_buffer());
-        let jpeg = within_frame_budget(options, |options| {
-            encode_source(source.clone(), options, ImageTarget::Keypad)
+        let jpeg = within_budget(options, gif.max_frame_bytes, |options| {
+            encode_source(source.clone(), options, gif.target)
         })?;
         output_bytes += jpeg.len();
-        if output_bytes > 512 * 1024 {
-            return Err("Prepared key artwork exceeds 512 KiB".into());
+        if output_bytes > gif.max_bytes {
+            return Err(format!(
+                "Prepared {} animation exceeds {} KiB",
+                gif.name,
+                gif.max_bytes / 1024
+            ));
         }
         frames.push(PreparedKeyArtworkFrame { jpeg, delay_ms });
     }
@@ -172,18 +247,26 @@ pub fn prepare_keypad_artwork(
 /// frame fits [`KeyArtwork::MAX_FRAME_BYTES`], so a prepared frame always
 /// passes profile validation.
 pub fn within_frame_budget(
+    options: PrepareOptions,
+    encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    within_budget(options, KeyArtwork::MAX_FRAME_BYTES, encode)
+}
+
+fn within_budget(
     mut options: PrepareOptions,
+    max_bytes: usize,
     mut encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
     loop {
         let jpeg = encode(options)?;
-        if jpeg.len() <= KeyArtwork::MAX_FRAME_BYTES {
+        if jpeg.len() <= max_bytes {
             return Ok(jpeg);
         }
         if options.quality <= 10 {
             return Err(format!(
-                "Prepared key artwork frame exceeds {} KiB even at JPEG quality {}",
-                KeyArtwork::MAX_FRAME_BYTES / 1024,
+                "Prepared frame exceeds {} KiB even at JPEG quality {}",
+                max_bytes / 1024,
                 options.quality
             ));
         }
@@ -960,6 +1043,39 @@ mod keypad_animation_tests {
             }
         }
         bytes
+    }
+
+    #[test]
+    fn a_dial_animation_has_240_pixel_frames_slower_delays_and_its_own_bounds() {
+        let source = gif_source(300, 200, 3, 5, Some(gif::Repeat::Finite(1)));
+        let result = prepare_dial_animation(&source, PrepareOptions::default()).unwrap();
+        assert_eq!(result.frames.len(), 3);
+        assert_eq!(result.loop_count, 2);
+        for frame in &result.frames {
+            // 5 cs is 50 ms, raised to the dial's 200 ms floor.
+            assert_eq!(frame.delay_ms, 200);
+            dial::validate_jpeg(&frame.jpeg).unwrap();
+            assert!(frame.jpeg.len() <= DialAnimation::MAX_FRAME_BYTES);
+        }
+        // Long delays are kept, and an infinite loop stays zero.
+        let slow = gif_source(2, 2, 2, 150, Some(gif::Repeat::Infinite));
+        let result = prepare_dial_animation(&slow, PrepareOptions::default()).unwrap();
+        assert_eq!((result.frames[0].delay_ms, result.loop_count), (1500, 0));
+        // More frames than a dial holds, and anything that is not a GIF.
+        let long = gif_source(2, 2, DialAnimation::MAX_FRAMES + 1, 20, None);
+        let error = prepare_dial_animation(&long, PrepareOptions::default()).unwrap_err();
+        assert!(error.contains("at most 30 frames"), "{error}");
+        let still = RgbImage::from_pixel(8, 8, Rgb([1, 2, 3]));
+        let mut png = Vec::new();
+        still
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        assert!(
+            prepare_dial_animation(&png, PrepareOptions::default())
+                .unwrap_err()
+                .contains("needs a GIF")
+        );
+        assert!(prepare_dial_animation(&[], PrepareOptions::default()).is_err());
     }
 
     #[test]

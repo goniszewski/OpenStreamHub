@@ -20,8 +20,8 @@ pub mod obs;
 
 pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
 pub use dial::{
-    DialBinding, DialDisplay, DialDisplayContent, DialFit, DialFunction, DialFunctionNavigation,
-    DialSource,
+    DialAnimation, DialAnimationFrame, DialBinding, DialDisplay, DialDisplayContent, DialFit,
+    DialFunction, DialFunctionNavigation, DialSource,
 };
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use key_artwork::{KeyArtwork, KeyArtworkDesign, KeyArtworkFrame, KeyArtworkTextAlign};

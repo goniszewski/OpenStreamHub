@@ -1265,6 +1265,7 @@ mod tests {
             content,
             image: None,
             source: None,
+            animation: None,
         });
         profile
     }

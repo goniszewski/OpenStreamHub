@@ -305,13 +305,21 @@ pub fn app_controls(module: ServiceModule) -> bool {
     matches!(module, ServiceModule::M4315 | ServiceModule::M131E)
 }
 
-/// The modules the session manager starts on its own under `App`: the
-/// keypad and the dial (software mode and display sync), and the M003K
-/// knobs, which report input in their own mode and get an input-only
-/// session: never software mode, display flags or any other write
-/// (`software_mode`, `spawn_display`). Faders, rollers and the base never.
+/// The modules the session manager starts on its own under `App`: every
+/// control module. The keypad and the dial get software mode and display
+/// sync; the M003K knobs, the M005S faders and the M032LE rollers report
+/// input in their own mode and get an input-only session: never software
+/// mode, display flags or any other write (`software_mode`,
+/// `spawn_display`). The base is not a control module and never starts one.
 pub fn auto_takes_over(module: ServiceModule) -> bool {
-    app_controls(module) || module == ServiceModule::M003K
+    matches!(
+        module,
+        ServiceModule::M4315
+            | ServiceModule::M131E
+            | ServiceModule::M003K
+            | ServiceModule::M005S
+            | ServiceModule::M032LE
+    )
 }
 
 /// Why a schema-2 keypad profile cannot run on an M4315 with module control
@@ -1472,18 +1480,29 @@ mod tests {
     }
 
     #[test]
-    fn the_knobs_are_taken_over_input_only() {
-        assert!(auto_takes_over(ServiceModule::M003K));
-        assert!(auto_takes_over(ServiceModule::M4315) && auto_takes_over(ServiceModule::M131E));
-        for module in [ServiceModule::M005S, ServiceModule::M032LE] {
-            assert!(!auto_takes_over(module));
+    fn the_knobs_faders_and_rollers_are_taken_over_input_only() {
+        for module in [
+            ServiceModule::M003K,
+            ServiceModule::M005S,
+            ServiceModule::M032LE,
+            ServiceModule::M4315,
+            ServiceModule::M131E,
+        ] {
+            assert!(auto_takes_over(module));
         }
         let live = DisplaySettings {
             run_mode: RunMode::Live,
             ..APP
         };
-        for settings in [APP, live] {
-            assert!(!software_mode(settings, ServiceModule::M003K, true));
+        for (settings, module) in [APP, live].into_iter().flat_map(|settings| {
+            [
+                ServiceModule::M003K,
+                ServiceModule::M005S,
+                ServiceModule::M032LE,
+            ]
+            .map(|module| (settings, module))
+        }) {
+            assert!(!software_mode(settings, module, true));
             // Even a request that claims software mode gets nothing.
             let request = StartRequest {
                 profile: flat(),
@@ -1492,7 +1511,7 @@ mod tests {
                 software_mode: true,
                 profile_id: None,
                 source_profile_id: None,
-                display: Some(launch(ServiceModule::M003K, settings)),
+                display: Some(launch(module, settings)),
                 obs: None,
             };
             assert_eq!(spawn_display(true, &request), SpawnDisplay::default());

@@ -38,10 +38,12 @@ impl PasswordVault for MemoryOnly {
     }
 }
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_os = "macos", not(test), debug_assertions))]
+pub use dev::DevKeychain;
+#[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
 pub use macos::Keychain;
 
-#[cfg(all(target_os = "macos", not(test)))]
+#[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
 mod macos {
     use super::PasswordVault;
     use security_framework::passwords::{
@@ -84,6 +86,119 @@ mod macos {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == NOT_FOUND => Ok(()),
                 Err(error) => Err(describe("remove", &error)),
+            }
+        }
+    }
+}
+
+/// Development builds only. Every rebuild is a new binary, which macOS does
+/// not recognise as the app that created the Keychain item, so it asks for the
+/// login password again each time. This vault keeps the item through Apple's
+/// own `/usr/bin/security` tool instead: the item then trusts that tool, whose
+/// identity never changes, so nothing is asked. The password is stored as hex
+/// (so `security` never has to print or parse arbitrary text) under a
+/// separate service name, and travels to the tool on its stdin, never in an
+/// argument. Release builds never use this: they talk to the Keychain
+/// directly and the item trusts the signed app.
+#[cfg(all(target_os = "macos", not(test), debug_assertions))]
+mod dev {
+    use super::PasswordVault;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    const SECURITY: &str = "/usr/bin/security";
+    const SERVICE: &str = "dev.cooltek.openstreamhub.dev";
+    const ACCOUNT: &str = "obs-websocket-password";
+    /// `security` exits with 44 when the item is not found.
+    const NOT_FOUND: i32 = 44;
+
+    pub struct DevKeychain;
+
+    fn hex(text: &str) -> String {
+        text.bytes().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn unhex(text: &str) -> Option<String> {
+        let digits = text.as_bytes();
+        if !digits.len().is_multiple_of(2) {
+            return None;
+        }
+        let bytes = digits
+            .chunks(2)
+            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
+            .collect::<Option<Vec<u8>>>()?;
+        String::from_utf8(bytes).ok()
+    }
+
+    impl PasswordVault for DevKeychain {
+        fn load(&self) -> Result<Option<String>, String> {
+            let output = Command::new(SECURITY)
+                .args(["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"])
+                .stdin(Stdio::null())
+                .stderr(Stdio::null())
+                .output()
+                .map_err(|error| format!("could not run the security tool: {}", error.kind()))?;
+            match output.status.code() {
+                Some(0) => unhex(String::from_utf8_lossy(&output.stdout).trim())
+                    .map(Some)
+                    .ok_or_else(|| "the stored OBS password is not valid".to_string()),
+                Some(NOT_FOUND) => Ok(None),
+                other => Err(format!(
+                    "could not read the OBS password with the security tool (exit {other:?})"
+                )),
+            }
+        }
+
+        fn save(&self, password: &str) -> Result<(), String> {
+            // Interactive mode reads the command, password included, from
+            // stdin, so it never appears in a process listing.
+            let mut child = Command::new(SECURITY)
+                .arg("-i")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|error| format!("could not run the security tool: {}", error.kind()))?;
+            let command = format!(
+                "add-generic-password -U -s {SERVICE} -a {ACCOUNT} -w {}\n",
+                hex(password)
+            );
+            child
+                .stdin
+                .take()
+                .ok_or("could not talk to the security tool")?
+                .write_all(command.as_bytes())
+                .map_err(|error| {
+                    format!("could not talk to the security tool: {}", error.kind())
+                })?;
+            let status = child
+                .wait()
+                .map_err(|error| format!("the security tool did not finish: {}", error.kind()))?;
+            if !status.success() {
+                return Err("could not save the OBS password with the security tool".into());
+            }
+            // `security -i` exits 0 even when a command failed: read it back.
+            match self.load()? {
+                Some(stored) if stored == password => Ok(()),
+                _ => Err("could not save the OBS password with the security tool".into()),
+            }
+        }
+
+        fn forget(&self) -> Result<(), String> {
+            let status = Command::new(SECURITY)
+                .args(["delete-generic-password", "-s", SERVICE, "-a", ACCOUNT])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|error| format!("could not run the security tool: {}", error.kind()))?;
+            match status.code() {
+                Some(0) | Some(NOT_FOUND) => Ok(()),
+                other => Err(format!(
+                    "could not remove the OBS password with the security tool (exit {other:?})"
+                )),
             }
         }
     }

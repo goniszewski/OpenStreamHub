@@ -306,15 +306,19 @@ mod tests {
         // The newest use replaces the older one.
         reopened.remember(KEYS, Some("K-1"), SECOND).unwrap();
         assert_eq!(last.get(KEYS, Some("K-1")), Ok(Some(SECOND.into())));
-        // Serial-less modules and other modules are never kept.
+        // Serial-less modules are never kept; faders and rollers are, like
+        // every module the app starts on its own.
         last.remember(KEYS, None, FIRST).unwrap();
         last.remember(KEYS, Some("  "), FIRST).unwrap();
         last.remember(ServiceModule::M005S, Some("F-1"), FIRST)
             .unwrap();
         assert_eq!(last.get(KEYS, None), Ok(None));
-        assert_eq!(last.get(ServiceModule::M005S, Some("F-1")), Ok(None));
+        assert_eq!(
+            last.get(ServiceModule::M005S, Some("F-1")),
+            Ok(Some(FIRST.into()))
+        );
         let stored = LastProfiles::load(directory.path()).unwrap();
-        assert_eq!(stored.last_profiles.len(), 3);
+        assert_eq!(stored.last_profiles.len(), 4);
         assert!(last.remember(KEYS, Some("K-1"), "not-a-uuid").is_err());
         #[cfg(unix)]
         {
@@ -351,12 +355,12 @@ mod tests {
         .unwrap();
         assert!(last.default_profile().is_err());
         assert!(last.get(KEYS, Some("K")).is_err());
-        // Faders and rollers are never kept.
+        // Faders and rollers are kept like any module the app starts itself.
         let directory = tempfile::tempdir().unwrap();
         let last = LastProfiles::open(Ok(directory.path()));
         for module in [ServiceModule::M005S, ServiceModule::M032LE] {
             last.remember(module, Some("X-1"), FIRST).unwrap();
-            assert_eq!(last.get(module, Some("X-1")), Ok(None));
+            assert_eq!(last.get(module, Some("X-1")), Ok(Some(FIRST.into())));
         }
     }
 
@@ -395,7 +399,7 @@ mod tests {
             br#"{"last_profiles":[],"extra":1}"#.to_vec(),
             br#"{"last_profiles":[{"module":"m4315","serial_number":"K","profile_id":"x"}]}"#
                 .to_vec(),
-            format!(r#"{{"last_profiles":[{{"module":"m005s","serial_number":"K","profile_id":"{FIRST}"}}]}}"#)
+            format!(r#"{{"last_profiles":[{{"module":"m4315","serial_number":"K","profile_id":"{FIRST}"}},{{"module":"m4315","serial_number":"K","profile_id":"{SECOND}"}}]}}"#)
                 .into_bytes(),
             duplicate.into_bytes(),
             vec![b' '; MAX_FILE_BYTES + 1],

@@ -63,9 +63,10 @@
 //! another program holds open (`IN_USE`) is a refusal too, never a retry.
 //!
 //! Automatic starts: while module control is `App`, the driver itself starts
-//! a session on every M4315, M131E and M003K when the app opens and whenever
+//! a session on every connected control module (M4315, M131E, M003K, M005S
+//! and M032LE) when the app opens and whenever
 //! one appears in the inventory and no session claims it
-//! (`Driver::auto_start`). The knobs' session is input-only: no software
+//! (`Driver::auto_start`). The knobs', faders' and rollers' sessions are input-only: no software
 //! mode and no display writes. Such a session runs the startup profile
 //! (`startup.rs`: the default profile, else the serial's last one, else a
 //! blank one) and is marked `auto_start` so the Run panel can tell it from a
@@ -1431,7 +1432,7 @@ impl<R: Runner> Driver<R> {
             request.software_mode =
                 display::software_mode(settings, device.module, request.software_mode);
             // Software mode (and with it every display write) is for the
-            // keypad and the dial only; the knobs' session is input-only.
+            // keypad and the dial only; the other modules' sessions are input-only.
             debug_assert!(display::app_controls(device.module) || !request.software_mode);
             request.display = Some(DisplayLaunch {
                 settings,
@@ -1919,8 +1920,8 @@ impl<R: Runner> Driver<R> {
         self.auto_start(previous.as_deref(), &devices, why, None, now_ms);
     }
 
-    /// Automatic starts, only while module control is `App`: every M4315 and
-    /// M131E in `devices` that was not in the previous watcher inventory
+    /// Automatic starts, only while module control is `App`: every control
+    /// module in `devices` that was not in the previous watcher inventory
     /// (every one in the first, when the app opened) and that no session
     /// claims gets a dry-run session with its serial's startup profile
     /// (`Runner::startup_profile`). Software mode and display sync follow
@@ -5841,13 +5842,13 @@ mod tests {
     }
 
     #[test]
-    fn app_control_starts_the_keypad_dial_and_knobs_and_nothing_else() {
+    fn app_control_starts_every_connected_control_module() {
         let mut driver = auto_driver(APP_CONTROL);
         driver.inventory(rig(), 0);
-        // Exactly the dial, the keypad and the knobs; the first two as dry
-        // runs in software mode with the settings read for this inventory
-        // and the blank profile.
-        assert_eq!(starts(&mut driver), 3);
+        // Every control module: the dial and the keypad as dry runs in
+        // software mode with the settings read for this inventory and the
+        // blank profile, the knobs, rollers and faders input only.
+        assert_eq!(starts(&mut driver), 5);
         for index in 0..2 {
             let started = driver.runner().starts[index].clone();
             assert!(!started.execute && started.software_mode);
@@ -5881,6 +5882,17 @@ mod tests {
             crate::display::spawn_display(true, &knobs),
             crate::display::SpawnDisplay::default()
         );
+        // The rollers and the faders likewise: input only.
+        for (index, module) in [(3, ServiceModule::M032LE), (4, ServiceModule::M005S)] {
+            let started = driver.runner().starts[index].clone();
+            assert_eq!(started.display.unwrap().module, module);
+            assert!(!started.execute && !started.software_mode);
+            assert!(spawned_args(&mut driver, index).is_empty());
+            assert_eq!(
+                crate::display::spawn_display(true, &started),
+                crate::display::SpawnDisplay::default()
+            );
+        }
         // Marked as started when the app opened, in every emitted state and
         // in the list a reconnecting window reads.
         assert!(driver.runner().emitted.iter().all(|state| {
@@ -5894,13 +5906,15 @@ mod tests {
                 (DIAL, Some(AutoStart::AppOpened)),
                 (ServiceModule::M4315, Some(AutoStart::AppOpened)),
                 (ServiceModule::M003K, Some(AutoStart::AppOpened)),
+                (ServiceModule::M032LE, Some(AutoStart::AppOpened)),
+                (ServiceModule::M005S, Some(AutoStart::AppOpened)),
             ]
         );
         let json = serde_json::to_value(&driver.states()[0]).unwrap();
         assert_eq!(json["auto_start"], "app_opened");
         // The same inventory again starts nothing new.
         driver.inventory(rig(), 1);
-        assert_eq!(starts(&mut driver), 3);
+        assert_eq!(starts(&mut driver), 5);
         // A user's Start on a module an automatic session runs is refused
         // like any other second start.
         let error = driver.start(request(&keypad("/k"), false), 2).unwrap_err();
@@ -5910,9 +5924,9 @@ mod tests {
     #[test]
     fn a_connected_module_starts_once_per_appearance_and_a_replug_reclaims_its_session() {
         let mut driver = auto_driver(APP_CONTROL);
-        driver.inventory(vec![fader("/n")], 0);
+        driver.inventory(vec![], 0);
         assert_eq!(starts(&mut driver), 0);
-        driver.inventory(vec![fader("/n"), keypad("/k")], 10);
+        driver.inventory(vec![keypad("/k")], 10);
         assert_eq!(starts(&mut driver), 1);
         let keypad_id = last(&mut driver).session_id;
         assert_eq!(
@@ -5921,7 +5935,7 @@ mod tests {
         );
         // Unplugged and replugged on a new path: its own session reconnects
         // there (a dry run, still marked automatic); no second session.
-        driver.inventory(vec![fader("/n")], 20);
+        driver.inventory(vec![], 20);
         exit(
             &mut driver,
             &keypad_id,
@@ -5929,7 +5943,7 @@ mod tests {
             21,
         );
         assert_eq!(phase(&mut driver), Phase::WaitingForDevice);
-        driver.inventory(vec![fader("/n"), keypad("/k2")], 30);
+        driver.inventory(vec![keypad("/k2")], 30);
         // After the usual backoff for the exit while it was unplugged.
         driver.tick(21 + backoff_ms(1));
         assert_eq!(starts(&mut driver), 2);
@@ -5943,12 +5957,12 @@ mod tests {
         let current = driver.runner().stops.last().unwrap().clone();
         exit(&mut driver, &current, "", 41);
         assert!(driver.states().is_empty());
-        driver.inventory(vec![fader("/n"), keypad("/k2")], 50);
+        driver.inventory(vec![keypad("/k2")], 50);
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), 2);
         // Connected again: one new automatic session.
-        driver.inventory(vec![fader("/n")], 1_000_001);
-        driver.inventory(vec![fader("/n"), keypad("/k3")], 1_000_002);
+        driver.inventory(vec![], 1_000_001);
+        driver.inventory(vec![keypad("/k3")], 1_000_002);
         assert_eq!(starts(&mut driver), 3);
         assert_eq!(
             auto_states(&mut driver),
@@ -5957,7 +5971,7 @@ mod tests {
     }
 
     #[test]
-    fn built_in_animation_unreadable_settings_and_other_modules_never_start_on_their_own() {
+    fn built_in_animation_and_unreadable_settings_never_start_a_module_on_their_own() {
         for settings in [BUILT_IN, DisplaySettings::UNREADABLE] {
             let mut driver = auto_driver(settings);
             driver.inventory(rig(), 0);
@@ -5966,10 +5980,10 @@ mod tests {
             assert_eq!(starts(&mut driver), 0);
             assert!(driver.runner().emitted.is_empty());
         }
-        // App: rollers and faders never start on their own.
+        // App: the rollers and the faders start like the other modules.
         let mut driver = auto_driver(APP_CONTROL);
         driver.inventory(rig()[3..].to_vec(), 0);
-        assert_eq!(starts(&mut driver), 0);
+        assert_eq!(starts(&mut driver), 2);
         // A runner without startup profiles never starts anything either.
         let mut driver = Driver::new(FakeRunner {
             display: APP_CONTROL,
@@ -5987,10 +6001,10 @@ mod tests {
     #[test]
     fn an_automatic_start_is_a_dry_run_even_when_its_profile_last_ran_with_actions() {
         let mut driver = auto_driver(APP_CONTROL);
-        driver.inventory(vec![fader("/n")], 0);
+        driver.inventory(vec![], 0);
         // The user runs a saved profile with actions on the keypad; it is
         // remembered for the module's serial.
-        driver.inventory(vec![fader("/n"), keypad("/k")], 1);
+        driver.inventory(vec![keypad("/k")], 1);
         let auto_id = last(&mut driver).session_id;
         driver.stop(&auto_id, true, 2);
         exit(&mut driver, &auto_id, "", 3);
@@ -6013,8 +6027,8 @@ mod tests {
             "KEY-1".into(),
             (SAVED_ID.into(), crate::test_profiles::folders()),
         );
-        driver.inventory(vec![fader("/n")], 7);
-        driver.inventory(vec![fader("/n"), keypad("/k")], 8);
+        driver.inventory(vec![], 7);
+        driver.inventory(vec![keypad("/k")], 8);
         let started = driver.runner().starts[2].clone();
         assert!(!started.execute);
         assert_eq!(started.profile, crate::test_profiles::folders());
@@ -6161,14 +6175,16 @@ mod tests {
             .filter(|state| state.phase == Phase::Stopped)
             .map(|state| (state.module, state.reason))
             .collect();
-        // Both stop as the user's runs do; `Services::stop_all` then stops
+        // All stop as the user's runs do; `Services::stop_all` then stops
         // the processes, which restores the built-in animation.
         assert_eq!(
             stopped,
             [
                 (DIAL, Some(Reason::User)),
                 (ServiceModule::M4315, Some(Reason::User)),
-                (ServiceModule::M003K, Some(Reason::User))
+                (ServiceModule::M003K, Some(Reason::User)),
+                (ServiceModule::M032LE, Some(Reason::User)),
+                (ServiceModule::M005S, Some(Reason::User))
             ]
         );
         assert!(driver.states().is_empty());
@@ -6187,10 +6203,10 @@ mod tests {
     #[test]
     fn leaving_app_control_ends_automatic_sessions_and_a_replug_starts_nothing() {
         let mut driver = auto_driver(APP_CONTROL);
-        driver.inventory(vec![keypad("/k"), fader("/n")], 0);
+        driver.inventory(vec![keypad("/k")], 0);
         let auto_id = last(&mut driver).session_id;
         // A run the user started (here on the dial) is not affected.
-        driver.inventory(vec![keypad("/k"), fader("/n"), dial("/a")], 1);
+        driver.inventory(vec![keypad("/k"), dial("/a")], 1);
         let dial_id = last(&mut driver).session_id;
         driver.stop(&dial_id, true, 2);
         exit(&mut driver, &dial_id, "", 3);
@@ -6220,7 +6236,7 @@ mod tests {
         assert_eq!(driver.session(&user_id).unwrap().phase(), Phase::Running);
         // Unplugged and replugged afterwards: nothing starts on its own.
         driver.inventory(vec![fader("/n"), dial("/a")], 20);
-        driver.inventory(vec![keypad("/k2"), fader("/n"), dial("/a")], 21);
+        driver.inventory(vec![keypad("/k2"), dial("/a")], 21);
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), 3);
         assert_eq!(driver.states().len(), 1);
@@ -6352,7 +6368,7 @@ mod tests {
     #[test]
     fn switching_to_app_control_starts_the_modules_already_connected() {
         let mut driver = auto_driver(BUILT_IN);
-        driver.inventory(vec![keypad("/k"), dial("/a"), fader("/n")], 0);
+        driver.inventory(vec![keypad("/k"), dial("/a")], 0);
         assert_eq!(starts(&mut driver), 0);
         // The user runs the dial by hand meanwhile; it is left alone.
         let user_id = driver.start(request(&dial("/a"), false), 1).unwrap();
@@ -6416,7 +6432,7 @@ mod tests {
 
     #[test]
     fn the_run_mode_decides_execute_for_every_automatic_module() {
-        // Off (the default): dry runs for all three.
+        // Off (the default): dry runs for all five.
         let mut driver = auto_driver(APP_CONTROL);
         driver.inventory(rig(), 0);
         assert_eq!(
@@ -6425,6 +6441,8 @@ mod tests {
                 (DIAL, false, true),
                 (ServiceModule::M4315, false, true),
                 (ServiceModule::M003K, false, false),
+                (ServiceModule::M032LE, false, false),
+                (ServiceModule::M005S, false, false),
             ]
         );
         assert!(
@@ -6433,7 +6451,7 @@ mod tests {
                 .iter()
                 .all(|state| state.auto_dry_run_reason.is_none())
         );
-        // On: actions run on the keypad, the dial and the knobs; the knobs
+        // On: actions run on every module; all but the keypad and the dial
         // still never enter software mode or get display flags.
         let mut driver = auto_driver(AUTO_ON);
         driver.inventory(rig(), 0);
@@ -6443,6 +6461,8 @@ mod tests {
                 (DIAL, CAN_EXECUTE, true),
                 (ServiceModule::M4315, CAN_EXECUTE, true),
                 (ServiceModule::M003K, CAN_EXECUTE, false),
+                (ServiceModule::M032LE, CAN_EXECUTE, false),
+                (ServiceModule::M005S, CAN_EXECUTE, false),
             ]
         );
         assert!(spawned_args(&mut driver, 2).is_empty());
@@ -6489,6 +6509,8 @@ mod tests {
                 (DIAL, false, true),
                 (ServiceModule::M4315, false, true),
                 (ServiceModule::M003K, false, false),
+                (ServiceModule::M032LE, false, false),
+                (ServiceModule::M005S, false, false),
             ]
         );
         assert!(
@@ -6513,8 +6535,8 @@ mod tests {
         for id in &ids {
             exit(&mut driver, id, "", 11);
         }
-        let restarted = &driver.runner().starts[3..];
-        assert_eq!(restarted.len(), 3);
+        let restarted = &driver.runner().starts[5..];
+        assert_eq!(restarted.len(), 5);
         assert!(restarted.iter().all(|start| start.execute));
         assert!(
             driver

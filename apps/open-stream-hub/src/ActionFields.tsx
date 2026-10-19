@@ -194,7 +194,7 @@ function FaderObsInputFields({ action, onChange, onSetUpObs, catalog }: {
   return <div className="action-fields">
     <ObsNameRow id="obs-input-volume-input" label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
       issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ type: 'obs_input_volume_from_position', input }, 'obs-input-volume-input')} />
-    <p className="fine-print">Each position change sets this OBS input's volume from 0% (silent) to 100% (unity gain, 0 dB), matched by exact name (up to {maxObsSceneBytes} bytes). It never boosts above 0 dB.</p>
+    <p className="fine-print">Each position change sets this OBS input's volume from 0% (silent) to 100% (unity gain, 0 dB) along OBS's own slider scale, so the fader and OBS's slider move together, matched by exact name (up to {maxObsSceneBytes} bytes). It never boosts above 0 dB.</p>
     <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />
   </div>;
 }
@@ -431,7 +431,7 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
           issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-input-volume-input')} />
         <label className="spaced-label" htmlFor={id('obs-input-volume-percent')}>Volume (%)</label>
         <IntegerField id={id('obs-input-volume-percent')} value={action.percent} minimum={0} maximum={100} onCommit={percent => onChange({ ...action, percent }, 'obs-input-volume-percent')} />
-        <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB). To follow a fader instead, bind a fader.</p></>;
+        <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB), on OBS's own slider scale (50% is about -19 dB). To follow a fader instead, bind a fader.</p></>;
       break;
     }
     case 'obs_input_mute':

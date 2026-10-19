@@ -584,6 +584,28 @@ fn screenshot_path() -> Result<String, String> {
     Ok(screenshot_file(&home.join("Pictures"), &stamp))
 }
 
+/// The decibels OBS's own volume slider shows at `position` (0.0 to 1.0 of its
+/// travel). OBS draws its mixer fader on a logarithmic taper (`OBS_FADER_LOG`
+/// in libobs: -96 dB at the bottom, 0 dB at the top, with a 6 dB offset), so
+/// the middle of the slider is about -18.7 dB and not the -6 dB a linear
+/// multiplier of 0.5 would give. Following that curve makes a physical fader
+/// and OBS's on-screen slider move together.
+fn slider_db(position: f64) -> f64 {
+    const OFFSET_DB: f64 = 6.0;
+    const RANGE_DB: f64 = 96.0;
+    let span = RANGE_DB + OFFSET_DB;
+    (-span * (span / OFFSET_DB).powf(-position) + OFFSET_DB).min(0.0)
+}
+
+/// The `SetInputVolume` data for a slider position of `percent` (0 to 100):
+/// silence at 0, otherwise the slider's decibels. Unity (0 dB) at 100.
+fn set_volume_data(input: &str, percent: u8) -> Value {
+    if percent == 0 {
+        return json!({"inputName":input, "inputVolumeMul":0.0});
+    }
+    json!({"inputName":input, "inputVolumeDb":slider_db(f64::from(percent) / 100.0)})
+}
+
 /// The volume after a step: held between -100 dB and 0 dB. (The official app
 /// lets a downward step pass -100 dB; OBS would reject or clamp that.)
 fn adjusted_db(current: f64, step_db: i8) -> f64 {
@@ -726,7 +748,7 @@ fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), Strin
         Action::ObsSetInputVolume { input, percent } => session
             .request(&ObsRequest::with_data(
                 "SetInputVolume",
-                json!({"inputName":input, "inputVolumeMul":f64::from(*percent) / 100.0}),
+                set_volume_data(input, *percent),
             ))
             .map(drop),
         other => {
@@ -2973,8 +2995,23 @@ mod tests {
     }
 
     #[test]
-    fn an_input_volume_sets_the_multiplier_from_the_percentage() {
-        for (percent, mul) in [(0, 0.0), (25, 0.25), (100, 1.0)] {
+    fn an_input_volume_follows_the_obs_slider_taper() {
+        // The ends: silence, and unity gain (0 dB).
+        assert!((slider_db(1.0) - 0.0).abs() < 1e-9);
+        assert!((slider_db(0.0) - -96.0).abs() < 1e-9);
+        // The middle of OBS's slider reads about -18.7 dB, not -6 dB.
+        assert!((slider_db(0.5) - -18.7).abs() < 0.1, "{}", slider_db(0.5));
+        // Monotonic: a higher position is never quieter.
+        let mut previous = f64::NEG_INFINITY;
+        for percent in 1..=100u8 {
+            let db = slider_db(f64::from(percent) / 100.0);
+            assert!(db > previous, "{percent}% -> {db} dB after {previous} dB");
+            previous = db;
+        }
+        for (percent, expected) in [
+            (0, json!({"inputName":"Mic \"1\"", "inputVolumeMul":0.0})),
+            (100, json!({"inputName":"Mic \"1\"", "inputVolumeDb":0.0})),
+        ] {
             let (endpoint, server) = serve(scripted_obs(vec![done()]));
             client(endpoint, None)
                 .run(&Action::ObsSetInputVolume {
@@ -2983,13 +3020,7 @@ mod tests {
                 })
                 .unwrap();
             let seen = server.join().unwrap();
-            assert_eq!(
-                requests(&seen),
-                [(
-                    "SetInputVolume".to_string(),
-                    json!({"inputName":"Mic \"1\"", "inputVolumeMul":mul})
-                )]
-            );
+            assert_eq!(requests(&seen), [("SetInputVolume".to_string(), expected)]);
         }
     }
 

@@ -50,7 +50,7 @@ export type StepAction =
   // Switch the OBS scene collection or OBS profile by exact name. OBS reloads, which can interrupt a live output.
   | { type: 'obs_scene_collection'; name: string }
   | { type: 'obs_profile'; name: string }
-  // Set an OBS input's volume to an absolute percentage (100 is unity gain, 0 dB). The input is an exact OBS name.
+  // Set an OBS input's volume to a position on OBS's own slider (0 is silent, 100 is unity gain, 0 dB; the scale is OBS's logarithmic taper, not linear). The input is an exact OBS name.
   | { type: 'obs_set_input_volume'; input: string; percent: number }
   // Mute an input, step its volume by dB (held between -100 and 0 dB), or play/pause/restart/stop a media source.
   | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }

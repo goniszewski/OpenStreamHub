@@ -683,7 +683,7 @@ pub enum Action {
         name: String,
     },
     /// Set an OBS input's volume to an absolute percentage (0 is silent, 100
-    /// is unity gain, 0 dB). Needs an OBS endpoint like `obs_scene`.
+    /// is unity gain, 0 dB) on OBS's own logarithmic slider scale. Needs an OBS endpoint like `obs_scene`.
     ObsSetInputVolume {
         /// Exact input (source) name.
         input: String,

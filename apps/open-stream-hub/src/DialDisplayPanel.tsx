@@ -116,7 +116,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
 
   return <section className="dial-display" aria-labelledby={dialDisplayHeadingId}>
     <h3 id={dialDisplayHeadingId}>Dial screen <span className="small-label">{dialDisplayOptions.find(option => option.value === content)?.label ?? 'Default'}</span></h3>
-    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second; an animated picture plays at up to five frames a second.</p>
+    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second; an animated picture plays at up to about six frames a second.</p>
     <label htmlFor="dial-display-mode">Dial screen shows</label>
     <SelectField id="dial-display-mode" value={content} disabled={disabled || busy} onChange={event => run(latest => setDialDisplayContent(latest, event.target.value as DialDisplayContent), 'dial-display')}>
       {dialDisplayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}

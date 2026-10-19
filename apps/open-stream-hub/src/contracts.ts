@@ -110,7 +110,7 @@ export interface DialFunction { name: string; bindings: DialBinding[] }
 export type DialDisplayContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu' | 'image';
 // The picture the custom face was made from and how it was fitted, so the look can be changed after a reopen.
 export interface DialSource { image: string; fit: 'contain' | 'cover' | 'stretch'; quarter_turns: number; background: [number, number, number] }
-// A GIF prepared for the dial: 2 to 30 frames of 240×240 JPEG, each shown 200 ms or longer. The first equals
+// A GIF prepared for the dial: 2 to 30 frames of 240×240 JPEG, each shown 150 ms or longer. The first equals
 // DialDisplay.image. loop_count 0 loops forever; a positive count is the number of plays, then the last frame holds.
 export interface DialAnimationFrame { jpeg_base64: string; delay_ms: number }
 export interface DialAnimation { frames: DialAnimationFrame[]; loop_count: number }

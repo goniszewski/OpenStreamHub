@@ -188,8 +188,8 @@ const DISPLAY_RECORD_QUEUE: usize = 32;
 pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// Shortest time between two dial writes while an animated picture plays. A
 /// frame near the size limit took 86 to 121 ms to write on a real M131E, so
-/// this leaves about half the interval spare.
-pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(200);
+/// this leaves about 30 ms spare over the worst case.
+pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(150);
 /// Trigger of a dial write started by an animation frame coming due.
 const DIAL_ANIMATION_TRIGGER: &str = "animation";
 /// How long a failed animation frame holds the animation back before the next

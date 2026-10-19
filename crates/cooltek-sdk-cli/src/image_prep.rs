@@ -107,7 +107,7 @@ pub struct PreparedKeyArtwork {
 pub struct PreparedKeyArtworkFrame {
     /// Complete baseline JPEG: 72×72 for a key, 240×240 for the dial.
     pub jpeg: Vec<u8>,
-    /// Playback delay in milliseconds: 100 to 60,000 for a key, 200 to 60,000 for the dial.
+    /// Playback delay in milliseconds: 100 to 60,000 for a key, 150 to 60,000 for the dial.
     pub delay_ms: u32,
 }
 
@@ -172,7 +172,7 @@ const DIAL_GIF: GifTarget = GifTarget {
 ///
 /// Fits and rotates every composited frame as [`prepare_image`] does a still,
 /// lowers the JPEG quality of a frame that is over the dial's per-frame budget,
-/// raises delays under 200 ms to 200 ms, and keeps the loop count (zero is
+/// raises delays under 150 ms to 150 ms, and keeps the loop count (zero is
 /// infinite). Only GIF input is accepted: a still goes through
 /// [`prepare_image`].
 pub fn prepare_dial_animation(
@@ -1096,8 +1096,8 @@ mod keypad_animation_tests {
         assert_eq!(result.frames.len(), 3);
         assert_eq!(result.loop_count, 2);
         for frame in &result.frames {
-            // 5 cs is 50 ms, raised to the dial's 200 ms floor.
-            assert_eq!(frame.delay_ms, 200);
+            // 5 cs is 50 ms, raised to the dial's 150 ms floor.
+            assert_eq!(frame.delay_ms, 150);
             dial::validate_jpeg(&frame.jpeg).unwrap();
             assert!(frame.jpeg.len() <= DialAnimation::MAX_FRAME_BYTES);
         }

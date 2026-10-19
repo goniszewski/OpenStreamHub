@@ -101,8 +101,9 @@ impl DialAnimation {
     /// the profile as a whole is still checked against that limit).
     pub const MAX_BYTES: usize = 384 * 1024;
     /// Shortest frame time. A frame near the size limit took 86 to 121 ms to
-    /// write on a real M131E, so 200 ms leaves about half the time spare.
-    pub const MIN_DELAY_MS: u32 = 200;
+    /// write on a real M131E, so 150 ms leaves a margin over the worst case. The
+    /// official app's floor is 66 ms.
+    pub const MIN_DELAY_MS: u32 = 150;
     /// Longest frame time.
     pub const MAX_DELAY_MS: u32 = 60_000;
 

@@ -1928,7 +1928,7 @@ mod tests {
                 profile(
                     "image",
                     &first,
-                    &[frame(&first, 199), frame(&other, 200)],
+                    &[frame(&first, 149), frame(&other, 150)],
                     "",
                 ),
             ),

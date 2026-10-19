@@ -160,7 +160,7 @@ These results come from one rig. Sleep/wake recovery, some lifecycle paths and r
 
 OpenStreamHub has no telemetry, analytics, automatic crash reporting, account or cloud sync. Profiles, settings, artwork and diagnostic bundles are stored locally. Diagnostic bundles are created on demand and are yours to share; sensitive fields are redacted by default.
 
-The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password stays in memory and must be entered again after launching the app. Configured actions can open apps or web addresses when executed.
+The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password is stored in your macOS Keychain, never in a file; after an app update macOS may ask once whether to allow access (choose Always Allow). Configured actions can open apps or web addresses when executed.
 
 The app does not contact a remote service on its own. **Settings → Updates** has a **Check for updates** button that asks GitHub for the latest release (an anonymous request that sends nothing but the app's name and version); an optional daily check on launch is off by default. The app never downloads or installs anything itself. Building from source downloads dependencies from npm and crates.io. See the [diagnostic bundle guide](docs/masterhub-diagnostic-bundle.md) for what local diagnostics contain.
 

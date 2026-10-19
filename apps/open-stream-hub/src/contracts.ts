@@ -252,7 +252,7 @@ export interface DisplaySettings { module_control: ModuleControl; run_mode: RunM
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.
-// The password is never stored or returned: set_obs_password({ password }) holds it in the app's memory only (null
+// The password is never stored or returned: set_obs_password({ password }) stores it in the macOS Keychain (and holds it in memory) (null
 // forgets it) and every reply says only whether one is set.
 export type ObsHost = '127.0.0.1' | '::1' | 'localhost';
 export interface ObsSettings { enabled: boolean; host: ObsHost; port: number }

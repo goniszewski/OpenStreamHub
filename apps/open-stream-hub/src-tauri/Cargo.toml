@@ -53,6 +53,7 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
+security-framework = "3"
 
 [dev-dependencies]
 tempfile = "3"

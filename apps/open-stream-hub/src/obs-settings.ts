@@ -3,7 +3,7 @@ import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
 // The OBS WebSocket setting for obs_scene actions. Rust stores the endpoint (src-tauri/src/obs.rs, in
-// <app data>/obs-settings.json) and keeps the password in the app's memory only; the session manager reads both once
+// <app data>/obs-settings.json) and keeps the password in the macOS Keychain; the session manager reads both once
 // when a profile is started. This store shows and edits the setting. It never holds the password: setPassword hands it
 // straight to the backend and every reply says only whether one is set.
 

@@ -13,6 +13,7 @@ mod export;
 mod feed;
 mod focus;
 mod import_flags;
+mod keychain;
 mod lighting;
 mod menubar;
 mod mhz;

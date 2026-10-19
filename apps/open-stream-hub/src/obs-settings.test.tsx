@@ -100,7 +100,8 @@ describe('ObsSettingsPanel markup', () => {
     expect(markup).toContain('>localhost (this Mac)</option>');
     expect(markup).toContain('127.0.0.1:4455');
     expect(markup).toContain(obsPasswordNote);
-    expect(obsPasswordNote).toContain('enter it again after you restart the app');
+    expect(obsPasswordNote).toContain('macOS Keychain');
+    expect(obsPasswordNote).not.toContain('only in memory');
     expect(markup).toContain('No password is set');
     expect(markup).toContain('Changes apply the next time a profile starts.');
   });

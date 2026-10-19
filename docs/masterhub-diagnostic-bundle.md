@@ -52,7 +52,7 @@ Probing enumerates, opens an interface, reads its report descriptor and, for a c
 
 Without redaction the bundle contains real `path_hex` values and serials.
 
-The OBS WebSocket password is never in a bundle, with or without redaction: the app keeps it in memory only and never writes it to any file (`<app data>/obs-settings.json` holds only the on/off switch, host and port, and the bundle does not read that file).
+The OBS WebSocket password is never in a bundle, with or without redaction: the app keeps it in the macOS Keychain and never writes it to any file (`<app data>/obs-settings.json` holds only the on/off switch, host and port, and the bundle does not read that file).
 
 Independently of redaction, the home directory prefix is replaced with `~` in every stored string, including the profile and client data.
 

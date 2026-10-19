@@ -192,6 +192,9 @@ pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(200);
 const DIAL_ANIMATION_TRIGGER: &str = "animation";
 /// How often the dial thread re-checks its clock and a rate-limited request.
 const DIAL_TICK: Duration = Duration::from_millis(100);
+/// Shortest wait while an animation plays, so a frame due in a moment does not
+/// spin the thread.
+const DIAL_ANIMATION_TICK_FLOOR: Duration = Duration::from_millis(5);
 
 /// Opt-in display synchronization for one live M4315 or M131E run.
 ///
@@ -567,7 +570,7 @@ impl DisplayThread {
                             match next_display_request(
                                 &thread_slot,
                                 &abort,
-                                Some(DIAL_TICK),
+                                Some(dial.tick(&artwork, min_interval)),
                                 &|| false,
                             ) {
                                 Wake::Stopped => return,
@@ -786,6 +789,16 @@ fn next_display_request(
     }
 }
 
+/// Least time between two dial writes: `min_interval`, or the shorter
+/// animation interval while an animated picture plays.
+fn dial_interval(artwork: &DialArtwork, min_interval: Duration) -> Duration {
+    if artwork.is_animated() {
+        min_interval.min(DIAL_ANIMATION_INTERVAL)
+    } else {
+        min_interval
+    }
+}
+
 /// The dial thread's view of what to draw and when it last tried.
 #[derive(Default)]
 struct DialState {
@@ -823,6 +836,33 @@ enum DialOutcome {
 }
 
 impl DialState {
+    /// How long to sleep before looking again: the usual tick, or while an
+    /// animation plays the time until the next draw can happen. When the frame
+    /// on the clock is not the one drawn that is when the rate limit opens;
+    /// otherwise it is when the frame ends. Waking at the usual tick instead
+    /// would draw each frame up to a tick late, and the lateness would pile up
+    /// until a frame was skipped. A paused animation waits at the usual tick
+    /// for the next request.
+    fn tick(&self, artwork: &DialArtwork, min_interval: Duration) -> Duration {
+        if !self.started || self.animation_paused {
+            return DIAL_TICK;
+        }
+        let Some(until_frame) = artwork.next_frame_in() else {
+            return DIAL_TICK;
+        };
+        let pending =
+            self.last_face.as_ref() != Some(&artwork.request(self.dial_function).function);
+        let wait = if pending {
+            let interval = dial_interval(artwork, min_interval);
+            self.last_attempt.map_or(Duration::ZERO, |last| {
+                interval.saturating_sub(last.elapsed())
+            })
+        } else {
+            until_frame
+        };
+        wait.clamp(DIAL_ANIMATION_TICK_FLOOR, DIAL_TICK)
+    }
+
     fn requested(&mut self, request: DisplayRequest) {
         self.started = true;
         self.dial_function = request.dial_function;
@@ -858,11 +898,7 @@ impl DialState {
         if animation && self.animation_paused && self.trigger.is_none() {
             return None;
         }
-        let min_interval = if artwork.is_animated() {
-            min_interval.min(DIAL_ANIMATION_INTERVAL)
-        } else {
-            min_interval
-        };
+        let min_interval = dial_interval(artwork, min_interval);
         if self
             .last_attempt
             .is_some_and(|last| last.elapsed() < min_interval)

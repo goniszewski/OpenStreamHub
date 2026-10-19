@@ -401,6 +401,25 @@ fn animation_frame(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> usi
     index
 }
 
+/// How long until the frame showing `elapsed` after playback began gives way
+/// to the next, or `None` once a finite animation has played its last time.
+fn frame_remaining(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> Option<Duration> {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 || (loop_count > 0 && at >= cycle * u64::from(loop_count)) {
+        return None;
+    }
+    let mut left = at % cycle;
+    for &delay in delays_ms {
+        let delay = u64::from(delay);
+        if left < delay {
+            return Some(Duration::from_millis(delay - left));
+        }
+        left -= delay;
+    }
+    None
+}
+
 impl fmt::Debug for DialArtwork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DialArtwork")
@@ -556,6 +575,17 @@ impl DialArtwork {
             profile: self.profile_name.clone(),
             function,
         }
+    }
+
+    /// How long until the animated picture's next frame is due, or `None` for
+    /// a still picture and for an animation that has played its last time.
+    pub fn next_frame_in(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        frame_remaining(
+            &animation.delays_ms,
+            animation.loop_count,
+            animation.started.elapsed(),
+        )
     }
 
     /// True when the dial picture plays frames, so the face changes with time.
@@ -1288,6 +1318,29 @@ mod tests {
         assert_eq!(animation_frame(&delays, 2, ms(1499)), 1);
         assert_eq!(animation_frame(&delays, 2, ms(2000)), 2);
         assert_eq!(animation_frame(&delays, 2, ms(u64::MAX)), 2);
+    }
+
+    #[test]
+    fn the_time_to_the_next_frame_counts_down_and_ends_with_a_finite_animation() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, Some(200)),
+            (150, Some(50)),
+            (200, Some(300)),
+            (999, Some(1)),
+            (1000, Some(200)),
+            (1450, Some(50)),
+        ] {
+            assert_eq!(
+                frame_remaining(&delays, 0, ms(elapsed)),
+                expected.map(ms),
+                "{elapsed} ms"
+            );
+        }
+        assert_eq!(frame_remaining(&delays, 2, ms(1999)), Some(ms(1)));
+        assert_eq!(frame_remaining(&delays, 2, ms(2000)), None);
+        assert_eq!(frame_remaining(&[], 0, ms(5)), None);
     }
 
     #[test]

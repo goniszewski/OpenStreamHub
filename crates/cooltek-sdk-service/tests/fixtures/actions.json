@@ -401,6 +401,11 @@
     },
     {
       "type": "obs_screenshot"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": "press_twice"
     }
   ],
   "invalid": [
@@ -850,6 +855,21 @@
     {
       "type": "obs_screenshot",
       "path": "/tmp/x.png"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": "hold"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": null
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle",
+      "confirm": "press_twice"
     }
   ]
 }

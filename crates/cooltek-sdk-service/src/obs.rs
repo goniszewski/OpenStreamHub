@@ -773,7 +773,7 @@ impl ObsRequest {
                 ObsOutputOp::Start => "StartVirtualCam",
                 ObsOutputOp::Stop => "StopVirtualCam",
             }),
-            Action::ObsStream { op } => Self::new(match op {
+            Action::ObsStream { op, .. } => Self::new(match op {
                 ObsOutputOp::Toggle => "ToggleStream",
                 ObsOutputOp::Start => "StartStream",
                 ObsOutputOp::Stop => "StopStream",
@@ -2018,7 +2018,7 @@ mod tests {
             (ObsOutputOp::Start, "StartStream"),
             (ObsOutputOp::Stop, "StopStream"),
         ] {
-            assert_eq!(name(Action::ObsStream { op }), expected);
+            assert_eq!(name(Action::ObsStream { op, confirm: None }), expected);
         }
         for (op, expected) in [
             (ObsRecordOp::Toggle, "ToggleRecord"),

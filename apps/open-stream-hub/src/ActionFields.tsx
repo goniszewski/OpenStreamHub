@@ -34,6 +34,10 @@ const obsSwitchMore = 'Turn on and Turn off are safer inside a multi-action.';
 const obsReloadHint = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording.';
 const obsReloadMore = 'OBS applies the switch a moment after the press; nothing waits for it to finish, so in a multi-action put it last (a later OBS step can reach OBS while it is still reloading and fail).';
 
+function withConfirm(action: { type: 'obs_stream'; op: ObsOutputOp }, on: boolean): StepAction {
+  return on ? { type: 'obs_stream', op: action.op, confirm: 'press_twice' } : { type: 'obs_stream', op: action.op };
+}
+
 function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {
   return <SelectField id={id} value={value} onChange={event => onChange(event.target.value as ObsSwitchOp)}>{(Object.keys(obsSwitchOpLabels) as ObsSwitchOp[]).map(op => <option key={op} value={op}>{obsSwitchOpLabels[op]}</option>)}</SelectField>;
 }
@@ -356,10 +360,11 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
       break;
     case 'obs_stream':
       fields = <><label htmlFor={id('obs-stream-op')}>Action</label>
-        <SelectField id={id('obs-stream-op')} value={action.op} onChange={event => onChange({ type: 'obs_stream', op: event.target.value as ObsOutputOp }, 'obs-stream-op')}>
+        <SelectField id={id('obs-stream-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsOutputOp }, 'obs-stream-op')}>
           {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
         </SelectField>
-        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. Pressing the key does this at once, with no further confirmation.</p>
+        <label className="setting-toggle"><input type="checkbox" checked={action.confirm === 'press_twice'} onChange={event => onChange(withConfirm(action, event.target.checked), 'obs-stream-confirm')} />Press twice to confirm</label>
+        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. {action.confirm === 'press_twice' ? 'The first press only arms the key; press it again within 3 seconds to run it. Not available inside a multi-action.' : 'Without the option above, one press does this at once.'}</p>
         <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
     case 'obs_record':

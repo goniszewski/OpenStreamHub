@@ -7,9 +7,9 @@
 
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, Binding, DeviceContext, InputEvent, InputSession, InputUpdate,
-    ProfileResolution, ProfileSession, RunningTimer, ServiceModule, TimerAlert, TimerKey,
-    TimerTable, TimerToggle,
+    Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
+    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, TimerAlert,
+    TimerKey, TimerTable, TimerToggle,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -392,6 +392,17 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
                 record["dial_function"] = json!(function);
             }
             emit(output, record)?;
+            continue;
+        }
+        // A guarded action (`obs_stream` with `confirm`) is armed by a first
+        // press and runs on a second press of the same binding in the window.
+        if action.needs_confirmation()
+            && timers.confirm(timer_key(planned), now_micros) == Confirmation::Armed
+        {
+            emit(
+                output,
+                json!({"type":"action_armed", "schema_version":1, "event":planned.event, "action":loggable(action), "confirm_within_ms":TimerTable::CONFIRM_WINDOW_MICROS / 1000}),
+            )?;
             continue;
         }
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
@@ -894,6 +905,67 @@ mod tests {
                 .filter(|record| !matches!(record["type"].as_str(), Some("report" | "event")))
                 .collect()
         }
+    }
+
+    /// Counts what reaches the host.
+    #[derive(Default)]
+    struct Counting {
+        dispatched: Vec<String>,
+    }
+
+    impl ActionDispatcher for Counting {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            self.dispatched.push(action.type_name().into());
+            Ok(())
+        }
+    }
+
+    fn guarded_stream() -> Action {
+        Action::ObsStream {
+            op: cooltek_sdk_service::ObsOutputOp::Toggle,
+            confirm: Some(cooltek_sdk_service::ObsConfirm::PressTwice),
+        }
+    }
+
+    #[test]
+    fn a_guarded_stream_press_arms_first_and_runs_on_a_second_press_in_time() {
+        let mut host = Counting::default();
+        let mut timers = TimerTable::default();
+        let mut output = Vec::new();
+        let mut summary = LiveSummary::default();
+        let abort = AtomicBool::new(false);
+        let mut press_at = |control: u8, micros: u64| {
+            process_work(
+                press(control, micros, guarded_stream()),
+                &mut host,
+                &mut output,
+                &abort,
+                true,
+                true,
+                false,
+                &mut timers,
+                micros,
+                &mut summary,
+            )
+            .unwrap();
+        };
+        press_at(3, 0); // arms
+        press_at(3, 1_000_000); // confirms
+        press_at(3, 2_000_000); // arms again: a third press is never a free run
+        press_at(4, 2_500_000); // another key's press does not confirm this one
+        press_at(3, 6_000_000); // the window (3 s) ended: arms again
+        press_at(3, 7_000_000); // confirms
+        let armed: Vec<_> = records(&output)
+            .into_iter()
+            .filter(|record| record["type"] == "action_armed")
+            .collect();
+        assert_eq!(armed.len(), 4);
+        assert_eq!(armed[0]["confirm_within_ms"], 3000);
+        assert_eq!(
+            armed[0]["action"],
+            json!({"type":"obs_stream","op":"toggle","confirm":"press_twice"})
+        );
+        assert_eq!(host.dispatched, ["obs_stream", "obs_stream"]);
     }
 
     #[test]

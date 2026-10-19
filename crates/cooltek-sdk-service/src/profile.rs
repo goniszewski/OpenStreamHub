@@ -328,6 +328,15 @@ pub enum ObsOutputOp {
     Stop,
 }
 
+/// A safeguard on an action that cannot be undone from the controller.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsConfirm {
+    /// The first press only arms the key; a second press of the same binding
+    /// within [`crate::TimerTable::CONFIRM_WINDOW_MICROS`] runs the action.
+    PressTwice,
+}
+
 /// What an `obs_record` action does to the OBS recording.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -627,6 +636,11 @@ pub enum Action {
     ObsStream {
         /// What to do with the stream.
         op: ObsOutputOp,
+        /// Optional safeguard: with `press_twice` a key must be pressed twice
+        /// within three seconds before going live or ending the broadcast.
+        /// Only a key's own action can carry it, not a `multi_action` step.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ObsConfirm>,
     },
     /// Start, stop, pause or resume the OBS recording. Needs an OBS endpoint
     /// like `obs_scene`.
@@ -950,6 +964,8 @@ impl<'de> Deserialize<'de> for Action {
             },
             ObsStream {
                 op: ObsOutputOp,
+                #[serde(default, deserialize_with = "present")]
+                confirm: Option<ObsConfirm>,
             },
             ObsRecord {
                 op: ObsRecordOp,
@@ -1025,7 +1041,7 @@ impl<'de> Deserialize<'de> for Action {
             },
             Shape::ObsScene { scene } => Self::ObsScene { scene },
             Shape::ObsVirtualCamera { op } => Self::ObsVirtualCamera { op },
-            Shape::ObsStream { op } => Self::ObsStream { op },
+            Shape::ObsStream { op, confirm } => Self::ObsStream { op, confirm },
             Shape::ObsRecord { op } => Self::ObsRecord { op },
             Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
             Shape::ObsStudioMode { op } => Self::ObsStudioMode { op },
@@ -1118,6 +1134,18 @@ impl Action {
             Self::ObsMediaSource { .. } => "obs_media_source",
             Self::ObsInputVolumeFromPosition { .. } => "obs_input_volume_from_position",
         }
+    }
+
+    /// True when a press only arms the action and a second press of the same
+    /// binding runs it (see [`ObsConfirm`]).
+    pub fn needs_confirmation(&self) -> bool {
+        matches!(
+            self,
+            Self::ObsStream {
+                confirm: Some(ObsConfirm::PressTwice),
+                ..
+            }
+        )
     }
 
     /// True for an OBS action (`obs_*`) or a `multi_action` with an OBS step.
@@ -1335,6 +1363,10 @@ impl Action {
                             | Self::ObsInputVolumeFromPosition { .. }
                             | Self::Profile { .. }
                             | Self::Timer { .. }
+                            | Self::ObsStream {
+                                confirm: Some(_),
+                                ..
+                            }
                     ) {
                         return Err(format!(
                             "multi_action step {}: {} cannot be a multi_action step",
@@ -2673,6 +2705,37 @@ mod tests {
     }
 
     #[test]
+    fn a_stream_confirm_is_closed_and_only_for_a_keys_own_action() {
+        let json = r#"{"type":"obs_stream","op":"toggle","confirm":"press_twice"}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        assert!(action.needs_confirmation());
+        action.validate_executable().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        let plain: Action = serde_json::from_str(r#"{"type":"obs_stream","op":"stop"}"#).unwrap();
+        assert!(!plain.needs_confirmation());
+        for json in [
+            r#"{"type":"obs_stream","op":"toggle","confirm":null}"#,
+            r#"{"type":"obs_stream","op":"toggle","confirm":"hold"}"#,
+            r#"{"type":"obs_stream","op":"toggle","confirm":true}"#,
+            r#"{"type":"obs_record","op":"toggle","confirm":"press_twice"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        // A multi_action step cannot carry it; the unguarded stream is fine.
+        let step = |confirm| Action::MultiAction {
+            actions: vec![
+                Action::ToggleMute,
+                Action::ObsStream {
+                    op: ObsOutputOp::Start,
+                    confirm,
+                },
+            ],
+        };
+        step(None).validate().unwrap();
+        assert!(step(Some(ObsConfirm::PressTwice)).validate().is_err());
+    }
+
+    #[test]
     fn obs_stream_and_record_actions_have_a_closed_json_shape() {
         for json in [
             r#"{"type":"obs_stream","op":"toggle"}"#,
@@ -2707,6 +2770,7 @@ mod tests {
                 },
                 Action::ObsStream {
                     op: ObsOutputOp::Start,
+                    confirm: None,
                 },
             ],
         };

@@ -37,7 +37,7 @@ export type StepAction =
   | { type: 'obs_virtual_camera'; op: ObsOutputOp }
   | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp }
   // Going live or ending a broadcast (obs_stream), and the recording including pause and resume (obs_record).
-  | { type: 'obs_stream'; op: ObsOutputOp }
+  | { type: 'obs_stream'; op: ObsOutputOp; confirm?: ObsConfirm }
   | { type: 'obs_record'; op: ObsRecordOp }
   // Studio mode, its transition, a source filter and a source's visibility in a scene. The names are exact OBS names
   // (the same rules as obs_scene.scene).
@@ -57,6 +57,8 @@ export type StepAction =
   | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
   | { type: 'obs_media_source'; input: string; op: ObsMediaOp };
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
+// With press_twice a key must be pressed twice within three seconds; only a key's own action, not a multi-action step.
+export type ObsConfirm = 'press_twice';
 export type ObsMuteOp = 'toggle' | 'mute' | 'unmute';
 export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';

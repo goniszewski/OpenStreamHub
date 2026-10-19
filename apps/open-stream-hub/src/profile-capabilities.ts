@@ -181,7 +181,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
       case 'obs_virtual_camera': obsOutputs.add(`virtual camera ${opWord(action.op, 'obs_virtual_camera')}`); break;
       case 'obs_replay_buffer': obsOutputs.add(`replay buffer ${opWord(action.op, 'obs_replay_buffer')}`); break;
       // Going live, ending a broadcast or a recording cannot be undone from the controller: elevated.
-      case 'obs_stream': obsOutputs.add(`stream ${opWord(action.op, 'obs_stream')}`); liveOutput = true; break;
+      case 'obs_stream': obsOutputs.add(`stream ${opWord(action.op, 'obs_stream')}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`); liveOutput = true; break;
       case 'obs_record': obsOutputs.add(`recording ${opWord(action.op, 'obs_record')}`); liveOutput = true; break;
       case 'obs_studio_mode': obsOutputs.add(`studio mode ${opWord(action.op, 'obs_studio_mode')}`); break;
       case 'obs_transition': obsOutputs.add('studio transition'); break;
@@ -329,7 +329,7 @@ export function stepLabel(step: StepAction): string {
     case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op, 'obs_virtual_camera')}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;
-    case 'obs_stream': return `OBS stream: ${opWord(step.op, 'obs_stream')}`;
+    case 'obs_stream': return `OBS stream: ${opWord(step.op, 'obs_stream')}${step.confirm === 'press_twice' ? ' (press twice)' : ''}`;
     case 'obs_record': return `OBS recording: ${opWord(step.op, 'obs_record')}`;
     case 'text': {
       const preview = snippetPreview(typeof step.text === 'string' ? step.text : '');

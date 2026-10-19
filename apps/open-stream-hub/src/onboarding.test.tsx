@@ -30,7 +30,7 @@ describe('onboarding steps', () => {
   });
   it('describes the starter flow on the first step', () => {
     const markup = render(0);
-    expect(markup).toContain('Mac basics, Streaming (OBS) and Editing and media');
+    expect(markup).toContain('Mac basics, Streaming (OBS), Streamer and Editing and media');
     expect(markup).toContain('offers the starters that use it');
     expect(markup).toContain('New from a starter');
     expect(markup).toContain('Nothing is typed into apps, and no app or web page is opened');

@@ -287,7 +287,7 @@ describe('obs outputs', () => {
     const ops = (type: string) => fixture.valid.filter(action => action.type === type).flatMap(action => ('op' in action ? [String(action.op)] : []));
     expect(ops('obs_virtual_camera').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
     expect(ops('obs_replay_buffer').sort()).toEqual(Object.keys(obsReplayBufferOpLabels).sort());
-    expect(ops('obs_stream').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
+    expect([...new Set(ops('obs_stream'))].sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
     expect(ops('obs_record').sort()).toEqual(Object.keys(obsRecordOpLabels).sort());
   });
 

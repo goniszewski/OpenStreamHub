@@ -195,7 +195,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
-    case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}`;
+    case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
     case 'obs_record': return `OBS recording: ${obsRecordOpLabels[action.op] ?? action.op}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
     case 'obs_studio_mode': return `OBS studio mode: ${obsSwitchOpLabels[action.op] ?? action.op}`;

@@ -929,6 +929,7 @@ fn sync_dial<S: DisplaySink>(
     counts: &DisplayCounts,
 ) -> (Value, DialOutcome) {
     counts.syncs.fetch_add(1, Ordering::SeqCst);
+    let started = Instant::now();
     let (report, missing, error) = match sync.plan_dial(request.clone(), artwork) {
         Ok(plan) => {
             let missing = plan.is_missing();
@@ -955,7 +956,14 @@ fn sync_dial<S: DisplaySink>(
         }
         _ => DialOutcome::Failed,
     };
-    let record = dial_record(trigger, request, report.as_ref(), missing, error.as_deref());
+    let mut record = dial_record(trigger, request, report.as_ref(), missing, error.as_deref());
+    // How long planning and the write took, to pace animation against.
+    if report
+        .as_ref()
+        .is_some_and(|report| report.written.contains(&DisplayTarget::Dial))
+    {
+        record["elapsed_micros"] = json!(started.elapsed().as_micros() as u64);
+    }
     (record, outcome)
 }
 

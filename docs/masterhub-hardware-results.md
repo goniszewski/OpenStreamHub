@@ -284,9 +284,15 @@ Desktop app, dial running its display and the 15-key module running its keys.
 - **Not done:** the move was by hand and not timed; jitter and a fader's resolution at rest are not measured, and the microphone-volume behaviour is the separate pending check.
 - **Not asked of the module:** there is no read-on-demand for positions; a position becomes known with the first report after a fader moves, which carries all five.
 
-## Dial GIF playback (pending)
+## Dial GIF playback (write timing measured 19 October 2026; look still to be checked)
 
-Built and tested against a fake sink only. In the app's dial **Display** tab choose **Custom image**, then a GIF (up to 8 MiB, at most 30 frames; shorter frame times are raised to 200 ms), and run the profile on an M131E with Module control set to App. Check: the frames play in order without tearing or blank flashes; the dial still answers a click and a turn while it plays; the loop count is respected (`loop_count` 0 loops, a positive count stops on the last frame); the run's `display_sync` records (`trigger: "animation"`) show `elapsed_micros` well under the frame time, and no failures. If writes take longer than 200 ms, raise `DialAnimation::MIN_DELAY_MS`. Then stop the run: the dial returns to hardware mode as for any other face. Needs the sidecar rebuilt (`npm run sidecar`).
+`masterhub-service run --software-mode --display-sync --dial-content image --duration-secs 20` on the M131E, no `--execute`, with a profile of six busy frames (random 4×4-pixel colour blocks) of about 44 KiB each, close to the 48 KiB frame limit, every frame 200 ms, looping forever. Two runs ended cleanly (`duration_elapsed`, hardware mode restored): 89 and 90 dial writes in 20 s, every record complete, 0 display failures, all with `trigger: "animation"` apart from the first.
+
+**Write time.** The second run (the first had no timing in its records; dial `display_sync` records now carry `elapsed_micros`, as keypad records do): minimum 86 ms, median 102 ms, 90th percentile 111 ms, maximum 118 ms, for a frame near the size limit. So a worst-case frame takes about half of the 200 ms floor, and the floor is safe with margin; smaller frames write faster. A floor of 150 ms would also have fit, but the display thread wakes every 100 ms, which limits how evenly frames land, so 200 ms stays.
+
+**Frame cadence.** The thread picks the frame from the run clock and checks every 100 ms, so a frame is drawn up to 100 ms after its deadline and, when two deadlines fall in one tick, one frame is skipped: 10 of 89 steps advanced by two frames in the second run (11 of 88 in the first). With 200 ms frames that is visible as an occasional jump; longer frames hide it.
+
+**Still to check by eye:** that the picture on the dial looks smooth and untorn, that a click and a turn are still answered while it plays, and the loop count (`loop_count` 0 loops; a positive count stops on the last frame). In the app: dial **Display** tab, **Custom image**, choose a GIF (up to 8 MiB, at most 30 frames; shorter frame times are raised to 200 ms), Module control App. Needs the sidecar rebuilt (`npm run sidecar`).
 
 ## Custom dial picture (11 October 2026)
 

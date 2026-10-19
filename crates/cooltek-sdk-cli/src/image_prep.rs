@@ -15,6 +15,7 @@ use image::{
     AnimationDecoder, DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat,
     Limits, Rgb, RgbImage,
     codecs::{
+        bmp::BmpDecoder,
         gif::GifDecoder,
         jpeg::{JpegDecoder, JpegEncoder},
         png::PngDecoder,
@@ -69,7 +70,7 @@ impl Default for PrepareOptions {
     }
 }
 
-/// Converts a single static PNG or JPEG to an encoded 240×240 RGB baseline JFIF.
+/// Converts a single static PNG, JPEG or BMP to an encoded 240×240 RGB baseline JFIF.
 ///
 /// Accepts progressive JPEG input for baseline re-encoding. Rejects APNG and
 /// concatenated JPEG streams instead of silently choosing their first frame.
@@ -83,7 +84,7 @@ pub fn prepare_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, S
     prepare_for_target(input, options, ImageTarget::Dial)
 }
 
-/// Converts a single static PNG or JPEG to an encoded 72×72 RGB baseline JFIF.
+/// Converts a single static PNG, JPEG or BMP to an encoded 72×72 RGB baseline JFIF.
 ///
 /// Applies the same bounded decoding, matte, fit, explicit clockwise rotation,
 /// and metadata handling as [`prepare_image`]. Validates the encoded image for
@@ -450,7 +451,12 @@ fn prepare_for_target(
                 .map_err(|error| format!("Could not read JPEG header: {error}"))?;
             decode_bounded(decoder)?
         }
-        _ => return Err("Only static PNG and JPEG source images are supported".into()),
+        ImageFormat::Bmp => {
+            let decoder = BmpDecoder::new(Cursor::new(input))
+                .map_err(|error| format!("Could not read BMP header: {error}"))?;
+            decode_bounded(decoder)?
+        }
+        _ => return Err("Only static PNG, JPEG and BMP source images are supported".into()),
     };
     encode_source(source, options, target)
 }
@@ -899,6 +905,24 @@ mod tests {
                 .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn a_bmp_is_decoded_like_a_png_and_a_truncated_one_is_rejected() {
+        let options = PrepareOptions::default();
+        let rgb = RgbImage::from_fn(8, 4, |x, y| Rgb([(x * 30) as u8, (y * 60) as u8, 200]));
+        let mut bmp = Vec::new();
+        image::codecs::bmp::BmpEncoder::new(&mut bmp)
+            .write_image(rgb.as_raw(), 8, 4, ExtendedColorType::Rgb8)
+            .unwrap();
+        let from_bmp = prepare_image(&bmp, options).unwrap();
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(rgb.as_raw(), 8, 4, ExtendedColorType::Rgb8)
+            .unwrap();
+        assert_eq!(from_bmp, prepare_image(&png, options).unwrap());
+        assert!(prepare_keypad_image(&bmp, options).is_ok());
+        assert!(prepare_image(&bmp[..bmp.len() / 2], options).is_err());
     }
 
     #[test]

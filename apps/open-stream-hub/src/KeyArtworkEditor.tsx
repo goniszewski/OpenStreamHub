@@ -361,7 +361,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       disabled={disabled} busy={busy} prepareAvailable={!!invoke} onApply={() => { void applyDesign(); }} />
     <div className="inspector-divider" />
     <label className="key-artwork-upload-title" htmlFor="key-artwork-file">Image or GIF file</label>
-    <input id="key-artwork-file" type="file" accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif" disabled={disabled || busy || !invoke} onChange={event => {
+    <input id="key-artwork-file" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,.png,.jpg,.jpeg,.gif,.bmp" disabled={disabled || busy || !invoke} onChange={event => {
       const file = event.target.files?.[0]; event.target.value = ''; if (file) void choose(file);
     }} />
     {busy && <p role="status">Preparing key artwork…</p>}

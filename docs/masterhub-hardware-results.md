@@ -11,7 +11,7 @@ What has actually been observed on real MasterHUB hardware, and what has not. Ev
 | M0064 base | 502 | Sends a constant heartbeat only. No input. |
 | M032LE rollers | 516 | **Silent**: no report in four captures. Unresolved. |
 | M131E dial | 518 | Input, a raw 240x240 image upload, the four generated faces, backlight and color writes verified in software mode. App-controlled dry-run display, live preview and normal Stop verified below. |
-| M005S faders | 512 | Input verified on all five faders in default mode (11 October 2026): positions arrive as 0 (bottom) to 100 (top). Lighting verified; see the LED sections. |
+| M005S faders | 512 | Input verified on all five faders in default mode (11 October 2026): positions arrive as 0 (bottom) to 100 (top). Lighting verified; see the LED sections. Fader 1 drove a real OBS input's volume on 19 October 2026 ([OBS results](#obs-studio-with-a-real-obs-19-october-2026)). |
 
 ## USB topology and reported physical layout
 
@@ -186,6 +186,16 @@ Unit with the M0064 base (firmware `02.00.04.00`), M003K knobs (`01.00.05.00`), 
 - **Fader effects verified on hardware (11 October 2026).** With type 1, Static plus green on fader indexes 0 to 4 turned all five LEDs solid green. Then fader LED 0 on the M005S was stepped through modes 2 to 9 and 0 (the other four stayed green); each looked as expected and matched the knob behaviour (2 breathing, 3 slow strobe, 4 fast strobe, 5 cycling, 6 random, 7 wave, 8 water, 9 rainbow, 0 off), then Static green was restored. Not tried: fader indexes 1 to 4 with effects, brightness, other colours, the `all` index (`0xff`).
 - **Brightness verified on hardware (11 October 2026).** `led brightness N --module knob|slider --index I` is per LED: with all LEDs at 100, setting knob LED 0 to 50 was not visibly different, but 5 was clearly dimmer than the other two, and the same held for fader LED 0 (the others stayed at 100). Both were restored to 100. Only index 0 was dimmed on each module; a value between 5 and 50 and the `all` index were not tried.
 - **Not tried:** colour channel order beyond red, base brightness and the other effect numbers, `--save` on the base.
+
+## OBS Studio with a real OBS (19 October 2026)
+
+Real OBS Studio with obs-websocket 5.7.4 on this Mac, WebSocket server on port 4455 with a password (OBS asks for authentication). Dev build of the app, 15-key, knob, dial and 5-fader modules connected, the *Streaming (OBS)* profile running in Execute.
+
+- **Connection.** After the password was entered once, Settings › OBS Studio showed **Connected**. The editor's OBS name fields were fed from the real OBS.
+- **Password reaches the service only at start.** The first run failed to act because the modules had started 80 seconds before the password was saved: a service reads the endpoint and password once, when it starts. After Stop and Start the modules got `--obs-password-stdin`.
+- **Fader to OBS input volume.** Fader 1 of the M005S bound to `obs_input_volume_from_position` for the input *Mic/Aux*. With the first mapping (a linear multiplier, `percent / 100`) the owner found the change uneven against OBS's slider (the first half of the travel did almost nothing). After the mapping followed OBS's own logarithmic slider scale (about -19 dB at 50%), the owner confirmed it works as expected.
+- **Faders did not start by themselves** at first: the app auto-started only the keys, dial and knobs. Every control module now starts automatically; confirmed once the fader session ran.
+- **Not checked yet on a real OBS:** the other actions (recording, pause, stream, screenshot, mute, volume step, media source, scene, camera, replay buffer, studio mode, filter, source visibility, collection, profile), the wrong-password, wrong-port and not-running states.
 
 ## OBS connection states (pending)
 

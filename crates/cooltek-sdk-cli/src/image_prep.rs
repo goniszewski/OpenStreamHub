@@ -1,6 +1,8 @@
 //! Offline static-image preparation for dial and keypad JPEG packet plans.
 //!
-//! EXIF orientation and embedded color profiles are not automatically applied.
+//! A JPEG's EXIF orientation is applied to the source before fitting, so a
+//! photo shows upright; explicit rotation still turns the fitted square after
+//! that. Embedded color profiles are not applied.
 //! Alpha is composited in the source's converted eight-bit channel values before
 //! filtering. Rotation is explicit and clockwise, applied to the fitted square.
 //! No device is opened and no HID transport is initialized by this module.
@@ -18,6 +20,7 @@ use image::{
         png::PngDecoder,
     },
     imageops::{self, FilterType},
+    metadata::Orientation,
 };
 
 /// Largest encoded source accepted before format inspection or decoding.
@@ -70,7 +73,8 @@ impl Default for PrepareOptions {
 ///
 /// Accepts progressive JPEG input for baseline re-encoding. Rejects APNG and
 /// concatenated JPEG streams instead of silently choosing their first frame.
-/// EXIF orientation, ICC profiles, and other source metadata are not copied.
+/// EXIF orientation is applied to the source before fitting. ICC profiles and
+/// other source metadata are not copied.
 ///
 /// Options, encoded size, source dimensions, and decoded buffer limits are
 /// checked before transformation. The output is entropy-encoded by `image` and
@@ -419,8 +423,12 @@ fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, Strin
     decoder
         .set_limits(decode_limits())
         .map_err(|error| format!("Could not apply source decoder limits: {error}"))?;
-    DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("Could not decode source image within limits: {error}"))
+    // An unreadable orientation tag leaves the picture as stored.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut source = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("Could not decode source image within limits: {error}"))?;
+    source.apply_orientation(orientation);
+    Ok(source)
 }
 
 /// An RGB view composites alpha as samples are fetched, avoiding a second full
@@ -890,7 +898,7 @@ mod tests {
     }
 
     #[test]
-    fn exif_orientation_is_ignored_and_explicit_rotation_still_applies() {
+    fn exif_orientation_is_applied_and_explicit_rotation_still_follows() {
         let source = RgbImage::from_pixel(80, 40, Rgb([240, 20, 20]));
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, 100)
@@ -902,9 +910,12 @@ mod tests {
         metadata.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
         metadata.extend_from_slice(exif);
         jpeg.splice(2..2, metadata);
+        // Orientation 6 turns the 80×40 picture upright into 40×80, which
+        // fills the middle of the square with bars left and right.
         let output = decoded(&jpeg, PrepareOptions::default());
-        color_near(&output, 120, 20, [0; 3]);
-        color_near(&output, 20, 120, [240, 20, 20]);
+        color_near(&output, 20, 120, [0; 3]);
+        color_near(&output, 120, 20, [240, 20, 20]);
+        // The explicit turn then applies to the fitted square.
         let output = decoded(
             &jpeg,
             PrepareOptions {
@@ -912,8 +923,8 @@ mod tests {
                 ..PrepareOptions::default()
             },
         );
-        color_near(&output, 20, 120, [0; 3]);
-        color_near(&output, 120, 20, [240, 20, 20]);
+        color_near(&output, 120, 20, [0; 3]);
+        color_near(&output, 20, 120, [240, 20, 20]);
     }
 }
 

@@ -436,6 +436,25 @@ fn frame_remaining(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> Opt
     None
 }
 
+/// How long the frame showing `elapsed` after playback began has been up:
+/// zero for a finished animation, whose last frame has no end.
+fn frame_age(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> Duration {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 || (loop_count > 0 && at >= cycle * u64::from(loop_count)) {
+        return Duration::ZERO;
+    }
+    let mut left = at % cycle;
+    for &delay in delays_ms {
+        let delay = u64::from(delay);
+        if left < delay {
+            return Duration::from_millis(left);
+        }
+        left -= delay;
+    }
+    Duration::ZERO
+}
+
 impl fmt::Debug for DialArtwork {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DialArtwork")
@@ -615,6 +634,19 @@ impl DialArtwork {
         // Playback begins with the first request, so nothing is due before it.
         let elapsed = animation.started.get()?.elapsed();
         frame_remaining(&animation.delays_ms, animation.loop_count, elapsed)
+    }
+
+    /// How long the animated picture's current frame has been due: how late a
+    /// draw made now would be. `None` for a still picture or before playback
+    /// has begun.
+    pub fn frame_age(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        let elapsed = animation.started.get()?.elapsed();
+        Some(frame_age(
+            &animation.delays_ms,
+            animation.loop_count,
+            elapsed,
+        ))
     }
 
     /// True when the dial picture plays frames, so the face changes with time.
@@ -1354,6 +1386,30 @@ mod tests {
         assert_eq!(animation_frame(&delays, 2, ms(1499)), 1);
         assert_eq!(animation_frame(&delays, 2, ms(2000)), 2);
         assert_eq!(animation_frame(&delays, 2, ms(u64::MAX)), 2);
+    }
+
+    #[test]
+    fn a_frame_ages_from_its_start_and_a_finished_animation_has_no_age() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, 0),
+            (150, 150),
+            (200, 0),
+            (230, 30),
+            (999, 499),
+            (1000, 0),
+            (1210, 10),
+        ] {
+            assert_eq!(
+                frame_age(&delays, 0, ms(elapsed)),
+                ms(expected),
+                "{elapsed} ms"
+            );
+        }
+        assert_eq!(frame_age(&delays, 2, ms(1999)), ms(499));
+        assert_eq!(frame_age(&delays, 2, ms(2000)), Duration::ZERO);
+        assert_eq!(frame_age(&[], 0, ms(5)), Duration::ZERO);
     }
 
     #[test]

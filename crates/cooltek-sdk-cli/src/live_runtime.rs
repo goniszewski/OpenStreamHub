@@ -198,6 +198,10 @@ const DIAL_ANIMATION_RETRY: Duration = Duration::from_secs(5);
 /// One clean animation frame in this many is logged, with its write time; the
 /// rest are counted in `syncs` only, as the keypad's timed frames are.
 const DIAL_ANIMATION_LOG_EVERY: u32 = 50;
+/// The most lateness an animation frame's draw may hand back to the next one.
+/// A fifth of the shortest interval, so two writes are never closer than four
+/// fifths of it (a worst-case frame writes in about four fifths of 150 ms).
+const DIAL_ANIMATION_CREDIT_DIVISOR: u32 = 5;
 /// How often the dial thread re-checks its clock and a rate-limited request.
 const DIAL_TICK: Duration = Duration::from_millis(100);
 /// Shortest wait while an animation plays, so a frame due in a moment does not
@@ -865,6 +869,19 @@ enum DialOutcome {
     Failed,
 }
 
+/// When to count the rate limit from for a draw made `now`. The limit counts
+/// from the start of the previous write, so a frame drawn a little after its
+/// deadline would push the next deadline back by the same amount, and the
+/// lateness would pile up until a frame was skipped. An animation frame
+/// therefore counts from when it was due, up to a fifth of `interval` earlier
+/// than `now`.
+fn attempt_anchor(now: Instant, late_by: Option<Duration>, interval: Duration) -> Instant {
+    let credit = late_by
+        .unwrap_or_default()
+        .min(interval / DIAL_ANIMATION_CREDIT_DIVISOR);
+    now.checked_sub(credit).unwrap_or(now)
+}
+
 impl DialState {
     /// How long to sleep before looking again: the usual tick, or while an
     /// animation plays the time until the next draw can happen. When the frame
@@ -954,7 +971,11 @@ impl DialState {
         }
         let retrying = self.retry_pending.take() == face;
         self.last_face = face;
-        self.last_attempt = Some(Instant::now());
+        self.last_attempt = Some(attempt_anchor(
+            Instant::now(),
+            animation.then(|| artwork.frame_age()).flatten(),
+            dial_interval(artwork, min_interval),
+        ));
         self.last_was_animation = animation;
         // What changes a face without a request: the clock's minute or a new
         // CPU percentage.
@@ -6388,6 +6409,53 @@ mod tests {
         assert!(records.iter().all(|record| record["written"] == true));
         assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 3);
         assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_late_animation_frame_counts_its_rate_limit_from_when_it_was_due() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(150);
+        let ms = Duration::from_millis;
+        // On time, or not an animation: counted from now.
+        assert_eq!(attempt_anchor(now, None, interval), now);
+        assert_eq!(attempt_anchor(now, Some(Duration::ZERO), interval), now);
+        // A few milliseconds late: the lateness is handed back.
+        assert_eq!(attempt_anchor(now, Some(ms(7)), interval), now - ms(7));
+        // Never more than a fifth of the interval, so writes stay apart.
+        assert_eq!(attempt_anchor(now, Some(ms(120)), interval), now - ms(30));
+    }
+
+    #[test]
+    fn frames_drawn_a_little_late_do_not_pile_their_lateness_up() {
+        // Simulated clock: frames are due every 150 ms and every draw happens
+        // 9 ms after the earliest moment the rate limit and the frame allow.
+        let interval = 150u64;
+        let lateness = 9u64;
+        let mut last_start = 0u64; // start of the previous write, as counted
+        let mut skipped = 0;
+        for frame in 1..200u64 {
+            let due = frame * interval;
+            let earliest = due.max(last_start + interval);
+            let drawn = earliest + lateness;
+            // The frame on the clock when the draw happens.
+            if drawn / interval != frame {
+                skipped += 1;
+            }
+            let late = drawn - due;
+            last_start = drawn - late.min(interval / u64::from(DIAL_ANIMATION_CREDIT_DIVISOR));
+        }
+        assert_eq!(skipped, 0);
+        // Without handing the lateness back it accumulates into skipped frames.
+        let mut last_start = 0u64;
+        let mut skipped = 0;
+        for frame in 1..200u64 {
+            let drawn = (frame * interval).max(last_start + interval) + lateness;
+            if drawn / interval != frame {
+                skipped += 1;
+            }
+            last_start = drawn;
+        }
+        assert!(skipped > 0);
     }
 
     #[test]

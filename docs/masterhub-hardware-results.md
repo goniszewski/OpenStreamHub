@@ -306,7 +306,9 @@ Desktop app, dial running its display and the 15-key module running its keys.
 
 **Loop count 3 (20 October 2026).** The 12-frame bouncing square with `loop_count` 3 (about 5.4 s of playback) ran twice for 30 s on the M131E. Both runs had no failed write, and each log held only two sampled `display_sync` records (the start and one animation write), against 7 to 9 in the 45 to 60 s runs that looped forever. The log samples one animation write in 50, so that fits about 36 writes, which is three loops, and not a loop that kept going. The log cannot show the frame that is held at the end, so the same profile was run again for 30 s with the user watching: the user saw the animation stop on its last frame.
 
-**Still to check:** a restart with the imported GIF. In the app: dial **Display** tab, **Custom image**, choose a GIF (up to 8 MiB, at most 30 frames, canvas up to 512×512; shorter frame times are raised to 150 ms; the frames together may not exceed 384 KiB, so the quality is lowered until they fit; a one-frame GIF becomes a still picture), Module control App. Needs the sidecar rebuilt (`npm run sidecar`).
+**Restart with the imported GIF (21 October 2026).** After the app had been stopped and started again (`npm run desktop`), the user opened the profile and reported that the imported GIF was still on the dial's Display tab. Not written down: whether the preview text read "Plays 12 frames, looping.", whether the app offered a draft restore or the profile had been saved, and whether it played on the dial after the restart.
+
+**Still to check:** nothing for a single GIF import; mixed static and animated keys and folder navigation on hardware are tracked in the parity tracker. In the app: dial **Display** tab, **Custom image**, choose a GIF (up to 8 MiB, at most 30 frames, canvas up to 512×512; shorter frame times are raised to 150 ms; the frames together may not exceed 384 KiB, so the quality is lowered until they fit; a one-frame GIF becomes a still picture), Module control App. Needs the sidecar rebuilt (`npm run sidecar`).
 
 ## Custom dial picture (11 October 2026)
 

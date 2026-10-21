@@ -357,3 +357,5 @@ Two test profiles were imported through the app (`AAA Switch A` and `AAA Switch 
 
 Not written down: whether the dry-run switch went A to B and back, whether quick presses switched only once per 500 ms, what the executing run's confirmation dialog said, and whether the keypad faces changed with the profile after confirming. The profile key's switch on a real run is therefore only partly checked: the device switching on a press and the editor following were seen.
 
+**Executing run and quick presses (21 October 2026, later).** With `AAA Switch A` running with actions on, the user pressed the profile key, went through the confirmation, and tried quick presses and a declined confirmation (the three checks listed above), and reported "All good". The banner and Resume dialog text, whether key 2 stayed idle before the confirmation, and how many confirmations the quick presses needed were not written down, so this records that nothing looked wrong, not the details.
+

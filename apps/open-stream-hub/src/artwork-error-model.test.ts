@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { artworkErrorNotice, genericArtworkError } from './artwork-error-model';
 
-const friendlyArtworkError = (error: unknown) => artworkErrorNotice(error).message;
+const noticeMessage = (error: unknown) => artworkErrorNotice(error).message;
 
-describe('friendlyArtworkError', () => {
+describe('artworkErrorNotice', () => {
   it.each([
     ['Only static PNG, JPEG and BMP source images are supported', 'PNG, JPEG or BMP'],
     ['Animated PNG input is unsupported; supply one static image', 'PNG, JPEG or BMP'],
@@ -32,7 +32,7 @@ describe('friendlyArtworkError', () => {
     ['Could not read PNG header within limits: Image size exceeds limit', 'too large'],
     ['Could not decode source image within limits: Memory limit exceeded', 'too large'],
   ])('maps %s', (raw, expected) => {
-    const message = friendlyArtworkError(raw);
+    const message = noticeMessage(raw);
     expect(message).toContain(expected);
     expect(message).not.toBe(genericArtworkError);
   });
@@ -41,7 +41,7 @@ describe('friendlyArtworkError', () => {
     expect(artworkErrorNotice(new Error('os error 13: permission denied'))).toEqual({ message: genericArtworkError, detail: 'os error 13: permission denied' });
   });
   it('falls back to the generic text for unknown values', () => {
-    expect(friendlyArtworkError({ weird: true })).toBe(genericArtworkError);
+    expect(noticeMessage({ weird: true })).toBe(genericArtworkError);
     expect(artworkErrorNotice('').detail).toBeUndefined();
   });
 });

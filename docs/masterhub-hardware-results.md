@@ -337,3 +337,13 @@ Not checked or not written down:
 
 **Another service was running on the same keypad.** The desktop app was open (`npm run desktop`) and had started its own `masterhub-service` on the same M4315 with the profile "Streaming (OBS)", whose key 1 is "Record" (`obs_record` toggle). Both services therefore received the presses and drew the key faces, and key 1 showed RECORD right after it was pressed, as the user saw. That text is the app profile's label, not something this test wrote: the test's own service wrote the 15 key faces once, at start (`display_sync` `software_mode`, 15 written, none missing or failed). The `obs_record` toggle was not looked at; no OBS process was seen running at the time, and whether the app's service logged a failed action was not checked. A test that needs the keypad to itself should stop the app first.
 
+## Macro recorder and replay (M4315, 21 October 2026)
+
+Done by the user in the desktop app (`npm run desktop`, a debug build) on a real Mac: the **Record macro** button of the macro editor, then **Use recording**, then a run of the profile with Module control App and actions on, pressing the key on the M4315 with a text editor focused.
+
+**Two defects found and fixed.**
+1. **Clicking Record macro crashed the app** (twice, 14:16 and 14:17; both macOS crash reports show the same stack: `SIGBUS` in `CFRunLoopAddSource` called from the recorder's tap thread). `recorder.rs` declared `kCFRunLoopCommonModes` as an opaque value and passed its address; the symbol holds a `CFStringRef`, so Core Foundation read the variable's bytes as a string object. It now declares the pointer and passes its value. The bug had been there since the recorder was added; only a real event tap reaches that call, so no unit test could have found it. A search found no other `&kCF…` or `&kCG…` use in the Rust sources.
+2. **Use recording did not close the dialog.** The handler applied the steps but never closed the recorder. It now does both.
+
+**Result after the fixes.** The user recorded a sample, used it, and reported that the replay of the macro works. Not written down: what was typed, how many keystrokes the recording became, whether the recorder dialog showed the permission rows as expected, which permission prompts appeared and which app they named, and whether the replayed timing matched. The key chord replay of Command combinations and named keys was not singled out.
+

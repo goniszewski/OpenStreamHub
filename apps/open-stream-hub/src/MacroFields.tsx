@@ -259,7 +259,7 @@ export function MacroFields({ steps, disabled, onChange, invoke }: {
     {issue && <p className="field-error" role="alert">{issue}</p>}
     <MacroRecorderDialog state={recorder} onCancel={closeRecorder}
       onStart={() => void beginRecording()} onStop={() => void stopRecording()}
-      onUse={useSteps => update(useSteps)}
+      onUse={useSteps => { update(useSteps); closeRecorder(); }}
       permissions={permissions} permissionError={permissionError} busy={busy} live={live} disabled={disabled}
       onCheckPermissions={() => void checkPermissions()} onOpenSettings={target => void openSettings(target)} />
   </div>;

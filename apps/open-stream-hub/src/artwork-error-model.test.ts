@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { artworkErrorNotice, friendlyArtworkError, genericArtworkError } from './artwork-error-model';
+import { artworkErrorNotice, genericArtworkError } from './artwork-error-model';
+
+const friendlyArtworkError = (error: unknown) => artworkErrorNotice(error).message;
 
 describe('friendlyArtworkError', () => {
   it.each([
     ['Only static PNG, JPEG and BMP source images are supported', 'PNG, JPEG or BMP'],
     ['Animated PNG input is unsupported; supply one static image', 'PNG, JPEG or BMP'],
+    ['Key artwork source must contain 1 byte through 8 MiB', 'too large'],
+    ['Choose an image first', 'Choose the file again'],
     ['The image is larger than 8 MiB', 'too large'],
     ['Dial animation source must contain 1 byte through 8 MiB', 'too large'],
     ['Source image dimensions must be between 1 and 4096 on each axis', 'too large'],
@@ -18,8 +22,8 @@ describe('friendlyArtworkError', () => {
     ['A dial animation needs a GIF', 'Choose a GIF'],
     ['Invalid GIF signature', 'GIF could not be read'],
     ['Could not decode GIF frame: boom', 'GIF could not be read'],
-    ['Prepared dial animation exceeds 512 KiB even at JPEG quality 10', 'too detailed'],
-    ['Prepared frame exceeds 64 KiB even at JPEG quality 10', 'too detailed'],
+    ['Prepared dial animation exceeds 384 KiB even at JPEG quality 10', 'too detailed'],
+    ['Prepared frame exceeds 48 KiB even at JPEG quality 10', 'too detailed'],
     ['The image data is not valid base64', 'Choose the file again'],
     ['JPEG source is truncated or missing a marker', 'could not be read'],
     ['Could not decode source image within limits: Format error', 'could not be read'],

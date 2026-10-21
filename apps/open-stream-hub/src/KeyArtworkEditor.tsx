@@ -276,6 +276,10 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   // auto-artwork timer bumps requestId to discard an upload still in flight, and
   // that upload's own finish must still clear busy.
   const busyId = useRef(0);
+  // The request id the auto-artwork timer took last. When that is still the current id as a choice or design finishes,
+  // the timer discarded it (a newer click or closing the editor would have moved the id on), and the person is told.
+  const autoRequest = useRef(0);
+  const discardedByTimer = (id: number) => id !== requestId.current && requestId.current === autoRequest.current;
   useEffect(() => () => { requestId.current++; }, []);
   // The real .app icon for a launch_app action, asked once per bundle id.
   useEffect(() => {
@@ -308,6 +312,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     // The application field is typed into: settle before looking anything up.
     const timer = setTimeout(() => {
       const id = ++requestId.current;
+      autoRequest.current = id;
       void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
         planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current,
       });
@@ -326,7 +331,10 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: {
         image_base64: source.base64, target: 'keypad', quality: 85, fit: 'contain', quarter_turns: 0, background: [0, 0, 0],
       } });
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) {
+        if (discardedByTimer(id)) setError({ message: 'The key\'s artwork was replaced automatically while your picture was being prepared, so your choice was not applied. Choose the file again.' });
+        return;
+      }
       // Never apply completion to a different draft, nor undo intervening edits.
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
@@ -353,7 +361,10 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       const built = buildKeyArtworkDesignRequest(design, png);
       if (!built.ok) { if (id === requestId.current) setError({ message: built.error }); return; }
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: built.request });
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) {
+        if (discardedByTimer(id)) setError({ message: 'The key\'s artwork was replaced automatically while your design was being prepared, so it was not applied. Apply it again.' });
+        return;
+      }
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
         setError({ message: 'The profile changed while preparing artwork. Apply again.' }); return;

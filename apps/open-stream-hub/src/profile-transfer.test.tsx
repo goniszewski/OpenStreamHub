@@ -90,7 +90,7 @@ describe('import', () => {
     const state = session.getState();
     expect(state.draft.profileId).toBe('new-1');
     expect(state.draft.profile.name).toBe('Desk');
-    expect(state.notice).toBe('Imported Desk. It is now the open profile.');
+    expect(state.notice).toBe('Imported Desk. It is open in the editor, not running on the modules yet. Choose it in the profile picker to run it.');
     expect(state.importError).toBeNull();
     expect(files.get('a')!.profile.name).toBe('Alpha');
     expect(session.unsaved).toBe(false);

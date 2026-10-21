@@ -100,12 +100,37 @@ impl DialAnimation {
     /// under its 1 MiB JSON limit once base64 encoded (alone: with key artwork
     /// the profile as a whole is still checked against that limit).
     pub const MAX_BYTES: usize = 384 * 1024;
-    /// Shortest frame time. A frame near the size limit took 86 to 121 ms to
-    /// write on a real M131E, so 150 ms leaves a margin over the worst case. The
-    /// official app's floor is 66 ms.
+    /// Shortest frame time of a frame in the largest size class, and so the
+    /// longest floor. A frame near the size limit took 86 to 121 ms to write on
+    /// a real M131E, so 150 ms leaves a margin over the worst case.
     pub const MIN_DELAY_MS: u32 = 150;
+    /// Shortest frame time of a frame in the smallest size class: the official
+    /// app's floor.
+    pub const FASTEST_DELAY_MS: u32 = 66;
+    /// Shortest frame time of a frame in the middle size class.
+    pub const MEDIUM_DELAY_MS: u32 = 100;
+    /// Largest frame, in bytes, of the smallest size class.
+    pub const SMALL_FRAME_BYTES: usize = 8 * 1024;
+    /// Largest frame, in bytes, of the middle size class.
+    pub const MEDIUM_FRAME_BYTES: usize = 20 * 1024;
     /// Longest frame time.
     pub const MAX_DELAY_MS: u32 = 60_000;
+
+    /// Shortest time a frame of `frame_bytes` may stay up. The time to write a
+    /// frame grows with its size (measured on a real M131E: about 6 ms plus 2.7
+    /// ms per KiB at worst), and a frame must last at least that long, so the
+    /// floor has three steps: [`Self::FASTEST_DELAY_MS`] up to
+    /// [`Self::SMALL_FRAME_BYTES`], [`Self::MEDIUM_DELAY_MS`] up to
+    /// [`Self::MEDIUM_FRAME_BYTES`], and [`Self::MIN_DELAY_MS`] above.
+    pub const fn min_delay_ms_for(frame_bytes: usize) -> u32 {
+        if frame_bytes <= Self::SMALL_FRAME_BYTES {
+            Self::FASTEST_DELAY_MS
+        } else if frame_bytes <= Self::MEDIUM_FRAME_BYTES {
+            Self::MEDIUM_DELAY_MS
+        } else {
+            Self::MIN_DELAY_MS
+        }
+    }
 
     /// The decoded, validated JPEG of every frame.
     pub fn jpegs(&self) -> Result<Vec<Vec<u8>>, String> {
@@ -119,10 +144,9 @@ impl DialAnimation {
         let mut total = 0usize;
         let mut jpegs = Vec::with_capacity(self.frames.len());
         for frame in &self.frames {
-            if !(Self::MIN_DELAY_MS..=Self::MAX_DELAY_MS).contains(&frame.delay_ms) {
+            if frame.delay_ms > Self::MAX_DELAY_MS {
                 return Err(format!(
-                    "dial_display: an animation frame lasts {} through {} ms",
-                    Self::MIN_DELAY_MS,
+                    "dial_display: an animation frame lasts at most {} ms",
                     Self::MAX_DELAY_MS
                 ));
             }
@@ -144,6 +168,16 @@ impl DialAnimation {
                     "dial_display: an animation frame exceeds {} KiB or the frames exceed {} KiB together",
                     Self::MAX_FRAME_BYTES / 1024,
                     Self::MAX_BYTES / 1024
+                ));
+            }
+            // The floor depends on the size, so it is checked once the frame is decoded.
+            let floor = Self::min_delay_ms_for(jpeg.len());
+            if frame.delay_ms < floor {
+                return Err(format!(
+                    "dial_display: an animation frame of {} KiB lasts {} through {} ms",
+                    jpeg.len().div_ceil(1024),
+                    floor,
+                    Self::MAX_DELAY_MS
                 ));
             }
             cooltek_sdk_masterhub::dial::validate_jpeg(&jpeg)

@@ -186,9 +186,11 @@ const DISPLAY_RECORD_QUEUE: usize = 32;
 /// Shortest time between two dial writes: the dial is redrawn at most about once a second
 /// (an animated picture uses [`DIAL_ANIMATION_INTERVAL`]).
 pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
-/// Shortest time between two dial writes while an animated picture plays. A
-/// frame near the size limit took 86 to 121 ms to write on a real M131E, so
-/// this leaves about 30 ms spare over the worst case.
+/// Longest shortest-time between two dial writes while an animated picture
+/// plays: the floor of the largest frames. A frame near the size limit took 86
+/// to 121 ms to write on a real M131E, so this leaves about 30 ms spare over
+/// the worst case. Smaller frames have shorter floors
+/// ([`cooltek_sdk_service::DialAnimation::min_delay_ms_for`]).
 pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(150);
 /// Trigger of a dial write started by an animation frame coming due.
 const DIAL_ANIMATION_TRIGGER: &str = "animation";
@@ -821,12 +823,11 @@ fn next_display_request(
 }
 
 /// Least time between two dial writes: `min_interval`, or the shorter
-/// animation interval while an animated picture plays.
+/// size floor of the current frame while an animated picture plays.
 fn dial_interval(artwork: &DialArtwork, min_interval: Duration) -> Duration {
-    if artwork.is_animated() {
-        min_interval.min(DIAL_ANIMATION_INTERVAL)
-    } else {
-        min_interval
+    match artwork.animation_floor() {
+        Some(floor) => min_interval.min(floor),
+        None => min_interval,
     }
 }
 

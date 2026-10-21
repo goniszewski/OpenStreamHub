@@ -1928,7 +1928,7 @@ mod tests {
                 profile(
                     "image",
                     &first,
-                    &[frame(&first, 149), frame(&other, 150)],
+                    &[frame(&first, 65), frame(&other, 150)],
                     "",
                 ),
             ),
@@ -1969,6 +1969,79 @@ mod tests {
         // The source rule itself is what refuses a source beside an animation.
         let error = profile("image", &first, &two, &source).unwrap_err();
         assert!(error.to_string().contains("no source picture"), "{error}");
+    }
+
+    #[test]
+    fn a_dial_frame_may_not_last_less_than_its_size_allows() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        // Pseudo-random pixels do not compress, so the JPEG size follows the quality.
+        let noise = |quality: u8| {
+            let mut seed = 0x2545_f491_u32;
+            let image = image::RgbImage::from_fn(240, 240, |_, _| {
+                let mut next = || {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (seed >> 24) as u8
+                };
+                image::Rgb([next(), next(), next()])
+            });
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+                .encode_image(&image)
+                .unwrap();
+            jpeg
+        };
+        let profile = |jpeg: &[u8], delay: u32| {
+            let encoded = STANDARD.encode(jpeg);
+            Profile::from_json(
+                format!(
+                    r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"image","image":"{encoded}","animation":{{"frames":[{{"jpeg_base64":"{encoded}","delay_ms":{delay}}},{{"jpeg_base64":"{encoded}","delay_ms":60000}}],"loop_count":0}}}}}}"#
+                )
+                .as_bytes(),
+            )
+        };
+        let mut floors = std::collections::BTreeSet::new();
+        for quality in [4, 12, 25, 40] {
+            let jpeg = noise(quality);
+            let floor = crate::dial::DialAnimation::min_delay_ms_for(jpeg.len());
+            floors.insert(floor);
+            let at = profile(&jpeg, floor);
+            assert!(at.is_ok(), "{} bytes at {floor} ms: {at:?}", jpeg.len());
+            let below = profile(&jpeg, floor - 1).unwrap_err();
+            assert!(
+                below.contains(&format!("lasts {floor} through")),
+                "{} bytes: {below}",
+                jpeg.len()
+            );
+        }
+        // The four qualities reach all three size classes.
+        assert_eq!(
+            floors.into_iter().collect::<Vec<_>>(),
+            [
+                crate::dial::DialAnimation::FASTEST_DELAY_MS,
+                crate::dial::DialAnimation::MEDIUM_DELAY_MS,
+                crate::dial::DialAnimation::MIN_DELAY_MS
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dial_floor_has_three_steps_at_the_size_boundaries() {
+        let small = crate::dial::DialAnimation::SMALL_FRAME_BYTES;
+        let medium = crate::dial::DialAnimation::MEDIUM_FRAME_BYTES;
+        for (bytes, floor) in [
+            (0, 66),
+            (small, 66),
+            (small + 1, 100),
+            (medium, 100),
+            (medium + 1, 150),
+            (crate::dial::DialAnimation::MAX_FRAME_BYTES, 150),
+        ] {
+            assert_eq!(
+                crate::dial::DialAnimation::min_delay_ms_for(bytes),
+                floor,
+                "{bytes} bytes"
+            );
+        }
     }
 
     #[test]

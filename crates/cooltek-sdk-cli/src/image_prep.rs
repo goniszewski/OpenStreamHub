@@ -107,7 +107,8 @@ pub struct PreparedKeyArtwork {
 pub struct PreparedKeyArtworkFrame {
     /// Complete baseline JPEG: 72×72 for a key, 240×240 for the dial.
     pub jpeg: Vec<u8>,
-    /// Playback delay in milliseconds: 100 to 60,000 for a key, 150 to 60,000 for the dial.
+    /// Playback delay in milliseconds: 100 to 60,000 for a key; for the dial 60,000 at most and at least
+    /// [`DialAnimation::min_delay_ms_for`] of the frame's size (66, 100 or 150).
     pub delay_ms: u32,
 }
 
@@ -140,8 +141,9 @@ struct GifTarget {
     target: ImageTarget,
     /// Most frames accepted.
     max_frames: usize,
-    /// Shortest frame time; shorter GIF delays are raised to it.
-    min_delay_ms: u32,
+    /// Shortest frame time for a prepared frame of the given size in bytes;
+    /// shorter GIF delays are raised to it.
+    min_delay_ms: fn(usize) -> u32,
     /// Most bytes in one prepared frame.
     max_frame_bytes: usize,
     /// Most bytes across the prepared frames.
@@ -153,7 +155,7 @@ struct GifTarget {
 const KEYPAD_GIF: GifTarget = GifTarget {
     target: ImageTarget::Keypad,
     max_frames: KeyArtwork::MAX_FRAMES,
-    min_delay_ms: KeyArtwork::MIN_DELAY_MS,
+    min_delay_ms: |_| KeyArtwork::MIN_DELAY_MS,
     max_frame_bytes: KeyArtwork::MAX_FRAME_BYTES,
     max_bytes: KeyArtwork::MAX_BYTES,
     name: "key",
@@ -162,7 +164,7 @@ const KEYPAD_GIF: GifTarget = GifTarget {
 const DIAL_GIF: GifTarget = GifTarget {
     target: ImageTarget::Dial,
     max_frames: DialAnimation::MAX_FRAMES,
-    min_delay_ms: DialAnimation::MIN_DELAY_MS,
+    min_delay_ms: DialAnimation::min_delay_ms_for,
     max_frame_bytes: DialAnimation::MAX_FRAME_BYTES,
     max_bytes: DialAnimation::MAX_BYTES,
     name: "dial",
@@ -172,7 +174,8 @@ const DIAL_GIF: GifTarget = GifTarget {
 ///
 /// Fits and rotates every composited frame as [`prepare_image`] does a still,
 /// lowers the JPEG quality of a frame that is over the dial's per-frame budget,
-/// raises delays under 150 ms to 150 ms, and keeps the loop count (zero is
+/// raises a delay to the floor of its prepared frame's size
+/// ([`DialAnimation::min_delay_ms_for`]), and keeps the loop count (zero is
 /// infinite). Only GIF input is accepted: a still goes through
 /// [`prepare_image`].
 pub fn prepare_dial_animation(
@@ -239,7 +242,7 @@ fn prepare_gif_pass(
         }
         let frame = frame.map_err(|e| format!("Could not decode GIF frame: {e}"))?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
-        let delay_ms = numerator.div_ceil(denominator).max(gif.min_delay_ms);
+        let delay_ms = numerator.div_ceil(denominator);
         if delay_ms > 60_000 {
             return Err("GIF frame delay exceeds 60 seconds".into());
         }
@@ -252,6 +255,8 @@ fn prepare_gif_pass(
                 gif.target,
             )
         })?;
+        // The floor depends on the prepared frame's size, so it is applied once the frame is encoded.
+        let delay_ms = delay_ms.max((gif.min_delay_ms)(jpeg.len()));
         output_bytes += jpeg.len();
         if output_bytes > gif.max_bytes {
             return Ok(Err(format!(
@@ -1189,11 +1194,26 @@ mod keypad_animation_tests {
         assert_eq!(result.frames.len(), 3);
         assert_eq!(result.loop_count, 2);
         for frame in &result.frames {
-            // 5 cs is 50 ms, raised to the dial's 150 ms floor.
-            assert_eq!(frame.delay_ms, 150);
+            // 5 cs is 50 ms, raised to the 66 ms floor of a frame this small.
+            assert!(frame.jpeg.len() <= DialAnimation::SMALL_FRAME_BYTES);
+            assert_eq!(frame.delay_ms, DialAnimation::FASTEST_DELAY_MS);
             dial::validate_jpeg(&frame.jpeg).unwrap();
             assert!(frame.jpeg.len() <= DialAnimation::MAX_FRAME_BYTES);
         }
+        // The dial's floor follows the frame's size; a key's does not.
+        assert_eq!(
+            (DIAL_GIF.min_delay_ms)(30 * 1024),
+            DialAnimation::MIN_DELAY_MS
+        );
+        assert_eq!(
+            (DIAL_GIF.min_delay_ms)(10 * 1024),
+            DialAnimation::MEDIUM_DELAY_MS
+        );
+        assert_eq!(
+            (KEYPAD_GIF.min_delay_ms)(30 * 1024),
+            KeyArtwork::MIN_DELAY_MS
+        );
+        assert_eq!((KEYPAD_GIF.min_delay_ms)(1), KeyArtwork::MIN_DELAY_MS);
         // Long delays are kept, and an infinite loop stays zero.
         let slow = gif_source(2, 2, 2, 150, Some(gif::Repeat::Infinite));
         let result = prepare_dial_animation(&slow, PrepareOptions::default()).unwrap();

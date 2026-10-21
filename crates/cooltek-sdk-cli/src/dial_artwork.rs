@@ -373,6 +373,9 @@ pub struct DialArtwork {
 struct Animation {
     frames: Vec<Vec<u8>>,
     delays_ms: Vec<u32>,
+    /// The shortest time between two writes while each frame is the one to draw:
+    /// the floor of its size ([`DialAnimation::min_delay_ms_for`]).
+    floors_ms: Vec<u32>,
     loop_count: u32,
     /// When playback began: frame 0 is up at this moment. Set by the first
     /// request, not when the artwork is prepared, so a slow device setup does
@@ -491,16 +494,25 @@ impl DialArtwork {
             .as_ref()
             .and_then(|d| d.animation.as_ref())
         {
-            Some(animation) if content == DialContent::Image => Some(Box::new(Animation {
-                frames: animation.jpegs()?,
-                delays_ms: animation
-                    .frames
-                    .iter()
-                    .map(|frame| frame.delay_ms)
-                    .collect(),
-                loop_count: animation.loop_count,
-                started: Cell::new(None),
-            })),
+            Some(animation) if content == DialContent::Image => {
+                let frames = animation.jpegs()?;
+                Some(Box::new(Animation {
+                    floors_ms: frames
+                        .iter()
+                        .map(|jpeg| {
+                            cooltek_sdk_service::DialAnimation::min_delay_ms_for(jpeg.len())
+                        })
+                        .collect(),
+                    frames,
+                    delays_ms: animation
+                        .frames
+                        .iter()
+                        .map(|frame| frame.delay_ms)
+                        .collect(),
+                    loop_count: animation.loop_count,
+                    started: Cell::new(None),
+                }))
+            }
             _ => None,
         };
         let names: Vec<&str> = profile
@@ -647,6 +659,25 @@ impl DialArtwork {
             animation.loop_count,
             elapsed,
         ))
+    }
+
+    /// The least time between two writes right now: the size floor of the
+    /// animation's current frame (the first before playback has begun). `None`
+    /// for a still picture.
+    pub fn animation_floor(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        let index = match animation.started.get() {
+            Some(started) => animation_frame(
+                &animation.delays_ms,
+                animation.loop_count,
+                started.elapsed(),
+            ),
+            None => 0,
+        };
+        animation
+            .floors_ms
+            .get(index)
+            .map(|&floor| Duration::from_millis(u64::from(floor)))
     }
 
     /// True when the dial picture plays frames, so the face changes with time.
@@ -1468,6 +1499,25 @@ mod tests {
             assert_eq!(served, turned(&plain, 1).unwrap(), "frame {index}");
             assert_ne!(served, plain);
         }
+    }
+
+    #[test]
+    fn the_write_floor_follows_the_size_of_the_current_frame() {
+        // The test frames are solid colours, a few KiB each: the smallest size class.
+        let profile = animated_test_profile(&[200, 200], 0);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        assert_eq!(
+            art.animation_floor(),
+            Some(Duration::from_millis(u64::from(
+                cooltek_sdk_service::DialAnimation::FASTEST_DELAY_MS
+            )))
+        );
+        // A still picture has no animation floor.
+        let still = animated_test_profile(&[200, 200], 0);
+        let still =
+            DialArtwork::prepare(DialContent::Function, &still, Box::new(clock(9, 41))).unwrap();
+        assert_eq!(still.animation_floor(), None);
     }
 
     #[test]

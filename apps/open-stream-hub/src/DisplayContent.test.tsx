@@ -68,3 +68,14 @@ describe('dial face', () => {
     expect(wrapDialName('A very long function name here')).toEqual(['A very long', 'function .']);
   });
 });
+
+describe('keyLabelLines', () => {
+  it('wraps a label as the module does: large for two short lines, else small, cut with a dot', async () => {
+    const { keyLabelLines } = await import('./DisplayContent');
+    expect(keyLabelLines('Record')).toEqual({ lines: ['Record'], scale: 2 });
+    expect(keyLabelLines('Mute mic')).toEqual({ lines: ['Mute', 'mic'], scale: 2 });
+    expect(keyLabelLines('Toggle microphone')).toEqual({ lines: ['Toggle', 'microphone'], scale: 1 });
+    expect(keyLabelLines('a'.repeat(40)).lines.at(-1)).toMatch(/\.$/);
+    expect(keyLabelLines('').lines).toEqual([]);
+  });
+});

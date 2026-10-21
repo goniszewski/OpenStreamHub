@@ -260,14 +260,15 @@ html,body { overflow:clip; }
 .key-display:hover,.key-display.selected { background:linear-gradient(145deg,#a893ee70,#211733e6); }
 .key-display:active { box-shadow:inset 0 2px 5px #00000090; }
 .key-upright { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; width:100%; height:100%; }
-.key-display svg { width:42%; height:42%; flex:none; filter:drop-shadow(0 1px 2px #000); }
+.key-display svg:not(.key-label) { width:42%; height:42%; flex:none; filter:drop-shadow(0 1px 2px #000); }
 .display-label { font-size:10px; line-height:1.15; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .key-display .display-label { font-size:clamp(7px, .75vw, 10px); max-width:92%; text-shadow:0 1px 2px #000; }
 .display-depth { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; padding:1px 3px; border-radius:3px; background:#221735; color:#fff; }
 .display-empty { color:#b5a7c9; font-size:24px; }
 .keypad-tile .display-depth { top:4px; right:4px; font-size:11px; background:var(--panel); color:var(--text); border:1px solid var(--line); }
-.keypad-tile > svg { width:27px; height:27px; }
-.keypad-tile.back > svg { width:39px; height:39px; }
+.keypad-tile > svg:not(.key-label) { width:27px; height:27px; }
+.keypad-tile .key-label { width:min(100%,72px); }
+.keypad-tile.back > svg:not(.key-label) { width:39px; height:39px; }
 .keypad-tile .display-label { font-size:11px; }
 .encoder-display { position:absolute; left:17%; top:16%; width:65%; height:63%; border-radius:50%; background:radial-gradient(circle at 35% 25%,#343044,#13131b 80%); color:#f5f1ff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:12%; box-shadow:inset 0 2px 5px #ffffff16,inset 0 -3px 8px #00000070; pointer-events:none; }
 .encoder-display svg { width:38%; height:38%; flex:none; }
@@ -299,7 +300,10 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage-turn.r270 { width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(270deg); }
 .rig-stage-turn.r180 { width:100cqw; height:100cqh; transform:translate(-50%,-50%) rotate(180deg); }
 .base-orientation { flex:none; }
-.rig-stage .display-label,.rig-stage .display-depth { display:none; }
+.rig-stage .display-depth { display:none; }
+.rig-stage .display-label:not(.key-label) { display:none; }
+/* A key label is drawn in the module's own bitmap font, one SVG unit per font pixel, as wide as the key. Edges are anti-aliased: snapping them to whole pixels at a non-integer scale thickens the strokes. */
+.key-display .key-label { display:block; width:100%; height:auto; flex:none; padding:0 0 4%; filter:none; }
 .rig-stage .image-control.bound:not(.selected) { border-color:#a284ff80; }
 .rig-stage .fader { touch-action:none; cursor:ns-resize; }
 .fader-thumb { position:absolute; left:-25%; width:150%; height:6px; margin-bottom:-3px; border-radius:3px; background:#f5f1ff; box-shadow:0 0 6px #a284ff; pointer-events:none; }

@@ -272,6 +272,10 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ArtworkNotice | null>(null);
   const requestId = useRef(0);
+  // Which prepare call owns the "Preparing" state. Kept apart from requestId: the
+  // auto-artwork timer bumps requestId to discard an upload still in flight, and
+  // that upload's own finish must still clear busy.
+  const busyId = useRef(0);
   useEffect(() => () => { requestId.current++; }, []);
   // The real .app icon for a launch_app action, asked once per bundle id.
   useEffect(() => {
@@ -313,6 +317,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   }, [planId]);
   async function choose(file: File) {
     const id = ++requestId.current;
+    const busyToken = ++busyId.current;
     const before = session.getState();
     setBusy(true); setError(null);
     try {
@@ -331,10 +336,11 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       // one: the file, not the studio, is now what the key shows.
       session.edit(setKeyArtwork(current.draft.profile, path, control, prepared));
     } catch (reason) { if (id === requestId.current) setError(artworkErrorNotice(reason)); }
-    finally { if (id === requestId.current) setBusy(false); }
+    finally { if (busyToken === busyId.current) setBusy(false); }
   }
   async function applyDesign() {
     const id = ++requestId.current;
+    const busyToken = ++busyId.current;
     const before = session.getState();
     setBusy(true); setError(null);
     try {
@@ -360,7 +366,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
         setRecents(readRecentKeyIcons(keyDesignStorage));
       }
     } catch (reason) { if (id === requestId.current) setError(artworkErrorNotice(reason)); }
-    finally { if (id === requestId.current) setBusy(false); }
+    finally { if (busyToken === busyId.current) setBusy(false); }
   }
   return <section className="key-artwork-editor" aria-label="Key artwork">
     <KeyDesignStudio design={design} onDesign={editDesign} action={action} appIcon={appIcon} appIconFailed={appIconFailed}

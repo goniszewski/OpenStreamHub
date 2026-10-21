@@ -14,6 +14,8 @@ import { keyIconById } from './key-icons';
 import { applyAutoArtwork, planAutoArtwork, planKey } from './auto-key-artwork';
 import type { Invoke, ProfileSession } from './profile-session';
 import { artworkErrorNotice } from './artwork-error-model';
+import { ArtworkErrorNote } from './ArtworkErrorNote';
+import { errorMessage } from './ui-model';
 import type { ArtworkNotice } from './artwork-error-model';
 
 export interface AppIconResult { png_base64: string }
@@ -315,7 +317,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     setBusy(true); setError(null);
     try {
       const source = await readSourceFile(file);
-      if (!source.ok) { setError({ message: source.error }); return; }
+      if (!source.ok) { if (id === requestId.current) setError({ message: source.error }); return; }
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: {
         image_base64: source.base64, target: 'keypad', quality: 85, fit: 'contain', quarter_turns: 0, background: [0, 0, 0],
       } });
@@ -336,9 +338,14 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     const before = session.getState();
     setBusy(true); setError(null);
     try {
-      const png = await renderKeyDesign(design, appIcon?.pngBase64);
+      let png: string;
+      try { png = await renderKeyDesign(design, appIcon?.pngBase64); } catch (reason) {
+        // The studio's own drawing errors are already plain language.
+        if (id === requestId.current) setError({ message: errorMessage(reason) });
+        return;
+      }
       const built = buildKeyArtworkDesignRequest(design, png);
-      if (!built.ok) { setError({ message: built.error }); return; }
+      if (!built.ok) { if (id === requestId.current) setError({ message: built.error }); return; }
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: built.request });
       if (id !== requestId.current) return;
       const current = session.getState();
@@ -366,7 +373,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       const file = event.target.files?.[0]; event.target.value = ''; if (file) void choose(file);
     }} />
     {busy && <p role="status">Preparing key artwork…</p>}
-    {error && <p className="field-error" role="alert" title={error.detail}>{error.message}</p>}
+    {error && <ArtworkErrorNote notice={error} />}
     {artwork && <><KeyArtworkPreview artwork={artwork} /><p className="fine-print">{artwork.frames.length > 1 ? `${artwork.frames.length} frames · ${artwork.loop_count === 0 ? 'loops continuously' : `${artwork.loop_count} play(s)`}` : 'Static image'}</p><button className="button compact" disabled={disabled || busy} onClick={() => { declined.current = planId; session.edit(setKeyArtwork(session.getState().draft.profile, path, control, null)); }}>Remove artwork</button></>}
     <p className="fine-print">The preview above shows the design; the key receives the same picture prepared as a 72×72 JPEG. PNG, JPEG or GIF · up to 8 MiB. GIFs: up to 512×512 and 120 frames, at most 10 FPS. Artwork is saved with the profile and sent while OpenStreamHub drives the display.</p>
     {!invoke && <p className="fine-print">Preparing key artwork needs the desktop app.</p>}

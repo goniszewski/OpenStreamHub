@@ -20,10 +20,12 @@ describe('friendlyArtworkError', () => {
     ['Could not decode GIF frame: boom', 'GIF could not be read'],
     ['Prepared dial animation exceeds 512 KiB even at JPEG quality 10', 'too detailed'],
     ['Prepared frame exceeds 64 KiB even at JPEG quality 10', 'too detailed'],
-    ['This picture does not fit the dial even at the lowest quality. Choose a simpler one.', 'too detailed'],
     ['The image data is not valid base64', 'Choose the file again'],
     ['JPEG source is truncated or missing a marker', 'could not be read'],
     ['Could not decode source image within limits: Format error', 'could not be read'],
+    // A too-large PNG or JPEG fails in the decoder's own limit check, before ours; it is too large, not damaged.
+    ['Could not read PNG header within limits: Image size exceeds limit', 'too large'],
+    ['Could not decode source image within limits: Memory limit exceeded', 'too large'],
   ])('maps %s', (raw, expected) => {
     const message = friendlyArtworkError(raw);
     expect(message).toContain(expected);

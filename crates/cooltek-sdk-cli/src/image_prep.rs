@@ -549,7 +549,8 @@ fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<(DynamicImage, Orie
 
 /// An RGB view composites alpha as samples are fetched, avoiding a second full
 /// source-sized RGB/RGBA buffer and preventing hidden transparent RGB from
-/// leaking into resampling against the chosen matte.
+/// leaking into resampling against the chosen matte. It also reads the stored
+/// pixels through the EXIF orientation, so no turned copy is built.
 struct MatteView<'a> {
     source: &'a DynamicImage,
     orientation: Orientation,
@@ -1126,9 +1127,10 @@ mod tests {
     }
 
     #[test]
-    fn orientation_is_read_through_a_view_instead_of_a_turned_copy() {
-        // Structure, not allocator: the decoder hands back the stored buffer
-        // untouched, so a turning orientation never needs a second full-size one.
+    fn decoding_hands_back_the_stored_buffer_and_the_orientation_separately() {
+        // Only the decode contract: the stored buffer comes back untouched. That
+        // nothing turns it later is covered by the all-orientations test above
+        // and the end-to-end test.
         let source = RgbImage::from_pixel(80, 40, Rgb([240, 20, 20]));
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, 100)

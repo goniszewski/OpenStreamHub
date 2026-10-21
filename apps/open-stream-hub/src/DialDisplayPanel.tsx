@@ -12,6 +12,7 @@ import { SelectField } from './controls';
 import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { errorMessage } from './ui-model';
 import { artworkErrorNotice } from './artwork-error-model';
+import { ArtworkErrorNote } from './ArtworkErrorNote';
 import type { ArtworkNotice } from './artwork-error-model';
 
 export const dialDisplayHeadingId = 'dial-display-heading';
@@ -80,11 +81,11 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         prepared = await prepareArtwork(invoke, { image_base64: base64, target: 'dial', quality, fit: look.fit, quarter_turns: look.turns, background: rgb });
         if (prepared.bytes <= maxDialImageBytes) break;
       }
+      if (id !== requestId.current) return true;
       if (!prepared || prepared.bytes > maxDialImageBytes) {
         setError({ message: 'This picture does not fit the dial even at the lowest quality. Choose a simpler one.' });
         return false;
       }
-      if (id !== requestId.current) return true;
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
         setError({ message: 'The profile changed while preparing the image. Choose the file again.' });
@@ -157,7 +158,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
       {busy && <p className="fine-print" role="status"><LoaderCircle size={15} className="spinning" /> Preparing the image…</p>}
       {!invoke && <p className="fine-print">Preparing the dial picture needs the desktop app.</p>}
     </>}
-    {error && <p className="field-error" role="alert" title={error.detail}>{error.message}</p>}
+    {error && <ArtworkErrorNote notice={error} />}
     <div className="dial-face-preview" role="img" aria-label="Preview of the dial screen face">
       <DialFace profile={profile} />
     </div>

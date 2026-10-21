@@ -367,3 +367,20 @@ OBS Studio 5.7.4 on the Mac, WebSocket server on (port 4455, password required, 
 
 Not written down: what each key looked like in OBS, any activity-log lines, whether the stream keys showed the expected connection failure in OBS and not an error in the app, whether one press of the armed stream key only armed it, and whether OBS answered a collection or profile switch before or after its reload. No broadcast was made; the stream target cannot receive one, so this does not show a stream going live.
 
+## Dial write time by frame size (M131E, 21 October 2026)
+
+To choose a size-aware dial floor, six profiles each held two different noise frames of one size, played at the 150 ms floor with `masterhub-service run --software-mode --display-sync --dial-content image` (dry run, 20 s each, one run per size). The service was built with its sampled logging of dial animation frames temporarily set to every frame (not committed), so each write has its own `elapsed_micros`. The frames came from `masterhub-diag dial prepare-image` at JPEG quality 3, 10, 20, 40, 55 and 70 on one 240×240 noise image, which is a near worst case for a given quality.
+
+| Frame size | Writes | Min | Median | 90th pct | Max |
+|---|---|---|---|---|---|
+| 2.8 KiB | 133 | 1.8 ms | 6.5 ms | 9.4 ms | 14.2 ms |
+| 7.7 KiB | 133 | 10.7 ms | 18.8 ms | 22.9 ms | 29.3 ms |
+| 14.3 KiB | 133 | 15.3 ms | 31.5 ms | 36.7 ms | 47.1 ms |
+| 26.7 KiB | 132 | 47.3 ms | 62.1 ms | 69.4 ms | 82.8 ms |
+| 34.7 KiB | 132 | 63.4 ms | 81.6 ms | 93.3 ms | 99.3 ms |
+| 45.6 KiB | 132 | 85.7 ms | 105.6 ms | 116.1 ms | 123.3 ms |
+
+The time grows about linearly with size: roughly 2.3 ms per KiB at the median, and a maximum of about 6 ms plus 2.7 ms per KiB. Every run made 132 or 133 writes in 20 s (133 is the most 150 ms allows), and no write failed while the animation ran. The three largest runs each logged one failed write, the last frame before the end of the run (`display writes are closed`): the final frame racing the shutdown, not a slow or short write. It counts in `display_failure_count`. Nobody looked at the dial for these runs.
+
+What this means for the floor: the largest frame (45.6 KiB, maximum 123 ms) leaves about 27 ms under 150 ms, as before. A frame must not be due again before its write is done, so a floor of about the maximum write time plus 30 ms is safe: roughly 2.7 ms per KiB plus 35 ms.
+

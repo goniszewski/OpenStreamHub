@@ -182,6 +182,20 @@ pub fn prepare_dial_animation(
     input: &[u8],
     options: PrepareOptions,
 ) -> Result<PreparedKeyArtwork, String> {
+    prepare_dial_animation_within(input, options, DialAnimation::MAX_FRAME_BYTES)
+}
+
+/// Like [`prepare_dial_animation`], with every frame held to `frame_budget_bytes`
+/// (at most [`DialAnimation::MAX_FRAME_BYTES`]) by stepping its JPEG quality
+/// down. A smaller frame may stay up for a shorter time
+/// ([`DialAnimation::min_delay_ms_for`]), so a smaller budget buys a faster
+/// animation at a lower quality. A frame that does not fit even at quality 10
+/// is an error.
+pub fn prepare_dial_animation_within(
+    input: &[u8],
+    options: PrepareOptions,
+    frame_budget_bytes: usize,
+) -> Result<PreparedKeyArtwork, String> {
     if input.is_empty() || input.len() > 8 * 1024 * 1024 {
         return Err("Dial animation source must contain 1 byte through 8 MiB".into());
     }
@@ -191,7 +205,11 @@ pub fn prepare_dial_animation(
     if image::guess_format(input).ok() != Some(ImageFormat::Gif) {
         return Err("A dial animation needs a GIF".into());
     }
-    prepare_gif(input, options, DIAL_GIF)
+    let target = GifTarget {
+        max_frame_bytes: frame_budget_bytes.min(DIAL_GIF.max_frame_bytes),
+        ..DIAL_GIF
+    };
+    prepare_gif(input, options, target)
 }
 
 /// Prepares a GIF's frames, then steps the JPEG quality of the whole GIF down
@@ -1200,6 +1218,17 @@ mod keypad_animation_tests {
             dial::validate_jpeg(&frame.jpeg).unwrap();
             assert!(frame.jpeg.len() <= DialAnimation::MAX_FRAME_BYTES);
         }
+        // A frame budget the frames cannot meet is refused, and one they meet changes nothing.
+        let tight =
+            prepare_dial_animation_within(&source, PrepareOptions::default(), 1).unwrap_err();
+        assert!(tight.contains("even at JPEG quality 10"), "{tight}");
+        let roomy = prepare_dial_animation_within(
+            &source,
+            PrepareOptions::default(),
+            DialAnimation::MEDIUM_FRAME_BYTES,
+        )
+        .unwrap();
+        assert_eq!(roomy.frames.len(), result.frames.len());
         // The dial's floor follows the frame's size; a key's does not.
         assert_eq!(
             (DIAL_GIF.min_delay_ms)(30 * 1024),

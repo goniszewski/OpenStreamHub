@@ -19,6 +19,12 @@ const render = (profile: Profile, invoke?: Invoke) => {
 };
 
 describe('DialDisplayPanel markup', () => {
+  it('offers comparing the versions of a GIF, on by default, only for a custom image', () => {
+    const { html } = render(pictured);
+    expect(html).toMatch(/<input type="checkbox" checked=""[^>]*\/>Compare versions of a GIF/);
+    expect(html).toContain('which takes about three times as long');
+    expect(render(clock).html).not.toContain('Compare versions of a GIF');
+  });
   it('offers every dial face, defaulting to the function name', () => {
     const { html } = render(flat);
     expect(html).toContain('aria-labelledby="dial-display-heading"');

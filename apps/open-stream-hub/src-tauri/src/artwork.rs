@@ -10,7 +10,7 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cooltek_sdk_cli::image_prep::{
-    FitMode, PrepareOptions, prepare_dial_animation as prepare_dial_animation_frames,
+    FitMode, PrepareOptions, prepare_dial_animation_within as prepare_dial_animation_frames,
     prepare_image, prepare_keypad_artwork, prepare_keypad_image, within_frame_budget,
 };
 use cooltek_sdk_masterhub::{dial, keypad};
@@ -67,6 +67,10 @@ pub struct PrepareRequest {
     pub fit: Fit,
     pub quarter_turns: u32,
     pub background: [u8; 3],
+    /// Only a dial animation uses it: the most KiB one frame may take, 1 through 48, so a faster
+    /// preset can ask for smaller frames. Left out, a frame may take the dial's 48 KiB.
+    #[serde(default)]
+    pub frame_budget_kib: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +116,7 @@ impl SaveRequest {
             fit: self.fit,
             quarter_turns: self.quarter_turns,
             background: self.background,
+            frame_budget_kib: None,
         }
     }
 }
@@ -208,8 +213,13 @@ pub fn prepare_dial_animation(
         return Err("A dial animation requires the dial target".into());
     }
     let options = options(request)?;
+    let budget = match request.frame_budget_kib {
+        None => cooltek_sdk_service::DialAnimation::MAX_FRAME_BYTES,
+        Some(kib @ 1..=48) => kib as usize * 1024,
+        Some(_) => return Err("A frame budget must be 1 through 48 KiB".into()),
+    };
     let input = decode_input(&request.image_base64)?;
-    let prepared = prepare_dial_animation_frames(&input, options)?;
+    let prepared = prepare_dial_animation_frames(&input, options, budget)?;
     let animation = cooltek_sdk_service::DialAnimation {
         frames: prepared
             .frames
@@ -361,6 +371,7 @@ mod tests {
             fit,
             quarter_turns,
             background: [0, 0, 0],
+            frame_budget_kib: None,
         }
     }
 
@@ -428,6 +439,37 @@ mod tests {
         assert!(prepare_dial_animation(&keypad).is_err());
         let still = request(&png(&RgbImage::new(4, 4)), Target::Dial, Fit::Cover, 0);
         assert!(prepare_dial_animation(&still).unwrap_err().contains("GIF"));
+    }
+
+    #[test]
+    fn a_dial_animation_frame_budget_is_one_through_48_kib() {
+        let asked = request(&tiny_gif(), Target::Dial, Fit::Cover, 0);
+        for kib in [8, 20, 48] {
+            let animation = prepare_dial_animation(&PrepareRequest {
+                frame_budget_kib: Some(kib),
+                ..asked.clone()
+            })
+            .unwrap_or_else(|error| panic!("{kib} KiB: {error}"));
+            assert_eq!(animation.frames.len(), 2);
+        }
+        // A budget the frames cannot reach, even at the lowest quality, is a refusal too.
+        let unreachable = prepare_dial_animation(&PrepareRequest {
+            frame_budget_kib: Some(1),
+            ..asked.clone()
+        })
+        .unwrap_err();
+        assert!(
+            unreachable.contains("even at JPEG quality 10"),
+            "{unreachable}"
+        );
+        for kib in [0, 49, 1000] {
+            let error = prepare_dial_animation(&PrepareRequest {
+                frame_budget_kib: Some(kib),
+                ..asked.clone()
+            })
+            .unwrap_err();
+            assert!(error.contains("1 through 48 KiB"), "{kib}: {error}");
+        }
     }
 
     #[test]

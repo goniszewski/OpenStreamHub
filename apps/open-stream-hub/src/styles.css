@@ -759,6 +759,17 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .colour-popover { position:absolute; z-index:40; top:calc(100% + 6px); right:0; width:240px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel, var(--header)); box-shadow:0 8px 24px rgba(0,0,0,.35); }
 
 .dial-image-look { display:grid; gap:8px; margin-top:12px; }
+.dial-display .compact-toggle { font-size:13px; font-weight:400; margin-top:6px; }
+.dial-variants { margin-top:12px; padding:10px; border:1px solid var(--line); border-radius:10px; display:grid; gap:8px; }
+.dial-variants-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.dial-variants-head h4 { margin:0; font-size:13px; }
+.dial-variants-nav { display:flex; align-items:center; gap:6px; }
+.dial-variant { display:grid; grid-template-columns:128px minmax(0, 1fr); gap:12px; align-items:start; }
+.dial-variant img, .dial-variant-missing { width:128px; height:128px; border-radius:50%; border:1px solid var(--line); object-fit:cover; display:block; }
+.dial-variant-text { display:grid; gap:4px; align-content:start; justify-items:start; text-align:left; }
+.dial-variant-text .fine-print { margin:0; }
+.dial-variant-name { font-weight:600; font-size:14px; display:flex; align-items:center; gap:8px; }
+.dial-variant-badge { font-size:11px; font-weight:500; padding:1px 8px; border-radius:999px; border:1px solid var(--line); }
 .dial-image-look>label { margin:0; font-size:12px; }
 .dial-image-rotate { display:flex; align-items:center; gap:12px; }
 

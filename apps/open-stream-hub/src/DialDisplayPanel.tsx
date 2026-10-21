@@ -11,6 +11,8 @@ import type { Invoke, ProfileSession } from './profile-session';
 import { SelectField } from './controls';
 import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { errorMessage } from './ui-model';
+import { artworkErrorNotice } from './artwork-error-model';
+import type { ArtworkNotice } from './artwork-error-model';
 
 export const dialDisplayHeadingId = 'dial-display-heading';
 
@@ -26,7 +28,7 @@ const isGif = (base64: string) => base64.startsWith('R0lGOD');
 // next run start; a running profile keeps the face it started with.
 export function DialDisplayPanel({ profile, session, disabled, invoke }: { profile: Profile; session: ProfileSession; disabled: boolean; invoke?: Invoke }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ArtworkNotice | null>(null);
   const requestId = useRef(0);
   // The picture chosen in this session and how it is fitted. The profile keeps only the prepared JPEG, so
   // fit, rotation and background can be changed only while the source is still at hand.
@@ -66,7 +68,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         if (id !== requestId.current) return true;
         const current = session.getState();
         if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
-          setError('The profile changed while preparing the image. Choose the file again.');
+          setError({ message: 'The profile changed while preparing the image. Choose the file again.' });
           return false;
         }
         // A one-frame GIF is a still picture.
@@ -79,18 +81,19 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         if (prepared.bytes <= maxDialImageBytes) break;
       }
       if (!prepared || prepared.bytes > maxDialImageBytes) {
-        throw new Error('This picture does not fit the dial even at the lowest quality. Choose a simpler one.');
+        setError({ message: 'This picture does not fit the dial even at the lowest quality. Choose a simpler one.' });
+        return false;
       }
       if (id !== requestId.current) return true;
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
-        setError('The profile changed while preparing the image. Choose the file again.');
+        setError({ message: 'The profile changed while preparing the image. Choose the file again.' });
         return false;
       }
       session.edit(setDialImage(current.draft.profile, prepared.jpeg_base64, keep ? { image: keep, fit: look.fit, quarter_turns: look.turns, background: rgb } : undefined));
       return true;
     } catch (reason) {
-      if (id === requestId.current) setError(errorMessage(reason));
+      if (id === requestId.current) setError(artworkErrorNotice(reason));
       return id !== requestId.current;
     } finally {
       if (id === requestId.current) setBusy(false);
@@ -100,7 +103,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   const choose = async (file: File) => {
     setBusy(true); setError(null);
     const read = await readSourceFile(file);
-    if (!read.ok) { setBusy(false); setError(read.error); return; }
+    if (!read.ok) { setBusy(false); setError({ message: read.error }); return; }
     const previous = source;
     setSource(read.base64);
     const kept = isGif(read.base64) ? null : await sourceToKeep(read.base64, read.mime, background);
@@ -154,7 +157,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
       {busy && <p className="fine-print" role="status"><LoaderCircle size={15} className="spinning" /> Preparing the image…</p>}
       {!invoke && <p className="fine-print">Preparing the dial picture needs the desktop app.</p>}
     </>}
-    {error && <p className="field-error" role="alert">{error}</p>}
+    {error && <p className="field-error" role="alert" title={error.detail}>{error.message}</p>}
     <div className="dial-face-preview" role="img" aria-label="Preview of the dial screen face">
       <DialFace profile={profile} />
     </div>

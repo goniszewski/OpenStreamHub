@@ -245,7 +245,12 @@ fn prepare_gif_pass(
         }
         let source = DynamicImage::ImageRgba8(frame.into_buffer());
         let jpeg = within_budget(options, gif.max_frame_bytes, |options| {
-            encode_source(source.clone(), options, gif.target)
+            encode_source(
+                source.clone(),
+                Orientation::NoTransforms,
+                options,
+                gif.target,
+            )
         })?;
         output_bytes += jpeg.len();
         if output_bytes > gif.max_bytes {
@@ -453,7 +458,7 @@ fn prepare_for_target(
     }
     let format = image::guess_format(input)
         .map_err(|error| format!("Could not identify source image: {error}"))?;
-    let source = match format {
+    let (source, orientation) = match format {
         ImageFormat::Png => {
             let decoder = PngDecoder::with_limits(Cursor::new(input), decode_limits())
                 .map_err(|error| format!("Could not read PNG header within limits: {error}"))?;
@@ -478,16 +483,17 @@ fn prepare_for_target(
         }
         _ => return Err("Only static PNG, JPEG and BMP source images are supported".into()),
     };
-    encode_source(source, options, target)
+    encode_source(source, orientation, options, target)
 }
 
 fn encode_source(
     source: DynamicImage,
+    orientation: Orientation,
     options: PrepareOptions,
     target: ImageTarget,
 ) -> Result<Vec<u8>, String> {
     let (output_width, output_height) = target.dimensions();
-    let fitted = fit_and_matte(&source, options, output_width);
+    let fitted = fit_and_matte(&source, orientation, options, output_width);
     drop(source);
     let rotated = match options.quarter_turns {
         0 => fitted,
@@ -521,7 +527,9 @@ fn decode_limits() -> Limits {
     limits
 }
 
-fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, String> {
+/// Decodes within the limits and returns the stored pixels with the EXIF
+/// orientation to read them through, so no turned copy sits beside the buffer.
+fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<(DynamicImage, Orientation), String> {
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err("Source image dimensions must be between 1 and 4096 on each axis".into());
@@ -534,10 +542,9 @@ fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, Strin
         .map_err(|error| format!("Could not apply source decoder limits: {error}"))?;
     // An unreadable orientation tag leaves the picture as stored.
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
-    let mut source = DynamicImage::from_decoder(decoder)
+    let source = DynamicImage::from_decoder(decoder)
         .map_err(|error| format!("Could not decode source image within limits: {error}"))?;
-    source.apply_orientation(orientation);
-    Ok(source)
+    Ok((source, orientation))
 }
 
 /// An RGB view composites alpha as samples are fetched, avoiding a second full
@@ -545,6 +552,7 @@ fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, Strin
 /// leaking into resampling against the chosen matte.
 struct MatteView<'a> {
     source: &'a DynamicImage,
+    orientation: Orientation,
     background: [u8; 3],
 }
 
@@ -552,10 +560,30 @@ impl GenericImageView for MatteView<'_> {
     type Pixel = Rgb<u8>;
 
     fn dimensions(&self) -> (u32, u32) {
-        self.source.dimensions()
+        let (width, height) = self.source.dimensions();
+        match self.orientation {
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH => (height, width),
+            _ => (width, height),
+        }
     }
 
     fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
+        // Maps an upright coordinate back to the stored pixel, matching
+        // `DynamicImage::apply_orientation` without building the turned copy.
+        let (width, height) = self.source.dimensions();
+        let (x, y) = match self.orientation {
+            Orientation::NoTransforms => (x, y),
+            Orientation::Rotate90 => (y, height - 1 - x),
+            Orientation::Rotate180 => (width - 1 - x, height - 1 - y),
+            Orientation::Rotate270 => (width - 1 - y, x),
+            Orientation::FlipHorizontal => (width - 1 - x, y),
+            Orientation::FlipVertical => (x, height - 1 - y),
+            Orientation::Rotate90FlipH => (y, x),
+            Orientation::Rotate270FlipH => (width - 1 - y, height - 1 - x),
+        };
         let source = self.source.get_pixel(x, y).0;
         let alpha = u32::from(source[3]);
         Rgb(std::array::from_fn(|channel| {
@@ -566,9 +594,15 @@ impl GenericImageView for MatteView<'_> {
     }
 }
 
-fn fit_and_matte(source: &DynamicImage, options: PrepareOptions, side: u32) -> RgbImage {
+fn fit_and_matte(
+    source: &DynamicImage,
+    orientation: Orientation,
+    options: PrepareOptions,
+    side: u32,
+) -> RgbImage {
     let matte = MatteView {
         source,
+        orientation,
         background: options.background,
     };
     let (width, height) = matte.dimensions();
@@ -1052,6 +1086,63 @@ mod tests {
         );
         color_near(&output, 120, 20, [0; 3]);
         color_near(&output, 20, 120, [240, 20, 20]);
+    }
+
+    #[test]
+    fn oriented_view_matches_apply_orientation_for_all_eight_orientations() {
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_fn(7, 5, |x, y| {
+            Rgba([
+                x as u8 * 30,
+                y as u8 * 40,
+                (x * y) as u8,
+                100 + (x + y) as u8,
+            ])
+        }));
+        for orientation in (1..=8).map(|value| Orientation::from_exif(value).unwrap()) {
+            let mut turned = source.clone();
+            turned.apply_orientation(orientation);
+            let view = MatteView {
+                source: &source,
+                orientation,
+                background: [9, 80, 200],
+            };
+            let reference = MatteView {
+                source: &turned,
+                orientation: Orientation::NoTransforms,
+                background: [9, 80, 200],
+            };
+            assert_eq!(view.dimensions(), reference.dimensions(), "{orientation:?}");
+            let (width, height) = view.dimensions();
+            for y in 0..height {
+                for x in 0..width {
+                    assert_eq!(
+                        view.get_pixel(x, y),
+                        reference.get_pixel(x, y),
+                        "{orientation:?} at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn orientation_is_read_through_a_view_instead_of_a_turned_copy() {
+        // Structure, not allocator: the decoder hands back the stored buffer
+        // untouched, so a turning orientation never needs a second full-size one.
+        let source = RgbImage::from_pixel(80, 40, Rgb([240, 20, 20]));
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 100)
+            .encode_image(&source)
+            .unwrap();
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut metadata = vec![0xff, 0xe1];
+        metadata.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        metadata.extend_from_slice(exif);
+        jpeg.splice(2..2, metadata);
+        let decoder = JpegDecoder::new(Cursor::new(&jpeg[..])).unwrap();
+        let (stored, orientation) = decode_bounded(decoder).unwrap();
+        assert_eq!(orientation, Orientation::Rotate90);
+        assert_eq!(stored.dimensions(), (80, 40));
     }
 }
 

@@ -2,7 +2,7 @@ import { errorMessage } from './ui-model';
 
 // Backend picture errors are written for logs. This turns the known ones into
 // what went wrong and what to do; anything else gets a short generic line. The
-// raw text is kept as `detail` (shown as a tooltip) so it is never lost.
+// raw text is kept as `detail` (shown under a Details disclosure) so it is never lost.
 // Rules match stable substrings and the first match wins.
 const rules: Array<[match: RegExp, text: (found: RegExpMatchArray) => string]> = [
   [/Only static PNG|Animated PNG/i, () => 'This file type is not supported. Choose a still PNG, JPEG or BMP picture, or a GIF (animated PNGs do not work).'],
@@ -14,7 +14,8 @@ const rules: Array<[match: RegExp, text: (found: RegExpMatchArray) => string]> =
   [/needs a GIF/i, () => 'This picture cannot be used here. Choose a GIF for an animation.'],
   [/GIF/i, () => 'This GIF could not be read. Choose a different GIF or save it again.'],
   [/not valid base64|Choose an image first/i, () => 'The picture could not be loaded. Choose the file again.'],
-  [/JPEG source|Could not (read|identify|decode|inspect|apply|encode)/i, () => 'This picture could not be read. It may be damaged; choose a different PNG, JPEG or BMP file.'],
+  [/format could not be determined/i, () => 'This file type is not supported. Choose a PNG, JPEG, BMP or GIF picture.'],
+  [/JPEG source|Could not (read|identify|decode|inspect|apply|encode)/i, () => 'This picture could not be read. It may be damaged; choose a different PNG, JPEG, BMP or GIF file.'],
 ];
 
 export const genericArtworkError = 'The picture could not be prepared. Choose a different PNG, JPEG, BMP or GIF picture.';

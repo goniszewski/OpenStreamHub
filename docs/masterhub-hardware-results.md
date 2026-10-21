@@ -286,7 +286,7 @@ Desktop app, dial running its display and the 15-key module running its keys.
 - **Not done:** the move was by hand and not timed; jitter and a fader's resolution at rest are not measured, and the microphone-volume behaviour is the separate pending check.
 - **Not asked of the module:** there is no read-on-demand for positions; a position becomes known with the first report after a fader moves, which carries all five.
 
-## Dial GIF playback (write timing measured 19 October 2026; look still to be checked)
+## Dial GIF playback (measured and seen on the dial, 19 October 2026)
 
 `masterhub-service run --software-mode --display-sync --dial-content image --duration-secs 20` on the M131E, no `--execute`, with a profile of six busy frames (random 4×4-pixel colour blocks) of about 44 KiB each, close to the 48 KiB frame limit, every frame 200 ms, looping forever. Four runs, each ended cleanly (`duration_elapsed`, hardware mode restored) with every record complete and 0 display failures. The first three drew 88–90 dial writes in 20 s (the code before the cadence fix below); the fourth drew 99. Records carry `trigger: "animation"` apart from the first.
 
@@ -308,7 +308,7 @@ Desktop app, dial running its display and the 15-key module running its keys.
 
 **Restart with the imported GIF (21 October 2026).** After the app had been stopped and started again (`npm run desktop`), the user opened the profile and reported that the imported GIF was still on the dial's Display tab. Not written down: whether the preview text read "Plays 12 frames, looping.", whether the app offered a draft restore or the profile had been saved, and whether it played on the dial after the restart.
 
-**Still to check:** nothing for a single GIF import, and mixed static and animated keys with folder navigation were checked on 21 October 2026 (see the end of this file). In the app: dial **Display** tab, **Custom image**, choose a GIF (up to 8 MiB, at most 30 frames, canvas up to 512×512; shorter frame times are raised to 150 ms; the frames together may not exceed 384 KiB, so the quality is lowered until they fit; a one-frame GIF becomes a still picture), Module control App. Needs the sidecar rebuilt (`npm run sidecar`).
+**Still to check:** whether an imported GIF plays on the dial after an app restart, and a dial switching between an animated picture and other functions. (Mixed static and animated keys with folder navigation were checked on 21 October 2026; see the end of this file.) In the app: dial **Display** tab, **Custom image**, choose a GIF (up to 8 MiB, at most 30 frames, canvas up to 512×512; shorter frame times are raised to 150 ms; the frames together may not exceed 384 KiB, so the quality is lowered until they fit; a one-frame GIF becomes a still picture), Module control App. Needs the sidecar rebuilt (`npm run sidecar`).
 
 ## Custom dial picture (11 October 2026)
 

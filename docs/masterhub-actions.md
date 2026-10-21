@@ -443,7 +443,7 @@ Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the ti
 ## Not implemented
 
 - Selecting a profile by name with the `profile` action (see above). Profile next/previous itself works only under the OpenStreamHub session manager; the CLI loads one profile per process.
-- Showing a timer's remaining time on the key (see above), and importing official timers from `.mhz` files.
-- Recorded key macros, clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
-- Every OBS action except scene switching, the virtual camera, the replay buffer, studio mode, the studio transition, filters, source visibility, scene collections and profiles: recording (start/stop/pause) and streaming, audio mute and volume, media sources, and screenshots (6 of the official app's 17; see [the action list](research/masterhub-obs-actions.md)). Also missing: Keychain storage of the OBS password, a connection kept open between actions, and any OBS event or state display.
+- Importing official timers from `.mhz` files.
+- Clocks on keys, launch/close app variants beyond `launch_app`, lighting actions, and the Twitch, Discord, Streamlabs, Adobe and Master CTRL presets.
+- OBS: a connection kept open between actions, and any OBS event or state display (all 17 official actions exist; see [the action list](research/masterhub-obs-actions.md)).
 - A media stop for players other than Apple Music and Spotify, fast-forward/rewind (`media-fast-back-forward`) and playing an audio file (`play-pause`).

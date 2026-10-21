@@ -27,6 +27,7 @@ describe('friendlyArtworkError', () => {
     ['The image data is not valid base64', 'Choose the file again'],
     ['JPEG source is truncated or missing a marker', 'could not be read'],
     ['Could not decode source image within limits: Format error', 'could not be read'],
+    ['Could not identify source image: The image format could not be determined', 'file type is not supported'],
     // A too-large PNG or JPEG fails in the decoder's own limit check, before ours; it is too large, not damaged.
     ['Could not read PNG header within limits: Image size exceeds limit', 'too large'],
     ['Could not decode source image within limits: Memory limit exceeded', 'too large'],

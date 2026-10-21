@@ -102,6 +102,9 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   };
 
   const choose = async (file: File) => {
+    // prepare() bails out before it owns the busy state when the colour is unusable, so refuse here instead of
+    // leaving the controls disabled with no message.
+    if (!parseHexColour(background)) { setError({ message: 'Enter a valid background colour, such as #1a2b3c, then choose the picture again.' }); return; }
     setBusy(true); setError(null);
     const read = await readSourceFile(file);
     if (!read.ok) { setBusy(false); setError({ message: read.error }); return; }

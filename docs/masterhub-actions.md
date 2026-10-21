@@ -285,7 +285,7 @@ Two more OBS actions, from the [official list of 17](research/masterhub-obs-acti
 - Both are allowed as `multi_action` steps and follow the same rules as `obs_scene` there: a run without an OBS endpoint reports the whole sequence as unavailable, and an OBS step gets only the time left before the 15 s deadline (at most 3 s).
 - Logging: records show `{"type":"obs_virtual_camera","op":"toggle"}`. The op is a closed word, so unlike a scene name there is nothing to redact, and diagnostics bundles keep it.
 - The Execute confirmation lists "Controls OBS outputs through the OBS WebSocket on this Mac" with each operation. It does not raise the risk level: neither output publishes to an audience by itself. (Recording and streaming will differ; they are not implemented.)
-- Tested against the scripted fake obs-websocket server only; no real OBS has been used.
+- Tested against the scripted fake obs-websocket server and, as reported by the owner, on a real OBS 5.7.4 (19 October 2026; [results](masterhub-hardware-results.md#obs-studio-with-a-real-obs-19-october-2026)).
 
 ## OBS source actions (`obs_studio_mode`, `obs_transition`, `obs_filter`, `obs_source_visibility`)
 
@@ -299,7 +299,7 @@ The next four of the [official 17](research/masterhub-obs-actions.md), on the sa
 - Failures: a missing scene, source or filter reports "no such scene, or no such source in it" or "no such source, or no such filter on it" (status 600); a transition outside studio mode reports "studio mode is not active" (506). A failed lookup ends the action before any write.
 - **Logging and redaction.** Records and the activity panel show lengths only: `{"type":"obs_filter","source_chars":11,"filter_chars":4,"op":"off"}`. Diagnostics bundles with redaction on replace `source`, `filter` and `scene` of these actions with `<N chars>`, and scrub short names from free text like scene names. **OBS's own comment text is never shown for any request that carried a name** (OBS repeats the name it was given); only the reason above is. This also applies to `obs_scene`, whose error text no longer includes OBS's comment.
 - The Execute confirmation lists studio mode and transition as OBS outputs, and each filter and source change with its names (invisible characters made visible). It stays at normal risk: these change what OBS shows, like a scene switch.
-- Tested against the scripted fake obs-websocket server only; no real OBS has been used.
+- Studio mode and the transition were also reported working on a real OBS 5.7.4 (19 October 2026; [results](masterhub-hardware-results.md#obs-studio-with-a-real-obs-19-october-2026)); filters and source visibility were tested against the scripted fake obs-websocket server only.
 
 ## OBS scene collection and profile (`obs_scene_collection`, `obs_profile`)
 
@@ -319,7 +319,7 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - **Fader template.** `obs_input_volume_from_position` can only be bound to a fader (module `m005s`), and a fader binding can only be one of the two fader templates. A fader position resolves to the nearest whole percentage and then into `obs_set_input_volume`, the same way `volume_from_position` resolves into `set_volume`. The template cannot run unresolved and cannot be a `multi_action` step; `obs_set_input_volume` can be a step and can be bound to any other control.
 - **Logging and redaction.** Records show `{"type":"obs_set_input_volume","input_chars":3,"percent":40}`; the activity panel shows the level and the name's length. Diagnostics bundles with redaction replace `input` with `<N chars>`.
 - The Execute confirmation lists the input by name with the level, or says the volume follows the fader. It is a local OBS effect and does not raise the risk level.
-- Tested against the scripted fake obs-websocket server only; no real OBS has been used, and the fader's range and jitter on hardware are unrecorded. Each position change sends one request, but a backlog of queued movements on the same input is coalesced to the latest level, like `set_volume`. There is no deadband yet.
+- Tested against the scripted fake obs-websocket server; on a real OBS 5.7.4 the owner confirmed the fader drives an input's volume as expected (19 October 2026), while its range and jitter on hardware are unrecorded. Each position change sends one request, but a backlog of queued movements on the same input is coalesced to the latest level, like `set_volume`. There is no deadband yet.
 
 ## Microphone volume (`set_mic_input_volume`, `mic_input_volume_from_position`)
 

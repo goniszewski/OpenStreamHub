@@ -118,7 +118,7 @@ The service (a standalone `masterhub-service` run) can replay macros but has no 
 
 ## Media control (`media`)
 
-`media` accepts `play_pause`, `next_track`, `previous_track` and `stop`, matching the official `media-track-control` options. It is allowed as a `multi_action` step: each command is one bounded subprocess, like a shortcut. Everything below is tested only against a mock process host and by compiling the scripts. No media key has been posted and no player has been stopped by this code on a real Mac (see "Unverified" below).
+`media` accepts `play_pause`, `next_track`, `previous_track` and `stop`, matching the official `media-track-control` options. It is allowed as a `multi_action` step: each command is one bounded subprocess, like a shortcut. Unit tests use a mock process host and the scripts are compiled. On 21 October 2026 the four commands were pressed from an M4315 on a real Mac with Apple Music, and the user reported that play/pause, next, previous and stop all worked ([results](masterhub-hardware-results.md#media-keys-and-media-stop-with-apple-music-m4315-21-october-2026)). Browsers and Spotify, and the permission prompts, are still unchecked (see "Unverified" below).
 
 ### play_pause, next_track, previous_track
 
@@ -149,9 +149,9 @@ Sending a command to Music or Spotify needs the Automation permission (System Se
 
 ### Unverified
 
-- That the posted events reach the media-key owner on a real Mac, for each of Music, Spotify and a browser. Posting needs a GUI login session.
+- That the posted events reach the media-key owner for Spotify and a browser. They reached Apple Music on 21 October 2026. Posting needs a GUI login session.
 - Which process macOS asks about and holds responsible for the Accessibility and Automation permissions when `osascript` is started by the bundled sidecar, and whether `CGPreflightPostEventAccess` reflects that process.
-- That Music's pid-addressed `stop` event and Spotify's `pause` reach the players. Neither was ever sent to them, and Spotify was not installed on the development Mac.
+- That Spotify's `pause` reaches the player. Music's `stop` worked on 21 October 2026; Spotify is not installed on the development Mac.
 - Whether `CGRequestPostEventAccess` shows its prompt again on a later call after a denial, or only once per app (the service calls it at most once per run either way).
 - What happens to a macOS Automation (or Accessibility) prompt when `osascript` is killed at the 5 s timeout: the prompt may stay on screen, and its answer then applies only to later presses.
 - The undocumented field numbers have been checked on one macOS version only (27). The read-back check is there so a different layout fails instead of posting something else.

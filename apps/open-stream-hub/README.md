@@ -89,7 +89,7 @@ Still open:
 
 - Sending images to the module displays is experimental; the user saw the dial picture (11–12 October 2026) and the dial GIF animation (19 October 2026) working on a real M131E, and key artwork and key GIF animation ran on an M4315; firmware controls are not implemented.
 - Checking `obs_stream`, scene, scene collection, profile, filter and source visibility against a real OBS; Twitch, Discord and Streamlabs integrations.
-- A hardware check of the macro recorder. Media keys and media stop (Apple Music and Spotify only) execute but are unverified on a real Mac.
+- A hardware check of the macro recorder. Media keys and media stop were checked on a real Mac with Apple Music only; browsers and Spotify are unchecked.
 - Official `.mhz` export (a nice-to-have), and checking the importer against a real user export.
 - Multi-module live action routing, browser-tab cards, flows and script integrations (the last three do not exist in the official app).
 - Hardware acceptance of input, displays, timers, OBS and sleep/wake, then signing and notarization (including the sidecar) before a public release.

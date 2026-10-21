@@ -137,5 +137,5 @@ Ahead of the documented official software: passive descriptor/input diagnostic b
 4. Feature-report semantics: reply byte 1 and firmware bytes; firmware query for non-dial modules.
 5. Sleep/wake and replug timing: 2 s delay, re-enumeration, serial/path stability, SIGINT-before-sleep.
 6. Complete input payload lengths and dial long-press sequences; fader range and jitter.
-7. Real macOS action acceptance, permissions (including the timer's notification permission and sound) and sustained throughput; `obs_scene` against a real OBS 28+; the profile key on a real run; the `.mhz` importer against a real user export (images, `uploadImages/`).
+7. Real macOS action acceptance, permissions (including the timer's notification permission and sound) and sustained throughput; `obs_scene` against a real OBS 28+; the profile key's confirmation of an executing run and its quick-press debounce on a real run (the switch itself and the editor following it were checked on 21 October 2026, [results](masterhub-hardware-results.md#profile-key-and-the-editor-following-it-m4315-21-october-2026)); the `.mhz` importer against a real user export (images, `uploadImages/`).
 8. Official-app Windows captures (USBPcap) for startup, display and profile changes, per the [macOS plan](masterhub-macos-plan.md), "Windows capture procedure".

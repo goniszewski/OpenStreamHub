@@ -347,3 +347,13 @@ Done by the user in the desktop app (`npm run desktop`, a debug build) on a real
 
 **Result after the fixes.** The user recorded a sample, used it, and reported that the replay of the macro works. Not written down: what was typed, how many keystrokes the recording became, whether the recorder dialog showed the permission rows as expected, which permission prompts appeared and which app they named, and whether the replayed timing matched. The key chord replay of Command combinations and named keys was not singled out.
 
+## Profile key, and the editor following it (M4315, 21 October 2026)
+
+Two test profiles were imported through the app (`AAA Switch A` and `AAA Switch B`, generated for the check): key 1 is a profile key (`next` on A, `previous` on B) and key 2 a 5 s timer without sound. The names sort first, so A's next is B. The app (`npm run desktop`, a debug build) ran A on the M4315 with Module control App.
+
+**What the user saw first.** (1) After importing A, the editor and module image showed A while the device kept showing the profile it was already running; this is by design, because the editor and the running profile are separate. (2) Pressing the profile key switched the device to the next profile, but the module image in the app stayed on the old one. The user asked for the editor to follow the run.
+
+**Change.** When a profile key switches a run, the editor now opens the switched profile, unless that would replace unsaved changes (it keeps them and shows a note instead). Eight unit tests cover the rule; the wiring in `App.tsx` has no test, because the vitest setup has no DOM. The user checked it on the device and reported it verified.
+
+Not written down: whether the dry-run switch went A to B and back, whether quick presses switched only once per 500 ms, what the executing run's confirmation dialog said, and whether the keypad faces changed with the profile after confirming. The profile key's switch on a real run is therefore only partly checked: the device switching on a press and the editor following were seen.
+

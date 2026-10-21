@@ -201,7 +201,7 @@ Key indices are zero-based, 0–14; their physical positions remain unverified. 
 
 Plans identify `module: m4315` and `key_index` in their header, packet records, and footer. The eight-byte header is `02 36`, followed by a little-endian 16-bit sequence, a little-endian 16-bit payload length, the key index in byte 6, and the final flag in byte 7. Payload starts at byte 8; unused bytes are zeroed. Report lengths are bounded to 9–65,535 bytes and images to 16 MiB, with at most 65,536 chunks to prevent sequence wrap. The JSONL plan is separate from input captures and cannot be passed to `replay`.
 
-Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app sends images to module displays only through its experimental, off-by-default Settings toggle (see [display sync](masterhub-display-sync.md)); this CLI path stays offline-only except for an explicit `dial jpeg --path-hex`.
+Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app sends images to module displays only while Settings > Let OpenStreamHub drive the display is App, its default (see [display sync](masterhub-display-sync.md)); this CLI path stays offline-only except for an explicit `dial jpeg --path-hex`.
 
 ## SDK building blocks
 

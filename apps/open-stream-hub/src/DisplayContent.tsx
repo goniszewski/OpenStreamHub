@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, ArrowLeftRight, Camera, Clapperboard, Folder, Globe, Keyboard, ListOrdered, Monitor, Play, Timer, Type, Undo2, Volume2, VolumeX } from 'lucide-react';
-import type { BindingAction, DialDisplayContent, KeyArtwork, KeypadPage, KeypadSlot, Profile } from './contracts';
+import type { BindingAction, DialAnimation, DialDisplayContent, KeyArtwork, KeypadPage, KeypadSlot, Profile } from './contracts';
 import { effectiveDialDisplay } from './dial-display-model';
 import { dialFaceSide, nowDialTime, paintDialFace } from './dial-face';
 import type { DialTime } from './dial-face';
+import { keyArtworkFrame } from './key-artwork';
 import { KeyArtworkPreview } from './KeyArtworkEditor';
 import { actionLabel } from './ui-model';
 
@@ -33,6 +34,8 @@ export function DialFace({ profile }: { profile: Profile }) {
   const content = effectiveDialDisplay(profile);
   if (content === 'off') return <span className="dial-face off" aria-hidden="true" />;
   if (content === 'image') {
+    const animation = profile.dial_display?.animation;
+    if (animation && animation.frames.length > 1) return <DialAnimatedFace animation={animation} />;
     const image = profile.dial_display?.image;
     // A validated profile always carries its picture; the blank frame only
     // shows while the editor holds an image mode without one yet.
@@ -41,6 +44,19 @@ export function DialFace({ profile }: { profile: Profile }) {
       : <span className="dial-face off" aria-hidden="true" />;
   }
   return <DialGeneratedFace profile={profile} content={content} />;
+}
+
+// An imported GIF plays in the preview with the stored frame times, as the dial does.
+function DialAnimatedFace({ animation }: { animation: DialAnimation }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    setElapsed(0);
+    const start = performance.now();
+    const timer = window.setInterval(() => setElapsed(performance.now() - start), 50);
+    return () => window.clearInterval(timer);
+  }, [animation]);
+  const frame = animation.frames[keyArtworkFrame(animation, elapsed)];
+  return <img className="dial-face" src={`data:image/jpeg;base64,${frame.jpeg_base64}`} alt="" draggable={false} />;
 }
 
 // The illustration value shown on the CPU face; a live run draws the real

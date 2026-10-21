@@ -134,7 +134,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
       {image
         ? <div className="dial-display-image" aria-label="Custom dial image"><img src={`data:image/jpeg;base64,${image}`} alt="" draggable={false} /><button type="button" className="button compact" disabled={disabled || busy} onClick={() => { setSource(null); run(latest => setDialDisplayContent(latest, 'function'), 'dial-display'); }}><Trash2 size={16} />Remove image</button></div>
         : <p className="fine-print">Choose a picture or a GIF to show; it is cropped to fill the round screen.</p>}
-      {animation && <p className="fine-print">Plays {animation.frames.length} frames{animation.loop_count === 0 ? ', looping' : animation.loop_count === 1 ? ' once' : `, ${animation.loop_count} times`}. The preview shows the first frame.</p>}
+      {animation && <p className="fine-print">Plays {animation.frames.length} frames{animation.loop_count === 0 ? ', looping' : animation.loop_count === 1 ? ' once' : `, ${animation.loop_count} times`}. The previews play it.</p>}
       <label className="spaced-label" htmlFor="dial-display-image-file">Dial picture or GIF</label>
       <input id="dial-display-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,.png,.jpg,.jpeg,.gif,.bmp" disabled={disabled || busy || !invoke} onChange={event => { const file = event.target.files?.[0]; if (file) void choose(file); event.target.value = ''; }} />
       {source ? <div className="dial-image-look">

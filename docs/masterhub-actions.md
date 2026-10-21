@@ -300,7 +300,7 @@ The next four of the [official 17](research/masterhub-obs-actions.md), on the sa
 - Failures: a missing scene, source or filter reports "no such scene, or no such source in it" or "no such source, or no such filter on it" (status 600); a transition outside studio mode reports "studio mode is not active" (506). A failed lookup ends the action before any write.
 - **Logging and redaction.** Records and the activity panel show lengths only: `{"type":"obs_filter","source_chars":11,"filter_chars":4,"op":"off"}`. Diagnostics bundles with redaction on replace `source`, `filter` and `scene` of these actions with `<N chars>`, and scrub short names from free text like scene names. **OBS's own comment text is never shown for any request that carried a name** (OBS repeats the name it was given); only the reason above is. This also applies to `obs_scene`, whose error text no longer includes OBS's comment.
 - The Execute confirmation lists studio mode and transition as OBS outputs, and each filter and source change with its names (invisible characters made visible). It stays at normal risk: these change what OBS shows, like a scene switch.
-- Studio mode and the transition were also reported working on a real OBS 5.7.4 (19 October 2026; [results](masterhub-hardware-results.md#obs-studio-with-a-real-obs-19-october-2026)); filters and source visibility were tested against the scripted fake obs-websocket server only.
+- Studio mode and the transition were also reported working on a real OBS 5.7.4 (19 October 2026; [results](masterhub-hardware-results.md#obs-studio-with-a-real-obs-19-october-2026)); filters and source visibility were reported working on the same OBS on 21 October 2026 ([results](masterhub-hardware-results.md#the-remaining-obs-actions-with-a-real-obs-21-october-2026)).
 
 ## OBS scene collection and profile (`obs_scene_collection`, `obs_profile`)
 
@@ -311,7 +311,7 @@ The official app's `scene-collection` and `obs-profile` actions ([action list](r
 - Failures: a missing name reports "no scene collection with that name" or "no profile with that name" (status 600). OBS's own comment text is never shown (the request carried a name).
 - **Logging and redaction.** Records show `{"type":"obs_profile","name_chars":4}`; the activity panel shows `OBS profile (4 characters)`. Diagnostics bundles with redaction replace `name` with `<N chars>`.
 - The Execute confirmation lists each switch with its name (invisible characters made visible) and a reload note. It raises the profile to elevated risk, because a reload can interrupt a live output; the editor also says to put a reload last in a multi-action.
-- Tested against the scripted fake obs-websocket server only; no real OBS has been used. Whether OBS answers before or after the reload completes is unverified.
+- Tested against the scripted fake obs-websocket server and, as reported by the user, on a real OBS 5.7.4 on 21 October 2026 ([results](masterhub-hardware-results.md#the-remaining-obs-actions-with-a-real-obs-21-october-2026)). The detail of whether OBS answers before or after the reload completes was not written down.
 
 ## OBS input volume (`obs_set_input_volume`, `obs_input_volume_from_position`)
 

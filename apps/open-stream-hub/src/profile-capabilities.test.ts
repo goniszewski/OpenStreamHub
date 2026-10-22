@@ -70,6 +70,18 @@ describe('profileCapabilities', () => {
     expect(paste.risk).toBe('high');
     expect(paste.urlOrigins).toEqual(['https://evil.test']);
   });
+  it('discloses both branches of a conditional and rates each branch like a sequence', () => {
+    const conditional = profileCapabilities(flat({ type: 'conditional', when: { obs_recording: true },
+      then: [{ type: 'open_url', url: 'https://evil.test/collect' }, { type: 'shortcut', key: 'v', modifiers: ['command'] }],
+      else: [{ type: 'text', text: 'rm -rf x', press_enter: false }] }));
+    expect(conditional.counts).toMatchObject({ conditional: 1, open_url: 1, shortcut: 1, text: 1 });
+    expect(conditional.urlOrigins).toEqual(['https://evil.test']);
+    expect(conditional.texts.map(snippet => snippet.text)).toEqual(['rm -rf x']);
+    expect(conditional.risk).toBe('high');
+    expect(conditional.riskReasons).toContain('A multi-step sequence opens an app or web page and then types or sends shortcuts into it.');
+    // Even a harmless conditional is elevated, like a multi-action: the run depends on a state read at press time.
+    expect(profileCapabilities(flat({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] })).risk).toBe('elevated');
+  });
   it('is high for a screenshot and a web page in one sequence, and for text then any key', () => {
     expect(profileCapabilities(flat({ type: 'multi_action', actions: [{ type: 'system', command: 'screenshot' }, { type: 'open_url', url: 'https://x.test' }] })).riskReasons)
       .toEqual(['A multi-step sequence captures the screen and opens a web page.']);

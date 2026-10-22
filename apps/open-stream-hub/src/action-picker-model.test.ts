@@ -16,7 +16,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'macro', 'profile'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'conditional', 'macro', 'profile'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -70,6 +70,7 @@ describe('scope filtering', () => {
   it('offers multi-action steps the executable actions only', () => {
     const offered = types(entriesForScope('step'));
     expect(offered).not.toContain('multi_action');
+    expect(offered).not.toContain('conditional');
     expect(offered).not.toContain('profile');
     expect(offered).not.toContain('timer');
     expect(offered).not.toContain('volume_from_position');

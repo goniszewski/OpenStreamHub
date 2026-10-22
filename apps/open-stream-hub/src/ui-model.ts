@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -188,6 +188,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
       const flat = action.text.replace(/\s+/g, ' ').trim();
       return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
     }
+    case 'conditional': return `If ${conditionLabel(action.when)}: ${action.then.map(step => actionLabel(step)).join(', then ')}${action.else?.length ? `; otherwise ${action.else.map(step => actionLabel(step)).join(', then ')}` : ''}`;
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     // The keys themselves are not listed here (they read like typed text); the inspector's macro
     // editor shows them, and the Execute confirmation discloses them.

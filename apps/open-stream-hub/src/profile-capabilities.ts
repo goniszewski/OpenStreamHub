@@ -97,6 +97,18 @@ const isScreenshot = (step: unknown) => isRecord(step) && step.type === 'system'
 const followedBy = (steps: unknown[], first: (step: unknown) => boolean, then: (step: unknown) => boolean) =>
   steps.some((step, index) => first(step) && steps.slice(index + 1).some(then));
 
+// Why a list of steps that run one after another is rated high: what one step sets up for the next.
+function sequenceReasons(steps: unknown[]): string[] {
+  const reasons: string[] = [];
+  const has = (type: string) => steps.some(step => isRecord(step) && step.type === type);
+  if ((has('launch_app') || has('open_url')) && (has('text') || has('shortcut'))) reasons.push('A multi-step sequence opens an app or web page and then types or sends shortcuts into it.');
+  if (steps.some(isScreenshot) && has('open_url')) reasons.push('A multi-step sequence captures the screen and opens a web page.');
+  // Fails closed: any key after pasted text can submit it (Return, Control+M, Control+J, Control+O, app bindings).
+  if (followedBy(steps, step => isRecord(step) && step.type === 'text', isShortcut)) reasons.push('A multi-step sequence pastes text and then sends keys after it.');
+  if (followedBy(steps, isScreenshot, isShortcut)) reasons.push('A multi-step sequence captures the screen and then sends keys, which can paste it into another app.');
+  return reasons;
+}
+
 // Snippets and step text are shown in full. A profile the service would accept never reaches this limit; anything
 // longer (an invalid or hand-edited profile) is cut for display and rated high, so a hidden tail is never trusted.
 export const maxShownChars = 4096;
@@ -208,17 +220,22 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         if (codePoints(String(action.name ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
+      case 'conditional': {
+        // Both branches are walked and disclosed like multi-action steps, since either can run. Which one depends on
+        // a state read at press time (OBS or the output), so the profile can do whatever either branch can.
+        for (const steps of [list(action.then), list(action.else)]) {
+          if (depth < 4) for (const step of steps) visit(step, depth + 1);
+          if (steps.length > 0) sequences.set(JSON.stringify(steps), steps as StepAction[]);
+          sequenceReasons(steps).forEach(reason => reasons.add(reason));
+        }
+        break;
+      }
       case 'multi_action': {
         const steps = list(action.actions);
         // The service rejects nested sequences; they are still walked so nothing hides inside one.
         if (depth < 4) for (const step of steps) visit(step, depth + 1);
         sequences.set(JSON.stringify(steps), steps as StepAction[]);
-        const has = (type: string) => steps.some(step => isRecord(step) && step.type === type);
-        if ((has('launch_app') || has('open_url')) && (has('text') || has('shortcut'))) reasons.add('A multi-step sequence opens an app or web page and then types or sends shortcuts into it.');
-        if (steps.some(isScreenshot) && has('open_url')) reasons.add('A multi-step sequence captures the screen and opens a web page.');
-        // Fails closed: any key after pasted text can submit it (Return, Control+M, Control+J, Control+O, app bindings).
-        if (followedBy(steps, step => isRecord(step) && step.type === 'text', isShortcut)) reasons.add('A multi-step sequence pastes text and then sends keys after it.');
-        if (followedBy(steps, isScreenshot, isShortcut)) reasons.add('A multi-step sequence captures the screen and then sends keys, which can paste it into another app.');
+        sequenceReasons(steps).forEach(reason => reasons.add(reason));
         break;
       }
       case 'macro': {
@@ -245,7 +262,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   for (const action of profileActions(profile)) visit(action, 0);
 
   const snippets = [...texts.values()];
-  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || liveOutput || macros.size > 0 || (counts.multi_action ?? 0) > 0;
+  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || liveOutput || macros.size > 0 || (counts.multi_action ?? 0) > 0 || (counts.conditional ?? 0) > 0;
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),

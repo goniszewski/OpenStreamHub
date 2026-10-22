@@ -37,7 +37,7 @@ export function tileIconOf(action?: BindingAction): TileIcon {
     case 'open_url': return 'web';
     case 'launch_app': return 'application';
     case 'text': return 'text';
-    case 'multi_action': case 'macro': return 'sequence';
+    case 'multi_action': case 'conditional': case 'macro': return 'sequence';
     case 'profile': return 'profile';
     case 'timer': return 'timer';
     case 'shortcut': return 'generic';

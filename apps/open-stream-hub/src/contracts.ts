@@ -64,9 +64,21 @@ export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
+// The state a conditional tests (Condition in profile.rs): one key with a value. The first four read an OBS output and
+// need the OBS connection; the last two read the default output of this Mac.
+export type Condition =
+  | { obs_streaming: boolean }
+  | { obs_recording: boolean }
+  | { obs_virtual_camera: boolean }
+  | { obs_replay_buffer: boolean }
+  | { output_muted: boolean }
+  | { output_volume_at_least: number };
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
+  // Tests one condition when pressed, then runs the `then` steps (1-8) or the `else` steps (0-8, omitted when empty).
+  // Steps follow the multi_action rules; never a step itself.
+  | { type: 'conditional'; when: Condition; then: StepAction[]; else?: StepAction[] }
   // A recorded sequence of keystrokes with waits and holds (bounded: 1–64 steps, ≤30 s in total).
   // Never a multi_action step: a macro is already a timed sequence.
   | { type: 'macro'; steps: MacroStep[] }

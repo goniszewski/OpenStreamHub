@@ -549,4 +549,27 @@ describe('obs combo', () => {
     inputOf(plain.tree).onClick({ target: null });
     expect(requested).toBe('once');
   });
+
+  it('edits a conditional: the condition, a Then list that cannot be emptied and an optional Otherwise list', () => {
+    const markup = render({ type: 'conditional', when: { output_volume_at_least: 40 }, then: [{ type: 'toggle_mute' }], else: [{ type: 'set_volume', percent: 20 }] });
+    expect(markup).toContain('<label for="conditional-when">If</label>');
+    expect(markup).toContain('<label class="spaced-label" for="conditional-volume">Volume (%)</label>');
+    expect(markup).toContain('then-step-1-action');
+    expect(markup).toContain('else-step-1-action');
+    expect(markup).toContain('aria-label="Remove then step 1"');
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove then step 1"/);
+    expect(markup).toContain('aria-label="Remove otherwise step 1"');
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove otherwise step 1"/);
+    // An output condition and non-OBS steps need no OBS connection.
+    expect(markup).not.toContain('OBS connection');
+    expectAccessible(markup);
+    const yesNo = render({ type: 'conditional', when: { obs_recording: false }, then: [{ type: 'obs_record', op: 'start' }] });
+    expect(yesNo).toContain('for="conditional-value"');
+    expect(yesNo).toContain('<option value="false" selected="">False</option>');
+    expect(yesNo).toContain('OBS');
+    expect(yesNo).not.toContain('else-step-1-action');
+    expectAccessible(yesNo);
+    // Neither list offers a conditional or a multi-action as a step.
+    expect(markup.match(/>If \/ else<\/span>/g)).toHaveLength(1);
+  });
 });

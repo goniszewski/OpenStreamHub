@@ -1,4 +1,4 @@
-import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, Condition, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -55,6 +55,8 @@ export const defaultTimerSound: TimerSound = 'glass';
 export const maxUrlBytes = 2048;
 export const maxTextBytes = 2048;
 export const multiActionSteps = { minimum: 2, maximum: 8 } as const;
+// Conditional branches (Action::MAX_MULTI_ACTION_STEPS): 1 to 8 steps when the condition holds, 0 to 8 otherwise.
+export const conditionalSteps = { thenMinimum: 1, maximum: 8 } as const;
 export const timerSeconds = { minimum: 1, maximum: 86_400 } as const;
 export const maxTimerLabelBytes = 64;
 // TimerTable::MAX_RUNNING: more presses fail until one ends or is cancelled.
@@ -213,6 +215,44 @@ export function timerDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60) % 60;
   const pad = (value: number) => String(value).padStart(2, '0');
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
+
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least';
+// Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
+export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
+  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'],
+  ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
+  ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
+];
+const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least'>, readonly [string, string]> = {
+  obs_streaming: ['OBS is streaming', 'OBS is not streaming'],
+  obs_recording: ['OBS is recording', 'OBS is not recording'],
+  obs_virtual_camera: ['the OBS virtual camera is on', 'the OBS virtual camera is off'],
+  obs_replay_buffer: ['the OBS replay buffer is running', 'the OBS replay buffer is not running'],
+  output_muted: ['the output is muted', 'the output is not muted'],
+};
+export function conditionKey(when: Condition): ConditionKey {
+  return Object.keys(when)[0] as ConditionKey;
+}
+export function conditionValue(when: Condition): boolean | number {
+  return (when as Record<string, boolean | number>)[conditionKey(when)];
+}
+// Reads from OBS, so needs the connection set up in Settings; the output conditions read this Mac.
+export const conditionUsesObs = (when: Condition): boolean => conditionKey(when).startsWith('obs_');
+// "OBS is recording", "the output is not muted", "the output volume is at least 40%".
+export function conditionLabel(when: Condition): string {
+  const key = conditionKey(when);
+  const value = conditionValue(when);
+  if (key === 'output_volume_at_least') return `the output volume is at least ${value}%`;
+  return conditionPhrases[key][value ? 0 : 1];
+}
+// A condition of the chosen kind with its default value.
+export function defaultCondition(key: ConditionKey): Condition {
+  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : { [key]: true }) as Condition;
+}
+
+export function defaultConditional(): Action {
+  return { type: 'conditional', when: defaultCondition('output_muted'), then: [{ type: 'toggle_mute' }] };
 }
 
 export function defaultMultiAction(): Action {

@@ -1,7 +1,7 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, Condition, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
@@ -13,11 +13,12 @@ import { obsConnectionLabels } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
+  conditionKey, conditionKeys, conditionLabel, conditionUsesObs, conditionValue, conditionalSteps, defaultCondition, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
+import type { ConditionKey } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
 
@@ -177,6 +178,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'macro' && <MacroFields steps={action.steps} disabled={false} onChange={steps => onChange({ type: 'macro', steps }, 'macro-steps')} invoke={invoke} />}
+    {action?.type === 'conditional' && <ConditionalFields action={action} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
     {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
@@ -186,7 +188,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
     {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">Each position change sets the default input device's volume (the microphone gain) from 0% to 100%. Some microphones have no software gain, and macOS then ignores it.</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
-    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
+    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'conditional' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
   </>;
 }
@@ -228,27 +230,74 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
   </div>;
 }
 
+// Numbered steps with a picker each, Remove buttons and Add step: the list a multi-action and both branches of a
+// conditional edit. `idBase` keeps the ids apart (`step-2-action` for a multi-action, `then-step-2-action` in a branch).
+function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, onSetUpObs, catalog, invoke }: {
+  steps: StepAction[]; idBase: string; noun: string; minimum: number; maximum: number; selectorKey: string; update: (next: StepAction[], field?: string) => void;
+  onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
+}) {
+  return <>
+    <ol className="action-steps">
+      {steps.map((step, index) => {
+        const prefix = `${idBase}step-${index + 1}-`;
+        return <li key={`${index}:${step.type}`}>
+          <label htmlFor={`${prefix}action`}>{noun} {index + 1}</label>
+          <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
+            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
+          <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${idBase}${index}:${steps.length}`}
+            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} />
+          <button type="button" className="button compact" disabled={steps.length <= minimum}
+            aria-label={`Remove ${noun.toLowerCase()} ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
+        </li>;
+      })}
+    </ol>
+    <button type="button" className="button compact" disabled={steps.length >= maximum}
+      onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add {noun.toLowerCase()}</button>
+  </>;
+}
+
 function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, invoke }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
   const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
   return <div className="action-fields">
     <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
-    <ol className="action-steps">
-      {steps.map((step, index) => {
-        const prefix = `step-${index + 1}-`;
-        return <li key={`${index}:${step.type}`}>
-          <label htmlFor={`${prefix}action`}>Step {index + 1}</label>
-          <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
-            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
-          <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
-            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} />
-          <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}
-            aria-label={`Remove step ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
-        </li>;
-      })}
-    </ol>
-    <button type="button" className="button compact" disabled={steps.length >= multiActionSteps.maximum}
-      onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add step</button>
+    <StepList steps={steps} idBase="" noun="Step" minimum={multiActionSteps.minimum} maximum={multiActionSteps.maximum} selectorKey={selectorKey} update={update}
+      onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
     {steps.some(step => step.type.startsWith('obs_')) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
+  </div>;
+}
+
+type ConditionalAction = Extract<BindingAction, { type: 'conditional' }>;
+
+// If / else: one condition read when the key is pressed, a list of steps for when it holds and a list for when it does not.
+function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
+  const otherwise = action.else ?? [];
+  // An empty else is left out, never written as [] (it is optional in the profile).
+  const build = (when: Condition, then: StepAction[], other: StepAction[]): ConditionalAction => ({ type: 'conditional', when, then, ...(other.length > 0 ? { else: other } : {}) });
+  const key = conditionKey(action.when);
+  const value = conditionValue(action.when);
+  const usesObs = conditionUsesObs(action.when) || action.then.concat(otherwise).some(step => step.type.startsWith('obs_'));
+  return <div className="action-fields">
+    <label htmlFor="conditional-when">If</label>
+    <SelectField id="conditional-when" value={key} onChange={event => onChange(build(defaultCondition(event.target.value as ConditionKey), action.then, otherwise), 'conditional-when')}>
+      {conditionKeys.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+    </SelectField>
+    {typeof value === 'number'
+      ? <><label className="spaced-label" htmlFor="conditional-volume">Volume (%)</label>
+        <IntegerField key={selectorKey} id="conditional-volume" value={value} minimum={0} maximum={100}
+          onCommit={percent => onChange(build({ output_volume_at_least: percent }, action.then, otherwise), 'conditional-volume')} /></>
+      : <><label className="spaced-label" htmlFor="conditional-value">The statement is</label>
+        <SelectField id="conditional-value" value={value ? 'true' : 'false'} onChange={event => onChange(build({ [key]: event.target.value === 'true' } as Condition, action.then, otherwise), 'conditional-value')}>
+          <option value="true">True</option><option value="false">False</option>
+        </SelectField></>}
+    <p className="fine-print">Read when the key is pressed: {conditionLabel(action.when)}. If it cannot be read{conditionUsesObs(action.when) ? ' (OBS is not running or not set up)' : ''}, the press fails and neither list runs.</p>
+    <h4 className="spaced-label">Then</h4>
+    <StepList steps={action.then} idBase="then-" noun="Then step" minimum={conditionalSteps.thenMinimum} maximum={conditionalSteps.maximum} selectorKey={selectorKey}
+      update={(next, field) => onChange(build(action.when, next, otherwise), field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
+    <h4 className="spaced-label">Otherwise (optional)</h4>
+    <StepList steps={otherwise} idBase="else-" noun="Otherwise step" minimum={0} maximum={conditionalSteps.maximum} selectorKey={selectorKey}
+      update={(next, field) => onChange(build(action.when, action.then, next), field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
+    <p className="fine-print">Each list runs up to {conditionalSteps.maximum} steps in order, 280 ms apart; the first failed step stops the rest of that list. Steps cannot be multi-actions or conditionals.</p>
+    {usesObs && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
   </div>;
 }
 

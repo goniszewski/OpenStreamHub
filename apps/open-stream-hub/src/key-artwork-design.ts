@@ -190,6 +190,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   media: ['play', 'pause'],
   system: ['undo-2', 'camera'],
   multi_action: ['list-ordered'],
+  conditional: ['git-branch', 'list-ordered'],
   profile: ['arrow-left-right'],
   timer: ['timer', 'alarm-clock'],
   obs_scene: ['clapperboard'], obs_virtual_camera: ['video', 'video-off'], obs_replay_buffer: ['film'], obs_stream: ['radio', 'cast'], obs_screenshot: ['camera'], obs_input_mute: ['mic-off', 'volume-x'], obs_adjust_input_volume: ['volume-2'], obs_media_source: ['play', 'pause'], obs_record: ['circle', 'pause'],

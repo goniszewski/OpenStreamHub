@@ -1,10 +1,10 @@
 import type { BindingAction, ServiceModule } from './contracts';
-import { defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
+import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
 import type { StepActionType } from './action-model';
 
 // One file per picker entry: the step actions plus the binding-only ones, and the one
 // OBS entry ('obs'), which stands in for the ten obs_* step action types.
-export type PickerActionType = StepActionType | 'multi_action' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs';
+export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs';
 
 export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'navigation';
 
@@ -15,7 +15,7 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 ];
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
-const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['profile', 'Switch profile'],
+const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['conditional', 'If / else'], ['profile', 'Switch profile'],
   ['timer', 'Timer'], ['macro', 'Recorded macro'], ['volume_from_position', 'Output volume follows position'], ['mic_input_volume_from_position', 'Microphone volume follows position'],
   ['obs_input_volume_from_position', 'OBS input volume follows position'], ['obs', 'OBS']]);
 
@@ -40,6 +40,7 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['obs', 'obs', 'scene switch program virtual camera webcam replay buffer save output studio mode preview transition cut filter source enable disable visibility show hide collection profile settings stream'],
   ['timer', 'sequences', 'countdown alarm reminder notification wait'],
   ['multi_action', 'sequences', 'sequence steps batch several queue'],
+  ['conditional', 'sequences', 'if else condition branch when depends state recording streaming muted volume flow'],
   ['macro', 'sequences', 'record macro keystrokes timing timeline replay type'],
   ['profile', 'navigation', 'next previous saved profiles change'],
 ];
@@ -72,7 +73,7 @@ export type PickerScope = 'binding' | 'binding-fader' | 'step';
 
 const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position'];
 // A macro is a binding-level sequence like a multi-action: never a step.
-const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'macro', 'profile', 'timer', ...faderTypes];
+const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditional', 'macro', 'profile', 'timer', ...faderTypes];
 
 export function entriesForScope(scope: PickerScope): ReadonlyArray<PickerEntry> {
   if (scope === 'binding-fader') return pickerEntries.filter(entry => faderTypes.includes(entry.type));
@@ -110,7 +111,7 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 // select's onChange built them. The OBS entry starts from the scene operation; the editor's
 // Operation dropdown changes it from there.
 export function defaultBindingAction(type: PickerActionType): BindingAction {
-  return type === 'volume_from_position' || type === 'mic_input_volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction()
+  return type === 'volume_from_position' || type === 'mic_input_volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction() : type === 'conditional' ? defaultConditional()
     : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
     : type === 'macro' ? defaultMacro()
     : type === 'obs' ? defaultStepAction('obs_scene') : defaultStepAction(type);

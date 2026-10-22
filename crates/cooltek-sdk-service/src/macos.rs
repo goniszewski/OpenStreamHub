@@ -1,8 +1,8 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
 use crate::{
-    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, SystemCommand, TimerAlert,
-    TimerAlerter,
+    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
+    TimerAlert, TimerAlerter,
     obs::{OBS_UNAVAILABLE, ObsClient},
 };
 use std::{
@@ -340,6 +340,8 @@ pub struct MacOsDispatcher {
     /// Set once a media key has asked macOS for the Accessibility prompt;
     /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
     media_access_requested: bool,
+    /// The service state handed over before the current action.
+    service_state: ServiceState,
 }
 
 impl MacOsDispatcher {
@@ -350,6 +352,7 @@ impl MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         }
     }
 
@@ -365,6 +368,7 @@ impl MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         }
     }
 
@@ -820,6 +824,7 @@ impl MacOsDispatcher {
         match condition {
             Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
             Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
+            Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
             _ => Err("this condition is read from OBS".into()),
         }
     }
@@ -959,6 +964,10 @@ impl Default for MacOsDispatcher {
 }
 
 impl ActionDispatcher for MacOsDispatcher {
+    fn set_service_state(&mut self, state: ServiceState) {
+        self.service_state = state;
+    }
+
     fn dispatch(&mut self, action: &Action) -> Result<(), String> {
         // Validate even when the caller did not use the profile loader. This
         // also validates every multi_action step before the first one runs.
@@ -1024,6 +1033,7 @@ impl ActionDispatcher for MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         }))
     }
 }
@@ -1560,6 +1570,7 @@ mod tests {
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         };
         (dispatcher, state)
     }
@@ -2150,6 +2161,7 @@ mod tests {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         };
         assert!(
             dispatcher
@@ -2240,6 +2252,7 @@ mod tests {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -3088,6 +3101,32 @@ mod tests {
     }
 
     #[test]
+    fn a_conditional_tests_whether_a_timer_is_running_from_the_service_state() {
+        use crate::profile::Condition;
+        for (running, expected, branch) in [
+            (true, true, "a"),
+            (false, true, "b"),
+            (false, false, "a"),
+            (true, false, "b"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher.set_service_state(ServiceState {
+                timer_running: running,
+            });
+            dispatcher
+                .dispatch(&conditional(Condition::TimerRunning(expected)))
+                .unwrap();
+            let state = state.lock().unwrap();
+            // Nothing is read from macOS or OBS: only the branch runs.
+            assert_eq!(state.requests.len(), 1);
+            assert!(
+                state.requests[0].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "running {running}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn a_conditional_that_cannot_read_obs_runs_neither_branch() {
         use crate::profile::Condition;
         // No endpoint at all.
@@ -3660,6 +3699,7 @@ mod tests {
                 sleeper: Box::new(SystemSleeper),
                 obs: None,
                 media_access_requested: false,
+                service_state: ServiceState::default(),
             };
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
             assert!(error.contains("action execution cancelled"), "{error}");
@@ -4229,6 +4269,7 @@ mod tests {
             sleeper: Box::new(CancellingSleeper(cancellation)),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

@@ -393,6 +393,10 @@ describe('obs input volume', () => {
     expect(conditionUsesObs({ obs_streaming: true })).toBe(true);
     expect(conditionUsesObs({ output_muted: true })).toBe(false);
     expect(conditionUsesObs({ output_volume_at_least: 5 })).toBe(false);
+    expect(conditionLabel({ timer_running: true })).toBe('a timer is running');
+    expect(conditionLabel({ timer_running: false })).toBe('no timer is running');
+    expect(conditionUsesObs({ timer_running: true })).toBe(false);
+    expect(defaultCondition('timer_running')).toEqual({ timer_running: true });
     expect(defaultCondition('output_volume_at_least')).toEqual({ output_volume_at_least: 50 });
     expect(defaultCondition('obs_replay_buffer')).toEqual({ obs_replay_buffer: true });
     expect(defaultConditional()).toEqual({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });

@@ -217,10 +217,10 @@ export function timerDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
-export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least';
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running';
 // Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
 export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
-  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'],
+  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'],
   ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
   ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
 ];
@@ -230,6 +230,7 @@ const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least'>, 
   obs_virtual_camera: ['the OBS virtual camera is on', 'the OBS virtual camera is off'],
   obs_replay_buffer: ['the OBS replay buffer is running', 'the OBS replay buffer is not running'],
   output_muted: ['the output is muted', 'the output is not muted'],
+  timer_running: ['a timer is running', 'no timer is running'],
 };
 export const maxCombinedConditions = 8;
 export type CombineMode = 'all' | 'any';

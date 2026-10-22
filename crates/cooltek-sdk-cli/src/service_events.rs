@@ -8,8 +8,8 @@
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, TimerAlert,
-    TimerKey, TimerTable, TimerToggle,
+    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
+    TimerAlert, TimerKey, TimerTable, TimerToggle,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -405,6 +405,9 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             )?;
             continue;
         }
+        dispatcher.set_service_state(ServiceState {
+            timer_running: !timers.is_empty(),
+        });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
             Err(error) => {
@@ -1541,5 +1544,68 @@ mod tests {
             3,
             "report and both events"
         );
+    }
+
+    #[test]
+    fn the_dispatcher_is_told_whether_a_timer_is_running_before_each_action() {
+        struct Seen(Vec<bool>, bool);
+        impl ActionDispatcher for Seen {
+            fn set_service_state(&mut self, state: ServiceState) {
+                self.1 = state.timer_running;
+            }
+            fn dispatch(&mut self, _: &Action) -> Result<(), String> {
+                self.0.push(self.1);
+                Ok(())
+            }
+        }
+        let mut seen = Seen(Vec::new(), false);
+        let mut timers = TimerTable::default();
+        let mut run = |work: Work, timers: &mut TimerTable| {
+            process_work(
+                work,
+                &mut seen,
+                &mut Vec::new(),
+                &AtomicBool::new(false),
+                true,
+                false,
+                false,
+                timers,
+                0,
+                &mut LiveSummary::default(),
+            )
+            .unwrap();
+        };
+        run(press(0, 1, Action::ToggleMute), &mut timers);
+        // Key 1 starts a countdown; it is not dispatched, only counted.
+        run(
+            press(
+                1,
+                2,
+                Action::Timer {
+                    seconds: 60,
+                    label: None,
+                    sound: None,
+                },
+            ),
+            &mut timers,
+        );
+        assert_eq!(timers.len(), 1);
+        run(press(0, 3, Action::ToggleMute), &mut timers);
+        // Pressing the timer key again cancels it.
+        run(
+            press(
+                1,
+                4,
+                Action::Timer {
+                    seconds: 60,
+                    label: None,
+                    sound: None,
+                },
+            ),
+            &mut timers,
+        );
+        assert!(timers.is_empty());
+        run(press(0, 5, Action::ToggleMute), &mut timers);
+        assert_eq!(seen.0, [false, true, false]);
     }
 }

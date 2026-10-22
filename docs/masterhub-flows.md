@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), tested with fakes only. The timer and dial function conditions are not built yet. System conditions need no OBS endpoint. The app editor (step 5) is built: "If / else" in the action picker, under Timers & sequences, with the condition, a Then list and an optional Otherwise list; the run confirmation lists both branches and rates the profile at least elevated. It has unit and render tests only and has not been looked at in the running app. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
+Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), `timer_running`, and AND / OR, tested with fakes only. The dial function condition is not built (see below). System conditions need no OBS endpoint. The app editor (step 5) is built: "If / else" in the action picker, under Timers & sequences, with the condition, a Then list and an optional Otherwise list; the run confirmation lists both branches and rates the profile at least elevated. It has unit and render tests only and has not been looked at in the running app. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.
@@ -37,8 +37,8 @@ One condition per `when`, a single key with a value:
 | OBS | `obs_input_muted` | `{ "input": name, "muted": bool }` | `GetInputMute` |
 | System | `output_muted` (built) | bool | the same reader `toggle_mute` uses |
 | System | `output_volume_at_least` (built) | percent 0 to 100 | the same reader the volume actions use |
-| System | `timer_running` | bool | service-owned timer |
-| Dial | `dial_function` | function index or name | service-owned dial state |
+| System | `timer_running` (built) | bool | the service's own timer table; counts only timers started by this module's bindings |
+| Dial | `dial_function` (not built) | function name | the dial's process; see below |
 | Focus | `focused_app` | bundle id | see below |
 
 ## Evaluation rules
@@ -47,6 +47,10 @@ One condition per `when`, a single key with a value:
 - **A condition that cannot be read is an error, not "false".** OBS unreachable, no endpoint, authentication rejected: the press fails with the same error text the OBS actions give today, and neither branch runs. Otherwise a missing OBS would silently take the `else` branch and start a recording that is already running.
 - The read gets the same overall deadline as the branch; the total (reads plus steps plus spacing) must stay inside the action timeout already used for `multi_action`.
 - Events: `action_executed` reports which branch ran (`then` or `else`) so the test mode and the logs show it.
+
+## Dial function: not built, and why
+
+Each module runs in its own process, and the dial's bindings already live inside its functions, so a function is only active for bindings that belong to it. A `dial_function` condition on a dial binding would always be true for the function it sits in. It would only mean something on another module (for example a key that acts differently while the dial is on Volume), and that process cannot see the dial. It needs the desktop app to relay the dial's function to the other modules' services over their control channel, plus a new control message and a state in the service. That is the cross-module routing that was left to the app when one process per module was decided, so it is a separate piece of work.
 
 ## Where each condition comes from
 

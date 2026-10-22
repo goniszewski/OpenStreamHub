@@ -538,6 +538,10 @@ pub enum Condition {
     OutputMuted(bool),
     /// The default output volume is at least this percentage, 0 to 100.
     OutputVolumeAtLeast(u8),
+    /// A `timer` countdown of this run is counting down (`true`) or none is.
+    /// Timers belong to the module's own process, so only the timers started
+    /// by this module's bindings count.
+    TimerRunning(bool),
     /// Every listed condition holds (AND). All of them are read, in order.
     All(Vec<Condition>),
     /// At least one listed condition holds (OR). All of them are read, in
@@ -560,6 +564,7 @@ impl Condition {
             Self::ReplayBuffer(_) => "obs_replay_buffer",
             Self::OutputMuted(_) => "output_muted",
             Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
+            Self::TimerRunning(_) => "timer_running",
             Self::All(_) => "all",
             Self::Any(_) => "any",
         }
@@ -573,7 +578,7 @@ impl Condition {
             | Self::VirtualCamera(_)
             | Self::ReplayBuffer(_) => true,
             Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_obs),
-            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) => false,
+            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) | Self::TimerRunning(_) => false,
         }
     }
 
@@ -585,9 +590,11 @@ impl Condition {
             | Self::Recording(value)
             | Self::VirtualCamera(value)
             | Self::ReplayBuffer(value) => Some(*value),
-            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) | Self::All(_) | Self::Any(_) => {
-                None
-            }
+            Self::OutputMuted(_)
+            | Self::OutputVolumeAtLeast(_)
+            | Self::TimerRunning(_)
+            | Self::All(_)
+            | Self::Any(_) => None,
         }
     }
 
@@ -3174,6 +3181,21 @@ mod tests {
         assert!(
             serde_json::from_str::<Action>(
                 r#"{"type":"conditional","when":{"output_volume_at_least":-1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn timer_running_is_a_plain_condition_that_needs_no_obs() {
+        let json = r#"{"type":"conditional","when":{"any":[{"timer_running":true},{"output_muted":true}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"timer_running":1},"then":[{"type":"toggle_mute"}]}"#
             )
             .is_err()
         );

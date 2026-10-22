@@ -18,7 +18,9 @@ pub mod display_sync;
 pub mod macos;
 pub mod obs;
 
-pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
+pub use binding::{
+    ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, ServiceState, TimerAlerter,
+};
 pub use dial::{
     DialAnimation, DialAnimationFrame, DialBinding, DialDisplay, DialDisplayContent, DialFit,
     DialFunction, DialFunctionNavigation, DialSource,

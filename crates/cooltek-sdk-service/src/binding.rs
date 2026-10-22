@@ -132,8 +132,19 @@ impl BindingEngine {
     }
 }
 
+/// What the service worker knows that a dispatcher cannot see for itself, handed over right before each action so a
+/// `conditional` can test it.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ServiceState {
+    /// At least one `timer` countdown of this run is counting down.
+    pub timer_running: bool,
+}
+
 /// The host boundary for explicitly dispatching a matched action.
 pub trait ActionDispatcher {
+    /// Tells the dispatcher the service state for the action about to be dispatched. The default ignores it.
+    fn set_service_state(&mut self, _state: ServiceState) {}
+
     /// Executes one action or reports failure without an implicit retry.
     fn dispatch(&mut self, action: &Action) -> Result<(), String>;
 

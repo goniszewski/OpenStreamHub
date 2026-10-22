@@ -335,6 +335,7 @@ impl ObsClient {
             Condition::ReplayBuffer(_) => "GetReplayBufferStatus",
             Condition::OutputMuted(_)
             | Condition::OutputVolumeAtLeast(_)
+            | Condition::TimerRunning(_)
             | Condition::All(_)
             | Condition::Any(_) => {
                 return Err("this condition is not read from OBS".into());

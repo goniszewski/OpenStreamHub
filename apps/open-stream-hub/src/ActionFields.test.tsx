@@ -593,6 +593,10 @@ describe('obs combo', () => {
     expect(and).toContain('for="conditional-volume-2"');
     expect(and).not.toContain('OBS must be running');
     expectAccessible(and);
+    const timer = render({ type: 'conditional', when: { timer_running: false }, then: [{ type: 'toggle_mute' }] });
+    expect(timer).toContain('<option value="timer_running" selected="">A timer is running</option>');
+    expect(timer).toContain('no timer is running');
+    expect(timer).not.toContain('OBS must be running');
     const eight = render({ type: 'conditional', when: { all: Array.from({ length: 8 }, () => ({ output_muted: true })) }, then: [{ type: 'toggle_mute' }] });
     expect(eight).toMatch(/<button[^>]*id="conditional-add"[^>]*disabled=""|<button[^>]*disabled=""[^>]*id="conditional-add"/);
   });

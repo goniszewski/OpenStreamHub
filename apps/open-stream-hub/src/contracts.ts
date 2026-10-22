@@ -74,7 +74,9 @@ export type LeafCondition =
   | { obs_virtual_camera: boolean }
   | { obs_replay_buffer: boolean }
   | { output_muted: boolean }
-  | { output_volume_at_least: number };
+  | { output_volume_at_least: number }
+  // A timer countdown started by this module's bindings is running.
+  | { timer_running: boolean };
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }

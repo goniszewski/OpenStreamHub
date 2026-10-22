@@ -646,6 +646,14 @@ impl Dispatcher {
 }
 
 impl ActionDispatcher for Dispatcher {
+    fn set_service_state(&mut self, state: cooltek_sdk_service::ServiceState) {
+        match self {
+            Self::Switchable { macos, .. } => macos.set_service_state(state),
+            Self::MacOs(dispatcher) => dispatcher.set_service_state(state),
+            Self::Preview { .. } => {}
+        }
+    }
+
     fn dispatch_with_execution(
         &mut self,
         action: &cooltek_sdk_service::Action,

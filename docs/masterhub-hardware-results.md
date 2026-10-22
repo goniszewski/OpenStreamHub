@@ -199,7 +199,7 @@ Real OBS Studio with obs-websocket 5.7.4 on this Mac, WebSocket server on port 4
 - **Fader to OBS input volume.** Fader 1 of the M005S bound to `obs_input_volume_from_position` for the input *Mic/Aux*. With the first mapping (a linear multiplier, `percent / 100`) the owner found the change uneven against OBS's slider (the first half of the travel did almost nothing). After the mapping followed OBS's own logarithmic slider scale (about -19 dB at 50%), the owner confirmed it works as expected.
 - **Faders did not start by themselves** at first: the app auto-started only the keys, dial and knobs. Every control module now starts automatically; confirmed once the fader session ran.
 - **Keys on the real OBS (19 October 2026, later the same day).** The owner pressed every key of the *Streaming (OBS)* profile and reported that all worked as described: Record (start and stop), Pause rec (pause and resume), Screenshot (PNG in `~/Pictures`), Virtual camera, Replay buffer, Save replay, Studio mode, Transition, Mic mute, Mic -3 dB and +3 dB, Play / pause and Stop media, and knob 2 (step and mute). No failures were reported; the per-key details (file names, refusal texts) were not recorded.
-- **Not checked yet on a real OBS:** `obs_stream` (it goes live, so it was left out on purpose), `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter` and `obs_source_visibility` (not in the test profile), the failure paths (a refused press, a missing input), and the wrong-password, wrong-port and not-running states.
+- **Not checked yet on a real OBS:** `obs_stream` (it goes live, so it was left out on purpose), `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter` and `obs_source_visibility` (not in the test profile), the failure paths (a refused press, a missing input), and the wrong-password, wrong-port and not-running states. (Update: the scene, filter, visibility, collection, profile and stream-arming actions were run on 21 October with "All good", and the failure paths and the three connection states were checked on 22 October; see below.)
 
 ## OBS connection states (pending)
 
@@ -369,6 +369,21 @@ OBS Studio 5.7.4 on the Mac, WebSocket server on (port 4455, password required, 
 **Result.** After pressing the keys the user reported "All good". That covers the scene, filter, source visibility, scene collection, profile and stream actions against a real OBS for the first time.
 
 Not written down: what each key looked like in OBS, any activity-log lines, whether the stream keys showed the expected connection failure in OBS and not an error in the app, whether one press of the armed stream key only armed it, and whether OBS answered a collection or profile switch before or after its reload. No broadcast was made; the stream target cannot receive one, so this does not show a stream going live.
+
+## OBS failure paths with a real OBS (22 October 2026)
+
+OBS Studio with obs-websocket 5.7.4 on the Mac, driven by `masterhub-service run --execute` on an M003K with a three-knob test profile (`obs_scene` to a scene that does not exist, `obs_input_mute` on an input that does not exist, `obs_virtual_camera` toggle). The user pressed each knob once per run. Every press logged `action_failed` (or `action_unavailable`) and the session carried on; releases were handled about 0.25 s after the press.
+
+| State | Setup | Result |
+| --- | --- | --- |
+| Wrong password | OBS running with authentication on, password `definitely-wrong-password` through `--obs-password-stdin` | All three presses failed with "OBS rejected the password (authentication failed); check the OBS WebSocket password". The password appears in neither stdout nor stderr. |
+| Missing scene | OBS running, authentication off for this run only, no password | "OBS refused the scene switch (no scene with that name)" |
+| Missing input | same | "OBS refused ToggleInputMute (no input with that name)" |
+| Virtual camera | same | Two presses logged `action_executed`; the user saw the virtual camera go on and then off in OBS. |
+| OBS not running (also a wrong port, since nothing listens) | OBS quit, endpoint 127.0.0.1:4455 | All three presses failed at once with "could not connect (Connection refused (os error 61)); is OBS running with its WebSocket server on?" |
+| No endpoint | no `--obs-endpoint` | All three presses logged `action_unavailable`: "OBS is not configured for this run (turn on OBS in OpenStreamHub Settings, or pass --obs-endpoint); no action was taken" |
+
+Authentication was turned back on afterwards. Not tried: a wrong port while OBS is running (the same refusal as OBS not running), the app's Settings > OBS Studio states, and `obs_stream` going live, which stays out on purpose.
 
 ## Dial write time by frame size (M131E, 21 October 2026)
 

@@ -195,7 +195,7 @@ cargo run -p cooltek-sdk-cli --locked -- keypad jpeg \
   --output /tmp/masterhub-keypad-plan.jsonl
 ```
 
-Key indices are zero-based, 0–14; their physical positions remain unverified. Preparation defaults to quality 100, contain fit, black background, and no rotation. Its baseline JFIF output policy follows the pinned Windows renderer's 72×72 JPEG path. The packet builder validates an 8-bit, three-component baseline JFIF JPEG with one interleaved scan; it checks framing and dimensions without decoding entropy data. These conservative constraints do not establish every format the firmware accepts.
+Key indices are zero-based, 0–14, numbered row by row from the top left of a 5-across, 3-down module (verified on hardware, 22 October 2026). Preparation defaults to quality 100, contain fit, black background, and no rotation. Its baseline JFIF output policy follows the pinned Windows renderer's 72×72 JPEG path. The packet builder validates an 8-bit, three-component baseline JFIF JPEG with one interleaved scan; it checks framing and dimensions without decoding entropy data. These conservative constraints do not establish every format the firmware accepts.
 
 `keypad jpeg` requires a saved binary descriptor containing output report ID `02` and a new output path. It has no live-device option, constructs no HIDAPI context, and sends no packets. Image, key index, and descriptor validation complete before file creation. The example reuses a synthetic 65-byte descriptor; its filename reflects the original dial tests, and its length is not hardware evidence.
 

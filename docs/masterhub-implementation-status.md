@@ -116,3 +116,14 @@ Automated validation uses pure parsers, simulated transports, synthetic captures
 The first hardware session must establish descriptors/topology, interface selection, actual serial/report framing, physical control order and gestures, required initialization, and native HID timeout/open behavior. Complete dial payloads, descriptor sizes, physical direction, color order, feature-field semantics, image acceptance/orientation, header byte 6, and pacing still require captures or device tests. Implemented aliases, decoders, commands, and packet construction are not hardware acceptance.
 
 Wider hardware acceptance of the experimental key display sync (one M4315 session is recorded in [display sync](masterhub-display-sync.md#hardware-results-m4315-8-october-2026)), hardware acceptance of the dial display sync, base/knob lighting, complete action/permission runtime acceptance, hardware acceptance of the desktop app's live preview, sleep/wake and reconnect behavior, signed/notarized release packaging (see the [release process](release-process.md)), and firmware compatibility acceptance remain later roadmap milestones. SDK lifecycle hooks do not recover devices by themselves; automatic recovery exists only in the desktop session manager and is untested on hardware. Static PNG/JPEG/BMP conversion is implemented; progressive JPEG output is unsupported on purpose (the device takes only baseline). Firmware flashing/recovery remains excluded.
+
+## Next software work (agreed 22 October 2026)
+
+Taken in this order after the lighting hardware checks:
+
+1. **Multi-module live routing.** One `masterhub-service` runs per interface today; route several modules in one session, tested with simulated inventories.
+2. **Resume refresh.** After a wake the official app queries the firmware and redraws the displays; we do neither (`session.rs`, `power.rs`).
+3. **Dial function cycling.** Short click switches the function, long press runs the press action; still Partial until checked on the dial ([dial functions](masterhub-dial-functions.md)).
+4. **Flows.** Only the flat multi-action list exists; conditional flows are not started.
+5. **Action acceptance.** macOS actions and the remaining OBS actions (`obs_stream`, `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter`, `obs_source_visibility`, failure paths) are unverified.
+6. **Small known issues.** Older builds refuse schema-3 profiles; about two frames per 60 s are skipped at the 150 ms floor; the dial carousel hides the current face while another version is shown.

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DialAnimation } from './contracts';
-import { animationRate, compareVersionsStorageKey, readCompareVersionsSetting, writeCompareVersionsSetting, animationRateLabel, averageFrameLabel, defaultDialPreset, dialPresets, frameBytes, sameAnimation, stepIndex } from './dial-animation-model';
+import { animationRate, compareVersionsStorageKey, readCompareVersionsSetting, writeCompareVersionsSetting, animationRateLabel, averageFrameLabel, defaultDialPreset, dialPresets, frameBytes, sameAnimation, stepIndex, inUseElsewhere } from './dial-animation-model';
 
 // A base64 string that decodes to `bytes` bytes (no padding when divisible by 3).
 const frame = (bytes: number, delay_ms: number, fill = 'A') => ({ jpeg_base64: fill.repeat(Math.ceil(bytes / 3) * 4), delay_ms });
@@ -43,6 +43,15 @@ describe('dial animation model', () => {
     expect(sameAnimation(base, { ...base, loop_count: 2 })).toBe(false);
     expect(sameAnimation(base, undefined)).toBe(false);
     expect(sameAnimation(animation([]), animation([]))).toBe(false);
+  });
+});
+
+describe('inUseElsewhere', () => {
+  it('points back to the version in use only while another one is shown', () => {
+    expect(inUseElsewhere(0, 1)).toBe(0);
+    expect(inUseElsewhere(2, 0)).toBe(2);
+    expect(inUseElsewhere(1, 1)).toBe(-1);
+    expect(inUseElsewhere(-1, 1)).toBe(-1);
   });
 });
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { DialAnimation } from './contracts';
-import { animationRateLabel, averageFrameLabel, dialPresets, sameAnimation, stepIndex } from './dial-animation-model';
+import { animationRateLabel, averageFrameLabel, dialPresets, inUseElsewhere, sameAnimation, stepIndex } from './dial-animation-model';
 import type { DialPreset } from './dial-animation-model';
 import { keyArtworkFrame } from './key-artwork';
 
@@ -26,7 +26,8 @@ export type DialVariants = Record<DialPreset, DialVariant>;
 // the next. Looking changes nothing: Use puts the shown version in the profile. A version the GIF cannot reach (too
 // detailed for its frame budget) can be looked at but not used.
 export function DialVariantPicker({ variants, current, onChoose, disabled }: { variants: DialVariants; current: DialAnimation | undefined; onChoose(preset: DialPreset): void; disabled: boolean }) {
-  const inUse = Math.max(0, dialPresets.findIndex(preset => { const variant = variants[preset.id]; return 'animation' in variant && sameAnimation(variant.animation, current); }));
+  const usedIndex = dialPresets.findIndex(preset => { const variant = variants[preset.id]; return 'animation' in variant && sameAnimation(variant.animation, current); });
+  const inUse = Math.max(0, usedIndex);
   const [shown, setShown] = useState(inUse);
   // Following the profile: a version chosen elsewhere (an undo, a new GIF) is the one to look at.
   useEffect(() => { setShown(inUse); }, [inUse, current]);
@@ -57,5 +58,8 @@ export function DialVariantPicker({ variants, current, onChoose, disabled }: { v
         {!used && <button type="button" className="button compact" disabled={disabled || !ok} onClick={() => onChoose(preset.id)}>Use {preset.label}</button>}
       </div>
     </div>
+    {inUseElsewhere(usedIndex, shown) >= 0 && <p className="fine-print dial-variant-elsewhere">
+      In use: {dialPresets[usedIndex].label}. <button type="button" className="button compact" disabled={disabled} onClick={() => setShown(usedIndex)}>Show it</button>
+    </p>}
   </section>;
 }

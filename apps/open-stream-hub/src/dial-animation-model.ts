@@ -42,6 +42,9 @@ export const sameAnimation = (a: DialAnimation | undefined, b: DialAnimation | u
 };
 
 // The next version to look at: one step either way, wrapping round the ends.
+// The version the profile holds when it is not the one being looked at; -1 means none of the three is in use.
+export const inUseElsewhere = (usedIndex: number, shown: number): number => usedIndex >= 0 && usedIndex !== shown ? usedIndex : -1;
+
 export const stepIndex = (index: number, delta: number, count: number): number => count <= 0 ? 0 : (((index + delta) % count) + count) % count;
 
 // "Compare versions of a GIF" is on unless it was turned off: choosing a GIF then prepares all three versions to look at

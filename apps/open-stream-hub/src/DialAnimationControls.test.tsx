@@ -22,6 +22,7 @@ describe('DialVariantPicker', () => {
     expect(html).toContain('6.7 frames a second · 23 KiB a frame');
     expect(html).toContain('aria-label="Previous version"');
     expect(html).toContain('aria-label="Next version"');
+    expect(html).not.toContain('dial-variant-elsewhere');
   });
   it('starts on the version the profile holds, and says it is in use instead of offering it', () => {
     const html = render(balanced);

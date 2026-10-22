@@ -778,6 +778,7 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .dial-variant-text { display:grid; gap:4px; align-content:start; justify-items:start; text-align:left; }
 .dial-variant-text .fine-print { margin:0; }
 .dial-variant-name { font-weight:600; font-size:14px; display:flex; align-items:center; gap:8px; }
+.dial-variant-elsewhere { margin:0; display:flex; align-items:center; gap:8px; }
 .dial-variant-badge { font-size:11px; font-weight:500; padding:1px 8px; border-radius:999px; border:1px solid var(--line); }
 .dial-image-look>label { margin:0; font-size:12px; }
 .dial-image-rotate { display:flex; align-items:center; gap:12px; }

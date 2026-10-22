@@ -375,7 +375,7 @@ impl ProfileStore {
         // change file bytes, modification time, filename, or opaque identity.
         #[cfg(test)]
         fault::PARSES.with(|count| count.set(count.get() + 1));
-        let profile = Profile::from_json(&bytes)?.into_v2()?;
+        let profile = Profile::from_json(&bytes)?.into_current()?;
         let modified_at_ms = metadata
             .modified()
             .map_err(|error| format!("could not read profile modification time: {error}"))?
@@ -437,7 +437,7 @@ impl ProfileStore {
         keep_version: bool,
     ) -> Result<StoredProfile, String> {
         // Explicit Save is the only operation that persists a schema upgrade.
-        let profile = profile.into_v2()?;
+        let profile = profile.into_current()?;
         let id = match id {
             Some(id) => {
                 // Never overwrite an unreadable existing profile during editing.
@@ -461,7 +461,7 @@ impl ProfileStore {
     /// its dry-run flag for that id first). Never overwrites: an existing
     /// file or link under that id is refused.
     pub fn create(&self, id: &str, profile: Profile) -> Result<StoredProfile, String> {
-        let profile = profile.into_v2()?;
+        let profile = profile.into_current()?;
         let path = self.path(id)?;
         if fs::symlink_metadata(&path).is_ok() {
             return Err("a profile with this id already exists".into());
@@ -665,7 +665,7 @@ impl ProfileStore {
             .join(format!("{modified_at_ms}.json"));
         let (bytes, _) = read_private_file(&path, Profile::MAX_JSON_BYTES, "profile version")?
             .ok_or("this profile version no longer exists in storage")?;
-        let profile = Profile::from_json(&bytes)?.into_v2()?;
+        let profile = Profile::from_json(&bytes)?.into_current()?;
         Ok(StoredProfile {
             id: id.to_owned(),
             content_hash: crate::import_flags::content_hash(&profile),
@@ -878,12 +878,12 @@ mod tests {
         let bytes = include_bytes!("../../../../examples/profiles/all-modules.json");
         fs::write(&path, bytes).unwrap();
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
-        let expected = Profile::from_json(bytes).unwrap().into_v2().unwrap();
+        let expected = Profile::from_json(bytes).unwrap().into_current().unwrap();
 
         let loaded = store.load(&id).unwrap();
         assert_eq!(loaded.id, id);
         assert_eq!(loaded.profile, expected);
-        assert_eq!(loaded.profile.schema_version, 2);
+        assert_eq!(loaded.profile.schema_version, Profile::CURRENT_SCHEMA);
         assert!(loaded.profile.keypad.is_some());
         assert_eq!(
             store.bootstrap().unwrap().profile.unwrap().profile,
@@ -901,7 +901,10 @@ mod tests {
         assert_eq!(saved.profile, expected);
         let saved_bytes = fs::read(&path).unwrap();
         assert_ne!(saved_bytes, bytes);
-        assert_eq!(Profile::from_json(&saved_bytes).unwrap().schema_version, 2);
+        assert_eq!(
+            Profile::from_json(&saved_bytes).unwrap().schema_version,
+            Profile::CURRENT_SCHEMA
+        );
         assert_eq!(visible_entries(&directory.path().join("profiles")), 1);
     }
 

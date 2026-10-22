@@ -2010,7 +2010,7 @@ fn validate_display(
         return Err("display sync requires software mode".into());
     }
     if session.profile().keypad.is_none() {
-        return Err("display sync requires a schema-2 keypad profile".into());
+        return Err("display sync requires a keypad-page profile (schema 2 or later)".into());
     }
     Ok(())
 }
@@ -4889,7 +4889,12 @@ mod tests {
                 "software mode",
             ),
             (keypad_options(1), device(), keypad_profile(), "M4315"),
-            (keypad_options(1), keypad_device(), profile(), "schema-2"),
+            (
+                keypad_options(1),
+                keypad_device(),
+                profile(),
+                "keypad-page profile",
+            ),
         ] {
             let error = run_inner(
                 &mut InputReader::new(Transport::new([])),

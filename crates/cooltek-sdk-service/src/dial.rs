@@ -536,7 +536,7 @@ mod tests {
             serde_json::to_vec(&Profile::from_json(compact).unwrap()).unwrap(),
             compact
         );
-        let v2 = Profile::from_json(compact).unwrap().into_v2().unwrap();
+        let v2 = Profile::from_json(compact).unwrap().into_current().unwrap();
         let v2_bytes = serde_json::to_vec(&v2).unwrap();
         assert!(!v2_bytes.windows(14).any(|w| w == b"dial_functions"));
         assert_eq!(
@@ -561,8 +561,8 @@ mod tests {
         value["schema_version"] = json!(1);
         value.as_object_mut().unwrap().remove("keypad");
         let flat = Profile::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
-        let upgraded = flat.clone().into_v2().unwrap();
-        assert_eq!(upgraded.schema_version, 2);
+        let upgraded = flat.clone().into_current().unwrap();
+        assert_eq!(upgraded.schema_version, Profile::CURRENT_SCHEMA);
         assert_eq!(upgraded.dial_functions, flat.dial_functions);
         assert_eq!(upgraded.binding_count(), flat.binding_count());
     }

@@ -2111,7 +2111,7 @@ pub fn map_with_limit(
     );
 
     let mut profile = Profile {
-        schema_version: 2,
+        schema_version: Profile::CURRENT_SCHEMA,
         name: source_name.clone(),
         bindings: flat,
         keypad: Some(keypad),

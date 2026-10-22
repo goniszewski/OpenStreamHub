@@ -1459,13 +1459,14 @@ pub struct Binding {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// Configuration schema: 1 for flat bindings or 2 for a keypad page tree.
+    /// Configuration schema: 1 for flat bindings, 2 or 3 for a keypad page tree. Schema 3 is the current one: every
+    /// profile this version saves carries it, and [`Profile::into_current`] upgrades the older two.
     pub schema_version: u32,
     /// Human-readable name of at most 128 bytes.
     pub name: String,
     /// At most 256 bindings with unique complete selectors.
     pub bindings: Vec<Binding>,
-    /// Schema-2 keypad pages; omitted from existing schema-1 profiles.
+    /// Keypad pages (schema 2 and later); omitted from schema-1 profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keypad: Option<KeypadLayout>,
     /// Optional ordered M131E functions cycled by a short click (schema 1 or 2).
@@ -1524,11 +1525,34 @@ impl Profile {
     pub const MAX_JSON_BYTES: usize = 1024 * 1024;
     /// Maximum number of bindings in one profile.
     pub const MAX_BINDINGS: usize = 256;
+    /// The oldest schema this version still reads: flat bindings.
+    pub const OLDEST_SCHEMA: u32 = 1;
+    /// The schema this version writes and the newest it reads.
+    ///
+    /// History: 1 flat bindings; 2 keypad page tree, with dial functions, dial display and screen brightness added as
+    /// optional fields; 3 the same layout under a defined upgrade path, so a newer file is recognised as newer rather
+    /// than refused as malformed. Raise it, and add an upgrade step to [`Profile::into_current`], whenever a change
+    /// would make an older build misread a profile.
+    pub const CURRENT_SCHEMA: u32 = 3;
 
     /// Parses bounded JSON and checks its complete semantic constraints.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > Self::MAX_JSON_BYTES {
             return Err(format!("profile exceeds {} bytes", Self::MAX_JSON_BYTES));
+        }
+        // A profile from a newer version may carry fields this one does not know, so its schema is read first.
+        #[derive(Deserialize)]
+        struct Peek {
+            schema_version: u32,
+        }
+        if let Ok(Peek { schema_version }) = serde_json::from_slice(bytes)
+            && schema_version > Self::CURRENT_SCHEMA
+        {
+            return Err(format!(
+                "this profile is schema {schema_version}, made by a newer version of Open Stream Hub; this version reads schemas {} through {}. Update the app to open it",
+                Self::OLDEST_SCHEMA,
+                Self::CURRENT_SCHEMA
+            ));
         }
         let profile: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("invalid profile JSON: {error}"))?;
@@ -1540,12 +1564,16 @@ impl Profile {
     pub fn validate(&self) -> Result<(), String> {
         match (self.schema_version, self.keypad.as_ref()) {
             (1, None) => {}
-            (2, Some(keypad)) => keypad.validate()?,
+            (2 | 3, Some(keypad)) => keypad.validate()?,
             (1, Some(_)) => return Err("schema 1 profiles must omit keypad pages".into()),
-            (2, None) => return Err("schema 2 profiles require keypad pages".into()),
+            (version @ (2 | 3), None) => {
+                return Err(format!("schema {version} profiles require keypad pages"));
+            }
             (version, _) => {
                 return Err(format!(
-                    "unsupported profile schema {version} (expected 1 or 2)"
+                    "unsupported profile schema {version} (expected {} through {})",
+                    Self::OLDEST_SCHEMA,
+                    Self::CURRENT_SCHEMA
                 ));
             }
         }
@@ -1590,9 +1618,10 @@ impl Profile {
         }
         let mut selectors = HashSet::new();
         for (index, binding) in self.bindings.iter().enumerate() {
-            if self.schema_version == 2 && binding.module == ServiceModule::M4315 {
+            if self.uses_keypad_pages() && binding.module == ServiceModule::M4315 {
                 return Err(format!(
-                    "binding {index}: schema 2 keypad bindings belong in keypad action tiles"
+                    "binding {index}: keypad bindings belong in keypad action tiles (schema {})",
+                    self.schema_version
                 ));
             }
             if self.dial_functions.is_some() && binding.module == ServiceModule::M131E {
@@ -1634,14 +1663,23 @@ impl Profile {
             + crate::dial::binding_count(self)
     }
 
-    /// Converts a valid flat profile into schema 2 without writing to storage.
+    /// Whether the keypad is a page tree (schema 2 and later) rather than flat bindings (schema 1).
+    pub fn uses_keypad_pages(&self) -> bool {
+        self.schema_version >= 2
+    }
+
+    /// Upgrades a valid profile to the current schema without writing to storage.
     ///
-    /// Every M4315 selector becomes a binding on its original root key, retaining
-    /// gesture, serial selector, and action. Other module bindings keep their
-    /// original order. A valid schema-2 profile is returned unchanged.
-    pub fn into_v2(mut self) -> Result<Self, String> {
+    /// A flat profile gets its keypad tree first: every M4315 selector becomes a binding on its original root key,
+    /// retaining gesture, serial selector, and action, and other module bindings keep their original order. A schema-2
+    /// profile only has its version raised. A profile already at the current schema is returned unchanged.
+    pub fn into_current(mut self) -> Result<Self, String> {
         self.validate()?;
-        if self.schema_version == 2 {
+        if self.schema_version == Self::CURRENT_SCHEMA {
+            return Ok(self);
+        }
+        if self.uses_keypad_pages() {
+            self.schema_version = Self::CURRENT_SCHEMA;
             return Ok(self);
         }
         let mut slots = vec![None; KeypadLayout::KEY_COUNT];
@@ -1666,7 +1704,7 @@ impl Profile {
             }
         }
         self.bindings = flat;
-        self.schema_version = 2;
+        self.schema_version = Self::CURRENT_SCHEMA;
         self.keypad = Some(KeypadLayout {
             pages: vec![KeypadPage {
                 id: KeypadLayout::ROOT_PAGE_ID.into(),
@@ -2125,6 +2163,78 @@ mod tests {
         profile.name = "Desk".into();
         profile.bindings = vec![profile.bindings[0].clone(); Profile::MAX_BINDINGS + 1];
         assert!(profile.validate().unwrap_err().contains("exceeds"));
+    }
+
+    #[test]
+    fn a_profile_from_a_newer_version_is_named_as_such_even_with_fields_this_version_lacks() {
+        let next = Profile::CURRENT_SCHEMA + 1;
+        let json = format!(
+            r#"{{"schema_version":{next},"name":"Desk","bindings":[],"a_future_field":{{"x":1}}}}"#
+        );
+        let error = Profile::from_json(json.as_bytes()).unwrap_err();
+        assert!(error.contains(&format!("schema {next}")), "{error}");
+        assert!(error.contains("newer version"), "{error}");
+        assert!(error.contains("Update the app"), "{error}");
+        // Schema 0 was never written, so that is malformed rather than newer.
+        let zero = Profile::from_json(br#"{"schema_version":0,"name":"Desk","bindings":[]}"#);
+        assert!(zero.unwrap_err().contains("unsupported profile schema 0"));
+        // A file claiming a schema this version reads still gets the unknown-field refusal.
+        let current = format!(
+            r#"{{"schema_version":{},"name":"Desk","bindings":[],"a_future_field":1}}"#,
+            Profile::CURRENT_SCHEMA
+        );
+        assert!(Profile::from_json(current.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn every_older_schema_upgrades_to_the_current_one_and_stays_valid() {
+        let flat = sample();
+        assert_eq!(flat.schema_version, 1);
+        let from_flat = flat.clone().into_current().unwrap();
+        assert_eq!(from_flat.schema_version, Profile::CURRENT_SCHEMA);
+        assert!(from_flat.keypad.is_some());
+        let mut pages = from_flat.clone();
+        pages.schema_version = 2;
+        assert!(pages.validate().is_ok());
+        let from_pages = pages.clone().into_current().unwrap();
+        assert_eq!(from_pages.schema_version, Profile::CURRENT_SCHEMA);
+        assert_eq!(from_pages.keypad, pages.keypad);
+        assert_eq!(from_pages, from_flat);
+        // Already current: returned as it is, and upgrading again changes nothing.
+        assert_eq!(from_flat.clone().into_current().unwrap(), from_flat);
+        // Round trip through JSON keeps the schema.
+        let json = serde_json::to_vec(&from_flat).unwrap();
+        assert_eq!(Profile::from_json(&json).unwrap(), from_flat);
+    }
+
+    #[test]
+    fn schemas_two_and_three_need_pages_and_one_must_not_have_them() {
+        let mut profile = sample().into_current().unwrap();
+        profile.keypad = None;
+        for version in [2, 3] {
+            profile.schema_version = version;
+            assert!(
+                profile
+                    .validate()
+                    .unwrap_err()
+                    .contains("require keypad pages")
+            );
+        }
+        let mut with_pages = sample().into_current().unwrap();
+        with_pages.schema_version = 1;
+        assert!(
+            with_pages
+                .validate()
+                .unwrap_err()
+                .contains("must omit keypad pages")
+        );
+        with_pages.schema_version = Profile::CURRENT_SCHEMA + 1;
+        assert!(
+            with_pages
+                .validate()
+                .unwrap_err()
+                .contains("unsupported profile schema")
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ pub fn folders_json() -> Value {
         { "gesture": "pressed", "action": { "type": "shortcut", "key": "v", "modifiers": ["command"] } }
     ] });
     json!({
-        "schema_version": 2, "name": "Folders",
+        "schema_version": 3, "name": "Folders",
         "bindings": [{ "module": "m003k", "control": 0, "gesture": "clockwise",
             "action": { "type": "volume", "delta": 5 } }],
         "keypad": { "pages": [

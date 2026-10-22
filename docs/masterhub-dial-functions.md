@@ -30,7 +30,7 @@ A profile can add an optional `dial_functions` array. Each entry is a named grou
 ]
 ```
 
-A complete example that also has flat knob bindings and a schema-2 keypad is in [`crates/cooltek-sdk-service/tests/fixtures/dial-functions.json`](../crates/cooltek-sdk-service/tests/fixtures/dial-functions.json).
+A complete example that also has flat knob bindings and a keypad page tree is in [`crates/cooltek-sdk-service/tests/fixtures/dial-functions.json`](../crates/cooltek-sdk-service/tests/fixtures/dial-functions.json).
 
 There is no `module` or `control` field, because only the M131E dial, control 0, has functions.
 
@@ -52,12 +52,12 @@ There is no `module` or `control` field, because only the M131E dial, control 0,
 
 ### Why there is no schema 3
 
-`dial_functions` is an optional field and is allowed in schema 1 and schema 2:
+`dial_functions` is an optional field and is allowed in every schema:
 
 - **Old readers fail safely.** `Profile` already uses `deny_unknown_fields`. A build without this feature rejects a profile that has `dial_functions` with an `unknown field` error. It does not load the profile while silently ignoring the dial functions. A new schema version would produce the same rejection, only with a different message.
 - **Existing files do not change.** The field is skipped when absent. Every existing schema-1 and schema-2 profile parses and serializes exactly as before; a test re-encodes the bundled examples and compares them.
-- **No migration needed.** Schema 2 needed `into_v2` because it moved M4315 bindings into keypad tiles. Dial functions move nothing: a profile either has no functions, with flat M131E bindings as before, or has functions and no flat M131E bindings. `into_v2` keeps `dial_functions` unchanged.
-- **Downstream code keeps working.** The CLI and app compare `schema_version` with 1 and 2 in several places. A version 3 would need changes in all of them, while an optional field needs none.
+- **No migration needed.** Schema 2 needed an upgrade step because it moved M4315 bindings into keypad tiles. Dial functions move nothing: a profile either has no functions, with flat M131E bindings as before, or has functions and no flat M131E bindings. `into_current` keeps `dial_functions` unchanged.
+- **No bump for it.** The field is optional, so it did not raise the schema. Schema 3 came later for the upgrade path, not for this field; see [profile schema versions](masterhub-service.md#profile-schema-versions).
 
 The cost: a reader can tell that a profile uses dial functions only by looking for the field, not from the version number. Editors that rewrite profiles must carry the field through (see the checklist).
 

@@ -1,5 +1,6 @@
 import { isFaderTemplate } from './action-model';
 import type { Action, KeyArtwork, KeypadBinding, KeypadPage, KeypadSlot, Profile } from './contracts';
+import { currentSchema, oldestSchema, usesKeypadPages } from './contracts';
 
 export const keypadRoot = 'root';
 export const keypadSlotCount = 15;
@@ -12,11 +13,12 @@ export function emptyKeypadPage(id = keypadRoot, name = 'Root'): KeypadPage {
 
 // Migration only: action resolution, serial precedence and execution stay in Rust.
 export function upgradeKeypadProfile(profile: Profile): Profile {
-  if (profile.schema_version === 2) {
+  if (profile.schema_version > currentSchema) throw new Error('This profile was made by a newer version of Open Stream Hub. Update the app to open it.');
+  if (usesKeypadPages(profile)) {
     if (!profile.keypad) throw new Error('This profile is missing its keypad pages.');
-    return profile;
+    return profile.schema_version === currentSchema ? profile : { ...profile, schema_version: currentSchema };
   }
-  if (profile.schema_version !== 1) throw new Error('Unsupported profile version.');
+  if (profile.schema_version !== oldestSchema) throw new Error('Unsupported profile version.');
   const root = emptyKeypadPage();
   for (const binding of profile.bindings.filter(item => item.module === 'm4315')) {
     if (!Number.isInteger(binding.control) || binding.control < 0 || binding.control >= keypadSlotCount || !['pressed', 'released'].includes(binding.gesture) || isFaderTemplate(binding.action)) {
@@ -27,7 +29,7 @@ export function upgradeKeypadProfile(profile: Profile): Profile {
     if (slot.type !== 'action') throw new Error('Invalid keypad migration.');
     slot.bindings.push({ gesture: binding.gesture as KeypadBinding['gesture'], ...(binding.serial_number === undefined ? {} : { serial_number: binding.serial_number }), action: structuredClone(binding.action) });
   }
-  return { ...profile, schema_version: 2, bindings: profile.bindings.filter(item => item.module !== 'm4315'), keypad: { pages: [root] } };
+  return { ...profile, schema_version: currentSchema, bindings: profile.bindings.filter(item => item.module !== 'm4315'), keypad: { pages: [root] } };
 }
 
 // A copied key: its slot (label and every binding), its artwork, and — for a folder —

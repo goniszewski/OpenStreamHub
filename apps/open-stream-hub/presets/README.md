@@ -21,7 +21,7 @@ the profile when that app comes to the front.
   "source": "Where the shortcuts come from: the vendor's documentation, or original work.",
   "verified": false,
   "focus_rule": { "bundle_id": "com.example.MyApp" },
-  "profile": { "schema_version": 2, "name": "My App", "bindings": [], "keypad": { "pages": [] } }
+  "profile": { "schema_version": 3, "name": "My App", "bindings": [], "keypad": { "pages": [] } }
 }
 ```
 
@@ -30,7 +30,7 @@ the profile when that app comes to the front.
 - `source`: say where the shortcuts and layout come from. Do not copy text from anyone's documentation; list the shortcuts themselves.
 - `verified`: `true` only if you checked every shortcut against the application on a Mac. `false` is honest and fine; the chooser says so.
 - `focus_rule` is optional; `app.bundle_id` is optional.
-- `profile` is an ordinary schema-2 profile: flat bindings for knobs, the encoder, faders and rollers, and one `root` keypad page with 15 slots of single press tiles. Look at an existing pack.
+- `profile` is an ordinary keypad-page profile (schema 3 for new packs; schema 2 packs still load): flat bindings for knobs, the encoder, faders and rollers, and one `root` keypad page with 15 slots of single press tiles. Look at an existing pack.
 
 ## What a pack may bind
 

@@ -28,7 +28,7 @@ fn check_or_update(name: &str, actual: &Value) {
 #[test]
 fn legacy_upgrade_matches_the_shared_parity_fixture() {
     let input = fs::read(fixture("legacy-upgrade-input.json")).unwrap();
-    let upgraded = Profile::from_json(&input).unwrap().into_v2().unwrap();
+    let upgraded = Profile::from_json(&input).unwrap().into_current().unwrap();
     check_or_update(
         "legacy-upgrade-expected.json",
         &serde_json::to_value(&upgraded).unwrap(),

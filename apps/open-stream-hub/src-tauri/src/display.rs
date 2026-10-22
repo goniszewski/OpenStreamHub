@@ -338,7 +338,7 @@ pub fn keypad_refusal(
     module: ServiceModule,
     profile: &Profile,
 ) -> Option<&'static str> {
-    if module != ServiceModule::M4315 || profile.schema_version != 2 {
+    if module != ServiceModule::M4315 || !profile.uses_keypad_pages() {
         return None;
     }
     match settings.module_control {
@@ -431,7 +431,7 @@ pub fn display_args(
         return Vec::new();
     }
     match launch.module {
-        ServiceModule::M4315 if profile.schema_version == 2 && profile.keypad.is_some() => {
+        ServiceModule::M4315 if profile.uses_keypad_pages() && profile.keypad.is_some() => {
             let mut args: Vec<OsString> = vec!["--display-sync".into()];
             if launch.settings.press_feedback {
                 args.push("--press-feedback".into());
@@ -453,7 +453,7 @@ pub fn display_args(
 }
 
 /// A flat (schema-1) profile as one keypad page, for a keypad spawn that syncs
-/// its display. `Profile::into_v2` puts every M4315 binding on its own root
+/// its display. `Profile::into_current` puts every M4315 binding on its own root
 /// key (labelled "Key N") with its gesture, serial selector and action, and
 /// keeps every other binding, so `--display-sync` can draw it and the keys
 /// plan and run the same actions as the flat profile. Only under module
@@ -469,11 +469,11 @@ pub fn single_page(
     if launch.module != ServiceModule::M4315
         || launch.settings.module_control != ModuleControl::App
         || !software_mode
-        || profile.schema_version != 1
+        || profile.uses_keypad_pages()
     {
         return None;
     }
-    let page = profile.clone().into_v2().ok()?;
+    let page = profile.clone().into_current().ok()?;
     crate::replay::validate_profile(&page).ok()?;
     Some(page)
 }
@@ -1127,7 +1127,10 @@ mod tests {
         let page = shown.profile.unwrap();
         // One root page; each keypad binding on its own key with its action,
         // every other binding unchanged, the name kept.
-        assert_eq!((page.schema_version, page.name.as_str()), (2, "Folders"));
+        assert_eq!(
+            (page.schema_version, page.name.as_str()),
+            (Profile::CURRENT_SCHEMA, "Folders")
+        );
         let pages = &page.keypad.as_ref().unwrap().pages;
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].id, "root");

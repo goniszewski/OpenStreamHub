@@ -177,3 +177,21 @@ describe('key operations go through the edit history', () => {
     expect(keypadBindingAt(session.getState().draft.profile, ['root'], 4, 'pressed', '')).toBeTruthy();
   });
 });
+
+describe('profile schema upgrade', () => {
+  it('raises a schema-2 profile to the current schema and leaves a current one alone', async () => {
+    const { upgradeKeypadProfile, emptyKeypadPage } = await import('./keypad-model');
+    const { currentSchema } = await import('./contracts');
+    const pages = { schema_version: 2, name: 'Old', bindings: [], keypad: { pages: [emptyKeypadPage()] } };
+    const upgraded = upgradeKeypadProfile(pages);
+    expect(upgraded.schema_version).toBe(currentSchema);
+    expect(upgraded.keypad).toEqual(pages.keypad);
+    expect(upgradeKeypadProfile(upgraded)).toBe(upgraded);
+    expect(upgradeKeypadProfile({ schema_version: 1, name: 'Flat', bindings: [] }).schema_version).toBe(currentSchema);
+  });
+
+  it('names a profile from a newer version instead of calling it unsupported', async () => {
+    const { upgradeKeypadProfile } = await import('./keypad-model');
+    expect(() => upgradeKeypadProfile({ schema_version: 4, name: 'x', bindings: [] })).toThrow(/newer version/);
+  });
+});

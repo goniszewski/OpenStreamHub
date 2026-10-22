@@ -254,7 +254,7 @@ impl ImportedProfiles {
 pub fn content_hash(profile: &Profile) -> String {
     let mut canonical = profile
         .clone()
-        .into_v2()
+        .into_current()
         .unwrap_or_else(|_| profile.clone());
     canonical.name = String::new();
     let bytes = serde_json::to_vec(&canonical).unwrap_or_default();

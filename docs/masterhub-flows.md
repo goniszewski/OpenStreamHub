@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: step 1 of the build order is implemented in the service (22 October 2026): the `conditional` action, schema 4, and the four OBS output conditions, tested with a fake OBS only. No editor yet and no hardware check. Decisions taken with the owner:
+Status: step 1 of the build order is implemented in the service (22 October 2026): the `conditional` action, schema 4, and the four OBS output conditions, tested with a fake OBS only. No editor yet. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.

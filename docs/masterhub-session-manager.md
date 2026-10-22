@@ -105,7 +105,7 @@ Static analysis of MasterHUB 1.0.0.113 ([research notes](research/masterhub-1.0.
 
 - It restores hardware mode by stopping the service, which already does that on SIGINT when it enabled software mode.
 - It re-enters software mode by restarting the service with the same `--software-mode` flag.
-- It does not query firmware. It refreshes the displays only when the session started with Module control set to App: the restarted service then redraws keys or the dial from scratch.
+- It does not query firmware, and that is not needed: the official app reads it for its update check, which we do not have, and nothing here uses the result (decided 22 October 2026). It refreshes the displays only when the session started with Module control set to App: the restarted service then redraws keys or the dial from scratch.
 
 The 2 s settle delay is copied from the official app and has not been checked against real hardware. None of the following has been checked on hardware either:
 

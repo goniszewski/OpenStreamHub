@@ -121,7 +121,7 @@ Wider hardware acceptance of the experimental key display sync (one M4315 sessio
 
 Taken in this order after the lighting hardware checks:
 
-1. **Resume refresh.** After a wake the official app queries the firmware and redraws the displays; we do neither (`session.rs`, `power.rs`).
+1. ~~**Resume refresh.**~~ Not needed (22 October 2026): the restarted service already re-enters software mode and redraws the displays, and the firmware query has no use here. The sleep/wake hardware test is skipped for now; the timings in the [session manager](masterhub-session-manager.md#comparison-with-the-official-app-unverified) stay unverified.
 2. **Dial function cycling.** Short click switches the function, long press runs the press action; still Partial until checked on the dial ([dial functions](masterhub-dial-functions.md)).
 3. **Flows.** Only the flat multi-action list exists; conditional flows are not started.
 4. **Action acceptance.** macOS actions and the remaining OBS actions (`obs_stream`, `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter`, `obs_source_visibility`, failure paths) are unverified.

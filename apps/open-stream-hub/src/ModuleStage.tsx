@@ -72,7 +72,7 @@ export function ModuleStage({ module, where, editor, profile, live, stored, knob
         const page = editor.currentKeypadPage;
         return <button key={area.control} type="button" className={`image-control key-display${isPicked ? ' selected' : ''}${livePressed(live, area.control)}`} style={style} aria-label={label} aria-pressed={isPicked} onClick={() => onSelect(area.control)} {...drop}>
           <span className="key-upright" style={upright}>
-            <KeyDisplayContent key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
+            <KeyDisplayContent device key={page.id} artwork={page.artwork?.[String(area.control)]} slot={page.slots[area.control]} pages={profile.keypad?.pages ?? []} depth={keypadDepth(editor.keypadPath)} back={keypadIsBack(editor.keypadPath, area.control)} />
           </span>
         </button>;
       }

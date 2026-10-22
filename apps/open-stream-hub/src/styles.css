@@ -303,6 +303,11 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage .display-depth { display:none; }
 .rig-stage .display-label:not(.key-label) { display:none; }
 /* A key label is drawn in the module's own bitmap font, one SVG unit per font pixel, as wide as the key. Edges are anti-aliased: snapping them to whole pixels at a non-integer scale thickens the strokes. */
+/* A key drawn as the module draws it fills its screen; the highlight is an outline, as the picture covers the glass. */
+.key-display:has(.key-face) { background:#000; }
+.key-display .key-face { display:block; width:100%; height:100%; border-radius:9% / 10%; }
+.key-display:has(.key-face):hover { filter:brightness(1.2); }
+.key-display:has(.key-face).selected { outline:2px solid #b6a1ff; outline-offset:-2px; }
 .key-display .key-label { display:block; width:100%; height:auto; flex:none; padding:0 0 4%; filter:none; }
 .rig-stage .image-control.bound:not(.selected) { border-color:#a284ff80; }
 .rig-stage .fader { touch-action:none; cursor:ns-resize; }

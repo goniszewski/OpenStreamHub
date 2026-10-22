@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 import { ArrowLeft, ArrowLeftRight, Camera, Clapperboard, Folder, Globe, Keyboard, ListOrdered, Monitor, Play, Timer, Type, Undo2, Volume2, VolumeX } from 'lucide-react';
 import type { BindingAction, DialAnimation, DialDisplayContent, KeyArtwork, KeypadPage, KeypadSlot, Profile } from './contracts';
@@ -6,6 +6,8 @@ import { effectiveDialDisplay } from './dial-display-model';
 import { dialFaceSide, glyph, nowDialTime, paintDialFace } from './dial-face';
 import type { DialTime } from './dial-face';
 import { keyArtworkFrame } from './key-artwork';
+import { drawActionKey, drawBackKey, drawBlankKey, drawFolderKey, keyFaceRgba, keyFaceSide, keyLabelLines, tileIconOf } from './key-face';
+import type { KeyFace } from './key-face';
 import { KeyArtworkPreview } from './KeyArtworkEditor';
 import { actionLabel } from './ui-model';
 
@@ -15,33 +17,6 @@ export function ActionIcon({ action }: { action?: BindingAction }) {
     action?.type === 'open_url' ? Globe : action?.type === 'media' ? Play : action?.type === 'text' ? Type :
     action?.type === 'multi_action' ? ListOrdered : action?.type === 'profile' ? ArrowLeftRight : action?.type === 'timer' ? Timer : action?.type?.startsWith('obs_') ? Clapperboard : action?.type === 'system' ? (action.command === 'screenshot' ? Camera : Undo2) : Keyboard;
   return <Icon aria-hidden="true" />;
-}
-
-// The module draws a key label in its 5×7 bitmap font: large (two lines of up to 6 characters) when it fits that way,
-// else small (three lines of up to 12), cut with a final dot. Mirrors `tile_artwork::lines_of`, so the preview wraps,
-// sizes and shapes the text as the keys do.
-function wrapLabel(label: string, width: number, lines: number): string[] | null {
-  const wrapped: string[] = [];
-  for (const word of label.split(/\s+/).filter(Boolean)) {
-    if ([...word].length > width) return null;
-    const last = wrapped.length - 1;
-    if (last >= 0 && [...wrapped[last]].length + 1 + [...word].length <= width) wrapped[last] += ` ${word}`;
-    else wrapped.push(word);
-  }
-  return wrapped.length <= lines ? wrapped : null;
-}
-
-export function keyLabelLines(label: string): { lines: string[]; scale: 1 | 2 } {
-  const large = wrapLabel(label, 6, 2);
-  if (large) return { lines: large, scale: 2 };
-  const small = wrapLabel(label, 12, 3);
-  if (small) return { lines: small, scale: 1 };
-  const text = label.split(/\s+/).filter(Boolean).join(' ');
-  const characters = [...text].slice(0, 36);
-  const lines: string[] = [];
-  for (let at = 0; at < characters.length; at += 12) lines.push(characters.slice(at, at + 12).join('').trim());
-  if ([...text].length > 36) lines[lines.length - 1] = `${lines[lines.length - 1].slice(0, -1)}.`;
-  return { lines, scale: 1 };
 }
 
 function KeyLabel({ text }: { text: string }) {
@@ -61,8 +36,27 @@ function KeyLabel({ text }: { text: string }) {
   return <svg className="key-label" viewBox={`0 0 72 ${height}`} role="img" aria-label={text} fill="currentColor"><title>{text}</title>{rects}</svg>;
 }
 
-// The same content is used in the editor and the physical module illustration.
-export function KeyDisplayContent({ slot, pages, depth, back, artwork }: { slot: KeypadSlot; pages: KeypadPage[]; depth: number; back: boolean; artwork?: KeyArtwork }) {
+// A key as the module draws it: the service's own picture for the tile, pixel for pixel (see key-face.ts), in place of
+// the editor's icon over a label.
+function DeviceKeyFace({ slot, pages, depth, back }: { slot: KeypadSlot; pages: KeypadPage[]; depth: number; back: boolean }) {
+  const { face, label } = useMemo((): { face: KeyFace; label: string } => {
+    if (back) return { face: drawBackKey(Math.min(depth, 8)), label: 'Back' };
+    if (!slot) return { face: drawBlankKey(), label: 'Empty key' };
+    if (slot.type === 'folder') return { face: drawFolderKey(), label: pages.find(page => page.id === slot.page_id)?.name ?? slot.page_id };
+    return { face: drawActionKey(tileIconOf(slot.bindings[0]?.action), slot.label), label: slot.label };
+  }, [slot, pages, depth, back]);
+  const canvas = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const context = canvas.current?.getContext('2d');
+    if (context) context.putImageData(new ImageData(keyFaceRgba(face), keyFaceSide, keyFaceSide), 0, 0);
+  }, [face]);
+  return <canvas ref={canvas} className="key-face" width={keyFaceSide} height={keyFaceSide} role="img" aria-label={label} />;
+}
+
+// The same content is used in the editor and the physical module illustration. With `device`, a key without artwork is
+// drawn as the module draws it; artwork is shown as it is either way.
+export function KeyDisplayContent({ slot, pages, depth, back, artwork, device }: { slot: KeypadSlot; pages: KeypadPage[]; depth: number; back: boolean; artwork?: KeyArtwork; device?: boolean }) {
+  if (device && (back || !artwork)) return <DeviceKeyFace slot={slot} pages={pages} depth={depth} back={back} />;
   if (back) return <><ArrowLeft aria-hidden="true" /><span className="display-depth">L{depth}</span><KeyLabel text="Back" /></>;
   if (artwork) return <KeyArtworkPreview artwork={artwork} />;
   if (!slot) return <span className="display-empty" aria-hidden="true">·</span>;

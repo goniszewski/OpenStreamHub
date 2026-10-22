@@ -333,9 +333,12 @@ impl ObsClient {
             Condition::Recording(_) => "GetRecordStatus",
             Condition::VirtualCamera(_) => "GetVirtualCamStatus",
             Condition::ReplayBuffer(_) => "GetReplayBufferStatus",
+            Condition::OutputMuted(_) | Condition::OutputVolumeAtLeast(_) => {
+                return Err("this condition is not read from OBS".into());
+            }
         };
         let data = self.request(&ObsRequest::new(request))?;
-        Ok(response_flag(&data, "outputActive")? == condition.expected())
+        Ok(Some(response_flag(&data, "outputActive")?) == condition.expected())
     }
 
     /// Runs an OBS action on one connection. Actions that need OBS's answer

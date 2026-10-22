@@ -532,6 +532,10 @@ pub enum Condition {
     /// The OBS replay buffer is running.
     #[serde(rename = "obs_replay_buffer")]
     ReplayBuffer(bool),
+    /// The default output is muted (`true`) or is not (`false`).
+    OutputMuted(bool),
+    /// The default output volume is at least this percentage, 0 to 100.
+    OutputVolumeAtLeast(u8),
 }
 
 impl Condition {
@@ -542,16 +546,41 @@ impl Condition {
             Self::Recording(_) => "obs_recording",
             Self::VirtualCamera(_) => "obs_virtual_camera",
             Self::ReplayBuffer(_) => "obs_replay_buffer",
+            Self::OutputMuted(_) => "output_muted",
+            Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
         }
     }
 
-    /// The value the condition compares the live state with.
-    pub fn expected(&self) -> bool {
+    /// Whether the condition is read from OBS (and so needs an endpoint).
+    pub fn uses_obs(&self) -> bool {
+        matches!(
+            self,
+            Self::Streaming(_)
+                | Self::Recording(_)
+                | Self::VirtualCamera(_)
+                | Self::ReplayBuffer(_)
+        )
+    }
+
+    /// The value an OBS output condition compares the live state with;
+    /// `None` for a condition that is not an OBS output.
+    pub fn expected(&self) -> Option<bool> {
         match self {
             Self::Streaming(value)
             | Self::Recording(value)
             | Self::VirtualCamera(value)
-            | Self::ReplayBuffer(value) => *value,
+            | Self::ReplayBuffer(value) => Some(*value),
+            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) => None,
+        }
+    }
+
+    /// Checks the value ranges.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::OutputVolumeAtLeast(percent) if *percent > 100 => {
+                Err("output_volume_at_least must be between 0 and 100".into())
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -1241,9 +1270,11 @@ impl Action {
             | Self::ObsAdjustInputVolume { .. }
             | Self::ObsMediaSource { .. }
             | Self::ObsInputVolumeFromPosition { .. } => true,
-            // The condition itself is an OBS read, so the action needs OBS
-            // whatever its steps are.
-            Self::Conditional { .. } => true,
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => when.uses_obs() || then.iter().chain(otherwise).any(Self::uses_obs),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -1414,10 +1445,11 @@ impl Action {
                 Ok(())
             }
             Self::Conditional {
-                when: _,
+                when,
                 then,
                 otherwise,
             } => {
+                when.validate()?;
                 if then.is_empty() || then.len() > Self::MAX_MULTI_ACTION_STEPS {
                     return Err(format!(
                         "conditional must run 1 to {} steps when the condition holds",
@@ -3084,6 +3116,32 @@ mod tests {
         assert!(
             error.contains("conditional cannot be a multi_action step"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn system_conditions_parse_validate_and_need_obs_only_for_obs_steps() {
+        let json = r#"{"type":"conditional","when":{"output_volume_at_least":50},"then":[{"type":"toggle_mute"}],"else":[{"type":"set_volume","percent":50}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        let muted: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"output_muted":false},"then":[{"type":"obs_scene","scene":"Live"}]}"#,
+        )
+        .unwrap();
+        muted.validate().unwrap();
+        assert!(muted.uses_obs(), "an OBS step still needs the endpoint");
+        let high: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"output_volume_at_least":101},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        assert!(high.validate().unwrap_err().contains("between 0 and 100"));
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"output_volume_at_least":-1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
         );
     }
 

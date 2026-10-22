@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: step 1 of the build order is implemented in the service (22 October 2026): the `conditional` action, schema 4, and the four OBS output conditions, tested with a fake OBS only. No editor yet. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
+Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), tested with fakes only. The timer and dial function conditions are not built yet. System conditions need no OBS endpoint. No editor yet. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.
@@ -35,8 +35,8 @@ One condition per `when`, a single key with a value:
 | OBS | `obs_streaming`, `obs_recording`, `obs_virtual_camera`, `obs_replay_buffer` (built) | bool | `Get*Status` over the existing obs-websocket session |
 | OBS | `obs_scene` | scene name | `GetCurrentProgramScene` (already used) |
 | OBS | `obs_input_muted` | `{ "input": name, "muted": bool }` | `GetInputMute` |
-| System | `output_muted` | bool | the same reader `toggle_mute` uses |
-| System | `output_volume_at_least` | percent 0 to 100 | the same reader the volume actions use |
+| System | `output_muted` (built) | bool | the same reader `toggle_mute` uses |
+| System | `output_volume_at_least` (built) | percent 0 to 100 | the same reader the volume actions use |
 | System | `timer_running` | bool | service-owned timer |
 | Dial | `dial_function` | function index or name | service-owned dial state |
 | Focus | `focused_app` | bundle id | see below |

@@ -719,7 +719,12 @@ impl MacOsDispatcher {
                 otherwise,
             } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                let holds = self.condition_holds(*when, deadline).map_err(|error| {
+                let holds = if when.uses_obs() {
+                    self.condition_holds(*when, deadline)
+                } else {
+                    self.system_condition_holds(*when)
+                }
+                .map_err(|error| {
                     format!(
                         "conditional could not read {}: {error}; neither branch ran",
                         when.name()
@@ -778,6 +783,19 @@ impl MacOsDispatcher {
             })?;
         }
         Ok(())
+    }
+
+    /// Reads a condition about the default output from macOS.
+    fn system_condition_holds(
+        &mut self,
+        condition: crate::profile::Condition,
+    ) -> Result<bool, String> {
+        use crate::profile::Condition;
+        match condition {
+            Condition::OutputMuted(expected) => Ok(self.output_muted()? == expected),
+            Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= percent),
+            _ => Err("this condition is read from OBS".into()),
+        }
     }
 
     /// Reads a condition from OBS within what is left of `deadline`.
@@ -2903,6 +2921,61 @@ mod tests {
         dispatcher.dispatch(&action).unwrap();
         assert_eq!(server.join().unwrap(), ["GetVirtualCamStatus"]);
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_system_condition_needs_no_obs_and_reads_the_output() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // Muted: the output is read once, then the `then` branch runs.
+        let (mut dispatcher, state) = fake(vec![success("true"), success("")]);
+        let action = Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        assert_eq!(dispatcher.unavailable(&action), None);
+        dispatcher.dispatch(&action).unwrap();
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 2);
+            assert_eq!(
+                state.requests[0].args[1],
+                "output muted of (get volume settings)"
+            );
+            assert!(state.requests[1].args[1].contains("keystroke \"a\""));
+        }
+
+        // Volume 40 is at least 40 but not at least 41.
+        for (threshold, branch) in [(40, "a"), (41, "b")] {
+            let (mut dispatcher, state) = fake(vec![success("40"), success("")]);
+            dispatcher
+                .dispatch(&Action::Conditional {
+                    when: Condition::OutputVolumeAtLeast(threshold),
+                    then: vec![key("a")],
+                    otherwise: vec![key("b")],
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(
+                state.requests[0].args[1],
+                "output volume of (get volume settings)"
+            );
+            assert!(
+                state.requests[1].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "threshold {threshold}"
+            );
+        }
+
+        // An unreadable answer runs neither branch.
+        let (mut dispatcher, state) = fake(vec![success("missing value")]);
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("could not read output_muted"), "{error}");
+        assert!(error.contains("neither branch ran"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
     }
 
     #[test]

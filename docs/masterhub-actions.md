@@ -2,7 +2,7 @@
 
 This page covers the actions added to close the cheapest gaps with the official MasterHUB 1.0.0.113 action catalogue ([app features](research/masterhub-1.0.0.113-app-features.md), "Actions" row of the [parity tracker](windows-parity-gaps.md)). It explains what each action does, which ones the macOS backend actually runs, and what limits the input. The base actions (volume, set volume, mute, ASCII shortcut, launch app) are described in [the service doc](masterhub-service.md#actions-and-permissions).
 
-None of this has been checked on hardware or on a Mac with permissions granted. The macOS behaviour described here comes from tests that run against a mock process host and assert the exact argv; no real process is started in tests. Treat every "executes" entry as **hardware- and permission-unverified**.
+Several of these were checked on a real Mac on 20 to 22 October 2026 (media with Apple Music, the macro, the timer, the profile key, microphone volume, and on 22 October: open URL, launch app, text snippets, plain and modified shortcuts, undo, redo, screenshot, volume and mute; see the [results](masterhub-hardware-results.md#macos-actions-on-a-real-mac-m4315-22-october-2026)). The rest of this page was written before that and still says unverified in places; where it does, the results page is newer. The macOS behaviour described here comes from tests that run against a mock process host and assert the exact argv; no real process is started in tests. Treat every "executes" entry as **hardware- and permission-unverified**.
 
 ## Summary
 

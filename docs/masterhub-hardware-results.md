@@ -385,6 +385,12 @@ OBS Studio with obs-websocket 5.7.4 on the Mac, driven by `masterhub-service run
 
 Authentication was turned back on afterwards. Not tried: a wrong port while OBS is running (the same refusal as OBS not running), the app's Settings > OBS Studio states, and `obs_stream` going live, which stays out on purpose.
 
+## macOS actions on a real Mac (M4315, 22 October 2026)
+
+`masterhub-service run --software-mode --display-sync --execute` on the M4315 with a temporary profile of 13 keys (one `pressed` action each): `open_url` (https://example.com), `launch_app` (TextEdit), `text` (one line, then two lines with `press_enter`), `shortcut` (plain `m`, Command+A, Command+Left), `system` undo, redo and screenshot, `volume` +5 and -5, and `toggle_mute`. The user pressed the keys in that order, TextEdit with a blank document in front for the keyboard actions. All 13 keys logged `action_executed`, with no `action_failed` and an empty stderr (the screenshot in a second run of 120 s). The user reported that every action worked as described: the page opened, TextEdit came to the front, both texts were pasted, one `m` appeared, select all and the move to the line start worked, undo and redo acted, volume went up and down and mute switched on and off, and the screenshot gave the shutter sound and a full-screen picture on the clipboard.
+
+Not written down: which permission prompts appeared (Accessibility, Automation) and which app they named, what the undo and redo did exactly, and whether the clipboard was restored after the text actions. The volume and mute keys were also checked in the earlier device-free smoke (3 October). Still unchecked: Spotify and browser media keys, the notification permission for timers, and a packaged (bundled) app instead of the CLI.
+
 ## Dial write time by frame size (M131E, 21 October 2026)
 
 To choose a size-aware dial floor, six profiles each held two different noise frames of one size, played at the 150 ms floor with `masterhub-service run --software-mode --display-sync --dial-content image` (dry run, 20 s each, one run per size). The service was built with its sampled logging of dial animation frames temporarily set to every frame (not committed), so each write has its own `elapsed_micros`. The frames came from `masterhub-diag dial prepare-image` at JPEG quality 3, 10, 20, 40, 55 and 70 on one 240×240 noise image, which is a near worst case for a given quality.

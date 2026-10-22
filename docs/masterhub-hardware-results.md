@@ -391,6 +391,12 @@ Authentication was turned back on afterwards. Not tried: a wrong port while OBS 
 
 Not written down: which permission prompts appeared (Accessibility, Automation) and which app they named, what the undo and redo did exactly, and whether the clipboard was restored after the text actions. The volume and mute keys were also checked in the earlier device-free smoke (3 October). Still unchecked: Spotify and browser media keys, the notification permission for timers, and a packaged (bundled) app instead of the CLI.
 
+## macOS actions from the packaged app (22 October 2026)
+
+The same 13-key profile as above (saved as **OSH macOS check** in the app's store), run by a freshly built debug bundle (`npm run desktop:build`, `OpenStreamHub.app` under `src-tauri/target/debug/bundle/macos/`) and its bundled `masterhub-service` sidecar, with Run mode Live (the app passes `--execute`). On launch the app had started a service for each of the four modules on the last-used profile, `OSH OBS check`, so the first key presses would have run OBS actions; no macOS prompt appeared until the key module was switched to `OSH macOS check` in the app, which restarted its service (checked from the process arguments). After that the user pressed the 13 keys in the same order, and reported that all 13 worked and that every permission prompt named **OpenStreamHub** (the screenshot key's prompt was the first one the user mentioned). So macOS attributes the sidecar's `osascript` and `screencapture` to the app, not to a terminal.
+
+Not written down: the exact wording and number of the prompts, which keys needed one, and whether any was denied first. Not checked: a release build, a signed or notarized bundle (releases stay unsigned by decision), and whether a prompt answered once survives a rebuild of the unsigned bundle (a new ad hoc signature may make macOS ask again).
+
 ## Dial write time by frame size (M131E, 21 October 2026)
 
 To choose a size-aware dial floor, six profiles each held two different noise frames of one size, played at the 150 ms floor with `masterhub-service run --software-mode --display-sync --dial-content image` (dry run, 20 s each, one run per size). The service was built with its sampled logging of dial animation frames temporarily set to every frame (not committed), so each write has its own `elapsed_micros`. The frames came from `masterhub-diag dial prepare-image` at JPEG quality 3, 10, 20, 40, 55 and 70 on one 240×240 noise image, which is a near worst case for a given quality.

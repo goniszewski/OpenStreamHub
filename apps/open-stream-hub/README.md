@@ -91,5 +91,5 @@ Still open:
 - Twitch, Discord and Streamlabs integrations.
 - Media keys and media stop were checked on a real Mac with Apple Music only; browsers and Spotify are unchecked.
 - Official `.mhz` export (a nice-to-have), and checking the importer against a real user export.
-- Browser-tab cards, flows and script integrations (the last three do not exist in the official app).
+- Browser-tab cards, flows and script integrations (none of these exist in the official app).
 - Hardware acceptance of input, displays, timers, OBS and sleep/wake, then signing and notarization (including the sidecar) before a public release.

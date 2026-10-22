@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  conditionLabel, conditionUsesObs, defaultCondition, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  combineConditions, conditionLabel, conditionParts, conditionUsesObs, defaultCondition, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
@@ -399,5 +399,17 @@ describe('obs input volume', () => {
     expect(actionLabel({ type: 'conditional', when: { obs_recording: true }, then: [{ type: 'obs_record', op: 'stop' }], else: [{ type: 'obs_record', op: 'start' }] }))
       .toBe('If OBS is recording: OBS recording: Stop; otherwise OBS recording: Start');
     expect(actionLabel(defaultConditional() as never)).toBe('If the output is muted: Toggle output mute');
+  });
+
+  it('combines conditions with AND / OR and reads a single one as a list of one', () => {
+    expect(conditionParts({ output_muted: true })).toEqual({ mode: 'all', items: [{ output_muted: true }] });
+    expect(conditionParts({ any: [{ output_muted: true }, { obs_streaming: false }] })).toEqual({ mode: 'any', items: [{ output_muted: true }, { obs_streaming: false }] });
+    expect(combineConditions('all', [{ output_muted: true }])).toEqual({ output_muted: true });
+    expect(combineConditions('any', [{ output_muted: true }, { obs_recording: true }])).toEqual({ any: [{ output_muted: true }, { obs_recording: true }] });
+    expect(combineConditions('all', [{ output_muted: true }, { obs_recording: true }])).toEqual({ all: [{ output_muted: true }, { obs_recording: true }] });
+    expect(conditionLabel({ all: [{ output_muted: false }, { obs_streaming: true }] })).toBe('the output is not muted and OBS is streaming');
+    expect(conditionLabel({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe('the output is muted or the output volume is at least 10%');
+    expect(conditionUsesObs({ all: [{ output_muted: true }, { obs_streaming: true }] })).toBe(true);
+    expect(conditionUsesObs({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe(false);
   });
 });

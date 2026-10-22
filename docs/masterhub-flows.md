@@ -19,7 +19,7 @@ The official app has no conditional flows, so this is our own extension. It need
 }
 ```
 
-- `when` holds exactly one condition (see below). Combining conditions (and/or/not) is left out of the first version; `not` is covered by swapping `then` and `else`.
+- `when` holds one condition (see below), or `{"all":[…]}` (AND) / `{"any":[…]}` (OR) of 2 to 8 plain conditions. They do not nest and cannot be mixed in one block, so there are no precedence rules; every member is read (no early exit), and one that cannot be read fails the press. `not` is covered by swapping `then` and `else`, or by writing the condition with `false`.
 - `then` has 1 to 8 steps, `else` is optional (0 to 8). A missing or empty `else` means do nothing.
 - Steps are the same executable actions a `multi_action` step may be, with the same exclusions (no nesting, no `macro`, no `profile`, no `timer`, no `*_from_position` templates). A `conditional` is therefore not a step of another `conditional` or of a `multi_action`. Keeps one deadline and no loops.
 - A branch runs like a `multi_action`: steps in order, fixed spacing, a failure stops the rest of the branch.
@@ -86,4 +86,4 @@ Each step is shippable, and step 1 is useful without the rest.
 
 ## Not in scope
 
-Loops, variables, waiting for a state ("wait until recording"), combining conditions, conditions on a held key or gesture, and user scripts.
+Loops, variables, waiting for a state ("wait until recording"), nested or mixed AND / OR, conditions on a held key or gesture, and user scripts.

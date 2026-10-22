@@ -515,9 +515,11 @@ pub struct MacroStep {
 /// The state a `conditional` action tests right before it picks a branch.
 ///
 /// Written as a single-key object such as `{"obs_recording":true}`; a second
-/// key or an unknown key is refused. Each variant asks OBS over the local
-/// obs-websocket connection, so it needs the same endpoint as an OBS action.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// key or an unknown key is refused. The OBS variants ask OBS over the local
+/// obs-websocket connection, so they need the same endpoint as an OBS action.
+/// `all` and `any` combine 2 to 8 plain conditions (AND, OR); they do not nest
+/// and do not mix, so no precedence rules are needed.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Condition {
     /// OBS is streaming (`true`) or is not (`false`).
@@ -536,9 +538,19 @@ pub enum Condition {
     OutputMuted(bool),
     /// The default output volume is at least this percentage, 0 to 100.
     OutputVolumeAtLeast(u8),
+    /// Every listed condition holds (AND). All of them are read, in order.
+    All(Vec<Condition>),
+    /// At least one listed condition holds (OR). All of them are read, in
+    /// order, so an unreadable one fails the press whatever the others say.
+    Any(Vec<Condition>),
 }
 
 impl Condition {
+    /// Fewest conditions an `all` or `any` combines.
+    pub const MIN_COMBINED: usize = 2;
+    /// Most conditions an `all` or `any` combines.
+    pub const MAX_COMBINED: usize = 8;
+
     /// The JSON key of this condition, for diagnostics.
     pub fn name(&self) -> &'static str {
         match self {
@@ -548,18 +560,21 @@ impl Condition {
             Self::ReplayBuffer(_) => "obs_replay_buffer",
             Self::OutputMuted(_) => "output_muted",
             Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
+            Self::All(_) => "all",
+            Self::Any(_) => "any",
         }
     }
 
     /// Whether the condition is read from OBS (and so needs an endpoint).
     pub fn uses_obs(&self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::Streaming(_)
-                | Self::Recording(_)
-                | Self::VirtualCamera(_)
-                | Self::ReplayBuffer(_)
-        )
+            | Self::Recording(_)
+            | Self::VirtualCamera(_)
+            | Self::ReplayBuffer(_) => true,
+            Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_obs),
+            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) => false,
+        }
     }
 
     /// The value an OBS output condition compares the live state with;
@@ -570,7 +585,9 @@ impl Condition {
             | Self::Recording(value)
             | Self::VirtualCamera(value)
             | Self::ReplayBuffer(value) => Some(*value),
-            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) => None,
+            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) | Self::All(_) | Self::Any(_) => {
+                None
+            }
         }
     }
 
@@ -579,6 +596,23 @@ impl Condition {
         match self {
             Self::OutputVolumeAtLeast(percent) if *percent > 100 => {
                 Err("output_volume_at_least must be between 0 and 100".into())
+            }
+            Self::All(items) | Self::Any(items) => {
+                let name = self.name();
+                if !(Self::MIN_COMBINED..=Self::MAX_COMBINED).contains(&items.len()) {
+                    return Err(format!(
+                        "{name} must combine {} to {} conditions",
+                        Self::MIN_COMBINED,
+                        Self::MAX_COMBINED
+                    ));
+                }
+                for item in items {
+                    if matches!(item, Self::All(_) | Self::Any(_)) {
+                        return Err(format!("{name} cannot contain {}", item.name()));
+                    }
+                    item.validate()?;
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
@@ -3140,6 +3174,60 @@ mod tests {
         assert!(
             serde_json::from_str::<Action>(
                 r#"{"type":"conditional","when":{"output_volume_at_least":-1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn all_and_any_combine_two_to_eight_plain_conditions() {
+        let json = r#"{"type":"conditional","when":{"all":[{"output_muted":false},{"output_volume_at_least":30}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        let any: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"any":[{"output_muted":true},{"obs_recording":true}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        any.validate().unwrap();
+        assert!(any.uses_obs(), "one OBS member needs the endpoint");
+
+        let combined = |kind: &str, count: usize| -> Action {
+            let items = vec![r#"{"output_muted":true}"#; count].join(",");
+            serde_json::from_str(&format!(
+                r#"{{"type":"conditional","when":{{"{kind}":[{items}]}},"then":[{{"type":"toggle_mute"}}]}}"#
+            ))
+            .unwrap()
+        };
+        combined("all", 8).validate().unwrap();
+        for count in [0, 1, 9] {
+            let error = combined("any", count).validate().unwrap_err();
+            assert!(
+                error.contains("any must combine 2 to 8 conditions"),
+                "{error}"
+            );
+        }
+        // No nesting and no mixing, so there are no precedence rules.
+        let nested: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"any":[{"output_muted":false},{"output_muted":true}]}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        assert!(
+            nested
+                .validate()
+                .unwrap_err()
+                .contains("all cannot contain any")
+        );
+        // A bad member is named by its own rule.
+        let high: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"output_volume_at_least":101}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        assert!(high.validate().unwrap_err().contains("between 0 and 100"));
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"all":[{"output_muted":true}],"any":[]},"then":[{"type":"toggle_mute"}]}"#
             )
             .is_err()
         );

@@ -719,17 +719,7 @@ impl MacOsDispatcher {
                 otherwise,
             } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                let holds = if when.uses_obs() {
-                    self.condition_holds(*when, deadline)
-                } else {
-                    self.system_condition_holds(*when)
-                }
-                .map_err(|error| {
-                    format!(
-                        "conditional could not read {}: {error}; neither branch ran",
-                        when.name()
-                    )
-                })?;
+                let holds = self.evaluate_condition(when, deadline)?;
                 let (branch, label) = if holds {
                     (then, "conditional then")
                 } else {
@@ -785,15 +775,51 @@ impl MacOsDispatcher {
         Ok(())
     }
 
-    /// Reads a condition about the default output from macOS.
-    fn system_condition_holds(
+    /// Whether `condition` holds right now. An `all` or `any` reads every
+    /// member in order, without stopping early, so a member that cannot be
+    /// read fails the press whatever the others say. A failure names the
+    /// member that could not be read and says no branch ran.
+    fn evaluate_condition(
         &mut self,
-        condition: crate::profile::Condition,
+        condition: &crate::profile::Condition,
+        deadline: std::time::Instant,
     ) -> Result<bool, String> {
         use crate::profile::Condition;
         match condition {
-            Condition::OutputMuted(expected) => Ok(self.output_muted()? == expected),
-            Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= percent),
+            Condition::All(items) | Condition::Any(items) => {
+                let mut results = Vec::with_capacity(items.len());
+                for item in items {
+                    results.push(self.evaluate_condition(item, deadline)?);
+                }
+                Ok(if matches!(condition, Condition::All(_)) {
+                    results.iter().all(|holds| *holds)
+                } else {
+                    results.iter().any(|holds| *holds)
+                })
+            }
+            leaf => if leaf.uses_obs() {
+                self.condition_holds(leaf, deadline)
+            } else {
+                self.system_condition_holds(leaf)
+            }
+            .map_err(|error| {
+                format!(
+                    "conditional could not read {}: {error}; neither branch ran",
+                    leaf.name()
+                )
+            }),
+        }
+    }
+
+    /// Reads a condition about the default output from macOS.
+    fn system_condition_holds(
+        &mut self,
+        condition: &crate::profile::Condition,
+    ) -> Result<bool, String> {
+        use crate::profile::Condition;
+        match condition {
+            Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
+            Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
             _ => Err("this condition is read from OBS".into()),
         }
     }
@@ -801,7 +827,7 @@ impl MacOsDispatcher {
     /// Reads a condition from OBS within what is left of `deadline`.
     fn condition_holds(
         &self,
-        condition: crate::profile::Condition,
+        condition: &crate::profile::Condition,
         deadline: std::time::Instant,
     ) -> Result<bool, String> {
         let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
@@ -2976,6 +3002,89 @@ mod tests {
         assert!(error.contains("could not read output_muted"), "{error}");
         assert!(error.contains("neither branch ran"), "{error}");
         assert_eq!(state.lock().unwrap().requests.len(), 1);
+    }
+
+    #[test]
+    fn all_needs_every_member_and_any_needs_one_and_both_read_every_member() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // Output muted = false, volume = 40.
+        for (when, branch) in [
+            (
+                Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::OutputVolumeAtLeast(40),
+                ]),
+                "a",
+            ),
+            (
+                Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::OutputVolumeAtLeast(41),
+                ]),
+                "b",
+            ),
+            (
+                Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(40),
+                ]),
+                "a",
+            ),
+            (
+                Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(41),
+                ]),
+                "b",
+            ),
+        ] {
+            // Two reads, in order, then the branch: nothing stops early.
+            let (mut dispatcher, state) = fake(vec![success("false"), success("40"), success("")]);
+            dispatcher
+                .dispatch(&Action::Conditional {
+                    when: when.clone(),
+                    then: vec![key("a")],
+                    otherwise: vec![key("b")],
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 3, "{when:?}");
+            assert_eq!(
+                state.requests[0].args[1],
+                "output muted of (get volume settings)"
+            );
+            assert_eq!(
+                state.requests[1].args[1],
+                "output volume of (get volume settings)"
+            );
+            assert!(
+                state.requests[2].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "{when:?}"
+            );
+        }
+
+        // An unreadable member fails the press even when the others decide it.
+        let (mut dispatcher, state) = fake(vec![success("true"), success("missing value")]);
+        let error = dispatcher
+            .dispatch(&Action::Conditional {
+                when: Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(10),
+                ]),
+                then: vec![key("a")],
+                otherwise: vec![],
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("could not read output_volume_at_least")
+                && error.contains("neither branch ran"),
+            "{error}"
+        );
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
     }
 
     #[test]

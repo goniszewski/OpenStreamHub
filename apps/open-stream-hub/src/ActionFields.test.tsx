@@ -572,4 +572,28 @@ describe('obs combo', () => {
     // Neither list offers a conditional or a multi-action as a step.
     expect(markup.match(/>If \/ else<\/span>/g)).toHaveLength(1);
   });
+
+  it('edits several conditions: a row each, a way to remove them, and how they combine', () => {
+    const one = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });
+    expect(one).toContain('for="conditional-when">If</label>');
+    expect(one).toContain('id="conditional-add"');
+    expect(one).not.toContain('conditional-mode');
+    expect(one).not.toContain('Remove condition');
+    const two = render({ type: 'conditional', when: { any: [{ output_muted: true }, { obs_streaming: false }] }, then: [{ type: 'toggle_mute' }] });
+    expect(two).toContain('for="conditional-when">If</label>');
+    expect(two).toContain('for="conditional-when-2">Or</label>');
+    expect(two).toContain('for="conditional-value-2"');
+    expect(two).toContain('aria-label="Remove condition 1"');
+    expect(two).toContain('aria-label="Remove condition 2"');
+    expect(two).toContain('<option value="any" selected="">Any one is enough (OR)</option>');
+    expect(two).toContain('OBS must be running');
+    expectAccessible(two);
+    const and = render({ type: 'conditional', when: { all: [{ output_muted: true }, { output_volume_at_least: 20 }] }, then: [{ type: 'toggle_mute' }] });
+    expect(and).toContain('for="conditional-when-2">And</label>');
+    expect(and).toContain('for="conditional-volume-2"');
+    expect(and).not.toContain('OBS must be running');
+    expectAccessible(and);
+    const eight = render({ type: 'conditional', when: { all: Array.from({ length: 8 }, () => ({ output_muted: true })) }, then: [{ type: 'toggle_mute' }] });
+    expect(eight).toMatch(/<button[^>]*id="conditional-add"[^>]*disabled=""|<button[^>]*disabled=""[^>]*id="conditional-add"/);
+  });
 });

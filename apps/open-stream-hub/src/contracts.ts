@@ -64,9 +64,11 @@ export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
-// The state a conditional tests (Condition in profile.rs): one key with a value. The first four read an OBS output and
+// The state a conditional tests (Condition in profile.rs): one key with a value, or all/any of several. The first four read an OBS output and
 // need the OBS connection; the last two read the default output of this Mac.
-export type Condition =
+export type Condition = LeafCondition | { all: LeafCondition[] } | { any: LeafCondition[] };
+// `all` (AND) and `any` (OR) combine 2 to 8 plain conditions; they do not nest or mix.
+export type LeafCondition =
   | { obs_streaming: boolean }
   | { obs_recording: boolean }
   | { obs_virtual_camera: boolean }

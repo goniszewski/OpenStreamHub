@@ -1,7 +1,7 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, Condition, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, Condition, LeafCondition, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
@@ -13,12 +13,12 @@ import { obsConnectionLabels } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
-  conditionKey, conditionKeys, conditionLabel, conditionUsesObs, conditionValue, conditionalSteps, defaultCondition, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
+  combineConditions, conditionKey, conditionKeys, conditionLabel, conditionParts, conditionUsesObs, conditionValue, conditionalSteps, defaultCondition, maxCombinedConditions, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
-import type { ConditionKey } from './action-model';
+import type { CombineMode, ConditionKey } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
 
@@ -273,23 +273,39 @@ function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog,
   const otherwise = action.else ?? [];
   // An empty else is left out, never written as [] (it is optional in the profile).
   const build = (when: Condition, then: StepAction[], other: StepAction[]): ConditionalAction => ({ type: 'conditional', when, then, ...(other.length > 0 ? { else: other } : {}) });
-  const key = conditionKey(action.when);
-  const value = conditionValue(action.when);
+  const { mode, items } = conditionParts(action.when);
   const usesObs = conditionUsesObs(action.when) || action.then.concat(otherwise).some(step => step.type.startsWith('obs_'));
+  const setItems = (next: LeafCondition[], nextMode: CombineMode, field: string) => onChange(build(combineConditions(nextMode, next), action.then, otherwise), field);
   return <div className="action-fields">
-    <label htmlFor="conditional-when">If</label>
-    <SelectField id="conditional-when" value={key} onChange={event => onChange(build(defaultCondition(event.target.value as ConditionKey), action.then, otherwise), 'conditional-when')}>
-      {conditionKeys.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
-    </SelectField>
-    {typeof value === 'number'
-      ? <><label className="spaced-label" htmlFor="conditional-volume">Volume (%)</label>
-        <IntegerField key={selectorKey} id="conditional-volume" value={value} minimum={0} maximum={100}
-          onCommit={percent => onChange(build({ output_volume_at_least: percent }, action.then, otherwise), 'conditional-volume')} /></>
-      : <><label className="spaced-label" htmlFor="conditional-value">The statement is</label>
-        <SelectField id="conditional-value" value={value ? 'true' : 'false'} onChange={event => onChange(build({ [key]: event.target.value === 'true' } as Condition, action.then, otherwise), 'conditional-value')}>
-          <option value="true">True</option><option value="false">False</option>
-        </SelectField></>}
-    <p className="fine-print">Read when the key is pressed: {conditionLabel(action.when)}. If it cannot be read{conditionUsesObs(action.when) ? ' (OBS is not running or not set up)' : ''}, the press fails and neither list runs.</p>
+    {items.map((item, index) => {
+      const key = conditionKey(item);
+      const value = conditionValue(item);
+      const suffix = index === 0 ? '' : `-${index + 1}`;
+      const replace = (next: LeafCondition, field: string) => setItems(items.map((existing, at) => at === index ? next : existing), mode, field);
+      return <div key={index} className="action-fields">
+        <label className={index === 0 ? undefined : 'spaced-label'} htmlFor={`conditional-when${suffix}`}>{index === 0 ? 'If' : mode === 'all' ? 'And' : 'Or'}</label>
+        <SelectField id={`conditional-when${suffix}`} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey), `conditional-when${suffix}`)}>
+          {conditionKeys.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+        </SelectField>
+        {typeof value === 'number'
+          ? <><label className="spaced-label" htmlFor={`conditional-volume${suffix}`}>Volume (%)</label>
+            <IntegerField key={`${selectorKey}:${index}:${items.length}`} id={`conditional-volume${suffix}`} value={value} minimum={0} maximum={100}
+              onCommit={percent => replace({ output_volume_at_least: percent }, `conditional-volume${suffix}`)} /></>
+          : <><label className="spaced-label" htmlFor={`conditional-value${suffix}`}>The statement is</label>
+            <SelectField id={`conditional-value${suffix}`} value={value ? 'true' : 'false'} onChange={event => replace({ [key]: event.target.value === 'true' } as LeafCondition, `conditional-value${suffix}`)}>
+              <option value="true">True</option><option value="false">False</option>
+            </SelectField></>}
+        {items.length > 1 && <button type="button" className="button compact" aria-label={`Remove condition ${index + 1}`}
+          onClick={() => setItems(items.filter((_, at) => at !== index), mode, 'conditional-add')}><Trash2 size={16} />Remove</button>}
+      </div>;
+    })}
+    {items.length > 1 && <><label className="spaced-label" htmlFor="conditional-mode">Combine the conditions</label>
+      <SelectField id="conditional-mode" value={mode} onChange={event => setItems(items, event.target.value as CombineMode, 'conditional-mode')}>
+        <option value="all">All must hold (AND)</option><option value="any">Any one is enough (OR)</option>
+      </SelectField></>}
+    <button type="button" id="conditional-add" className="button compact" disabled={items.length >= maxCombinedConditions}
+      onClick={() => setItems([...items, defaultCondition('output_muted')], mode, 'conditional-add')}><Plus size={16} />Add condition</button>
+    <p className="fine-print">Read when the key is pressed: {conditionLabel(action.when)}. Every condition is read{conditionUsesObs(action.when) ? ', and OBS must be running and set up' : ''}; if one cannot be read, the press fails and neither list runs. AND and OR cannot be mixed in one block.</p>
     <h4 className="spaced-label">Then</h4>
     <StepList steps={action.then} idBase="then-" noun="Then step" minimum={conditionalSteps.thenMinimum} maximum={conditionalSteps.maximum} selectorKey={selectorKey}
       update={(next, field) => onChange(build(action.when, next, otherwise), field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />

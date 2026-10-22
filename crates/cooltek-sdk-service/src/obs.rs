@@ -327,13 +327,16 @@ impl ObsClient {
     /// Reads whether `condition` holds in OBS right now, on a fresh connection
     /// and within this client's timeout. An answer OBS does not give is an
     /// error, never `false`, so a caller cannot take the wrong branch.
-    pub fn condition_holds(&self, condition: Condition) -> Result<bool, String> {
+    pub fn condition_holds(&self, condition: &Condition) -> Result<bool, String> {
         let request = match condition {
             Condition::Streaming(_) => "GetStreamStatus",
             Condition::Recording(_) => "GetRecordStatus",
             Condition::VirtualCamera(_) => "GetVirtualCamStatus",
             Condition::ReplayBuffer(_) => "GetReplayBufferStatus",
-            Condition::OutputMuted(_) | Condition::OutputVolumeAtLeast(_) => {
+            Condition::OutputMuted(_)
+            | Condition::OutputVolumeAtLeast(_)
+            | Condition::All(_)
+            | Condition::Any(_) => {
                 return Err("this condition is not read from OBS".into());
             }
         };

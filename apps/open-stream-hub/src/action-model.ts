@@ -1,4 +1,4 @@
-import type { Action, BindingAction, Condition, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, Condition, LeafCondition, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -231,24 +231,39 @@ const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least'>, 
   obs_replay_buffer: ['the OBS replay buffer is running', 'the OBS replay buffer is not running'],
   output_muted: ['the output is muted', 'the output is not muted'],
 };
-export function conditionKey(when: Condition): ConditionKey {
+export const maxCombinedConditions = 8;
+export type CombineMode = 'all' | 'any';
+// The plain conditions of a `when`, and how several combine (all = AND, any = OR). A single condition is a list of one.
+export function conditionParts(when: Condition): { mode: CombineMode; items: LeafCondition[] } {
+  if ('all' in when) return { mode: 'all', items: when.all };
+  if ('any' in when) return { mode: 'any', items: when.any };
+  return { mode: 'all', items: [when] };
+}
+// One item is written bare; two or more are wrapped in all/any.
+export function combineConditions(mode: CombineMode, items: LeafCondition[]): Condition {
+  return items.length === 1 ? items[0] : (mode === 'all' ? { all: items } : { any: items }) as Condition;
+}
+export function conditionKey(when: LeafCondition): ConditionKey {
   return Object.keys(when)[0] as ConditionKey;
 }
-export function conditionValue(when: Condition): boolean | number {
+export function conditionValue(when: LeafCondition): boolean | number {
   return (when as Record<string, boolean | number>)[conditionKey(when)];
 }
 // Reads from OBS, so needs the connection set up in Settings; the output conditions read this Mac.
-export const conditionUsesObs = (when: Condition): boolean => conditionKey(when).startsWith('obs_');
-// "OBS is recording", "the output is not muted", "the output volume is at least 40%".
-export function conditionLabel(when: Condition): string {
+export const conditionUsesObs = (when: Condition): boolean => conditionParts(when).items.some(item => conditionKey(item).startsWith('obs_'));
+const leafLabel = (when: LeafCondition): string => {
   const key = conditionKey(when);
   const value = conditionValue(when);
-  if (key === 'output_volume_at_least') return `the output volume is at least ${value}%`;
-  return conditionPhrases[key][value ? 0 : 1];
+  return key === 'output_volume_at_least' ? `the output volume is at least ${value}%` : conditionPhrases[key][value ? 0 : 1];
+};
+// "OBS is recording", "the output is not muted and OBS is streaming", "the output volume is at least 40%".
+export function conditionLabel(when: Condition): string {
+  const { mode, items } = conditionParts(when);
+  return items.map(leafLabel).join(mode === 'all' ? ' and ' : ' or ');
 }
 // A condition of the chosen kind with its default value.
-export function defaultCondition(key: ConditionKey): Condition {
-  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : { [key]: true }) as Condition;
+export function defaultCondition(key: ConditionKey): LeafCondition {
+  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : { [key]: true }) as LeafCondition;
 }
 
 export function defaultConditional(): Action {

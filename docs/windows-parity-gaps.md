@@ -45,7 +45,7 @@ The protocol analysis documents cover the device (discovery, input, display, mod
 | App integration: user scripts | Absent in 1.0.0.113; only a hard-coded Photoshop automation | Not in official app | [app features](research/masterhub-1.0.0.113-app-features.md) | Optional extension only; sandbox and permission model first |
 | Lifecycle: suspend/resume | Hardware mode on suspend; 2 s, then software mode, firmware query, display refresh | Partial | `session.rs`, `power.rs`; session doc "Comparison with the official app" (no firmware query or refresh) | Hardware timing; add refresh after display upload exists |
 | Lifecycle: reconnect | Not documented beyond startup (unverified) | Partial | `session.rs` backoff 1/2/4/8/8 s, `needs_confirmation` for Execute runs | Hardware lifecycle gate |
-| Lifecycle: multi-module live | Official handles all modules (unverified) | Partial | One service per interface in `session.rs`; feed reads many; README "multi-module live action routing" milestone | Route several modules in one session |
+| Lifecycle: multi-module live | Official handles all modules (unverified) | Done (one process per module, by decision) | One service per interface in `session.rs`; the app starts and supervises every module; feed reads many | A single process for all modules is not planned ([status](masterhub-implementation-status.md#next-software-work-agreed-22-october-2026)); cross-module actions would go through the app |
 | Platform: Windows and Linux | Official is Windows-only | Out of scope | macOS plan scope; `macos.rs` non-macOS stub; power clock-gap fallback untested | None planned |
 | Packaging: installer | WiX Burn installer, Electron | Partial | `tauri.conf.json` targets `app` and `dmg`; releases are still unsigned (`building-the-desktop-app.md`) | None planned (unsigned by decision) |
 | Diagnostics | Not documented for the official app (unverified) | Done (ours) | `diagnostics.rs`; [diagnostic bundle](masterhub-diagnostic-bundle.md); `masterhub-diag` CLI | Use in first hardware session |
@@ -127,7 +127,7 @@ Ahead of the documented official software: passive descriptor/input diagnostic b
 8. Lighting controls in the app: built (Lighting page, per-profile screen brightness, control channel); see the lighting row for the open hardware checks.
 9. Release engineering: CI and the release workflow have run on GitHub (unsigned arm64 and Intel app and DMG, 0.2.0 tag build green on 14 October 2026), and the DMG target exists. Signing and notarization are out of scope: releases stay unsigned by decision (no Apple Developer account; see [release process](release-process.md#decision-releases-stay-unsigned)).
 10. Browser cards and user scripts: not in the official app; optional extensions, threat model first, no runtime until needed.
-11. Multi-module single-session routing, tested with simulated inventories.
+11. ~~Multi-module single-session routing.~~ Not planned: one process per module stays (22 October 2026).
 
 ### Needs hardware
 

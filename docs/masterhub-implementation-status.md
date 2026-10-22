@@ -121,9 +121,10 @@ Wider hardware acceptance of the experimental key display sync (one M4315 sessio
 
 Taken in this order after the lighting hardware checks:
 
-1. **Multi-module live routing.** One `masterhub-service` runs per interface today; route several modules in one session, tested with simulated inventories.
-2. **Resume refresh.** After a wake the official app queries the firmware and redraws the displays; we do neither (`session.rs`, `power.rs`).
-3. **Dial function cycling.** Short click switches the function, long press runs the press action; still Partial until checked on the dial ([dial functions](masterhub-dial-functions.md)).
-4. **Flows.** Only the flat multi-action list exists; conditional flows are not started.
-5. **Action acceptance.** macOS actions and the remaining OBS actions (`obs_stream`, `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter`, `obs_source_visibility`, failure paths) are unverified.
-6. **Small known issues.** Older builds refuse schema-3 profiles; about two frames per 60 s are skipped at the 150 ms floor; the dial carousel hides the current face while another version is shown.
+1. **Resume refresh.** After a wake the official app queries the firmware and redraws the displays; we do neither (`session.rs`, `power.rs`).
+2. **Dial function cycling.** Short click switches the function, long press runs the press action; still Partial until checked on the dial ([dial functions](masterhub-dial-functions.md)).
+3. **Flows.** Only the flat multi-action list exists; conditional flows are not started.
+4. **Action acceptance.** macOS actions and the remaining OBS actions (`obs_stream`, `obs_scene`, `obs_scene_collection`, `obs_profile`, `obs_filter`, `obs_source_visibility`, failure paths) are unverified.
+5. **Small known issues.** Older builds refuse schema-3 profiles; about two frames per 60 s are skipped at the 150 ms floor; the dial carousel hides the current face while another version is shown.
+
+**Not planned: one process for all modules.** Each module keeps its own `masterhub-service` process (decided 22 October 2026). The official app uses one process, but ours isolates a crash or unplug to one module, and the session manager's sleep/wake, reconnect, profile-switch and in-place save handling is built around one process per module. A single process would mean rewriting large parts of `session.rs` and `live_runtime.rs` and re-verifying them on hardware, for no user-facing gain found so far. If a cross-module action is ever wanted (a key on one module setting the dial function or another module's lighting), route it through the desktop app, which already supervises every process and has the dial control channel on stdin.

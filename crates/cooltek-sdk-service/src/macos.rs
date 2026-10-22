@@ -152,6 +152,9 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 /// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
 /// writing it before monitoring the child cannot block on a child that never reads.
 const STDIN_LIMIT: usize = 8 * 1024;
+/// Asks System Events for the frontmost application's bundle identifier.
+const FRONTMOST_APP_SCRIPT: &str = "tell application \"System Events\" to get bundle identifier of first application process whose frontmost is true";
+
 /// Fixed delay between `multi_action` steps, matching the official app.
 const STEP_SPACING: Duration = Duration::from_millis(280);
 /// Delay before restoring the clipboard, so the target application can read
@@ -825,6 +828,9 @@ impl MacOsDispatcher {
             Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
             Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
             Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
+            Condition::FocusedApp(bundle_id) => {
+                Ok(self.frontmost_bundle_id()?.eq_ignore_ascii_case(bundle_id))
+            }
             _ => Err("this condition is read from OBS".into()),
         }
     }
@@ -934,6 +940,20 @@ impl MacOsDispatcher {
         let text = String::from_utf8(output)
             .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in {property} response"))?;
         Ok(text.trim().to_owned())
+    }
+
+    /// The bundle identifier of the frontmost application, from System
+    /// Events (the same Automation permission the keystroke actions use).
+    fn frontmost_bundle_id(&mut self) -> Result<String, String> {
+        let output = self.apple_script(FRONTMOST_APP_SCRIPT.into())?;
+        let response = String::from_utf8(output)
+            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in the frontmost app response"))?
+            .trim()
+            .to_owned();
+        crate::profile::validate_bundle_id(&response).map_err(|_| {
+            format!("{OSASCRIPT}: the frontmost app has no usable bundle identifier ({response:?})")
+        })?;
+        Ok(response)
     }
 
     fn output_volume(&mut self) -> Result<u8, String> {
@@ -3123,6 +3143,38 @@ mod tests {
                 state.requests[0].args[1].contains(&format!("keystroke \"{branch}\"")),
                 "running {running}, expected {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn a_conditional_tests_the_frontmost_app_from_system_events() {
+        use crate::profile::Condition;
+        let when = || Condition::FocusedApp("com.apple.Finder".into());
+        for (frontmost, branch) in [
+            ("com.apple.finder\n", "a"),
+            ("com.apple.Finder", "a"),
+            ("com.apple.Safari", "b"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success(frontmost), success("")]);
+            dispatcher.dispatch(&conditional(when())).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 2, "one read, one branch step");
+            assert_eq!(state.requests[0].args[1], FRONTMOST_APP_SCRIPT);
+            assert!(
+                state.requests[1].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "{frontmost:?}"
+            );
+        }
+        // An answer that is not a bundle identifier runs neither branch.
+        for bad in ["missing value", ""] {
+            let (mut dispatcher, state) = fake(vec![success(bad)]);
+            let error = dispatcher.dispatch(&conditional(when())).unwrap_err();
+            assert!(
+                error.contains("could not read focused_app")
+                    && error.contains("neither branch ran"),
+                "{error}"
+            );
+            assert_eq!(state.lock().unwrap().requests.len(), 1);
         }
     }
 

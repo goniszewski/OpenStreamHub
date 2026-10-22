@@ -542,6 +542,11 @@ pub enum Condition {
     /// Timers belong to the module's own process, so only the timers started
     /// by this module's bindings count.
     TimerRunning(bool),
+    /// The frontmost application has this bundle identifier (compared
+    /// without regard to ASCII case). Written as a bare string: to act when it
+    /// is any other app, swap the branches. Read from macOS when the key is
+    /// pressed, so it works with the desktop app closed.
+    FocusedApp(String),
     /// Every listed condition holds (AND). All of them are read, in order.
     All(Vec<Condition>),
     /// At least one listed condition holds (OR). All of them are read, in
@@ -565,6 +570,7 @@ impl Condition {
             Self::OutputMuted(_) => "output_muted",
             Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
             Self::TimerRunning(_) => "timer_running",
+            Self::FocusedApp(_) => "focused_app",
             Self::All(_) => "all",
             Self::Any(_) => "any",
         }
@@ -578,7 +584,10 @@ impl Condition {
             | Self::VirtualCamera(_)
             | Self::ReplayBuffer(_) => true,
             Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_obs),
-            Self::OutputMuted(_) | Self::OutputVolumeAtLeast(_) | Self::TimerRunning(_) => false,
+            Self::OutputMuted(_)
+            | Self::OutputVolumeAtLeast(_)
+            | Self::TimerRunning(_)
+            | Self::FocusedApp(_) => false,
         }
     }
 
@@ -593,6 +602,7 @@ impl Condition {
             Self::OutputMuted(_)
             | Self::OutputVolumeAtLeast(_)
             | Self::TimerRunning(_)
+            | Self::FocusedApp(_)
             | Self::All(_)
             | Self::Any(_) => None,
         }
@@ -604,6 +614,7 @@ impl Condition {
             Self::OutputVolumeAtLeast(percent) if *percent > 100 => {
                 Err("output_volume_at_least must be between 0 and 100".into())
             }
+            Self::FocusedApp(bundle_id) => validate_bundle_id(bundle_id),
             Self::All(items) | Self::Any(items) => {
                 let name = self.name();
                 if !(Self::MIN_COMBINED..=Self::MAX_COMBINED).contains(&items.len()) {
@@ -1409,23 +1420,7 @@ impl Action {
                 }
                 Ok(())
             }
-            Self::LaunchApp { bundle_id } => {
-                if bundle_id.len() > 255
-                    || !bundle_id.contains('.')
-                    || bundle_id.split('.').any(|component| {
-                        !component
-                            .as_bytes()
-                            .first()
-                            .is_some_and(u8::is_ascii_alphanumeric)
-                            || !component
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                    })
-                {
-                    return Err("application bundle ID must be a dotted ASCII identifier of at most 255 bytes".into());
-                }
-                Ok(())
-            }
+            Self::LaunchApp { bundle_id } => validate_bundle_id(bundle_id),
             Self::OpenUrl { url } => validate_url(url),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
@@ -1893,6 +1888,27 @@ impl Profile {
         self.validate()?;
         Ok(self)
     }
+}
+
+/// An application bundle identifier: dotted ASCII components of letters, digits and hyphens, at most 255 bytes.
+pub(crate) fn validate_bundle_id(bundle_id: &str) -> Result<(), String> {
+    if bundle_id.len() > 255
+        || !bundle_id.contains('.')
+        || bundle_id.split('.').any(|component| {
+            !component
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                || !component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err(
+            "application bundle ID must be a dotted ASCII identifier of at most 255 bytes".into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_serial_number(serial: Option<&str>) -> Result<(), String> {
@@ -3181,6 +3197,38 @@ mod tests {
         assert!(
             serde_json::from_str::<Action>(
                 r#"{"type":"conditional","when":{"output_volume_at_least":-1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn focused_app_is_a_bundle_id_string_that_needs_no_obs() {
+        let json = r#"{"type":"conditional","when":{"all":[{"focused_app":"com.apple.finder"},{"output_muted":false}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        for bad in [
+            "finder",
+            "",
+            "com..x",
+            "com.apple.fin der",
+            "com.apple.\u{e9}",
+        ] {
+            let action = Action::Conditional {
+                when: Condition::FocusedApp(bad.into()),
+                then: vec![Action::ToggleMute],
+                otherwise: vec![],
+            };
+            assert!(
+                action.validate().unwrap_err().contains("bundle ID"),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"focused_app":true},"then":[{"type":"toggle_mute"}]}"#
             )
             .is_err()
         );

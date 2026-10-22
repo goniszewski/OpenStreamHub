@@ -217,14 +217,14 @@ export function timerDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
-export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running';
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app';
 // Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
 export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
-  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'],
+  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'], ['focused_app', 'The front app is'],
   ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
   ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
 ];
-const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least'>, readonly [string, string]> = {
+const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app'>, readonly [string, string]> = {
   obs_streaming: ['OBS is streaming', 'OBS is not streaming'],
   obs_recording: ['OBS is recording', 'OBS is not recording'],
   obs_virtual_camera: ['the OBS virtual camera is on', 'the OBS virtual camera is off'],
@@ -247,15 +247,17 @@ export function combineConditions(mode: CombineMode, items: LeafCondition[]): Co
 export function conditionKey(when: LeafCondition): ConditionKey {
   return Object.keys(when)[0] as ConditionKey;
 }
-export function conditionValue(when: LeafCondition): boolean | number {
-  return (when as Record<string, boolean | number>)[conditionKey(when)];
+export function conditionValue(when: LeafCondition): boolean | number | string {
+  return (when as Record<string, boolean | number | string>)[conditionKey(when)];
 }
 // Reads from OBS, so needs the connection set up in Settings; the output conditions read this Mac.
 export const conditionUsesObs = (when: Condition): boolean => conditionParts(when).items.some(item => conditionKey(item).startsWith('obs_'));
 const leafLabel = (when: LeafCondition): string => {
   const key = conditionKey(when);
   const value = conditionValue(when);
-  return key === 'output_volume_at_least' ? `the output volume is at least ${value}%` : conditionPhrases[key][value ? 0 : 1];
+  if (key === 'output_volume_at_least') return `the output volume is at least ${value}%`;
+  if (key === 'focused_app') return `the front app is ${value}`;
+  return conditionPhrases[key][value ? 0 : 1];
 };
 // "OBS is recording", "the output is not muted and OBS is streaming", "the output volume is at least 40%".
 export function conditionLabel(when: Condition): string {
@@ -264,7 +266,7 @@ export function conditionLabel(when: Condition): string {
 }
 // A condition of the chosen kind with its default value.
 export function defaultCondition(key: ConditionKey): LeafCondition {
-  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : { [key]: true }) as LeafCondition;
+  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : key === 'focused_app' ? { focused_app: 'com.apple.finder' } : { [key]: true }) as LeafCondition;
 }
 
 export function defaultConditional(): Action {

@@ -76,7 +76,9 @@ export type LeafCondition =
   | { output_muted: boolean }
   | { output_volume_at_least: number }
   // A timer countdown started by this module's bindings is running.
-  | { timer_running: boolean };
+  | { timer_running: boolean }
+  // The frontmost application has this bundle identifier (read on this Mac when the key is pressed).
+  | { focused_app: string };
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }

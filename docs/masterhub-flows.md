@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), `timer_running`, and AND / OR, tested with fakes only. The dial function condition is not built (see below). System conditions need no OBS endpoint. The app editor (step 5) is built: "If / else" in the action picker, under Timers & sequences, with the condition, a Then list and an optional Otherwise list; the run confirmation lists both branches and rates the profile at least elevated. It has unit and render tests only and has not been looked at in the running app. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
+Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), `timer_running`, `focused_app` and AND / OR, tested with fakes only. The System Events script for the front app was run once by hand on this Mac and printed the terminal's bundle id; it has not been run from a key. The dial function condition is not built (see below). System conditions need no OBS endpoint. The app editor (step 5) is built: "If / else" in the action picker, under Timers & sequences, with the condition, a Then list and an optional Otherwise list; the run confirmation lists both branches and rates the profile at least elevated. It has unit and render tests only and has not been looked at in the running app. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.
@@ -39,7 +39,7 @@ One condition per `when`, a single key with a value:
 | System | `output_volume_at_least` (built) | percent 0 to 100 | the same reader the volume actions use |
 | System | `timer_running` (built) | bool | the service's own timer table; counts only timers started by this module's bindings |
 | Dial | `dial_function` (not built) | function name | the dial's process; see below |
-| Focus | `focused_app` | bundle id | see below |
+| Focus | `focused_app` (built) | bundle id string | System Events, read in the service at press time |
 
 ## Evaluation rules
 
@@ -56,7 +56,7 @@ Each module runs in its own process, and the dial's bindings already live inside
 
 - OBS: the service already holds the obs-websocket connection; only the request calls are new.
 - System, timer and dial function: state the service already owns or can read.
-- **Focused app is the odd one out.** The frontmost-app watcher lives in the desktop app (`focus` worker, [focus rules](masterhub-focus-rules.md)), not in the service. Two options, to settle when this is built: the app pushes the current bundle id to the service on its control channel (cheap at press time, but stale or missing when the app is closed), or the service reads it itself at press time on macOS (about one extra process or API call per press, works with the app closed). Recommended: read it in the service, so the "works with the app closed" decision holds for every condition.
+- **Focused app (built as the service-side option).** The frontmost-app watcher lives in the desktop app (`focus` worker, [focus rules](masterhub-focus-rules.md)), not in the service. Two options, to settle when this is built: the app pushes the current bundle id to the service on its control channel (cheap at press time, but stale or missing when the app is closed), or the service reads it itself at press time on macOS (about one extra process or API call per press, works with the app closed). Recommended: read it in the service, so the "works with the app closed" decision holds for every condition.
 
 ## Editor (desktop app)
 

@@ -597,6 +597,13 @@ describe('obs combo', () => {
     expect(timer).toContain('<option value="timer_running" selected="">A timer is running</option>');
     expect(timer).toContain('no timer is running');
     expect(timer).not.toContain('OBS must be running');
+    const app = render({ type: 'conditional', when: { focused_app: 'com.apple.Safari' }, then: [{ type: 'toggle_mute' }] });
+    expect(app).toContain('<option value="focused_app" selected="">The front app is</option>');
+    expect(app).toContain('id="conditional-app"');
+    expect(app).toContain('value="com.apple.Safari"');
+    expect(app).not.toContain('for="conditional-value"');
+    expect(app).not.toContain('OBS must be running');
+    expectAccessible(app);
     const eight = render({ type: 'conditional', when: { all: Array.from({ length: 8 }, () => ({ output_muted: true })) }, then: [{ type: 'toggle_mute' }] });
     expect(eight).toMatch(/<button[^>]*id="conditional-add"[^>]*disabled=""|<button[^>]*disabled=""[^>]*id="conditional-add"/);
   });

@@ -397,6 +397,9 @@ describe('obs input volume', () => {
     expect(conditionLabel({ timer_running: false })).toBe('no timer is running');
     expect(conditionUsesObs({ timer_running: true })).toBe(false);
     expect(defaultCondition('timer_running')).toEqual({ timer_running: true });
+    expect(conditionLabel({ focused_app: 'com.apple.Safari' })).toBe('the front app is com.apple.Safari');
+    expect(conditionUsesObs({ focused_app: 'com.apple.Safari' })).toBe(false);
+    expect(defaultCondition('focused_app')).toEqual({ focused_app: 'com.apple.finder' });
     expect(defaultCondition('output_volume_at_least')).toEqual({ output_volume_at_least: 50 });
     expect(defaultCondition('obs_replay_buffer')).toEqual({ obs_replay_buffer: true });
     expect(defaultConditional()).toEqual({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });

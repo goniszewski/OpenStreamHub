@@ -287,7 +287,10 @@ function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog,
         <SelectField id={`conditional-when${suffix}`} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey), `conditional-when${suffix}`)}>
           {conditionKeys.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
         </SelectField>
-        {typeof value === 'number'
+        {typeof value === 'string'
+          ? <><LaunchAppFields inputId={`conditional-app${suffix}`} bundleId={value} invoke={invoke} onChange={bundleId => replace({ focused_app: bundleId }, `conditional-app${suffix}`)} />
+            <p className="fine-print">Compared with the front app's bundle ID when the key is pressed, without regard to letter case. To act in every other app, swap the two lists.</p></>
+          : typeof value === 'number'
           ? <><label className="spaced-label" htmlFor={`conditional-volume${suffix}`}>Volume (%)</label>
             <IntegerField key={`${selectorKey}:${index}:${items.length}`} id={`conditional-volume${suffix}`} value={value} minimum={0} maximum={100}
               onCommit={percent => replace({ output_volume_at_least: percent }, `conditional-volume${suffix}`)} /></>

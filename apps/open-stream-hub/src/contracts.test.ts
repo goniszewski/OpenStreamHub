@@ -38,7 +38,7 @@ describe('Rust IPC contract fixture', () => {
   it('StoredProfile has exactly the fields the frontend reads', () => {
     expectKeys(contracts.stored_profile, shapes.storedProfile);
     expect(typeof contracts.stored_profile.modified_at_ms).toBe('number');
-    expect(contracts.stored_profile.profile.schema_version).toBe(3);
+    expect(contracts.stored_profile.profile.schema_version).toBe(4);
   });
 
   it('bootstrap and listing include readable and unreadable profiles', () => {
@@ -89,7 +89,7 @@ describe('profile export fixtures', () => {
   it('the request carries one upgraded profile and the result a path and byte count', () => {
     expect(Object.keys(exportRequest)).toEqual(['request']);
     expect(Object.keys(exportRequest.request).sort()).toEqual(['profile', 'sourceProfileId']);
-    expect(exportRequest.request.profile.schema_version).toBe(3);
+    expect(exportRequest.request.profile.schema_version).toBe(4);
     expect(Object.keys(exportResult.export_profile).sort()).toEqual(['bytes', 'path']);
     expect(exportResult.export_profile.path).toMatch(/\/exports\/[a-z0-9-]+-\d{8}-\d{6}\.json$/);
     expect(typeof exportResult.export_profile.bytes).toBe('number');

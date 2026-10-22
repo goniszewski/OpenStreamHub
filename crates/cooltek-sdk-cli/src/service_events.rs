@@ -444,6 +444,17 @@ pub fn loggable(action: &Action) -> Value {
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
+        // The condition is a closed value; the steps are redacted one by one.
+        Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } => json!({
+            "type":"conditional",
+            "when":when,
+            "then":then.iter().map(loggable).collect::<Vec<_>>(),
+            "else":otherwise.iter().map(loggable).collect::<Vec<_>>(),
+        }),
         // A macro's step list is the keys it types, so like a text snippet
         // only its shape is logged: never the keys themselves.
         Action::Macro { steps } => {
@@ -729,6 +740,30 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_conditional_is_logged_by_shape_with_its_steps_redacted() {
+        let action = Action::Conditional {
+            when: cooltek_sdk_service::Condition::Recording(true),
+            then: vec![Action::ObsScene {
+                scene: "Private call".into(),
+            }],
+            otherwise: vec![Action::Text {
+                text: "secret".into(),
+                press_enter: false,
+            }],
+        };
+        let logged = loggable(&action).to_string();
+        assert!(
+            logged.contains(r#""when":{"obs_recording":true}"#),
+            "{logged}"
+        );
+        assert!(logged.contains("scene_chars"), "{logged}");
+        assert!(
+            !logged.contains("Private call") && !logged.contains("secret"),
+            "{logged}"
+        );
     }
 
     #[test]

@@ -84,7 +84,7 @@ describe('import', () => {
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Desk', bindings: [] })));
     await flush();
     const validated = calls.find(call => call.command === 'validate_profile')!.args!.profile as Profile;
-    expect(validated.schema_version).toBe(3);
+    expect(validated.schema_version).toBe(4);
     const save = calls.find(call => call.command === 'save_profile')!;
     expect(save.args!.request).toMatchObject({ id: null, expectedModifiedAtMs: null });
     const state = session.getState();

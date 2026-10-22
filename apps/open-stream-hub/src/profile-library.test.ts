@@ -38,14 +38,14 @@ describe('parseImportedProfile', () => {
     expect(() => parseImportedProfile('[]')).toThrow(/expected a JSON object/);
     expect(() => parseImportedProfile('null')).toThrow(ImportError);
     expect(() => parseImportedProfile('{"schema_version":2}')).toThrow(/name and a bindings/);
-    expect(() => parseImportedProfile(JSON.stringify({ schema_version: 4, name: 'x', bindings: [] }))).toThrow(/newer version of Open Stream Hub/);
+    expect(() => parseImportedProfile(JSON.stringify({ schema_version: 5, name: 'x', bindings: [] }))).toThrow(/newer version of Open Stream Hub/);
     expect(() => parseImportedProfile(JSON.stringify({ schema_version: 0, name: 'x', bindings: [] }))).toThrow(/Unsupported profile version/);
     expect(() => parseImportedProfile(JSON.stringify({ schema_version: 2, name: 'x', bindings: [] }))).toThrow(/missing its keypad/);
   });
 
   it('upgrades a legacy profile to the current schema without executing anything', () => {
     const profile = parseImportedProfile(JSON.stringify(legacy));
-    expect(profile.schema_version).toBe(3);
+    expect(profile.schema_version).toBe(4);
     expect(profile.bindings).toEqual([]);
     expect(profile.keypad!.pages[0].slots[1]).toMatchObject({ type: 'action' });
   });

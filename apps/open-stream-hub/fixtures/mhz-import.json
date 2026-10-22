@@ -236,7 +236,7 @@
               ]
             },
             "name": "Desk (imported)",
-            "schema_version": 3
+            "schema_version": 4
           }
         }
       }
@@ -393,7 +393,7 @@
           ]
         },
         "name": "Folders",
-        "schema_version": 3
+        "schema_version": 4
       },
       "sourceProfileId": "00000000-0000-4000-8000-0000000000aa"
     }

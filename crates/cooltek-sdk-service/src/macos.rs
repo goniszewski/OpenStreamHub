@@ -710,43 +710,90 @@ impl MacOsDispatcher {
             | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
-                let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                for (index, step) in actions.iter().enumerate() {
-                    if index > 0 {
-                        self.pause(STEP_SPACING).map_err(|error| {
-                            format!(
-                                "multi_action stopped before step {} of {count}: {error}",
-                                index + 1
-                            )
-                        })?;
-                    }
-                    if self.sleeper.now() >= deadline {
-                        return Err(format!(
-                            "multi_action stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
-                            index + 1,
-                            step.type_name(),
-                            MULTI_ACTION_DEADLINE.as_secs()
-                        ));
-                    }
-                    // An OBS step gets only what is left of the sequence's
-                    // deadline, so a slow OBS cannot push the sequence past it.
-                    let result = if step.uses_obs() {
-                        self.obs_action(step, Some(deadline))
-                    } else {
-                        self.execute(step)
-                    };
-                    result.map_err(|error| {
-                        format!(
-                            "multi_action step {} of {count} ({}) failed: {error}",
-                            index + 1,
-                            step.type_name()
-                        )
-                    })?;
-                }
+                self.run_steps(actions, "multi_action", deadline)?;
+            }
+            Action::Conditional {
+                when,
+                then,
+                otherwise,
+            } => {
+                let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
+                let holds = self.condition_holds(*when, deadline).map_err(|error| {
+                    format!(
+                        "conditional could not read {}: {error}; neither branch ran",
+                        when.name()
+                    )
+                })?;
+                let (branch, label) = if holds {
+                    (then, "conditional then")
+                } else {
+                    (otherwise, "conditional else")
+                };
+                self.run_steps(branch, label, deadline)?;
             }
         }
         Ok(())
+    }
+
+    /// Runs `steps` in order with fixed spacing, all inside `deadline`; the
+    /// first failure stops the rest. `label` names the sequence in errors.
+    fn run_steps(
+        &mut self,
+        steps: &[Action],
+        label: &str,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let count = steps.len();
+        for (index, step) in steps.iter().enumerate() {
+            if index > 0 {
+                self.pause(STEP_SPACING).map_err(|error| {
+                    format!(
+                        "{label} stopped before step {} of {count}: {error}",
+                        index + 1
+                    )
+                })?;
+            }
+            if self.sleeper.now() >= deadline {
+                return Err(format!(
+                    "{label} stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
+                    index + 1,
+                    step.type_name(),
+                    MULTI_ACTION_DEADLINE.as_secs()
+                ));
+            }
+            // An OBS step gets only what is left of the sequence's deadline,
+            // so a slow OBS cannot push the sequence past it.
+            let result = if step.uses_obs() {
+                self.obs_action(step, Some(deadline))
+            } else {
+                self.execute(step)
+            };
+            result.map_err(|error| {
+                format!(
+                    "{label} step {} of {count} ({}) failed: {error}",
+                    index + 1,
+                    step.type_name()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Reads a condition from OBS within what is left of `deadline`.
+    fn condition_holds(
+        &self,
+        condition: crate::profile::Condition,
+        deadline: std::time::Instant,
+    ) -> Result<bool, String> {
+        let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err("the overall deadline has passed; OBS was not contacted".into());
+        }
+        obs.clone()
+            .with_timeout(remaining)
+            .condition_holds(condition)
     }
 
     /// Runs an OBS action within `deadline` (on the sleeper's clock) when
@@ -2702,6 +2749,213 @@ mod tests {
             );
         });
         (port, server)
+    }
+
+    /// A fake OBS that serves one request per connection, `replies.len()`
+    /// connections in a row. Each reply is a request type and the
+    /// `responseData` to answer it with; the thread returns the request types
+    /// it saw, in order.
+    fn fake_obs_script(
+        replies: Vec<(&'static str, serde_json::Value)>,
+    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut seen_types = Vec::new();
+            for (request_type, data) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut chunk = [0; 4096];
+                while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).unwrap();
+                    seen.extend_from_slice(&chunk[..read]);
+                }
+                let request = String::from_utf8(seen).unwrap();
+                let key = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+                    .unwrap()
+                    .to_owned();
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                            crate::obs::tests_support::accept(&key)
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                let send = |stream: &mut std::net::TcpStream, text: String| {
+                    let mut frame = vec![0x81];
+                    if text.len() < 126 {
+                        frame.push(text.len() as u8);
+                    } else {
+                        frame.push(126);
+                        frame.extend_from_slice(&(text.len() as u16).to_be_bytes());
+                    }
+                    frame.extend_from_slice(text.as_bytes());
+                    stream.write_all(&frame).unwrap();
+                };
+                send(&mut stream, r#"{"op":0,"d":{"rpcVersion":1}}"#.into());
+                let _identify = crate::obs::tests_support::read_text(&mut stream);
+                send(
+                    &mut stream,
+                    r#"{"op":2,"d":{"negotiatedRpcVersion":1}}"#.into(),
+                );
+                let request = crate::obs::tests_support::read_text(&mut stream);
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["d"]["requestType"], request_type);
+                seen_types.push(request_type.to_string());
+                send(
+                    &mut stream,
+                    serde_json::json!({"op":7,"d":{"requestType":request_type,"requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100},"responseData":data}})
+                        .to_string(),
+                );
+            }
+            seen_types
+        });
+        (port, server)
+    }
+
+    fn conditional(when: crate::profile::Condition) -> Action {
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![Modifier::Command],
+        };
+        Action::Conditional {
+            when,
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        }
+    }
+
+    #[test]
+    fn a_conditional_runs_the_branch_the_obs_state_picks() {
+        use crate::profile::Condition;
+        for (active, expected_key) in [(true, "a"), (false, "b")] {
+            let (dispatcher, state) = fake(vec![success("")]);
+            let (port, server) = fake_obs_script(vec![(
+                "GetRecordStatus",
+                serde_json::json!({"outputActive":active}),
+            )]);
+            let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+                crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+                None,
+            )));
+            let action = conditional(Condition::Recording(true));
+            assert_eq!(dispatcher.unavailable(&action), None);
+            dispatcher.dispatch(&action).unwrap();
+            assert_eq!(server.join().unwrap(), ["GetRecordStatus"]);
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1, "exactly one branch step ran");
+            assert_eq!(
+                args(&state.requests[0]),
+                [
+                    "-e",
+                    format!(
+                        "tell application \"System Events\" to keystroke \"{expected_key}\" using {{command down}}"
+                    )
+                    .as_str()
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_conditional_compares_with_the_value_it_was_written_with() {
+        use crate::profile::Condition;
+        // `false` holds while OBS is not streaming, so `then` runs.
+        let (dispatcher, state) = fake(vec![success("")]);
+        let (port, server) = fake_obs_script(vec![(
+            "GetStreamStatus",
+            serde_json::json!({"outputActive":false}),
+        )]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        dispatcher
+            .dispatch(&conditional(Condition::Streaming(false)))
+            .unwrap();
+        server.join().unwrap();
+        let state = state.lock().unwrap();
+        assert!(args(&state.requests[0])[1].contains("keystroke \"a\""));
+    }
+
+    #[test]
+    fn a_conditional_without_an_else_does_nothing_when_the_condition_fails() {
+        use crate::profile::Condition;
+        let (dispatcher, state) = fake(vec![]);
+        let (port, server) = fake_obs_script(vec![(
+            "GetVirtualCamStatus",
+            serde_json::json!({"outputActive":false}),
+        )]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let action = Action::Conditional {
+            when: Condition::VirtualCamera(true),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(server.join().unwrap(), ["GetVirtualCamStatus"]);
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_conditional_that_cannot_read_obs_runs_neither_branch() {
+        use crate::profile::Condition;
+        // No endpoint at all.
+        let (mut dispatcher, state) = fake(vec![]);
+        let action = conditional(Condition::Recording(true));
+        assert_eq!(dispatcher.unavailable(&action), Some(OBS_UNAVAILABLE));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("neither branch ran"), "{error}");
+        assert!(state.lock().unwrap().requests.is_empty());
+
+        // An endpoint nothing listens on.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(
+            error.contains("could not read obs_recording") && error.contains("neither branch ran"),
+            "{error}"
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_conditional_branch_can_run_an_obs_step_after_the_read() {
+        use crate::profile::{Condition, ObsRecordOp};
+        let (mut dispatcher, _state) = fake(vec![]);
+        let (port, server) = fake_obs_script(vec![
+            ("GetRecordStatus", serde_json::json!({"outputActive":true})),
+            ("StopRecord", serde_json::Value::Null),
+        ]);
+        dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let action = Action::Conditional {
+            when: Condition::Recording(true),
+            then: vec![Action::ObsRecord {
+                op: ObsRecordOp::Stop,
+            }],
+            otherwise: vec![Action::ObsRecord {
+                op: ObsRecordOp::Start,
+            }],
+        };
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(server.join().unwrap(), ["GetRecordStatus", "StopRecord"]);
     }
 
     #[test]

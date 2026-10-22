@@ -120,11 +120,11 @@ export interface DialDisplay { content: DialDisplayContent; image?: string; sour
 // How bright the module screens are while the profile runs and the app drives them, in percent (10 to 100); a screen left
 // out is at full brightness. Mirrors ScreenBrightness in crates/cooltek-sdk-service/src/profile.rs.
 export interface ScreenBrightness { keys?: number; dial?: number }
-// Profile file schemas this version reads (1 flat bindings; 2 keypad pages; 3 current, the one it writes). Mirrors
+// Profile file schemas this version reads (1 flat bindings; 2 keypad pages; 3 the same layout; 4 current, the one it writes, adds the conditional action). Mirrors
 // Profile::OLDEST_SCHEMA and CURRENT_SCHEMA in crates/cooltek-sdk-service/src/profile.rs; a profile from a newer
 // version is refused with a message saying so.
 export const oldestSchema = 1;
-export const currentSchema = 3;
+export const currentSchema = 4;
 // The keypad is a page tree (schema 2 and later) rather than flat bindings (schema 1).
 export const usesKeypadPages = (profile: Pick<Profile, 'schema_version'>): boolean => profile.schema_version >= 2;
 export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness }

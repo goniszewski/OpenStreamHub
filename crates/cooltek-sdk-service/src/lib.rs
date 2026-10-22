@@ -31,8 +31,8 @@ pub use keypad::{
 };
 pub use macos::MacOsDispatcher;
 pub use profile::{
-    Action, Binding, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp, ObsMuteOp,
-    ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
+    Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
+    ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
     ScreenBrightness, ServiceModule, SystemCommand, TimerSound, is_invisible_text_character,
     key_for_virtual_code, virtual_key_code,
 };

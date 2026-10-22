@@ -512,6 +512,50 @@ pub struct MacroStep {
     pub hold_ms: u32,
 }
 
+/// The state a `conditional` action tests right before it picks a branch.
+///
+/// Written as a single-key object such as `{"obs_recording":true}`; a second
+/// key or an unknown key is refused. Each variant asks OBS over the local
+/// obs-websocket connection, so it needs the same endpoint as an OBS action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Condition {
+    /// OBS is streaming (`true`) or is not (`false`).
+    #[serde(rename = "obs_streaming")]
+    Streaming(bool),
+    /// OBS is recording (a paused recording counts as recording).
+    #[serde(rename = "obs_recording")]
+    Recording(bool),
+    /// The OBS virtual camera is running.
+    #[serde(rename = "obs_virtual_camera")]
+    VirtualCamera(bool),
+    /// The OBS replay buffer is running.
+    #[serde(rename = "obs_replay_buffer")]
+    ReplayBuffer(bool),
+}
+
+impl Condition {
+    /// The JSON key of this condition, for diagnostics.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Streaming(_) => "obs_streaming",
+            Self::Recording(_) => "obs_recording",
+            Self::VirtualCamera(_) => "obs_virtual_camera",
+            Self::ReplayBuffer(_) => "obs_replay_buffer",
+        }
+    }
+
+    /// The value the condition compares the live state with.
+    pub fn expected(&self) -> bool {
+        match self {
+            Self::Streaming(value)
+            | Self::Recording(value)
+            | Self::VirtualCamera(value)
+            | Self::ReplayBuffer(value) => *value,
+        }
+    }
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -583,6 +627,19 @@ pub enum Action {
         text: String,
         /// Press Return after pasting.
         press_enter: bool,
+    },
+    /// Test one condition right before running, then run the `then` steps when
+    /// it holds or the `otherwise` steps when it does not. A condition that
+    /// cannot be read fails the press and runs neither branch. Steps follow
+    /// the `multi_action` rules, and a `conditional` is not a step itself.
+    Conditional {
+        /// The state to test.
+        when: Condition,
+        /// 1 to 8 steps run when the condition holds.
+        then: Vec<Action>,
+        /// 0 to 8 steps run when it does not (JSON key `else`).
+        #[serde(rename = "else", skip_serializing_if = "Vec::is_empty")]
+        otherwise: Vec<Action>,
     },
     /// Run 2 to 8 executable, non-nested actions in order with fixed spacing.
     MultiAction {
@@ -940,6 +997,12 @@ impl<'de> Deserialize<'de> for Action {
                 #[serde(default)]
                 press_enter: bool,
             },
+            Conditional {
+                when: Condition,
+                then: Vec<Action>,
+                #[serde(default, rename = "else")]
+                otherwise: Vec<Action>,
+            },
             MultiAction {
                 actions: Vec<Action>,
             },
@@ -1027,6 +1090,15 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
+            Shape::Conditional {
+                when,
+                then,
+                otherwise,
+            } => Self::Conditional {
+                when,
+                then,
+                otherwise,
+            },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
             Shape::Macro { steps } => Self::Macro { steps },
             Shape::Profile { direction } => Self::Profile { direction },
@@ -1112,6 +1184,7 @@ impl Action {
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
+            Self::Conditional { .. } => "conditional",
             Self::MultiAction { .. } => "multi_action",
             Self::Macro { .. } => "macro",
             Self::Profile { .. } => "profile",
@@ -1168,6 +1241,9 @@ impl Action {
             | Self::ObsAdjustInputVolume { .. }
             | Self::ObsMediaSource { .. }
             | Self::ObsInputVolumeFromPosition { .. } => true,
+            // The condition itself is an OBS read, so the action needs OBS
+            // whatever its steps are.
+            Self::Conditional { .. } => true,
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -1337,6 +1413,26 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::Conditional {
+                when: _,
+                then,
+                otherwise,
+            } => {
+                if then.is_empty() || then.len() > Self::MAX_MULTI_ACTION_STEPS {
+                    return Err(format!(
+                        "conditional must run 1 to {} steps when the condition holds",
+                        Self::MAX_MULTI_ACTION_STEPS
+                    ));
+                }
+                if otherwise.len() > Self::MAX_MULTI_ACTION_STEPS {
+                    return Err(format!(
+                        "conditional else must have at most {} steps",
+                        Self::MAX_MULTI_ACTION_STEPS
+                    ));
+                }
+                Self::validate_steps(then, "conditional then", "conditional")?;
+                Self::validate_steps(otherwise, "conditional else", "conditional")
+            }
             Self::MultiAction { actions } => {
                 if !(Self::MIN_MULTI_ACTION_STEPS..=Self::MAX_MULTI_ACTION_STEPS)
                     .contains(&actions.len())
@@ -1347,36 +1443,7 @@ impl Action {
                         Self::MAX_MULTI_ACTION_STEPS
                     ));
                 }
-                for (index, step) in actions.iter().enumerate() {
-                    // A profile switch stops the running service, so it
-                    // could never be followed by the remaining steps. A timer
-                    // toggles per binding, which a step does not have; the
-                    // official app refuses timers in multi-task lists too. A
-                    // macro is already a timed sequence; nesting one would
-                    // split the overall deadline across two clocks.
-                    if matches!(
-                        step,
-                        Self::MultiAction { .. }
-                            | Self::Macro { .. }
-                            | Self::VolumeFromPosition
-                            | Self::MicInputVolumeFromPosition
-                            | Self::ObsInputVolumeFromPosition { .. }
-                            | Self::Profile { .. }
-                            | Self::Timer { .. }
-                            | Self::ObsStream {
-                                confirm: Some(_),
-                                ..
-                            }
-                    ) {
-                        return Err(format!(
-                            "multi_action step {}: {} cannot be a multi_action step",
-                            index + 1,
-                            step.type_name()
-                        ));
-                    }
-                    step.validate()
-                        .map_err(|error| format!("multi_action step {}: {error}", index + 1))?;
-                }
+                Self::validate_steps(actions, "multi_action", "multi_action")?;
                 Ok(())
             }
             Self::Timer { seconds, label, .. } => {
@@ -1411,6 +1478,43 @@ impl Action {
             | Self::ObsTransition
             | Self::ObsScreenshot => Ok(()),
         }
+    }
+
+    /// Validates the steps of a `multi_action` or a `conditional` branch.
+    ///
+    /// A profile switch stops the running service, so it could never be
+    /// followed by the remaining steps. A timer toggles per binding, which a
+    /// step does not have; the official app refuses timers in multi-task lists
+    /// too. A macro is already a timed sequence; nesting one would split the
+    /// overall deadline across two clocks. A `conditional` is not a step, so a
+    /// branch can never nest another test or loop.
+    fn validate_steps(steps: &[Action], label: &str, noun: &str) -> Result<(), String> {
+        for (index, step) in steps.iter().enumerate() {
+            if matches!(
+                step,
+                Self::MultiAction { .. }
+                    | Self::Conditional { .. }
+                    | Self::Macro { .. }
+                    | Self::VolumeFromPosition
+                    | Self::MicInputVolumeFromPosition
+                    | Self::ObsInputVolumeFromPosition { .. }
+                    | Self::Profile { .. }
+                    | Self::Timer { .. }
+                    | Self::ObsStream {
+                        confirm: Some(_),
+                        ..
+                    }
+            ) {
+                return Err(format!(
+                    "{label} step {}: {} cannot be a {noun} step",
+                    index + 1,
+                    step.type_name()
+                ));
+            }
+            step.validate()
+                .map_err(|error| format!("{label} step {}: {error}", index + 1))?;
+        }
+        Ok(())
     }
 
     /// Validates an operation and rejects templates lacking a resolved input value.
@@ -1531,9 +1635,9 @@ impl Profile {
     ///
     /// History: 1 flat bindings; 2 keypad page tree, with dial functions, dial display and screen brightness added as
     /// optional fields; 3 the same layout under a defined upgrade path, so a newer file is recognised as newer rather
-    /// than refused as malformed. Raise it, and add an upgrade step to [`Profile::into_current`], whenever a change
+    /// than refused as malformed; 4 adds the `conditional` action. Raise it, and add an upgrade step to [`Profile::into_current`], whenever a change
     /// would make an older build misread a profile.
-    pub const CURRENT_SCHEMA: u32 = 3;
+    pub const CURRENT_SCHEMA: u32 = 4;
 
     /// Parses bounded JSON and checks its complete semantic constraints.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
@@ -1564,9 +1668,9 @@ impl Profile {
     pub fn validate(&self) -> Result<(), String> {
         match (self.schema_version, self.keypad.as_ref()) {
             (1, None) => {}
-            (2 | 3, Some(keypad)) => keypad.validate()?,
+            (2..=4, Some(keypad)) => keypad.validate()?,
             (1, Some(_)) => return Err("schema 1 profiles must omit keypad pages".into()),
-            (version @ (2 | 3), None) => {
+            (version @ 2..=4, None) => {
                 return Err(format!("schema {version} profiles require keypad pages"));
             }
             (version, _) => {
@@ -2853,6 +2957,145 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn conditional_round_trips_and_is_strict() {
+        let json = r#"{"type":"conditional","when":{"obs_recording":true},"then":[{"type":"obs_record","op":"stop"}],"else":[{"type":"obs_record","op":"start"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(
+            action,
+            Action::Conditional {
+                when: Condition::Recording(true),
+                then: vec![Action::ObsRecord {
+                    op: ObsRecordOp::Stop
+                }],
+                otherwise: vec![Action::ObsRecord {
+                    op: ObsRecordOp::Start
+                }],
+            }
+        );
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+
+        // `else` is optional and is left out again when empty.
+        let short = r#"{"type":"conditional","when":{"obs_streaming":false},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(short).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), short);
+
+        for bad in [
+            // two keys in `when`, an unknown condition, a non-boolean value
+            r#"{"type":"conditional","when":{"obs_recording":true,"obs_streaming":true},"then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_cloud":true},"then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_recording":"yes"},"then":[{"type":"toggle_mute"}]}"#,
+            // a missing condition or branch, and an unknown field
+            r#"{"type":"conditional","then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_recording":true}}"#,
+            r#"{"type":"conditional","when":{"obs_recording":true},"then":[{"type":"toggle_mute"}],"extra":1}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn conditional_branches_follow_the_multi_action_step_rules() {
+        let mute = || Action::ToggleMute;
+        let conditional = |then: Vec<Action>, otherwise: Vec<Action>| Action::Conditional {
+            when: Condition::Streaming(true),
+            then,
+            otherwise,
+        };
+        conditional(vec![mute()], vec![]).validate().unwrap();
+        conditional(vec![mute(); 8], vec![mute(); 8])
+            .validate()
+            .unwrap();
+
+        assert!(
+            conditional(vec![], vec![mute()])
+                .validate()
+                .unwrap_err()
+                .contains("1 to 8 steps")
+        );
+        assert!(
+            conditional(vec![mute(); 9], vec![])
+                .validate()
+                .unwrap_err()
+                .contains("1 to 8 steps")
+        );
+        assert!(
+            conditional(vec![mute()], vec![mute(); 9])
+                .validate()
+                .unwrap_err()
+                .contains("at most 8 steps")
+        );
+
+        // No nesting, no loops, and nothing a multi_action step cannot be.
+        let nested = conditional(vec![mute()], vec![]);
+        for step in [
+            nested.clone(),
+            Action::MultiAction {
+                actions: vec![mute(), mute()],
+            },
+            Action::Macro {
+                steps: vec![MacroStep {
+                    key: "a".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 50,
+                }],
+            },
+            Action::Profile {
+                direction: ProfileDirection::Next,
+            },
+            Action::Timer {
+                seconds: 5,
+                label: None,
+                sound: None,
+            },
+            Action::VolumeFromPosition,
+        ] {
+            let name = step.type_name();
+            let error = conditional(vec![mute()], vec![step.clone()])
+                .validate()
+                .unwrap_err();
+            assert!(
+                error.contains(&format!("conditional else step 1: {name} cannot be")),
+                "{error}"
+            );
+            let error = conditional(vec![step], vec![]).validate().unwrap_err();
+            assert!(
+                error.contains(&format!("conditional then step 1: {name} cannot be")),
+                "{error}"
+            );
+        }
+
+        // An invalid step is named with its branch.
+        let error = conditional(vec![mute(), Action::SetVolume { percent: 101 }], vec![])
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("conditional then step 2"), "{error}");
+        // A conditional is never a multi_action step either.
+        let error = Action::MultiAction {
+            actions: vec![mute(), nested],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("conditional cannot be a multi_action step"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_conditional_needs_obs_even_when_its_steps_do_not() {
+        let action = Action::Conditional {
+            when: Condition::Recording(true),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        assert!(action.uses_obs());
+        assert_eq!(action.type_name(), "conditional");
     }
 
     #[test]

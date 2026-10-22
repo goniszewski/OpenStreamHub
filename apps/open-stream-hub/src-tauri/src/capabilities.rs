@@ -83,6 +83,22 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::Text { text, press_enter } => {
             set.insert(format!("text\0{text}\0{press_enter}"));
         }
+        Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } => {
+            // The test and both branches are the identity: a changed
+            // condition or a swapped branch is a new item. Every step of
+            // either branch could run, so each counts on its own too.
+            match serde_json::to_string(&(when, then, otherwise)) {
+                Ok(identity) => set.insert(format!("conditional\0{identity}")),
+                Err(_) => set.insert("conditional\0unnameable".into()),
+            };
+            for step in then.iter().chain(otherwise) {
+                visit(step, set);
+            }
+        }
         Action::MultiAction { actions } => {
             // The JSON of the typed steps is a stable identity, so a known
             // set of steps in a new order is still a new sequence item.
@@ -227,6 +243,56 @@ mod tests {
             text: text.into(),
             press_enter,
         }
+    }
+
+    #[test]
+    fn a_conditional_adds_its_test_its_branches_and_every_step() {
+        use cooltek_sdk_service::Condition;
+        let conditional = |when: Condition, then: Vec<Action>, otherwise: Vec<Action>| {
+            profile(vec![Action::Conditional {
+                when,
+                then,
+                otherwise,
+            }])
+        };
+        let held = conditional(
+            Condition::Recording(true),
+            vec![Action::ToggleMute],
+            vec![text("hi", false)],
+        );
+        assert!(!adds_capabilities(&held, &held));
+        // The same steps under another condition, or swapped between the
+        // branches, are a new conditional.
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Streaming(true),
+                vec![Action::ToggleMute],
+                vec![text("hi", false)]
+            )
+        ));
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Recording(true),
+                vec![text("hi", false)],
+                vec![Action::ToggleMute]
+            )
+        ));
+        // A step of a branch counts on its own: a new snippet is an addition.
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Recording(true),
+                vec![Action::ToggleMute],
+                vec![text("other", false)]
+            )
+        ));
+        // Without a conditional, the held steps alone do not cover it.
+        assert!(adds_capabilities(
+            &profile(vec![Action::ToggleMute, text("hi", false)]),
+            &held
+        ));
     }
 
     #[test]

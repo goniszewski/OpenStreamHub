@@ -32,7 +32,8 @@
 //! masked text, pong and close frames and reads the frames listed above.
 
 use crate::profile::{
-    Action, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp,
+    Action, Condition, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp,
+    ObsSwitchOp,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
@@ -321,6 +322,20 @@ impl ObsClient {
     /// error the request may or may not have taken effect.
     pub fn request(&self, request: &ObsRequest) -> Result<Value, String> {
         self.session(|session| session.request(request))
+    }
+
+    /// Reads whether `condition` holds in OBS right now, on a fresh connection
+    /// and within this client's timeout. An answer OBS does not give is an
+    /// error, never `false`, so a caller cannot take the wrong branch.
+    pub fn condition_holds(&self, condition: Condition) -> Result<bool, String> {
+        let request = match condition {
+            Condition::Streaming(_) => "GetStreamStatus",
+            Condition::Recording(_) => "GetRecordStatus",
+            Condition::VirtualCamera(_) => "GetVirtualCamStatus",
+            Condition::ReplayBuffer(_) => "GetReplayBufferStatus",
+        };
+        let data = self.request(&ObsRequest::new(request))?;
+        Ok(response_flag(&data, "outputActive")? == condition.expected())
     }
 
     /// Runs an OBS action on one connection. Actions that need OBS's answer

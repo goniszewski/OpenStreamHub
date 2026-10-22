@@ -192,6 +192,6 @@ describe('profile schema upgrade', () => {
 
   it('names a profile from a newer version instead of calling it unsupported', async () => {
     const { upgradeKeypadProfile } = await import('./keypad-model');
-    expect(() => upgradeKeypadProfile({ schema_version: 4, name: 'x', bindings: [] })).toThrow(/newer version/);
+    expect(() => upgradeKeypadProfile({ schema_version: 5, name: 'x', bindings: [] })).toThrow(/newer version/);
   });
 });

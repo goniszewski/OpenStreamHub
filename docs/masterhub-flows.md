@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: design only, nothing implemented (22 October 2026). Decisions taken with the owner:
+Status: step 1 of the build order is implemented in the service (22 October 2026): the `conditional` action, schema 4, and the four OBS output conditions, tested with a fake OBS only. No editor yet and no hardware check. Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.
@@ -23,8 +23,8 @@ The official app has no conditional flows, so this is our own extension. It need
 - `then` has 1 to 8 steps, `else` is optional (0 to 8). A missing or empty `else` means do nothing.
 - Steps are the same executable actions a `multi_action` step may be, with the same exclusions (no nesting, no `macro`, no `profile`, no `timer`, no `*_from_position` templates). A `conditional` is therefore not a step of another `conditional` or of a `multi_action`. Keeps one deadline and no loops.
 - A branch runs like a `multi_action`: steps in order, fixed spacing, a failure stops the rest of the branch.
-- Binds to discrete controls only (keys, dial press), like `multi_action`.
-- Schema: this needs a new action type, so it should bump the profile schema to 4. Older builds then refuse the profile (the accepted behaviour from schema 3).
+- Binds wherever a `multi_action` does (it is not a fader template).
+- Schema: this is a new action type, so the profile schema is now 4. Older builds then refuse the profile (the accepted behaviour from schema 3).
 
 ## Conditions
 
@@ -32,7 +32,7 @@ One condition per `when`, a single key with a value:
 
 | Group | Key | Value | Read from |
 | --- | --- | --- | --- |
-| OBS | `obs_streaming`, `obs_recording`, `obs_virtual_camera`, `obs_replay_buffer` | bool | `Get*Status` over the existing obs-websocket session |
+| OBS | `obs_streaming`, `obs_recording`, `obs_virtual_camera`, `obs_replay_buffer` (built) | bool | `Get*Status` over the existing obs-websocket session |
 | OBS | `obs_scene` | scene name | `GetCurrentProgramScene` (already used) |
 | OBS | `obs_input_muted` | `{ "input": name, "muted": bool }` | `GetInputMute` |
 | System | `output_muted` | bool | the same reader `toggle_mute` uses |

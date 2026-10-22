@@ -616,6 +616,9 @@ fn shortcut_count(action: &Action) -> usize {
     match action {
         Action::Shortcut { .. } => 1,
         Action::MultiAction { actions } => actions.iter().map(shortcut_count).sum(),
+        Action::Conditional {
+            then, otherwise, ..
+        } => then.iter().chain(otherwise).map(shortcut_count).sum(),
         _ => 0,
     }
 }
@@ -626,6 +629,9 @@ fn payload_bytes(action: &Action) -> usize {
         Action::Text { text, .. } => json_len(text),
         Action::OpenUrl { url } => json_len(url),
         Action::MultiAction { actions } => actions.iter().map(payload_bytes).sum(),
+        Action::Conditional {
+            then, otherwise, ..
+        } => then.iter().chain(otherwise).map(payload_bytes).sum(),
         _ => 0,
     }
 }

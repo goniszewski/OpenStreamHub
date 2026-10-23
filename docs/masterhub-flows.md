@@ -1,6 +1,6 @@
 # Conditional flows: design
 
-Status: steps 1 and part of 3 of the build order are implemented in the service (22 October 2026): the `conditional` action, schema 4, the four OBS output conditions, and the two output conditions (`output_muted`, `output_volume_at_least`), `timer_running`, `focused_app` and AND / OR, tested with fakes only. The System Events script for the front app was run once by hand on this Mac and printed the terminal's bundle id; it has not been run from a key. The dial function condition is not built (see below). System conditions need no OBS endpoint. The app editor (step 5) is built: "If / else" in the action picker, under Timers & sequences, with the condition, a Then list and an optional Otherwise list; the run confirmation lists both branches and rates the profile at least elevated. It has unit and render tests only and has not been looked at in the running app. The hardware check was skipped by decision (22 October 2026); a ready profile is not kept, so it would need writing again. Decisions taken with the owner:
+Status (23 October 2026): the `conditional` action, nesting of AND / OR groups and of if / else blocks, user-defined variables (schema 5) and the app editor with drag-and-drop are built, tested with fakes and unit and render tests only. The drag gesture itself was tried in a browser by the owner, not on hardware; the hardware check was skipped by decision. The System Events script for the front app was run once by hand. The dial function condition is not built (see below). Decisions taken with the owner:
 
 - Shape: one new `conditional` action (if / else), not a graph.
 - Conditions: OBS state, focused app, system state, dial function.
@@ -19,7 +19,7 @@ The official app has no conditional flows, so this is our own extension. It need
 }
 ```
 
-- `when` holds one condition (see below), or `{"all":[…]}` (AND) / `{"any":[…]}` (OR) of 2 to 8 plain conditions. They do not nest and cannot be mixed in one block, so there are no precedence rules; every member is read (no early exit), and one that cannot be read fails the press. `not` is covered by swapping `then` and `else`, or by writing the condition with `false`.
+- `when` holds one condition (see below), or `{"all":[…]}` (AND) / `{"any":[…]}` (OR) of 2 to 8 plain conditions. They nest and mix (see Nesting), so the grouping is the precedence; every member is read (no early exit), and one that cannot be read fails the press. `not` is covered by swapping `then` and `else`, or by writing the condition with `false`.
 - `then` has 1 to 8 steps, `else` is optional (0 to 8). A missing or empty `else` means do nothing.
 - Steps are the same executable actions a `multi_action` step may be, with the same exclusions (no nesting, no `macro`, no `profile`, no `timer`, no `*_from_position` templates). A `conditional` is therefore not a step of another `conditional` or of a `multi_action`. Keeps one deadline and no loops.
 - A branch runs like a `multi_action`: steps in order, fixed spacing, a failure stops the rest of the branch.

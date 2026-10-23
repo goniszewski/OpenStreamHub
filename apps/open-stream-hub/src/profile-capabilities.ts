@@ -166,7 +166,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
       // timer shows a notification and plays a fixed system sound; its label is plain notification text.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer': break;
+      // A variable is the profile's own memory: it reaches nothing outside the service.
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer':
+      case 'set_variable': case 'toggle_variable': case 'add_to_variable': break;
       // A media key or a stop of an already running player: disclosed, but low risk.
       case 'media': if (action.command === 'stop') mediaStop = true; else mediaKeys = true; break;
       case 'shortcut': if (submitKey(action)) submits = true; break;

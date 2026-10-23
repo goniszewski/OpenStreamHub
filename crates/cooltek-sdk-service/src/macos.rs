@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
-    TimerAlert, TimerAlerter,
+    TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
 };
 use std::{
@@ -345,6 +345,8 @@ pub struct MacOsDispatcher {
     media_access_requested: bool,
     /// The service state handed over before the current action.
     service_state: ServiceState,
+    /// Current values of the declared variables, by name.
+    variables: std::collections::HashMap<String, crate::profile::VariableValue>,
 }
 
 impl MacOsDispatcher {
@@ -356,6 +358,7 @@ impl MacOsDispatcher {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         }
     }
 
@@ -372,6 +375,7 @@ impl MacOsDispatcher {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         }
     }
 
@@ -720,22 +724,69 @@ impl MacOsDispatcher {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_steps(actions, "multi_action", deadline)?;
             }
-            Action::Conditional {
-                when,
-                then,
-                otherwise,
-            } => {
+            Action::SetVariable { name, value } => {
+                let slot = self.variable_mut(name)?;
+                if slot.kind() != value.kind() {
+                    return Err(format!(
+                        "variable {name} is {}, not {}; no action was taken",
+                        slot.kind().name(),
+                        value.kind().name()
+                    ));
+                }
+                *slot = value.clone();
+            }
+            Action::ToggleVariable { name } => match self.variable_mut(name)? {
+                VariableValue::Bool(flag) => *flag = !*flag,
+                other => {
+                    return Err(format!(
+                        "variable {name} is {}, not bool; no action was taken",
+                        other.kind().name()
+                    ));
+                }
+            },
+            Action::AddToVariable { name, amount } => match self.variable_mut(name)? {
+                VariableValue::Number(number) => {
+                    *number = number
+                        .saturating_add(*amount)
+                        .clamp(VariableValue::MIN_NUMBER, VariableValue::MAX_NUMBER);
+                }
+                other => {
+                    return Err(format!(
+                        "variable {name} is {}, not number; no action was taken",
+                        other.kind().name()
+                    ));
+                }
+            },
+            Action::Conditional { .. } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                let holds = self.evaluate_condition(when, deadline)?;
-                let (branch, label) = if holds {
-                    (then, "conditional then")
-                } else {
-                    (otherwise, "conditional else")
-                };
-                self.run_steps(branch, label, deadline)?;
+                self.run_conditional(action, deadline)?;
             }
         }
         Ok(())
+    }
+
+    /// Reads the condition of a `conditional`, then runs the branch it picks.
+    /// A nested `conditional` shares the outer one's `deadline`.
+    fn run_conditional(
+        &mut self,
+        action: &Action,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } = action
+        else {
+            return Err("not a conditional".into());
+        };
+        let holds = self.evaluate_condition(when, deadline)?;
+        let (branch, label) = if holds {
+            (then, "conditional then")
+        } else {
+            (otherwise, "conditional else")
+        };
+        self.run_steps(branch, label, deadline)
     }
 
     /// Runs `steps` in order with fixed spacing, all inside `deadline`; the
@@ -766,7 +817,9 @@ impl MacOsDispatcher {
             }
             // An OBS step gets only what is left of the sequence's deadline,
             // so a slow OBS cannot push the sequence past it.
-            let result = if step.uses_obs() {
+            let result = if matches!(step, Action::Conditional { .. }) {
+                self.run_conditional(step, deadline)
+            } else if step.uses_obs() {
                 self.obs_action(step, Some(deadline))
             } else {
                 self.execute(step)
@@ -818,6 +871,13 @@ impl MacOsDispatcher {
         }
     }
 
+    /// The current value of a declared variable.
+    fn variable_mut(&mut self, name: &str) -> Result<&mut VariableValue, String> {
+        self.variables
+            .get_mut(name)
+            .ok_or_else(|| format!("variable {name} is not declared; no action was taken"))
+    }
+
     /// Reads a condition about the default output from macOS.
     fn system_condition_holds(
         &mut self,
@@ -828,6 +888,23 @@ impl MacOsDispatcher {
             Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
             Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
             Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
+            Condition::VariableIs { name, value } => match self.variables.get(name) {
+                Some(current) if current.kind() == value.kind() => Ok(current == value),
+                Some(current) => Err(format!(
+                    "variable {name} is {}, not {}",
+                    current.kind().name(),
+                    value.kind().name()
+                )),
+                None => Err(format!("variable {name} is not declared")),
+            },
+            Condition::VariableAtLeast { name, value } => match self.variables.get(name) {
+                Some(VariableValue::Number(current)) => Ok(current >= value),
+                Some(other) => Err(format!(
+                    "variable {name} is {}, not number",
+                    other.kind().name()
+                )),
+                None => Err(format!("variable {name} is not declared")),
+            },
             Condition::FocusedApp(bundle_id) => {
                 Ok(self.frontmost_bundle_id()?.eq_ignore_ascii_case(bundle_id))
             }
@@ -985,6 +1062,17 @@ impl Default for MacOsDispatcher {
 
 impl ActionDispatcher for MacOsDispatcher {
     fn set_service_state(&mut self, state: ServiceState) {
+        // A variable keeps its value while its name and kind stay; anything
+        // else starts at the declared value, and an undeclared one is dropped.
+        let mut kept = std::collections::HashMap::new();
+        for variable in &state.variables {
+            let value = match self.variables.remove(&variable.name) {
+                Some(current) if current.kind() == variable.value.kind() => current,
+                _ => variable.value.clone(),
+            };
+            kept.insert(variable.name.clone(), value);
+        }
+        self.variables = kept;
         self.service_state = state;
     }
 
@@ -1054,6 +1142,7 @@ impl ActionDispatcher for MacOsDispatcher {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         }))
     }
 }
@@ -1591,6 +1680,7 @@ mod tests {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         (dispatcher, state)
     }
@@ -2182,6 +2272,7 @@ mod tests {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         assert!(
             dispatcher
@@ -2273,6 +2364,7 @@ mod tests {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -3038,6 +3130,165 @@ mod tests {
     }
 
     #[test]
+    fn variables_keep_their_values_between_actions_and_follow_the_declarations() {
+        use crate::profile::{Condition, Variable};
+        let declared = |takes: i32, live: bool| ServiceState {
+            variables: vec![
+                Variable {
+                    name: "takes".into(),
+                    value: VariableValue::Number(takes),
+                },
+                Variable {
+                    name: "live".into(),
+                    value: VariableValue::Bool(live),
+                },
+            ],
+            ..Default::default()
+        };
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher.set_service_state(declared(0, false));
+        let add = |amount| Action::AddToVariable {
+            name: "takes".into(),
+            amount,
+        };
+        dispatcher.dispatch(&add(2)).unwrap();
+        dispatcher.dispatch(&add(3)).unwrap();
+        dispatcher
+            .dispatch(&Action::ToggleVariable {
+                name: "live".into(),
+            })
+            .unwrap();
+        // The declarations are handed over again before every press and never reset a value.
+        dispatcher.set_service_state(declared(0, false));
+        let when = |name: &str, value: i32| Condition::VariableAtLeast {
+            name: name.into(),
+            value,
+        };
+        let test = |when: Condition| Action::Conditional {
+            when,
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        // takes = 5, live = true; no process runs for the tests themselves.
+        dispatcher
+            .dispatch(&test(Condition::All(vec![
+                when("takes", 5),
+                Condition::VariableIs {
+                    name: "live".into(),
+                    value: VariableValue::Bool(true),
+                },
+            ])))
+            .unwrap();
+        assert!(state.lock().unwrap().requests[0].args[1].contains("keystroke \"a\""));
+
+        // Numbers stop at the limits, and a set replaces the value.
+        dispatcher
+            .dispatch(&add(VariableValue::MAX_NUMBER))
+            .unwrap();
+        dispatcher
+            .dispatch(&add(VariableValue::MAX_NUMBER))
+            .unwrap();
+        assert_eq!(
+            dispatcher.variables["takes"],
+            VariableValue::Number(VariableValue::MAX_NUMBER)
+        );
+        dispatcher
+            .dispatch(&Action::SetVariable {
+                name: "takes".into(),
+                value: VariableValue::Number(1),
+            })
+            .unwrap();
+        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+
+        // A wrong kind or an undeclared name fails and changes nothing.
+        let error = dispatcher
+            .dispatch(&Action::ToggleVariable {
+                name: "takes".into(),
+            })
+            .unwrap_err();
+        assert!(error.contains("not bool"), "{error}");
+        let error = dispatcher
+            .dispatch(&Action::AddToVariable {
+                name: "nope".into(),
+                amount: 1,
+            })
+            .unwrap_err();
+        assert!(error.contains("not declared"), "{error}");
+        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+
+        // A swap keeps a variable of the same name and kind, starts a new one
+        // at its declared value, and drops what is no longer declared.
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![
+                Variable {
+                    name: "takes".into(),
+                    value: VariableValue::Text("changed kind".into()),
+                },
+                Variable {
+                    name: "live".into(),
+                    value: VariableValue::Bool(false),
+                },
+                Variable {
+                    name: "fresh".into(),
+                    value: VariableValue::Number(9),
+                },
+            ],
+            ..Default::default()
+        });
+        assert_eq!(dispatcher.variables["live"], VariableValue::Bool(true));
+        assert_eq!(
+            dispatcher.variables["takes"],
+            VariableValue::Text("changed kind".into())
+        );
+        assert_eq!(dispatcher.variables["fresh"], VariableValue::Number(9));
+        assert_eq!(dispatcher.variables.len(), 3);
+    }
+
+    #[test]
+    fn nested_groups_and_a_nested_conditional_read_in_order_on_one_deadline() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // all[ muted=false, any[ muted=true, volume>=40 ] ]: false, then the
+        // group reads muted (false) and volume (40); holds. Then the inner
+        // conditional reads muted (false) and runs its else branch.
+        let (mut dispatcher, state) = fake(vec![
+            success("false"),
+            success("false"),
+            success("40"),
+            success("false"),
+            success(""),
+        ]);
+        let inner = Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        dispatcher
+            .dispatch(&Action::Conditional {
+                when: Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::Any(vec![
+                        Condition::OutputMuted(true),
+                        Condition::OutputVolumeAtLeast(40),
+                    ]),
+                ]),
+                then: vec![inner],
+                otherwise: vec![key("c")],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 5);
+        assert!(state.requests[4].args[1].contains("keystroke \"b\""));
+    }
+
+    #[test]
     fn all_needs_every_member_and_any_needs_one_and_both_read_every_member() {
         use crate::profile::Condition;
         let key = |key: &str| Action::Shortcut {
@@ -3132,6 +3383,7 @@ mod tests {
             let (mut dispatcher, state) = fake(vec![success("")]);
             dispatcher.set_service_state(ServiceState {
                 timer_running: running,
+                ..Default::default()
             });
             dispatcher
                 .dispatch(&conditional(Condition::TimerRunning(expected)))
@@ -3752,6 +4004,7 @@ mod tests {
                 obs: None,
                 media_access_requested: false,
                 service_state: ServiceState::default(),
+                variables: Default::default(),
             };
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
             assert!(error.contains("action execution cancelled"), "{error}");
@@ -4322,6 +4575,7 @@ mod tests {
             obs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

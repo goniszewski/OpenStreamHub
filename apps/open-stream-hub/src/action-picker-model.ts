@@ -6,12 +6,12 @@ import type { StepActionType } from './action-model';
 // OBS entry ('obs'), which stands in for the ten obs_* step action types.
 export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs';
 
-export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'navigation';
+export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'variables' | 'navigation';
 
 // Category order is the picker's display order.
 export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> = [
   ['audio', 'Audio'], ['keyboard', 'Keyboard'], ['apps', 'Apps & web'], ['media', 'Media'], ['system', 'System'],
-  ['obs', 'OBS'], ['sequences', 'Timers & sequences'], ['navigation', 'Navigation'],
+  ['obs', 'OBS'], ['sequences', 'Timers & sequences'], ['variables', 'Variables'], ['navigation', 'Navigation'],
 ];
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
@@ -42,6 +42,9 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['multi_action', 'sequences', 'sequence steps batch several queue'],
   ['conditional', 'sequences', 'if else condition branch when depends state recording streaming muted volume flow'],
   ['macro', 'sequences', 'record macro keystrokes timing timeline replay type'],
+  ['set_variable', 'variables', 'variable value remember store state flag counter number text'],
+  ['toggle_variable', 'variables', 'variable flip switch on off bool flag toggle state'],
+  ['add_to_variable', 'variables', 'variable add subtract count counter increment decrement number plus minus'],
   ['profile', 'navigation', 'next previous saved profiles change'],
 ];
 
@@ -69,7 +72,8 @@ export function pickerEntryIsCurrent(entry: PickerActionType, action: PickerActi
 
 // Which catalogue the picker offers: faders take only the position-driven actions, multi-action
 // steps cannot nest multi-actions, profiles or timers, and every other control offers all but the fader actions.
-export type PickerScope = 'binding' | 'binding-fader' | 'step';
+// A 'branch' step is a step of an if / else list, which may also hold another if / else.
+export type PickerScope = 'binding' | 'binding-fader' | 'step' | 'branch';
 
 const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position'];
 // A macro is a binding-level sequence like a multi-action: never a step.
@@ -78,6 +82,7 @@ const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditio
 export function entriesForScope(scope: PickerScope): ReadonlyArray<PickerEntry> {
   if (scope === 'binding-fader') return pickerEntries.filter(entry => faderTypes.includes(entry.type));
   if (scope === 'step') return pickerEntries.filter(entry => !stepExcluded.includes(entry.type));
+  if (scope === 'branch') return pickerEntries.filter(entry => entry.type === 'conditional' || !stepExcluded.includes(entry.type));
   return pickerEntries.filter(entry => !faderTypes.includes(entry.type));
 }
 

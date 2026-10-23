@@ -16,7 +16,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'conditional', 'macro', 'profile'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -80,7 +80,7 @@ describe('scope filtering', () => {
 
   it('groups the visible entries by category and drops empty groups', () => {
     const groups = pickerGroups('', 'binding');
-    expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Timers & sequences', 'Navigation']);
+    expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Timers & sequences', 'Variables', 'Navigation']);
     expect(groups.find(group => group.category === 'obs')!.entries).toHaveLength(1);
     expect(pickerGroups('', 'binding-fader').map(group => group.label)).toEqual(['Audio', 'OBS']);
   });

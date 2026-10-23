@@ -88,6 +88,22 @@ Each module runs in its own process, and the dial's bindings already live inside
 
 Each step is shippable, and step 1 is useful without the rest.
 
+## Nesting (decided 23 October 2026)
+
+- `all` / `any` nest in each other and mix: at most 3 levels, at most 16 tests in all, 2 to 8 members per group. The nesting is the grouping, so there are no precedence rules. Every test is still read, in order, with no early exit.
+- A `conditional` may be a step of a `then` or `else` list of another `conditional` (3 levels at most, 32 steps in all branches counting nested ones). It is still never a step of a `multi_action`, and nothing loops. A nested one is read when it is reached, on the same 15 s deadline as the outer one.
+- No schema change: it only loosens what schema 4 allows. An older schema-4 build refuses such a profile on validation.
+- Editor: conditions and steps are blocks you drag to reorder, move between groups and lists, or into a nested group / if-else.
+
+## Variables (decided 23 October 2026)
+
+- Declared in the profile: `"variables":[{"name":"takes","value":0},{"name":"live","value":false}]`. A value is a bool, a whole number (-1 000 000 to 1 000 000) or text (up to 64 bytes). At most 16; a name is 1 to 32 characters of `a-z`, `0-9`, `_` starting with a letter. The kind never changes after the declaration.
+- Per profile and per module process. Values start at the declared value when the service starts and are kept across presses, not across a service restart (a profile switch restarts it). Not shared between modules.
+- Actions (steps of a `multi_action` or a branch too): `set_variable {name, value}`, `toggle_variable {name}` (bool), `add_to_variable {name, amount}` (number; a result outside the range stops at the limit).
+- Conditions: `variable_is {name, value}` (any kind), `variable_at_least {name, value}` (number).
+- A name that is not declared, or an action or test of the wrong kind, is refused when the profile is validated, not at press time.
+- Schema 5.
+
 ## Not in scope
 
-Loops, variables, waiting for a state ("wait until recording"), nested or mixed AND / OR, conditions on a held key or gesture, and user scripts.
+Loops, waiting for a state ("wait until recording"), conditions on a held key or gesture, variables shared between modules, variables saved across a service restart, `{name}` placeholders in text or URLs, and user scripts.

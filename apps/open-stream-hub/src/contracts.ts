@@ -55,7 +55,16 @@ export type StepAction =
   // Mute an input, step its volume by dB (held between -100 and 0 dB), or play/pause/restart/stop a media source.
   | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }
   | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
-  | { type: 'obs_media_source'; input: string; op: ObsMediaOp };
+  | { type: 'obs_media_source'; input: string; op: ObsMediaOp }
+  // The profile's own variables (declared in Profile.variables): set one, flip a bool, or add to a number (a result past the limits stops there).
+  | { type: 'set_variable'; name: string; value: VariableValue }
+  | { type: 'toggle_variable'; name: string }
+  | { type: 'add_to_variable'; name: string; amount: number };
+// A variable's value is its kind: a bool, a whole number (-1 000 000 to 1 000 000) or text (up to 64 bytes). VariableValue in profile.rs.
+export type VariableValue = boolean | number | string;
+export type VariableKind = 'bool' | 'number' | 'text';
+// Declared in the profile; the value is where it starts when the service starts. Kept across key presses, per module process.
+export interface Variable { name: string; value: VariableValue }
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
 // With press_twice a key must be pressed twice within three seconds; only a key's own action, not a multi-action step.
 export type ObsConfirm = 'press_twice';
@@ -66,8 +75,8 @@ export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
 // The state a conditional tests (Condition in profile.rs): one key with a value, or all/any of several. The first four read an OBS output and
 // need the OBS connection; the last two read the default output of this Mac.
-export type Condition = LeafCondition | { all: LeafCondition[] } | { any: LeafCondition[] };
-// `all` (AND) and `any` (OR) combine 2 to 8 plain conditions; they do not nest or mix.
+export type Condition = LeafCondition | { all: Condition[] } | { any: Condition[] };
+// `all` (AND) and `any` (OR) combine 2 to 8 conditions and nest in each other (3 levels, 16 tests in all).
 export type LeafCondition =
   | { obs_streaming: boolean }
   | { obs_recording: boolean }
@@ -78,13 +87,17 @@ export type LeafCondition =
   // A timer countdown started by this module's bindings is running.
   | { timer_running: boolean }
   // The frontmost application has this bundle identifier (read on this Mac when the key is pressed).
-  | { focused_app: string };
+  | { focused_app: string }
+  | { variable_is: { name: string; value: VariableValue } }
+  | { variable_at_least: { name: string; value: number } };
+export type BranchStep = StepAction | ConditionalAction;
+export interface ConditionalAction { type: 'conditional'; when: Condition; then: BranchStep[]; else?: BranchStep[] }
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
   // Tests one condition when pressed, then runs the `then` steps (1-8) or the `else` steps (0-8, omitted when empty).
-  // Steps follow the multi_action rules; never a step itself.
-  | { type: 'conditional'; when: Condition; then: StepAction[]; else?: StepAction[] }
+  // Steps follow the multi_action rules; a conditional may also be a step of another conditional (3 levels, 32 steps in all).
+  | ConditionalAction
   // A recorded sequence of keystrokes with waits and holds (bounded: 1–64 steps, ≤30 s in total).
   // Never a multi_action step: a macro is already a timed sequence.
   | { type: 'macro'; steps: MacroStep[] }
@@ -138,14 +151,14 @@ export interface DialDisplay { content: DialDisplayContent; image?: string; sour
 // How bright the module screens are while the profile runs and the app drives them, in percent (10 to 100); a screen left
 // out is at full brightness. Mirrors ScreenBrightness in crates/cooltek-sdk-service/src/profile.rs.
 export interface ScreenBrightness { keys?: number; dial?: number }
-// Profile file schemas this version reads (1 flat bindings; 2 keypad pages; 3 the same layout; 4 current, the one it writes, adds the conditional action). Mirrors
+// Profile file schemas this version reads (1 flat bindings; 2 keypad pages; 3 the same layout; 4 adds the conditional action; 5 current, the one it writes, adds variables). Mirrors
 // Profile::OLDEST_SCHEMA and CURRENT_SCHEMA in crates/cooltek-sdk-service/src/profile.rs; a profile from a newer
 // version is refused with a message saying so.
 export const oldestSchema = 1;
-export const currentSchema = 4;
+export const currentSchema = 5;
 // The keypad is a page tree (schema 2 and later) rather than flat bindings (schema 1).
 export const usesKeypadPages = (profile: Pick<Profile, 'schema_version'>): boolean => profile.schema_version >= 2;
-export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness }
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness; variables?: Variable[] }
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }

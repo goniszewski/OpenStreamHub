@@ -2126,6 +2126,7 @@ pub fn map_with_limit(
         // profile shows the default face until the user picks one.
         dial_display: None,
         screen_brightness: None,
+        variables: Vec::new(),
     };
     let trimmed = fit_store_limit(&mut profile, &mut mapper, limit)?;
     if trimmed > 0 {

@@ -1759,6 +1759,7 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     pending.error = next.error;
     pending.dropped_event_count += next.dropped_event_count;
     pending.dropped_dial_function_count += next.dropped_dial_function_count;
+    pending.variables = next.variables;
     for planned in next.events {
         // Merge only into the immediately preceding event so the order of
         // events across controls is preserved. A dropped dial function switch
@@ -3796,6 +3797,7 @@ mod tests {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         }
     }
 

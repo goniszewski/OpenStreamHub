@@ -9,7 +9,7 @@ use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
     InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
-    TimerAlert, TimerKey, TimerTable, TimerToggle,
+    TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -114,6 +114,9 @@ pub struct Work {
     /// Set by live coalescing when a switch after the last event was dropped,
     /// so the next event is never merged into that last event.
     pub merge_barrier: bool,
+    /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
+    /// the rest across a profile swap.
+    pub variables: Vec<Variable>,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -161,6 +164,7 @@ pub fn plan_report(
         dropped_event_count: 0,
         dropped_dial_function_count: 0,
         merge_barrier: false,
+        variables: session.profile().variables.clone(),
     })
 }
 
@@ -407,6 +411,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         }
         dispatcher.set_service_state(ServiceState {
             timer_running: !timers.is_empty(),
+            variables: work.variables.clone(),
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -734,6 +739,7 @@ mod tests {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         }
     }
 

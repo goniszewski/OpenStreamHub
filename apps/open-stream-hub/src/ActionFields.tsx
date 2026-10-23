@@ -1,11 +1,13 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, Condition, LeafCondition, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
+import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
+import { VariableActionFields } from './VariableFields';
 import { MacroFields } from './MacroFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
@@ -13,12 +15,11 @@ import { obsConnectionLabels } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
-  combineConditions, conditionKey, conditionKeys, conditionLabel, conditionParts, conditionUsesObs, conditionValue, conditionalSteps, defaultCondition, maxCombinedConditions, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
+  conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
-import type { CombineMode, ConditionKey } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
 
@@ -266,58 +267,19 @@ function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, 
   </div>;
 }
 
-type ConditionalAction = Extract<BindingAction, { type: 'conditional' }>;
+// Whether a flow reads from or acts on OBS anywhere: a test, a step, or inside a nested if / else.
+const flowUsesObs = (action: ConditionalAction): boolean =>
+  conditionUsesObs(action.when) || action.then.concat(action.else ?? []).some(step => (step.type === 'conditional' ? flowUsesObs(step) : step.type.startsWith('obs_')));
 
-// If / else: one condition read when the key is pressed, a list of steps for when it holds and a list for when it does not.
+// If / else: tests read when the key is pressed (AND / OR groups that nest), a Then list and an Otherwise list whose steps
+// may be if / else blocks themselves. The tree, its drag-and-drop and its limits live in FlowEditor.
 function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
-  const otherwise = action.else ?? [];
-  // An empty else is left out, never written as [] (it is optional in the profile).
-  const build = (when: Condition, then: StepAction[], other: StepAction[]): ConditionalAction => ({ type: 'conditional', when, then, ...(other.length > 0 ? { else: other } : {}) });
-  const { mode, items } = conditionParts(action.when);
-  const usesObs = conditionUsesObs(action.when) || action.then.concat(otherwise).some(step => step.type.startsWith('obs_'));
-  const setItems = (next: LeafCondition[], nextMode: CombineMode, field: string) => onChange(build(combineConditions(nextMode, next), action.then, otherwise), field);
-  return <div className="action-fields">
-    {items.map((item, index) => {
-      const key = conditionKey(item);
-      const value = conditionValue(item);
-      const suffix = index === 0 ? '' : `-${index + 1}`;
-      const replace = (next: LeafCondition, field: string) => setItems(items.map((existing, at) => at === index ? next : existing), mode, field);
-      return <div key={index} className="action-fields">
-        <label className={index === 0 ? undefined : 'spaced-label'} htmlFor={`conditional-when${suffix}`}>{index === 0 ? 'If' : mode === 'all' ? 'And' : 'Or'}</label>
-        <SelectField id={`conditional-when${suffix}`} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey), `conditional-when${suffix}`)}>
-          {conditionKeys.map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
-        </SelectField>
-        {typeof value === 'string'
-          ? <><LaunchAppFields inputId={`conditional-app${suffix}`} bundleId={value} invoke={invoke} onChange={bundleId => replace({ focused_app: bundleId }, `conditional-app${suffix}`)} />
-            <p className="fine-print">Compared with the front app's bundle ID when the key is pressed, without regard to letter case. To act in every other app, swap the two lists.</p></>
-          : typeof value === 'number'
-          ? <><label className="spaced-label" htmlFor={`conditional-volume${suffix}`}>Volume (%)</label>
-            <IntegerField key={`${selectorKey}:${index}:${items.length}`} id={`conditional-volume${suffix}`} value={value} minimum={0} maximum={100}
-              onCommit={percent => replace({ output_volume_at_least: percent }, `conditional-volume${suffix}`)} /></>
-          : <><label className="spaced-label" htmlFor={`conditional-value${suffix}`}>The statement is</label>
-            <SelectField id={`conditional-value${suffix}`} value={value ? 'true' : 'false'} onChange={event => replace({ [key]: event.target.value === 'true' } as LeafCondition, `conditional-value${suffix}`)}>
-              <option value="true">True</option><option value="false">False</option>
-            </SelectField></>}
-        {items.length > 1 && <button type="button" className="button compact" aria-label={`Remove condition ${index + 1}`}
-          onClick={() => setItems(items.filter((_, at) => at !== index), mode, 'conditional-add')}><Trash2 size={16} />Remove</button>}
-      </div>;
-    })}
-    {items.length > 1 && <><label className="spaced-label" htmlFor="conditional-mode">Combine the conditions</label>
-      <SelectField id="conditional-mode" value={mode} onChange={event => setItems(items, event.target.value as CombineMode, 'conditional-mode')}>
-        <option value="all">All must hold (AND)</option><option value="any">Any one is enough (OR)</option>
-      </SelectField></>}
-    <button type="button" id="conditional-add" className="button compact" disabled={items.length >= maxCombinedConditions}
-      onClick={() => setItems([...items, defaultCondition('output_muted')], mode, 'conditional-add')}><Plus size={16} />Add condition</button>
-    <p className="fine-print">Read when the key is pressed: {conditionLabel(action.when)}. Every condition is read{conditionUsesObs(action.when) ? ', and OBS must be running and set up' : ''}; if one cannot be read, the press fails and neither list runs. AND and OR cannot be mixed in one block.</p>
-    <h4 className="spaced-label">Then</h4>
-    <StepList steps={action.then} idBase="then-" noun="Then step" minimum={conditionalSteps.thenMinimum} maximum={conditionalSteps.maximum} selectorKey={selectorKey}
-      update={(next, field) => onChange(build(action.when, next, otherwise), field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
-    <h4 className="spaced-label">Otherwise (optional)</h4>
-    <StepList steps={otherwise} idBase="else-" noun="Otherwise step" minimum={0} maximum={conditionalSteps.maximum} selectorKey={selectorKey}
-      update={(next, field) => onChange(build(action.when, action.then, next), field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
-    <p className="fine-print">Each list runs up to {conditionalSteps.maximum} steps in order, 280 ms apart; the first failed step stops the rest of that list. Steps cannot be multi-actions or conditionals.</p>
-    {usesObs && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
-  </div>;
+  return <FlowEditor action={action} selectorKey={selectorKey} onChange={(next, field) => onChange(next, field)}
+    render={{
+      step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />,
+      app: ({ inputId, bundleId, onChange: change }) => <LaunchAppFields inputId={inputId} bundleId={bundleId} invoke={invoke} onChange={change} />,
+    }}
+    obsNote={flowUsesObs(action) ? <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} /> : undefined} />;
 }
 
 // "Open app": choose an app with the system's picker (or type its bundle ID) and see its everyday name under the field.
@@ -399,6 +361,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
     case 'obs_input_mute': case 'obs_adjust_input_volume': case 'obs_media_source':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
+    case 'set_variable': case 'toggle_variable': case 'add_to_variable': return <VariableActionFields prefix={prefix} action={action} onChange={onChange} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
 }

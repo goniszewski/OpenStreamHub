@@ -322,7 +322,7 @@
       ]
     },
     "name": "Folders",
-    "schema_version": 4
+    "schema_version": 5
   },
   "redacted": true,
   "runtime": {

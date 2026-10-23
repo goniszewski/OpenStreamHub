@@ -3141,6 +3141,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         };
         let saved = save(&state, None, &blank, None).unwrap();
         assert!(!flagged(&state, &saved.id));

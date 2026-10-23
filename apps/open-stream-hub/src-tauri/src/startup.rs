@@ -48,6 +48,7 @@ pub fn blank_profile() -> Profile {
         dial_functions: None,
         dial_display: None,
         screen_brightness: None,
+        variables: Vec::new(),
     }
 }
 

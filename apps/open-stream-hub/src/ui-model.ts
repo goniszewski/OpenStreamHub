@@ -188,6 +188,9 @@ export function actionLabel(action: Action | BindingAction | null): string {
       const flat = action.text.replace(/\s+/g, ' ').trim();
       return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
     }
+    case 'set_variable': return `Set ${action.name || 'a variable'} to ${typeof action.value === 'string' ? `“${action.value}”` : typeof action.value === 'boolean' ? (action.value ? 'on' : 'off') : action.value}`;
+    case 'toggle_variable': return `Flip ${action.name || 'a variable'}`;
+    case 'add_to_variable': return `${action.name || 'A variable'} ${action.amount > 0 ? '+' : ''}${action.amount}`;
     case 'conditional': return `If ${conditionLabel(action.when)}: ${action.then.map(step => actionLabel(step)).join(', then ')}${action.else?.length ? `; otherwise ${action.else.map(step => actionLabel(step)).join(', then ')}` : ''}`;
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     // The keys themselves are not listed here (they read like typed text); the inspector's macro

@@ -159,7 +159,7 @@
         ]
       },
       "name": "Streaming",
-      "schema_version": 4
+      "schema_version": 5
     },
     "profile_generation": 1,
     "profile_id": "00000000-0000-4000-8000-0000000000a2"

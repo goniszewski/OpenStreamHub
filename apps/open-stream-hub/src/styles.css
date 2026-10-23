@@ -513,6 +513,38 @@ input[aria-invalid="true"] { border-color:var(--red); }
 /* Action editor: text snippet and ordered multi-action steps. */
 .inspector textarea { width:100%; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font:inherit; font-size:13px; color:inherit; resize:vertical; }.inspector textarea[aria-invalid="true"] { border-color:var(--red); }.inspector textarea:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 .action-steps { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }.action-steps>li { border:1px solid var(--line); border-radius:9px; padding:12px; }.action-steps>li>.button { margin-top:12px; }.action-fields .setting-toggle { display:flex; align-items:center; gap:7px; margin-top:12px; font-weight:400; }.obs-connection .obs-setup { border:0; background:none; padding:0; font:inherit; color:var(--accent); text-decoration:underline; cursor:pointer; }.obs-connection .obs-setup:hover { color:var(--text); }
+/* If / else editor: groups of tests that nest, step lists, grips and the thin drop slots between blocks. */
+.flow-block { display:block; }
+.flow-nested { margin-top:12px; padding:10px; border:1px dashed var(--line); border-radius:9px; background:color-mix(in srgb, var(--selected) 30%, transparent); }
+.flow-group { border:1px solid var(--line); border-radius:9px; padding:10px; margin-top:8px; }
+.flow-group-root { margin-top:0; }
+.flow-members { list-style:none; margin:6px 0; padding:0; }
+.flow-condition { border:1px solid var(--line); border-radius:9px; padding:10px; background:var(--panel); }
+.flow-condition-group { padding:0; border:0; background:none; }
+.flow-row-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.flow-row-head[draggable="true"] { cursor:grab; }
+.flow-row-head[draggable="true"]:active { cursor:grabbing; }
+.flow-row-head[draggable="true"] label { cursor:inherit; }
+.flow-row-head label { flex:1; margin:0; }
+.flow-buttons { display:inline-flex; gap:4px; margin-left:auto; flex:none; }
+.flow-icon { padding:5px 7px; min-width:0; }
+.flow-grip { display:inline-flex; flex:none; padding:3px; border-radius:6px; color:var(--muted); }
+.flow-row-head:hover .flow-grip { color:var(--text); }
+.flow-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.flow-slot { list-style:none; height:6px; margin:0; border:0; border-radius:4px; transition:height .1s ease, background-color .1s ease; }
+.flow-dragging .flow-slot { height:12px; }
+.flow-slot.flow-slot-active { background:color-mix(in srgb, var(--accent) 22%, transparent); }
+.flow-slot.flow-slot-over { height:18px; background:var(--accent); }
+.flow-dragged { opacity:.45; }
+.action-steps.flow-steps { gap:0; margin:8px 0; }
+.action-steps.flow-steps>li.flow-slot { border:0; padding:0; border-radius:4px; }
+.action-steps.flow-steps>li:not(.flow-slot) { margin:2px 0; }
+.variables-panel h3 { margin:0 0 8px; font-size:14px; }
+.variables-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }
+.variables-list>li { border:1px solid var(--line); border-radius:9px; padding:12px; }
+.variables-list>li>.button { margin-top:12px; }
+.variables-list label { font-weight:500; font-size:12px; }
+@media (prefers-reduced-motion: reduce) { .flow-slot { transition:none; } }
 /* OBS name fields: combobox choices under the input, the live cross-check note, and the
    listing row of the connection note (Refresh button plus why a listing failed). */
 .obs-name { position:relative; display:block; }

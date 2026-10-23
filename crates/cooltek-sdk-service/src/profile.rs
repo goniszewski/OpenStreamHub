@@ -512,13 +512,158 @@ pub struct MacroStep {
     pub hold_ms: u32,
 }
 
+/// The value of a user-defined variable: a bool, a whole number or short text.
+///
+/// Written as the bare JSON value (`true`, `3`, `"intro"`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VariableValue {
+    /// On or off.
+    Bool(bool),
+    /// A whole number within `-1 000 000` and `1 000 000`.
+    Number(i32),
+    /// Text of at most 64 bytes without control characters.
+    Text(String),
+}
+
+/// The kind of a [`VariableValue`]; a variable keeps its kind for life.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VariableKind {
+    /// A bool.
+    Bool,
+    /// A whole number.
+    Number,
+    /// Text.
+    Text,
+}
+
+impl VariableKind {
+    /// The kind's name for diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Number => "number",
+            Self::Text => "text",
+        }
+    }
+}
+
+impl VariableValue {
+    /// Smallest number a variable can hold.
+    pub const MIN_NUMBER: i32 = -1_000_000;
+    /// Largest number a variable can hold.
+    pub const MAX_NUMBER: i32 = 1_000_000;
+    /// Longest text a variable can hold, in UTF-8 bytes.
+    pub const MAX_TEXT_BYTES: usize = 64;
+
+    /// The kind of this value.
+    pub fn kind(&self) -> VariableKind {
+        match self {
+            Self::Bool(_) => VariableKind::Bool,
+            Self::Number(_) => VariableKind::Number,
+            Self::Text(_) => VariableKind::Text,
+        }
+    }
+
+    /// Checks the number range and the text rules.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Bool(_) => Ok(()),
+            Self::Number(number) => validate_variable_number(*number),
+            Self::Text(text) => {
+                if text.len() > Self::MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+                    Err(format!(
+                        "variable text must be at most {} bytes without control characters",
+                        Self::MAX_TEXT_BYTES
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn validate_variable_number(number: i32) -> Result<(), String> {
+    if (VariableValue::MIN_NUMBER..=VariableValue::MAX_NUMBER).contains(&number) {
+        Ok(())
+    } else {
+        Err(format!(
+            "variable numbers must be between {} and {}",
+            VariableValue::MIN_NUMBER,
+            VariableValue::MAX_NUMBER
+        ))
+    }
+}
+
+/// A variable name: 1 to 32 characters of `a-z`, `0-9` and `_`, starting with a letter.
+pub fn validate_variable_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > Variable::MAX_NAME_BYTES
+        || !bytes[0].is_ascii_lowercase()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+    {
+        return Err(format!(
+            "variable names are 1 to {} characters of a-z, 0-9 and _, starting with a letter",
+            Variable::MAX_NAME_BYTES
+        ));
+    }
+    Ok(())
+}
+
+/// A user-defined variable a profile declares, with the value it starts at.
+///
+/// Values live in the service process and are kept across key presses; they
+/// are reset to these starting values when the service starts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variable {
+    /// Unique name, see [`validate_variable_name`].
+    pub name: String,
+    /// The starting value; its kind is the variable's kind.
+    pub value: VariableValue,
+}
+
+impl Variable {
+    /// Most variables one profile declares.
+    pub const MAX_VARIABLES: usize = 16;
+    /// Longest variable name in bytes.
+    pub const MAX_NAME_BYTES: usize = 32;
+
+    /// Checks the declarations: count, names, values and uniqueness.
+    pub fn validate_all(variables: &[Self]) -> Result<(), String> {
+        if variables.len() > Self::MAX_VARIABLES {
+            return Err(format!(
+                "a profile declares at most {} variables",
+                Self::MAX_VARIABLES
+            ));
+        }
+        let mut seen = HashSet::new();
+        for variable in variables {
+            validate_variable_name(&variable.name)?;
+            variable
+                .value
+                .validate()
+                .map_err(|error| format!("variable {}: {error}", variable.name))?;
+            if !seen.insert(variable.name.as_str()) {
+                return Err(format!("variable {} is declared twice", variable.name));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The state a `conditional` action tests right before it picks a branch.
 ///
 /// Written as a single-key object such as `{"obs_recording":true}`; a second
 /// key or an unknown key is refused. The OBS variants ask OBS over the local
 /// obs-websocket connection, so they need the same endpoint as an OBS action.
-/// `all` and `any` combine 2 to 8 plain conditions (AND, OR); they do not nest
-/// and do not mix, so no precedence rules are needed.
+/// `all` and `any` combine 2 to 8 conditions (AND, OR) and nest in each other
+/// up to [`Condition::MAX_DEPTH`] levels, at most [`Condition::MAX_LEAVES`]
+/// tests in all; the nesting is the grouping, so there are no precedence rules.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Condition {
@@ -547,6 +692,20 @@ pub enum Condition {
     /// is any other app, swap the branches. Read from macOS when the key is
     /// pressed, so it works with the desktop app closed.
     FocusedApp(String),
+    /// The declared variable `name` equals `value` (same kind).
+    VariableIs {
+        /// A declared variable.
+        name: String,
+        /// The value to compare with.
+        value: VariableValue,
+    },
+    /// The declared number variable `name` is at least `value`.
+    VariableAtLeast {
+        /// A declared number variable.
+        name: String,
+        /// The lowest accepted number.
+        value: i32,
+    },
     /// Every listed condition holds (AND). All of them are read, in order.
     All(Vec<Condition>),
     /// At least one listed condition holds (OR). All of them are read, in
@@ -559,6 +718,10 @@ impl Condition {
     pub const MIN_COMBINED: usize = 2;
     /// Most conditions an `all` or `any` combines.
     pub const MAX_COMBINED: usize = 8;
+    /// Deepest nesting of `all` / `any` (a lone `all` is depth 1).
+    pub const MAX_DEPTH: usize = 3;
+    /// Most single tests (leaves) in one condition, however it is grouped.
+    pub const MAX_LEAVES: usize = 16;
 
     /// The JSON key of this condition, for diagnostics.
     pub fn name(&self) -> &'static str {
@@ -571,6 +734,8 @@ impl Condition {
             Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
             Self::TimerRunning(_) => "timer_running",
             Self::FocusedApp(_) => "focused_app",
+            Self::VariableIs { .. } => "variable_is",
+            Self::VariableAtLeast { .. } => "variable_at_least",
             Self::All(_) => "all",
             Self::Any(_) => "any",
         }
@@ -587,7 +752,9 @@ impl Condition {
             Self::OutputMuted(_)
             | Self::OutputVolumeAtLeast(_)
             | Self::TimerRunning(_)
-            | Self::FocusedApp(_) => false,
+            | Self::FocusedApp(_)
+            | Self::VariableIs { .. }
+            | Self::VariableAtLeast { .. } => false,
         }
     }
 
@@ -603,20 +770,92 @@ impl Condition {
             | Self::OutputVolumeAtLeast(_)
             | Self::TimerRunning(_)
             | Self::FocusedApp(_)
+            | Self::VariableIs { .. }
+            | Self::VariableAtLeast { .. }
             | Self::All(_)
             | Self::Any(_) => None,
         }
     }
 
-    /// Checks the value ranges.
+    /// Checks every variable this condition names against the declarations.
+    pub fn check_variables(&self, declared: &[Variable]) -> Result<(), String> {
+        let kind_of = |name: &str| {
+            declared
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.kind())
+                .ok_or_else(|| format!("variable {name} is not declared"))
+        };
+        match self {
+            Self::VariableIs { name, value } => {
+                let kind = kind_of(name)?;
+                if kind == value.kind() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "variable {name} is {}, not {}",
+                        kind.name(),
+                        value.kind().name()
+                    ))
+                }
+            }
+            Self::VariableAtLeast { name, .. } => {
+                let kind = kind_of(name)?;
+                if kind == VariableKind::Number {
+                    Ok(())
+                } else {
+                    Err(format!("variable {name} is {}, not number", kind.name()))
+                }
+            }
+            Self::All(items) | Self::Any(items) => items
+                .iter()
+                .try_for_each(|item| item.check_variables(declared)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Number of single tests in this condition.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            Self::All(items) | Self::Any(items) => items.iter().map(Self::leaf_count).sum(),
+            _ => 1,
+        }
+    }
+
+    /// Checks the value ranges, the grouping sizes and the nesting depth.
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_at(0)?;
+        if self.leaf_count() > Self::MAX_LEAVES {
+            return Err(format!(
+                "a condition can hold at most {} tests",
+                Self::MAX_LEAVES
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_at(&self, depth: usize) -> Result<(), String> {
         match self {
             Self::OutputVolumeAtLeast(percent) if *percent > 100 => {
                 Err("output_volume_at_least must be between 0 and 100".into())
             }
             Self::FocusedApp(bundle_id) => validate_bundle_id(bundle_id),
+            Self::VariableIs { name, value } => {
+                validate_variable_name(name)?;
+                value.validate()
+            }
+            Self::VariableAtLeast { name, value } => {
+                validate_variable_name(name)?;
+                validate_variable_number(*value)
+            }
             Self::All(items) | Self::Any(items) => {
                 let name = self.name();
+                if depth >= Self::MAX_DEPTH {
+                    return Err(format!(
+                        "{name} is nested more than {} levels deep",
+                        Self::MAX_DEPTH
+                    ));
+                }
                 if !(Self::MIN_COMBINED..=Self::MAX_COMBINED).contains(&items.len()) {
                     return Err(format!(
                         "{name} must combine {} to {} conditions",
@@ -624,13 +863,9 @@ impl Condition {
                         Self::MAX_COMBINED
                     ));
                 }
-                for item in items {
-                    if matches!(item, Self::All(_) | Self::Any(_)) {
-                        return Err(format!("{name} cannot contain {}", item.name()));
-                    }
-                    item.validate()?;
-                }
-                Ok(())
+                items
+                    .iter()
+                    .try_for_each(|item| item.validate_at(depth + 1))
             }
             _ => Ok(()),
         }
@@ -721,6 +956,26 @@ pub enum Action {
         /// 0 to 8 steps run when it does not (JSON key `else`).
         #[serde(rename = "else", skip_serializing_if = "Vec::is_empty")]
         otherwise: Vec<Action>,
+    },
+    /// Set the declared variable `name` to `value` (the same kind).
+    SetVariable {
+        /// A declared variable.
+        name: String,
+        /// The new value.
+        value: VariableValue,
+    },
+    /// Flip the declared bool variable `name`.
+    ToggleVariable {
+        /// A declared bool variable.
+        name: String,
+    },
+    /// Add `amount` (negative to subtract) to the declared number variable
+    /// `name`; a result past the limits stops at the limit.
+    AddToVariable {
+        /// A declared number variable.
+        name: String,
+        /// Nonzero amount within the number limits.
+        amount: i32,
     },
     /// Run 2 to 8 executable, non-nested actions in order with fixed spacing.
     MultiAction {
@@ -1084,6 +1339,17 @@ impl<'de> Deserialize<'de> for Action {
                 #[serde(default, rename = "else")]
                 otherwise: Vec<Action>,
             },
+            SetVariable {
+                name: String,
+                value: VariableValue,
+            },
+            ToggleVariable {
+                name: String,
+            },
+            AddToVariable {
+                name: String,
+                amount: i32,
+            },
             MultiAction {
                 actions: Vec<Action>,
             },
@@ -1180,6 +1446,9 @@ impl<'de> Deserialize<'de> for Action {
                 then,
                 otherwise,
             },
+            Shape::SetVariable { name, value } => Self::SetVariable { name, value },
+            Shape::ToggleVariable { name } => Self::ToggleVariable { name },
+            Shape::AddToVariable { name, amount } => Self::AddToVariable { name, amount },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
             Shape::Macro { steps } => Self::Macro { steps },
             Shape::Profile { direction } => Self::Profile { direction },
@@ -1230,6 +1499,10 @@ impl Action {
     pub const MIN_MULTI_ACTION_STEPS: usize = 2;
     /// Maximum number of `multi_action` steps.
     pub const MAX_MULTI_ACTION_STEPS: usize = 8;
+    /// Deepest nesting of `conditional` (a lone one is depth 1).
+    pub const MAX_CONDITIONAL_DEPTH: usize = 3;
+    /// Most steps in all branches of one `conditional`, nested ones included.
+    pub const MAX_FLOW_STEPS: usize = 32;
     /// Shortest `timer` countdown in seconds.
     pub const MIN_TIMER_SECONDS: u32 = 1;
     /// Longest `timer` countdown in seconds (24 hours).
@@ -1266,6 +1539,9 @@ impl Action {
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
             Self::Conditional { .. } => "conditional",
+            Self::SetVariable { .. } => "set_variable",
+            Self::ToggleVariable { .. } => "toggle_variable",
+            Self::AddToVariable { .. } => "add_to_variable",
             Self::MultiAction { .. } => "multi_action",
             Self::Macro { .. } => "macro",
             Self::Profile { .. } => "profile",
@@ -1480,26 +1756,28 @@ impl Action {
                 }
                 Ok(())
             }
-            Self::Conditional {
-                when,
-                then,
-                otherwise,
-            } => {
-                when.validate()?;
-                if then.is_empty() || then.len() > Self::MAX_MULTI_ACTION_STEPS {
+            Self::SetVariable { name, value } => {
+                validate_variable_name(name)?;
+                value.validate()
+            }
+            Self::ToggleVariable { name } => validate_variable_name(name),
+            Self::AddToVariable { name, amount } => {
+                validate_variable_name(name)?;
+                if *amount == 0 {
+                    return Err("add_to_variable amount must be nonzero".into());
+                }
+                validate_variable_number(*amount)
+            }
+            Self::Conditional { .. } => {
+                self.validate_conditional(1)?;
+                let steps = self.flow_steps();
+                if steps > Self::MAX_FLOW_STEPS {
                     return Err(format!(
-                        "conditional must run 1 to {} steps when the condition holds",
-                        Self::MAX_MULTI_ACTION_STEPS
+                        "conditional can hold at most {} steps in all its branches",
+                        Self::MAX_FLOW_STEPS
                     ));
                 }
-                if otherwise.len() > Self::MAX_MULTI_ACTION_STEPS {
-                    return Err(format!(
-                        "conditional else must have at most {} steps",
-                        Self::MAX_MULTI_ACTION_STEPS
-                    ));
-                }
-                Self::validate_steps(then, "conditional then", "conditional")?;
-                Self::validate_steps(otherwise, "conditional else", "conditional")
+                Ok(())
             }
             Self::MultiAction { actions } => {
                 if !(Self::MIN_MULTI_ACTION_STEPS..=Self::MAX_MULTI_ACTION_STEPS)
@@ -1511,7 +1789,7 @@ impl Action {
                         Self::MAX_MULTI_ACTION_STEPS
                     ));
                 }
-                Self::validate_steps(actions, "multi_action", "multi_action")?;
+                Self::validate_steps(actions, "multi_action", "multi_action", None)?;
                 Ok(())
             }
             Self::Timer { seconds, label, .. } => {
@@ -1548,16 +1826,118 @@ impl Action {
         }
     }
 
+    /// Checks every variable this action (or a step or test inside it) names
+    /// against the profile's declarations.
+    pub fn check_variables(&self, declared: &[Variable]) -> Result<(), String> {
+        let kind_of = |name: &str| -> Result<VariableKind, String> {
+            declared
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.kind())
+                .ok_or_else(|| format!("variable {name} is not declared"))
+        };
+        let expect = |name: &str, wanted: VariableKind| -> Result<(), String> {
+            let kind = kind_of(name)?;
+            if kind == wanted {
+                Ok(())
+            } else {
+                Err(format!(
+                    "variable {name} is {}, not {}",
+                    kind.name(),
+                    wanted.name()
+                ))
+            }
+        };
+        match self {
+            Self::SetVariable { name, value } => expect(name, value.kind()),
+            Self::ToggleVariable { name } => expect(name, VariableKind::Bool),
+            Self::AddToVariable { name, .. } => expect(name, VariableKind::Number),
+            Self::MultiAction { actions } => actions
+                .iter()
+                .try_for_each(|step| step.check_variables(declared)),
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => {
+                when.check_variables(declared)?;
+                then.iter()
+                    .chain(otherwise)
+                    .try_for_each(|step| step.check_variables(declared))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Total steps in the branches of a `conditional`, nested ones included
+    /// (a nested `conditional` counts as a step and as its own steps).
+    fn flow_steps(&self) -> usize {
+        match self {
+            Self::Conditional {
+                then, otherwise, ..
+            } => then
+                .iter()
+                .chain(otherwise)
+                .map(|step| 1 + step.flow_steps())
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    /// Validates a `conditional` sitting at `depth` (1 for the outermost).
+    fn validate_conditional(&self, depth: usize) -> Result<(), String> {
+        let Self::Conditional {
+            when,
+            then,
+            otherwise,
+        } = self
+        else {
+            return self.validate();
+        };
+        if depth > Self::MAX_CONDITIONAL_DEPTH {
+            return Err(format!(
+                "conditional is nested more than {} levels deep",
+                Self::MAX_CONDITIONAL_DEPTH
+            ));
+        }
+        when.validate()?;
+        if then.is_empty() || then.len() > Self::MAX_MULTI_ACTION_STEPS {
+            return Err(format!(
+                "conditional must run 1 to {} steps when the condition holds",
+                Self::MAX_MULTI_ACTION_STEPS
+            ));
+        }
+        if otherwise.len() > Self::MAX_MULTI_ACTION_STEPS {
+            return Err(format!(
+                "conditional else must have at most {} steps",
+                Self::MAX_MULTI_ACTION_STEPS
+            ));
+        }
+        Self::validate_steps(then, "conditional then", "conditional", Some(depth))?;
+        Self::validate_steps(otherwise, "conditional else", "conditional", Some(depth))
+    }
+
     /// Validates the steps of a `multi_action` or a `conditional` branch.
     ///
     /// A profile switch stops the running service, so it could never be
     /// followed by the remaining steps. A timer toggles per binding, which a
     /// step does not have; the official app refuses timers in multi-task lists
     /// too. A macro is already a timed sequence; nesting one would split the
-    /// overall deadline across two clocks. A `conditional` is not a step, so a
-    /// branch can never nest another test or loop.
-    fn validate_steps(steps: &[Action], label: &str, noun: &str) -> Result<(), String> {
+    /// overall deadline across two clocks. A `conditional` may be a step of
+    /// another `conditional` (`depth` is the outer one's level), never of a
+    /// `multi_action` (`None`), and nothing loops.
+    fn validate_steps(
+        steps: &[Action],
+        label: &str,
+        noun: &str,
+        depth: Option<usize>,
+    ) -> Result<(), String> {
         for (index, step) in steps.iter().enumerate() {
+            if let (Self::Conditional { .. }, Some(depth)) = (step, depth) {
+                step.validate_conditional(depth + 1)
+                    .map_err(|error| format!("{label} step {}: {error}", index + 1))?;
+                continue;
+            }
             if matches!(
                 step,
                 Self::MultiAction { .. }
@@ -1659,6 +2039,10 @@ pub struct Profile {
     /// existing profiles serialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_brightness: Option<ScreenBrightness>,
+    /// User-defined variables (schema 5), at most [`Variable::MAX_VARIABLES`].
+    /// Omitted when empty, so existing profiles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<Variable>,
 }
 
 /// The brightness of the module screens, in percent. A screen left out shows at full brightness.
@@ -1705,7 +2089,7 @@ impl Profile {
     /// optional fields; 3 the same layout under a defined upgrade path, so a newer file is recognised as newer rather
     /// than refused as malformed; 4 adds the `conditional` action. Raise it, and add an upgrade step to [`Profile::into_current`], whenever a change
     /// would make an older build misread a profile.
-    pub const CURRENT_SCHEMA: u32 = 4;
+    pub const CURRENT_SCHEMA: u32 = 5;
 
     /// Parses bounded JSON and checks its complete semantic constraints.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
@@ -1736,9 +2120,9 @@ impl Profile {
     pub fn validate(&self) -> Result<(), String> {
         match (self.schema_version, self.keypad.as_ref()) {
             (1, None) => {}
-            (2..=4, Some(keypad)) => keypad.validate()?,
+            (2..=5, Some(keypad)) => keypad.validate()?,
             (1, Some(_)) => return Err("schema 1 profiles must omit keypad pages".into()),
-            (version @ 2..=4, None) => {
+            (version @ 2..=5, None) => {
                 return Err(format!("schema {version} profiles require keypad pages"));
             }
             (version, _) => {
@@ -1785,6 +2169,7 @@ impl Profile {
         if let Some(brightness) = &self.screen_brightness {
             brightness.validate()?;
         }
+        Variable::validate_all(&self.variables)?;
         if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
         }
@@ -1825,7 +2210,44 @@ impl Profile {
                 .validate()
                 .map_err(|error| format!("binding {index}: {error}"))?;
         }
+        self.check_variable_uses()?;
         Ok(())
+    }
+
+    /// Visits every action of every binding: flat, keypad tiles and dial functions.
+    pub fn for_each_action(&self, mut visit: impl FnMut(&Action)) {
+        for binding in &self.bindings {
+            visit(&binding.action);
+        }
+        if let Some(keypad) = &self.keypad {
+            for page in &keypad.pages {
+                for tile in page.slots.iter().flatten() {
+                    if let KeypadTile::Action { bindings, .. } = tile {
+                        for binding in bindings {
+                            visit(&binding.action);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(functions) = &self.dial_functions {
+            for function in functions {
+                for binding in &function.bindings {
+                    visit(&binding.action);
+                }
+            }
+        }
+    }
+
+    /// Every variable an action or test names must be declared, and be of the kind it needs.
+    fn check_variable_uses(&self) -> Result<(), String> {
+        let mut result = Ok(());
+        self.for_each_action(|action| {
+            if result.is_ok() {
+                result = action.check_variables(&self.variables);
+            }
+        });
+        result
     }
 
     /// Counts flat bindings, nested keypad action tile bindings, and dial function bindings.
@@ -1943,6 +2365,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         }
     }
 
@@ -3119,10 +3542,8 @@ mod tests {
                 .contains("at most 8 steps")
         );
 
-        // No nesting, no loops, and nothing a multi_action step cannot be.
-        let nested = conditional(vec![mute()], vec![]);
+        // Nothing a multi_action step cannot be (a conditional may nest).
         for step in [
-            nested.clone(),
             Action::MultiAction {
                 actions: vec![mute(), mute()],
             },
@@ -3166,7 +3587,7 @@ mod tests {
         assert!(error.contains("conditional then step 2"), "{error}");
         // A conditional is never a multi_action step either.
         let error = Action::MultiAction {
-            actions: vec![mute(), nested],
+            actions: vec![mute(), conditional(vec![mute()], vec![])],
         }
         .validate()
         .unwrap_err();
@@ -3250,7 +3671,7 @@ mod tests {
     }
 
     #[test]
-    fn all_and_any_combine_two_to_eight_plain_conditions() {
+    fn all_and_any_combine_two_to_eight_conditions() {
         let json = r#"{"type":"conditional","when":{"all":[{"output_muted":false},{"output_volume_at_least":30}]},"then":[{"type":"toggle_mute"}]}"#;
         let action: Action = serde_json::from_str(json).unwrap();
         action.validate().unwrap();
@@ -3278,17 +3699,13 @@ mod tests {
                 "{error}"
             );
         }
-        // No nesting and no mixing, so there are no precedence rules.
+        // Groups nest and mix; the nesting is the grouping.
         let nested: Action = serde_json::from_str(
             r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"any":[{"output_muted":false},{"output_muted":true}]}]},"then":[{"type":"toggle_mute"}]}"#,
         )
         .unwrap();
-        assert!(
-            nested
-                .validate()
-                .unwrap_err()
-                .contains("all cannot contain any")
-        );
+        nested.validate().unwrap();
+        assert_eq!(nested.type_name(), "conditional");
         // A bad member is named by its own rule.
         let high: Action = serde_json::from_str(
             r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"output_volume_at_least":101}]},"then":[{"type":"toggle_mute"}]}"#,
@@ -3301,6 +3718,207 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn conditions_nest_to_three_levels_and_sixteen_tests() {
+        let leaf = || Condition::OutputMuted(true);
+        let all = |items: Vec<Condition>| Condition::All(items);
+        let any = |items: Vec<Condition>| Condition::Any(items);
+        let three = all(vec![leaf(), any(vec![leaf(), all(vec![leaf(), leaf()])])]);
+        three.validate().unwrap();
+        assert_eq!(three.leaf_count(), 4);
+        let four = all(vec![
+            leaf(),
+            any(vec![leaf(), all(vec![leaf(), any(vec![leaf(), leaf()])])]),
+        ]);
+        assert!(
+            four.validate()
+                .unwrap_err()
+                .contains("nested more than 3 levels")
+        );
+        // 3 groups of 6 = 18 tests.
+        let wide = all(vec![
+            any(vec![leaf(); 6].into_iter().collect()),
+            any(vec![leaf(); 6]),
+            any(vec![leaf(); 6]),
+        ]);
+        assert!(wide.validate().unwrap_err().contains("at most 16 tests"));
+        // A nested group is checked by its own size rule.
+        let thin = all(vec![leaf(), any(vec![leaf()])]);
+        assert!(
+            thin.validate()
+                .unwrap_err()
+                .contains("any must combine 2 to 8")
+        );
+    }
+
+    #[test]
+    fn a_conditional_nests_in_a_branch_to_three_levels_and_thirty_two_steps() {
+        let mute = || Action::ToggleMute;
+        let cond = |then: Vec<Action>, otherwise: Vec<Action>| Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then,
+            otherwise,
+        };
+        let two = cond(vec![cond(vec![mute()], vec![mute()])], vec![mute()]);
+        two.validate().unwrap();
+        let three = cond(vec![cond(vec![cond(vec![mute()], vec![])], vec![])], vec![]);
+        three.validate().unwrap();
+        let four = cond(vec![three.clone()], vec![]);
+        let error = four.validate().unwrap_err();
+        assert!(error.contains("nested more than 3 levels"), "{error}");
+        // A nested step is named with its position.
+        let bad = cond(
+            vec![
+                mute(),
+                cond(vec![Action::SetVolume { percent: 101 }], vec![]),
+            ],
+            vec![],
+        );
+        let error = bad.validate().unwrap_err();
+        assert!(
+            error.contains("conditional then step 2: conditional then step 1"),
+            "{error}"
+        );
+        // 8 + 8 nested + 8 nested + 8 nested = more than 32 steps counted.
+        let inner = || cond(vec![mute(); 8], vec![mute(); 8]);
+        let many = cond(
+            vec![
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+            ],
+            vec![],
+        );
+        assert!(many.validate().unwrap_err().contains("at most 32 steps"));
+        // Never a multi_action step.
+        let error = Action::MultiAction {
+            actions: vec![mute(), two],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("conditional cannot be a multi_action step"),
+            "{error}"
+        );
+        // Round trip through JSON.
+        let json = serde_json::to_string(&three).unwrap();
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), three);
+    }
+
+    #[test]
+    fn variables_are_declared_once_and_every_use_must_match_the_declaration() {
+        let declared = |json: &str| -> Profile {
+            let mut profile = sample();
+            profile.variables = serde_json::from_str(json).unwrap();
+            profile
+        };
+        let uses = |action: Action| -> Result<(), String> {
+            let mut profile = declared(
+                r#"[{"name":"takes","value":0},{"name":"live","value":false},{"name":"scene","value":"intro"}]"#,
+            );
+            profile.bindings[0].action = action;
+            profile.validate()
+        };
+        let parse = |json: &str| -> Action { serde_json::from_str(json).unwrap() };
+
+        uses(parse(
+            r#"{"type":"add_to_variable","name":"takes","amount":1}"#,
+        ))
+        .unwrap();
+        uses(parse(r#"{"type":"toggle_variable","name":"live"}"#)).unwrap();
+        uses(parse(
+            r#"{"type":"set_variable","name":"scene","value":"outro"}"#,
+        ))
+        .unwrap();
+        uses(parse(
+            r#"{"type":"conditional","when":{"all":[{"variable_is":{"name":"live","value":true}},{"variable_at_least":{"name":"takes","value":3}}]},"then":[{"type":"toggle_variable","name":"live"}]}"#,
+        ))
+        .unwrap();
+        // Usable as a multi_action step too.
+        uses(parse(
+            r#"{"type":"multi_action","actions":[{"type":"toggle_variable","name":"live"},{"type":"toggle_mute"}]}"#,
+        ))
+        .unwrap();
+
+        for (json, expected) in [
+            (
+                r#"{"type":"toggle_variable","name":"missing"}"#,
+                "not declared",
+            ),
+            (
+                r#"{"type":"toggle_variable","name":"takes"}"#,
+                "is number, not bool",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"live","amount":1}"#,
+                "is bool, not number",
+            ),
+            (
+                r#"{"type":"set_variable","name":"takes","value":"x"}"#,
+                "is number, not text",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"takes","amount":0}"#,
+                "nonzero",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"takes","amount":1000001}"#,
+                "between",
+            ),
+            (
+                r#"{"type":"set_variable","name":"Bad Name","value":1}"#,
+                "variable names",
+            ),
+            (
+                r#"{"type":"conditional","when":{"variable_at_least":{"name":"live","value":1}},"then":[{"type":"toggle_mute"}]}"#,
+                "is bool, not number",
+            ),
+            (
+                r#"{"type":"conditional","when":{"any":[{"output_muted":true},{"variable_is":{"name":"takes","value":true}}]},"then":[{"type":"toggle_mute"}]}"#,
+                "is number, not bool",
+            ),
+        ] {
+            let error = uses(parse(json)).unwrap_err();
+            assert!(error.contains(expected), "{json}: {error}");
+        }
+
+        // Declarations: unique, bounded, well-formed, kinds fixed by the value.
+        let error = |json: &str| {
+            Variable::validate_all(&serde_json::from_str::<Vec<Variable>>(json).unwrap())
+                .unwrap_err()
+        };
+        assert!(error(r#"[{"name":"a","value":1},{"name":"a","value":2}]"#).contains("twice"));
+        assert!(error(r#"[{"name":"a","value":2000000}]"#).contains("between"));
+        assert!(error(r#"[{"name":"a","value":"line\nbreak"}]"#).contains("control"));
+        let many: Vec<Variable> = (0..17)
+            .map(|index| Variable {
+                name: format!("v{index}"),
+                value: VariableValue::Bool(false),
+            })
+            .collect();
+        assert!(
+            Variable::validate_all(&many)
+                .unwrap_err()
+                .contains("at most 16")
+        );
+        // Unknown fields are refused, and JSON round trips.
+        assert!(serde_json::from_str::<Variable>(r#"{"name":"a","value":1,"x":2}"#).is_err());
+        let profile = declared(r#"[{"name":"takes","value":0}]"#);
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains(r#""variables":[{"name":"takes","value":0}]"#));
+    }
+
+    #[test]
+    fn a_profile_without_variables_serializes_without_the_field() {
+        let json = serde_json::to_string(&sample()).unwrap();
+        assert!(!json.contains("variables"));
     }
 
     #[test]

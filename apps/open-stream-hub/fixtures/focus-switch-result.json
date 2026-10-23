@@ -1,6 +1,6 @@
 {
   "switch_session_profile": {
-    "content_hash": "a176852b9bf55f1f9412acb068ffe60c6c574cc29ea88bb473058b3edffc5a7c",
+    "content_hash": "c312aa2d43523fab0f067431185678da5f4d4d1797d4d296a1161db7255da0b0",
     "id": "00000000-0000-4000-8000-000000000000",
     "modified_at_ms": 0,
     "profile": {
@@ -149,7 +149,7 @@
         ]
       },
       "name": "Folders",
-      "schema_version": 4
+      "schema_version": 5
     },
     "profile_generation": 1
   }

@@ -83,6 +83,11 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::Text { text, press_enter } => {
             set.insert(format!("text\0{text}\0{press_enter}"));
         }
+        // A variable is the profile's own memory: it reaches nothing outside
+        // the service, so it adds no capability (the actions it steers do).
+        Action::SetVariable { .. }
+        | Action::ToggleVariable { .. }
+        | Action::AddToVariable { .. } => {}
         Action::Conditional {
             when,
             then,
@@ -235,6 +240,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         }
     }
 

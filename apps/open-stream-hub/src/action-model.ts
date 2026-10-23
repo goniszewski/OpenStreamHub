@@ -1,4 +1,5 @@
-import type { Action, BindingAction, Condition, LeafCondition, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import { groupItems, groupMode, isGroup } from './flow-model';
+import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -145,6 +146,7 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
   ['obs_input_mute', 'OBS input mute'], ['obs_adjust_input_volume', 'Change OBS input volume'], ['obs_media_source', 'OBS media source'],
+  ['set_variable', 'Set a variable'], ['toggle_variable', 'Flip an on / off variable'], ['add_to_variable', 'Add to a number variable'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -174,6 +176,9 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_input_mute': return { type, input: 'Mic/Aux', op: 'toggle' };
     case 'obs_adjust_input_volume': return { type, input: 'Mic/Aux', step_db: 3 };
     case 'obs_media_source': return { type, input: 'Media Source', op: 'play_pause' };
+    case 'set_variable': return { type, name: '', value: true };
+    case 'toggle_variable': return { type, name: '' };
+    case 'add_to_variable': return { type, name: '', amount: 1 };
   }
 }
 
@@ -217,14 +222,16 @@ export function timerDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
 }
 
-export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app';
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app' | 'variable_is' | 'variable_at_least';
 // Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
 export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
   ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'], ['focused_app', 'The front app is'],
+  ['variable_is', 'A variable is'], ['variable_at_least', 'A number variable is at least'],
   ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
   ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
 ];
-const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app'>, readonly [string, string]> = {
+type YesNoKey = Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app' | 'variable_is' | 'variable_at_least'>;
+const conditionPhrases: Record<YesNoKey, readonly [string, string]> = {
   obs_streaming: ['OBS is streaming', 'OBS is not streaming'],
   obs_recording: ['OBS is recording', 'OBS is not recording'],
   obs_virtual_camera: ['the OBS virtual camera is on', 'the OBS virtual camera is off'],
@@ -232,41 +239,40 @@ const conditionPhrases: Record<Exclude<ConditionKey, 'output_volume_at_least' | 
   output_muted: ['the output is muted', 'the output is not muted'],
   timer_running: ['a timer is running', 'no timer is running'],
 };
-export const maxCombinedConditions = 8;
-export type CombineMode = 'all' | 'any';
-// The plain conditions of a `when`, and how several combine (all = AND, any = OR). A single condition is a list of one.
-export function conditionParts(when: Condition): { mode: CombineMode; items: LeafCondition[] } {
-  if ('all' in when) return { mode: 'all', items: when.all };
-  if ('any' in when) return { mode: 'any', items: when.any };
-  return { mode: 'all', items: [when] };
-}
-// One item is written bare; two or more are wrapped in all/any.
-export function combineConditions(mode: CombineMode, items: LeafCondition[]): Condition {
-  return items.length === 1 ? items[0] : (mode === 'all' ? { all: items } : { any: items }) as Condition;
-}
 export function conditionKey(when: LeafCondition): ConditionKey {
   return Object.keys(when)[0] as ConditionKey;
 }
-export function conditionValue(when: LeafCondition): boolean | number | string {
-  return (when as Record<string, boolean | number | string>)[conditionKey(when)];
+// The single value of a yes/no, number or text test; a variable test holds a name and a value instead.
+export function conditionValue(when: LeafCondition): boolean | number | string | { name: string; value: VariableValue } {
+  return (when as Record<string, boolean | number | string | { name: string; value: VariableValue }>)[conditionKey(when)];
 }
-// Reads from OBS, so needs the connection set up in Settings; the output conditions read this Mac.
-export const conditionUsesObs = (when: Condition): boolean => conditionParts(when).items.some(item => conditionKey(item).startsWith('obs_'));
+// Reads from OBS, so needs the connection set up in Settings; the other conditions read this Mac or the service.
+export const conditionUsesObs = (when: Condition): boolean => isGroup(when) ? groupItems(when).some(conditionUsesObs) : conditionKey(when).startsWith('obs_');
+const variableText = (value: VariableValue): string => typeof value === 'boolean' ? (value ? 'on' : 'off') : typeof value === 'string' ? `"${value}"` : String(value);
 const leafLabel = (when: LeafCondition): string => {
   const key = conditionKey(when);
   const value = conditionValue(when);
   if (key === 'output_volume_at_least') return `the output volume is at least ${value}%`;
   if (key === 'focused_app') return `the front app is ${value}`;
-  return conditionPhrases[key][value ? 0 : 1];
+  if (key === 'variable_is') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is ${variableText(wanted)}`; }
+  if (key === 'variable_at_least') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is at least ${wanted}`; }
+  return conditionPhrases[key as YesNoKey][value ? 0 : 1];
 };
-// "OBS is recording", "the output is not muted and OBS is streaming", "the output volume is at least 40%".
-export function conditionLabel(when: Condition): string {
-  const { mode, items } = conditionParts(when);
-  return items.map(leafLabel).join(mode === 'all' ? ' and ' : ' or ');
+// "OBS is recording", "the output is not muted and OBS is streaming", "takes is at least 3 and (a timer is running or OBS is recording)".
+export function conditionLabel(when: Condition, nested = false): string {
+  if (!isGroup(when)) return leafLabel(when);
+  const text = groupItems(when).map(item => conditionLabel(item, true)).join(groupMode(when) === 'all' ? ' and ' : ' or ');
+  return nested ? `(${text})` : text;
 }
-// A condition of the chosen kind with its default value.
-export function defaultCondition(key: ConditionKey): LeafCondition {
-  return (key === 'output_volume_at_least' ? { output_volume_at_least: 50 } : key === 'focused_app' ? { focused_app: 'com.apple.finder' } : { [key]: true }) as LeafCondition;
+// A condition of the chosen kind with its default value. A variable test starts on the first declared variable it can use.
+export function defaultCondition(key: ConditionKey, variables: ReadonlyArray<Variable> = []): LeafCondition {
+  switch (key) {
+    case 'output_volume_at_least': return { output_volume_at_least: 50 };
+    case 'focused_app': return { focused_app: 'com.apple.finder' };
+    case 'variable_is': { const first = variables[0]; return { variable_is: { name: first?.name ?? '', value: first?.value ?? false } }; }
+    case 'variable_at_least': return { variable_at_least: { name: variables.find(variable => typeof variable.value === 'number')?.name ?? '', value: 1 } };
+    default: return { [key]: true } as LeafCondition;
+  }
 }
 
 export function defaultConditional(): Action {

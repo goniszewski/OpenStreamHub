@@ -337,6 +337,8 @@ impl ObsClient {
             | Condition::OutputVolumeAtLeast(_)
             | Condition::TimerRunning(_)
             | Condition::FocusedApp(_)
+            | Condition::VariableIs { .. }
+            | Condition::VariableAtLeast { .. }
             | Condition::All(_)
             | Condition::Any(_) => {
                 return Err("this condition is not read from OBS".into());

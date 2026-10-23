@@ -1509,6 +1509,7 @@ mod control_regressions {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         };
         let mut output = Vec::new();
         process_work(

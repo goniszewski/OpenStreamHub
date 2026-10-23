@@ -181,9 +181,12 @@ impl TileIcon {
             Action::OpenUrl { .. } => Self::Web,
             Action::LaunchApp { .. } => Self::Application,
             Action::Text { .. } => Self::Text,
-            Action::MultiAction { .. } | Action::Conditional { .. } | Action::Macro { .. } => {
-                Self::Sequence
-            }
+            Action::MultiAction { .. }
+            | Action::Conditional { .. }
+            | Action::SetVariable { .. }
+            | Action::ToggleVariable { .. }
+            | Action::AddToVariable { .. }
+            | Action::Macro { .. } => Self::Sequence,
             Action::Profile { .. } => Self::Profile,
             Action::Timer { .. } => Self::Timer,
             Action::ObsScene { .. }

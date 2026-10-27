@@ -21,9 +21,9 @@ CI was blocked by GitHub billing, so 0.1.0 was built on an Apple Silicon Mac and
 | File | Trigger | Purpose |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | pull request (code changes), manual | `cargo fmt --check`, clippy (`-D warnings`) and tests for the root workspace and `src-tauri`; `tsc --noEmit` and `npm test` for the frontend. PR runs use `macos-15` (arm64) only, and there is no run on pushes to `master` (macOS minutes are costly); a manual run adds `macos-15-intel`. |
-| `.github/workflows/release.yml` | tags `v*` | Builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist, uploads a zip and a DMG as one workflow artifact. |
+| `.github/workflows/release.yml` | tags `v*` | `preflight` (`scripts/check-release.sh`), then builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist (ad-hoc signs and verifies it otherwise), uploads a zip and a DMG per architecture as workflow artifacts, and finally makes a **draft** GitHub release from them. |
 
-Both use `permissions: contents: read`. The release workflow does not create a GitHub release; publish by hand after checking the artifact.
+Both use `permissions: contents: read`; only the last job of the release workflow (`draft-release`) has `contents: write`. It creates a draft release (zip and DMG per architecture named `OpenStreamHub-<version>-<arch>-UNSIGNED`, `SHA256SUMS.txt`, and `docs/release-notes-<version>.md` as the body) and never publishes: check the draft, then publish by hand with `gh release edit vX.Y.Z --draft=false --latest`. If a release for the tag already exists, the job leaves it alone. A tag with a suffix (`v0.3.0-citest`) is checked against the base version and drafted as a prerelease, which is how to test the workflow; delete the tag and the draft afterwards.
 
 Intel runner label: `macos-13` has been retired by GitHub, so `macos-15-intel` is used (it ran successfully on 13 October 2026). The Intel job takes about 6 minutes with a warm cache and about 16 without.
 
@@ -58,9 +58,9 @@ The workflow exports these to the job environment only if **all six** are non-em
 ## Running a release
 
 1. Bump the version in `apps/open-stream-hub/package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they are kept in sync by hand; the app is currently `0.3.0`). Commit.
-2. Tag `vX.Y.Z` and push the tag.
-3. Write `docs/release-notes-X.Y.Z.md` and use it as the release notes. The README needs no edit: its release badge and Install link follow the latest published release.
-4. Download the artifacts, verify them locally (below), and attach them to a release manually.
+2. Write `docs/release-notes-X.Y.Z.md` and update the "currently" version above in this file. The README needs no edit: its release badge and Install link follow the latest published release. Run `scripts/check-release.sh vX.Y.Z` to see what the workflow's `preflight` job will check (versions agree with the tag, notes exist, this file names the version).
+3. Merge to `master` (it only takes pull requests), then tag `vX.Y.Z` on that commit and push the tag.
+4. When the workflow finishes, open the draft release, check the files (the local verification commands below work on the downloaded zip), and publish it.
 
 ## Sidecar signing
 

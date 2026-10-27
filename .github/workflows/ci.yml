@@ -1,17 +1,12 @@
 name: CI
 
 # macOS runners bill at a multiple of Linux minutes, so CI runs the essentials:
-# one Apple Silicon job, skipped for docs-only changes. The Intel compile check
-# runs on demand (Actions -> CI -> Run workflow) and is covered by the release
-# workflow's per-arch bundles.
+# one Apple Silicon job on pull requests that touch code (docs-only changes are
+# skipped). It does not run on pushes to master, to keep Actions spend down; run
+# it by hand from Actions -> CI -> Run workflow, which also adds the Intel
+# compile check, covered otherwise by the release workflow's per-arch bundles.
 on:
   pull_request:
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "LICENSE*"
-  push:
-    branches: [master]
     paths-ignore:
       - "**/*.md"
       - "docs/**"

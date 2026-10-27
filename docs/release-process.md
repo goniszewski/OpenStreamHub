@@ -20,8 +20,8 @@ CI was blocked by GitHub billing, so 0.1.0 was built on an Apple Silicon Mac and
 
 | File | Trigger | Purpose |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | pull request, push to `master`, manual | `cargo fmt --check`, clippy (`-D warnings`) and tests for the root workspace and `src-tauri`; `tsc --noEmit` and `npm test` for the frontend. Push and PR runs use `macos-15` (arm64) only; a manual run adds `macos-15-intel`. |
-| `.github/workflows/release.yml` | `workflow_dispatch`, tags `v*` | Builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist, uploads a zip and a DMG as one workflow artifact. |
+| `.github/workflows/ci.yml` | pull request (code changes), manual | `cargo fmt --check`, clippy (`-D warnings`) and tests for the root workspace and `src-tauri`; `tsc --noEmit` and `npm test` for the frontend. PR runs use `macos-15` (arm64) only, and there is no run on pushes to `master` (macOS minutes are costly); a manual run adds `macos-15-intel`. |
+| `.github/workflows/release.yml` | tags `v*` | Builds `OpenStreamHub.app` per architecture, signs and notarizes it if secrets exist, uploads a zip and a DMG as one workflow artifact. |
 
 Both use `permissions: contents: read`. The release workflow does not create a GitHub release; publish by hand after checking the artifact.
 
@@ -58,7 +58,7 @@ The workflow exports these to the job environment only if **all six** are non-em
 ## Running a release
 
 1. Bump the version in `apps/open-stream-hub/package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they are kept in sync by hand; the app is currently `0.1.0`). Commit.
-2. Tag `vX.Y.Z` and push the tag, or start the workflow from the Actions tab.
+2. Tag `vX.Y.Z` and push the tag.
 3. Write `docs/release-notes-X.Y.Z.md` and use it as the release notes. The README needs no edit: its release badge and Install link follow the latest published release.
 4. Download the artifacts, verify them locally (below), and attach them to a release manually.
 

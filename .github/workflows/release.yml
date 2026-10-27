@@ -6,7 +6,6 @@ name: Release (macOS bundle)
 # is produced.
 
 on:
-  workflow_dispatch:
   push:
     tags: ["v*"]
 

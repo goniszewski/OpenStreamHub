@@ -183,10 +183,32 @@ const DISPLAY_ERROR_CHARS: usize = 240;
 /// Display records waiting for the action worker; later records are dropped and counted.
 const DISPLAY_RECORD_QUEUE: usize = 32;
 
-/// Shortest time between two dial writes: the dial is redrawn at most about once a second.
+/// Shortest time between two dial writes: the dial is redrawn at most about once a second
+/// (an animated picture uses [`DIAL_ANIMATION_INTERVAL`]).
 pub const DIAL_MIN_INTERVAL: Duration = Duration::from_secs(1);
+/// Longest shortest-time between two dial writes while an animated picture
+/// plays: the floor of the largest frames. A frame near the size limit took 86
+/// to 121 ms to write on a real M131E, so this leaves about 30 ms spare over
+/// the worst case. Smaller frames have shorter floors
+/// ([`cooltek_sdk_service::DialAnimation::min_delay_ms_for`]).
+pub const DIAL_ANIMATION_INTERVAL: Duration = Duration::from_millis(150);
+/// Trigger of a dial write started by an animation frame coming due.
+const DIAL_ANIMATION_TRIGGER: &str = "animation";
+/// How long a failed animation frame holds the animation back before the next
+/// try, so a failing dial logs once in a while instead of at every frame.
+const DIAL_ANIMATION_RETRY: Duration = Duration::from_secs(5);
+/// One clean animation frame in this many is logged, with its write time; the
+/// rest are counted in `syncs` only, as the keypad's timed frames are.
+const DIAL_ANIMATION_LOG_EVERY: u32 = 50;
+/// The most lateness an animation frame's draw may hand back to the next one.
+/// A fifth of the shortest interval, so two writes are never closer than four
+/// fifths of it (a worst-case frame writes in about four fifths of 150 ms).
+const DIAL_ANIMATION_CREDIT_DIVISOR: u32 = 5;
 /// How often the dial thread re-checks its clock and a rate-limited request.
 const DIAL_TICK: Duration = Duration::from_millis(100);
+/// Shortest wait while an animation plays, so a frame due in a moment does not
+/// spin the thread.
+const DIAL_ANIMATION_TICK_FLOOR: Duration = Duration::from_millis(5);
 
 /// Opt-in display synchronization for one live M4315 or M131E run.
 ///
@@ -562,7 +584,7 @@ impl DisplayThread {
                             match next_display_request(
                                 &thread_slot,
                                 &abort,
-                                Some(DIAL_TICK),
+                                Some(dial.tick(&artwork, min_interval, closed())),
                                 &|| false,
                             ) {
                                 Wake::Stopped => return,
@@ -601,6 +623,25 @@ impl DisplayThread {
                                 };
                                 (request, "panic")
                             });
+                            // Clean animation frames are counted in `syncs` and mostly
+                            // not logged: at five a second they would flood the log.
+                            if trigger == DIAL_ANIMATION_TRIGGER
+                                && outcome == DialOutcome::Done
+                                && !record
+                                    .as_ref()
+                                    .is_ok_and(|(record, _)| record["error"].is_string())
+                            {
+                                dial.finished(outcome);
+                                if !dial.logs_clean_frame() {
+                                    continue;
+                                }
+                                // This one is the logged sample.
+                                let Ok((record, _)) = record else { continue };
+                                if finish(Ok(record), Value::Null) {
+                                    return;
+                                }
+                                continue;
+                            }
                             let failed =
                                 dial_record(trigger, &request, None, false, Some(DISPLAY_PANIC));
                             if finish(record.map(|(record, _)| record), failed) {
@@ -781,6 +822,15 @@ fn next_display_request(
     }
 }
 
+/// Least time between two dial writes: `min_interval`, or the shorter
+/// size floor of the current frame while an animated picture plays.
+fn dial_interval(artwork: &DialArtwork, min_interval: Duration) -> Duration {
+    match artwork.animation_floor() {
+        Some(floor) => min_interval.min(floor),
+        None => min_interval,
+    }
+}
+
 /// The dial thread's view of what to draw and when it last tried.
 #[derive(Default)]
 struct DialState {
@@ -799,6 +849,14 @@ struct DialState {
     retried: Option<Option<String>>,
     /// The face waiting for its one retry after a plain transport failure.
     retry_pending: Option<Option<String>>,
+    /// The newest attempt drew an animation frame.
+    last_was_animation: bool,
+    /// An animation frame failed: no more frames are tried until this moment
+    /// or the next request, so a failing dial logs once in a while instead of
+    /// at every frame.
+    animation_paused_until: Option<Instant>,
+    /// Clean animation frames drawn since one was last logged.
+    animation_unlogged: u32,
 }
 
 /// How one dial attempt ended, for the retry bookkeeping.
@@ -812,11 +870,65 @@ enum DialOutcome {
     Failed,
 }
 
+/// When to count the rate limit from for a draw made `now`. The limit counts
+/// from the start of the previous write, so a frame drawn a little after its
+/// deadline would push the next deadline back by the same amount, and the
+/// lateness would pile up until a frame was skipped. An animation frame
+/// therefore counts from when it was due, up to a fifth of `interval` earlier
+/// than `now`.
+fn attempt_anchor(now: Instant, late_by: Option<Duration>, interval: Duration) -> Instant {
+    let credit = late_by
+        .unwrap_or_default()
+        .min(interval / DIAL_ANIMATION_CREDIT_DIVISOR);
+    now.checked_sub(credit).unwrap_or(now)
+}
+
 impl DialState {
+    /// How long to sleep before looking again: the usual tick, or while an
+    /// animation plays the time until the next draw can happen. When the frame
+    /// on the clock is not the one drawn that is when the rate limit opens;
+    /// otherwise it is when the frame ends. Waking at the usual tick instead
+    /// would draw each frame up to a tick late, and the lateness would pile up
+    /// until a frame was skipped. A paused animation waits at the usual tick
+    /// for the next request.
+    fn tick(&self, artwork: &DialArtwork, min_interval: Duration, closed: bool) -> Duration {
+        if !self.started || closed || self.animation_paused() {
+            return DIAL_TICK;
+        }
+        let Some(until_frame) = artwork.next_frame_in() else {
+            return DIAL_TICK;
+        };
+        let pending =
+            self.last_face.as_ref() != Some(&artwork.request(self.dial_function).function);
+        let wait = if pending {
+            let interval = dial_interval(artwork, min_interval);
+            self.last_attempt.map_or(Duration::ZERO, |last| {
+                interval.saturating_sub(last.elapsed())
+            })
+        } else {
+            until_frame
+        };
+        wait.clamp(DIAL_ANIMATION_TICK_FLOOR, DIAL_TICK)
+    }
+
+    fn animation_paused(&self) -> bool {
+        self.animation_paused_until
+            .is_some_and(|until| Instant::now() < until)
+    }
+
+    /// Whether a clean animation frame's record is written to the log: the
+    /// first, then one in [`DIAL_ANIMATION_LOG_EVERY`].
+    fn logs_clean_frame(&mut self) -> bool {
+        let log = self.animation_unlogged == 0;
+        self.animation_unlogged = (self.animation_unlogged + 1) % DIAL_ANIMATION_LOG_EVERY;
+        log
+    }
+
     fn requested(&mut self, request: DisplayRequest) {
         self.started = true;
         self.dial_function = request.dial_function;
         self.trigger = Some(request.trigger);
+        self.animation_paused_until = None;
     }
 
     /// The request to draw now, if the face changed and the rate limit allows.
@@ -836,10 +948,18 @@ impl DialState {
         if artwork.awaiting_first_sample() {
             return None;
         }
+        let animation = request
+            .function
+            .as_deref()
+            .is_some_and(|face| face.starts_with("image:"));
         if self.last_face.as_ref() == Some(&request.function) {
             self.trigger = None;
             return None;
         }
+        if animation && self.animation_paused() && self.trigger.is_none() {
+            return None;
+        }
+        let min_interval = dial_interval(artwork, min_interval);
         if self
             .last_attempt
             .is_some_and(|last| last.elapsed() < min_interval)
@@ -852,7 +972,12 @@ impl DialState {
         }
         let retrying = self.retry_pending.take() == face;
         self.last_face = face;
-        self.last_attempt = Some(Instant::now());
+        self.last_attempt = Some(attempt_anchor(
+            Instant::now(),
+            animation.then(|| artwork.frame_age()).flatten(),
+            dial_interval(artwork, min_interval),
+        ));
+        self.last_was_animation = animation;
         // What changes a face without a request: the clock's minute or a new
         // CPU percentage.
         let timed = match request.function.as_deref() {
@@ -860,6 +985,7 @@ impl DialState {
                 Some("clock")
             }
             Some(face) if face.starts_with("cpu:") => Some("cpu"),
+            Some(face) if face.starts_with("image:") => Some(DIAL_ANIMATION_TRIGGER),
             _ => None,
         };
         let trigger = match (self.trigger.take(), timed) {
@@ -879,6 +1005,9 @@ impl DialState {
     /// already used its retry is left alone until a successful write or
     /// another face resets it.
     fn finished(&mut self, outcome: DialOutcome) {
+        if self.last_was_animation && outcome != DialOutcome::Done {
+            self.animation_paused_until = Some(Instant::now() + DIAL_ANIMATION_RETRY);
+        }
         match outcome {
             DialOutcome::Done => self.retried = None,
             DialOutcome::TransportFailed
@@ -901,6 +1030,7 @@ fn sync_dial<S: DisplaySink>(
     counts: &DisplayCounts,
 ) -> (Value, DialOutcome) {
     counts.syncs.fetch_add(1, Ordering::SeqCst);
+    let started = Instant::now();
     let (report, missing, error) = match sync.plan_dial(request.clone(), artwork) {
         Ok(plan) => {
             let missing = plan.is_missing();
@@ -927,7 +1057,14 @@ fn sync_dial<S: DisplaySink>(
         }
         _ => DialOutcome::Failed,
     };
-    let record = dial_record(trigger, request, report.as_ref(), missing, error.as_deref());
+    let mut record = dial_record(trigger, request, report.as_ref(), missing, error.as_deref());
+    // How long planning and the write took, to pace animation against.
+    if report
+        .as_ref()
+        .is_some_and(|report| report.written.contains(&DisplayTarget::Dial))
+    {
+        record["elapsed_micros"] = json!(started.elapsed().as_micros() as u64);
+    }
     (record, outcome)
 }
 
@@ -1622,6 +1759,7 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     pending.error = next.error;
     pending.dropped_event_count += next.dropped_event_count;
     pending.dropped_dial_function_count += next.dropped_dial_function_count;
+    pending.variables = next.variables;
     for planned in next.events {
         // Merge only into the immediately preceding event so the order of
         // events across controls is preserved. A dropped dial function switch
@@ -1873,7 +2011,7 @@ fn validate_display(
         return Err("display sync requires software mode".into());
     }
     if session.profile().keypad.is_none() {
-        return Err("display sync requires a schema-2 keypad profile".into());
+        return Err("display sync requires a keypad-page profile (schema 2 or later)".into());
     }
     Ok(())
 }
@@ -3659,6 +3797,7 @@ mod tests {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         }
     }
 
@@ -4752,7 +4891,12 @@ mod tests {
                 "software mode",
             ),
             (keypad_options(1), device(), keypad_profile(), "M4315"),
-            (keypad_options(1), keypad_device(), profile(), "schema-2"),
+            (
+                keypad_options(1),
+                keypad_device(),
+                profile(),
+                "keypad-page profile",
+            ),
         ] {
             let error = run_inner(
                 &mut InputReader::new(Transport::new([])),
@@ -6273,6 +6417,90 @@ mod tests {
         assert!(records.iter().all(|record| record["written"] == true));
         assert_eq!(display.counts.syncs.load(Ordering::SeqCst), 3);
         assert_eq!(display.counts.failures.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_late_animation_frame_counts_its_rate_limit_from_when_it_was_due() {
+        let now = Instant::now();
+        let interval = Duration::from_millis(150);
+        let ms = Duration::from_millis;
+        // On time, or not an animation: counted from now.
+        assert_eq!(attempt_anchor(now, None, interval), now);
+        assert_eq!(attempt_anchor(now, Some(Duration::ZERO), interval), now);
+        // A few milliseconds late: the lateness is handed back.
+        assert_eq!(attempt_anchor(now, Some(ms(7)), interval), now - ms(7));
+        // Never more than a fifth of the interval, so writes stay apart.
+        assert_eq!(attempt_anchor(now, Some(ms(120)), interval), now - ms(30));
+    }
+
+    #[test]
+    fn frames_drawn_a_little_late_do_not_pile_their_lateness_up() {
+        // Simulated clock: frames are due every 150 ms and every draw happens
+        // 9 ms after the earliest moment the rate limit and the frame allow.
+        let interval = 150u64;
+        let lateness = 9u64;
+        let mut last_start = 0u64; // start of the previous write, as counted
+        let mut skipped = 0;
+        for frame in 1..200u64 {
+            let due = frame * interval;
+            let earliest = due.max(last_start + interval);
+            let drawn = earliest + lateness;
+            // The frame on the clock when the draw happens.
+            if drawn / interval != frame {
+                skipped += 1;
+            }
+            let late = drawn - due;
+            last_start = drawn - late.min(interval / u64::from(DIAL_ANIMATION_CREDIT_DIVISOR));
+        }
+        assert_eq!(skipped, 0);
+        // Without handing the lateness back it accumulates into skipped frames.
+        let mut last_start = 0u64;
+        let mut skipped = 0;
+        for frame in 1..200u64 {
+            let drawn = (frame * interval).max(last_start + interval) + lateness;
+            if drawn / interval != frame {
+                skipped += 1;
+            }
+            last_start = drawn;
+        }
+        assert!(skipped > 0);
+    }
+
+    #[test]
+    fn an_animated_dial_picture_redraws_each_frame_faster_than_the_default_interval() {
+        let profile = crate::dial_artwork::animated_test_profile(&[250, 250, 250], 0);
+        let artwork = DialArtwork::prepare(
+            DialContent::Image,
+            &profile,
+            Box::new(ManualClock::new(WallTime::new(9, 0))),
+        )
+        .unwrap();
+        // The default one-second dial interval would allow one write here.
+        let harness = dial_harness(artwork, DIAL_MIN_INTERVAL, None);
+        let fake = Arc::clone(&harness.fake);
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let session = two_functions();
+        let mut display = DisplayThread::spawn(
+            harness.display,
+            session.clone(),
+            Arc::new(AtomicBool::new(false)),
+            records_tx,
+        )
+        .unwrap();
+        display.request(&session, "software_mode");
+        thread::sleep(Duration::from_millis(1400));
+        assert!(display.finish(Duration::from_secs(2)));
+        let writes = dial_writes(&fake);
+        assert!(writes.len() >= 4, "{} writes", writes.len());
+        // Frames cycle: neighbours differ, and the loop comes back to frame 0.
+        assert!(writes.windows(2).all(|pair| pair[0] != pair[1]));
+        assert!(writes.iter().skip(3).any(|write| *write == writes[0]));
+        let triggers: Vec<String> = records
+            .try_iter()
+            .map(|record| record["trigger"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(triggers[0], "software_mode");
+        assert!(triggers[1..].iter().all(|trigger| trigger == "animation"));
     }
 
     #[test]

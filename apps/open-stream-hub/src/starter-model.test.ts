@@ -18,7 +18,7 @@ function* actionsOf(profile: Profile): Generator<{ action: Action | FaderTemplat
 
 describe('shipped starters', () => {
   it('are structurally valid profiles the service will accept', () => {
-    expect(starters.map(item => item.name)).toEqual(['Mac basics', 'Streaming (OBS)', 'Editing and media']);
+    expect(starters.map(item => item.name)).toEqual(['Mac basics', 'Streaming (OBS)', 'Streamer', 'Editing and media']);
     for (const item of starters) {
       expect(starterIssue(item.profile), item.id).toBeNull();
       expect(labelIssue(item.profile.name, 'Profile name'), item.id).toBeNull();
@@ -31,12 +31,21 @@ describe('shipped starters', () => {
     }
   });
   it('stay dry-run safe: nothing that types, launches, opens or names an OBS item', () => {
-    const allowed = new Set(['volume', 'toggle_mute', 'media', 'system', 'timer', 'volume_from_position', 'obs_virtual_camera', 'obs_replay_buffer', 'obs_transition']);
+    const allowed = new Set(['volume', 'toggle_mute', 'media', 'system', 'timer', 'volume_from_position', 'obs_virtual_camera', 'obs_replay_buffer', 'obs_transition', 'obs_studio_mode', 'obs_record', 'obs_screenshot', 'obs_stream']);
     for (const item of starters) {
       for (const { action, where } of actionsOf(item.profile)) {
         expect(allowed.has(action.type), `${item.id} at ${where}`).toBe(true);
       }
     }
+  });
+  it('hold the stream only behind the press-twice guard', () => {
+    for (const item of starters) {
+      for (const { action, where } of actionsOf(item.profile)) {
+        if (action.type === 'obs_stream') expect((action as { confirm?: string }).confirm, `${item.id} at ${where}`).toBe('press_twice');
+      }
+    }
+    const unguarded: Profile = { ...starters.find(item => item.id === 'streamer')!.profile, bindings: [{ module: 'm131e', control: 0, gesture: 'pressed', action: { type: 'obs_stream', op: 'toggle' } }] };
+    expect(starterIssue(unguarded)).toContain('press twice');
   });
   it('bind supported selectors without duplicates and keep the 15-key module on the keypad', () => {
     for (const item of starters) {

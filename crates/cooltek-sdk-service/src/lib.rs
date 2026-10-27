@@ -18,10 +18,12 @@ pub mod display_sync;
 pub mod macos;
 pub mod obs;
 
-pub use binding::{ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, TimerAlerter};
+pub use binding::{
+    ActionDispatcher, BindingEngine, DeviceContext, DryRunDispatcher, ServiceState, TimerAlerter,
+};
 pub use dial::{
-    DialBinding, DialDisplay, DialDisplayContent, DialFit, DialFunction, DialFunctionNavigation,
-    DialSource,
+    DialAnimation, DialAnimationFrame, DialBinding, DialDisplay, DialDisplayContent, DialFit,
+    DialFunction, DialFunctionNavigation, DialSource,
 };
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use key_artwork::{KeyArtwork, KeyArtworkDesign, KeyArtworkFrame, KeyArtworkTextAlign};
@@ -31,8 +33,11 @@ pub use keypad::{
 };
 pub use macos::MacOsDispatcher;
 pub use profile::{
-    Action, Binding, Gesture, MacroStep, MediaCommand, Modifier, ObsOutputOp, ObsReplayBufferOp,
-    ObsSwitchOp, Profile, ProfileDirection, ScreenBrightness, ServiceModule, SystemCommand,
-    TimerSound, is_invisible_text_character, key_for_virtual_code, virtual_key_code,
+    Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
+    ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
+    ScreenBrightness, ServiceModule, SystemCommand, TimerSound, Variable, VariableKind,
+    VariableValue, is_invisible_text_character, key_for_virtual_code, virtual_key_code,
 };
-pub use timer::{RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration};
+pub use timer::{
+    Confirmation, RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration,
+};

@@ -1,11 +1,13 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, MediaCommand, Modifier, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
 import type { ObsStepAction, ObsStepType } from './action-model';
+import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
+import { VariableActionFields } from './VariableFields';
 import { MacroFields } from './MacroFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
@@ -13,8 +15,8 @@ import { obsConnectionLabels } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
-  defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
-  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
+  conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
+  obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -33,6 +35,10 @@ const obsSwitchHint = 'Toggle follows OBS\'s current state; Turn on and Turn off
 const obsSwitchMore = 'Turn on and Turn off are safer inside a multi-action.';
 const obsReloadHint = 'OBS reloads its scenes and settings when this runs, which can interrupt a live stream or recording.';
 const obsReloadMore = 'OBS applies the switch a moment after the press; nothing waits for it to finish, so in a multi-action put it last (a later OBS step can reach OBS while it is still reloading and fail).';
+
+function withConfirm(action: { type: 'obs_stream'; op: ObsOutputOp }, on: boolean): StepAction {
+  return on ? { type: 'obs_stream', op: action.op, confirm: 'press_twice' } : { type: 'obs_stream', op: action.op };
+}
 
 function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {
   return <SelectField id={id} value={value} onChange={event => onChange(event.target.value as ObsSwitchOp)}>{(Object.keys(obsSwitchOpLabels) as ObsSwitchOp[]).map(op => <option key={op} value={op}>{obsSwitchOpLabels[op]}</option>)}</SelectField>;
@@ -173,6 +179,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'macro' && <MacroFields steps={action.steps} disabled={false} onChange={steps => onChange({ type: 'macro', steps }, 'macro-steps')} invoke={invoke} />}
+    {action?.type === 'conditional' && <ConditionalFields action={action} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
     {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
@@ -182,7 +189,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
     {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">Each position change sets the default input device's volume (the microphone gain) from 0% to 100%. Some microphones have no software gain, and macOS then ignores it.</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
-    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'profile' && action.type !== 'timer' &&
+    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'conditional' && action.type !== 'profile' && action.type !== 'timer' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
   </>;
 }
@@ -194,7 +201,7 @@ function FaderObsInputFields({ action, onChange, onSetUpObs, catalog }: {
   return <div className="action-fields">
     <ObsNameRow id="obs-input-volume-input" label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
       issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ type: 'obs_input_volume_from_position', input }, 'obs-input-volume-input')} />
-    <p className="fine-print">Each position change sets this OBS input's volume from 0% (silent) to 100% (unity gain, 0 dB), matched by exact name (up to {maxObsSceneBytes} bytes). It never boosts above 0 dB.</p>
+    <p className="fine-print">Each position change sets this OBS input's volume from 0% (silent) to 100% (unity gain, 0 dB) along OBS's own slider scale, so the fader and OBS's slider move together, matched by exact name (up to {maxObsSceneBytes} bytes). It never boosts above 0 dB.</p>
     <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />
   </div>;
 }
@@ -224,28 +231,55 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
   </div>;
 }
 
+// Numbered steps with a picker each, Remove buttons and Add step: the list a multi-action and both branches of a
+// conditional edit. `idBase` keeps the ids apart (`step-2-action` for a multi-action, `then-step-2-action` in a branch).
+function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, onSetUpObs, catalog, invoke }: {
+  steps: StepAction[]; idBase: string; noun: string; minimum: number; maximum: number; selectorKey: string; update: (next: StepAction[], field?: string) => void;
+  onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
+}) {
+  return <>
+    <ol className="action-steps">
+      {steps.map((step, index) => {
+        const prefix = `${idBase}step-${index + 1}-`;
+        return <li key={`${index}:${step.type}`}>
+          <label htmlFor={`${prefix}action`}>{noun} {index + 1}</label>
+          <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
+            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
+          <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${idBase}${index}:${steps.length}`}
+            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} />
+          <button type="button" className="button compact" disabled={steps.length <= minimum}
+            aria-label={`Remove ${noun.toLowerCase()} ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
+        </li>;
+      })}
+    </ol>
+    <button type="button" className="button compact" disabled={steps.length >= maximum}
+      onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add {noun.toLowerCase()}</button>
+  </>;
+}
+
 function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, invoke }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
   const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
   return <div className="action-fields">
     <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
-    <ol className="action-steps">
-      {steps.map((step, index) => {
-        const prefix = `step-${index + 1}-`;
-        return <li key={`${index}:${step.type}`}>
-          <label htmlFor={`${prefix}action`}>Step {index + 1}</label>
-          <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
-            onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
-          <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${index}:${steps.length}`}
-            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} />
-          <button type="button" className="button compact" disabled={steps.length <= multiActionSteps.minimum}
-            aria-label={`Remove step ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
-        </li>;
-      })}
-    </ol>
-    <button type="button" className="button compact" disabled={steps.length >= multiActionSteps.maximum}
-      onClick={() => update([...steps, defaultStepAction('toggle_mute')])}><Plus size={16} />Add step</button>
+    <StepList steps={steps} idBase="" noun="Step" minimum={multiActionSteps.minimum} maximum={multiActionSteps.maximum} selectorKey={selectorKey} update={update}
+      onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
     {steps.some(step => step.type.startsWith('obs_')) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
   </div>;
+}
+
+// Whether a flow reads from or acts on OBS anywhere: a test, a step, or inside a nested if / else.
+const flowUsesObs = (action: ConditionalAction): boolean =>
+  conditionUsesObs(action.when) || action.then.concat(action.else ?? []).some(step => (step.type === 'conditional' ? flowUsesObs(step) : step.type.startsWith('obs_')));
+
+// If / else: tests read when the key is pressed (AND / OR groups that nest), a Then list and an Otherwise list whose steps
+// may be if / else blocks themselves. The tree, its drag-and-drop and its limits live in FlowEditor.
+function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
+  return <FlowEditor action={action} selectorKey={selectorKey} onChange={(next, field) => onChange(next, field)}
+    render={{
+      step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />,
+      app: ({ inputId, bundleId, onChange: change }) => <LaunchAppFields inputId={inputId} bundleId={bundleId} invoke={invoke} onChange={change} />,
+    }}
+    obsNote={flowUsesObs(action) ? <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} /> : undefined} />;
 }
 
 // "Open app": choose an app with the system's picker (or type its bundle ID) and see its everyday name under the field.
@@ -323,9 +357,11 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
     case 'media': return <div className="action-fields"><label htmlFor={id('media-command')}>Media command</label><SelectField id={id('media-command')} value={action.command} onChange={event => onChange({ type: 'media', command: event.target.value as MediaCommand })}>{(Object.keys(mediaLabels) as MediaCommand[]).map(command => <option key={command} value={command}>{mediaLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'stop'
       ? 'macOS has no stop media key, so this stops Apple Music or pauses Spotify, only when one is already running. It does not start a player that is not running; if one quits at the very instant of the press, macOS may relaunch it, without playing. Needs macOS Automation permission for the player.'
       : 'Sends the media key to whichever app controls playback, like the key on a keyboard. Needs macOS Accessibility permission.'}</p></div>;
-    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_studio_mode': case 'obs_transition':
+    case 'obs_scene': case 'obs_virtual_camera': case 'obs_replay_buffer': case 'obs_stream': case 'obs_record': case 'obs_studio_mode': case 'obs_transition': case 'obs_screenshot':
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
+    case 'obs_input_mute': case 'obs_adjust_input_volume': case 'obs_media_source':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
+    case 'set_variable': case 'toggle_variable': case 'add_to_variable': return <VariableActionFields prefix={prefix} action={action} onChange={onChange} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
 }
@@ -353,6 +389,22 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
         </SelectField>
         <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
+    case 'obs_stream':
+      fields = <><label htmlFor={id('obs-stream-op')}>Action</label>
+        <SelectField id={id('obs-stream-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsOutputOp }, 'obs-stream-op')}>
+          {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
+        </SelectField>
+        <label className="setting-toggle"><input type="checkbox" checked={action.confirm === 'press_twice'} onChange={event => onChange(withConfirm(action, event.target.checked), 'obs-stream-confirm')} />Press twice to confirm</label>
+        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. {action.confirm === 'press_twice' ? 'The first press only arms the key; press it again within 3 seconds to run it. Not available inside a multi-action.' : 'Without the option above, one press does this at once.'}</p>
+        <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_record':
+      fields = <><label htmlFor={id('obs-record-op')}>Action</label>
+        <SelectField id={id('obs-record-op')} value={action.op} onChange={event => onChange({ type: 'obs_record', op: event.target.value as ObsRecordOp }, 'obs-record-op')}>
+          {(Object.keys(obsRecordOpLabels) as ObsRecordOp[]).map(op => <option key={op} value={op}>{obsRecordOpLabels[op]}</option>)}
+        </SelectField>
+        <Hint hint={`Pause and Resume need a running recording in OBS. ${obsSwitchHint}`}>{obsOutputNote} {obsSwitchMore}</Hint></>;
+      break;
     case 'obs_replay_buffer':
       fields = <><label htmlFor={id('obs-replay-buffer-op')}>Action</label>
         <SelectField id={id('obs-replay-buffer-op')} value={action.op} onChange={event => onChange({ type: 'obs_replay_buffer', op: event.target.value as ObsReplayBufferOp }, 'obs-replay-buffer-op')}>
@@ -364,6 +416,9 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
       fields = <><label htmlFor={id('obs-studio-mode-op')}>Action</label>
         <ObsSwitchSelect id={id('obs-studio-mode-op')} value={action.op} onChange={op => onChange({ type: 'obs_studio_mode', op }, 'obs-studio-mode-op')} />
         <Hint hint={obsSwitchHint}>{obsSwitchMore}</Hint></>;
+      break;
+    case 'obs_screenshot':
+      fields = <p className="fine-print">Saves a PNG of the current OBS program scene to your Pictures folder as “OBS Screenshot” with the date and time. The location is fixed. OBS must be allowed to write there.</p>;
       break;
     case 'obs_transition':
       fields = <p className="fine-print">Triggers the studio-mode transition from the preview to the program scene. OBS refuses it while studio mode is off, and the press is logged as failed.</p>;
@@ -412,9 +467,37 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
           issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-input-volume-input')} />
         <label className="spaced-label" htmlFor={id('obs-input-volume-percent')}>Volume (%)</label>
         <IntegerField id={id('obs-input-volume-percent')} value={action.percent} minimum={0} maximum={100} onCommit={percent => onChange({ ...action, percent }, 'obs-input-volume-percent')} />
-        <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB). To follow a fader instead, bind a fader.</p></>;
+        <p className="fine-print">Sets the OBS input's volume to this level: 0% is silent, 100% is unity gain (0 dB), on OBS's own slider scale (50% is about -19 dB). To follow a fader instead, bind a fader.</p></>;
       break;
     }
+    case 'obs_input_mute':
+      fields = <>
+        <ObsNameRow id={id('obs-input-mute-input')} label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-input-mute-input')} />
+        <label className="spaced-label" htmlFor={id('obs-input-mute-op')}>Action</label>
+        <SelectField id={id('obs-input-mute-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsMuteOp }, 'obs-input-mute-op')}>
+          {(Object.keys(obsMuteOpLabels) as ObsMuteOp[]).map(op => <option key={op} value={op}>{obsMuteOpLabels[op]}</option>)}
+        </SelectField>
+        <p className="fine-print">Mutes or unmutes this OBS input. Mute and Unmute do not depend on the current state, which makes them safe inside a multi-action.</p></>;
+      break;
+    case 'obs_adjust_input_volume':
+      fields = <>
+        <ObsNameRow id={id('obs-adjust-volume-input')} label="OBS input name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-adjust-volume-input')} />
+        <label className="spaced-label" htmlFor={id('obs-adjust-volume-step')}>Step (dB)</label>
+        <IntegerField id={id('obs-adjust-volume-step')} value={action.step_db} minimum={-20} maximum={20} onCommit={step_db => onChange({ ...action, step_db }, 'obs-adjust-volume-step')} />
+        <p className="fine-print">Changes the input's volume by this many decibels per press (negative is quieter, zero is not allowed). The result is held between -100 dB and 0 dB.</p></>;
+      break;
+    case 'obs_media_source':
+      fields = <>
+        <ObsNameRow id={id('obs-media-input')} label="OBS media source name" value={action.input} entry={catalogNames(catalog, catalog?.names?.sources)} what="input"
+          issue={obsNameIssue(action.input, 'input')} onChange={input => onChange({ ...action, input }, 'obs-media-input')} />
+        <label className="spaced-label" htmlFor={id('obs-media-op')}>Action</label>
+        <SelectField id={id('obs-media-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as ObsMediaOp }, 'obs-media-op')}>
+          {(Object.keys(obsMediaOpLabels) as ObsMediaOp[]).map(op => <option key={op} value={op}>{obsMediaOpLabels[op]}</option>)}
+        </SelectField>
+        <p className="fine-print">Reads the source's play state first. Play / pause pauses a playing source and plays a paused one; Play / stop stops a playing source; Play / restart restarts it; a stopped or ended source always restarts.</p></>;
+      break;
     case 'obs_scene': {
       fields = <>
         <ObsNameRow id={id('obs-scene')} label="OBS scene name" value={action.scene} entry={scenes} what="scene"

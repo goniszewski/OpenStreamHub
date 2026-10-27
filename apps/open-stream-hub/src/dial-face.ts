@@ -59,7 +59,7 @@ const GLYPHS: Record<string, readonly [number, number, number, number, number, n
   '!': [4, 4, 4, 4, 4, 0, 4],
 };
 
-const glyph = (character: string) => GLYPHS[character.toUpperCase()] ?? GLYPHS['?'] ?? [14, 17, 1, 2, 4, 0, 4];
+export const glyph = (character: string) => GLYPHS[character.toUpperCase()] ?? GLYPHS['?'] ?? [14, 17, 1, 2, 4, 0, 4];
 
 // Seven-segment masks, bit 0 = a (top) through bit 6 = g (middle).
 const SEGMENTS = [0b011_1111, 0b000_0110, 0b101_1011, 0b100_1111, 0b110_0110, 0b110_1101, 0b111_1101, 0b000_0111, 0b111_1111, 0b110_1111];

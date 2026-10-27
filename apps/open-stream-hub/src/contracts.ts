@@ -36,23 +36,68 @@ export type StepAction =
   // WebSocket. No names are involved; the op is a closed set (ObsOutputOp, ObsReplayBufferOp in profile.rs).
   | { type: 'obs_virtual_camera'; op: ObsOutputOp }
   | { type: 'obs_replay_buffer'; op: ObsReplayBufferOp }
+  // Going live or ending a broadcast (obs_stream), and the recording including pause and resume (obs_record).
+  | { type: 'obs_stream'; op: ObsOutputOp; confirm?: ObsConfirm }
+  | { type: 'obs_record'; op: ObsRecordOp }
   // Studio mode, its transition, a source filter and a source's visibility in a scene. The names are exact OBS names
   // (the same rules as obs_scene.scene).
   | { type: 'obs_studio_mode'; op: ObsSwitchOp }
   | { type: 'obs_transition' }
+  // Saves a PNG of the program scene into ~/Pictures (a fixed place; a profile cannot name a path).
+  | { type: 'obs_screenshot' }
   | { type: 'obs_filter'; source: string; filter: string; op: ObsSwitchOp }
   | { type: 'obs_source_visibility'; scene: string; source: string; op: ObsSwitchOp }
   // Switch the OBS scene collection or OBS profile by exact name. OBS reloads, which can interrupt a live output.
   | { type: 'obs_scene_collection'; name: string }
   | { type: 'obs_profile'; name: string }
-  // Set an OBS input's volume to an absolute percentage (100 is unity gain, 0 dB). The input is an exact OBS name.
-  | { type: 'obs_set_input_volume'; input: string; percent: number };
+  // Set an OBS input's volume to a position on OBS's own slider (0 is silent, 100 is unity gain, 0 dB; the scale is OBS's logarithmic taper, not linear). The input is an exact OBS name.
+  | { type: 'obs_set_input_volume'; input: string; percent: number }
+  // Mute an input, step its volume by dB (held between -100 and 0 dB), or play/pause/restart/stop a media source.
+  | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }
+  | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
+  | { type: 'obs_media_source'; input: string; op: ObsMediaOp }
+  // The profile's own variables (declared in Profile.variables): set one, flip a bool, or add to a number (a result past the limits stops there).
+  | { type: 'set_variable'; name: string; value: VariableValue }
+  | { type: 'toggle_variable'; name: string }
+  | { type: 'add_to_variable'; name: string; amount: number };
+// A variable's value is its kind: a bool, a whole number (-1 000 000 to 1 000 000) or text (up to 64 bytes). VariableValue in profile.rs.
+export type VariableValue = boolean | number | string;
+export type VariableKind = 'bool' | 'number' | 'text';
+// Declared in the profile; the value is where it starts when the service starts. Kept across key presses, per module process.
+export interface Variable { name: string; value: VariableValue }
 export type ObsSwitchOp = 'toggle' | 'on' | 'off';
+// With press_twice a key must be pressed twice within three seconds; only a key's own action, not a multi-action step.
+export type ObsConfirm = 'press_twice';
+export type ObsMuteOp = 'toggle' | 'mute' | 'unmute';
+export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
+export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
+// The state a conditional tests (Condition in profile.rs): one key with a value, or all/any of several. The first four read an OBS output and
+// need the OBS connection; the last two read the default output of this Mac.
+export type Condition = LeafCondition | { all: Condition[] } | { any: Condition[] };
+// `all` (AND) and `any` (OR) combine 2 to 8 conditions and nest in each other (3 levels, 16 tests in all).
+export type LeafCondition =
+  | { obs_streaming: boolean }
+  | { obs_recording: boolean }
+  | { obs_virtual_camera: boolean }
+  | { obs_replay_buffer: boolean }
+  | { output_muted: boolean }
+  | { output_volume_at_least: number }
+  // A timer countdown started by this module's bindings is running.
+  | { timer_running: boolean }
+  // The frontmost application has this bundle identifier (read on this Mac when the key is pressed).
+  | { focused_app: string }
+  | { variable_is: { name: string; value: VariableValue } }
+  | { variable_at_least: { name: string; value: number } };
+export type BranchStep = StepAction | ConditionalAction;
+export interface ConditionalAction { type: 'conditional'; when: Condition; then: BranchStep[]; else?: BranchStep[] }
 export type BindingAction =
   | StepAction
   | { type: 'multi_action'; actions: StepAction[] }
+  // Tests one condition when pressed, then runs the `then` steps (1-8) or the `else` steps (0-8, omitted when empty).
+  // Steps follow the multi_action rules; a conditional may also be a step of another conditional (3 levels, 32 steps in all).
+  | ConditionalAction
   // A recorded sequence of keystrokes with waits and holds (bounded: 1–64 steps, ≤30 s in total).
   // Never a multi_action step: a macro is already a timed sequence.
   | { type: 'macro'; steps: MacroStep[] }
@@ -96,13 +141,24 @@ export interface DialFunction { name: string; bindings: DialBinding[] }
 export type DialDisplayContent = 'off' | 'function' | 'clock' | 'analog_clock' | 'cpu' | 'image';
 // The picture the custom face was made from and how it was fitted, so the look can be changed after a reopen.
 export interface DialSource { image: string; fit: 'contain' | 'cover' | 'stretch'; quarter_turns: number; background: [number, number, number] }
-export interface DialDisplay { content: DialDisplayContent; image?: string; source?: DialSource }
+// A GIF prepared for the dial: 2 to 30 frames of 240×240 JPEG, each shown at least as long as it takes to send: 66, 100 or 150 ms by frame size. The first equals
+// DialDisplay.image. loop_count 0 loops forever; a positive count is the number of plays, then the last frame holds.
+export interface DialAnimationFrame { jpeg_base64: string; delay_ms: number }
+export interface DialAnimation { frames: DialAnimationFrame[]; loop_count: number }
+export interface DialDisplay { content: DialDisplayContent; image?: string; source?: DialSource; animation?: DialAnimation }
 // dial_functions and dial_display are edited in the dial editor of the inspector or imported; edit paths that do not
 // touch them must carry them through untouched.
 // How bright the module screens are while the profile runs and the app drives them, in percent (10 to 100); a screen left
 // out is at full brightness. Mirrors ScreenBrightness in crates/cooltek-sdk-service/src/profile.rs.
 export interface ScreenBrightness { keys?: number; dial?: number }
-export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness }
+// Profile file schemas this version reads (1 flat bindings; 2 keypad pages; 3 the same layout; 4 adds the conditional action; 5 current, the one it writes, adds variables). Mirrors
+// Profile::OLDEST_SCHEMA and CURRENT_SCHEMA in crates/cooltek-sdk-service/src/profile.rs; a profile from a newer
+// version is refused with a message saying so.
+export const oldestSchema = 1;
+export const currentSchema = 5;
+// The keypad is a page tree (schema 2 and later) rather than flat bindings (schema 1).
+export const usesKeypadPages = (profile: Pick<Profile, 'schema_version'>): boolean => profile.schema_version >= 2;
+export interface Profile { schema_version: number; name: string; bindings: Binding[]; keypad?: { pages: KeypadPage[] }; dial_functions?: DialFunction[]; dial_display?: DialDisplay; screen_brightness?: ScreenBrightness; variables?: Variable[] }
 // content_hash: the backend's hash of the profile without its name; allow_imported_profile_execution names the one the
 // confirmation showed.
 export interface StoredProfile { id: string; profile: Profile; modified_at_ms: number; content_hash?: string }
@@ -240,7 +296,7 @@ export interface DisplaySettings { module_control: ModuleControl; run_mode: RunM
 // default_profile / set_default_profile: the saved profile every automatic start uses first, or null for none.
 export interface DefaultProfile { profile_id: string | null }
 // OBS WebSocket setting (src-tauri/src/obs.rs, <app data>/obs-settings.json). host is 127.0.0.1, ::1 or localhost.
-// The password is never stored or returned: set_obs_password({ password }) holds it in the app's memory only (null
+// The password is never stored or returned: set_obs_password({ password }) stores it in the macOS Keychain (and holds it in memory) (null
 // forgets it) and every reply says only whether one is set.
 export type ObsHost = '127.0.0.1' | '::1' | 'localhost';
 export interface ObsSettings { enabled: boolean; host: ObsHost; port: number }

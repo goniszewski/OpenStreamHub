@@ -150,7 +150,7 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
           aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}
           onClick={() => editor.changeSelection({ ...selection, control: area.control })}
           {...controlDropHandlers(selected.id, area.control, disabled ? undefined : type => editor.dropAction(selected.id, area.control, type))}>
-          {isKeypad && <KeyDisplayContent key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
+          {isKeypad && <KeyDisplayContent device key={currentKeypadPage.id} artwork={currentKeypadPage.artwork?.[String(area.control)]} slot={currentKeypadPage.slots[area.control]} pages={profile.keypad!.pages} depth={keypadDepth(keypadPath)} back={keypadIsBack(keypadPath, area.control)} />}
           {!isKeypad && selected.id !== 'm005s' && <>{livePointer(live, area.control)}{livePulse(live, area.control)}</>}
         </button>)}
         <ModuleGlass module={selected.id} />

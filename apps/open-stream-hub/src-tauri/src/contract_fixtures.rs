@@ -28,7 +28,7 @@ fn check_or_update(name: &str, actual: &Value) {
 #[test]
 fn legacy_upgrade_matches_the_shared_parity_fixture() {
     let input = fs::read(fixture("legacy-upgrade-input.json")).unwrap();
-    let upgraded = Profile::from_json(&input).unwrap().into_v2().unwrap();
+    let upgraded = Profile::from_json(&input).unwrap().into_current().unwrap();
     check_or_update(
         "legacy-upgrade-expected.json",
         &serde_json::to_value(&upgraded).unwrap(),
@@ -737,11 +737,13 @@ fn display_settings_payloads_match_the_shared_fixture() {
                 content: DialDisplayContent::Image,
                 image: Some("AAAA".into()),
                 source: None,
+                animation: None,
             },
             "dial_display_function_json": cooltek_sdk_service::DialDisplay {
                 content: DialDisplayContent::Function,
                 image: None,
                 source: None,
+                animation: None,
             },
             "module_controls": [ModuleControl::App, ModuleControl::BuiltInAnimation],
             // The global default profile for automatic starts. Tauri maps

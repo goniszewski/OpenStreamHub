@@ -4,6 +4,7 @@
 // remains the authority on profile validity; the tests pin the structural
 // rules these templates must meet.
 import type { Action, Binding, BindingAction, KeypadPage, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
+import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { controlCounts, gestures } from './ui-model';
 
@@ -24,7 +25,7 @@ const macBasics: StarterTemplate = {
   name: 'Mac basics',
   description: 'Volume, mute and playback on every module, ready as they are.',
   profile: {
-    schema_version: 2,
+    schema_version: currentSchema,
     name: 'Mac basics',
     bindings: [
       { module: 'm003k', control: 0, gesture: 'clockwise', action: volume(5) },
@@ -55,7 +56,7 @@ const streaming: StarterTemplate = {
   name: 'Streaming (OBS)',
   description: 'Virtual camera, replay buffer and transition on the 15-key module; volume on the knobs and encoder. Scene keys can be added in the editor once OBS is set up in Settings.',
   profile: {
-    schema_version: 2,
+    schema_version: currentSchema,
     name: 'Streaming (OBS)',
     bindings: [
       { module: 'm003k', control: 0, gesture: 'clockwise', action: volume(5) },
@@ -75,12 +76,45 @@ const streaming: StarterTemplate = {
   },
 };
 
+const streamer: StarterTemplate = {
+  id: 'streamer',
+  name: 'Streamer',
+  description: 'Record, pause, replay and screenshot keys, a stream start and a stream end that each need two presses, and the usual output controls. Scene, microphone and desktop-audio keys name your OBS items: add them in the editor once OBS is set up.',
+  profile: {
+    schema_version: currentSchema,
+    name: 'Streamer',
+    bindings: [
+      { module: 'm003k', control: 0, gesture: 'clockwise', action: volume(5) },
+      { module: 'm003k', control: 0, gesture: 'counter_clockwise', action: volume(-5) },
+      { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'toggle_mute' } },
+      { module: 'm131e', control: 0, gesture: 'right', action: volume(5) },
+      { module: 'm131e', control: 0, gesture: 'left', action: volume(-5) },
+      { module: 'm131e', control: 0, gesture: 'pressed', action: { type: 'obs_record', op: 'toggle_pause' } },
+      { module: 'm005s', control: 0, gesture: 'position_changed', action: { type: 'volume_from_position' } },
+    ],
+    keypad: keys(
+      key('Record', { type: 'obs_record', op: 'toggle' }),
+      key('Pause rec', { type: 'obs_record', op: 'toggle_pause' }),
+      key('Screenshot', { type: 'obs_screenshot' }),
+      key('Replay buffer', { type: 'obs_replay_buffer', op: 'toggle' }),
+      key('Save replay', { type: 'obs_replay_buffer', op: 'save' }),
+      key('Go live', { type: 'obs_stream', op: 'start', confirm: 'press_twice' }),
+      key('End stream', { type: 'obs_stream', op: 'stop', confirm: 'press_twice' }),
+      key('Virtual camera', { type: 'obs_virtual_camera', op: 'toggle' }),
+      key('Studio mode', { type: 'obs_studio_mode', op: 'toggle' }),
+      key('Transition', { type: 'obs_transition' }),
+      key('Mute output', { type: 'toggle_mute' }),
+      key('Break timer', { type: 'timer', seconds: 300, label: 'Break' }),
+    ),
+  },
+};
+
 const editing: StarterTemplate = {
   id: 'editing',
   name: 'Editing and media',
   description: 'Rotate the encoder to step undo and redo, press it to play; the 15-key module gets undo, redo, playback, a screenshot key and a timer.',
   profile: {
-    schema_version: 2,
+    schema_version: currentSchema,
     name: 'Editing and media',
     bindings: [
       { module: 'm131e', control: 0, gesture: 'right', action: { type: 'system', command: 'redo' } },
@@ -101,7 +135,7 @@ const editing: StarterTemplate = {
   },
 };
 
-export const starters: StarterTemplate[] = [macBasics, streaming, editing];
+export const starters: StarterTemplate[] = [macBasics, streaming, streamer, editing];
 
 // The modules a profile sets up: every module with a flat binding, plus the
 // 15-key module when its keypad page holds any tile. Used both for the
@@ -152,7 +186,7 @@ export type ActionCheck = (action: BindingAction) => string | null;
 // `check` decides which actions the profile may hold: the starters' dry-run-safe set by default, a pack's wider set
 // for an app preset pack. It is applied to flat bindings and keypad tiles alike.
 export function starterIssue(profile: Profile, check: ActionCheck = actionIssue): string | null {
-  if (profile.schema_version !== 2) return 'Starters are schema-2 profiles.';
+  if (!usesKeypadPages(profile) || profile.schema_version > currentSchema) return 'Starters are keypad-page profiles (schema 2 or 3).';
   if (!profile.name.trim()) return 'Profile name cannot be empty.';
   const flat = new Set<string>();
   for (const binding of profile.bindings) {
@@ -187,7 +221,8 @@ function bindingIssue(binding: Binding, check: ActionCheck): string | null {
 }
 
 // Starters stay dry-run safe: nothing that types into apps, launches or opens
-// anything, and no OBS action that names a scene or source of a set-up OBS.
+// anything, and no OBS action that names a scene or source of a set-up OBS. Going live is allowed only behind the
+// press-twice guard.
 export function actionIssue(action: BindingAction): string | null {
   switch (action.type) {
     case 'volume': return action.delta === 0 || action.delta < -100 || action.delta > 100 ? 'Volume must be nonzero and between -100 and 100.' : null;
@@ -202,7 +237,13 @@ export function actionIssue(action: BindingAction): string | null {
     case 'obs_virtual_camera':
     case 'obs_replay_buffer':
     case 'obs_transition':
+    case 'obs_studio_mode':
+    case 'obs_record':
+    case 'obs_screenshot':
       return null;
+    // Going live or ending a broadcast cannot be undone from the controller: a starter may hold it only behind the
+    // press-twice guard.
+    case 'obs_stream': return action.confirm === 'press_twice' ? null : 'A starter holds the stream only behind press twice.';
     default: return `${action.type} does not belong in a starter profile.`;
   }
 }

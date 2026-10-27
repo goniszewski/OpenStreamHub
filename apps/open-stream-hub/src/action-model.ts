@@ -1,4 +1,5 @@
-import type { Action, BindingAction, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import { groupItems, groupMode, isGroup } from './flow-model';
+import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -55,6 +56,8 @@ export const defaultTimerSound: TimerSound = 'glass';
 export const maxUrlBytes = 2048;
 export const maxTextBytes = 2048;
 export const multiActionSteps = { minimum: 2, maximum: 8 } as const;
+// Conditional branches (Action::MAX_MULTI_ACTION_STEPS): 1 to 8 steps when the condition holds, 0 to 8 otherwise.
+export const conditionalSteps = { thenMinimum: 1, maximum: 8 } as const;
 export const timerSeconds = { minimum: 1, maximum: 86_400 } as const;
 export const maxTimerLabelBytes = 64;
 // TimerTable::MAX_RUNNING: more presses fail until one ends or is cancelled.
@@ -122,6 +125,9 @@ export function macroIssue(steps: MacroStep[]): string | null {
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
 export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
 export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: 'Toggle', on: 'Turn on', off: 'Turn off' };
+export const obsMuteOpLabels: Record<ObsMuteOp, string> = { toggle: 'Toggle', mute: 'Mute', unmute: 'Unmute' };
+export const obsMediaOpLabels: Record<ObsMediaOp, string> = { play_pause: 'Play / pause', play_stop: 'Play / stop', play_restart: 'Play / restart', stop: 'Stop' };
+export const obsRecordOpLabels: Record<ObsRecordOp, string> = { ...obsOutputOpLabels, pause: 'Pause', resume: 'Resume', toggle_pause: 'Pause or resume' };
 export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
 
 export type StepActionType = StepAction['type'];
@@ -135,9 +141,12 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
-  ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_filter', 'OBS filter'],
+  ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
+  ['obs_studio_mode', 'OBS studio mode'], ['obs_transition', 'OBS studio transition'], ['obs_screenshot', 'OBS screenshot'], ['obs_filter', 'OBS filter'],
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
+  ['obs_input_mute', 'OBS input mute'], ['obs_adjust_input_volume', 'Change OBS input volume'], ['obs_media_source', 'OBS media source'],
+  ['set_variable', 'Set a variable'], ['toggle_variable', 'Flip an on / off variable'], ['add_to_variable', 'Add to a number variable'],
 ];
 
 export function defaultStepAction(type: StepActionType): StepAction {
@@ -154,13 +163,22 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_scene': return { type, scene: 'Scene' };
     case 'obs_virtual_camera': return { type, op: 'toggle' };
     case 'obs_replay_buffer': return { type, op: 'save' };
+    case 'obs_stream': return { type, op: 'toggle' };
+    case 'obs_record': return { type, op: 'toggle' };
     case 'obs_studio_mode': return { type, op: 'toggle' };
     case 'obs_transition': return { type };
+    case 'obs_screenshot': return { type };
     case 'obs_filter': return { type, source: 'Source', filter: 'Filter', op: 'toggle' };
     case 'obs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
     case 'obs_scene_collection': return { type, name: 'Scene collection' };
     case 'obs_profile': return { type, name: 'Profile' };
     case 'obs_set_input_volume': return { type, input: 'Mic/Aux', percent: 100 };
+    case 'obs_input_mute': return { type, input: 'Mic/Aux', op: 'toggle' };
+    case 'obs_adjust_input_volume': return { type, input: 'Mic/Aux', step_db: 3 };
+    case 'obs_media_source': return { type, input: 'Media Source', op: 'play_pause' };
+    case 'set_variable': return { type, name: '', value: true };
+    case 'toggle_variable': return { type, name: '' };
+    case 'add_to_variable': return { type, name: '', amount: 1 };
   }
 }
 
@@ -168,15 +186,16 @@ export function defaultProfileAction(): Action {
   return { type: 'profile', direction: 'next' };
 }
 
-// The nine OBS operations of the one OBS editor, in the Operation list's order. The picker keeps
+// The OBS operations of the one OBS editor, in the Operation list's order. The picker keeps
 // one entry per operation; the editor groups them behind this dropdown.
 export type ObsStepType = Extract<StepActionType, `obs_${string}`>;
 export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
 
 export const obsOperationLabels: Record<ObsStepType, string> = {
-  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer',
-  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_filter: 'Filter',
+  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer', obs_stream: 'Stream', obs_record: 'Recording',
+  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_screenshot: 'Screenshot', obs_filter: 'Filter',
   obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
+  obs_input_mute: 'Input mute', obs_adjust_input_volume: 'Input volume step', obs_media_source: 'Media source',
 };
 
 // Switching operation starts from the new operation's defaults and keeps the names the two
@@ -201,6 +220,63 @@ export function timerDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60) % 60;
   const pad = (value: number) => String(value).padStart(2, '0');
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
+
+export type ConditionKey = 'obs_streaming' | 'obs_recording' | 'obs_virtual_camera' | 'obs_replay_buffer' | 'output_muted' | 'output_volume_at_least' | 'timer_running' | 'focused_app' | 'variable_is' | 'variable_at_least';
+// Picker order. The phrase pair is [true, false] for a yes/no condition and finishes "If …" in the editor and the key label.
+export const conditionKeys: ReadonlyArray<readonly [ConditionKey, string]> = [
+  ['output_muted', 'The output is muted'], ['output_volume_at_least', 'The output volume is at least'], ['timer_running', 'A timer is running'], ['focused_app', 'The front app is'],
+  ['variable_is', 'A variable is'], ['variable_at_least', 'A number variable is at least'],
+  ['obs_recording', 'OBS is recording'], ['obs_streaming', 'OBS is streaming'],
+  ['obs_virtual_camera', 'The OBS virtual camera is on'], ['obs_replay_buffer', 'The OBS replay buffer is running'],
+];
+type YesNoKey = Exclude<ConditionKey, 'output_volume_at_least' | 'focused_app' | 'variable_is' | 'variable_at_least'>;
+const conditionPhrases: Record<YesNoKey, readonly [string, string]> = {
+  obs_streaming: ['OBS is streaming', 'OBS is not streaming'],
+  obs_recording: ['OBS is recording', 'OBS is not recording'],
+  obs_virtual_camera: ['the OBS virtual camera is on', 'the OBS virtual camera is off'],
+  obs_replay_buffer: ['the OBS replay buffer is running', 'the OBS replay buffer is not running'],
+  output_muted: ['the output is muted', 'the output is not muted'],
+  timer_running: ['a timer is running', 'no timer is running'],
+};
+export function conditionKey(when: LeafCondition): ConditionKey {
+  return Object.keys(when)[0] as ConditionKey;
+}
+// The single value of a yes/no, number or text test; a variable test holds a name and a value instead.
+export function conditionValue(when: LeafCondition): boolean | number | string | { name: string; value: VariableValue } {
+  return (when as Record<string, boolean | number | string | { name: string; value: VariableValue }>)[conditionKey(when)];
+}
+// Reads from OBS, so needs the connection set up in Settings; the other conditions read this Mac or the service.
+export const conditionUsesObs = (when: Condition): boolean => isGroup(when) ? groupItems(when).some(conditionUsesObs) : conditionKey(when).startsWith('obs_');
+const variableText = (value: VariableValue): string => typeof value === 'boolean' ? (value ? 'on' : 'off') : typeof value === 'string' ? `"${value}"` : String(value);
+const leafLabel = (when: LeafCondition): string => {
+  const key = conditionKey(when);
+  const value = conditionValue(when);
+  if (key === 'output_volume_at_least') return `the output volume is at least ${value}%`;
+  if (key === 'focused_app') return `the front app is ${value}`;
+  if (key === 'variable_is') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is ${variableText(wanted)}`; }
+  if (key === 'variable_at_least') { const { name, value: wanted } = value as { name: string; value: VariableValue }; return `${name || 'a variable'} is at least ${wanted}`; }
+  return conditionPhrases[key as YesNoKey][value ? 0 : 1];
+};
+// "OBS is recording", "the output is not muted and OBS is streaming", "takes is at least 3 and (a timer is running or OBS is recording)".
+export function conditionLabel(when: Condition, nested = false): string {
+  if (!isGroup(when)) return leafLabel(when);
+  const text = groupItems(when).map(item => conditionLabel(item, true)).join(groupMode(when) === 'all' ? ' and ' : ' or ');
+  return nested ? `(${text})` : text;
+}
+// A condition of the chosen kind with its default value. A variable test starts on the first declared variable it can use.
+export function defaultCondition(key: ConditionKey, variables: ReadonlyArray<Variable> = []): LeafCondition {
+  switch (key) {
+    case 'output_volume_at_least': return { output_volume_at_least: 50 };
+    case 'focused_app': return { focused_app: 'com.apple.finder' };
+    case 'variable_is': { const first = variables[0]; return { variable_is: { name: first?.name ?? '', value: first?.value ?? false } }; }
+    case 'variable_at_least': return { variable_at_least: { name: variables.find(variable => typeof variable.value === 'number')?.name ?? '', value: 1 } };
+    default: return { [key]: true } as LeafCondition;
+  }
+}
+
+export function defaultConditional(): Action {
+  return { type: 'conditional', when: defaultCondition('output_muted'), then: [{ type: 'toggle_mute' }] };
 }
 
 export function defaultMultiAction(): Action {

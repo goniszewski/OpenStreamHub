@@ -1,8 +1,8 @@
 //! Explicit macOS actions through system tools. Constructing a dispatcher performs no actions.
 
 use crate::{
-    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, SystemCommand, TimerAlert,
-    TimerAlerter,
+    Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
+    TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
 };
 use std::{
@@ -152,6 +152,9 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 /// Largest stdin payload. It is below the 16 KiB initial macOS pipe buffer, so
 /// writing it before monitoring the child cannot block on a child that never reads.
 const STDIN_LIMIT: usize = 8 * 1024;
+/// Asks System Events for the frontmost application's bundle identifier.
+const FRONTMOST_APP_SCRIPT: &str = "tell application \"System Events\" to get bundle identifier of first application process whose frontmost is true";
+
 /// Fixed delay between `multi_action` steps, matching the official app.
 const STEP_SPACING: Duration = Duration::from_millis(280);
 /// Delay before restoring the clipboard, so the target application can read
@@ -340,6 +343,10 @@ pub struct MacOsDispatcher {
     /// Set once a media key has asked macOS for the Accessibility prompt;
     /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
     media_access_requested: bool,
+    /// The service state handed over before the current action.
+    service_state: ServiceState,
+    /// Current values of the declared variables, by name.
+    variables: std::collections::HashMap<String, crate::profile::VariableValue>,
 }
 
 impl MacOsDispatcher {
@@ -350,6 +357,8 @@ impl MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         }
     }
 
@@ -365,6 +374,8 @@ impl MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         }
     }
 
@@ -695,52 +706,226 @@ impl MacOsDispatcher {
             }
             Action::ObsScene { .. }
             | Action::ObsVirtualCamera { .. }
+            | Action::ObsStream { .. }
+            | Action::ObsRecord { .. }
             | Action::ObsReplayBuffer { .. }
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition
+            | Action::ObsScreenshot
             | Action::ObsFilter { .. }
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }
             | Action::ObsProfile { .. }
+            | Action::ObsInputMute { .. }
+            | Action::ObsAdjustInputVolume { .. }
+            | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
             Action::MultiAction { actions } => {
-                let count = actions.len();
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
-                for (index, step) in actions.iter().enumerate() {
-                    if index > 0 {
-                        self.pause(STEP_SPACING).map_err(|error| {
-                            format!(
-                                "multi_action stopped before step {} of {count}: {error}",
-                                index + 1
-                            )
-                        })?;
-                    }
-                    if self.sleeper.now() >= deadline {
-                        return Err(format!(
-                            "multi_action stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
-                            index + 1,
-                            step.type_name(),
-                            MULTI_ACTION_DEADLINE.as_secs()
-                        ));
-                    }
-                    // An OBS step gets only what is left of the sequence's
-                    // deadline, so a slow OBS cannot push the sequence past it.
-                    let result = if step.uses_obs() {
-                        self.obs_action(step, Some(deadline))
-                    } else {
-                        self.execute(step)
-                    };
-                    result.map_err(|error| {
-                        format!(
-                            "multi_action step {} of {count} ({}) failed: {error}",
-                            index + 1,
-                            step.type_name()
-                        )
-                    })?;
+                self.run_steps(actions, "multi_action", deadline)?;
+            }
+            Action::SetVariable { name, value } => {
+                let slot = self.variable_mut(name)?;
+                if slot.kind() != value.kind() {
+                    return Err(format!(
+                        "variable {name} is {}, not {}; no action was taken",
+                        slot.kind().name(),
+                        value.kind().name()
+                    ));
                 }
+                *slot = value.clone();
+            }
+            Action::ToggleVariable { name } => match self.variable_mut(name)? {
+                VariableValue::Bool(flag) => *flag = !*flag,
+                other => {
+                    return Err(format!(
+                        "variable {name} is {}, not bool; no action was taken",
+                        other.kind().name()
+                    ));
+                }
+            },
+            Action::AddToVariable { name, amount } => match self.variable_mut(name)? {
+                VariableValue::Number(number) => {
+                    *number = number
+                        .saturating_add(*amount)
+                        .clamp(VariableValue::MIN_NUMBER, VariableValue::MAX_NUMBER);
+                }
+                other => {
+                    return Err(format!(
+                        "variable {name} is {}, not number; no action was taken",
+                        other.kind().name()
+                    ));
+                }
+            },
+            Action::Conditional { .. } => {
+                let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
+                self.run_conditional(action, deadline)?;
             }
         }
         Ok(())
+    }
+
+    /// Reads the condition of a `conditional`, then runs the branch it picks.
+    /// A nested `conditional` shares the outer one's `deadline`.
+    fn run_conditional(
+        &mut self,
+        action: &Action,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } = action
+        else {
+            return Err("not a conditional".into());
+        };
+        let holds = self.evaluate_condition(when, deadline)?;
+        let (branch, label) = if holds {
+            (then, "conditional then")
+        } else {
+            (otherwise, "conditional else")
+        };
+        self.run_steps(branch, label, deadline)
+    }
+
+    /// Runs `steps` in order with fixed spacing, all inside `deadline`; the
+    /// first failure stops the rest. `label` names the sequence in errors.
+    fn run_steps(
+        &mut self,
+        steps: &[Action],
+        label: &str,
+        deadline: std::time::Instant,
+    ) -> Result<(), String> {
+        let count = steps.len();
+        for (index, step) in steps.iter().enumerate() {
+            if index > 0 {
+                self.pause(STEP_SPACING).map_err(|error| {
+                    format!(
+                        "{label} stopped before step {} of {count}: {error}",
+                        index + 1
+                    )
+                })?;
+            }
+            if self.sleeper.now() >= deadline {
+                return Err(format!(
+                    "{label} stopped before step {} of {count} ({}): the sequence exceeded its {} s overall deadline; earlier steps already took effect",
+                    index + 1,
+                    step.type_name(),
+                    MULTI_ACTION_DEADLINE.as_secs()
+                ));
+            }
+            // An OBS step gets only what is left of the sequence's deadline,
+            // so a slow OBS cannot push the sequence past it.
+            let result = if matches!(step, Action::Conditional { .. }) {
+                self.run_conditional(step, deadline)
+            } else if step.uses_obs() {
+                self.obs_action(step, Some(deadline))
+            } else {
+                self.execute(step)
+            };
+            result.map_err(|error| {
+                format!(
+                    "{label} step {} of {count} ({}) failed: {error}",
+                    index + 1,
+                    step.type_name()
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Whether `condition` holds right now. An `all` or `any` reads every
+    /// member in order, without stopping early, so a member that cannot be
+    /// read fails the press whatever the others say. A failure names the
+    /// member that could not be read and says no branch ran.
+    fn evaluate_condition(
+        &mut self,
+        condition: &crate::profile::Condition,
+        deadline: std::time::Instant,
+    ) -> Result<bool, String> {
+        use crate::profile::Condition;
+        match condition {
+            Condition::All(items) | Condition::Any(items) => {
+                let mut results = Vec::with_capacity(items.len());
+                for item in items {
+                    results.push(self.evaluate_condition(item, deadline)?);
+                }
+                Ok(if matches!(condition, Condition::All(_)) {
+                    results.iter().all(|holds| *holds)
+                } else {
+                    results.iter().any(|holds| *holds)
+                })
+            }
+            leaf => if leaf.uses_obs() {
+                self.condition_holds(leaf, deadline)
+            } else {
+                self.system_condition_holds(leaf)
+            }
+            .map_err(|error| {
+                format!(
+                    "conditional could not read {}: {error}; neither branch ran",
+                    leaf.name()
+                )
+            }),
+        }
+    }
+
+    /// The current value of a declared variable.
+    fn variable_mut(&mut self, name: &str) -> Result<&mut VariableValue, String> {
+        self.variables
+            .get_mut(name)
+            .ok_or_else(|| format!("variable {name} is not declared; no action was taken"))
+    }
+
+    /// Reads a condition about the default output from macOS.
+    fn system_condition_holds(
+        &mut self,
+        condition: &crate::profile::Condition,
+    ) -> Result<bool, String> {
+        use crate::profile::Condition;
+        match condition {
+            Condition::OutputMuted(expected) => Ok(self.output_muted()? == *expected),
+            Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
+            Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
+            Condition::VariableIs { name, value } => match self.variables.get(name) {
+                Some(current) if current.kind() == value.kind() => Ok(current == value),
+                Some(current) => Err(format!(
+                    "variable {name} is {}, not {}",
+                    current.kind().name(),
+                    value.kind().name()
+                )),
+                None => Err(format!("variable {name} is not declared")),
+            },
+            Condition::VariableAtLeast { name, value } => match self.variables.get(name) {
+                Some(VariableValue::Number(current)) => Ok(current >= value),
+                Some(other) => Err(format!(
+                    "variable {name} is {}, not number",
+                    other.kind().name()
+                )),
+                None => Err(format!("variable {name} is not declared")),
+            },
+            Condition::FocusedApp(bundle_id) => {
+                Ok(self.frontmost_bundle_id()?.eq_ignore_ascii_case(bundle_id))
+            }
+            _ => Err("this condition is read from OBS".into()),
+        }
+    }
+
+    /// Reads a condition from OBS within what is left of `deadline`.
+    fn condition_holds(
+        &self,
+        condition: &crate::profile::Condition,
+        deadline: std::time::Instant,
+    ) -> Result<bool, String> {
+        let obs = self.obs.as_ref().ok_or(OBS_UNAVAILABLE)?;
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err("the overall deadline has passed; OBS was not contacted".into());
+        }
+        obs.clone()
+            .with_timeout(remaining)
+            .condition_holds(condition)
     }
 
     /// Runs an OBS action within `deadline` (on the sleeper's clock) when
@@ -834,6 +1019,20 @@ impl MacOsDispatcher {
         Ok(text.trim().to_owned())
     }
 
+    /// The bundle identifier of the frontmost application, from System
+    /// Events (the same Automation permission the keystroke actions use).
+    fn frontmost_bundle_id(&mut self) -> Result<String, String> {
+        let output = self.apple_script(FRONTMOST_APP_SCRIPT.into())?;
+        let response = String::from_utf8(output)
+            .map_err(|_| format!("{OSASCRIPT}: invalid UTF-8 in the frontmost app response"))?
+            .trim()
+            .to_owned();
+        crate::profile::validate_bundle_id(&response).map_err(|_| {
+            format!("{OSASCRIPT}: the frontmost app has no usable bundle identifier ({response:?})")
+        })?;
+        Ok(response)
+    }
+
     fn output_volume(&mut self) -> Result<u8, String> {
         let response = self.query("output volume")?;
         response
@@ -862,6 +1061,21 @@ impl Default for MacOsDispatcher {
 }
 
 impl ActionDispatcher for MacOsDispatcher {
+    fn set_service_state(&mut self, state: ServiceState) {
+        // A variable keeps its value while its name and kind stay; anything
+        // else starts at the declared value, and an undeclared one is dropped.
+        let mut kept = std::collections::HashMap::new();
+        for variable in &state.variables {
+            let value = match self.variables.remove(&variable.name) {
+                Some(current) if current.kind() == variable.value.kind() => current,
+                _ => variable.value.clone(),
+            };
+            kept.insert(variable.name.clone(), value);
+        }
+        self.variables = kept;
+        self.service_state = state;
+    }
+
     fn dispatch(&mut self, action: &Action) -> Result<(), String> {
         // Validate even when the caller did not use the profile loader. This
         // also validates every multi_action step before the first one runs.
@@ -927,6 +1141,8 @@ impl ActionDispatcher for MacOsDispatcher {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         }))
     }
 }
@@ -1463,6 +1679,8 @@ mod tests {
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         (dispatcher, state)
     }
@@ -2053,6 +2271,8 @@ mod tests {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         assert!(
             dispatcher
@@ -2143,6 +2363,8 @@ mod tests {
             sleeper: Box::new(SystemSleeper),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -2698,6 +2920,569 @@ mod tests {
         (port, server)
     }
 
+    /// A fake OBS that serves one request per connection, `replies.len()`
+    /// connections in a row. Each reply is a request type and the
+    /// `responseData` to answer it with; the thread returns the request types
+    /// it saw, in order.
+    fn fake_obs_script(
+        replies: Vec<(&'static str, serde_json::Value)>,
+    ) -> (u16, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let mut seen_types = Vec::new();
+            for (request_type, data) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut seen = Vec::new();
+                let mut chunk = [0; 4096];
+                while !seen.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut chunk).unwrap();
+                    seen.extend_from_slice(&chunk[..read]);
+                }
+                let request = String::from_utf8(seen).unwrap();
+                let key = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+                    .unwrap()
+                    .to_owned();
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                            crate::obs::tests_support::accept(&key)
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+                let send = |stream: &mut std::net::TcpStream, text: String| {
+                    let mut frame = vec![0x81];
+                    if text.len() < 126 {
+                        frame.push(text.len() as u8);
+                    } else {
+                        frame.push(126);
+                        frame.extend_from_slice(&(text.len() as u16).to_be_bytes());
+                    }
+                    frame.extend_from_slice(text.as_bytes());
+                    stream.write_all(&frame).unwrap();
+                };
+                send(&mut stream, r#"{"op":0,"d":{"rpcVersion":1}}"#.into());
+                let _identify = crate::obs::tests_support::read_text(&mut stream);
+                send(
+                    &mut stream,
+                    r#"{"op":2,"d":{"negotiatedRpcVersion":1}}"#.into(),
+                );
+                let request = crate::obs::tests_support::read_text(&mut stream);
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["d"]["requestType"], request_type);
+                seen_types.push(request_type.to_string());
+                send(
+                    &mut stream,
+                    serde_json::json!({"op":7,"d":{"requestType":request_type,"requestId":request["d"]["requestId"],"requestStatus":{"result":true,"code":100},"responseData":data}})
+                        .to_string(),
+                );
+            }
+            seen_types
+        });
+        (port, server)
+    }
+
+    fn conditional(when: crate::profile::Condition) -> Action {
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![Modifier::Command],
+        };
+        Action::Conditional {
+            when,
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        }
+    }
+
+    #[test]
+    fn a_conditional_runs_the_branch_the_obs_state_picks() {
+        use crate::profile::Condition;
+        for (active, expected_key) in [(true, "a"), (false, "b")] {
+            let (dispatcher, state) = fake(vec![success("")]);
+            let (port, server) = fake_obs_script(vec![(
+                "GetRecordStatus",
+                serde_json::json!({"outputActive":active}),
+            )]);
+            let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+                crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+                None,
+            )));
+            let action = conditional(Condition::Recording(true));
+            assert_eq!(dispatcher.unavailable(&action), None);
+            dispatcher.dispatch(&action).unwrap();
+            assert_eq!(server.join().unwrap(), ["GetRecordStatus"]);
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1, "exactly one branch step ran");
+            assert_eq!(
+                args(&state.requests[0]),
+                [
+                    "-e",
+                    format!(
+                        "tell application \"System Events\" to keystroke \"{expected_key}\" using {{command down}}"
+                    )
+                    .as_str()
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_conditional_compares_with_the_value_it_was_written_with() {
+        use crate::profile::Condition;
+        // `false` holds while OBS is not streaming, so `then` runs.
+        let (dispatcher, state) = fake(vec![success("")]);
+        let (port, server) = fake_obs_script(vec![(
+            "GetStreamStatus",
+            serde_json::json!({"outputActive":false}),
+        )]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        dispatcher
+            .dispatch(&conditional(Condition::Streaming(false)))
+            .unwrap();
+        server.join().unwrap();
+        let state = state.lock().unwrap();
+        assert!(args(&state.requests[0])[1].contains("keystroke \"a\""));
+    }
+
+    #[test]
+    fn a_conditional_without_an_else_does_nothing_when_the_condition_fails() {
+        use crate::profile::Condition;
+        let (dispatcher, state) = fake(vec![]);
+        let (port, server) = fake_obs_script(vec![(
+            "GetVirtualCamStatus",
+            serde_json::json!({"outputActive":false}),
+        )]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let action = Action::Conditional {
+            when: Condition::VirtualCamera(true),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(server.join().unwrap(), ["GetVirtualCamStatus"]);
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_system_condition_needs_no_obs_and_reads_the_output() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // Muted: the output is read once, then the `then` branch runs.
+        let (mut dispatcher, state) = fake(vec![success("true"), success("")]);
+        let action = Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        assert_eq!(dispatcher.unavailable(&action), None);
+        dispatcher.dispatch(&action).unwrap();
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 2);
+            assert_eq!(
+                state.requests[0].args[1],
+                "output muted of (get volume settings)"
+            );
+            assert!(state.requests[1].args[1].contains("keystroke \"a\""));
+        }
+
+        // Volume 40 is at least 40 but not at least 41.
+        for (threshold, branch) in [(40, "a"), (41, "b")] {
+            let (mut dispatcher, state) = fake(vec![success("40"), success("")]);
+            dispatcher
+                .dispatch(&Action::Conditional {
+                    when: Condition::OutputVolumeAtLeast(threshold),
+                    then: vec![key("a")],
+                    otherwise: vec![key("b")],
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(
+                state.requests[0].args[1],
+                "output volume of (get volume settings)"
+            );
+            assert!(
+                state.requests[1].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "threshold {threshold}"
+            );
+        }
+
+        // An unreadable answer runs neither branch.
+        let (mut dispatcher, state) = fake(vec![success("missing value")]);
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("could not read output_muted"), "{error}");
+        assert!(error.contains("neither branch ran"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+    }
+
+    #[test]
+    fn variables_keep_their_values_between_actions_and_follow_the_declarations() {
+        use crate::profile::{Condition, Variable};
+        let declared = |takes: i32, live: bool| ServiceState {
+            variables: vec![
+                Variable {
+                    name: "takes".into(),
+                    value: VariableValue::Number(takes),
+                },
+                Variable {
+                    name: "live".into(),
+                    value: VariableValue::Bool(live),
+                },
+            ],
+            ..Default::default()
+        };
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher.set_service_state(declared(0, false));
+        let add = |amount| Action::AddToVariable {
+            name: "takes".into(),
+            amount,
+        };
+        dispatcher.dispatch(&add(2)).unwrap();
+        dispatcher.dispatch(&add(3)).unwrap();
+        dispatcher
+            .dispatch(&Action::ToggleVariable {
+                name: "live".into(),
+            })
+            .unwrap();
+        // The declarations are handed over again before every press and never reset a value.
+        dispatcher.set_service_state(declared(0, false));
+        let when = |name: &str, value: i32| Condition::VariableAtLeast {
+            name: name.into(),
+            value,
+        };
+        let test = |when: Condition| Action::Conditional {
+            when,
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        // takes = 5, live = true; no process runs for the tests themselves.
+        dispatcher
+            .dispatch(&test(Condition::All(vec![
+                when("takes", 5),
+                Condition::VariableIs {
+                    name: "live".into(),
+                    value: VariableValue::Bool(true),
+                },
+            ])))
+            .unwrap();
+        assert!(state.lock().unwrap().requests[0].args[1].contains("keystroke \"a\""));
+
+        // Numbers stop at the limits, and a set replaces the value.
+        dispatcher
+            .dispatch(&add(VariableValue::MAX_NUMBER))
+            .unwrap();
+        dispatcher
+            .dispatch(&add(VariableValue::MAX_NUMBER))
+            .unwrap();
+        assert_eq!(
+            dispatcher.variables["takes"],
+            VariableValue::Number(VariableValue::MAX_NUMBER)
+        );
+        dispatcher
+            .dispatch(&Action::SetVariable {
+                name: "takes".into(),
+                value: VariableValue::Number(1),
+            })
+            .unwrap();
+        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+
+        // A wrong kind or an undeclared name fails and changes nothing.
+        let error = dispatcher
+            .dispatch(&Action::ToggleVariable {
+                name: "takes".into(),
+            })
+            .unwrap_err();
+        assert!(error.contains("not bool"), "{error}");
+        let error = dispatcher
+            .dispatch(&Action::AddToVariable {
+                name: "nope".into(),
+                amount: 1,
+            })
+            .unwrap_err();
+        assert!(error.contains("not declared"), "{error}");
+        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+
+        // A swap keeps a variable of the same name and kind, starts a new one
+        // at its declared value, and drops what is no longer declared.
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![
+                Variable {
+                    name: "takes".into(),
+                    value: VariableValue::Text("changed kind".into()),
+                },
+                Variable {
+                    name: "live".into(),
+                    value: VariableValue::Bool(false),
+                },
+                Variable {
+                    name: "fresh".into(),
+                    value: VariableValue::Number(9),
+                },
+            ],
+            ..Default::default()
+        });
+        assert_eq!(dispatcher.variables["live"], VariableValue::Bool(true));
+        assert_eq!(
+            dispatcher.variables["takes"],
+            VariableValue::Text("changed kind".into())
+        );
+        assert_eq!(dispatcher.variables["fresh"], VariableValue::Number(9));
+        assert_eq!(dispatcher.variables.len(), 3);
+    }
+
+    #[test]
+    fn nested_groups_and_a_nested_conditional_read_in_order_on_one_deadline() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // all[ muted=false, any[ muted=true, volume>=40 ] ]: false, then the
+        // group reads muted (false) and volume (40); holds. Then the inner
+        // conditional reads muted (false) and runs its else branch.
+        let (mut dispatcher, state) = fake(vec![
+            success("false"),
+            success("false"),
+            success("40"),
+            success("false"),
+            success(""),
+        ]);
+        let inner = Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![key("a")],
+            otherwise: vec![key("b")],
+        };
+        dispatcher
+            .dispatch(&Action::Conditional {
+                when: Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::Any(vec![
+                        Condition::OutputMuted(true),
+                        Condition::OutputVolumeAtLeast(40),
+                    ]),
+                ]),
+                then: vec![inner],
+                otherwise: vec![key("c")],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests.len(), 5);
+        assert!(state.requests[4].args[1].contains("keystroke \"b\""));
+    }
+
+    #[test]
+    fn all_needs_every_member_and_any_needs_one_and_both_read_every_member() {
+        use crate::profile::Condition;
+        let key = |key: &str| Action::Shortcut {
+            key: key.into(),
+            modifiers: vec![],
+        };
+        // Output muted = false, volume = 40.
+        for (when, branch) in [
+            (
+                Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::OutputVolumeAtLeast(40),
+                ]),
+                "a",
+            ),
+            (
+                Condition::All(vec![
+                    Condition::OutputMuted(false),
+                    Condition::OutputVolumeAtLeast(41),
+                ]),
+                "b",
+            ),
+            (
+                Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(40),
+                ]),
+                "a",
+            ),
+            (
+                Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(41),
+                ]),
+                "b",
+            ),
+        ] {
+            // Two reads, in order, then the branch: nothing stops early.
+            let (mut dispatcher, state) = fake(vec![success("false"), success("40"), success("")]);
+            dispatcher
+                .dispatch(&Action::Conditional {
+                    when: when.clone(),
+                    then: vec![key("a")],
+                    otherwise: vec![key("b")],
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 3, "{when:?}");
+            assert_eq!(
+                state.requests[0].args[1],
+                "output muted of (get volume settings)"
+            );
+            assert_eq!(
+                state.requests[1].args[1],
+                "output volume of (get volume settings)"
+            );
+            assert!(
+                state.requests[2].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "{when:?}"
+            );
+        }
+
+        // An unreadable member fails the press even when the others decide it.
+        let (mut dispatcher, state) = fake(vec![success("true"), success("missing value")]);
+        let error = dispatcher
+            .dispatch(&Action::Conditional {
+                when: Condition::Any(vec![
+                    Condition::OutputMuted(true),
+                    Condition::OutputVolumeAtLeast(10),
+                ]),
+                then: vec![key("a")],
+                otherwise: vec![],
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("could not read output_volume_at_least")
+                && error.contains("neither branch ran"),
+            "{error}"
+        );
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+    }
+
+    #[test]
+    fn a_conditional_tests_whether_a_timer_is_running_from_the_service_state() {
+        use crate::profile::Condition;
+        for (running, expected, branch) in [
+            (true, true, "a"),
+            (false, true, "b"),
+            (false, false, "a"),
+            (true, false, "b"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher.set_service_state(ServiceState {
+                timer_running: running,
+                ..Default::default()
+            });
+            dispatcher
+                .dispatch(&conditional(Condition::TimerRunning(expected)))
+                .unwrap();
+            let state = state.lock().unwrap();
+            // Nothing is read from macOS or OBS: only the branch runs.
+            assert_eq!(state.requests.len(), 1);
+            assert!(
+                state.requests[0].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "running {running}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conditional_tests_the_frontmost_app_from_system_events() {
+        use crate::profile::Condition;
+        let when = || Condition::FocusedApp("com.apple.Finder".into());
+        for (frontmost, branch) in [
+            ("com.apple.finder\n", "a"),
+            ("com.apple.Finder", "a"),
+            ("com.apple.Safari", "b"),
+        ] {
+            let (mut dispatcher, state) = fake(vec![success(frontmost), success("")]);
+            dispatcher.dispatch(&conditional(when())).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 2, "one read, one branch step");
+            assert_eq!(state.requests[0].args[1], FRONTMOST_APP_SCRIPT);
+            assert!(
+                state.requests[1].args[1].contains(&format!("keystroke \"{branch}\"")),
+                "{frontmost:?}"
+            );
+        }
+        // An answer that is not a bundle identifier runs neither branch.
+        for bad in ["missing value", ""] {
+            let (mut dispatcher, state) = fake(vec![success(bad)]);
+            let error = dispatcher.dispatch(&conditional(when())).unwrap_err();
+            assert!(
+                error.contains("could not read focused_app")
+                    && error.contains("neither branch ran"),
+                "{error}"
+            );
+            assert_eq!(state.lock().unwrap().requests.len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_conditional_that_cannot_read_obs_runs_neither_branch() {
+        use crate::profile::Condition;
+        // No endpoint at all.
+        let (mut dispatcher, state) = fake(vec![]);
+        let action = conditional(Condition::Recording(true));
+        assert_eq!(dispatcher.unavailable(&action), Some(OBS_UNAVAILABLE));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("neither branch ran"), "{error}");
+        assert!(state.lock().unwrap().requests.is_empty());
+
+        // An endpoint nothing listens on.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(
+            error.contains("could not read obs_recording") && error.contains("neither branch ran"),
+            "{error}"
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn a_conditional_branch_can_run_an_obs_step_after_the_read() {
+        use crate::profile::{Condition, ObsRecordOp};
+        let (mut dispatcher, _state) = fake(vec![]);
+        let (port, server) = fake_obs_script(vec![
+            ("GetRecordStatus", serde_json::json!({"outputActive":true})),
+            ("StopRecord", serde_json::Value::Null),
+        ]);
+        dispatcher = dispatcher.with_obs(Some(ObsClient::new(
+            crate::obs::ObsEndpoint::new("127.0.0.1", port).unwrap(),
+            None,
+        )));
+        let action = Action::Conditional {
+            when: Condition::Recording(true),
+            then: vec![Action::ObsRecord {
+                op: ObsRecordOp::Stop,
+            }],
+            otherwise: vec![Action::ObsRecord {
+                op: ObsRecordOp::Start,
+            }],
+        };
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(server.join().unwrap(), ["GetRecordStatus", "StopRecord"]);
+    }
+
     #[test]
     fn obs_scene_with_an_endpoint_switches_through_the_client() {
         let (port, server) = fake_obs("Live", || {});
@@ -3218,6 +4003,8 @@ mod tests {
                 sleeper: Box::new(SystemSleeper),
                 obs: None,
                 media_access_requested: false,
+                service_state: ServiceState::default(),
+                variables: Default::default(),
             };
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
             assert!(error.contains("action execution cancelled"), "{error}");
@@ -3787,6 +4574,8 @@ mod tests {
             sleeper: Box::new(CancellingSleeper(cancellation)),
             obs: None,
             media_access_requested: false,
+            service_state: ServiceState::default(),
+            variables: Default::default(),
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

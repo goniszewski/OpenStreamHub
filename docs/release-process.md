@@ -2,6 +2,10 @@
 
 This describes how the macOS desktop bundle is built in CI (`.github/workflows/release.yml`) and how to check signing and notarization. **Run so far (13 October 2026):** unsigned builds for both architectures through the release workflow, and local release builds of both (see below). **Not run:** signing, notarization, and a launch of the Intel app.
 
+## Decision: releases stay unsigned
+
+No Apple Developer Program membership is planned (decided 18 October 2026), so releases are ad-hoc signed only: no Developer ID, no notarization, no stapling. Consequences, all already told to users in the README [Install](../README.md#install) section and the release notes: first launch needs **Open Anyway** (or `xattr -dr com.apple.quarantine`), and every update counts as a new app, so macOS asks again for Accessibility, Automation and Input Monitoring. The signed path in `release.yml`, the secrets table and the sidecar signing notes below are kept for anyone who forks with their own certificate; they have never run.
+
 ## Local builds (how the 0.1.0 release was made)
 
 CI was blocked by GitHub billing, so 0.1.0 was built on an Apple Silicon Mac and attached to a draft release by hand.
@@ -102,9 +106,9 @@ Zips downloaded from Actions carry a quarantine attribute, which is what Gatekee
 
 ## Untested
 
-- No workflow has run in GitHub Actions; runner labels, cache settings and action versions (`actions/*@v4`, `Swatinem/rust-cache@v2`) are unconfirmed.
+- The workflows have run unsigned on GitHub Actions (the v0.2.0 tag build succeeded on 14 October 2026), so runner labels, cache settings and action versions are confirmed for the unsigned path only.
 - Signing, notarization, stapling and the `spctl` check have never been exercised.
 - Tauri's documented sidecar signing and hardened-runtime behaviour has not been exercised here; the workflow's explicit `codesign` check will show it on the first signed run.
-- The Intel build has not run; `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
+- `macos-15-intel` is the last Intel GitHub-hosted image, so watch GitHub's runner retirement notices. `macos-14` was avoided because GitHub retires it on 2026-11-02.
 - `cargo test` for `src-tauri` on a headless runner is assumed to work.
 - Stapling is not done separately; Tauri is expected to staple after notarizing. The workflow does not fail if `stapler validate` fails.

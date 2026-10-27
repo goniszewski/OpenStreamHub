@@ -1,6 +1,6 @@
 //! Generated pictures for keypad action tiles that have no artwork of their own: a small icon for what the tile does,
-//! above its label. The editor's preview draws the same idea (an icon over the label), so the module and the preview
-//! agree. Everything is drawn from shapes and the built-in 5×7 bitmap font, so no font or icon files are read.
+//! above its label. The editor's module preview redraws these pictures pixel for pixel (`key-face.ts`),
+//! held to this drawing by a shared fingerprint fixture, so the module and the preview agree. Everything is drawn from shapes and the built-in 5×7 bitmap font, so no font or icon files are read.
 
 use cooltek_sdk_service::display_sync::TileIcon;
 use image::{Rgb, RgbImage};
@@ -473,6 +473,67 @@ mod tests {
         assert_ne!(
             draw(TileIcon::Timer, "Break"),
             draw(TileIcon::Timer, "Lunch")
+        );
+    }
+
+    /// FNV-1a over the picture's RGB bytes; the editor's preview hashes its own drawing the same way.
+    fn fingerprint(image: &RgbImage) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in image.as_raw() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+
+    /// The labels the fixture draws every icon with: none, one short word, two lines, a small three-line label, a
+    /// cut one, and one with characters outside the font.
+    const LABELS: [&str; 6] = [
+        "",
+        "Record",
+        "Mute mic",
+        "Toggle microphone",
+        "A label far longer than the key can ever hold in full",
+        "Żółw 9",
+    ];
+
+    /// Pins the key pictures the editor's preview redraws in TypeScript (`key-face.ts`): both read
+    /// `apps/open-stream-hub/fixtures/key-faces.json`. Regenerate with `UPDATE_FIXTURES=1 cargo test`.
+    #[test]
+    fn the_key_pictures_match_the_shared_fixture_the_preview_is_checked_against() {
+        let mut actual = serde_json::Map::new();
+        for icon in ICONS {
+            let name = serde_json::to_value(icon).unwrap();
+            for label in LABELS {
+                actual.insert(
+                    format!("{}|{label}", name.as_str().unwrap()),
+                    fingerprint(&draw(icon, label)).into(),
+                );
+            }
+        }
+        actual.insert(
+            "folder".into(),
+            fingerprint(&crate::display_artwork::draw_folder()).into(),
+        );
+        for depth in 1..=crate::display_artwork::MAX_BACK_DEPTH {
+            actual.insert(
+                format!("back|{depth}"),
+                fingerprint(&crate::display_artwork::draw_back(depth)).into(),
+            );
+        }
+        let actual = serde_json::Value::Object(actual);
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/open-stream-hub/fixtures/key-faces.json");
+        if std::env::var_os("UPDATE_FIXTURES").is_some() {
+            let text = serde_json::to_string_pretty(&actual).unwrap() + "\n";
+            std::fs::write(&path, text).unwrap();
+            return;
+        }
+        let expected: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            actual, expected,
+            "key-faces.json is stale; regenerate with UPDATE_FIXTURES=1 cargo test -p cooltek-sdk-cli"
         );
     }
 }

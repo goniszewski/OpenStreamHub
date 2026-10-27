@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
-import { dialDisplayArgs, dialDisplayOptions, effectiveDialDisplay, maxDialImageBytes, setDialDisplayContent, setDialImage } from './dial-display-model';
+import { dialDisplayArgs, dialDisplayOptions, effectiveDialDisplay, maxDialImageBytes, setDialDisplayContent, setDialImage, setDialAnimation } from './dial-display-model';
 
 const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const dialBound: Profile = { ...flat, bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 2 } }] };
@@ -34,6 +34,18 @@ describe('dial display model', () => {
   });
   it('caps the stored picture like the Rust validator', () => {
     expect(maxDialImageBytes).toBe(64 * 1024);
+  });
+});
+
+describe('setDialAnimation', () => {
+  it('stores the frames with the first as the still image, and any other content drops them', () => {
+    const flat = { schema_version: 1, name: 'Desk', bindings: [] };
+    const animation = { frames: [{ jpeg_base64: 'AAAA', delay_ms: 200 }, { jpeg_base64: 'BBBB', delay_ms: 400 }], loop_count: 0 };
+    const moving = setDialAnimation(flat, animation);
+    expect(moving.dial_display).toEqual({ content: 'image', image: 'AAAA', animation });
+    expect(setDialDisplayContent(moving, 'clock').dial_display).toEqual({ content: 'clock' });
+    // A still picture chosen afterwards replaces the animation too.
+    expect(setDialImage(moving, 'CCCC').dial_display).toEqual({ content: 'image', image: 'CCCC' });
   });
 });
 

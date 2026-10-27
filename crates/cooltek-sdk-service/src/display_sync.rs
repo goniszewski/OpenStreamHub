@@ -181,18 +181,29 @@ impl TileIcon {
             Action::OpenUrl { .. } => Self::Web,
             Action::LaunchApp { .. } => Self::Application,
             Action::Text { .. } => Self::Text,
-            Action::MultiAction { .. } | Action::Macro { .. } => Self::Sequence,
+            Action::MultiAction { .. }
+            | Action::Conditional { .. }
+            | Action::SetVariable { .. }
+            | Action::ToggleVariable { .. }
+            | Action::AddToVariable { .. }
+            | Action::Macro { .. } => Self::Sequence,
             Action::Profile { .. } => Self::Profile,
             Action::Timer { .. } => Self::Timer,
             Action::ObsScene { .. }
             | Action::ObsVirtualCamera { .. }
+            | Action::ObsStream { .. }
+            | Action::ObsRecord { .. }
             | Action::ObsReplayBuffer { .. }
             | Action::ObsStudioMode { .. }
             | Action::ObsTransition
+            | Action::ObsScreenshot
             | Action::ObsFilter { .. }
             | Action::ObsSourceVisibility { .. }
             | Action::ObsSceneCollection { .. }
             | Action::ObsProfile { .. }
+            | Action::ObsInputMute { .. }
+            | Action::ObsAdjustInputVolume { .. }
+            | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. }
             | Action::ObsInputVolumeFromPosition { .. } => Self::Obs,
             Action::Shortcut { .. } => Self::Generic,

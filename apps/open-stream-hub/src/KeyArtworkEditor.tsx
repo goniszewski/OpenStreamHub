@@ -13,7 +13,10 @@ import { stableStringify } from './draft-model';
 import { keyIconById } from './key-icons';
 import { applyAutoArtwork, planAutoArtwork, planKey } from './auto-key-artwork';
 import type { Invoke, ProfileSession } from './profile-session';
+import { artworkErrorNotice } from './artwork-error-model';
+import { ArtworkErrorNote } from './ArtworkErrorNote';
 import { errorMessage } from './ui-model';
+import type { ArtworkNotice } from './artwork-error-model';
 
 export interface AppIconResult { png_base64: string }
 
@@ -267,8 +270,16 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   });
   const [appIconFailed, setAppIconFailed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ArtworkNotice | null>(null);
   const requestId = useRef(0);
+  // Which prepare call owns the "Preparing" state. Kept apart from requestId: the
+  // auto-artwork timer bumps requestId to discard an upload still in flight, and
+  // that upload's own finish must still clear busy.
+  const busyId = useRef(0);
+  // The request id the auto-artwork timer took last. When that is still the current id as a choice or design finishes,
+  // the timer discarded it (a newer click or closing the editor would have moved the id on), and the person is told.
+  const autoRequest = useRef(0);
+  const discardedByTimer = (id: number) => id !== requestId.current && requestId.current === autoRequest.current;
   useEffect(() => () => { requestId.current++; }, []);
   // The real .app icon for a launch_app action, asked once per bundle id.
   useEffect(() => {
@@ -301,6 +312,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     // The application field is typed into: settle before looking anything up.
     const timer = setTimeout(() => {
       const id = ++requestId.current;
+      autoRequest.current = id;
       void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
         planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current,
       });
@@ -310,39 +322,52 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   }, [planId]);
   async function choose(file: File) {
     const id = ++requestId.current;
+    const busyToken = ++busyId.current;
     const before = session.getState();
     setBusy(true); setError(null);
     try {
       const source = await readSourceFile(file);
-      if (!source.ok) throw new Error(source.error);
+      if (!source.ok) { if (id === requestId.current) setError({ message: source.error }); return; }
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: {
         image_base64: source.base64, target: 'keypad', quality: 85, fit: 'contain', quarter_turns: 0, background: [0, 0, 0],
       } });
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) {
+        if (discardedByTimer(id)) setError({ message: 'The key\'s artwork was replaced automatically while your picture was being prepared, so your choice was not applied. Choose the file again.' });
+        return;
+      }
       // Never apply completion to a different draft, nor undo intervening edits.
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
-        setError('The profile changed while preparing artwork. Choose the file again.'); return;
+        setError({ message: 'The profile changed while preparing artwork. Choose the file again.' }); return;
       }
       // The prepared artwork carries no design, so an upload clears a stored
       // one: the file, not the studio, is now what the key shows.
       session.edit(setKeyArtwork(current.draft.profile, path, control, prepared));
-    } catch (reason) { if (id === requestId.current) setError(errorMessage(reason)); }
-    finally { if (id === requestId.current) setBusy(false); }
+    } catch (reason) { if (id === requestId.current) setError(artworkErrorNotice(reason)); }
+    finally { if (busyToken === busyId.current) setBusy(false); }
   }
   async function applyDesign() {
     const id = ++requestId.current;
+    const busyToken = ++busyId.current;
     const before = session.getState();
     setBusy(true); setError(null);
     try {
-      const png = await renderKeyDesign(design, appIcon?.pngBase64);
+      let png: string;
+      try { png = await renderKeyDesign(design, appIcon?.pngBase64); } catch (reason) {
+        // The studio's own drawing errors are already plain language.
+        if (id === requestId.current) setError({ message: errorMessage(reason) });
+        return;
+      }
       const built = buildKeyArtworkDesignRequest(design, png);
-      if (!built.ok) throw new Error(built.error);
+      if (!built.ok) { if (id === requestId.current) setError({ message: built.error }); return; }
       const prepared = await invoke!<KeyArtwork>('prepare_key_artwork', { request: built.request });
-      if (id !== requestId.current) return;
+      if (id !== requestId.current) {
+        if (discardedByTimer(id)) setError({ message: 'The key\'s artwork was replaced automatically while your design was being prepared, so it was not applied. Apply it again.' });
+        return;
+      }
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
-        setError('The profile changed while preparing artwork. Apply again.'); return;
+        setError({ message: 'The profile changed while preparing artwork. Apply again.' }); return;
       }
       // Store the design beside the frames so reopening restores the studio.
       // An uploaded file (choose) prepares design-less artwork, which clears it.
@@ -351,8 +376,8 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
         recordRecentKeyIcon(keyDesignStorage, design.iconId);
         setRecents(readRecentKeyIcons(keyDesignStorage));
       }
-    } catch (reason) { if (id === requestId.current) setError(errorMessage(reason)); }
-    finally { if (id === requestId.current) setBusy(false); }
+    } catch (reason) { if (id === requestId.current) setError(artworkErrorNotice(reason)); }
+    finally { if (busyToken === busyId.current) setBusy(false); }
   }
   return <section className="key-artwork-editor" aria-label="Key artwork">
     <KeyDesignStudio design={design} onDesign={editDesign} action={action} appIcon={appIcon} appIconFailed={appIconFailed}
@@ -361,11 +386,11 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
       disabled={disabled} busy={busy} prepareAvailable={!!invoke} onApply={() => { void applyDesign(); }} />
     <div className="inspector-divider" />
     <label className="key-artwork-upload-title" htmlFor="key-artwork-file">Image or GIF file</label>
-    <input id="key-artwork-file" type="file" accept="image/png,image/jpeg,image/gif,.png,.jpg,.jpeg,.gif" disabled={disabled || busy || !invoke} onChange={event => {
+    <input id="key-artwork-file" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,.png,.jpg,.jpeg,.gif,.bmp" disabled={disabled || busy || !invoke} onChange={event => {
       const file = event.target.files?.[0]; event.target.value = ''; if (file) void choose(file);
     }} />
     {busy && <p role="status">Preparing key artwork…</p>}
-    {error && <p className="field-error" role="alert">{error}</p>}
+    {error && <ArtworkErrorNote notice={error} />}
     {artwork && <><KeyArtworkPreview artwork={artwork} /><p className="fine-print">{artwork.frames.length > 1 ? `${artwork.frames.length} frames · ${artwork.loop_count === 0 ? 'loops continuously' : `${artwork.loop_count} play(s)`}` : 'Static image'}</p><button className="button compact" disabled={disabled || busy} onClick={() => { declined.current = planId; session.edit(setKeyArtwork(session.getState().draft.profile, path, control, null)); }}>Remove artwork</button></>}
     <p className="fine-print">The preview above shows the design; the key receives the same picture prepared as a 72×72 JPEG. PNG, JPEG or GIF · up to 8 MiB. GIFs: up to 512×512 and 120 frames, at most 10 FPS. Artwork is saved with the profile and sent while OpenStreamHub drives the display.</p>
     {!invoke && <p className="fine-print">Preparing key artwork needs the desktop app.</p>}

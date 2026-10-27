@@ -132,8 +132,22 @@ impl BindingEngine {
     }
 }
 
+/// What the service worker knows that a dispatcher cannot see for itself, handed over right before each action so a
+/// `conditional` can test it.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ServiceState {
+    /// At least one `timer` countdown of this run is counting down.
+    pub timer_running: bool,
+    /// The variables the running profile declares. The dispatcher keeps the current value of each across presses
+    /// (and across a profile swap, for a variable that keeps its name and kind) and starts a new one at its declared value.
+    pub variables: Vec<crate::profile::Variable>,
+}
+
 /// The host boundary for explicitly dispatching a matched action.
 pub trait ActionDispatcher {
+    /// Tells the dispatcher the service state for the action about to be dispatched. The default ignores it.
+    fn set_service_state(&mut self, _state: ServiceState) {}
+
     /// Executes one action or reports failure without an implicit retry.
     fn dispatch(&mut self, action: &Action) -> Result<(), String>;
 
@@ -232,6 +246,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         })
         .unwrap()
     }
@@ -336,6 +351,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         };
         assert!(BindingEngine::new(invalid).is_err());
     }

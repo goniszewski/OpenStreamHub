@@ -2,9 +2,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  conditionLabel, conditionUsesObs, defaultCondition, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
-  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSceneIssue, obsSwitchOpLabels,
+  namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
@@ -287,6 +287,24 @@ describe('obs outputs', () => {
     const ops = (type: string) => fixture.valid.filter(action => action.type === type).flatMap(action => ('op' in action ? [String(action.op)] : []));
     expect(ops('obs_virtual_camera').sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
     expect(ops('obs_replay_buffer').sort()).toEqual(Object.keys(obsReplayBufferOpLabels).sort());
+    expect([...new Set(ops('obs_stream'))].sort()).toEqual(Object.keys(obsOutputOpLabels).sort());
+    expect(ops('obs_record').sort()).toEqual(Object.keys(obsRecordOpLabels).sort());
+  });
+
+  it('offers mute, volume step and media source steps with their defaults and labels', () => {
+    expect(defaultStepAction('obs_input_mute')).toMatchObject({ type: 'obs_input_mute', op: 'toggle' });
+    expect(defaultStepAction('obs_adjust_input_volume')).toMatchObject({ type: 'obs_adjust_input_volume', step_db: 3 });
+    expect(defaultStepAction('obs_media_source')).toMatchObject({ type: 'obs_media_source', op: 'play_pause' });
+    expect(actionLabel({ type: 'obs_input_mute', input: 'Mic', op: 'mute' })).toBe('OBS input “Mic”: Mute');
+    expect(actionLabel({ type: 'obs_adjust_input_volume', input: 'Mic', step_db: -3 })).toBe('OBS input “Mic” -3 dB');
+    expect(actionLabel({ type: 'obs_media_source', input: 'Intro', op: 'play_stop' })).toBe('OBS media “Intro”: Play / stop');
+  });
+
+  it('offers the stream and the recording as steps with their own operation sets', () => {
+    expect(defaultStepAction('obs_stream')).toEqual({ type: 'obs_stream', op: 'toggle' });
+    expect(defaultStepAction('obs_record')).toEqual({ type: 'obs_record', op: 'toggle' });
+    expect(actionLabel({ type: 'obs_stream', op: 'start' })).toBe('OBS stream: Start');
+    expect(actionLabel({ type: 'obs_record', op: 'toggle_pause' })).toBe('OBS recording: Pause or resume');
   });
 });
 
@@ -364,5 +382,36 @@ describe('obs input volume', () => {
     expect(actionLabel({ type: 'mic_input_volume_from_position' })).toBe('Follow fader position for microphone volume');
     expect(isFaderTemplate({ type: 'obs_set_input_volume' })).toBe(false);
     expect(isFaderTemplate(null)).toBe(false);
+  });
+
+  it('describes conditions and starts a conditional that needs no OBS', () => {
+    expect(conditionLabel({ obs_recording: true })).toBe('OBS is recording');
+    expect(conditionLabel({ obs_recording: false })).toBe('OBS is not recording');
+    expect(conditionLabel({ obs_virtual_camera: false })).toBe('the OBS virtual camera is off');
+    expect(conditionLabel({ output_muted: true })).toBe('the output is muted');
+    expect(conditionLabel({ output_volume_at_least: 40 })).toBe('the output volume is at least 40%');
+    expect(conditionUsesObs({ obs_streaming: true })).toBe(true);
+    expect(conditionUsesObs({ output_muted: true })).toBe(false);
+    expect(conditionUsesObs({ output_volume_at_least: 5 })).toBe(false);
+    expect(conditionLabel({ timer_running: true })).toBe('a timer is running');
+    expect(conditionLabel({ timer_running: false })).toBe('no timer is running');
+    expect(conditionUsesObs({ timer_running: true })).toBe(false);
+    expect(defaultCondition('timer_running')).toEqual({ timer_running: true });
+    expect(conditionLabel({ focused_app: 'com.apple.Safari' })).toBe('the front app is com.apple.Safari');
+    expect(conditionUsesObs({ focused_app: 'com.apple.Safari' })).toBe(false);
+    expect(defaultCondition('focused_app')).toEqual({ focused_app: 'com.apple.finder' });
+    expect(defaultCondition('output_volume_at_least')).toEqual({ output_volume_at_least: 50 });
+    expect(defaultCondition('obs_replay_buffer')).toEqual({ obs_replay_buffer: true });
+    expect(defaultConditional()).toEqual({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });
+    expect(actionLabel({ type: 'conditional', when: { obs_recording: true }, then: [{ type: 'obs_record', op: 'stop' }], else: [{ type: 'obs_record', op: 'start' }] }))
+      .toBe('If OBS is recording: OBS recording: Stop; otherwise OBS recording: Start');
+    expect(actionLabel(defaultConditional() as never)).toBe('If the output is muted: Toggle output mute');
+  });
+
+  it('combines conditions with AND / OR and reads a single one as a list of one', () => {
+    expect(conditionLabel({ all: [{ output_muted: false }, { obs_streaming: true }] })).toBe('the output is not muted and OBS is streaming');
+    expect(conditionLabel({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe('the output is muted or the output volume is at least 10%');
+    expect(conditionUsesObs({ all: [{ output_muted: true }, { obs_streaming: true }] })).toBe(true);
+    expect(conditionUsesObs({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe(false);
   });
 });

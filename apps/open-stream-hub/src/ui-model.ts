@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -176,6 +176,9 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'volume_from_position': return 'Follow fader position for output volume';
     case 'mic_input_volume_from_position': return 'Follow fader position for microphone volume';
     case 'obs_input_volume_from_position': return `Follow fader position for OBS input “${clipLabel(action.input)}”`;
+    case 'obs_input_mute': return `OBS input “${clipLabel(action.input)}”: ${obsMuteOpLabels[action.op] ?? action.op}`;
+    case 'obs_adjust_input_volume': return `OBS input “${clipLabel(action.input)}” ${action.step_db > 0 ? '+' : ''}${action.step_db} dB`;
+    case 'obs_media_source': return `OBS media “${clipLabel(action.input)}”: ${obsMediaOpLabels[action.op] ?? action.op}`;
     case 'obs_set_input_volume': return `Set OBS input “${clipLabel(action.input)}” to ${action.percent}%`;
     case 'set_volume': return `Set output volume to ${action.percent}%`;
     case 'open_url': return `Open ${action.url}`;
@@ -185,6 +188,10 @@ export function actionLabel(action: Action | BindingAction | null): string {
       const flat = action.text.replace(/\s+/g, ' ').trim();
       return `Paste “${flat.length > 24 ? `${flat.slice(0, 24)}…` : flat}”${action.press_enter ? ' + Return' : ''}`;
     }
+    case 'set_variable': return `Set ${action.name || 'a variable'} to ${typeof action.value === 'string' ? `“${action.value}”` : typeof action.value === 'boolean' ? (action.value ? 'on' : 'off') : action.value}`;
+    case 'toggle_variable': return `Flip ${action.name || 'a variable'}`;
+    case 'add_to_variable': return `${action.name || 'A variable'} ${action.amount > 0 ? '+' : ''}${action.amount}`;
+    case 'conditional': return `If ${conditionLabel(action.when)}: ${action.then.map(step => actionLabel(step)).join(', then ')}${action.else?.length ? `; otherwise ${action.else.map(step => actionLabel(step)).join(', then ')}` : ''}`;
     case 'multi_action': return `${action.actions.length} actions: ${action.actions.map(step => actionLabel(step)).join(', then ')}`;
     // The keys themselves are not listed here (they read like typed text); the inspector's macro
     // editor shows them, and the Execute confirmation discloses them.
@@ -192,9 +199,12 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
+    case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'obs_record': return `OBS recording: ${obsRecordOpLabels[action.op] ?? action.op}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${obsReplayBufferOpLabels[action.op] ?? action.op}`;
     case 'obs_studio_mode': return `OBS studio mode: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_screenshot': return 'OBS screenshot';
     case 'obs_filter': return `OBS filter “${clipLabel(action.filter)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_source_visibility': return `OBS source “${clipLabel(action.source)}”: ${obsSwitchOpLabels[action.op] ?? action.op}`;
     case 'obs_scene_collection': return `OBS scene collection “${clipLabel(action.name)}”`;

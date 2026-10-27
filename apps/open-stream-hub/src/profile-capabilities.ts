@@ -97,6 +97,18 @@ const isScreenshot = (step: unknown) => isRecord(step) && step.type === 'system'
 const followedBy = (steps: unknown[], first: (step: unknown) => boolean, then: (step: unknown) => boolean) =>
   steps.some((step, index) => first(step) && steps.slice(index + 1).some(then));
 
+// Why a list of steps that run one after another is rated high: what one step sets up for the next.
+function sequenceReasons(steps: unknown[]): string[] {
+  const reasons: string[] = [];
+  const has = (type: string) => steps.some(step => isRecord(step) && step.type === type);
+  if ((has('launch_app') || has('open_url')) && (has('text') || has('shortcut'))) reasons.push('A multi-step sequence opens an app or web page and then types or sends shortcuts into it.');
+  if (steps.some(isScreenshot) && has('open_url')) reasons.push('A multi-step sequence captures the screen and opens a web page.');
+  // Fails closed: any key after pasted text can submit it (Return, Control+M, Control+J, Control+O, app bindings).
+  if (followedBy(steps, step => isRecord(step) && step.type === 'text', isShortcut)) reasons.push('A multi-step sequence pastes text and then sends keys after it.');
+  if (followedBy(steps, isScreenshot, isShortcut)) reasons.push('A multi-step sequence captures the screen and then sends keys, which can paste it into another app.');
+  return reasons;
+}
+
 // Snippets and step text are shown in full. A profile the service would accept never reaches this limit; anything
 // longer (an invalid or hand-edited profile) is cut for display and rated high, so a hidden tail is never trusted.
 export const maxShownChars = 4096;
@@ -107,14 +119,22 @@ const quoted = (name: unknown) => `“${snippetPreview(String(name ?? '')).text}
 const obsItemLine = (action: Record<string, unknown>) => action.type === 'obs_filter'
   ? `OBS filter ${quoted(action.filter)} on ${quoted(action.source)}: ${opWord(action.op, 'obs_filter')}`
   : `OBS source ${quoted(action.source)} in scene ${quoted(action.scene)}: ${opWord(action.op, 'obs_source_visibility')}`;
-const obsInputVolumeLine = (action: Record<string, unknown>) => action.type === 'obs_set_input_volume'
-  ? `OBS input ${quoted(action.input)}: set volume to ${String(action.percent)}%`
-  : `OBS input ${quoted(action.input)}: volume follows the fader`;
+const obsInputVolumeLine = (action: Record<string, unknown>) => {
+  switch (action.type) {
+    case 'obs_set_input_volume': return `OBS input ${quoted(action.input)}: set volume to ${String(action.percent)}%`;
+    case 'obs_adjust_input_volume': return `OBS input ${quoted(action.input)}: change volume by ${String(action.step_db)} dB`;
+    case 'obs_input_mute': return `OBS input ${quoted(action.input)}: ${opWord(action.op, 'obs_input_mute')}`;
+    case 'obs_media_source': return `OBS media source ${quoted(action.input)}: ${opWord(action.op, 'obs_media_source')}`;
+    default: return `OBS input ${quoted(action.input)}: volume follows the fader`;
+  }
+};
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
 const obsOpSets: Record<string, string[]> = {
   obs_virtual_camera: outputOps, obs_replay_buffer: [...outputOps, 'save'],
+  obs_input_mute: ['toggle', 'mute', 'unmute'], obs_media_source: ['play_pause', 'play_stop', 'play_restart', 'stop'],
+  obs_stream: outputOps, obs_record: [...outputOps, 'pause', 'resume', 'toggle_pause'],
   obs_studio_mode: ['toggle', 'on', 'off'], obs_filter: ['toggle', 'on', 'off'], obs_source_visibility: ['toggle', 'on', 'off'],
 };
 const opWord = (op: unknown, type: string) => typeof op === 'string' && obsOpSets[type]?.includes(op) ? op : `${clipped(String(op), 20)} (unrecognised)`;
@@ -128,6 +148,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
   const obsReloads = new Set<string>();
+  let liveOutput = false;
   const sequences = new Map<string, StepAction[]>();
   const macros = new Map<string, MacroStep[]>();
   const reasons = new Set<string>();
@@ -145,7 +166,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
       // timer shows a notification and plays a fixed system sound; its label is plain notification text.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer': break;
+      // A variable is the profile's own memory: it reaches nothing outside the service.
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer':
+      case 'set_variable': case 'toggle_variable': case 'add_to_variable': break;
       // A media key or a stop of an already running player: disclosed, but low risk.
       case 'media': if (action.command === 'stop') mediaStop = true; else mediaKeys = true; break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
@@ -171,8 +194,13 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
       // Local OBS outputs: neither publishes to an audience by itself, so they are shown but low risk.
       case 'obs_virtual_camera': obsOutputs.add(`virtual camera ${opWord(action.op, 'obs_virtual_camera')}`); break;
       case 'obs_replay_buffer': obsOutputs.add(`replay buffer ${opWord(action.op, 'obs_replay_buffer')}`); break;
+      // Going live, ending a broadcast or a recording cannot be undone from the controller: elevated.
+      case 'obs_stream': obsOutputs.add(`stream ${opWord(action.op, 'obs_stream')}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`); liveOutput = true; break;
+      case 'obs_record': obsOutputs.add(`recording ${opWord(action.op, 'obs_record')}`); liveOutput = true; break;
       case 'obs_studio_mode': obsOutputs.add(`studio mode ${opWord(action.op, 'obs_studio_mode')}`); break;
       case 'obs_transition': obsOutputs.add('studio transition'); break;
+      // The one OBS action that writes a file (a PNG in Pictures): elevated.
+      case 'obs_screenshot': obsOutputs.add('screenshot to Pictures'); liveOutput = true; break;
       // Names are user text: shown clipped, and a very long one is a reason to look closer.
       case 'obs_filter':
       case 'obs_source_visibility':
@@ -181,6 +209,9 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         break;
       // A fader (or a fixed level) driving an OBS input's volume: a local OBS effect, shown by input name.
       case 'obs_input_volume_from_position':
+      case 'obs_input_mute':
+      case 'obs_adjust_input_volume':
+      case 'obs_media_source':
       case 'obs_set_input_volume':
         obsItems.add(obsInputVolumeLine(action));
         if (codePoints(String(action.input ?? '')) > maxShownChars) reasons.add(tooLongReason);
@@ -191,17 +222,22 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         if (codePoints(String(action.name ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
+      case 'conditional': {
+        // Both branches are walked and disclosed like multi-action steps, since either can run. Which one depends on
+        // a state read at press time (OBS or the output), so the profile can do whatever either branch can.
+        for (const steps of [list(action.then), list(action.else)]) {
+          if (depth < 4) for (const step of steps) visit(step, depth + 1);
+          if (steps.length > 0) sequences.set(JSON.stringify(steps), steps as StepAction[]);
+          sequenceReasons(steps).forEach(reason => reasons.add(reason));
+        }
+        break;
+      }
       case 'multi_action': {
         const steps = list(action.actions);
         // The service rejects nested sequences; they are still walked so nothing hides inside one.
         if (depth < 4) for (const step of steps) visit(step, depth + 1);
         sequences.set(JSON.stringify(steps), steps as StepAction[]);
-        const has = (type: string) => steps.some(step => isRecord(step) && step.type === type);
-        if ((has('launch_app') || has('open_url')) && (has('text') || has('shortcut'))) reasons.add('A multi-step sequence opens an app or web page and then types or sends shortcuts into it.');
-        if (steps.some(isScreenshot) && has('open_url')) reasons.add('A multi-step sequence captures the screen and opens a web page.');
-        // Fails closed: any key after pasted text can submit it (Return, Control+M, Control+J, Control+O, app bindings).
-        if (followedBy(steps, step => isRecord(step) && step.type === 'text', isShortcut)) reasons.add('A multi-step sequence pastes text and then sends keys after it.');
-        if (followedBy(steps, isScreenshot, isShortcut)) reasons.add('A multi-step sequence captures the screen and then sends keys, which can paste it into another app.');
+        sequenceReasons(steps).forEach(reason => reasons.add(reason));
         break;
       }
       case 'macro': {
@@ -228,7 +264,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   for (const action of profileActions(profile)) visit(action, 0);
 
   const snippets = [...texts.values()];
-  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || macros.size > 0 || (counts.multi_action ?? 0) > 0;
+  const elevated = snippets.length > 0 || origins.size > 0 || screenshot || obsReloads.size > 0 || liveOutput || macros.size > 0 || (counts.multi_action ?? 0) > 0 || (counts.conditional ?? 0) > 0;
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
@@ -306,11 +342,14 @@ export function stepLabel(step: StepAction): string {
     }
     case 'obs_studio_mode': return `OBS studio mode: ${opWord(step.op, 'obs_studio_mode')}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_screenshot': return 'OBS screenshot: save a PNG of the program scene to Pictures';
     case 'obs_filter': case 'obs_source_visibility': return obsItemLine(step);
-    case 'obs_set_input_volume': return obsInputVolumeLine(step);
+    case 'obs_set_input_volume': case 'obs_adjust_input_volume': case 'obs_input_mute': case 'obs_media_source': return obsInputVolumeLine(step);
     case 'obs_scene_collection': case 'obs_profile': return `Switch ${obsReloadLine(step)} (OBS reloads)`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${opWord(step.op, 'obs_virtual_camera')}`;
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;
+    case 'obs_stream': return `OBS stream: ${opWord(step.op, 'obs_stream')}${step.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'obs_record': return `OBS recording: ${opWord(step.op, 'obs_record')}`;
     case 'text': {
       const preview = snippetPreview(typeof step.text === 'string' ? step.text : '');
       return `Paste “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}${step.press_enter ? ', then press Return' : ''}`;

@@ -7,7 +7,7 @@ const steps = (mod: string): Record<OnboardingStepId, { title: string; body: Rea
   starters: {
     title: 'Start from a starter profile',
     body: <>
-      <p id="onboarding-body">The first launch offers starter profiles — Mac basics, Streaming (OBS) and Editing and media. Picking one creates a saved profile with working controls; starting with an empty profile is fine too.</p>
+      <p id="onboarding-body">The first launch offers starter profiles — Mac basics, Streaming (OBS), Streamer and Editing and media. Picking one creates a saved profile with working controls; starting with an empty profile is fine too.</p>
       <ul><li>When a module is connected later, OpenStreamHub offers the starters that use it. “New from a starter” in the profile manager (Manage profiles, next to the profile switcher) opens the same chooser any time.</li><li>Starters only set volume and playback, take screenshots, run a timer and drive OBS. Nothing is typed into apps, and no app or web page is opened.</li><li>Live is the default, but the first time you use it the app asks once and lists what the open profile will do; until you confirm, presses are only logged. The badge in the header always shows which mode is on.</li><li>Profiles from someone else can do much more than the starters. Only run profiles you wrote or reviewed.</li></ul>
     </>,
   },

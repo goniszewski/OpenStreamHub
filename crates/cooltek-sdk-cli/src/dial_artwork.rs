@@ -24,7 +24,7 @@
 //! `docs/masterhub-display-sync.md`.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::VecDeque,
     f64::consts::PI,
     fmt,
@@ -355,6 +355,9 @@ pub struct DialArtwork {
     functions: Vec<Vec<u8>>,
     /// Only for [`DialContent::Image`]: the profile's validated dial picture.
     image: Option<Vec<u8>>,
+    /// Only for [`DialContent::Image`] with an animation in the profile.
+    /// Boxed for the same reason as `cpu`.
+    animation: Option<Box<Animation>>,
     clock: Box<dyn Clock>,
     /// Only for [`DialContent::Cpu`].
     /// Boxed: inline, it makes `DialArtwork` large enough to trip clippy's
@@ -364,6 +367,95 @@ pub struct DialArtwork {
     cached: RefCell<Option<(String, Vec<u8>)>>,
     /// Quarter turns clockwise applied to every face served, so a dial sitting turned on the base reads upright.
     quarter_turns: u8,
+}
+
+/// The frames of an animated dial picture and the clock they play against.
+struct Animation {
+    frames: Vec<Vec<u8>>,
+    delays_ms: Vec<u32>,
+    /// The shortest time between two writes while each frame is the one to draw:
+    /// the floor of its size ([`DialAnimation::min_delay_ms_for`]).
+    floors_ms: Vec<u32>,
+    loop_count: u32,
+    /// When playback began: frame 0 is up at this moment. Set by the first
+    /// request, not when the artwork is prepared, so a slow device setup does
+    /// not eat into a short or single-play animation.
+    started: Cell<Option<Instant>>,
+}
+
+impl Animation {
+    /// Time since playback began, starting it now on the first call.
+    fn elapsed(&self) -> Duration {
+        self.started
+            .get()
+            .unwrap_or_else(|| {
+                let now = Instant::now();
+                self.started.set(Some(now));
+                now
+            })
+            .elapsed()
+    }
+}
+
+/// The frame showing `elapsed` after playback began. A positive `loop_count`
+/// is the number of plays; after the last the final frame stays up.
+fn animation_frame(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> usize {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let mut at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 {
+        return 0;
+    }
+    if loop_count > 0 && at >= cycle * u64::from(loop_count) {
+        return delays_ms.len() - 1;
+    }
+    at %= cycle;
+    let mut index = 0;
+    for (frame, &delay) in delays_ms.iter().enumerate() {
+        index = frame;
+        if at < u64::from(delay) {
+            break;
+        }
+        at -= u64::from(delay);
+    }
+    index
+}
+
+/// How long until the frame showing `elapsed` after playback began gives way
+/// to the next, or `None` once a finite animation has played its last time.
+fn frame_remaining(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> Option<Duration> {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 || (loop_count > 0 && at >= cycle * u64::from(loop_count)) {
+        return None;
+    }
+    let mut left = at % cycle;
+    for &delay in delays_ms {
+        let delay = u64::from(delay);
+        if left < delay {
+            return Some(Duration::from_millis(delay - left));
+        }
+        left -= delay;
+    }
+    None
+}
+
+/// How long the frame showing `elapsed` after playback began has been up:
+/// zero for a finished animation, whose last frame has no end.
+fn frame_age(delays_ms: &[u32], loop_count: u32, elapsed: Duration) -> Duration {
+    let cycle: u64 = delays_ms.iter().map(|&delay| u64::from(delay)).sum();
+    let at = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
+    if cycle == 0 || (loop_count > 0 && at >= cycle * u64::from(loop_count)) {
+        return Duration::ZERO;
+    }
+    let mut left = at % cycle;
+    for &delay in delays_ms {
+        let delay = u64::from(delay);
+        if left < delay {
+            return Duration::from_millis(left);
+        }
+        left -= delay;
+    }
+    Duration::ZERO
 }
 
 impl fmt::Debug for DialArtwork {
@@ -397,6 +489,32 @@ impl DialArtwork {
         } else {
             None
         };
+        let animation = match profile
+            .dial_display
+            .as_ref()
+            .and_then(|d| d.animation.as_ref())
+        {
+            Some(animation) if content == DialContent::Image => {
+                let frames = animation.jpegs()?;
+                Some(Box::new(Animation {
+                    floors_ms: frames
+                        .iter()
+                        .map(|jpeg| {
+                            cooltek_sdk_service::DialAnimation::min_delay_ms_for(jpeg.len())
+                        })
+                        .collect(),
+                    frames,
+                    delays_ms: animation
+                        .frames
+                        .iter()
+                        .map(|frame| frame.delay_ms)
+                        .collect(),
+                    loop_count: animation.loop_count,
+                    started: Cell::new(None),
+                }))
+            }
+            _ => None,
+        };
         let names: Vec<&str> = profile
             .dial_functions
             .iter()
@@ -421,6 +539,7 @@ impl DialArtwork {
                 .transpose()?,
             functions,
             image,
+            animation,
             clock,
             cpu: (content == DialContent::Cpu)
                 .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
@@ -450,7 +569,22 @@ impl DialArtwork {
 
     /// Turns every face served by `quarter_turns` quarter turns clockwise (0 to 3).
     pub fn with_turn(mut self, quarter_turns: u8) -> Self {
-        self.quarter_turns = quarter_turns % 4;
+        let quarter_turns = quarter_turns % 4;
+        if self.content == DialContent::Image {
+            // Turn the stored picture once, by the change from the turn already
+            // applied, so serving a frame never decodes and re-encodes it.
+            let delta = (quarter_turns + 4 - self.quarter_turns) % 4;
+            let turn = |jpeg: &mut Vec<u8>| {
+                if let Some(turned) = turned(jpeg, delta) {
+                    *jpeg = turned;
+                }
+            };
+            self.image.iter_mut().for_each(turn);
+            if let Some(animation) = &mut self.animation {
+                animation.frames.iter_mut().for_each(turn);
+            }
+        }
+        self.quarter_turns = quarter_turns;
         self
     }
 
@@ -474,7 +608,17 @@ impl DialArtwork {
                     None => "profile".into(),
                 })
             }
-            DialContent::Image => Some("image".into()),
+            DialContent::Image => Some(match &self.animation {
+                Some(animation) => format!(
+                    "image:{}",
+                    animation_frame(
+                        &animation.delays_ms,
+                        animation.loop_count,
+                        animation.elapsed()
+                    )
+                ),
+                None => "image".into(),
+            }),
             DialContent::Cpu => Some(match self.cpu_percent(Instant::now()) {
                 Some(percent) => format!("cpu:{percent}"),
                 None => "cpu:--".into(),
@@ -493,6 +637,52 @@ impl DialArtwork {
             profile: self.profile_name.clone(),
             function,
         }
+    }
+
+    /// How long until the animated picture's next frame is due, or `None` for
+    /// a still picture and for an animation that has played its last time.
+    pub fn next_frame_in(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        // Playback begins with the first request, so nothing is due before it.
+        let elapsed = animation.started.get()?.elapsed();
+        frame_remaining(&animation.delays_ms, animation.loop_count, elapsed)
+    }
+
+    /// How long the animated picture's current frame has been due: how late a
+    /// draw made now would be. `None` for a still picture or before playback
+    /// has begun.
+    pub fn frame_age(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        let elapsed = animation.started.get()?.elapsed();
+        Some(frame_age(
+            &animation.delays_ms,
+            animation.loop_count,
+            elapsed,
+        ))
+    }
+
+    /// The least time between two writes right now: the size floor of the
+    /// animation's current frame (the first before playback has begun). `None`
+    /// for a still picture.
+    pub fn animation_floor(&self) -> Option<Duration> {
+        let animation = self.animation.as_ref()?;
+        let index = match animation.started.get() {
+            Some(started) => animation_frame(
+                &animation.delays_ms,
+                animation.loop_count,
+                started.elapsed(),
+            ),
+            None => 0,
+        };
+        animation
+            .floors_ms
+            .get(index)
+            .map(|&floor| Duration::from_millis(u64::from(floor)))
+    }
+
+    /// True when the dial picture plays frames, so the face changes with time.
+    pub fn is_animated(&self) -> bool {
+        self.animation.is_some()
     }
 
     /// Prepared bytes of the profile face (function content only).
@@ -567,6 +757,10 @@ fn parse_time(text: &str) -> Option<WallTime> {
 impl DialImageProvider for DialArtwork {
     fn dial_image(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
         let face = self.face(request)?;
+        if self.content == DialContent::Image {
+            // The stored picture was turned when the turn was set.
+            return Some(face);
+        }
         Some(turned(&face, self.quarter_turns).unwrap_or(face))
     }
 }
@@ -596,6 +790,14 @@ impl DialArtwork {
         let face = request.function.as_deref()?;
         if face == "image" && self.content == DialContent::Image {
             return self.image.clone();
+        }
+        if let (Some(index), Some(animation)) = (face.strip_prefix("image:"), &self.animation)
+            && self.content == DialContent::Image
+        {
+            if index.starts_with('+') || (index.len() > 1 && index.starts_with('0')) {
+                return None;
+            }
+            return animation.frames.get(index.parse::<usize>().ok()?).cloned();
         }
         if face == "profile" && self.content == DialContent::Function {
             return self.profile_face.clone();
@@ -639,6 +841,33 @@ fn decode_profile_dial_image(profile: &Profile) -> Result<Vec<u8>, String> {
     dial::validate_jpeg(&jpeg)
         .map_err(|error| format!("the profile's dial image is not a valid dial image: {error}"))?;
     Ok(jpeg)
+}
+
+/// A profile whose dial plays `delays_ms.len()` frames, each a solid colour with a corner block, for tests.
+#[cfg(test)]
+pub(crate) fn animated_test_profile(delays_ms: &[u32], loop_count: u32) -> Profile {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let frames: Vec<serde_json::Value> = delays_ms
+        .iter()
+        .enumerate()
+        .map(|(index, delay)| {
+            let shade = (40 + index * 30).min(255) as u8;
+            // A bright corner block, so turning a frame changes it.
+            let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb([shade, 20, 200]));
+            fill(&mut image, 0, 0, 60, 60, [255, 255, 0]);
+            let jpeg = encode(&image).unwrap();
+            serde_json::json!({"jpeg_base64": STANDARD.encode(jpeg), "delay_ms": delay})
+        })
+        .collect();
+    let json = serde_json::json!({
+        "schema_version": 1, "name": "Moving", "bindings": [],
+        "dial_display": {
+            "content": "image",
+            "image": frames[0]["jpeg_base64"],
+            "animation": {"frames": frames, "loop_count": loop_count},
+        }
+    });
+    Profile::from_json(serde_json::to_vec(&json).unwrap().as_slice()).unwrap()
 }
 
 /// Encodes through the shared preparation path, then validates explicitly.
@@ -1150,6 +1379,7 @@ mod tests {
                 content: cooltek_sdk_service::DialDisplayContent::Image,
                 image: None,
                 source: None,
+                animation: None,
             }),
             ..profile(serde_json::Value::Null)
         };
@@ -1158,6 +1388,181 @@ mod tests {
         }
         // The same profiles start fine with the content they declare.
         DialArtwork::prepare(DialContent::Clock, &without_setting, Box::new(clock(9, 41))).unwrap();
+    }
+
+    #[test]
+    fn the_animation_frame_follows_the_elapsed_time() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, 0),
+            (199, 0),
+            (200, 1),
+            (499, 1),
+            (500, 2),
+            (999, 2),
+            // Looping forever wraps around.
+            (1000, 0),
+            (1200, 1),
+            (12_000_000, 0),
+        ] {
+            assert_eq!(
+                animation_frame(&delays, 0, ms(elapsed)),
+                expected,
+                "{elapsed} ms"
+            );
+        }
+        // Two plays, then the last frame holds.
+        assert_eq!(animation_frame(&delays, 2, ms(1999)), 2);
+        assert_eq!(animation_frame(&delays, 2, ms(1499)), 1);
+        assert_eq!(animation_frame(&delays, 2, ms(2000)), 2);
+        assert_eq!(animation_frame(&delays, 2, ms(u64::MAX)), 2);
+    }
+
+    #[test]
+    fn a_frame_ages_from_its_start_and_a_finished_animation_has_no_age() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, 0),
+            (150, 150),
+            (200, 0),
+            (230, 30),
+            (999, 499),
+            (1000, 0),
+            (1210, 10),
+        ] {
+            assert_eq!(
+                frame_age(&delays, 0, ms(elapsed)),
+                ms(expected),
+                "{elapsed} ms"
+            );
+        }
+        assert_eq!(frame_age(&delays, 2, ms(1999)), ms(499));
+        assert_eq!(frame_age(&delays, 2, ms(2000)), Duration::ZERO);
+        assert_eq!(frame_age(&[], 0, ms(5)), Duration::ZERO);
+    }
+
+    #[test]
+    fn the_time_to_the_next_frame_counts_down_and_ends_with_a_finite_animation() {
+        let ms = Duration::from_millis;
+        let delays = [200, 300, 500];
+        for (elapsed, expected) in [
+            (0, Some(200)),
+            (150, Some(50)),
+            (200, Some(300)),
+            (999, Some(1)),
+            (1000, Some(200)),
+            (1450, Some(50)),
+        ] {
+            assert_eq!(
+                frame_remaining(&delays, 0, ms(elapsed)),
+                expected.map(ms),
+                "{elapsed} ms"
+            );
+        }
+        assert_eq!(frame_remaining(&delays, 2, ms(1999)), Some(ms(1)));
+        assert_eq!(frame_remaining(&delays, 2, ms(2000)), None);
+        assert_eq!(frame_remaining(&[], 0, ms(5)), None);
+    }
+
+    #[test]
+    fn playback_starts_at_the_first_request_not_at_preparation() {
+        let profile = animated_test_profile(&[200, 200], 1);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        // Nothing is due before playback has begun.
+        assert_eq!(art.next_frame_in(), None);
+        std::thread::sleep(Duration::from_millis(450));
+        // A single play of 400 ms would be over by now had it run from preparation.
+        assert_eq!(art.request(None).function.as_deref(), Some("image:0"));
+        assert!(art.next_frame_in().is_some());
+    }
+
+    #[test]
+    fn a_turned_animation_is_turned_once_and_served_as_stored() {
+        let profile = animated_test_profile(&[200, 200, 200], 0);
+        let upright =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        let turned_art = DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41)))
+            .unwrap()
+            .with_turn(1)
+            .with_turn(1);
+        let request = |index: usize| DialImageRequest {
+            profile: "Moving".into(),
+            function: Some(format!("image:{index}")),
+        };
+        for index in 0..3 {
+            let plain = upright.dial_image(&request(index)).unwrap();
+            let served = turned_art.dial_image(&request(index)).unwrap();
+            // Setting the same turn twice turns the frames once, not twice.
+            assert_eq!(served, turned(&plain, 1).unwrap(), "frame {index}");
+            assert_ne!(served, plain);
+        }
+    }
+
+    #[test]
+    fn the_write_floor_follows_the_size_of_the_current_frame() {
+        // The test frames are solid colours, a few KiB each: the smallest size class.
+        let profile = animated_test_profile(&[200, 200], 0);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        assert_eq!(
+            art.animation_floor(),
+            Some(Duration::from_millis(u64::from(
+                cooltek_sdk_service::DialAnimation::FASTEST_DELAY_MS
+            )))
+        );
+        // A still picture has no animation floor.
+        let still = animated_test_profile(&[200, 200], 0);
+        let still =
+            DialArtwork::prepare(DialContent::Function, &still, Box::new(clock(9, 41))).unwrap();
+        assert_eq!(still.animation_floor(), None);
+    }
+
+    #[test]
+    fn an_animated_picture_serves_each_frame_under_its_own_face() {
+        let profile = animated_test_profile(&[200, 200, 200], 0);
+        let art =
+            DialArtwork::prepare(DialContent::Image, &profile, Box::new(clock(9, 41))).unwrap();
+        assert!(art.is_animated());
+        // Just prepared: playback is at frame 0.
+        assert_eq!(art.request(None).function.as_deref(), Some("image:0"));
+        let frames: Vec<Vec<u8>> = (0..3)
+            .map(|index| {
+                art.dial_image(&DialImageRequest {
+                    profile: "Moving".into(),
+                    function: Some(format!("image:{index}")),
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_ne!(frames[0], frames[1]);
+        assert_ne!(frames[1], frames[2]);
+        for bad in ["image:3", "image:+1", "image:01", "image:", "image:x"] {
+            let request = DialImageRequest {
+                profile: "Moving".into(),
+                function: Some(bad.into()),
+            };
+            assert_eq!(art.dial_image(&request), None, "{bad}");
+        }
+        // A still picture is not animated and keeps its single face.
+        let still = Profile::from_json(
+            serde_json::to_vec(&{
+                let mut json = serde_json::to_value(&profile).unwrap();
+                json["dial_display"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("animation");
+                json
+            })
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        let art = DialArtwork::prepare(DialContent::Image, &still, Box::new(clock(9, 41))).unwrap();
+        assert!(!art.is_animated());
+        assert_eq!(art.request(None).function.as_deref(), Some("image"));
     }
 
     #[test]

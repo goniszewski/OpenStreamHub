@@ -7,9 +7,9 @@
 
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, Binding, DeviceContext, InputEvent, InputSession, InputUpdate,
-    ProfileResolution, ProfileSession, RunningTimer, ServiceModule, TimerAlert, TimerKey,
-    TimerTable, TimerToggle,
+    Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
+    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
+    TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -114,6 +114,9 @@ pub struct Work {
     /// Set by live coalescing when a switch after the last event was dropped,
     /// so the next event is never merged into that last event.
     pub merge_barrier: bool,
+    /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
+    /// the rest across a profile swap.
+    pub variables: Vec<Variable>,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -161,6 +164,7 @@ pub fn plan_report(
         dropped_event_count: 0,
         dropped_dial_function_count: 0,
         merge_barrier: false,
+        variables: session.profile().variables.clone(),
     })
 }
 
@@ -394,6 +398,21 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             emit(output, record)?;
             continue;
         }
+        // A guarded action (`obs_stream` with `confirm`) is armed by a first
+        // press and runs on a second press of the same binding in the window.
+        if action.needs_confirmation()
+            && timers.confirm(timer_key(planned), now_micros) == Confirmation::Armed
+        {
+            emit(
+                output,
+                json!({"type":"action_armed", "schema_version":1, "event":planned.event, "action":loggable(action), "confirm_within_ms":TimerTable::CONFIRM_WINDOW_MICROS / 1000}),
+            )?;
+            continue;
+        }
+        dispatcher.set_service_state(ServiceState {
+            timer_running: !timers.is_empty(),
+            variables: work.variables.clone(),
+        });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
             Err(error) => {
@@ -433,6 +452,17 @@ pub fn loggable(action: &Action) -> Value {
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
+        // The condition is a closed value; the steps are redacted one by one.
+        Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } => json!({
+            "type":"conditional",
+            "when":when,
+            "then":then.iter().map(loggable).collect::<Vec<_>>(),
+            "else":otherwise.iter().map(loggable).collect::<Vec<_>>(),
+        }),
         // A macro's step list is the keys it types, so like a text snippet
         // only its shape is logged: never the keys themselves.
         Action::Macro { steps } => {
@@ -484,6 +514,21 @@ pub fn loggable(action: &Action) -> Value {
             "type":"obs_set_input_volume",
             "input_chars":input.chars().count(),
             "percent":percent,
+        }),
+        Action::ObsInputMute { input, op } => json!({
+            "type":"obs_input_mute",
+            "input_chars":input.chars().count(),
+            "op":op,
+        }),
+        Action::ObsAdjustInputVolume { input, step_db } => json!({
+            "type":"obs_adjust_input_volume",
+            "input_chars":input.chars().count(),
+            "step_db":step_db,
+        }),
+        Action::ObsMediaSource { input, op } => json!({
+            "type":"obs_media_source",
+            "input_chars":input.chars().count(),
+            "op":op,
         }),
         Action::ObsInputVolumeFromPosition { input } => json!({
             "type":"obs_input_volume_from_position",
@@ -694,6 +739,7 @@ mod tests {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         }
     }
 
@@ -703,6 +749,30 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_conditional_is_logged_by_shape_with_its_steps_redacted() {
+        let action = Action::Conditional {
+            when: cooltek_sdk_service::Condition::Recording(true),
+            then: vec![Action::ObsScene {
+                scene: "Private call".into(),
+            }],
+            otherwise: vec![Action::Text {
+                text: "secret".into(),
+                press_enter: false,
+            }],
+        };
+        let logged = loggable(&action).to_string();
+        assert!(
+            logged.contains(r#""when":{"obs_recording":true}"#),
+            "{logged}"
+        );
+        assert!(logged.contains("scene_chars"), "{logged}");
+        assert!(
+            !logged.contains("Private call") && !logged.contains("secret"),
+            "{logged}"
+        );
     }
 
     #[test]
@@ -879,6 +949,67 @@ mod tests {
                 .filter(|record| !matches!(record["type"].as_str(), Some("report" | "event")))
                 .collect()
         }
+    }
+
+    /// Counts what reaches the host.
+    #[derive(Default)]
+    struct Counting {
+        dispatched: Vec<String>,
+    }
+
+    impl ActionDispatcher for Counting {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            self.dispatched.push(action.type_name().into());
+            Ok(())
+        }
+    }
+
+    fn guarded_stream() -> Action {
+        Action::ObsStream {
+            op: cooltek_sdk_service::ObsOutputOp::Toggle,
+            confirm: Some(cooltek_sdk_service::ObsConfirm::PressTwice),
+        }
+    }
+
+    #[test]
+    fn a_guarded_stream_press_arms_first_and_runs_on_a_second_press_in_time() {
+        let mut host = Counting::default();
+        let mut timers = TimerTable::default();
+        let mut output = Vec::new();
+        let mut summary = LiveSummary::default();
+        let abort = AtomicBool::new(false);
+        let mut press_at = |control: u8, micros: u64| {
+            process_work(
+                press(control, micros, guarded_stream()),
+                &mut host,
+                &mut output,
+                &abort,
+                true,
+                true,
+                false,
+                &mut timers,
+                micros,
+                &mut summary,
+            )
+            .unwrap();
+        };
+        press_at(3, 0); // arms
+        press_at(3, 1_000_000); // confirms
+        press_at(3, 2_000_000); // arms again: a third press is never a free run
+        press_at(4, 2_500_000); // another key's press does not confirm this one
+        press_at(3, 6_000_000); // the window (3 s) ended: arms again
+        press_at(3, 7_000_000); // confirms
+        let armed: Vec<_> = records(&output)
+            .into_iter()
+            .filter(|record| record["type"] == "action_armed")
+            .collect();
+        assert_eq!(armed.len(), 4);
+        assert_eq!(armed[0]["confirm_within_ms"], 3000);
+        assert_eq!(
+            armed[0]["action"],
+            json!({"type":"obs_stream","op":"toggle","confirm":"press_twice"})
+        );
+        assert_eq!(host.dispatched, ["obs_stream", "obs_stream"]);
     }
 
     #[test]
@@ -1157,6 +1288,7 @@ mod tests {
                 json!({"type":"obs_studio_mode","op":"toggle"}),
             ),
             (Action::ObsTransition, json!({"type":"obs_transition"})),
+            (Action::ObsScreenshot, json!({"type":"obs_screenshot"})),
             (
                 Action::ObsFilter {
                     source: "Private cam".into(),
@@ -1418,5 +1550,68 @@ mod tests {
             3,
             "report and both events"
         );
+    }
+
+    #[test]
+    fn the_dispatcher_is_told_whether_a_timer_is_running_before_each_action() {
+        struct Seen(Vec<bool>, bool);
+        impl ActionDispatcher for Seen {
+            fn set_service_state(&mut self, state: ServiceState) {
+                self.1 = state.timer_running;
+            }
+            fn dispatch(&mut self, _: &Action) -> Result<(), String> {
+                self.0.push(self.1);
+                Ok(())
+            }
+        }
+        let mut seen = Seen(Vec::new(), false);
+        let mut timers = TimerTable::default();
+        let mut run = |work: Work, timers: &mut TimerTable| {
+            process_work(
+                work,
+                &mut seen,
+                &mut Vec::new(),
+                &AtomicBool::new(false),
+                true,
+                false,
+                false,
+                timers,
+                0,
+                &mut LiveSummary::default(),
+            )
+            .unwrap();
+        };
+        run(press(0, 1, Action::ToggleMute), &mut timers);
+        // Key 1 starts a countdown; it is not dispatched, only counted.
+        run(
+            press(
+                1,
+                2,
+                Action::Timer {
+                    seconds: 60,
+                    label: None,
+                    sound: None,
+                },
+            ),
+            &mut timers,
+        );
+        assert_eq!(timers.len(), 1);
+        run(press(0, 3, Action::ToggleMute), &mut timers);
+        // Pressing the timer key again cancels it.
+        run(
+            press(
+                1,
+                4,
+                Action::Timer {
+                    seconds: 60,
+                    label: None,
+                    sound: None,
+                },
+            ),
+            &mut timers,
+        );
+        assert!(timers.is_empty());
+        run(press(0, 5, Action::ToggleMute), &mut timers);
+        assert_eq!(seen.0, [false, true, false]);
     }
 }

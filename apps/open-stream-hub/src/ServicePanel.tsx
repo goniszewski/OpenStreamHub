@@ -9,6 +9,7 @@ import type { ServiceRun, ServiceRunner } from './service-runner';
 import { modules } from './ui-model';
 import { capabilityLines, macroLabel, macroStepLabel, profileCapabilities, snapshotProfile, snippetPreview, stepLabel } from './profile-capabilities';import type { RiskLevel } from './profile-capabilities';
 import type { RunMode } from './contracts';
+import { usesKeypadPages } from './contracts';
 import { appControls, idleDisplaySettingsState } from './display-settings';
 import type { DisplaySettingsStore } from './display-settings';
 import { endEditingHold, restoreNeedsConfirm } from './editing-hold';
@@ -32,7 +33,7 @@ export function runBlocker(input: { desktop: boolean; device: LiveDevice | undef
   if (!input.desktop) return 'Running a profile needs the desktop app. Launch it to run actions.';
   if (!input.device) return 'No module connected. Connect a module to run this profile on it.';
   if (input.settingsLoaded === false) return input.settingsError ? settingsErrorBlocker(input.settingsError) : settingsLoadingBlocker;
-  if (input.device.module === 'm4315' && input.profile.schema_version === 2 && input.moduleControl === 'built_in_animation') return builtInKeypadBlocker;
+  if (input.device.module === 'm4315' && usesKeypadPages(input.profile) && input.moduleControl === 'built_in_animation') return builtInKeypadBlocker;
   return null;
 }
 

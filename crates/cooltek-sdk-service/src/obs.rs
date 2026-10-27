@@ -31,7 +31,10 @@
 //! The WebSocket client is hand-written and minimal: it only sends small
 //! masked text, pong and close frames and reads the frames listed above.
 
-use crate::profile::{Action, ObsOutputOp, ObsReplayBufferOp, ObsSwitchOp};
+use crate::profile::{
+    Action, Condition, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp,
+    ObsSwitchOp,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -321,6 +324,30 @@ impl ObsClient {
         self.session(|session| session.request(request))
     }
 
+    /// Reads whether `condition` holds in OBS right now, on a fresh connection
+    /// and within this client's timeout. An answer OBS does not give is an
+    /// error, never `false`, so a caller cannot take the wrong branch.
+    pub fn condition_holds(&self, condition: &Condition) -> Result<bool, String> {
+        let request = match condition {
+            Condition::Streaming(_) => "GetStreamStatus",
+            Condition::Recording(_) => "GetRecordStatus",
+            Condition::VirtualCamera(_) => "GetVirtualCamStatus",
+            Condition::ReplayBuffer(_) => "GetReplayBufferStatus",
+            Condition::OutputMuted(_)
+            | Condition::OutputVolumeAtLeast(_)
+            | Condition::TimerRunning(_)
+            | Condition::FocusedApp(_)
+            | Condition::VariableIs { .. }
+            | Condition::VariableAtLeast { .. }
+            | Condition::All(_)
+            | Condition::Any(_) => {
+                return Err("this condition is not read from OBS".into());
+            }
+        };
+        let data = self.request(&ObsRequest::new(request))?;
+        Ok(Some(response_flag(&data, "outputActive")?) == condition.expected())
+    }
+
     /// Runs an OBS action on one connection. Actions that need OBS's answer
     /// first (a toggle of studio mode, a filter or a source's visibility) read
     /// it and write the opposite on the same connection and deadline. An
@@ -490,6 +517,146 @@ fn response_flag(data: &Value, field: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("OBS response has no {field}"))
 }
 
+/// Local date and time fields, for a file name.
+struct Stamp {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+}
+
+#[cfg(target_os = "macos")]
+fn local_stamp(seconds: i64) -> Option<Stamp> {
+    // SAFETY: an all-zero `tm` (null `tm_zone` pointer included) is a valid
+    // value that `localtime_r` overwrites; `time` outlives the call.
+    let (time, mut tm) = (seconds as libc::time_t, unsafe {
+        std::mem::zeroed::<libc::tm>()
+    });
+    if unsafe { libc::localtime_r(&time, &mut tm) }.is_null() {
+        return None;
+    }
+    Some(Stamp {
+        year: tm.tm_year + 1900,
+        month: u32::try_from(tm.tm_mon + 1).ok()?,
+        day: u32::try_from(tm.tm_mday).ok()?,
+        hour: u32::try_from(tm.tm_hour).ok()?,
+        minute: u32::try_from(tm.tm_min).ok()?,
+        second: u32::try_from(tm.tm_sec).ok()?,
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn local_stamp(seconds: i64) -> Option<Stamp> {
+    Some(utc_stamp(seconds))
+}
+
+/// UTC fields of a Unix time (days-from-civil, Howard Hinnant's algorithm).
+/// The local-time fallback off macOS; on macOS only the tests use it.
+#[cfg(any(test, not(target_os = "macos")))]
+fn utc_stamp(seconds: i64) -> Stamp {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    Stamp {
+        year: year as i32,
+        month: month as u32,
+        day: (day_of_year - (153 * month_index + 2) / 5 + 1) as u32,
+        hour: (rest / 3_600) as u32,
+        minute: (rest % 3_600 / 60) as u32,
+        second: (rest % 60) as u32,
+    }
+}
+
+/// `<pictures>/OBS Screenshot YYYY-MM-DD HH.MM.SS.png`: no colon, which Finder
+/// shows as a slash.
+fn screenshot_file(pictures: &std::path::Path, stamp: &Stamp) -> String {
+    pictures
+        .join(format!(
+            "OBS Screenshot {:04}-{:02}-{:02} {:02}.{:02}.{:02}.png",
+            stamp.year, stamp.month, stamp.day, stamp.hour, stamp.minute, stamp.second
+        ))
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// Where `obs_screenshot` saves: `~/Pictures`, fixed. OBS runs on this Mac
+/// (loopback only), so it writes the file itself; nothing is ever read back.
+fn screenshot_path() -> Result<String, String> {
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|home| home.is_absolute())
+        .ok_or("the home folder is unknown; no screenshot was taken")?;
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "the clock is before 1970; no screenshot was taken")?
+        .as_secs();
+    let stamp = local_stamp(i64::try_from(seconds).unwrap_or(0))
+        .ok_or("the local time is unavailable; no screenshot was taken")?;
+    Ok(screenshot_file(&home.join("Pictures"), &stamp))
+}
+
+/// The decibels OBS's own volume slider shows at `position` (0.0 to 1.0 of its
+/// travel). OBS draws its mixer fader on a logarithmic taper (`OBS_FADER_LOG`
+/// in libobs: -96 dB at the bottom, 0 dB at the top, with a 6 dB offset), so
+/// the middle of the slider is about -18.7 dB and not the -6 dB a linear
+/// multiplier of 0.5 would give. Following that curve makes a physical fader
+/// and OBS's on-screen slider move together.
+fn slider_db(position: f64) -> f64 {
+    const OFFSET_DB: f64 = 6.0;
+    const RANGE_DB: f64 = 96.0;
+    let span = RANGE_DB + OFFSET_DB;
+    (-span * (span / OFFSET_DB).powf(-position) + OFFSET_DB).min(0.0)
+}
+
+/// The `SetInputVolume` data for a slider position of `percent` (0 to 100):
+/// silence at 0, otherwise the slider's decibels. Unity (0 dB) at 100.
+fn set_volume_data(input: &str, percent: u8) -> Value {
+    if percent == 0 {
+        return json!({"inputName":input, "inputVolumeMul":0.0});
+    }
+    json!({"inputName":input, "inputVolumeDb":slider_db(f64::from(percent) / 100.0)})
+}
+
+/// The volume after a step: held between -100 dB and 0 dB. (The official app
+/// lets a downward step pass -100 dB; OBS would reject or clamp that.)
+fn adjusted_db(current: f64, step_db: i8) -> f64 {
+    (current + f64::from(step_db)).clamp(-100.0, 0.0)
+}
+
+/// The `TriggerMediaInputAction` to send for a media source in `state`
+/// (`OBS_MEDIA_STATE_*`), following the official app's four modes. An
+/// unknown state is treated like stopped, so the source starts.
+fn media_action(op: ObsMediaOp, state: &str) -> &'static str {
+    const PLAY: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PLAY";
+    const PAUSE: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE";
+    const RESTART: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART";
+    const STOP: &str = "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_STOP";
+    let playing = state == "OBS_MEDIA_STATE_PLAYING";
+    let paused = state == "OBS_MEDIA_STATE_PAUSED";
+    match op {
+        ObsMediaOp::PlayPause if playing => PAUSE,
+        ObsMediaOp::PlayPause | ObsMediaOp::PlayRestart if paused => PLAY,
+        ObsMediaOp::PlayPause => RESTART,
+        ObsMediaOp::PlayStop if playing => STOP,
+        ObsMediaOp::PlayStop | ObsMediaOp::PlayRestart => RESTART,
+        ObsMediaOp::Stop => STOP,
+    }
+}
+
 fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), String> {
     match action {
         Action::ObsStudioMode { op } => {
@@ -542,10 +709,71 @@ fn run_action(session: &mut ObsSession<'_>, action: &Action) -> Result<(), Strin
                 ))
                 .map(drop)
         }
+        Action::ObsScreenshot => {
+            let scene = session.request(&ObsRequest::new("GetCurrentProgramScene"))?;
+            let name = scene
+                .get("currentProgramSceneName")
+                .and_then(Value::as_str)
+                .ok_or("OBS response has no currentProgramSceneName")?;
+            let path = screenshot_path()?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SaveSourceScreenshot",
+                    json!({"sourceName":name, "imageFormat":"png", "imageFilePath":path}),
+                ))
+                .map(drop)
+        }
+        Action::ObsInputMute { input, op } => match op {
+            ObsMuteOp::Toggle => session
+                .request(&ObsRequest::with_data(
+                    "ToggleInputMute",
+                    json!({"inputName":input}),
+                ))
+                .map(drop),
+            ObsMuteOp::Mute | ObsMuteOp::Unmute => session
+                .request(&ObsRequest::with_data(
+                    "SetInputMute",
+                    json!({"inputName":input, "inputMuted":*op == ObsMuteOp::Mute}),
+                ))
+                .map(drop),
+        },
+        Action::ObsAdjustInputVolume { input, step_db } => {
+            let current = session.request(&ObsRequest::with_data(
+                "GetInputVolume",
+                json!({"inputName":input}),
+            ))?;
+            let db = current
+                .get("inputVolumeDb")
+                .and_then(Value::as_f64)
+                .ok_or("OBS response has no inputVolumeDb")?;
+            session
+                .request(&ObsRequest::with_data(
+                    "SetInputVolume",
+                    json!({"inputName":input, "inputVolumeDb":adjusted_db(db, *step_db)}),
+                ))
+                .map(drop)
+        }
+        Action::ObsMediaSource { input, op } => {
+            let status = session.request(&ObsRequest::with_data(
+                "GetMediaInputStatus",
+                json!({"inputName":input}),
+            ))?;
+            let state = status
+                .get("mediaState")
+                .and_then(Value::as_str)
+                .ok_or("OBS response has no mediaState")?;
+            let media_action = media_action(*op, state);
+            session
+                .request(&ObsRequest::with_data(
+                    "TriggerMediaInputAction",
+                    json!({"inputName":input, "mediaAction":media_action}),
+                ))
+                .map(drop)
+        }
         Action::ObsSetInputVolume { input, percent } => session
             .request(&ObsRequest::with_data(
                 "SetInputVolume",
-                json!({"inputName":input, "inputVolumeMul":f64::from(*percent) / 100.0}),
+                set_volume_data(input, *percent),
             ))
             .map(drop),
         other => {
@@ -569,6 +797,19 @@ impl ObsRequest {
                 ObsOutputOp::Toggle => "ToggleVirtualCam",
                 ObsOutputOp::Start => "StartVirtualCam",
                 ObsOutputOp::Stop => "StopVirtualCam",
+            }),
+            Action::ObsStream { op, .. } => Self::new(match op {
+                ObsOutputOp::Toggle => "ToggleStream",
+                ObsOutputOp::Start => "StartStream",
+                ObsOutputOp::Stop => "StopStream",
+            }),
+            Action::ObsRecord { op } => Self::new(match op {
+                ObsRecordOp::Toggle => "ToggleRecord",
+                ObsRecordOp::Start => "StartRecord",
+                ObsRecordOp::Stop => "StopRecord",
+                ObsRecordOp::Pause => "PauseRecord",
+                ObsRecordOp::Resume => "ResumeRecord",
+                ObsRecordOp::TogglePause => "ToggleRecordPause",
             }),
             Action::ObsTransition => Self::new("TriggerStudioModeTransition"),
             Action::ObsSceneCollection { name } => Self::with_data(
@@ -893,7 +1134,15 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
         ("SetCurrentProgramScene", 600) => "no scene with that name".into(),
         ("SetCurrentSceneCollection", 600) => "no scene collection with that name".into(),
         ("SetCurrentProfile", 600) => "no profile with that name".into(),
-        ("SetInputVolume", 600) => "no input with that name".into(),
+        (
+            "SetInputVolume"
+            | "GetInputVolume"
+            | "ToggleInputMute"
+            | "SetInputMute"
+            | "GetMediaInputStatus"
+            | "TriggerMediaInputAction",
+            600,
+        ) => "no input with that name".into(),
         (_, 207) => "OBS is not ready yet".into(),
         (_, 500) => "the output is already running".into(),
         (_, 501) => "the output is not running".into(),
@@ -1616,6 +1865,199 @@ mod tests {
     // ---- Endpoint validation ----
 
     #[test]
+    fn screenshot_names_use_civil_time_without_colons() {
+        let stamp = utc_stamp(0);
+        assert_eq!(
+            screenshot_file(std::path::Path::new("/Users/me/Pictures"), &stamp),
+            "/Users/me/Pictures/OBS Screenshot 1970-01-01 00.00.00.png"
+        );
+        let stamp = utc_stamp(1_760_790_245); // 2025-10-18 12:24:05 UTC
+        assert_eq!(
+            (
+                stamp.year,
+                stamp.month,
+                stamp.day,
+                stamp.hour,
+                stamp.minute,
+                stamp.second
+            ),
+            (2025, 10, 18, 12, 24, 5)
+        );
+        let leap = utc_stamp(1_709_164_799); // 2024-02-28 23:59:59 UTC
+        assert_eq!((leap.year, leap.month, leap.day), (2024, 2, 28));
+        let leap = utc_stamp(1_709_164_800); // 2024-02-29 00:00:00 UTC
+        assert_eq!((leap.year, leap.month, leap.day), (2024, 2, 29));
+    }
+
+    #[test]
+    fn a_screenshot_reads_the_program_scene_then_saves_a_png_in_pictures() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"currentProgramSceneName":"Live \"A\""})),
+            done(),
+        ]));
+        client(endpoint, None).run(&Action::ObsScreenshot).unwrap();
+        let seen = requests(&server.join().unwrap());
+        assert_eq!(seen[0], ("GetCurrentProgramScene".to_string(), Value::Null));
+        assert_eq!(seen[1].0, "SaveSourceScreenshot");
+        let data = &seen[1].1;
+        assert_eq!(data["sourceName"], "Live \"A\"");
+        assert_eq!(data["imageFormat"], "png");
+        let path = data["imageFilePath"].as_str().unwrap();
+        assert!(path.contains("/Pictures/OBS Screenshot "), "{path}");
+        assert!(path.ends_with(".png"), "{path}");
+    }
+
+    #[test]
+    fn an_input_mute_toggles_or_sets_the_state() {
+        let (endpoint, server) = serve(scripted_obs(vec![done()]));
+        client(endpoint, None)
+            .run(&Action::ObsInputMute {
+                input: "Mic \"1\"".into(),
+                op: ObsMuteOp::Toggle,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [(
+                "ToggleInputMute".to_string(),
+                json!({"inputName":"Mic \"1\""})
+            )]
+        );
+        for (op, muted) in [(ObsMuteOp::Mute, true), (ObsMuteOp::Unmute, false)] {
+            let (endpoint, server) = serve(scripted_obs(vec![done()]));
+            client(endpoint, None)
+                .run(&Action::ObsInputMute {
+                    input: "Mic".into(),
+                    op,
+                })
+                .unwrap();
+            assert_eq!(
+                requests(&server.join().unwrap()),
+                [(
+                    "SetInputMute".to_string(),
+                    json!({"inputName":"Mic", "inputMuted":muted})
+                )]
+            );
+        }
+    }
+
+    #[test]
+    fn a_volume_step_is_held_between_minus_100_and_0_db() {
+        assert_eq!(adjusted_db(-10.0, 3), -7.0);
+        assert_eq!(adjusted_db(-2.0, 5), 0.0);
+        assert_eq!(adjusted_db(-98.0, -5), -100.0);
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"inputVolumeDb":-98.0, "inputVolumeMul":0.0})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&Action::ObsAdjustInputVolume {
+                input: "Mic".into(),
+                step_db: -5,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [
+                ("GetInputVolume".to_string(), json!({"inputName":"Mic"})),
+                (
+                    "SetInputVolume".to_string(),
+                    json!({"inputName":"Mic", "inputVolumeDb":-100.0})
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn media_modes_follow_the_official_state_table() {
+        use ObsMediaOp::{PlayPause, PlayRestart, PlayStop, Stop};
+        let a = |name: &str| format!("OBS_WEBSOCKET_MEDIA_INPUT_ACTION_{name}");
+        let s = |name: &str| format!("OBS_MEDIA_STATE_{name}");
+        for (op, state, expected) in [
+            (PlayPause, "PLAYING", "PAUSE"),
+            (PlayPause, "PAUSED", "PLAY"),
+            (PlayPause, "STOPPED", "RESTART"),
+            (PlayPause, "ENDED", "RESTART"),
+            (PlayStop, "PLAYING", "STOP"),
+            (PlayStop, "PAUSED", "RESTART"),
+            (PlayStop, "ENDED", "RESTART"),
+            (PlayRestart, "PLAYING", "RESTART"),
+            (PlayRestart, "PAUSED", "PLAY"),
+            (PlayRestart, "STOPPED", "RESTART"),
+            (Stop, "PLAYING", "STOP"),
+            (Stop, "ENDED", "STOP"),
+        ] {
+            assert_eq!(media_action(op, &s(state)), a(expected), "{op:?} {state}");
+        }
+        assert_eq!(
+            media_action(PlayPause, "OBS_MEDIA_STATE_NONE"),
+            a("RESTART")
+        );
+    }
+
+    #[test]
+    fn a_media_source_reads_its_state_then_triggers_one_action() {
+        let (endpoint, server) = serve(scripted_obs(vec![
+            ok(json!({"mediaState":"OBS_MEDIA_STATE_PLAYING"})),
+            done(),
+        ]));
+        client(endpoint, None)
+            .run(&Action::ObsMediaSource {
+                input: "Intro".into(),
+                op: ObsMediaOp::PlayPause,
+            })
+            .unwrap();
+        assert_eq!(
+            requests(&server.join().unwrap()),
+            [
+                (
+                    "GetMediaInputStatus".to_string(),
+                    json!({"inputName":"Intro"})
+                ),
+                (
+                    "TriggerMediaInputAction".to_string(),
+                    json!({"inputName":"Intro", "mediaAction":"OBS_WEBSOCKET_MEDIA_INPUT_ACTION_PAUSE"})
+                ),
+            ]
+        );
+        let (endpoint, server) = serve(scripted_obs(vec![(
+            json!({"result":false,"code":600,"comment":"No input called Secret"}),
+            None,
+        )]));
+        let error = client(endpoint, None)
+            .run(&Action::ObsMediaSource {
+                input: "Secret".into(),
+                op: ObsMediaOp::Stop,
+            })
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(error.contains("no input with that name"), "{error}");
+        assert!(!error.contains("Secret"), "{error}");
+    }
+
+    #[test]
+    fn stream_and_record_actions_map_to_the_v5_requests() {
+        let name = |action: Action| ObsRequest::for_action(&action).unwrap().request_type;
+        for (op, expected) in [
+            (ObsOutputOp::Toggle, "ToggleStream"),
+            (ObsOutputOp::Start, "StartStream"),
+            (ObsOutputOp::Stop, "StopStream"),
+        ] {
+            assert_eq!(name(Action::ObsStream { op, confirm: None }), expected);
+        }
+        for (op, expected) in [
+            (ObsRecordOp::Toggle, "ToggleRecord"),
+            (ObsRecordOp::Start, "StartRecord"),
+            (ObsRecordOp::Stop, "StopRecord"),
+            (ObsRecordOp::Pause, "PauseRecord"),
+            (ObsRecordOp::Resume, "ResumeRecord"),
+            (ObsRecordOp::TogglePause, "ToggleRecordPause"),
+        ] {
+            assert_eq!(name(Action::ObsRecord { op }), expected);
+        }
+    }
+
+    #[test]
     fn endpoints_are_loopback_only_with_a_strict_port() {
         for (value, host, port, shown) in [
             ("127.0.0.1:4455", "127.0.0.1", 4455, "127.0.0.1:4455"),
@@ -2325,13 +2767,13 @@ mod tests {
         )]));
         let error = client(endpoint, None)
             .request(&ObsRequest::with_data(
-                "SetInputMute",
-                json!({"inputName":"Mic","inputMuted":true}),
+                "GetInputSettings",
+                json!({"inputName":"Mic"}),
             ))
             .unwrap_err();
         server.join().unwrap();
         assert!(
-            error.contains("refused SetInputMute (not found)"),
+            error.contains("refused GetInputSettings (not found)"),
             "{error}"
         );
         assert!(!error.contains("scene"), "{error}");
@@ -2578,8 +3020,23 @@ mod tests {
     }
 
     #[test]
-    fn an_input_volume_sets_the_multiplier_from_the_percentage() {
-        for (percent, mul) in [(0, 0.0), (25, 0.25), (100, 1.0)] {
+    fn an_input_volume_follows_the_obs_slider_taper() {
+        // The ends: silence, and unity gain (0 dB).
+        assert!((slider_db(1.0) - 0.0).abs() < 1e-9);
+        assert!((slider_db(0.0) - -96.0).abs() < 1e-9);
+        // The middle of OBS's slider reads about -18.7 dB, not -6 dB.
+        assert!((slider_db(0.5) - -18.7).abs() < 0.1, "{}", slider_db(0.5));
+        // Monotonic: a higher position is never quieter.
+        let mut previous = f64::NEG_INFINITY;
+        for percent in 1..=100u8 {
+            let db = slider_db(f64::from(percent) / 100.0);
+            assert!(db > previous, "{percent}% -> {db} dB after {previous} dB");
+            previous = db;
+        }
+        for (percent, expected) in [
+            (0, json!({"inputName":"Mic \"1\"", "inputVolumeMul":0.0})),
+            (100, json!({"inputName":"Mic \"1\"", "inputVolumeDb":0.0})),
+        ] {
             let (endpoint, server) = serve(scripted_obs(vec![done()]));
             client(endpoint, None)
                 .run(&Action::ObsSetInputVolume {
@@ -2588,13 +3045,7 @@ mod tests {
                 })
                 .unwrap();
             let seen = server.join().unwrap();
-            assert_eq!(
-                requests(&seen),
-                [(
-                    "SetInputVolume".to_string(),
-                    json!({"inputName":"Mic \"1\"", "inputVolumeMul":mul})
-                )]
-            );
+            assert_eq!(requests(&seen), [("SetInputVolume".to_string(), expected)]);
         }
     }
 

@@ -305,13 +305,21 @@ pub fn app_controls(module: ServiceModule) -> bool {
     matches!(module, ServiceModule::M4315 | ServiceModule::M131E)
 }
 
-/// The modules the session manager starts on its own under `App`: the
-/// keypad and the dial (software mode and display sync), and the M003K
-/// knobs, which report input in their own mode and get an input-only
-/// session: never software mode, display flags or any other write
-/// (`software_mode`, `spawn_display`). Faders, rollers and the base never.
+/// The modules the session manager starts on its own under `App`: every
+/// control module. The keypad and the dial get software mode and display
+/// sync; the M003K knobs, the M005S faders and the M032LE rollers report
+/// input in their own mode and get an input-only session: never software
+/// mode, display flags or any other write (`software_mode`,
+/// `spawn_display`). The base is not a control module and never starts one.
 pub fn auto_takes_over(module: ServiceModule) -> bool {
-    app_controls(module) || module == ServiceModule::M003K
+    matches!(
+        module,
+        ServiceModule::M4315
+            | ServiceModule::M131E
+            | ServiceModule::M003K
+            | ServiceModule::M005S
+            | ServiceModule::M032LE
+    )
 }
 
 /// Why a schema-2 keypad profile cannot run on an M4315 with module control
@@ -330,7 +338,7 @@ pub fn keypad_refusal(
     module: ServiceModule,
     profile: &Profile,
 ) -> Option<&'static str> {
-    if module != ServiceModule::M4315 || profile.schema_version != 2 {
+    if module != ServiceModule::M4315 || !profile.uses_keypad_pages() {
         return None;
     }
     match settings.module_control {
@@ -423,7 +431,7 @@ pub fn display_args(
         return Vec::new();
     }
     match launch.module {
-        ServiceModule::M4315 if profile.schema_version == 2 && profile.keypad.is_some() => {
+        ServiceModule::M4315 if profile.uses_keypad_pages() && profile.keypad.is_some() => {
             let mut args: Vec<OsString> = vec!["--display-sync".into()];
             if launch.settings.press_feedback {
                 args.push("--press-feedback".into());
@@ -445,7 +453,7 @@ pub fn display_args(
 }
 
 /// A flat (schema-1) profile as one keypad page, for a keypad spawn that syncs
-/// its display. `Profile::into_v2` puts every M4315 binding on its own root
+/// its display. `Profile::into_current` puts every M4315 binding on its own root
 /// key (labelled "Key N") with its gesture, serial selector and action, and
 /// keeps every other binding, so `--display-sync` can draw it and the keys
 /// plan and run the same actions as the flat profile. Only under module
@@ -461,11 +469,11 @@ pub fn single_page(
     if launch.module != ServiceModule::M4315
         || launch.settings.module_control != ModuleControl::App
         || !software_mode
-        || profile.schema_version != 1
+        || profile.uses_keypad_pages()
     {
         return None;
     }
-    let page = profile.clone().into_v2().ok()?;
+    let page = profile.clone().into_current().ok()?;
     crate::replay::validate_profile(&page).ok()?;
     Some(page)
 }
@@ -1119,7 +1127,10 @@ mod tests {
         let page = shown.profile.unwrap();
         // One root page; each keypad binding on its own key with its action,
         // every other binding unchanged, the name kept.
-        assert_eq!((page.schema_version, page.name.as_str()), (2, "Folders"));
+        assert_eq!(
+            (page.schema_version, page.name.as_str()),
+            (Profile::CURRENT_SCHEMA, "Folders")
+        );
         let pages = &page.keypad.as_ref().unwrap().pages;
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].id, "root");
@@ -1257,6 +1268,7 @@ mod tests {
             content,
             image: None,
             source: None,
+            animation: None,
         });
         profile
     }
@@ -1472,18 +1484,29 @@ mod tests {
     }
 
     #[test]
-    fn the_knobs_are_taken_over_input_only() {
-        assert!(auto_takes_over(ServiceModule::M003K));
-        assert!(auto_takes_over(ServiceModule::M4315) && auto_takes_over(ServiceModule::M131E));
-        for module in [ServiceModule::M005S, ServiceModule::M032LE] {
-            assert!(!auto_takes_over(module));
+    fn the_knobs_faders_and_rollers_are_taken_over_input_only() {
+        for module in [
+            ServiceModule::M003K,
+            ServiceModule::M005S,
+            ServiceModule::M032LE,
+            ServiceModule::M4315,
+            ServiceModule::M131E,
+        ] {
+            assert!(auto_takes_over(module));
         }
         let live = DisplaySettings {
             run_mode: RunMode::Live,
             ..APP
         };
-        for settings in [APP, live] {
-            assert!(!software_mode(settings, ServiceModule::M003K, true));
+        for (settings, module) in [APP, live].into_iter().flat_map(|settings| {
+            [
+                ServiceModule::M003K,
+                ServiceModule::M005S,
+                ServiceModule::M032LE,
+            ]
+            .map(|module| (settings, module))
+        }) {
+            assert!(!software_mode(settings, module, true));
             // Even a request that claims software mode gets nothing.
             let request = StartRequest {
                 profile: flat(),
@@ -1492,7 +1515,7 @@ mod tests {
                 software_mode: true,
                 profile_id: None,
                 source_profile_id: None,
-                display: Some(launch(ServiceModule::M003K, settings)),
+                display: Some(launch(module, settings)),
                 obs: None,
             };
             assert_eq!(spawn_display(true, &request), SpawnDisplay::default());

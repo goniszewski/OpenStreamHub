@@ -1,22 +1,34 @@
 import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RotateCcw, RotateCw, Trash2 } from 'lucide-react';
-import type { DialDisplayContent, Profile } from './contracts';
+import type { DialAnimation, DialDisplayContent, Profile } from './contracts';
 import { fitInfo, formatHexColour, parseHexColour, prepareArtwork, readSourceFile, rotationLabel } from './artwork-model';
 import type { ArtworkFit, PrepareResult } from './artwork-model';
 import { ColourSwatchPicker } from './ColourPicker';
 import { sourceToKeep } from './dial-source';
 import { DialFace } from './DisplayContent';
-import { dialDisplayOptions, maxDialImageBytes, setDialDisplayContent, setDialImage } from './dial-display-model';
+import { dialDisplayOptions, maxDialImageBytes, setDialAnimation, setDialDisplayContent, setDialImage } from './dial-display-model';
 import type { Invoke, ProfileSession } from './profile-session';
 import { SelectField } from './controls';
 import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { errorMessage } from './ui-model';
+import { artworkErrorNotice } from './artwork-error-model';
+import { ArtworkErrorNote } from './ArtworkErrorNote';
+import { DialVariantPicker } from './DialAnimationControls';
+import type { DialVariants } from './DialAnimationControls';
+import { defaultDialPreset, dialPresets, readCompareVersionsSetting, sameAnimation, writeCompareVersionsSetting } from './dial-animation-model';
+import type { DialPreset } from './dial-animation-model';
+import type { ArtworkNotice } from './artwork-error-model';
 
 export const dialDisplayHeadingId = 'dial-display-heading';
 
 // Qualities tried in order until the prepared picture fits the profile's dial
 // image budget; the profile would refuse anything bigger.
 const dialImageQualities = [85, 70, 55, 40, 25];
+function webStorage(): Storage | null {
+  try { return localStorage; } catch { return null; }
+}
+// Base64 of "GIF8", which starts both GIF87a and GIF89a. A GIF becomes dial frames; other pictures a still.
+const isGif = (base64: string) => base64.startsWith('R0lGOD');
 
 // The "Display" tab of the dial editor: what the M131E screen shows while this
 // profile runs and OpenStreamHub drives the display. The choice is a profile
@@ -24,7 +36,7 @@ const dialImageQualities = [85, 70, 55, 40, 25];
 // next run start; a running profile keeps the face it started with.
 export function DialDisplayPanel({ profile, session, disabled, invoke }: { profile: Profile; session: ProfileSession; disabled: boolean; invoke?: Invoke }) {
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ArtworkNotice | null>(null);
   const requestId = useRef(0);
   // The picture chosen in this session and how it is fitted. The profile keeps only the prepared JPEG, so
   // fit, rotation and background can be changed only while the source is still at hand.
@@ -33,6 +45,13 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   const [fit, setFit] = useState<ArtworkFit>(stored?.fit ?? 'cover');
   const [turns, setTurns] = useState(stored?.quarter_turns ?? 0);
   const [background, setBackground] = useState(stored ? formatHexColour(stored.background) : '#000000');
+  // The three variants of the chosen GIF (see dial-animation-model) and which one the profile holds. Shown only while
+  // the profile's animation is one of them, so a profile switch or an undo never leaves stale choices on screen.
+  const [variants, setVariants] = useState<DialVariants | null>(null);
+  const preset = useRef<DialPreset>(defaultDialPreset);
+  // Whether choosing a GIF prepares all three versions (on by default) or only the one in use.
+  const [compare, setCompare] = useState(() => readCompareVersionsSetting(webStorage()));
+  const compareRef = useRef(compare);
   // The kept source is the truth after a reopen, an undo or a profile switch.
   useEffect(() => {
     if (!stored) return;
@@ -40,6 +59,7 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
   }, [stored]);
   const content = profile.dial_display?.content ?? 'function';
   const image = profile.dial_display?.image;
+  const animation = profile.dial_display?.animation;
 
   const run = (change: (latest: Profile) => Profile, key?: string) => {
     try { session.update(change, key); } catch (reason) { session.setError(errorMessage(reason)); }
@@ -47,43 +67,77 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
 
   // Prepares the source as the exact 240×240 JPEG the dial receives, lowering the quality until it fits the
   // profile budget, then stores it in the profile. Never applies across a draft change (undo, switch or save).
-  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }, keep: string | null) => {
-    if (!invoke) return;
+  // Resolves false when the picture could not be used (an error is shown or the profile moved on), so the caller can
+  // keep the previous source instead of one that only fails.
+  const prepare = async (base64: string, look: { fit: ArtworkFit; turns: number; background: string }, keep: string | null): Promise<boolean> => {
+    if (!invoke) return false;
     const rgb = parseHexColour(look.background);
-    if (!rgb) return;
+    if (!rgb) return false;
     const id = ++requestId.current;
     const before = session.getState();
     setBusy(true); setError(null);
     try {
+      if (isGif(base64)) {
+        // The backend steps the JPEG quality down itself until every frame fits the preset's per-frame budget; the three
+        // presets are prepared together, and one a GIF is too detailed for is reported as unavailable.
+        const made = await Promise.all(dialPresets.filter(option => compareRef.current || option.id === preset.current).map(async (option): Promise<[DialPreset, DialVariants[DialPreset], unknown]> => {
+          try {
+            const request = { image_base64: base64, target: 'dial', quality: 85, fit: look.fit, quarter_turns: look.turns, background: rgb, ...(option.budgetKib ? { frame_budget_kib: option.budgetKib } : {}) };
+            return [option.id, { animation: await invoke<DialAnimation>('prepare_dial_animation', { request }) }, null];
+          } catch (reason) { return [option.id, { error: errorMessage(reason) }, reason]; }
+        }));
+        if (id !== requestId.current) return true;
+        const usable = made.find(([name, variant]) => name === preset.current && 'animation' in variant) ?? made.find(([, variant]) => 'animation' in variant);
+        // Nothing could be prepared: the plain failure, in the usual friendly words.
+        if (!usable) throw made[0][2];
+        const animation = (usable[1] as { animation: DialAnimation }).animation;
+        preset.current = usable[0];
+        const current = session.getState();
+        if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
+          setError({ message: 'The profile changed while preparing the image. Choose the file again.' });
+          return false;
+        }
+        // A one-frame GIF is a still picture, with no variants to choose from.
+        setVariants(animation.frames.length === 1 || !compareRef.current ? null : Object.fromEntries(made.map(([name, variant]) => [name, variant])) as DialVariants);
+        session.edit(animation.frames.length === 1 ? setDialImage(current.draft.profile, animation.frames[0].jpeg_base64) : setDialAnimation(current.draft.profile, animation));
+        return true;
+      }
       let prepared: PrepareResult | null = null;
       for (const quality of dialImageQualities) {
         prepared = await prepareArtwork(invoke, { image_base64: base64, target: 'dial', quality, fit: look.fit, quarter_turns: look.turns, background: rgb });
         if (prepared.bytes <= maxDialImageBytes) break;
       }
+      if (id !== requestId.current) return true;
       if (!prepared || prepared.bytes > maxDialImageBytes) {
-        throw new Error('This picture does not fit the dial even at the lowest quality. Choose a simpler one.');
+        setError({ message: 'This picture does not fit the dial even at the lowest quality. Choose a simpler one.' });
+        return false;
       }
-      if (id !== requestId.current) return;
       const current = session.getState();
       if (current.draftGeneration !== before.draftGeneration || current.draft.profile !== before.draft.profile) {
-        setError('The profile changed while preparing the image. Choose the file again.');
-        return;
+        setError({ message: 'The profile changed while preparing the image. Choose the file again.' });
+        return false;
       }
       session.edit(setDialImage(current.draft.profile, prepared.jpeg_base64, keep ? { image: keep, fit: look.fit, quarter_turns: look.turns, background: rgb } : undefined));
+      return true;
     } catch (reason) {
-      if (id === requestId.current) setError(errorMessage(reason));
+      if (id === requestId.current) setError(artworkErrorNotice(reason));
+      return id !== requestId.current;
     } finally {
       if (id === requestId.current) setBusy(false);
     }
   };
 
   const choose = async (file: File) => {
+    // prepare() bails out before it owns the busy state when the colour is unusable, so refuse here instead of
+    // leaving the controls disabled with no message.
+    if (!parseHexColour(background)) { setError({ message: 'Enter a valid background colour, such as #1a2b3c, then choose the picture again.' }); return; }
     setBusy(true); setError(null);
     const read = await readSourceFile(file);
-    if (!read.ok) { setBusy(false); setError(read.error); return; }
+    if (!read.ok) { setBusy(false); setError({ message: read.error }); return; }
+    const previous = source;
     setSource(read.base64);
-    const kept = await sourceToKeep(read.base64, read.mime, background);
-    await prepare(read.base64, { fit, turns, background }, kept?.image ?? null);
+    const kept = isGif(read.base64) ? null : await sourceToKeep(read.base64, read.mime, background);
+    if (!await prepare(read.base64, { fit, turns, background }, kept?.image ?? null)) setSource(previous);
   };
 
   // A change of look re-prepares the chosen picture.
@@ -93,9 +147,27 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     if (source) void prepare(source, look, stored ? source : null);
   };
 
+  // Turning the comparison on or off prepares the GIF at hand again, so the choices appear or go.
+  const toggleCompare = (on: boolean) => {
+    setCompare(on); compareRef.current = on;
+    writeCompareVersionsSetting(webStorage(), on);
+    if (source && isGif(source)) void prepare(source, { fit, turns, background }, null);
+  };
+
+  // The version card plays the picture in use, so the face preview below it would show the same twice.
+  const showVariants = !!(animation && variants && Object.values(variants).some(variant => 'animation' in variant && sameAnimation(variant.animation, animation)));
+
+  // Choosing a variant puts its prepared animation in the profile.
+  const choosePreset = (next: DialPreset) => {
+    const variant = variants?.[next];
+    if (!variant || !('animation' in variant)) return;
+    preset.current = next;
+    run(latest => setDialAnimation(latest, variant.animation), 'dial-animation');
+  };
+
   return <section className="dial-display" aria-labelledby={dialDisplayHeadingId}>
     <h3 id={dialDisplayHeadingId}>Dial screen <span className="small-label">{dialDisplayOptions.find(option => option.value === content)?.label ?? 'Default'}</span></h3>
-    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second.</p>
+    <p className="fine-print">What the encoder dial shows while this profile runs and OpenStreamHub drives the display (Module control: App). The choice belongs to this profile and applies at its next start; a running profile keeps the face it started with. The screen is redrawn at most about once a second; an animated picture plays as fast as its frames allow, up to about 15 frames a second.</p>
     <label htmlFor="dial-display-mode">Dial screen shows</label>
     <SelectField id="dial-display-mode" value={content} disabled={disabled || busy} onChange={event => run(latest => setDialDisplayContent(latest, event.target.value as DialDisplayContent), 'dial-display')}>
       {dialDisplayOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -105,9 +177,11 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
     {content === 'image' && <>
       {image
         ? <div className="dial-display-image" aria-label="Custom dial image"><img src={`data:image/jpeg;base64,${image}`} alt="" draggable={false} /><button type="button" className="button compact" disabled={disabled || busy} onClick={() => { setSource(null); run(latest => setDialDisplayContent(latest, 'function'), 'dial-display'); }}><Trash2 size={16} />Remove image</button></div>
-        : <p className="fine-print">Choose a picture to show; it is cropped to fill the round screen.</p>}
-      <label className="spaced-label" htmlFor="dial-display-image-file">Dial picture</label>
-      <input id="dial-display-image-file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" disabled={disabled || busy || !invoke} onChange={event => { const file = event.target.files?.[0]; if (file) void choose(file); event.target.value = ''; }} />
+        : <p className="fine-print">Choose a picture or a GIF to show; it is cropped to fill the round screen.</p>}
+      {animation && <p className="fine-print">Plays {animation.frames.length} frames{animation.loop_count === 0 ? ', looping' : animation.loop_count === 1 ? ' once' : `, ${animation.loop_count} times`}.</p>}
+      <label className="spaced-label" htmlFor="dial-display-image-file">Dial picture or GIF</label>
+      <input id="dial-display-image-file" type="file" accept="image/png,image/jpeg,image/gif,image/bmp,.png,.jpg,.jpeg,.gif,.bmp" disabled={disabled || busy || !invoke} onChange={event => { const file = event.target.files?.[0]; if (file) void choose(file); event.target.value = ''; }} />
+      <label className="setting-toggle compact-toggle" title="Choosing a GIF then prepares three versions to look at, which takes about three times as long. Off: the Sharp version is used straight away."><input type="checkbox" checked={compare} disabled={disabled || busy} onChange={event => toggleCompare(event.target.checked)} />Compare versions of a GIF</label>
       {source ? <div className="dial-image-look">
         <label htmlFor="dial-image-fit">Fit</label>
         <SelectField id="dial-image-fit" value={fit} disabled={disabled || busy} onChange={event => adjust({ fit: event.target.value as ArtworkFit })}>
@@ -128,14 +202,17 @@ export function DialDisplayPanel({ profile, session, disabled, invoke }: { profi
         </div>
         <p className="fine-print">Fills the margins when the picture does not cover the whole screen.</p>
       </div> : image && <p className="fine-print">To change the fit, rotation or background, choose the picture again.</p>}
-      {source && !stored && image && <p className="fine-print">This picture is too large to keep in the profile, so these controls work only until the app closes.</p>}
+      {source && !stored && image && !animation && <p className="fine-print">This picture is too large to keep in the profile, so these controls work only until the app closes.</p>}
+      {showVariants && <DialVariantPicker variants={variants} current={animation} onChoose={choosePreset} disabled={disabled || busy} />}
       {busy && <p className="fine-print" role="status"><LoaderCircle size={15} className="spinning" /> Preparing the image…</p>}
       {!invoke && <p className="fine-print">Preparing the dial picture needs the desktop app.</p>}
     </>}
-    {error && <p className="field-error" role="alert">{error}</p>}
-    <div className="dial-face-preview" role="img" aria-label="Preview of the dial screen face">
-      <DialFace profile={profile} />
-    </div>
-    <p className="fine-print">{content === 'clock' || content === 'analog_clock' ? 'The clock faces follow the time on this computer.' : content === 'cpu' ? 'A run draws the real reading.' : 'This is the face a run draws on the dial.'}</p>
+    {error && <ArtworkErrorNote notice={error} />}
+    {!showVariants && <>
+      <div className="dial-face-preview" role="img" aria-label="Preview of the dial screen face">
+        <DialFace profile={profile} />
+      </div>
+      <p className="fine-print">{content === 'clock' || content === 'analog_clock' ? 'The clock faces follow the time on this computer.' : content === 'cpu' ? 'A run draws the real reading.' : 'This is the face a run draws on the dial.'}</p>
+    </>}
   </section>;
 }

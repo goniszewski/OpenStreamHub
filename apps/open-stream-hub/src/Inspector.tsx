@@ -6,6 +6,9 @@ import type { Gesture, Profile } from './contracts';
 import { DialDisplayPanel } from './DialDisplayPanel';
 import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { ActionFields } from './ActionFields';
+import { VariablesPanel } from './VariableFields';
+import { VariablesContext } from './variables-context';
+import { renameVariable, variableUseCounts } from './variable-model';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
 import { useObsCatalog } from './obs-catalog';
@@ -45,7 +48,8 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   const [faderStats, setFaderStats] = useState<FaderStats>(emptyFaderStats);
   useEffect(() => { if (liveFader !== undefined) setFaderStats(stats => recordFader(stats, liveFader)); }, [liveFader]);
   useEffect(() => { setFaderStats(emptyFaderStats); }, [selection.module, selection.control]);
-  return <aside className="inspector" aria-label={t('inspector.aria')}>
+  const declared = profile.variables ?? [];
+  return <aside className="inspector" aria-label={t('inspector.aria')}><VariablesContext.Provider value={declared}>
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? t('inspector.folder', { depth: keypadDepth(keypadPath) }) : t('inspector.rootPage')}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />{t('inspector.deleteFolder')}</button>}<div className="inspector-divider" /></>}
       {isKeypad && <><ScreenBrightnessControl screen="keys" label={t('inspector.keyBrightness')} profile={profile} session={session} disabled={disabled} /><div className="inspector-divider" /></>}
@@ -85,8 +89,15 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
           them (flat bindings keep working until then), and with functions on it is the only
           editor, since every encoder binding then belongs to a function. */}
       {!dialFunctionsActive && selection.module === 'm131e' && <DialEditorTabs tab={dialTab} onTab={setDialTab} profile={profile} session={session} state={state} disabled={disabled} invoke={invoke} setPage={setPage} catalog={catalogStore} />}
+      <div className="inspector-divider" />
+      <details className="advanced inspector-variables" open={declared.length > 0 || undefined}>
+        <summary>Variables{declared.length > 0 ? ` (${declared.length})` : ''}</summary>
+        <VariablesPanel variables={declared} uses={variableUseCounts(profile)} disabled={disabled}
+          onChange={(next, field) => session.edit({ ...profile, variables: next.length > 0 ? next : undefined }, field)}
+          onRename={(from, to) => session.edit(renameVariable(profile, from, to), `variable-rename:${from}`)} />
+      </details>
     </> : <><h2>{selected.name}</h2><div className="status offline"><span className="status-dot" />{t('inspector.notAvailable')}</div><p className="inspector-note">{t('inspector.unsupported')}</p></>}
-  </aside>;
+  </VariablesContext.Provider></aside>;
 }
 
 // The dial editor's two tabs. Functions is the dial functions editor (or its

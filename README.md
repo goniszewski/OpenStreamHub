@@ -72,14 +72,16 @@ Tap or click any screenshot to open it at full size. They follow your light or d
 | --- | --- |
 | Keypad, knob and dial input | Implemented and tested on hardware. See [module support](#hardware-support) for limits. |
 | Two-roller input | Decoder implemented. Windows input confirmed by capture; macOS receives no reports. Unresolved. |
-| Five-fader input | Implemented and tested on hardware (all five faders, 0 at the bottom to 100 at the top). Jitter and the microphone-volume action are not yet checked. |
+| Five-fader input | Implemented and tested on hardware (all five faders, 0 at the bottom to 100 at the top). Fader 1 driving a real OBS input's volume follows OBS's own slider. Jitter at rest and the microphone-volume action are checked in the [hardware results](docs/masterhub-hardware-results.md). |
 | Profiles, bindings and keypad folders | Implemented, including nested folders, Back navigation and profile switching. Folder redraws tested on hardware. |
 | Key images and animations | Per-key static artwork and animation sequences implemented. Static artwork tested on hardware; animation playback still needs hardware acceptance. |
 | Dial display and function switching | Image uploads, function labels, clocks and CPU display implemented and tested on hardware. Full display parity is incomplete. |
 | Volume, mute, shortcuts, text, apps, URLs and media controls | Implemented; execution and macOS permission validation vary by action. See the [action catalogue](docs/masterhub-actions.md). |
 | Multi-action and recorded key macros | Multi-action sequences and the key macro recorder implemented; the recorder still needs a hardware-session check. |
 | Countdown timers | Implemented with notification and sound; remaining time is not displayed on the key. |
-| OBS Studio actions | Partial implementation, tested against a fake server. Real OBS validation and remaining actions are pending. |
+| OBS Studio actions | All 17 official OBS actions are implemented: scenes, scene collection and profile, virtual camera, replay buffer, recording (including pause), streaming, studio mode and transition, filter and source visibility, input mute, volume (absolute, step and fader-driven), media sources and screenshots to `~/Pictures`. Checked on a real OBS 5.7.4: the connection, a fader driving an input's volume, and recording, pause, screenshot, virtual camera, replay buffer, studio mode and transition, mute, volume step and media-source keys. Streaming, scenes, collections, profiles, filters and source visibility are only tested against a fake server. |
+| Streamer starter profile | Record, pause, replay, screenshot, studio mode and virtual-camera keys, plus "Go live" and "End stream" keys that need two presses within three seconds. Scene, microphone and desktop-audio keys name your OBS items, so you add those in the editor. |
+| Modules start by themselves | While module control is App, every connected control module (keys, dial, knobs, faders, rollers) starts a session on its own. |
 | Twitch, Discord, Streamlabs and application-specific integrations | Not implemented as equivalent integrations. Some shortcuts can be assigned manually. |
 | Official `.mhz` profile import/export | Import implemented with a compatibility report and review before execution; real export compatibility remains to be validated. `.mhz` export missing. Own-format JSON import/export implemented. |
 | Lighting and brightness | Lighting page for the base, knobs and faders, and screen backlight and colour for the dial, including while a profile runs. Per-profile screen brightness for the dial and the key screens (software dimming on keys) tested on hardware. Base, knob and fader lighting in the app still needs more hardware checks. |
@@ -139,7 +141,7 @@ To build a local debug app bundle:
 npm run desktop:build
 ```
 
-See the [desktop guide](apps/open-stream-hub/README.md) for development details and the [build guide](docs/building-the-desktop-app.md) for bundling and signing. Signing and notarization remain release work.
+See the [desktop guide](apps/open-stream-hub/README.md) for development details and the [build guide](docs/building-the-desktop-app.md) for bundling. Releases stay unsigned by decision: signing and notarization need a paid Apple Developer account (see the [release process](docs/release-process.md#decision-releases-stay-unsigned)).
 
 ## Hardware support
 
@@ -151,16 +153,16 @@ Support below describes the current macOS work. A decoder or editor alone does n
 | 3-knob module · M003K | Rotation and press tested in default mode; physical mapping verified with the single knob on top. |
 | IPS dial · M131E | Rotation, press, display faces, image upload, backlight and color tested. App dry-run reconnect tested. |
 | 2-roller scroll module · M032LE | Windows capture confirms both rollers send input. macOS readers still receive no reports; investigation continues. |
-| 5-fader module · M005S | Decoder and editor implemented; no physical module available for validation. |
+| 5-fader module · M005S | Input tested on all five faders (0 to 100); drives an OBS input's volume along OBS's slider scale. Starts automatically like the other modules. |
 | Base · M0064 | Discovered and recorded; observed reports are a constant heartbeat. |
 
-These results come from one rig. Sleep/wake recovery, some lifecycle paths and real OBS behavior still need validation. See [hardware results](docs/masterhub-hardware-results.md) for the exact tests and limits, and the [parity tracker](docs/windows-parity-gaps.md) for gaps against the official Windows app.
+These results come from one rig. Sleep/wake recovery, some lifecycle paths and some real-OBS actions still need validation. See [hardware results](docs/masterhub-hardware-results.md) for the exact tests and limits, and the [parity tracker](docs/windows-parity-gaps.md) for gaps against the official Windows app.
 
 ## Privacy and telemetry
 
 OpenStreamHub has no telemetry, analytics, automatic crash reporting, account or cloud sync. Profiles, settings, artwork and diagnostic bundles are stored locally. Diagnostic bundles are created on demand and are yours to share; sensitive fields are redacted by default.
 
-The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password stays in memory and must be entered again after launching the app. Configured actions can open apps or web addresses when executed.
+The optional OBS integration connects only to OBS on the same Mac and is off until enabled. Its password is stored in your macOS Keychain, never in a file; after an app update macOS may ask once whether to allow access (choose Always Allow). Configured actions can open apps or web addresses when executed.
 
 The app does not contact a remote service on its own. **Settings → Updates** has a **Check for updates** button that asks GitHub for the latest release (an anonymous request that sends nothing but the app's name and version); an optional daily check on launch is off by default. The app never downloads or installs anything itself. Building from source downloads dependencies from npm and crates.io. See the [diagnostic bundle guide](docs/masterhub-diagnostic-bundle.md) for what local diagnostics contain.
 

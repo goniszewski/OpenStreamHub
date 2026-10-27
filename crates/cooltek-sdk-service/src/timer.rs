@@ -111,6 +111,19 @@ pub enum TimerToggle {
 #[derive(Clone, Debug, Default)]
 pub struct TimerTable {
     running: Vec<RunningTimer>,
+    /// Keys armed by a first press of a guarded action, with the time the
+    /// window ends. Lives in this table because it is the per-binding press
+    /// state the service already keeps; it never outlives the process.
+    armed: Vec<(TimerKey, u64)>,
+}
+
+/// What a press of a guarded binding does.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Confirmation {
+    /// First press: the binding is armed and nothing runs yet.
+    Armed,
+    /// A second press inside the window: the action runs.
+    Confirmed,
 }
 
 impl TimerTable {
@@ -179,8 +192,27 @@ impl TimerTable {
         self.running.push(timer);
     }
 
-    /// Removes and returns every running countdown, earliest first.
+    /// How long an armed binding waits for its second press.
+    pub const CONFIRM_WINDOW_MICROS: u64 = 3_000_000;
+
+    /// A press of a guarded binding at `now_micros`: arms it, or, when it was
+    /// armed and the window has not ended, confirms it (and disarms it, so a
+    /// third press arms again). Armed bindings whose window ended are dropped.
+    pub fn confirm(&mut self, key: TimerKey, now_micros: u64) -> Confirmation {
+        self.armed.retain(|(_, until)| now_micros < *until);
+        if let Some(index) = self.armed.iter().position(|(armed, _)| *armed == key) {
+            self.armed.remove(index);
+            return Confirmation::Confirmed;
+        }
+        self.armed
+            .push((key, now_micros.saturating_add(Self::CONFIRM_WINDOW_MICROS)));
+        Confirmation::Armed
+    }
+
+    /// Removes and returns every running countdown, earliest first. Armed
+    /// bindings are forgotten too.
     pub fn cancel_all(&mut self) -> Vec<RunningTimer> {
+        self.armed.clear();
         self.take_due(u64::MAX)
     }
 
@@ -337,5 +369,28 @@ mod tests {
         let mut invalid = labelled;
         invalid.label = Some("a\nb".into());
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn a_guarded_press_arms_then_confirms_inside_the_window() {
+        let key = |control| TimerKey {
+            control,
+            gesture: Gesture::Pressed,
+            page_id: None,
+            dial_function: None,
+        };
+        let window = TimerTable::CONFIRM_WINDOW_MICROS;
+        let mut table = TimerTable::default();
+        assert_eq!(table.confirm(key(1), 0), Confirmation::Armed);
+        assert_eq!(table.confirm(key(2), 1), Confirmation::Armed);
+        assert_eq!(table.confirm(key(1), window - 1), Confirmation::Confirmed);
+        // Confirming disarms: the next press arms again.
+        assert_eq!(table.confirm(key(1), window), Confirmation::Armed);
+        // Key 2 was armed at 1 µs: its window ends at 1 + window.
+        assert_eq!(table.confirm(key(2), window + 1), Confirmation::Armed);
+        // Cancelling everything (stop, sleep) forgets what was armed.
+        assert_eq!(table.confirm(key(3), 10), Confirmation::Armed);
+        table.cancel_all();
+        assert_eq!(table.confirm(key(3), 11), Confirmation::Armed);
     }
 }

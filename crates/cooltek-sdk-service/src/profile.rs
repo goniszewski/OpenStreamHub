@@ -328,6 +328,60 @@ pub enum ObsOutputOp {
     Stop,
 }
 
+/// A safeguard on an action that cannot be undone from the controller.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsConfirm {
+    /// The first press only arms the key; a second press of the same binding
+    /// within [`crate::TimerTable::CONFIRM_WINDOW_MICROS`] runs the action.
+    PressTwice,
+}
+
+/// What an `obs_record` action does to the OBS recording.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsRecordOp {
+    /// Start recording when it is stopped and stop it when it runs.
+    Toggle,
+    /// Start recording (OBS refuses when it already runs).
+    Start,
+    /// Stop recording (OBS refuses when it is not running).
+    Stop,
+    /// Pause a running recording (OBS refuses when it is not recording or already paused).
+    Pause,
+    /// Resume a paused recording (OBS refuses when it is not paused).
+    Resume,
+    /// Pause a running recording and resume a paused one.
+    TogglePause,
+}
+
+/// What an `obs_input_mute` action does to an OBS input's mute state.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsMuteOp {
+    /// Mute the input when it is audible and unmute it when it is muted.
+    Toggle,
+    /// Mute the input.
+    Mute,
+    /// Unmute the input.
+    Unmute,
+}
+
+/// What an `obs_media_source` action does to a media source (the official
+/// app's four modes). Each reads the source's play state first.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObsMediaOp {
+    /// Pause a playing source, play a paused one, restart a stopped or ended one.
+    PlayPause,
+    /// Stop a playing source, restart any other.
+    PlayStop,
+    /// Restart a playing, stopped or ended source, play a paused one.
+    PlayRestart,
+    /// Stop the source.
+    Stop,
+}
+
 /// What an OBS action does to something that is either on or off (studio
 /// mode, a filter, a source's visibility). `toggle` reads the current state
 /// from OBS first; `on` and `off` do not depend on it, which makes them safe
@@ -458,6 +512,366 @@ pub struct MacroStep {
     pub hold_ms: u32,
 }
 
+/// The value of a user-defined variable: a bool, a whole number or short text.
+///
+/// Written as the bare JSON value (`true`, `3`, `"intro"`).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum VariableValue {
+    /// On or off.
+    Bool(bool),
+    /// A whole number within `-1 000 000` and `1 000 000`.
+    Number(i32),
+    /// Text of at most 64 bytes without control characters.
+    Text(String),
+}
+
+/// The kind of a [`VariableValue`]; a variable keeps its kind for life.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VariableKind {
+    /// A bool.
+    Bool,
+    /// A whole number.
+    Number,
+    /// Text.
+    Text,
+}
+
+impl VariableKind {
+    /// The kind's name for diagnostics.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Bool => "bool",
+            Self::Number => "number",
+            Self::Text => "text",
+        }
+    }
+}
+
+impl VariableValue {
+    /// Smallest number a variable can hold.
+    pub const MIN_NUMBER: i32 = -1_000_000;
+    /// Largest number a variable can hold.
+    pub const MAX_NUMBER: i32 = 1_000_000;
+    /// Longest text a variable can hold, in UTF-8 bytes.
+    pub const MAX_TEXT_BYTES: usize = 64;
+
+    /// The kind of this value.
+    pub fn kind(&self) -> VariableKind {
+        match self {
+            Self::Bool(_) => VariableKind::Bool,
+            Self::Number(_) => VariableKind::Number,
+            Self::Text(_) => VariableKind::Text,
+        }
+    }
+
+    /// Checks the number range and the text rules.
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Bool(_) => Ok(()),
+            Self::Number(number) => validate_variable_number(*number),
+            Self::Text(text) => {
+                if text.len() > Self::MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+                    Err(format!(
+                        "variable text must be at most {} bytes without control characters",
+                        Self::MAX_TEXT_BYTES
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn validate_variable_number(number: i32) -> Result<(), String> {
+    if (VariableValue::MIN_NUMBER..=VariableValue::MAX_NUMBER).contains(&number) {
+        Ok(())
+    } else {
+        Err(format!(
+            "variable numbers must be between {} and {}",
+            VariableValue::MIN_NUMBER,
+            VariableValue::MAX_NUMBER
+        ))
+    }
+}
+
+/// A variable name: 1 to 32 characters of `a-z`, `0-9` and `_`, starting with a letter.
+pub fn validate_variable_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > Variable::MAX_NAME_BYTES
+        || !bytes[0].is_ascii_lowercase()
+        || !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
+    {
+        return Err(format!(
+            "variable names are 1 to {} characters of a-z, 0-9 and _, starting with a letter",
+            Variable::MAX_NAME_BYTES
+        ));
+    }
+    Ok(())
+}
+
+/// A user-defined variable a profile declares, with the value it starts at.
+///
+/// Values live in the service process and are kept across key presses; they
+/// are reset to these starting values when the service starts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variable {
+    /// Unique name, see [`validate_variable_name`].
+    pub name: String,
+    /// The starting value; its kind is the variable's kind.
+    pub value: VariableValue,
+}
+
+impl Variable {
+    /// Most variables one profile declares.
+    pub const MAX_VARIABLES: usize = 16;
+    /// Longest variable name in bytes.
+    pub const MAX_NAME_BYTES: usize = 32;
+
+    /// Checks the declarations: count, names, values and uniqueness.
+    pub fn validate_all(variables: &[Self]) -> Result<(), String> {
+        if variables.len() > Self::MAX_VARIABLES {
+            return Err(format!(
+                "a profile declares at most {} variables",
+                Self::MAX_VARIABLES
+            ));
+        }
+        let mut seen = HashSet::new();
+        for variable in variables {
+            validate_variable_name(&variable.name)?;
+            variable
+                .value
+                .validate()
+                .map_err(|error| format!("variable {}: {error}", variable.name))?;
+            if !seen.insert(variable.name.as_str()) {
+                return Err(format!("variable {} is declared twice", variable.name));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The state a `conditional` action tests right before it picks a branch.
+///
+/// Written as a single-key object such as `{"obs_recording":true}`; a second
+/// key or an unknown key is refused. The OBS variants ask OBS over the local
+/// obs-websocket connection, so they need the same endpoint as an OBS action.
+/// `all` and `any` combine 2 to 8 conditions (AND, OR) and nest in each other
+/// up to [`Condition::MAX_DEPTH`] levels, at most [`Condition::MAX_LEAVES`]
+/// tests in all; the nesting is the grouping, so there are no precedence rules.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Condition {
+    /// OBS is streaming (`true`) or is not (`false`).
+    #[serde(rename = "obs_streaming")]
+    Streaming(bool),
+    /// OBS is recording (a paused recording counts as recording).
+    #[serde(rename = "obs_recording")]
+    Recording(bool),
+    /// The OBS virtual camera is running.
+    #[serde(rename = "obs_virtual_camera")]
+    VirtualCamera(bool),
+    /// The OBS replay buffer is running.
+    #[serde(rename = "obs_replay_buffer")]
+    ReplayBuffer(bool),
+    /// The default output is muted (`true`) or is not (`false`).
+    OutputMuted(bool),
+    /// The default output volume is at least this percentage, 0 to 100.
+    OutputVolumeAtLeast(u8),
+    /// A `timer` countdown of this run is counting down (`true`) or none is.
+    /// Timers belong to the module's own process, so only the timers started
+    /// by this module's bindings count.
+    TimerRunning(bool),
+    /// The frontmost application has this bundle identifier (compared
+    /// without regard to ASCII case). Written as a bare string: to act when it
+    /// is any other app, swap the branches. Read from macOS when the key is
+    /// pressed, so it works with the desktop app closed.
+    FocusedApp(String),
+    /// The declared variable `name` equals `value` (same kind).
+    VariableIs {
+        /// A declared variable.
+        name: String,
+        /// The value to compare with.
+        value: VariableValue,
+    },
+    /// The declared number variable `name` is at least `value`.
+    VariableAtLeast {
+        /// A declared number variable.
+        name: String,
+        /// The lowest accepted number.
+        value: i32,
+    },
+    /// Every listed condition holds (AND). All of them are read, in order.
+    All(Vec<Condition>),
+    /// At least one listed condition holds (OR). All of them are read, in
+    /// order, so an unreadable one fails the press whatever the others say.
+    Any(Vec<Condition>),
+}
+
+impl Condition {
+    /// Fewest conditions an `all` or `any` combines.
+    pub const MIN_COMBINED: usize = 2;
+    /// Most conditions an `all` or `any` combines.
+    pub const MAX_COMBINED: usize = 8;
+    /// Deepest nesting of `all` / `any` (a lone `all` is depth 1).
+    pub const MAX_DEPTH: usize = 3;
+    /// Most single tests (leaves) in one condition, however it is grouped.
+    pub const MAX_LEAVES: usize = 16;
+
+    /// The JSON key of this condition, for diagnostics.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Streaming(_) => "obs_streaming",
+            Self::Recording(_) => "obs_recording",
+            Self::VirtualCamera(_) => "obs_virtual_camera",
+            Self::ReplayBuffer(_) => "obs_replay_buffer",
+            Self::OutputMuted(_) => "output_muted",
+            Self::OutputVolumeAtLeast(_) => "output_volume_at_least",
+            Self::TimerRunning(_) => "timer_running",
+            Self::FocusedApp(_) => "focused_app",
+            Self::VariableIs { .. } => "variable_is",
+            Self::VariableAtLeast { .. } => "variable_at_least",
+            Self::All(_) => "all",
+            Self::Any(_) => "any",
+        }
+    }
+
+    /// Whether the condition is read from OBS (and so needs an endpoint).
+    pub fn uses_obs(&self) -> bool {
+        match self {
+            Self::Streaming(_)
+            | Self::Recording(_)
+            | Self::VirtualCamera(_)
+            | Self::ReplayBuffer(_) => true,
+            Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_obs),
+            Self::OutputMuted(_)
+            | Self::OutputVolumeAtLeast(_)
+            | Self::TimerRunning(_)
+            | Self::FocusedApp(_)
+            | Self::VariableIs { .. }
+            | Self::VariableAtLeast { .. } => false,
+        }
+    }
+
+    /// The value an OBS output condition compares the live state with;
+    /// `None` for a condition that is not an OBS output.
+    pub fn expected(&self) -> Option<bool> {
+        match self {
+            Self::Streaming(value)
+            | Self::Recording(value)
+            | Self::VirtualCamera(value)
+            | Self::ReplayBuffer(value) => Some(*value),
+            Self::OutputMuted(_)
+            | Self::OutputVolumeAtLeast(_)
+            | Self::TimerRunning(_)
+            | Self::FocusedApp(_)
+            | Self::VariableIs { .. }
+            | Self::VariableAtLeast { .. }
+            | Self::All(_)
+            | Self::Any(_) => None,
+        }
+    }
+
+    /// Checks every variable this condition names against the declarations.
+    pub fn check_variables(&self, declared: &[Variable]) -> Result<(), String> {
+        let kind_of = |name: &str| {
+            declared
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.kind())
+                .ok_or_else(|| format!("variable {name} is not declared"))
+        };
+        match self {
+            Self::VariableIs { name, value } => {
+                let kind = kind_of(name)?;
+                if kind == value.kind() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "variable {name} is {}, not {}",
+                        kind.name(),
+                        value.kind().name()
+                    ))
+                }
+            }
+            Self::VariableAtLeast { name, .. } => {
+                let kind = kind_of(name)?;
+                if kind == VariableKind::Number {
+                    Ok(())
+                } else {
+                    Err(format!("variable {name} is {}, not number", kind.name()))
+                }
+            }
+            Self::All(items) | Self::Any(items) => items
+                .iter()
+                .try_for_each(|item| item.check_variables(declared)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Number of single tests in this condition.
+    pub fn leaf_count(&self) -> usize {
+        match self {
+            Self::All(items) | Self::Any(items) => items.iter().map(Self::leaf_count).sum(),
+            _ => 1,
+        }
+    }
+
+    /// Checks the value ranges, the grouping sizes and the nesting depth.
+    pub fn validate(&self) -> Result<(), String> {
+        self.validate_at(0)?;
+        if self.leaf_count() > Self::MAX_LEAVES {
+            return Err(format!(
+                "a condition can hold at most {} tests",
+                Self::MAX_LEAVES
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_at(&self, depth: usize) -> Result<(), String> {
+        match self {
+            Self::OutputVolumeAtLeast(percent) if *percent > 100 => {
+                Err("output_volume_at_least must be between 0 and 100".into())
+            }
+            Self::FocusedApp(bundle_id) => validate_bundle_id(bundle_id),
+            Self::VariableIs { name, value } => {
+                validate_variable_name(name)?;
+                value.validate()
+            }
+            Self::VariableAtLeast { name, value } => {
+                validate_variable_name(name)?;
+                validate_variable_number(*value)
+            }
+            Self::All(items) | Self::Any(items) => {
+                let name = self.name();
+                if depth >= Self::MAX_DEPTH {
+                    return Err(format!(
+                        "{name} is nested more than {} levels deep",
+                        Self::MAX_DEPTH
+                    ));
+                }
+                if !(Self::MIN_COMBINED..=Self::MAX_COMBINED).contains(&items.len()) {
+                    return Err(format!(
+                        "{name} must combine {} to {} conditions",
+                        Self::MIN_COMBINED,
+                        Self::MAX_COMBINED
+                    ));
+                }
+                items
+                    .iter()
+                    .try_for_each(|item| item.validate_at(depth + 1))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// One bounded operation performed by an action dispatcher.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
@@ -530,6 +944,39 @@ pub enum Action {
         /// Press Return after pasting.
         press_enter: bool,
     },
+    /// Test one condition right before running, then run the `then` steps when
+    /// it holds or the `otherwise` steps when it does not. A condition that
+    /// cannot be read fails the press and runs neither branch. Steps follow
+    /// the `multi_action` rules, and a `conditional` is not a step itself.
+    Conditional {
+        /// The state to test.
+        when: Condition,
+        /// 1 to 8 steps run when the condition holds.
+        then: Vec<Action>,
+        /// 0 to 8 steps run when it does not (JSON key `else`).
+        #[serde(rename = "else", skip_serializing_if = "Vec::is_empty")]
+        otherwise: Vec<Action>,
+    },
+    /// Set the declared variable `name` to `value` (the same kind).
+    SetVariable {
+        /// A declared variable.
+        name: String,
+        /// The new value.
+        value: VariableValue,
+    },
+    /// Flip the declared bool variable `name`.
+    ToggleVariable {
+        /// A declared bool variable.
+        name: String,
+    },
+    /// Add `amount` (negative to subtract) to the declared number variable
+    /// `name`; a result past the limits stops at the limit.
+    AddToVariable {
+        /// A declared number variable.
+        name: String,
+        /// Nonzero amount within the number limits.
+        amount: i32,
+    },
     /// Run 2 to 8 executable, non-nested actions in order with fixed spacing.
     MultiAction {
         /// Ordered steps; a failure stops the remaining steps.
@@ -577,6 +1024,23 @@ pub enum Action {
         /// What to do with the virtual camera.
         op: ObsOutputOp,
     },
+    /// Start, stop or toggle the OBS stream, which goes live or ends a
+    /// broadcast. Needs an OBS endpoint like `obs_scene`.
+    ObsStream {
+        /// What to do with the stream.
+        op: ObsOutputOp,
+        /// Optional safeguard: with `press_twice` a key must be pressed twice
+        /// within three seconds before going live or ending the broadcast.
+        /// Only a key's own action can carry it, not a `multi_action` step.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ObsConfirm>,
+    },
+    /// Start, stop, pause or resume the OBS recording. Needs an OBS endpoint
+    /// like `obs_scene`.
+    ObsRecord {
+        /// What to do with the recording.
+        op: ObsRecordOp,
+    },
     /// Start, stop, toggle or save the OBS replay buffer over the local
     /// obs-websocket v5 server. Needs an OBS endpoint like `obs_scene`.
     ObsReplayBuffer {
@@ -591,6 +1055,10 @@ pub enum Action {
     /// Trigger the studio-mode transition (preview to program). OBS refuses
     /// it when studio mode is off. Needs an OBS endpoint like `obs_scene`.
     ObsTransition,
+    /// Save a PNG of the current OBS program scene into the Pictures folder
+    /// as `OBS Screenshot <date time>.png`. The location is fixed: a profile
+    /// can never name a path. Needs an OBS endpoint like `obs_scene`.
+    ObsScreenshot,
     /// Turn a source filter on or off. Both names are matched exactly by OBS.
     ObsFilter {
         /// Exact name of the source (or scene) that owns the filter.
@@ -622,12 +1090,35 @@ pub enum Action {
         name: String,
     },
     /// Set an OBS input's volume to an absolute percentage (0 is silent, 100
-    /// is unity gain, 0 dB). Needs an OBS endpoint like `obs_scene`.
+    /// is unity gain, 0 dB) on OBS's own logarithmic slider scale. Needs an OBS endpoint like `obs_scene`.
     ObsSetInputVolume {
         /// Exact input (source) name.
         input: String,
         /// Absolute volume percentage, between 0 and 100 inclusive.
         percent: u8,
+    },
+    /// Mute, unmute or toggle an OBS input. Needs an OBS endpoint like `obs_scene`.
+    ObsInputMute {
+        /// Exact input (source) name.
+        input: String,
+        /// What to do with the mute state.
+        op: ObsMuteOp,
+    },
+    /// Change an OBS input's volume by a step in decibels, held between -100
+    /// dB and 0 dB. Needs an OBS endpoint like `obs_scene`.
+    ObsAdjustInputVolume {
+        /// Exact input (source) name.
+        input: String,
+        /// Step in dB: nonzero, between -20 and 20 inclusive.
+        step_db: i8,
+    },
+    /// Play, pause, restart or stop an OBS media source. Needs an OBS
+    /// endpoint like `obs_scene`.
+    ObsMediaSource {
+        /// Exact input (source) name.
+        input: String,
+        /// What to do with the media source.
+        op: ObsMediaOp,
     },
     /// Resolve a fader's absolute position into an absolute OBS input volume.
     ///
@@ -842,6 +1333,23 @@ impl<'de> Deserialize<'de> for Action {
                 #[serde(default)]
                 press_enter: bool,
             },
+            Conditional {
+                when: Condition,
+                then: Vec<Action>,
+                #[serde(default, rename = "else")]
+                otherwise: Vec<Action>,
+            },
+            SetVariable {
+                name: String,
+                value: VariableValue,
+            },
+            ToggleVariable {
+                name: String,
+            },
+            AddToVariable {
+                name: String,
+                amount: i32,
+            },
             MultiAction {
                 actions: Vec<Action>,
             },
@@ -864,6 +1372,14 @@ impl<'de> Deserialize<'de> for Action {
             ObsVirtualCamera {
                 op: ObsOutputOp,
             },
+            ObsStream {
+                op: ObsOutputOp,
+                #[serde(default, deserialize_with = "present")]
+                confirm: Option<ObsConfirm>,
+            },
+            ObsRecord {
+                op: ObsRecordOp,
+            },
             ObsReplayBuffer {
                 op: ObsReplayBufferOp,
             },
@@ -871,6 +1387,7 @@ impl<'de> Deserialize<'de> for Action {
                 op: ObsSwitchOp,
             },
             ObsTransition {},
+            ObsScreenshot {},
             ObsFilter {
                 source: String,
                 filter: String,
@@ -891,6 +1408,18 @@ impl<'de> Deserialize<'de> for Action {
                 input: String,
                 percent: u8,
             },
+            ObsInputMute {
+                input: String,
+                op: ObsMuteOp,
+            },
+            ObsAdjustInputVolume {
+                input: String,
+                step_db: i8,
+            },
+            ObsMediaSource {
+                input: String,
+                op: ObsMediaOp,
+            },
             ObsInputVolumeFromPosition {
                 input: String,
             },
@@ -908,6 +1437,18 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
+            Shape::Conditional {
+                when,
+                then,
+                otherwise,
+            } => Self::Conditional {
+                when,
+                then,
+                otherwise,
+            },
+            Shape::SetVariable { name, value } => Self::SetVariable { name, value },
+            Shape::ToggleVariable { name } => Self::ToggleVariable { name },
+            Shape::AddToVariable { name, amount } => Self::AddToVariable { name, amount },
             Shape::MultiAction { actions } => Self::MultiAction { actions },
             Shape::Macro { steps } => Self::Macro { steps },
             Shape::Profile { direction } => Self::Profile { direction },
@@ -922,9 +1463,12 @@ impl<'de> Deserialize<'de> for Action {
             },
             Shape::ObsScene { scene } => Self::ObsScene { scene },
             Shape::ObsVirtualCamera { op } => Self::ObsVirtualCamera { op },
+            Shape::ObsStream { op, confirm } => Self::ObsStream { op, confirm },
+            Shape::ObsRecord { op } => Self::ObsRecord { op },
             Shape::ObsReplayBuffer { op } => Self::ObsReplayBuffer { op },
             Shape::ObsStudioMode { op } => Self::ObsStudioMode { op },
             Shape::ObsTransition {} => Self::ObsTransition,
+            Shape::ObsScreenshot {} => Self::ObsScreenshot,
             Shape::ObsFilter { source, filter, op } => Self::ObsFilter { source, filter, op },
             Shape::ObsSourceVisibility { scene, source, op } => {
                 Self::ObsSourceVisibility { scene, source, op }
@@ -934,6 +1478,11 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsSetInputVolume { input, percent } => {
                 Self::ObsSetInputVolume { input, percent }
             }
+            Shape::ObsInputMute { input, op } => Self::ObsInputMute { input, op },
+            Shape::ObsAdjustInputVolume { input, step_db } => {
+                Self::ObsAdjustInputVolume { input, step_db }
+            }
+            Shape::ObsMediaSource { input, op } => Self::ObsMediaSource { input, op },
             Shape::ObsInputVolumeFromPosition { input } => {
                 Self::ObsInputVolumeFromPosition { input }
             }
@@ -950,6 +1499,10 @@ impl Action {
     pub const MIN_MULTI_ACTION_STEPS: usize = 2;
     /// Maximum number of `multi_action` steps.
     pub const MAX_MULTI_ACTION_STEPS: usize = 8;
+    /// Deepest nesting of `conditional` (a lone one is depth 1).
+    pub const MAX_CONDITIONAL_DEPTH: usize = 3;
+    /// Most steps in all branches of one `conditional`, nested ones included.
+    pub const MAX_FLOW_STEPS: usize = 32;
     /// Shortest `timer` countdown in seconds.
     pub const MIN_TIMER_SECONDS: u32 = 1;
     /// Longest `timer` countdown in seconds (24 hours).
@@ -985,22 +1538,44 @@ impl Action {
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
+            Self::Conditional { .. } => "conditional",
+            Self::SetVariable { .. } => "set_variable",
+            Self::ToggleVariable { .. } => "toggle_variable",
+            Self::AddToVariable { .. } => "add_to_variable",
             Self::MultiAction { .. } => "multi_action",
             Self::Macro { .. } => "macro",
             Self::Profile { .. } => "profile",
             Self::Timer { .. } => "timer",
             Self::ObsScene { .. } => "obs_scene",
             Self::ObsVirtualCamera { .. } => "obs_virtual_camera",
+            Self::ObsStream { .. } => "obs_stream",
+            Self::ObsRecord { .. } => "obs_record",
             Self::ObsReplayBuffer { .. } => "obs_replay_buffer",
             Self::ObsStudioMode { .. } => "obs_studio_mode",
             Self::ObsTransition => "obs_transition",
+            Self::ObsScreenshot => "obs_screenshot",
             Self::ObsFilter { .. } => "obs_filter",
             Self::ObsSourceVisibility { .. } => "obs_source_visibility",
             Self::ObsSceneCollection { .. } => "obs_scene_collection",
             Self::ObsProfile { .. } => "obs_profile",
             Self::ObsSetInputVolume { .. } => "obs_set_input_volume",
+            Self::ObsInputMute { .. } => "obs_input_mute",
+            Self::ObsAdjustInputVolume { .. } => "obs_adjust_input_volume",
+            Self::ObsMediaSource { .. } => "obs_media_source",
             Self::ObsInputVolumeFromPosition { .. } => "obs_input_volume_from_position",
         }
+    }
+
+    /// True when a press only arms the action and a second press of the same
+    /// binding runs it (see [`ObsConfirm`]).
+    pub fn needs_confirmation(&self) -> bool {
+        matches!(
+            self,
+            Self::ObsStream {
+                confirm: Some(ObsConfirm::PressTwice),
+                ..
+            }
+        )
     }
 
     /// True for an OBS action (`obs_*`) or a `multi_action` with an OBS step.
@@ -1008,15 +1583,26 @@ impl Action {
         match self {
             Self::ObsScene { .. }
             | Self::ObsVirtualCamera { .. }
+            | Self::ObsStream { .. }
+            | Self::ObsRecord { .. }
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition
+            | Self::ObsScreenshot
             | Self::ObsFilter { .. }
             | Self::ObsSourceVisibility { .. }
             | Self::ObsSceneCollection { .. }
             | Self::ObsProfile { .. }
             | Self::ObsSetInputVolume { .. }
+            | Self::ObsInputMute { .. }
+            | Self::ObsAdjustInputVolume { .. }
+            | Self::ObsMediaSource { .. }
             | Self::ObsInputVolumeFromPosition { .. } => true,
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => when.uses_obs() || then.iter().chain(otherwise).any(Self::uses_obs),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
             _ => false,
         }
@@ -1110,23 +1696,7 @@ impl Action {
                 }
                 Ok(())
             }
-            Self::LaunchApp { bundle_id } => {
-                if bundle_id.len() > 255
-                    || !bundle_id.contains('.')
-                    || bundle_id.split('.').any(|component| {
-                        !component
-                            .as_bytes()
-                            .first()
-                            .is_some_and(u8::is_ascii_alphanumeric)
-                            || !component
-                                .bytes()
-                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-                    })
-                {
-                    return Err("application bundle ID must be a dotted ASCII identifier of at most 255 bytes".into());
-                }
-                Ok(())
-            }
+            Self::LaunchApp { bundle_id } => validate_bundle_id(bundle_id),
             Self::OpenUrl { url } => validate_url(url),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
@@ -1146,6 +1716,17 @@ impl Action {
             }
             Self::ObsInputVolumeFromPosition { input } => {
                 validate_obs_name("obs_input_volume_from_position", "input", input)
+            }
+            Self::ObsInputMute { input, .. } => validate_obs_name("obs_input_mute", "input", input),
+            Self::ObsMediaSource { input, .. } => {
+                validate_obs_name("obs_media_source", "input", input)
+            }
+            Self::ObsAdjustInputVolume { input, step_db } => {
+                validate_obs_name("obs_adjust_input_volume", "input", input)?;
+                if *step_db == 0 || !(-20..=20).contains(step_db) {
+                    return Err("OBS volume step must be nonzero and between -20 and 20 dB".into());
+                }
+                Ok(())
             }
             Self::ObsSourceVisibility { scene, source, .. } => {
                 validate_obs_name("obs_source_visibility", "scene", scene)?;
@@ -1175,6 +1756,29 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::SetVariable { name, value } => {
+                validate_variable_name(name)?;
+                value.validate()
+            }
+            Self::ToggleVariable { name } => validate_variable_name(name),
+            Self::AddToVariable { name, amount } => {
+                validate_variable_name(name)?;
+                if *amount == 0 {
+                    return Err("add_to_variable amount must be nonzero".into());
+                }
+                validate_variable_number(*amount)
+            }
+            Self::Conditional { .. } => {
+                self.validate_conditional(1)?;
+                let steps = self.flow_steps();
+                if steps > Self::MAX_FLOW_STEPS {
+                    return Err(format!(
+                        "conditional can hold at most {} steps in all its branches",
+                        Self::MAX_FLOW_STEPS
+                    ));
+                }
+                Ok(())
+            }
             Self::MultiAction { actions } => {
                 if !(Self::MIN_MULTI_ACTION_STEPS..=Self::MAX_MULTI_ACTION_STEPS)
                     .contains(&actions.len())
@@ -1185,32 +1789,7 @@ impl Action {
                         Self::MAX_MULTI_ACTION_STEPS
                     ));
                 }
-                for (index, step) in actions.iter().enumerate() {
-                    // A profile switch stops the running service, so it
-                    // could never be followed by the remaining steps. A timer
-                    // toggles per binding, which a step does not have; the
-                    // official app refuses timers in multi-task lists too. A
-                    // macro is already a timed sequence; nesting one would
-                    // split the overall deadline across two clocks.
-                    if matches!(
-                        step,
-                        Self::MultiAction { .. }
-                            | Self::Macro { .. }
-                            | Self::VolumeFromPosition
-                            | Self::MicInputVolumeFromPosition
-                            | Self::ObsInputVolumeFromPosition { .. }
-                            | Self::Profile { .. }
-                            | Self::Timer { .. }
-                    ) {
-                        return Err(format!(
-                            "multi_action step {}: {} cannot be a multi_action step",
-                            index + 1,
-                            step.type_name()
-                        ));
-                    }
-                    step.validate()
-                        .map_err(|error| format!("multi_action step {}: {error}", index + 1))?;
-                }
+                Self::validate_steps(actions, "multi_action", "multi_action", None)?;
                 Ok(())
             }
             Self::Timer { seconds, label, .. } => {
@@ -1238,10 +1817,152 @@ impl Action {
             | Self::System { .. }
             | Self::Profile { .. }
             | Self::ObsVirtualCamera { .. }
+            | Self::ObsStream { .. }
+            | Self::ObsRecord { .. }
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
-            | Self::ObsTransition => Ok(()),
+            | Self::ObsTransition
+            | Self::ObsScreenshot => Ok(()),
         }
+    }
+
+    /// Checks every variable this action (or a step or test inside it) names
+    /// against the profile's declarations.
+    pub fn check_variables(&self, declared: &[Variable]) -> Result<(), String> {
+        let kind_of = |name: &str| -> Result<VariableKind, String> {
+            declared
+                .iter()
+                .find(|variable| variable.name == name)
+                .map(|variable| variable.value.kind())
+                .ok_or_else(|| format!("variable {name} is not declared"))
+        };
+        let expect = |name: &str, wanted: VariableKind| -> Result<(), String> {
+            let kind = kind_of(name)?;
+            if kind == wanted {
+                Ok(())
+            } else {
+                Err(format!(
+                    "variable {name} is {}, not {}",
+                    kind.name(),
+                    wanted.name()
+                ))
+            }
+        };
+        match self {
+            Self::SetVariable { name, value } => expect(name, value.kind()),
+            Self::ToggleVariable { name } => expect(name, VariableKind::Bool),
+            Self::AddToVariable { name, .. } => expect(name, VariableKind::Number),
+            Self::MultiAction { actions } => actions
+                .iter()
+                .try_for_each(|step| step.check_variables(declared)),
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => {
+                when.check_variables(declared)?;
+                then.iter()
+                    .chain(otherwise)
+                    .try_for_each(|step| step.check_variables(declared))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Total steps in the branches of a `conditional`, nested ones included
+    /// (a nested `conditional` counts as a step and as its own steps).
+    fn flow_steps(&self) -> usize {
+        match self {
+            Self::Conditional {
+                then, otherwise, ..
+            } => then
+                .iter()
+                .chain(otherwise)
+                .map(|step| 1 + step.flow_steps())
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    /// Validates a `conditional` sitting at `depth` (1 for the outermost).
+    fn validate_conditional(&self, depth: usize) -> Result<(), String> {
+        let Self::Conditional {
+            when,
+            then,
+            otherwise,
+        } = self
+        else {
+            return self.validate();
+        };
+        if depth > Self::MAX_CONDITIONAL_DEPTH {
+            return Err(format!(
+                "conditional is nested more than {} levels deep",
+                Self::MAX_CONDITIONAL_DEPTH
+            ));
+        }
+        when.validate()?;
+        if then.is_empty() || then.len() > Self::MAX_MULTI_ACTION_STEPS {
+            return Err(format!(
+                "conditional must run 1 to {} steps when the condition holds",
+                Self::MAX_MULTI_ACTION_STEPS
+            ));
+        }
+        if otherwise.len() > Self::MAX_MULTI_ACTION_STEPS {
+            return Err(format!(
+                "conditional else must have at most {} steps",
+                Self::MAX_MULTI_ACTION_STEPS
+            ));
+        }
+        Self::validate_steps(then, "conditional then", "conditional", Some(depth))?;
+        Self::validate_steps(otherwise, "conditional else", "conditional", Some(depth))
+    }
+
+    /// Validates the steps of a `multi_action` or a `conditional` branch.
+    ///
+    /// A profile switch stops the running service, so it could never be
+    /// followed by the remaining steps. A timer toggles per binding, which a
+    /// step does not have; the official app refuses timers in multi-task lists
+    /// too. A macro is already a timed sequence; nesting one would split the
+    /// overall deadline across two clocks. A `conditional` may be a step of
+    /// another `conditional` (`depth` is the outer one's level), never of a
+    /// `multi_action` (`None`), and nothing loops.
+    fn validate_steps(
+        steps: &[Action],
+        label: &str,
+        noun: &str,
+        depth: Option<usize>,
+    ) -> Result<(), String> {
+        for (index, step) in steps.iter().enumerate() {
+            if let (Self::Conditional { .. }, Some(depth)) = (step, depth) {
+                step.validate_conditional(depth + 1)
+                    .map_err(|error| format!("{label} step {}: {error}", index + 1))?;
+                continue;
+            }
+            if matches!(
+                step,
+                Self::MultiAction { .. }
+                    | Self::Conditional { .. }
+                    | Self::Macro { .. }
+                    | Self::VolumeFromPosition
+                    | Self::MicInputVolumeFromPosition
+                    | Self::ObsInputVolumeFromPosition { .. }
+                    | Self::Profile { .. }
+                    | Self::Timer { .. }
+                    | Self::ObsStream {
+                        confirm: Some(_),
+                        ..
+                    }
+            ) {
+                return Err(format!(
+                    "{label} step {}: {} cannot be a {noun} step",
+                    index + 1,
+                    step.type_name()
+                ));
+            }
+            step.validate()
+                .map_err(|error| format!("{label} step {}: {error}", index + 1))?;
+        }
+        Ok(())
     }
 
     /// Validates an operation and rejects templates lacking a resolved input value.
@@ -1290,13 +2011,14 @@ pub struct Binding {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
-    /// Configuration schema: 1 for flat bindings or 2 for a keypad page tree.
+    /// Configuration schema: 1 for flat bindings, 2 or 3 for a keypad page tree. Schema 3 is the current one: every
+    /// profile this version saves carries it, and [`Profile::into_current`] upgrades the older two.
     pub schema_version: u32,
     /// Human-readable name of at most 128 bytes.
     pub name: String,
     /// At most 256 bindings with unique complete selectors.
     pub bindings: Vec<Binding>,
-    /// Schema-2 keypad pages; omitted from existing schema-1 profiles.
+    /// Keypad pages (schema 2 and later); omitted from schema-1 profiles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keypad: Option<KeypadLayout>,
     /// Optional ordered M131E functions cycled by a short click (schema 1 or 2).
@@ -1317,6 +2039,10 @@ pub struct Profile {
     /// existing profiles serialize unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_brightness: Option<ScreenBrightness>,
+    /// User-defined variables (schema 5), at most [`Variable::MAX_VARIABLES`].
+    /// Omitted when empty, so existing profiles serialize unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub variables: Vec<Variable>,
 }
 
 /// The brightness of the module screens, in percent. A screen left out shows at full brightness.
@@ -1355,11 +2081,34 @@ impl Profile {
     pub const MAX_JSON_BYTES: usize = 1024 * 1024;
     /// Maximum number of bindings in one profile.
     pub const MAX_BINDINGS: usize = 256;
+    /// The oldest schema this version still reads: flat bindings.
+    pub const OLDEST_SCHEMA: u32 = 1;
+    /// The schema this version writes and the newest it reads.
+    ///
+    /// History: 1 flat bindings; 2 keypad page tree, with dial functions, dial display and screen brightness added as
+    /// optional fields; 3 the same layout under a defined upgrade path, so a newer file is recognised as newer rather
+    /// than refused as malformed; 4 adds the `conditional` action. Raise it, and add an upgrade step to [`Profile::into_current`], whenever a change
+    /// would make an older build misread a profile.
+    pub const CURRENT_SCHEMA: u32 = 5;
 
     /// Parses bounded JSON and checks its complete semantic constraints.
     pub fn from_json(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > Self::MAX_JSON_BYTES {
             return Err(format!("profile exceeds {} bytes", Self::MAX_JSON_BYTES));
+        }
+        // A profile from a newer version may carry fields this one does not know, so its schema is read first.
+        #[derive(Deserialize)]
+        struct Peek {
+            schema_version: u32,
+        }
+        if let Ok(Peek { schema_version }) = serde_json::from_slice(bytes)
+            && schema_version > Self::CURRENT_SCHEMA
+        {
+            return Err(format!(
+                "this profile is schema {schema_version}, made by a newer version of Open Stream Hub; this version reads schemas {} through {}. Update the app to open it",
+                Self::OLDEST_SCHEMA,
+                Self::CURRENT_SCHEMA
+            ));
         }
         let profile: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("invalid profile JSON: {error}"))?;
@@ -1371,19 +2120,30 @@ impl Profile {
     pub fn validate(&self) -> Result<(), String> {
         match (self.schema_version, self.keypad.as_ref()) {
             (1, None) => {}
-            (2, Some(keypad)) => keypad.validate()?,
+            (2..=5, Some(keypad)) => keypad.validate()?,
             (1, Some(_)) => return Err("schema 1 profiles must omit keypad pages".into()),
-            (2, None) => return Err("schema 2 profiles require keypad pages".into()),
+            (version @ 2..=5, None) => {
+                return Err(format!("schema {version} profiles require keypad pages"));
+            }
             (version, _) => {
                 return Err(format!(
-                    "unsupported profile schema {version} (expected 1 or 2)"
+                    "unsupported profile schema {version} (expected {} through {})",
+                    Self::OLDEST_SCHEMA,
+                    Self::CURRENT_SCHEMA
                 ));
             }
         }
-        if self
+        // Key artwork and a dial animation are the bulky parts; the encoded
+        // size is checked as a whole whenever either is present.
+        let has_media = self
             .keypad
             .as_ref()
             .is_some_and(|layout| layout.pages.iter().any(|page| !page.artwork.is_empty()))
+            || self
+                .dial_display
+                .as_ref()
+                .is_some_and(|display| display.animation.is_some());
+        if has_media
             && serde_json::to_vec(self)
                 .map_err(|error| error.to_string())?
                 .len()
@@ -1409,14 +2169,16 @@ impl Profile {
         if let Some(brightness) = &self.screen_brightness {
             brightness.validate()?;
         }
+        Variable::validate_all(&self.variables)?;
         if self.binding_count() > Self::MAX_BINDINGS {
             return Err(format!("profile exceeds {} bindings", Self::MAX_BINDINGS));
         }
         let mut selectors = HashSet::new();
         for (index, binding) in self.bindings.iter().enumerate() {
-            if self.schema_version == 2 && binding.module == ServiceModule::M4315 {
+            if self.uses_keypad_pages() && binding.module == ServiceModule::M4315 {
                 return Err(format!(
-                    "binding {index}: schema 2 keypad bindings belong in keypad action tiles"
+                    "binding {index}: keypad bindings belong in keypad action tiles (schema {})",
+                    self.schema_version
                 ));
             }
             if self.dial_functions.is_some() && binding.module == ServiceModule::M131E {
@@ -1448,7 +2210,44 @@ impl Profile {
                 .validate()
                 .map_err(|error| format!("binding {index}: {error}"))?;
         }
+        self.check_variable_uses()?;
         Ok(())
+    }
+
+    /// Visits every action of every binding: flat, keypad tiles and dial functions.
+    pub fn for_each_action(&self, mut visit: impl FnMut(&Action)) {
+        for binding in &self.bindings {
+            visit(&binding.action);
+        }
+        if let Some(keypad) = &self.keypad {
+            for page in &keypad.pages {
+                for tile in page.slots.iter().flatten() {
+                    if let KeypadTile::Action { bindings, .. } = tile {
+                        for binding in bindings {
+                            visit(&binding.action);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(functions) = &self.dial_functions {
+            for function in functions {
+                for binding in &function.bindings {
+                    visit(&binding.action);
+                }
+            }
+        }
+    }
+
+    /// Every variable an action or test names must be declared, and be of the kind it needs.
+    fn check_variable_uses(&self) -> Result<(), String> {
+        let mut result = Ok(());
+        self.for_each_action(|action| {
+            if result.is_ok() {
+                result = action.check_variables(&self.variables);
+            }
+        });
+        result
     }
 
     /// Counts flat bindings, nested keypad action tile bindings, and dial function bindings.
@@ -1458,14 +2257,23 @@ impl Profile {
             + crate::dial::binding_count(self)
     }
 
-    /// Converts a valid flat profile into schema 2 without writing to storage.
+    /// Whether the keypad is a page tree (schema 2 and later) rather than flat bindings (schema 1).
+    pub fn uses_keypad_pages(&self) -> bool {
+        self.schema_version >= 2
+    }
+
+    /// Upgrades a valid profile to the current schema without writing to storage.
     ///
-    /// Every M4315 selector becomes a binding on its original root key, retaining
-    /// gesture, serial selector, and action. Other module bindings keep their
-    /// original order. A valid schema-2 profile is returned unchanged.
-    pub fn into_v2(mut self) -> Result<Self, String> {
+    /// A flat profile gets its keypad tree first: every M4315 selector becomes a binding on its original root key,
+    /// retaining gesture, serial selector, and action, and other module bindings keep their original order. A schema-2
+    /// profile only has its version raised. A profile already at the current schema is returned unchanged.
+    pub fn into_current(mut self) -> Result<Self, String> {
         self.validate()?;
-        if self.schema_version == 2 {
+        if self.schema_version == Self::CURRENT_SCHEMA {
+            return Ok(self);
+        }
+        if self.uses_keypad_pages() {
+            self.schema_version = Self::CURRENT_SCHEMA;
             return Ok(self);
         }
         let mut slots = vec![None; KeypadLayout::KEY_COUNT];
@@ -1490,7 +2298,7 @@ impl Profile {
             }
         }
         self.bindings = flat;
-        self.schema_version = 2;
+        self.schema_version = Self::CURRENT_SCHEMA;
         self.keypad = Some(KeypadLayout {
             pages: vec![KeypadPage {
                 id: KeypadLayout::ROOT_PAGE_ID.into(),
@@ -1502,6 +2310,27 @@ impl Profile {
         self.validate()?;
         Ok(self)
     }
+}
+
+/// An application bundle identifier: dotted ASCII components of letters, digits and hyphens, at most 255 bytes.
+pub(crate) fn validate_bundle_id(bundle_id: &str) -> Result<(), String> {
+    if bundle_id.len() > 255
+        || !bundle_id.contains('.')
+        || bundle_id.split('.').any(|component| {
+            !component
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+                || !component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+    {
+        return Err(
+            "application bundle ID must be a dotted ASCII identifier of at most 255 bytes".into(),
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_serial_number(serial: Option<&str>) -> Result<(), String> {
@@ -1536,6 +2365,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         }
     }
 
@@ -1707,6 +2537,168 @@ mod tests {
     }
 
     #[test]
+    fn a_dial_animation_is_bounded_and_starts_with_the_still_image() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let first = dial_jpeg();
+        let other = {
+            let image = image::RgbImage::from_pixel(240, 240, image::Rgb([200, 20, 30]));
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+                .encode_image(&image)
+                .unwrap();
+            STANDARD.encode(jpeg)
+        };
+        let frame =
+            |jpeg: &str, delay: u32| format!(r#"{{"jpeg_base64":"{jpeg}","delay_ms":{delay}}}"#);
+        let profile = |content: &str, image: &str, frames: &[String], extra: &str| {
+            let image = if image.is_empty() {
+                String::new()
+            } else {
+                format!(r#","image":"{image}""#)
+            };
+            Profile::from_json(
+                format!(
+                    r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"{content}"{image}{extra},"animation":{{"frames":[{}],"loop_count":0}}}}}}"#,
+                    frames.join(",")
+                )
+                .as_bytes(),
+            )
+        };
+        let two = [frame(&first, 200), frame(&other, 60_000)];
+        let ok = profile("image", &first, &two, "").unwrap();
+        // Serializing and reading it back changes nothing.
+        let again = Profile::from_json(&serde_json::to_vec(&ok).unwrap()).unwrap();
+        assert_eq!(again, ok);
+        let many: Vec<String> = (0..31).map(|_| frame(&first, 200)).collect();
+        let source = format!(
+            r#","source":{{"image":"{}","fit":"contain","quarter_turns":0,"background":[0,0,0]}}"#,
+            STANDARD.encode(b"\x89PNG\r\n\x1a\n")
+        );
+        for (label, result) in [
+            ("one frame", profile("image", &first, &two[..1], "")),
+            ("31 frames", profile("image", &first, &many, "")),
+            (
+                "too short",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 65), frame(&other, 150)],
+                    "",
+                ),
+            ),
+            (
+                "too long",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame(&other, 60_001)],
+                    "",
+                ),
+            ),
+            ("still differs", profile("image", &other, &two, "")),
+            ("no still", profile("image", "", &two, "")),
+            ("wrong content", profile("clock", &first, &two, "")),
+            ("with a source", profile("image", &first, &two, &source)),
+            (
+                "not a jpeg",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame("AAAA", 200)],
+                    "",
+                ),
+            ),
+            (
+                "bad base64",
+                profile(
+                    "image",
+                    &first,
+                    &[frame(&first, 200), frame("!!!!", 200)],
+                    "",
+                ),
+            ),
+        ] {
+            assert!(result.is_err(), "{label} should be refused");
+        }
+        // The source rule itself is what refuses a source beside an animation.
+        let error = profile("image", &first, &two, &source).unwrap_err();
+        assert!(error.to_string().contains("no source picture"), "{error}");
+    }
+
+    #[test]
+    fn a_dial_frame_may_not_last_less_than_its_size_allows() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        // Pseudo-random pixels do not compress, so the JPEG size follows the quality.
+        let noise = |quality: u8| {
+            let mut seed = 0x2545_f491_u32;
+            let image = image::RgbImage::from_fn(240, 240, |_, _| {
+                let mut next = || {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (seed >> 24) as u8
+                };
+                image::Rgb([next(), next(), next()])
+            });
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
+                .encode_image(&image)
+                .unwrap();
+            jpeg
+        };
+        let profile = |jpeg: &[u8], delay: u32| {
+            let encoded = STANDARD.encode(jpeg);
+            Profile::from_json(
+                format!(
+                    r#"{{"schema_version":1,"name":"Desk","bindings":[],"dial_display":{{"content":"image","image":"{encoded}","animation":{{"frames":[{{"jpeg_base64":"{encoded}","delay_ms":{delay}}},{{"jpeg_base64":"{encoded}","delay_ms":60000}}],"loop_count":0}}}}}}"#
+                )
+                .as_bytes(),
+            )
+        };
+        let mut floors = std::collections::BTreeSet::new();
+        for quality in [4, 12, 25, 40] {
+            let jpeg = noise(quality);
+            let floor = crate::dial::DialAnimation::min_delay_ms_for(jpeg.len());
+            floors.insert(floor);
+            let at = profile(&jpeg, floor);
+            assert!(at.is_ok(), "{} bytes at {floor} ms: {at:?}", jpeg.len());
+            let below = profile(&jpeg, floor - 1).unwrap_err();
+            assert!(
+                below.contains(&format!("lasts {floor} through")),
+                "{} bytes: {below}",
+                jpeg.len()
+            );
+        }
+        // The four qualities reach all three size classes.
+        assert_eq!(
+            floors.into_iter().collect::<Vec<_>>(),
+            [
+                crate::dial::DialAnimation::FASTEST_DELAY_MS,
+                crate::dial::DialAnimation::MEDIUM_DELAY_MS,
+                crate::dial::DialAnimation::MIN_DELAY_MS
+            ]
+        );
+    }
+
+    #[test]
+    fn the_dial_floor_has_three_steps_at_the_size_boundaries() {
+        let small = crate::dial::DialAnimation::SMALL_FRAME_BYTES;
+        let medium = crate::dial::DialAnimation::MEDIUM_FRAME_BYTES;
+        for (bytes, floor) in [
+            (0, 66),
+            (small, 66),
+            (small + 1, 100),
+            (medium, 100),
+            (medium + 1, 150),
+            (crate::dial::DialAnimation::MAX_FRAME_BYTES, 150),
+        ] {
+            assert_eq!(
+                crate::dial::DialAnimation::min_delay_ms_for(bytes),
+                floor,
+                "{bytes} bytes"
+            );
+        }
+    }
+
+    #[test]
     fn a_dial_source_picture_is_kept_only_with_the_image_it_made() {
         use base64::Engine as _;
         let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -1787,6 +2779,78 @@ mod tests {
         profile.name = "Desk".into();
         profile.bindings = vec![profile.bindings[0].clone(); Profile::MAX_BINDINGS + 1];
         assert!(profile.validate().unwrap_err().contains("exceeds"));
+    }
+
+    #[test]
+    fn a_profile_from_a_newer_version_is_named_as_such_even_with_fields_this_version_lacks() {
+        let next = Profile::CURRENT_SCHEMA + 1;
+        let json = format!(
+            r#"{{"schema_version":{next},"name":"Desk","bindings":[],"a_future_field":{{"x":1}}}}"#
+        );
+        let error = Profile::from_json(json.as_bytes()).unwrap_err();
+        assert!(error.contains(&format!("schema {next}")), "{error}");
+        assert!(error.contains("newer version"), "{error}");
+        assert!(error.contains("Update the app"), "{error}");
+        // Schema 0 was never written, so that is malformed rather than newer.
+        let zero = Profile::from_json(br#"{"schema_version":0,"name":"Desk","bindings":[]}"#);
+        assert!(zero.unwrap_err().contains("unsupported profile schema 0"));
+        // A file claiming a schema this version reads still gets the unknown-field refusal.
+        let current = format!(
+            r#"{{"schema_version":{},"name":"Desk","bindings":[],"a_future_field":1}}"#,
+            Profile::CURRENT_SCHEMA
+        );
+        assert!(Profile::from_json(current.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn every_older_schema_upgrades_to_the_current_one_and_stays_valid() {
+        let flat = sample();
+        assert_eq!(flat.schema_version, 1);
+        let from_flat = flat.clone().into_current().unwrap();
+        assert_eq!(from_flat.schema_version, Profile::CURRENT_SCHEMA);
+        assert!(from_flat.keypad.is_some());
+        let mut pages = from_flat.clone();
+        pages.schema_version = 2;
+        assert!(pages.validate().is_ok());
+        let from_pages = pages.clone().into_current().unwrap();
+        assert_eq!(from_pages.schema_version, Profile::CURRENT_SCHEMA);
+        assert_eq!(from_pages.keypad, pages.keypad);
+        assert_eq!(from_pages, from_flat);
+        // Already current: returned as it is, and upgrading again changes nothing.
+        assert_eq!(from_flat.clone().into_current().unwrap(), from_flat);
+        // Round trip through JSON keeps the schema.
+        let json = serde_json::to_vec(&from_flat).unwrap();
+        assert_eq!(Profile::from_json(&json).unwrap(), from_flat);
+    }
+
+    #[test]
+    fn schemas_two_and_three_need_pages_and_one_must_not_have_them() {
+        let mut profile = sample().into_current().unwrap();
+        profile.keypad = None;
+        for version in [2, 3] {
+            profile.schema_version = version;
+            assert!(
+                profile
+                    .validate()
+                    .unwrap_err()
+                    .contains("require keypad pages")
+            );
+        }
+        let mut with_pages = sample().into_current().unwrap();
+        with_pages.schema_version = 1;
+        assert!(
+            with_pages
+                .validate()
+                .unwrap_err()
+                .contains("must omit keypad pages")
+        );
+        with_pages.schema_version = Profile::CURRENT_SCHEMA + 1;
+        assert!(
+            with_pages
+                .validate()
+                .unwrap_err()
+                .contains("unsupported profile schema")
+        );
     }
 
     #[test]
@@ -2408,6 +3472,467 @@ mod tests {
     }
 
     #[test]
+    fn conditional_round_trips_and_is_strict() {
+        let json = r#"{"type":"conditional","when":{"obs_recording":true},"then":[{"type":"obs_record","op":"stop"}],"else":[{"type":"obs_record","op":"start"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(
+            action,
+            Action::Conditional {
+                when: Condition::Recording(true),
+                then: vec![Action::ObsRecord {
+                    op: ObsRecordOp::Stop
+                }],
+                otherwise: vec![Action::ObsRecord {
+                    op: ObsRecordOp::Start
+                }],
+            }
+        );
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+
+        // `else` is optional and is left out again when empty.
+        let short = r#"{"type":"conditional","when":{"obs_streaming":false},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(short).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), short);
+
+        for bad in [
+            // two keys in `when`, an unknown condition, a non-boolean value
+            r#"{"type":"conditional","when":{"obs_recording":true,"obs_streaming":true},"then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_cloud":true},"then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_recording":"yes"},"then":[{"type":"toggle_mute"}]}"#,
+            // a missing condition or branch, and an unknown field
+            r#"{"type":"conditional","then":[{"type":"toggle_mute"}]}"#,
+            r#"{"type":"conditional","when":{"obs_recording":true}}"#,
+            r#"{"type":"conditional","when":{"obs_recording":true},"then":[{"type":"toggle_mute"}],"extra":1}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn conditional_branches_follow_the_multi_action_step_rules() {
+        let mute = || Action::ToggleMute;
+        let conditional = |then: Vec<Action>, otherwise: Vec<Action>| Action::Conditional {
+            when: Condition::Streaming(true),
+            then,
+            otherwise,
+        };
+        conditional(vec![mute()], vec![]).validate().unwrap();
+        conditional(vec![mute(); 8], vec![mute(); 8])
+            .validate()
+            .unwrap();
+
+        assert!(
+            conditional(vec![], vec![mute()])
+                .validate()
+                .unwrap_err()
+                .contains("1 to 8 steps")
+        );
+        assert!(
+            conditional(vec![mute(); 9], vec![])
+                .validate()
+                .unwrap_err()
+                .contains("1 to 8 steps")
+        );
+        assert!(
+            conditional(vec![mute()], vec![mute(); 9])
+                .validate()
+                .unwrap_err()
+                .contains("at most 8 steps")
+        );
+
+        // Nothing a multi_action step cannot be (a conditional may nest).
+        for step in [
+            Action::MultiAction {
+                actions: vec![mute(), mute()],
+            },
+            Action::Macro {
+                steps: vec![MacroStep {
+                    key: "a".into(),
+                    modifiers: vec![],
+                    delay_before_ms: 0,
+                    hold_ms: 50,
+                }],
+            },
+            Action::Profile {
+                direction: ProfileDirection::Next,
+            },
+            Action::Timer {
+                seconds: 5,
+                label: None,
+                sound: None,
+            },
+            Action::VolumeFromPosition,
+        ] {
+            let name = step.type_name();
+            let error = conditional(vec![mute()], vec![step.clone()])
+                .validate()
+                .unwrap_err();
+            assert!(
+                error.contains(&format!("conditional else step 1: {name} cannot be")),
+                "{error}"
+            );
+            let error = conditional(vec![step], vec![]).validate().unwrap_err();
+            assert!(
+                error.contains(&format!("conditional then step 1: {name} cannot be")),
+                "{error}"
+            );
+        }
+
+        // An invalid step is named with its branch.
+        let error = conditional(vec![mute(), Action::SetVolume { percent: 101 }], vec![])
+            .validate()
+            .unwrap_err();
+        assert!(error.contains("conditional then step 2"), "{error}");
+        // A conditional is never a multi_action step either.
+        let error = Action::MultiAction {
+            actions: vec![mute(), conditional(vec![mute()], vec![])],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("conditional cannot be a multi_action step"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn system_conditions_parse_validate_and_need_obs_only_for_obs_steps() {
+        let json = r#"{"type":"conditional","when":{"output_volume_at_least":50},"then":[{"type":"toggle_mute"}],"else":[{"type":"set_volume","percent":50}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        let muted: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"output_muted":false},"then":[{"type":"obs_scene","scene":"Live"}]}"#,
+        )
+        .unwrap();
+        muted.validate().unwrap();
+        assert!(muted.uses_obs(), "an OBS step still needs the endpoint");
+        let high: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"output_volume_at_least":101},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        assert!(high.validate().unwrap_err().contains("between 0 and 100"));
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"output_volume_at_least":-1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn focused_app_is_a_bundle_id_string_that_needs_no_obs() {
+        let json = r#"{"type":"conditional","when":{"all":[{"focused_app":"com.apple.finder"},{"output_muted":false}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        for bad in [
+            "finder",
+            "",
+            "com..x",
+            "com.apple.fin der",
+            "com.apple.\u{e9}",
+        ] {
+            let action = Action::Conditional {
+                when: Condition::FocusedApp(bad.into()),
+                then: vec![Action::ToggleMute],
+                otherwise: vec![],
+            };
+            assert!(
+                action.validate().unwrap_err().contains("bundle ID"),
+                "{bad:?}"
+            );
+        }
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"focused_app":true},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn timer_running_is_a_plain_condition_that_needs_no_obs() {
+        let json = r#"{"type":"conditional","when":{"any":[{"timer_running":true},{"output_muted":true}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"timer_running":1},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn all_and_any_combine_two_to_eight_conditions() {
+        let json = r#"{"type":"conditional","when":{"all":[{"output_muted":false},{"output_volume_at_least":30}]},"then":[{"type":"toggle_mute"}]}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        action.validate().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        assert!(!action.uses_obs());
+        let any: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"any":[{"output_muted":true},{"obs_recording":true}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        any.validate().unwrap();
+        assert!(any.uses_obs(), "one OBS member needs the endpoint");
+
+        let combined = |kind: &str, count: usize| -> Action {
+            let items = vec![r#"{"output_muted":true}"#; count].join(",");
+            serde_json::from_str(&format!(
+                r#"{{"type":"conditional","when":{{"{kind}":[{items}]}},"then":[{{"type":"toggle_mute"}}]}}"#
+            ))
+            .unwrap()
+        };
+        combined("all", 8).validate().unwrap();
+        for count in [0, 1, 9] {
+            let error = combined("any", count).validate().unwrap_err();
+            assert!(
+                error.contains("any must combine 2 to 8 conditions"),
+                "{error}"
+            );
+        }
+        // Groups nest and mix; the nesting is the grouping.
+        let nested: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"any":[{"output_muted":false},{"output_muted":true}]}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        nested.validate().unwrap();
+        assert_eq!(nested.type_name(), "conditional");
+        // A bad member is named by its own rule.
+        let high: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"all":[{"output_muted":true},{"output_volume_at_least":101}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        assert!(high.validate().unwrap_err().contains("between 0 and 100"));
+        assert!(
+            serde_json::from_str::<Action>(
+                r#"{"type":"conditional","when":{"all":[{"output_muted":true}],"any":[]},"then":[{"type":"toggle_mute"}]}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn conditions_nest_to_three_levels_and_sixteen_tests() {
+        let leaf = || Condition::OutputMuted(true);
+        let all = |items: Vec<Condition>| Condition::All(items);
+        let any = |items: Vec<Condition>| Condition::Any(items);
+        let three = all(vec![leaf(), any(vec![leaf(), all(vec![leaf(), leaf()])])]);
+        three.validate().unwrap();
+        assert_eq!(three.leaf_count(), 4);
+        let four = all(vec![
+            leaf(),
+            any(vec![leaf(), all(vec![leaf(), any(vec![leaf(), leaf()])])]),
+        ]);
+        assert!(
+            four.validate()
+                .unwrap_err()
+                .contains("nested more than 3 levels")
+        );
+        // 3 groups of 6 = 18 tests.
+        let wide = all(vec![
+            any(vec![leaf(); 6].into_iter().collect()),
+            any(vec![leaf(); 6]),
+            any(vec![leaf(); 6]),
+        ]);
+        assert!(wide.validate().unwrap_err().contains("at most 16 tests"));
+        // A nested group is checked by its own size rule.
+        let thin = all(vec![leaf(), any(vec![leaf()])]);
+        assert!(
+            thin.validate()
+                .unwrap_err()
+                .contains("any must combine 2 to 8")
+        );
+    }
+
+    #[test]
+    fn a_conditional_nests_in_a_branch_to_three_levels_and_thirty_two_steps() {
+        let mute = || Action::ToggleMute;
+        let cond = |then: Vec<Action>, otherwise: Vec<Action>| Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then,
+            otherwise,
+        };
+        let two = cond(vec![cond(vec![mute()], vec![mute()])], vec![mute()]);
+        two.validate().unwrap();
+        let three = cond(vec![cond(vec![cond(vec![mute()], vec![])], vec![])], vec![]);
+        three.validate().unwrap();
+        let four = cond(vec![three.clone()], vec![]);
+        let error = four.validate().unwrap_err();
+        assert!(error.contains("nested more than 3 levels"), "{error}");
+        // A nested step is named with its position.
+        let bad = cond(
+            vec![
+                mute(),
+                cond(vec![Action::SetVolume { percent: 101 }], vec![]),
+            ],
+            vec![],
+        );
+        let error = bad.validate().unwrap_err();
+        assert!(
+            error.contains("conditional then step 2: conditional then step 1"),
+            "{error}"
+        );
+        // 8 + 8 nested + 8 nested + 8 nested = more than 32 steps counted.
+        let inner = || cond(vec![mute(); 8], vec![mute(); 8]);
+        let many = cond(
+            vec![
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+                inner(),
+            ],
+            vec![],
+        );
+        assert!(many.validate().unwrap_err().contains("at most 32 steps"));
+        // Never a multi_action step.
+        let error = Action::MultiAction {
+            actions: vec![mute(), two],
+        }
+        .validate()
+        .unwrap_err();
+        assert!(
+            error.contains("conditional cannot be a multi_action step"),
+            "{error}"
+        );
+        // Round trip through JSON.
+        let json = serde_json::to_string(&three).unwrap();
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), three);
+    }
+
+    #[test]
+    fn variables_are_declared_once_and_every_use_must_match_the_declaration() {
+        let declared = |json: &str| -> Profile {
+            let mut profile = sample();
+            profile.variables = serde_json::from_str(json).unwrap();
+            profile
+        };
+        let uses = |action: Action| -> Result<(), String> {
+            let mut profile = declared(
+                r#"[{"name":"takes","value":0},{"name":"live","value":false},{"name":"scene","value":"intro"}]"#,
+            );
+            profile.bindings[0].action = action;
+            profile.validate()
+        };
+        let parse = |json: &str| -> Action { serde_json::from_str(json).unwrap() };
+
+        uses(parse(
+            r#"{"type":"add_to_variable","name":"takes","amount":1}"#,
+        ))
+        .unwrap();
+        uses(parse(r#"{"type":"toggle_variable","name":"live"}"#)).unwrap();
+        uses(parse(
+            r#"{"type":"set_variable","name":"scene","value":"outro"}"#,
+        ))
+        .unwrap();
+        uses(parse(
+            r#"{"type":"conditional","when":{"all":[{"variable_is":{"name":"live","value":true}},{"variable_at_least":{"name":"takes","value":3}}]},"then":[{"type":"toggle_variable","name":"live"}]}"#,
+        ))
+        .unwrap();
+        // Usable as a multi_action step too.
+        uses(parse(
+            r#"{"type":"multi_action","actions":[{"type":"toggle_variable","name":"live"},{"type":"toggle_mute"}]}"#,
+        ))
+        .unwrap();
+
+        for (json, expected) in [
+            (
+                r#"{"type":"toggle_variable","name":"missing"}"#,
+                "not declared",
+            ),
+            (
+                r#"{"type":"toggle_variable","name":"takes"}"#,
+                "is number, not bool",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"live","amount":1}"#,
+                "is bool, not number",
+            ),
+            (
+                r#"{"type":"set_variable","name":"takes","value":"x"}"#,
+                "is number, not text",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"takes","amount":0}"#,
+                "nonzero",
+            ),
+            (
+                r#"{"type":"add_to_variable","name":"takes","amount":1000001}"#,
+                "between",
+            ),
+            (
+                r#"{"type":"set_variable","name":"Bad Name","value":1}"#,
+                "variable names",
+            ),
+            (
+                r#"{"type":"conditional","when":{"variable_at_least":{"name":"live","value":1}},"then":[{"type":"toggle_mute"}]}"#,
+                "is bool, not number",
+            ),
+            (
+                r#"{"type":"conditional","when":{"any":[{"output_muted":true},{"variable_is":{"name":"takes","value":true}}]},"then":[{"type":"toggle_mute"}]}"#,
+                "is number, not bool",
+            ),
+        ] {
+            let error = uses(parse(json)).unwrap_err();
+            assert!(error.contains(expected), "{json}: {error}");
+        }
+
+        // Declarations: unique, bounded, well-formed, kinds fixed by the value.
+        let error = |json: &str| {
+            Variable::validate_all(&serde_json::from_str::<Vec<Variable>>(json).unwrap())
+                .unwrap_err()
+        };
+        assert!(error(r#"[{"name":"a","value":1},{"name":"a","value":2}]"#).contains("twice"));
+        assert!(error(r#"[{"name":"a","value":2000000}]"#).contains("between"));
+        assert!(error(r#"[{"name":"a","value":"line\nbreak"}]"#).contains("control"));
+        let many: Vec<Variable> = (0..17)
+            .map(|index| Variable {
+                name: format!("v{index}"),
+                value: VariableValue::Bool(false),
+            })
+            .collect();
+        assert!(
+            Variable::validate_all(&many)
+                .unwrap_err()
+                .contains("at most 16")
+        );
+        // Unknown fields are refused, and JSON round trips.
+        assert!(serde_json::from_str::<Variable>(r#"{"name":"a","value":1,"x":2}"#).is_err());
+        let profile = declared(r#"[{"name":"takes","value":0}]"#);
+        let json = serde_json::to_string(&profile).unwrap();
+        assert!(json.contains(r#""variables":[{"name":"takes","value":0}]"#));
+    }
+
+    #[test]
+    fn a_profile_without_variables_serializes_without_the_field() {
+        let json = serde_json::to_string(&sample()).unwrap();
+        assert!(!json.contains("variables"));
+    }
+
+    #[test]
+    fn a_conditional_needs_obs_even_when_its_steps_do_not() {
+        let action = Action::Conditional {
+            when: Condition::Recording(true),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        assert!(action.uses_obs());
+        assert_eq!(action.type_name(), "conditional");
+    }
+
+    #[test]
     fn timers_bind_to_discrete_controls_only_and_never_as_multi_action_steps() {
         let error = Action::MultiAction {
             actions: vec![Action::ToggleMute, timer(5, None, None)],
@@ -2490,6 +4015,123 @@ mod tests {
                 .unwrap_err()
                 .starts_with("binding 0: obs_scene")
         );
+    }
+
+    #[test]
+    fn obs_audio_and_media_actions_have_a_closed_json_shape() {
+        for json in [
+            r#"{"type":"obs_input_mute","input":"Mic","op":"toggle"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"mute"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"unmute"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":-3}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":20}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_pause"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_stop"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play_restart"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"stop"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs());
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_input_mute","input":"Mic"}"#,
+            r#"{"type":"obs_input_mute","input":"Mic","op":"on"}"#,
+            r#"{"type":"obs_media_source","input":"Intro","op":"play"}"#,
+            r#"{"type":"obs_media_source","op":"stop"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic"}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":1.5}"#,
+            r#"{"type":"obs_adjust_input_volume","input":"Mic","step_db":300}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        for step_db in [0, 21, -21, i8::MIN] {
+            let action = Action::ObsAdjustInputVolume {
+                input: "Mic".into(),
+                step_db,
+            };
+            assert!(action.validate().is_err(), "{step_db}");
+        }
+        let empty = Action::ObsMediaSource {
+            input: " ".into(),
+            op: ObsMediaOp::Stop,
+        };
+        assert!(empty.validate().is_err());
+    }
+
+    #[test]
+    fn a_stream_confirm_is_closed_and_only_for_a_keys_own_action() {
+        let json = r#"{"type":"obs_stream","op":"toggle","confirm":"press_twice"}"#;
+        let action: Action = serde_json::from_str(json).unwrap();
+        assert!(action.needs_confirmation());
+        action.validate_executable().unwrap();
+        assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        let plain: Action = serde_json::from_str(r#"{"type":"obs_stream","op":"stop"}"#).unwrap();
+        assert!(!plain.needs_confirmation());
+        for json in [
+            r#"{"type":"obs_stream","op":"toggle","confirm":null}"#,
+            r#"{"type":"obs_stream","op":"toggle","confirm":"hold"}"#,
+            r#"{"type":"obs_stream","op":"toggle","confirm":true}"#,
+            r#"{"type":"obs_record","op":"toggle","confirm":"press_twice"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        // A multi_action step cannot carry it; the unguarded stream is fine.
+        let step = |confirm| Action::MultiAction {
+            actions: vec![
+                Action::ToggleMute,
+                Action::ObsStream {
+                    op: ObsOutputOp::Start,
+                    confirm,
+                },
+            ],
+        };
+        step(None).validate().unwrap();
+        assert!(step(Some(ObsConfirm::PressTwice)).validate().is_err());
+    }
+
+    #[test]
+    fn obs_stream_and_record_actions_have_a_closed_json_shape() {
+        for json in [
+            r#"{"type":"obs_stream","op":"toggle"}"#,
+            r#"{"type":"obs_stream","op":"start"}"#,
+            r#"{"type":"obs_stream","op":"stop"}"#,
+            r#"{"type":"obs_record","op":"toggle"}"#,
+            r#"{"type":"obs_record","op":"start"}"#,
+            r#"{"type":"obs_record","op":"stop"}"#,
+            r#"{"type":"obs_record","op":"pause"}"#,
+            r#"{"type":"obs_record","op":"resume"}"#,
+            r#"{"type":"obs_record","op":"toggle_pause"}"#,
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert!(action.uses_obs());
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        for json in [
+            r#"{"type":"obs_stream"}"#,
+            r#"{"type":"obs_stream","op":"pause"}"#,
+            r#"{"type":"obs_stream","op":"toggle","endpoint":"127.0.0.1:4455"}"#,
+            r#"{"type":"obs_record"}"#,
+            r#"{"type":"obs_record","op":"save"}"#,
+            r#"{"type":"obs_record","op":"Toggle"}"#,
+        ] {
+            assert!(serde_json::from_str::<Action>(json).is_err(), "{json}");
+        }
+        let nested = Action::MultiAction {
+            actions: vec![
+                Action::ObsRecord {
+                    op: ObsRecordOp::Start,
+                },
+                Action::ObsStream {
+                    op: ObsOutputOp::Start,
+                    confirm: None,
+                },
+            ],
+        };
+        assert!(nested.uses_obs());
+        nested.validate_executable().unwrap();
     }
 
     #[test]

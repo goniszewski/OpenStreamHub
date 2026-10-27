@@ -122,7 +122,8 @@ mod tap {
 
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
-        static kCFRunLoopCommonModes: c_void;
+        // A `CFStringRef` constant: the symbol holds the pointer, so pass its value, never its address.
+        static kCFRunLoopCommonModes: *const c_void;
 
         fn CFMachPortCreateRunLoopSource(
             allocator: *const c_void,
@@ -239,7 +240,7 @@ mod tap {
             }
             let runloop = CFRunLoopGetCurrent();
             *runloop_slot.lock().unwrap() = Some(runloop as usize);
-            CFRunLoopAddSource(runloop, source, &kCFRunLoopCommonModes);
+            CFRunLoopAddSource(runloop, source, kCFRunLoopCommonModes);
             CFRunLoopRun();
             CFRelease(source);
             CFRelease(port);

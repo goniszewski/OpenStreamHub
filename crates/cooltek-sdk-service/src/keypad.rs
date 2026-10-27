@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn migration_preserves_selectors_and_other_modules() {
         let profile = Profile::from_json(br#"{"schema_version":1,"name":"Legacy","bindings":[{"module":"m4315","control":14,"gesture":"released","serial_number":"Desk","action":{"type":"toggle_mute"}},{"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"volume","delta":5}}]}"#).unwrap();
-        let migrated = profile.clone().into_v2().unwrap();
+        let migrated = profile.clone().into_current().unwrap();
         assert_eq!(migrated.binding_count(), profile.binding_count());
         assert_eq!(migrated.bindings, vec![profile.bindings[1].clone()]);
         let Some(KeypadTile::Action { bindings, .. }) =

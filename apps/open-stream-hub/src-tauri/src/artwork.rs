@@ -10,8 +10,8 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use cooltek_sdk_cli::image_prep::{
-    FitMode, PrepareOptions, prepare_image, prepare_keypad_artwork, prepare_keypad_image,
-    within_frame_budget,
+    FitMode, PrepareOptions, prepare_dial_animation_within as prepare_dial_animation_frames,
+    prepare_image, prepare_keypad_artwork, prepare_keypad_image, within_frame_budget,
 };
 use cooltek_sdk_masterhub::{dial, keypad};
 use serde::{Deserialize, Serialize};
@@ -67,6 +67,10 @@ pub struct PrepareRequest {
     pub fit: Fit,
     pub quarter_turns: u32,
     pub background: [u8; 3],
+    /// Only a dial animation uses it: the most KiB one frame may take, 1 through 48, so a faster
+    /// preset can ask for smaller frames. Left out, a frame may take the dial's 48 KiB.
+    #[serde(default)]
+    pub frame_budget_kib: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -112,6 +116,7 @@ impl SaveRequest {
             fit: self.fit,
             quarter_turns: self.quarter_turns,
             background: self.background,
+            frame_budget_kib: None,
         }
     }
 }
@@ -198,6 +203,46 @@ pub fn prepare_key_artwork(
     // that the profile would then refuse.
     artwork.validate()?;
     Ok(artwork)
+}
+
+/// Prepares a GIF as the dial's animation without opening hardware.
+pub fn prepare_dial_animation(
+    request: &PrepareRequest,
+) -> Result<cooltek_sdk_service::DialAnimation, String> {
+    if request.target != Target::Dial {
+        return Err("A dial animation requires the dial target".into());
+    }
+    let options = options(request)?;
+    let budget = match request.frame_budget_kib {
+        None => cooltek_sdk_service::DialAnimation::MAX_FRAME_BYTES,
+        Some(kib @ 1..=48) => kib as usize * 1024,
+        Some(_) => return Err("A frame budget must be 1 through 48 KiB".into()),
+    };
+    let input = decode_input(&request.image_base64)?;
+    let prepared = prepare_dial_animation_frames(&input, options, budget)?;
+    let animation = cooltek_sdk_service::DialAnimation {
+        frames: prepared
+            .frames
+            .into_iter()
+            .map(|frame| cooltek_sdk_service::DialAnimationFrame {
+                jpeg_base64: STANDARD.encode(frame.jpeg),
+                delay_ms: frame.delay_ms,
+            })
+            .collect(),
+        loop_count: prepared.loop_count,
+    };
+    // The same check a saved profile gets, so the editor never holds frames
+    // that the profile would then refuse. A one-frame GIF is not an animation:
+    // it comes back as its single frame, which the editor stores as a still.
+    if let [only] = animation.frames.as_slice() {
+        let jpeg = STANDARD
+            .decode(&only.jpeg_base64)
+            .map_err(|error| error.to_string())?;
+        dial::validate_jpeg(&jpeg).map_err(|error| error.to_string())?;
+    } else {
+        animation.jpegs()?;
+    }
+    Ok(animation)
 }
 
 pub fn prepare_artwork(request: &PrepareRequest) -> Result<PrepareResult, String> {
@@ -326,6 +371,7 @@ mod tests {
             fit,
             quarter_turns,
             background: [0, 0, 0],
+            frame_budget_kib: None,
         }
     }
 
@@ -362,6 +408,77 @@ mod tests {
                 .unwrap_err()
                 .contains("keypad target")
         );
+    }
+
+    /// Two 1×1 frames, 250 ms each, repeating forever.
+    fn tiny_gif() -> Vec<u8> {
+        tiny_gif_of(2)
+    }
+
+    fn tiny_gif_of(frames: usize) -> Vec<u8> {
+        let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
+        gif.extend_from_slice(b"\x21\xff\x0bNETSCAPE2.0\x03\x01\x00\x00\x00");
+        for _ in 0..frames {
+            gif.extend_from_slice(b"\x21\xf9\x04\x00\x19\x00\x00\x00");
+            gif.extend_from_slice(b"\x2c\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02\x44\x01\x00");
+        }
+        gif.push(0x3b);
+        gif
+    }
+
+    #[test]
+    fn a_gif_becomes_dial_frames_and_other_input_or_targets_are_refused() {
+        let asked = request(&tiny_gif(), Target::Dial, Fit::Cover, 0);
+        let animation = prepare_dial_animation(&asked).unwrap();
+        assert_eq!(animation.frames.len(), 2);
+        assert_eq!(animation.loop_count, 0);
+        assert!(animation.frames.iter().all(|frame| frame.delay_ms == 250));
+        assert_eq!(animation.jpegs().unwrap().len(), 2);
+        // Keys have their own artwork path; a still is not an animation.
+        let keypad = request(&tiny_gif(), Target::Keypad, Fit::Cover, 0);
+        assert!(prepare_dial_animation(&keypad).is_err());
+        let still = request(&png(&RgbImage::new(4, 4)), Target::Dial, Fit::Cover, 0);
+        assert!(prepare_dial_animation(&still).unwrap_err().contains("GIF"));
+    }
+
+    #[test]
+    fn a_dial_animation_frame_budget_is_one_through_48_kib() {
+        let asked = request(&tiny_gif(), Target::Dial, Fit::Cover, 0);
+        for kib in [8, 20, 48] {
+            let animation = prepare_dial_animation(&PrepareRequest {
+                frame_budget_kib: Some(kib),
+                ..asked.clone()
+            })
+            .unwrap_or_else(|error| panic!("{kib} KiB: {error}"));
+            assert_eq!(animation.frames.len(), 2);
+        }
+        // A budget the frames cannot reach, even at the lowest quality, is a refusal too.
+        let unreachable = prepare_dial_animation(&PrepareRequest {
+            frame_budget_kib: Some(1),
+            ..asked.clone()
+        })
+        .unwrap_err();
+        assert!(
+            unreachable.contains("even at JPEG quality 10"),
+            "{unreachable}"
+        );
+        for kib in [0, 49, 1000] {
+            let error = prepare_dial_animation(&PrepareRequest {
+                frame_budget_kib: Some(kib),
+                ..asked.clone()
+            })
+            .unwrap_err();
+            assert!(error.contains("1 through 48 KiB"), "{kib}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_one_frame_gif_comes_back_as_its_single_frame_for_a_still() {
+        let asked = request(&tiny_gif_of(1), Target::Dial, Fit::Cover, 0);
+        let animation = prepare_dial_animation(&asked).unwrap();
+        assert_eq!(animation.frames.len(), 1);
+        let jpeg = STANDARD.decode(&animation.frames[0].jpeg_base64).unwrap();
+        assert!(dial::validate_jpeg(&jpeg).is_ok());
     }
 
     #[test]

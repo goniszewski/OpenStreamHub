@@ -7,6 +7,7 @@ import { obsOperationLabels } from './action-model';
 import type { ObsStepAction } from './action-model';
 import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
 import type { BindingAction, ObsNameList, StepAction } from './contracts';
+import { VariablesContext } from './variables-context';
 
 const render = (action: BindingAction | null, fader = false, onSetUpObs: (() => void) | null = () => {}) =>
   renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} onSetUpObs={onSetUpObs ?? undefined} />);
@@ -548,5 +549,132 @@ describe('obs combo', () => {
     const plain = comboOf({ entry: null }, () => { requested = 'plain'; });
     inputOf(plain.tree).onClick({ target: null });
     expect(requested).toBe('once');
+  });
+
+  it('edits a conditional: the condition, a Then list that cannot be emptied and an optional Otherwise list', () => {
+    const markup = render({ type: 'conditional', when: { output_volume_at_least: 40 }, then: [{ type: 'toggle_mute' }], else: [{ type: 'set_volume', percent: 20 }] });
+    expect(markup).toContain('<label for="conditional-when">If</label>');
+    expect(markup).toContain('<label class="spaced-label" for="conditional-volume">Volume (%)</label>');
+    expect(markup).toContain('then-step-1-action');
+    expect(markup).toContain('else-step-1-action');
+    expect(markup).toContain('aria-label="Remove then step 1"');
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove then step 1"/);
+    expect(markup).toContain('aria-label="Remove otherwise step 1"');
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*aria-label="Remove otherwise step 1"/);
+    // An output condition and non-OBS steps need no OBS connection.
+    expect(markup).not.toContain('OBS connection');
+    expectAccessible(markup);
+    const yesNo = render({ type: 'conditional', when: { obs_recording: false }, then: [{ type: 'obs_record', op: 'start' }] });
+    expect(yesNo).toContain('for="conditional-value"');
+    expect(yesNo).toContain('<option value="false" selected="">False</option>');
+    expect(yesNo).toContain('OBS');
+    expect(yesNo).not.toContain('else-step-1-action');
+    expectAccessible(yesNo);
+    // Neither list offers a conditional or a multi-action as a step.
+    expect(markup.match(/>If \/ else<\/span>/g)).toHaveLength(1);
+  });
+
+  it('edits several tests as a group: a row each, arrows and Remove for each, and how they combine', () => {
+    const one = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });
+    expect(one).toContain('for="conditional-when">If</label>');
+    expect(one).toContain('id="conditional-add"');
+    expect(one).toContain('Add OR group');
+    expect(one).not.toContain('conditional-mode');
+    expect(one).not.toContain('Move this test');
+    const two = render({ type: 'conditional', when: { any: [{ output_muted: true }, { obs_streaming: false }] }, then: [{ type: 'toggle_mute' }] });
+    expect(two).toContain('for="conditional-mode">If</label>');
+    expect(two).toContain('for="conditional-when-1">Test</label>');
+    expect(two).toContain('for="conditional-when-2">Or</label>');
+    expect(two).toContain('for="conditional-value-2"');
+    expect(two.match(/aria-label="Remove this test"/g)).toHaveLength(2);
+    expect(two.match(/aria-label="Move this test up"/g)).toHaveLength(2);
+    expect(two).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(two).toContain('Add AND group');
+    expect(two).toContain('OBS must be running');
+    // Each test has a grip to drag it by; the group itself is the root, so it has none.
+    expect(two.match(/aria-label="Drag this test to move it"/g)).toHaveLength(2);
+    expect(two).not.toContain('Drag this group');
+    expectAccessible(two);
+    const and = render({ type: 'conditional', when: { all: [{ output_muted: true }, { output_volume_at_least: 20 }] }, then: [{ type: 'toggle_mute' }] });
+    expect(and).toContain('for="conditional-when-2">And</label>');
+    expect(and).toContain('for="conditional-volume-2"');
+    expect(and).not.toContain('OBS must be running');
+    expectAccessible(and);
+    const timer = render({ type: 'conditional', when: { timer_running: false }, then: [{ type: 'toggle_mute' }] });
+    expect(timer).toContain('<option value="timer_running" selected="">A timer is running</option>');
+    expect(timer).toContain('no timer is running');
+    expect(timer).not.toContain('OBS must be running');
+    const app = render({ type: 'conditional', when: { focused_app: 'com.apple.Safari' }, then: [{ type: 'toggle_mute' }] });
+    expect(app).toContain('<option value="focused_app" selected="">The front app is</option>');
+    expect(app).toContain('id="conditional-app"');
+    expect(app).toContain('value="com.apple.Safari"');
+    expect(app).not.toContain('for="conditional-value"');
+    expect(app).not.toContain('OBS must be running');
+    expectAccessible(app);
+    const eight = render({ type: 'conditional', when: { all: Array.from({ length: 8 }, () => ({ output_muted: true })) }, then: [{ type: 'toggle_mute' }] });
+    expect(eight).toMatch(/<button[^>]*id="conditional-add"[^>]*disabled=""|<button[^>]*disabled=""[^>]*id="conditional-add"/);
+  });
+
+  it('draws groups inside groups, each with its own mode, grip and buttons', () => {
+    const markup = render({ type: 'conditional', then: [{ type: 'toggle_mute' }],
+      when: { all: [{ output_muted: true }, { any: [{ timer_running: true }, { output_volume_at_least: 10 }] }] } });
+    expect(markup).toContain('for="conditional-mode">If</label>');
+    expect(markup).toContain('for="conditional-mode-2">If</label>');
+    expect(markup).toContain('for="conditional-when-2-1">Test</label>');
+    expect(markup).toContain('for="conditional-volume-2-2"');
+    expect(markup).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(markup).toContain('aria-label="Drag this group to move it"');
+    expect(markup).toContain('aria-label="Move this group up"');
+    expect(markup).toContain('aria-label="Remove this group"');
+    expect(markup).toContain('the output is muted and (a timer is running or the output volume is at least 10%)');
+    expect(markup).toContain('Add AND group');
+    expectAccessible(markup);
+    // At three levels a group takes no more groups, but tests still join it.
+    const full = render({ type: 'conditional', then: [{ type: 'toggle_mute' }],
+      when: { all: [{ output_muted: true }, { any: [{ timer_running: true }, { all: [{ output_muted: false }, { timer_running: false }] }] }] } });
+    expectAccessible(full);
+  });
+
+  it('draws an if / else inside a list with its own tests and lists, ids led by the steps that reach it', () => {
+    const markup = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' },
+      { type: 'conditional', when: { timer_running: true }, then: [{ type: 'set_volume', percent: 10 }], else: [{ type: 'toggle_mute' }] }], else: [{ type: 'toggle_mute' }] });
+    expect(markup).toContain('for="then-2-conditional-when">If</label>');
+    expect(markup).toContain('id="then-2-then-step-1-action"');
+    expect(markup).toContain('id="then-2-else-step-1-action"');
+    expect(markup).toContain('id="then-2-then-add"');
+    expect(markup).toContain('aria-label="Move then step 2 up"');
+    expect(markup).toContain('aria-label="Drag this step to move it"');
+    expect(markup).toContain('flow-nested');
+    expectAccessible(markup);
+  });
+
+  it('names the declared variables in tests and in the variable actions, and says when none are declared', () => {
+    const variables = [{ name: 'takes', value: 0 }, { name: 'live', value: false }, { name: 'scene', value: 'intro' }];
+    const withVariables = (action: BindingAction) => renderToStaticMarkup(<VariablesContext.Provider value={variables}>
+      <ActionFields action={action} fader={false} selectorKey="k" onChange={() => {}} /></VariablesContext.Provider>);
+    const test = withVariables({ type: 'conditional', when: { variable_at_least: { name: 'takes', value: 3 } }, then: [{ type: 'toggle_variable', name: 'live' }] });
+    expect(test).toContain('<option value="variable_at_least" selected="">A number variable is at least</option>');
+    expect(test).toContain('for="conditional-variable-name">Number variable</label>');
+    expect(test).toContain('<option value="takes" selected="">takes</option>');
+    expect(test).not.toContain('>scene</option>');
+    expect(test).toContain('for="conditional-variable-value">At least</label>');
+    expect(test).toContain('for="then-step-1-variable-name">On / off variable</label>');
+    expect(test).toContain('takes is at least 3');
+    expectAccessible(test);
+    const equal = withVariables({ type: 'conditional', when: { variable_is: { name: 'scene', value: 'intro' } }, then: [{ type: 'add_to_variable', name: 'takes', amount: -2 }] });
+    expect(equal).toContain('for="conditional-variable-value">Is equal to</label>');
+    expect(equal).toContain('value="intro"');
+    expect(equal).toContain('for="then-step-1-variable-amount">Add (negative to subtract)</label>');
+    expectAccessible(equal);
+    const set = withVariables({ type: 'set_variable', name: 'live', value: true });
+    expect(set).toContain('for="variable-name">Variable</label>');
+    expect(set).toContain('<option value="on" selected="">On</option>');
+    // An undeclared name is kept and marked, never swapped silently.
+    const missing = withVariables({ type: 'toggle_variable', name: 'gone' });
+    expect(missing).toContain('gone (not declared)');
+    // Nothing declared: the choices say where to add one.
+    const none = render({ type: 'toggle_variable', name: '' });
+    expect(none).toContain('Add one under Variables in the inspector');
+    expectAccessible(none);
   });
 });

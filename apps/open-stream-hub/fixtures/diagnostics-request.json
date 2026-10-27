@@ -171,7 +171,7 @@
       ]
     },
     "name": "Folders",
-    "schema_version": 2
+    "schema_version": 5
   },
   "redact_serials": true
 }

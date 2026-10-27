@@ -6,13 +6,15 @@
 //! file uses the same bounded, symlink-safe read and atomic 0600 write as
 //! `display-settings.json`. A missing file means off.
 //!
-//! The OBS WebSocket password is **never written anywhere**: not to that
+//! The OBS WebSocket password is **never written to a file**: not to that
 //! file, a profile, a log, a diagnostics bundle, an environment variable or
-//! an argument. It is entered in Settings, kept only in this process's memory
-//! (so it is entered again after every app launch), and handed to each
-//! `masterhub-service` process on its stdin pipe (`--obs-password-stdin`),
-//! which the service reads once at start. `ps` shows only
-//! `--obs-endpoint 127.0.0.1:4455 --obs-password-stdin`.
+//! an argument. It is entered in Settings and kept in the macOS Keychain
+//! ([`crate::keychain`]), read back from there the first time it is needed in
+//! a launch, and handed to each `masterhub-service` process on its stdin pipe
+//! (`--obs-password-stdin`), which the service reads once at start. `ps` shows
+//! only `--obs-endpoint 127.0.0.1:4455 --obs-password-stdin`. Where there is
+//! no Keychain (or it refuses), the password lives in this process's memory
+//! only and is entered again after every launch.
 //!
 //! Nothing is zeroed: plaintext copies of the password (the setting here, a
 //! copy in each session's snapshot, the stdin buffer, the service's own copy)
@@ -26,7 +28,7 @@
 //! reconnect, crash and profile-switch restarts reuse it, and changing it
 //! never stops or restarts anything. See `docs/masterhub-actions.md`.
 
-use crate::store;
+use crate::{keychain::PasswordVault, store};
 use cooltek_sdk_service::obs::{ObsEndpoint, ObsPassword, ObsStatus};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -163,22 +165,54 @@ pub struct ObsState {
     file: Result<SettingsFile, String>,
     lock: Mutex<()>,
     password: Mutex<Option<ObsPassword>>,
+    vault: Box<dyn PasswordVault>,
+    /// Set once the vault has been read (or has failed to be), so the
+    /// Keychain is asked at most once per launch.
+    vault_read: Mutex<bool>,
 }
 
 impl ObsState {
     pub fn open(app_data: Result<&Path, String>) -> Self {
+        #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
+        let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::Keychain);
+        #[cfg(all(target_os = "macos", not(test), debug_assertions))]
+        let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::DevKeychain);
+        #[cfg(not(all(target_os = "macos", not(test))))]
+        let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::MemoryOnly);
+        Self::open_with_vault(app_data, vault)
+    }
+
+    pub fn open_with_vault(app_data: Result<&Path, String>, vault: Box<dyn PasswordVault>) -> Self {
         Self {
             file: app_data.map(SettingsFile::new),
             lock: Mutex::new(()),
             password: Mutex::new(None),
+            vault,
+            vault_read: Mutex::new(false),
         }
     }
 
+    /// The held password, reading the vault the first time. A vault that
+    /// fails or holds something unusable leaves the password unset; the user
+    /// can enter it again.
+    fn held_password(&self) -> Option<ObsPassword> {
+        if let Ok(mut read) = self.vault_read.lock()
+            && !*read
+        {
+            *read = true;
+            if let Ok(Some(stored)) = self.vault.load()
+                && let Ok(password) = ObsPassword::new(stored)
+                && let Ok(mut held) = self.password.lock()
+                && held.is_none()
+            {
+                *held = Some(password);
+            }
+        }
+        self.password.lock().ok()?.clone()
+    }
+
     fn password_set(&self) -> bool {
-        self.password
-            .lock()
-            .map(|password| password.is_some())
-            .unwrap_or(false)
+        self.held_password().is_some()
     }
 
     fn load(&self) -> Result<ObsSettings, String> {
@@ -217,16 +251,33 @@ impl ObsState {
         })
     }
 
-    /// Holds `password` in memory for later Starts, or forgets it with
-    /// `None`. Nothing is written. Errors never contain the password.
-    /// Forgetting does not reach running sessions, which keep their snapshot
-    /// until stopped, and the old value is not zeroed in memory.
+    /// Holds `password` for later Starts and keeps it in the vault (the
+    /// Keychain), or forgets it everywhere with `None`. Errors never contain
+    /// the password. If the vault refuses, the password is still held in
+    /// memory for this launch and the error is returned so the panel can say
+    /// it will not survive a restart. Forgetting does not reach running
+    /// sessions, which keep their snapshot until stopped, and the old value
+    /// is not zeroed in memory.
     pub fn set_password(&self, password: Option<String>) -> Result<ObsSettingsView, String> {
         let password = password.map(ObsPassword::new).transpose()?;
+        // The vault counts as read: what is held now is the newest value.
+        *self
+            .vault_read
+            .lock()
+            .map_err(|_| "OBS password lock is unavailable".to_string())? = true;
+        let stored = match &password {
+            Some(password) => {
+                let line = password.stdin_line();
+                let text = String::from_utf8_lossy(&line[..line.len() - 1]).into_owned();
+                self.vault.save(&text)
+            }
+            None => self.vault.forget(),
+        };
         *self
             .password
             .lock()
             .map_err(|_| "OBS password lock is unavailable".to_string())? = password;
+        stored.map_err(|error| format!("{error}; the password is kept for this launch only"))?;
         self.get()
     }
 
@@ -237,7 +288,7 @@ impl ObsState {
         let settings = self.load().ok().filter(|settings| settings.enabled)?;
         Some(ObsLaunch {
             endpoint: settings.endpoint().ok()?,
-            password: self.password.lock().ok()?.clone(),
+            password: self.held_password(),
         })
     }
 
@@ -253,11 +304,7 @@ impl ObsState {
         }
         Ok(ObsLaunch {
             endpoint: settings.endpoint()?,
-            password: self
-                .password
-                .lock()
-                .map_err(|_| "OBS password lock is unavailable".to_string())?
-                .clone(),
+            password: self.held_password(),
         })
     }
 }
@@ -400,6 +447,99 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<ObsSettings>(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A vault that records what is stored, and can be told to fail.
+    #[derive(Clone, Default)]
+    struct FakeVault {
+        stored: std::sync::Arc<Mutex<Option<String>>>,
+        loads: std::sync::Arc<Mutex<u32>>,
+        refuse: bool,
+    }
+
+    impl PasswordVault for FakeVault {
+        fn load(&self) -> Result<Option<String>, String> {
+            *self.loads.lock().unwrap() += 1;
+            if self.refuse {
+                return Err("locked".into());
+            }
+            Ok(self.stored.lock().unwrap().clone())
+        }
+        fn save(&self, password: &str) -> Result<(), String> {
+            if self.refuse {
+                return Err("could not save the OBS password in the Keychain".into());
+            }
+            *self.stored.lock().unwrap() = Some(password.into());
+            Ok(())
+        }
+        fn forget(&self) -> Result<(), String> {
+            if self.refuse {
+                return Err("could not remove the OBS password in the Keychain".into());
+            }
+            *self.stored.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_password_goes_to_the_vault_and_comes_back_after_a_relaunch() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = FakeVault::default();
+        let state = ObsState::open_with_vault(Ok(directory.path()), Box::new(vault.clone()));
+        assert!(
+            state
+                .set_password(Some(PASSWORD.into()))
+                .unwrap()
+                .password_set
+        );
+        assert_eq!(vault.stored.lock().unwrap().as_deref(), Some(PASSWORD));
+        // Nothing reaches the settings file.
+        let file = std::fs::read_to_string(directory.path().join(FILE_NAME)).unwrap_or_default();
+        assert!(!file.contains(PASSWORD));
+
+        let relaunched = ObsState::open_with_vault(Ok(directory.path()), Box::new(vault.clone()));
+        assert_eq!(
+            *vault.loads.lock().unwrap(),
+            0,
+            "the vault is not read at launch"
+        );
+        assert!(relaunched.get().unwrap().password_set);
+        relaunched.get().unwrap();
+        assert_eq!(
+            *vault.loads.lock().unwrap(),
+            1,
+            "the vault is read once per launch"
+        );
+
+        assert!(!relaunched.set_password(None).unwrap().password_set);
+        assert_eq!(*vault.stored.lock().unwrap(), None);
+        let again = ObsState::open_with_vault(Ok(directory.path()), Box::new(vault));
+        assert!(!again.get().unwrap().password_set);
+    }
+
+    #[test]
+    fn a_refusing_vault_keeps_the_password_for_this_launch_and_says_so() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = FakeVault {
+            refuse: true,
+            ..FakeVault::default()
+        };
+        let state = ObsState::open_with_vault(Ok(directory.path()), Box::new(vault));
+        let error = state.set_password(Some(PASSWORD.into())).unwrap_err();
+        assert!(error.contains("this launch only"), "{error}");
+        assert!(!error.contains(PASSWORD), "{error}");
+        assert!(state.get().unwrap().password_set, "still held in memory");
+    }
+
+    #[test]
+    fn an_unreadable_vault_leaves_the_password_unset_without_failing() {
+        let directory = tempfile::tempdir().unwrap();
+        let vault = FakeVault {
+            refuse: true,
+            ..FakeVault::default()
+        };
+        let state = ObsState::open_with_vault(Ok(directory.path()), Box::new(vault));
+        assert!(!state.get().unwrap().password_set);
     }
 
     #[test]

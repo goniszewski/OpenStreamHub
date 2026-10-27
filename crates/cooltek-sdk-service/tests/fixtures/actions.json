@@ -317,6 +317,95 @@
       "type": "shortcut",
       "key": "play_pause",
       "modifiers": []
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_stream",
+      "op": "start"
+    },
+    {
+      "type": "obs_stream",
+      "op": "stop"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_record",
+      "op": "start"
+    },
+    {
+      "type": "obs_record",
+      "op": "stop"
+    },
+    {
+      "type": "obs_record",
+      "op": "pause"
+    },
+    {
+      "type": "obs_record",
+      "op": "resume"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle_pause"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "toggle"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "mute"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "unmute"
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": -3
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 5
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_pause"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_stop"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play_restart"
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "stop"
+    },
+    {
+      "type": "obs_screenshot"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": "press_twice"
     }
   ],
   "invalid": [
@@ -711,6 +800,76 @@
       "modifiers": [
         "command"
       ]
+    },
+    {
+      "type": "obs_stream"
+    },
+    {
+      "type": "obs_stream",
+      "op": "pause"
+    },
+    {
+      "type": "obs_stream",
+      "op": "Toggle"
+    },
+    {
+      "type": "obs_record"
+    },
+    {
+      "type": "obs_record",
+      "op": "save"
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle",
+      "endpoint": "127.0.0.1:4455"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic"
+    },
+    {
+      "type": "obs_input_mute",
+      "input": "Mic",
+      "op": "on"
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 0
+    },
+    {
+      "type": "obs_adjust_input_volume",
+      "input": "Mic",
+      "step_db": 21
+    },
+    {
+      "type": "obs_media_source",
+      "input": "Intro",
+      "op": "play"
+    },
+    {
+      "type": "obs_media_source",
+      "op": "stop"
+    },
+    {
+      "type": "obs_screenshot",
+      "path": "/tmp/x.png"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": "hold"
+    },
+    {
+      "type": "obs_stream",
+      "op": "toggle",
+      "confirm": null
+    },
+    {
+      "type": "obs_record",
+      "op": "toggle",
+      "confirm": "press_twice"
     }
   ]
 }

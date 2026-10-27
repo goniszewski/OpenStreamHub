@@ -361,7 +361,7 @@ fn row<'a>(report: &'a ImportReport, path: &str) -> &'a mapping::ReportRow {
 fn every_mapped_action_type_is_converted_and_every_unbound_type_is_reported() {
     let Converted { profile, report } = convert_one(&full_profile());
     profile.validate().unwrap();
-    assert_eq!(profile.schema_version, 2);
+    assert_eq!(profile.schema_version, Profile::CURRENT_SCHEMA);
     assert_eq!(profile.name, "Desk setup");
     assert_eq!(report.source_name, "Desk setup");
 
@@ -1697,7 +1697,7 @@ fn r3_quote_heavy_text_never_breaks_the_store_size_limit() {
     );
     entry.deflate = false;
     let Converted { profile, report } = convert(&zip(&[entry])).unwrap().remove(0);
-    let pretty = serde_json::to_vec_pretty(&profile.clone().into_v2().unwrap()).unwrap();
+    let pretty = serde_json::to_vec_pretty(&profile.clone().into_current().unwrap()).unwrap();
     assert!(pretty.len() <= Profile::MAX_JSON_BYTES, "{}", pretty.len());
     assert!(report.rows.iter().any(|r| r.reason.contains("KiB")));
 }
@@ -2095,7 +2095,7 @@ fn r5_a_shortcut_only_profile_is_fitted_instead_of_failing() {
     );
     entry.deflate = false;
     let Converted { profile, report } = convert(&zip(&[entry])).unwrap().remove(0);
-    let pretty = serde_json::to_vec_pretty(&profile.clone().into_v2().unwrap()).unwrap();
+    let pretty = serde_json::to_vec_pretty(&profile.clone().into_current().unwrap()).unwrap();
     assert!(
         pretty.len() <= Profile::MAX_JSON_BYTES - 1024,
         "{}",

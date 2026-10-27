@@ -1,6 +1,8 @@
 //! Offline static-image preparation for dial and keypad JPEG packet plans.
 //!
-//! EXIF orientation and embedded color profiles are not automatically applied.
+//! A JPEG's EXIF orientation is applied to the source before fitting, so a
+//! photo shows upright; explicit rotation still turns the fitted square after
+//! that. Embedded color profiles are not applied.
 //! Alpha is composited in the source's converted eight-bit channel values before
 //! filtering. Rotation is explicit and clockwise, applied to the fitted square.
 //! No device is opened and no HID transport is initialized by this module.
@@ -8,16 +10,18 @@
 use std::io::Cursor;
 
 use cooltek_sdk_masterhub::{dial, keypad};
-use cooltek_sdk_service::KeyArtwork;
+use cooltek_sdk_service::{DialAnimation, KeyArtwork};
 use image::{
     AnimationDecoder, DynamicImage, ExtendedColorType, GenericImageView, ImageDecoder, ImageFormat,
     Limits, Rgb, RgbImage,
     codecs::{
+        bmp::BmpDecoder,
         gif::GifDecoder,
         jpeg::{JpegDecoder, JpegEncoder},
         png::PngDecoder,
     },
     imageops::{self, FilterType},
+    metadata::Orientation,
 };
 
 /// Largest encoded source accepted before format inspection or decoding.
@@ -66,11 +70,12 @@ impl Default for PrepareOptions {
     }
 }
 
-/// Converts a single static PNG or JPEG to an encoded 240×240 RGB baseline JFIF.
+/// Converts a single static PNG, JPEG or BMP to an encoded 240×240 RGB baseline JFIF.
 ///
 /// Accepts progressive JPEG input for baseline re-encoding. Rejects APNG and
 /// concatenated JPEG streams instead of silently choosing their first frame.
-/// EXIF orientation, ICC profiles, and other source metadata are not copied.
+/// EXIF orientation is applied to the source before fitting. ICC profiles and
+/// other source metadata are not copied.
 ///
 /// Options, encoded size, source dimensions, and decoded buffer limits are
 /// checked before transformation. The output is entropy-encoded by `image` and
@@ -79,7 +84,7 @@ pub fn prepare_image(input: &[u8], options: PrepareOptions) -> Result<Vec<u8>, S
     prepare_for_target(input, options, ImageTarget::Dial)
 }
 
-/// Converts a single static PNG or JPEG to an encoded 72×72 RGB baseline JFIF.
+/// Converts a single static PNG, JPEG or BMP to an encoded 72×72 RGB baseline JFIF.
 ///
 /// Applies the same bounded decoding, matte, fit, explicit clockwise rotation,
 /// and metadata handling as [`prepare_image`]. Validates the encoded image for
@@ -100,13 +105,14 @@ pub struct PreparedKeyArtwork {
 /// One composited and fitted animation frame.
 #[derive(Debug)]
 pub struct PreparedKeyArtworkFrame {
-    /// Complete 72×72 baseline JPEG.
+    /// Complete baseline JPEG: 72×72 for a key, 240×240 for the dial.
     pub jpeg: Vec<u8>,
-    /// Playback delay, between 100 and 60,000 milliseconds.
+    /// Playback delay in milliseconds: 100 to 60,000 for a key; for the dial 60,000 at most and at least
+    /// [`DialAnimation::min_delay_ms_for`] of the frame's size (66, 100 or 150).
     pub delay_ms: u32,
 }
 
-/// Prepares PNG/JPEG or GIF artwork offline, enforcing bounds before decoding.
+/// Prepares PNG/JPEG/BMP or GIF artwork offline, enforcing bounds before decoding.
 pub fn prepare_keypad_artwork(
     input: &[u8],
     options: PrepareOptions,
@@ -126,7 +132,117 @@ pub fn prepare_keypad_artwork(
             loop_count: 1,
         });
     }
+    prepare_gif(input, options, KEYPAD_GIF)
+}
+
+/// What a GIF's frames are held to for one target.
+#[derive(Clone, Copy)]
+struct GifTarget {
+    target: ImageTarget,
+    /// Most frames accepted.
+    max_frames: usize,
+    /// Shortest frame time for a prepared frame of the given size in bytes;
+    /// shorter GIF delays are raised to it.
+    min_delay_ms: fn(usize) -> u32,
+    /// Most bytes in one prepared frame.
+    max_frame_bytes: usize,
+    /// Most bytes across the prepared frames.
+    max_bytes: usize,
+    /// What the target is called in errors.
+    name: &'static str,
+}
+
+const KEYPAD_GIF: GifTarget = GifTarget {
+    target: ImageTarget::Keypad,
+    max_frames: KeyArtwork::MAX_FRAMES,
+    min_delay_ms: |_| KeyArtwork::MIN_DELAY_MS,
+    max_frame_bytes: KeyArtwork::MAX_FRAME_BYTES,
+    max_bytes: KeyArtwork::MAX_BYTES,
+    name: "key",
+};
+
+const DIAL_GIF: GifTarget = GifTarget {
+    target: ImageTarget::Dial,
+    max_frames: DialAnimation::MAX_FRAMES,
+    min_delay_ms: DialAnimation::min_delay_ms_for,
+    max_frame_bytes: DialAnimation::MAX_FRAME_BYTES,
+    max_bytes: DialAnimation::MAX_BYTES,
+    name: "dial",
+};
+
+/// Prepares a GIF as a bounded 240×240 dial animation, offline.
+///
+/// Fits and rotates every composited frame as [`prepare_image`] does a still,
+/// lowers the JPEG quality of a frame that is over the dial's per-frame budget,
+/// raises a delay to the floor of its prepared frame's size
+/// ([`DialAnimation::min_delay_ms_for`]), and keeps the loop count (zero is
+/// infinite). Only GIF input is accepted: a still goes through
+/// [`prepare_image`].
+pub fn prepare_dial_animation(
+    input: &[u8],
+    options: PrepareOptions,
+) -> Result<PreparedKeyArtwork, String> {
+    prepare_dial_animation_within(input, options, DialAnimation::MAX_FRAME_BYTES)
+}
+
+/// Like [`prepare_dial_animation`], with every frame held to `frame_budget_bytes`
+/// (at most [`DialAnimation::MAX_FRAME_BYTES`]) by stepping its JPEG quality
+/// down. A smaller frame may stay up for a shorter time
+/// ([`DialAnimation::min_delay_ms_for`]), so a smaller budget buys a faster
+/// animation at a lower quality. A frame that does not fit even at quality 10
+/// is an error.
+pub fn prepare_dial_animation_within(
+    input: &[u8],
+    options: PrepareOptions,
+    frame_budget_bytes: usize,
+) -> Result<PreparedKeyArtwork, String> {
+    if input.is_empty() || input.len() > 8 * 1024 * 1024 {
+        return Err("Dial animation source must contain 1 byte through 8 MiB".into());
+    }
+    if !(1..=100).contains(&options.quality) || options.quarter_turns > 3 {
+        return Err("Invalid JPEG quality or clockwise rotation".into());
+    }
+    if image::guess_format(input).ok() != Some(ImageFormat::Gif) {
+        return Err("A dial animation needs a GIF".into());
+    }
+    let target = GifTarget {
+        max_frame_bytes: frame_budget_bytes.min(DIAL_GIF.max_frame_bytes),
+        ..DIAL_GIF
+    };
+    prepare_gif(input, options, target)
+}
+
+/// Prepares a GIF's frames, then steps the JPEG quality of the whole GIF down
+/// while the frames together exceed the target's total budget, so a long
+/// photographic GIF is compressed to fit instead of refused at the first try.
+fn prepare_gif(
+    input: &[u8],
+    mut options: PrepareOptions,
+    gif: GifTarget,
+) -> Result<PreparedKeyArtwork, String> {
+    loop {
+        match prepare_gif_pass(input, options, gif)? {
+            Ok(prepared) => return Ok(prepared),
+            Err(too_big) if options.quality <= 10 => return Err(too_big),
+            Err(_) => options.quality = options.quality.saturating_sub(15).max(10),
+        }
+    }
+}
+
+/// One pass at one quality. The inner error is the total-size overflow, which a
+/// lower quality can cure; any other failure is the outer error.
+fn prepare_gif_pass(
+    input: &[u8],
+    options: PrepareOptions,
+    gif: GifTarget,
+) -> Result<Result<PreparedKeyArtwork, String>, String> {
     let (count, loop_count) = gif_preflight(input)?;
+    if count > gif.max_frames {
+        return Err(format!(
+            "A {} animation holds at most {} frames; this GIF has {count}",
+            gif.name, gif.max_frames
+        ));
+    }
     let mut decoder =
         GifDecoder::new(Cursor::new(input)).map_err(|e| format!("Could not read GIF: {e}"))?;
     let mut limits = Limits::default();
@@ -144,42 +260,62 @@ pub fn prepare_keypad_artwork(
         }
         let frame = frame.map_err(|e| format!("Could not decode GIF frame: {e}"))?;
         let (numerator, denominator) = frame.delay().numer_denom_ms();
-        let delay_ms = numerator.div_ceil(denominator).max(100);
+        let delay_ms = numerator.div_ceil(denominator);
         if delay_ms > 60_000 {
             return Err("GIF frame delay exceeds 60 seconds".into());
         }
         let source = DynamicImage::ImageRgba8(frame.into_buffer());
-        let jpeg = within_frame_budget(options, |options| {
-            encode_source(source.clone(), options, ImageTarget::Keypad)
+        let jpeg = within_budget(options, gif.max_frame_bytes, |options| {
+            encode_source(
+                source.clone(),
+                Orientation::NoTransforms,
+                options,
+                gif.target,
+            )
         })?;
+        // The floor depends on the prepared frame's size, so it is applied once the frame is encoded.
+        let delay_ms = delay_ms.max((gif.min_delay_ms)(jpeg.len()));
         output_bytes += jpeg.len();
-        if output_bytes > 512 * 1024 {
-            return Err("Prepared key artwork exceeds 512 KiB".into());
+        if output_bytes > gif.max_bytes {
+            return Ok(Err(format!(
+                "Prepared {} animation exceeds {} KiB even at JPEG quality {}",
+                gif.name,
+                gif.max_bytes / 1024,
+                options.quality
+            )));
         }
         frames.push(PreparedKeyArtworkFrame { jpeg, delay_ms });
     }
     if frames.len() != count {
         return Err("GIF did not decode all declared frames".into());
     }
-    Ok(PreparedKeyArtwork { frames, loop_count })
+    Ok(Ok(PreparedKeyArtwork { frames, loop_count }))
 }
 
 /// Encodes at the requested quality, then steps the quality down until the
 /// frame fits [`KeyArtwork::MAX_FRAME_BYTES`], so a prepared frame always
 /// passes profile validation.
 pub fn within_frame_budget(
+    options: PrepareOptions,
+    encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    within_budget(options, KeyArtwork::MAX_FRAME_BYTES, encode)
+}
+
+fn within_budget(
     mut options: PrepareOptions,
+    max_bytes: usize,
     mut encode: impl FnMut(PrepareOptions) -> Result<Vec<u8>, String>,
 ) -> Result<Vec<u8>, String> {
     loop {
         let jpeg = encode(options)?;
-        if jpeg.len() <= KeyArtwork::MAX_FRAME_BYTES {
+        if jpeg.len() <= max_bytes {
             return Ok(jpeg);
         }
         if options.quality <= 10 {
             return Err(format!(
-                "Prepared key artwork frame exceeds {} KiB even at JPEG quality {}",
-                KeyArtwork::MAX_FRAME_BYTES / 1024,
+                "Prepared frame exceeds {} KiB even at JPEG quality {}",
+                max_bytes / 1024,
                 options.quality
             ));
         }
@@ -345,7 +481,7 @@ fn prepare_for_target(
     }
     let format = image::guess_format(input)
         .map_err(|error| format!("Could not identify source image: {error}"))?;
-    let source = match format {
+    let (source, orientation) = match format {
         ImageFormat::Png => {
             let decoder = PngDecoder::with_limits(Cursor::new(input), decode_limits())
                 .map_err(|error| format!("Could not read PNG header within limits: {error}"))?;
@@ -363,18 +499,24 @@ fn prepare_for_target(
                 .map_err(|error| format!("Could not read JPEG header: {error}"))?;
             decode_bounded(decoder)?
         }
-        _ => return Err("Only static PNG and JPEG source images are supported".into()),
+        ImageFormat::Bmp => {
+            let decoder = BmpDecoder::new(Cursor::new(input))
+                .map_err(|error| format!("Could not read BMP header: {error}"))?;
+            decode_bounded(decoder)?
+        }
+        _ => return Err("Only static PNG, JPEG and BMP source images are supported".into()),
     };
-    encode_source(source, options, target)
+    encode_source(source, orientation, options, target)
 }
 
 fn encode_source(
     source: DynamicImage,
+    orientation: Orientation,
     options: PrepareOptions,
     target: ImageTarget,
 ) -> Result<Vec<u8>, String> {
     let (output_width, output_height) = target.dimensions();
-    let fitted = fit_and_matte(&source, options, output_width);
+    let fitted = fit_and_matte(&source, orientation, options, output_width);
     drop(source);
     let rotated = match options.quarter_turns {
         0 => fitted,
@@ -408,7 +550,9 @@ fn decode_limits() -> Limits {
     limits
 }
 
-fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, String> {
+/// Decodes within the limits and returns the stored pixels with the EXIF
+/// orientation to read them through, so no turned copy sits beside the buffer.
+fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<(DynamicImage, Orientation), String> {
     let (width, height) = decoder.dimensions();
     if width == 0 || height == 0 || width > MAX_DIMENSION || height > MAX_DIMENSION {
         return Err("Source image dimensions must be between 1 and 4096 on each axis".into());
@@ -419,15 +563,20 @@ fn decode_bounded<D: ImageDecoder>(mut decoder: D) -> Result<DynamicImage, Strin
     decoder
         .set_limits(decode_limits())
         .map_err(|error| format!("Could not apply source decoder limits: {error}"))?;
-    DynamicImage::from_decoder(decoder)
-        .map_err(|error| format!("Could not decode source image within limits: {error}"))
+    // An unreadable orientation tag leaves the picture as stored.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let source = DynamicImage::from_decoder(decoder)
+        .map_err(|error| format!("Could not decode source image within limits: {error}"))?;
+    Ok((source, orientation))
 }
 
 /// An RGB view composites alpha as samples are fetched, avoiding a second full
 /// source-sized RGB/RGBA buffer and preventing hidden transparent RGB from
-/// leaking into resampling against the chosen matte.
+/// leaking into resampling against the chosen matte. It also reads the stored
+/// pixels through the EXIF orientation, so no turned copy is built.
 struct MatteView<'a> {
     source: &'a DynamicImage,
+    orientation: Orientation,
     background: [u8; 3],
 }
 
@@ -435,10 +584,30 @@ impl GenericImageView for MatteView<'_> {
     type Pixel = Rgb<u8>;
 
     fn dimensions(&self) -> (u32, u32) {
-        self.source.dimensions()
+        let (width, height) = self.source.dimensions();
+        match self.orientation {
+            Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH => (height, width),
+            _ => (width, height),
+        }
     }
 
     fn get_pixel(&self, x: u32, y: u32) -> Self::Pixel {
+        // Maps an upright coordinate back to the stored pixel, matching
+        // `DynamicImage::apply_orientation` without building the turned copy.
+        let (width, height) = self.source.dimensions();
+        let (x, y) = match self.orientation {
+            Orientation::NoTransforms => (x, y),
+            Orientation::Rotate90 => (y, height - 1 - x),
+            Orientation::Rotate180 => (width - 1 - x, height - 1 - y),
+            Orientation::Rotate270 => (width - 1 - y, x),
+            Orientation::FlipHorizontal => (width - 1 - x, y),
+            Orientation::FlipVertical => (x, height - 1 - y),
+            Orientation::Rotate90FlipH => (y, x),
+            Orientation::Rotate270FlipH => (width - 1 - y, height - 1 - x),
+        };
         let source = self.source.get_pixel(x, y).0;
         let alpha = u32::from(source[3]);
         Rgb(std::array::from_fn(|channel| {
@@ -449,9 +618,15 @@ impl GenericImageView for MatteView<'_> {
     }
 }
 
-fn fit_and_matte(source: &DynamicImage, options: PrepareOptions, side: u32) -> RgbImage {
+fn fit_and_matte(
+    source: &DynamicImage,
+    orientation: Orientation,
+    options: PrepareOptions,
+    side: u32,
+) -> RgbImage {
     let matte = MatteView {
         source,
+        orientation,
         background: options.background,
     };
     let (width, height) = matte.dimensions();
@@ -811,6 +986,24 @@ mod tests {
     }
 
     #[test]
+    fn a_bmp_is_decoded_like_a_png_and_a_truncated_one_is_rejected() {
+        let options = PrepareOptions::default();
+        let rgb = RgbImage::from_fn(8, 4, |x, y| Rgb([(x * 30) as u8, (y * 60) as u8, 200]));
+        let mut bmp = Vec::new();
+        image::codecs::bmp::BmpEncoder::new(&mut bmp)
+            .write_image(rgb.as_raw(), 8, 4, ExtendedColorType::Rgb8)
+            .unwrap();
+        let from_bmp = prepare_image(&bmp, options).unwrap();
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(rgb.as_raw(), 8, 4, ExtendedColorType::Rgb8)
+            .unwrap();
+        assert_eq!(from_bmp, prepare_image(&png, options).unwrap());
+        assert!(prepare_keypad_image(&bmp, options).is_ok());
+        assert!(prepare_image(&bmp[..bmp.len() / 2], options).is_err());
+    }
+
+    #[test]
     fn corrupt_unsupported_and_oversized_encoded_sources_are_rejected() {
         let options = PrepareOptions::default();
         for source in [&[][..], b"not an image", b"GIF89a\x01\0\x01\0\0\0\0"] {
@@ -890,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn exif_orientation_is_ignored_and_explicit_rotation_still_applies() {
+    fn exif_orientation_is_applied_and_explicit_rotation_still_follows() {
         let source = RgbImage::from_pixel(80, 40, Rgb([240, 20, 20]));
         let mut jpeg = Vec::new();
         JpegEncoder::new_with_quality(&mut jpeg, 100)
@@ -902,9 +1095,12 @@ mod tests {
         metadata.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
         metadata.extend_from_slice(exif);
         jpeg.splice(2..2, metadata);
+        // Orientation 6 turns the 80×40 picture upright into 40×80, which
+        // fills the middle of the square with bars left and right.
         let output = decoded(&jpeg, PrepareOptions::default());
-        color_near(&output, 120, 20, [0; 3]);
-        color_near(&output, 20, 120, [240, 20, 20]);
+        color_near(&output, 20, 120, [0; 3]);
+        color_near(&output, 120, 20, [240, 20, 20]);
+        // The explicit turn then applies to the fitted square.
         let output = decoded(
             &jpeg,
             PrepareOptions {
@@ -912,8 +1108,66 @@ mod tests {
                 ..PrepareOptions::default()
             },
         );
-        color_near(&output, 20, 120, [0; 3]);
-        color_near(&output, 120, 20, [240, 20, 20]);
+        color_near(&output, 120, 20, [0; 3]);
+        color_near(&output, 20, 120, [240, 20, 20]);
+    }
+
+    #[test]
+    fn oriented_view_matches_apply_orientation_for_all_eight_orientations() {
+        let source = DynamicImage::ImageRgba8(RgbaImage::from_fn(7, 5, |x, y| {
+            Rgba([
+                x as u8 * 30,
+                y as u8 * 40,
+                (x * y) as u8,
+                100 + (x + y) as u8,
+            ])
+        }));
+        for orientation in (1..=8).map(|value| Orientation::from_exif(value).unwrap()) {
+            let mut turned = source.clone();
+            turned.apply_orientation(orientation);
+            let view = MatteView {
+                source: &source,
+                orientation,
+                background: [9, 80, 200],
+            };
+            let reference = MatteView {
+                source: &turned,
+                orientation: Orientation::NoTransforms,
+                background: [9, 80, 200],
+            };
+            assert_eq!(view.dimensions(), reference.dimensions(), "{orientation:?}");
+            let (width, height) = view.dimensions();
+            for y in 0..height {
+                for x in 0..width {
+                    assert_eq!(
+                        view.get_pixel(x, y),
+                        reference.get_pixel(x, y),
+                        "{orientation:?} at {x},{y}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn decoding_hands_back_the_stored_buffer_and_the_orientation_separately() {
+        // Only the decode contract: the stored buffer comes back untouched. That
+        // nothing turns it later is covered by the all-orientations test above
+        // and the end-to-end test.
+        let source = RgbImage::from_pixel(80, 40, Rgb([240, 20, 20]));
+        let mut jpeg = Vec::new();
+        JpegEncoder::new_with_quality(&mut jpeg, 100)
+            .encode_image(&source)
+            .unwrap();
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut metadata = vec![0xff, 0xe1];
+        metadata.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        metadata.extend_from_slice(exif);
+        jpeg.splice(2..2, metadata);
+        let decoder = JpegDecoder::new(Cursor::new(&jpeg[..])).unwrap();
+        let (stored, orientation) = decode_bounded(decoder).unwrap();
+        assert_eq!(orientation, Orientation::Rotate90);
+        assert_eq!(stored.dimensions(), (80, 40));
     }
 }
 
@@ -949,6 +1203,65 @@ mod keypad_animation_tests {
             }
         }
         bytes
+    }
+
+    #[test]
+    fn a_dial_animation_has_240_pixel_frames_slower_delays_and_its_own_bounds() {
+        let source = gif_source(300, 200, 3, 5, Some(gif::Repeat::Finite(1)));
+        let result = prepare_dial_animation(&source, PrepareOptions::default()).unwrap();
+        assert_eq!(result.frames.len(), 3);
+        assert_eq!(result.loop_count, 2);
+        for frame in &result.frames {
+            // 5 cs is 50 ms, raised to the 66 ms floor of a frame this small.
+            assert!(frame.jpeg.len() <= DialAnimation::SMALL_FRAME_BYTES);
+            assert_eq!(frame.delay_ms, DialAnimation::FASTEST_DELAY_MS);
+            dial::validate_jpeg(&frame.jpeg).unwrap();
+            assert!(frame.jpeg.len() <= DialAnimation::MAX_FRAME_BYTES);
+        }
+        // A frame budget the frames cannot meet is refused, and one they meet changes nothing.
+        let tight =
+            prepare_dial_animation_within(&source, PrepareOptions::default(), 1).unwrap_err();
+        assert!(tight.contains("even at JPEG quality 10"), "{tight}");
+        let roomy = prepare_dial_animation_within(
+            &source,
+            PrepareOptions::default(),
+            DialAnimation::MEDIUM_FRAME_BYTES,
+        )
+        .unwrap();
+        assert_eq!(roomy.frames.len(), result.frames.len());
+        // The dial's floor follows the frame's size; a key's does not.
+        assert_eq!(
+            (DIAL_GIF.min_delay_ms)(30 * 1024),
+            DialAnimation::MIN_DELAY_MS
+        );
+        assert_eq!(
+            (DIAL_GIF.min_delay_ms)(10 * 1024),
+            DialAnimation::MEDIUM_DELAY_MS
+        );
+        assert_eq!(
+            (KEYPAD_GIF.min_delay_ms)(30 * 1024),
+            KeyArtwork::MIN_DELAY_MS
+        );
+        assert_eq!((KEYPAD_GIF.min_delay_ms)(1), KeyArtwork::MIN_DELAY_MS);
+        // Long delays are kept, and an infinite loop stays zero.
+        let slow = gif_source(2, 2, 2, 150, Some(gif::Repeat::Infinite));
+        let result = prepare_dial_animation(&slow, PrepareOptions::default()).unwrap();
+        assert_eq!((result.frames[0].delay_ms, result.loop_count), (1500, 0));
+        // More frames than a dial holds, and anything that is not a GIF.
+        let long = gif_source(2, 2, DialAnimation::MAX_FRAMES + 1, 20, None);
+        let error = prepare_dial_animation(&long, PrepareOptions::default()).unwrap_err();
+        assert!(error.contains("at most 30 frames"), "{error}");
+        let still = RgbImage::from_pixel(8, 8, Rgb([1, 2, 3]));
+        let mut png = Vec::new();
+        still
+            .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+            .unwrap();
+        assert!(
+            prepare_dial_animation(&png, PrepareOptions::default())
+                .unwrap_err()
+                .contains("needs a GIF")
+        );
+        assert!(prepare_dial_animation(&[], PrepareOptions::default()).is_err());
     }
 
     #[test]
@@ -1169,10 +1482,17 @@ mod keypad_animation_tests {
                     .unwrap();
             }
         }
-        assert!(
-            prepare_keypad_artwork(&bytes, PrepareOptions::default())
-                .unwrap_err()
-                .contains("512 KiB")
-        );
+        // At quality 100 the frames together are over the 512 KiB budget; the
+        // whole GIF is re-encoded at lower quality until it fits.
+        let prepared = prepare_keypad_artwork(&bytes, PrepareOptions::default()).unwrap();
+        assert_eq!(prepared.frames.len(), 120);
+        let total: usize = prepared.frames.iter().map(|frame| frame.jpeg.len()).sum();
+        assert!(total <= KEYPAD_GIF.max_bytes, "{total} bytes");
+        let at_full_quality = match prepare_gif_pass(&bytes, PrepareOptions::default(), KEYPAD_GIF)
+        {
+            Ok(result) => result,
+            Err(error) => panic!("{error}"),
+        };
+        assert!(at_full_quality.unwrap_err().contains("512 KiB"));
     }
 }

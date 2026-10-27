@@ -191,14 +191,21 @@ function describeAction(action: unknown): string {
     // The op is a closed word (toggle, start, stop, save), never user text.
     case 'obs_virtual_camera': case 'obs_replay_buffer': return `${action.type === 'obs_virtual_camera' ? 'OBS virtual camera' : 'OBS replay buffer'} ${str(action.op) ?? '?'}`;
     // Names are user text: only their lengths are shown (the service logs *_chars; older records carry the names).
+    case 'obs_stream': return `OBS stream ${str(action.op) ?? '?'}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'obs_record': return `OBS recording ${str(action.op) ?? '?'}`;
     case 'obs_studio_mode': return `OBS studio mode ${str(action.op) ?? '?'}`;
     case 'obs_transition': return 'OBS studio transition';
+    case 'obs_screenshot': return 'OBS screenshot';
+    case 'obs_input_mute': return `OBS input ${str(action.op) ?? '?'} (${nameChars(action, 'input')} characters)`;
+    case 'obs_adjust_input_volume': return `OBS input volume ${typeof action.step_db === 'number' ? `${action.step_db > 0 ? '+' : ''}${action.step_db} dB` : '?'} (${nameChars(action, 'input')} characters)`;
+    case 'obs_media_source': return `OBS media source ${str(action.op) ?? '?'} (${nameChars(action, 'input')} characters)`;
     case 'obs_set_input_volume': return `OBS input volume ${typeof action.percent === 'number' ? `${action.percent}%` : '?'} (${nameChars(action, 'input')} characters)`;
     case 'obs_input_volume_from_position': return `OBS input volume follows the fader (${nameChars(action, 'input')} characters)`;
     case 'obs_filter': return `OBS filter ${str(action.op) ?? '?'} (${nameChars(action, 'source')} + ${nameChars(action, 'filter')} characters)`;
     case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
     case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;
     case 'obs_profile': return `OBS profile (${nameChars(action, 'name')} characters)`;
+    case 'conditional': return isObject(action.when) ? `conditional (${Object.keys(action.when)[0] ?? '?'})` : 'conditional';
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     // The recorded keys read like typed text, so like a text snippet only the
     // shape is shown: the service logs {type, steps, ms} for the same reason.
@@ -253,6 +260,8 @@ export function summarizeRecord(record: unknown, at: number, execute = true): Ac
     case 'action_failed': return entry('action_failed', `${describeAction(record.action)} failed: ${clip(str(record.error) ?? 'unknown error')}`);
     // A profile key: the session manager switches the run when there is another saved profile to switch to.
     case 'profile_switch_requested': return entry('action', `Profile key: ${record.direction === 'previous' ? 'previous' : 'next'} profile requested (${describeEvent(record.event)}).`);
+    // A guarded key (press twice) was pressed once: nothing ran yet.
+    case 'action_armed': return entry('info', `${describeAction(record.action)} armed: press the key again within ${typeof record.confirm_within_ms === 'number' ? Math.round(record.confirm_within_ms / 1000) : 3} seconds to run it.`);
     case 'action_unavailable': return entry('info', `${describeAction(record.action)} not available: ${clip(str(record.reason) ?? 'no action was taken')}`);
     case 'timer_started': return entry('action', `Started ${describeAction(record.action)} (${describeEvent(record.event)}).`);
     case 'timer_cancelled': return entry('action', `Cancelled ${describeAction(record.action)} (${record.reason === 'pressed_again' ? 'pressed again' : 'run ended'}).`);

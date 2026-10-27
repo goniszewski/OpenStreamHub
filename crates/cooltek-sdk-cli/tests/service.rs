@@ -1119,7 +1119,7 @@ fn display_sync_rejects_invalid_combinations_before_any_hid_access() {
         (
             example_profile(),
             &["--software-mode"][..],
-            "--display-sync requires a schema-2 keypad profile",
+            "--display-sync requires a keypad-page profile (schema 2 or later)",
         ),
     ] {
         let mut arguments = vec![

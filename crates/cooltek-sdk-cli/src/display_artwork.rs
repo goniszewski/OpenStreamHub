@@ -410,7 +410,7 @@ fn glyph(image: &mut RgbImage, x: u32, y: u32, rows: &[u8; 7], color: [u8; 3]) {
 }
 
 /// A folder silhouette: a tab above a body.
-fn draw_folder() -> RgbImage {
+pub(crate) fn draw_folder() -> RgbImage {
     let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb(FOLDER_BACKGROUND));
     fill(&mut image, 12, 18, 20, 8, FOLDER);
     fill(&mut image, 12, 24, 48, 32, FOLDER);
@@ -418,7 +418,7 @@ fn draw_folder() -> RgbImage {
 }
 
 /// A left arrow above an `L{depth}` badge.
-fn draw_back(depth: u8) -> RgbImage {
+pub(crate) fn draw_back(depth: u8) -> RgbImage {
     let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb(BLACK));
     // Arrow head: tip at x = 12, base at x = 32, centred on y = 22.
     for x in 12..=32u32 {

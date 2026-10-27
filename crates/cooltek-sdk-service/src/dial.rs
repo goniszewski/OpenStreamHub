@@ -63,6 +63,129 @@ pub struct DialDisplay {
     /// reopen. Refused unless an image is present; the dial never reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<DialSource>,
+    /// Frames that play on the dial instead of the still `image`, which then
+    /// holds the first frame as the picture shown in lists and previews.
+    /// Refused with any other content, without an image, or with a `source`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub animation: Option<DialAnimation>,
+}
+
+/// One pre-encoded dial frame and how long it stays up.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialAnimationFrame {
+    /// Canonical standard base64 of a complete 240×240 baseline JFIF.
+    pub jpeg_base64: String,
+    /// Display time in milliseconds, [`DialAnimation::MIN_DELAY_MS`] through
+    /// [`DialAnimation::MAX_DELAY_MS`].
+    pub delay_ms: u32,
+}
+
+/// An ordered, bounded sequence of dial frames.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DialAnimation {
+    /// At least two frames; the first equals the display's `image`.
+    pub frames: Vec<DialAnimationFrame>,
+    /// Zero loops forever; a positive value counts total plays, then holds the last frame.
+    pub loop_count: u32,
+}
+
+impl DialAnimation {
+    /// Most frames in one animation.
+    pub const MAX_FRAMES: usize = 30;
+    /// Most decoded bytes in one frame.
+    pub const MAX_FRAME_BYTES: usize = 48 * 1024;
+    /// Most decoded bytes across all frames, which keeps the profile well
+    /// under its 1 MiB JSON limit once base64 encoded (alone: with key artwork
+    /// the profile as a whole is still checked against that limit).
+    pub const MAX_BYTES: usize = 384 * 1024;
+    /// Shortest frame time of a frame in the largest size class, and so the
+    /// longest floor. A frame near the size limit took 86 to 121 ms to write on
+    /// a real M131E, so 150 ms leaves a margin over the worst case.
+    pub const MIN_DELAY_MS: u32 = 150;
+    /// Shortest frame time of a frame in the smallest size class: the official
+    /// app's floor.
+    pub const FASTEST_DELAY_MS: u32 = 66;
+    /// Shortest frame time of a frame in the middle size class.
+    pub const MEDIUM_DELAY_MS: u32 = 100;
+    /// Largest frame, in bytes, of the smallest size class.
+    pub const SMALL_FRAME_BYTES: usize = 8 * 1024;
+    /// Largest frame, in bytes, of the middle size class.
+    pub const MEDIUM_FRAME_BYTES: usize = 20 * 1024;
+    /// Longest frame time.
+    pub const MAX_DELAY_MS: u32 = 60_000;
+
+    /// Shortest time a frame of `frame_bytes` may stay up. The time to write a
+    /// frame grows with its size (measured on a real M131E: about 6 ms plus 2.7
+    /// ms per KiB at worst), and a frame must last at least that long, so the
+    /// floor has three steps: [`Self::FASTEST_DELAY_MS`] up to
+    /// [`Self::SMALL_FRAME_BYTES`], [`Self::MEDIUM_DELAY_MS`] up to
+    /// [`Self::MEDIUM_FRAME_BYTES`], and [`Self::MIN_DELAY_MS`] above.
+    pub const fn min_delay_ms_for(frame_bytes: usize) -> u32 {
+        if frame_bytes <= Self::SMALL_FRAME_BYTES {
+            Self::FASTEST_DELAY_MS
+        } else if frame_bytes <= Self::MEDIUM_FRAME_BYTES {
+            Self::MEDIUM_DELAY_MS
+        } else {
+            Self::MIN_DELAY_MS
+        }
+    }
+
+    /// The decoded, validated JPEG of every frame.
+    pub fn jpegs(&self) -> Result<Vec<Vec<u8>>, String> {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        if !(2..=Self::MAX_FRAMES).contains(&self.frames.len()) {
+            return Err(format!(
+                "dial_display: an animation needs 2 through {} frames",
+                Self::MAX_FRAMES
+            ));
+        }
+        let mut total = 0usize;
+        let mut jpegs = Vec::with_capacity(self.frames.len());
+        for frame in &self.frames {
+            if frame.delay_ms > Self::MAX_DELAY_MS {
+                return Err(format!(
+                    "dial_display: an animation frame lasts at most {} ms",
+                    Self::MAX_DELAY_MS
+                ));
+            }
+            if frame.jpeg_base64.len() > Self::MAX_FRAME_BYTES.div_ceil(3) * 4 {
+                return Err(format!(
+                    "dial_display: an animation frame exceeds {} KiB",
+                    Self::MAX_FRAME_BYTES / 1024
+                ));
+            }
+            let jpeg = STANDARD
+                .decode(&frame.jpeg_base64)
+                .map_err(|_| "dial_display: an animation frame is not valid base64".to_string())?;
+            if STANDARD.encode(&jpeg) != frame.jpeg_base64 {
+                return Err("dial_display: animation frames must use canonical base64".into());
+            }
+            total += jpeg.len();
+            if jpeg.len() > Self::MAX_FRAME_BYTES || total > Self::MAX_BYTES {
+                return Err(format!(
+                    "dial_display: an animation frame exceeds {} KiB or the frames exceed {} KiB together",
+                    Self::MAX_FRAME_BYTES / 1024,
+                    Self::MAX_BYTES / 1024
+                ));
+            }
+            // The floor depends on the size, so it is checked once the frame is decoded.
+            let floor = Self::min_delay_ms_for(jpeg.len());
+            if frame.delay_ms < floor {
+                return Err(format!(
+                    "dial_display: an animation frame of {} KiB lasts {} through {} ms",
+                    jpeg.len().div_ceil(1024),
+                    floor,
+                    Self::MAX_DELAY_MS
+                ));
+            }
+            cooltek_sdk_masterhub::dial::validate_jpeg(&jpeg)
+                .map_err(|error| format!("dial_display: {error}"))?;
+            jpegs.push(jpeg);
+        }
+        Ok(jpegs)
+    }
 }
 
 /// How a source picture is fitted onto the round screen.
@@ -143,14 +266,33 @@ pub(crate) fn validate_display(display: &DialDisplay) -> Result<(), String> {
         }
         validate_source(source)?;
     }
+    // The still is checked (and size-bounded) before anything decodes it below.
     match (display.content, display.image.as_deref()) {
-        (DialDisplayContent::Image, Some(image)) => validate_display_image(image),
+        (DialDisplayContent::Image, Some(image)) => validate_display_image(image)?,
         (DialDisplayContent::Image, None) => {
-            Err("dial_display: image content requires the image field".into())
+            return Err("dial_display: image content requires the image field".into());
         }
-        (_, Some(_)) => Err("dial_display: only image content carries an image".into()),
-        (_, None) => Ok(()),
+        (_, Some(_)) => return Err("dial_display: only image content carries an image".into()),
+        (_, None) => {}
     }
+    if let Some(animation) = &display.animation {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        if display.content != DialDisplayContent::Image || display.image.is_none() {
+            return Err("dial_display: an animation belongs to image content".into());
+        }
+        if display.source.is_some() {
+            return Err("dial_display: an animation has no source picture".into());
+        }
+        let jpegs = animation.jpegs()?;
+        // Validated above, so the still is bounded and decodes.
+        let still = STANDARD
+            .decode(display.image.as_deref().unwrap_or_default())
+            .map_err(|_| "dial_display: the image is not valid base64".to_string())?;
+        if jpegs.first() != Some(&still) {
+            return Err("dial_display: the image must be the animation's first frame".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_source(source: &DialSource) -> Result<(), String> {
@@ -394,7 +536,7 @@ mod tests {
             serde_json::to_vec(&Profile::from_json(compact).unwrap()).unwrap(),
             compact
         );
-        let v2 = Profile::from_json(compact).unwrap().into_v2().unwrap();
+        let v2 = Profile::from_json(compact).unwrap().into_current().unwrap();
         let v2_bytes = serde_json::to_vec(&v2).unwrap();
         assert!(!v2_bytes.windows(14).any(|w| w == b"dial_functions"));
         assert_eq!(
@@ -419,8 +561,8 @@ mod tests {
         value["schema_version"] = json!(1);
         value.as_object_mut().unwrap().remove("keypad");
         let flat = Profile::from_json(&serde_json::to_vec(&value).unwrap()).unwrap();
-        let upgraded = flat.clone().into_v2().unwrap();
-        assert_eq!(upgraded.schema_version, 2);
+        let upgraded = flat.clone().into_current().unwrap();
+        assert_eq!(upgraded.schema_version, Profile::CURRENT_SCHEMA);
         assert_eq!(upgraded.dial_functions, flat.dial_functions);
         assert_eq!(upgraded.binding_count(), flat.binding_count());
     }

@@ -1,6 +1,6 @@
 # M131E dial functions
 
-Design recorded on 7 October 2026. The routing lives in `cooltek-sdk-service`. CLI replay and live runs, the desktop app's replay and preview, and the profile editor use it; the dial screen and a hardware check are still open (see the [integration checklist](#integration-checklist)). Nothing here has been tested on hardware.
+Design recorded on 7 October 2026. The routing lives in `cooltek-sdk-service`. CLI replay and live runs, the desktop app's replay and preview, and the profile editor use it; the hardware check is done except the exact 600 ms boundary (see the [integration checklist](#integration-checklist)).
 
 ## Behavior in the official app
 
@@ -30,7 +30,7 @@ A profile can add an optional `dial_functions` array. Each entry is a named grou
 ]
 ```
 
-A complete example that also has flat knob bindings and a schema-2 keypad is in [`crates/cooltek-sdk-service/tests/fixtures/dial-functions.json`](../crates/cooltek-sdk-service/tests/fixtures/dial-functions.json).
+A complete example that also has flat knob bindings and a keypad page tree is in [`crates/cooltek-sdk-service/tests/fixtures/dial-functions.json`](../crates/cooltek-sdk-service/tests/fixtures/dial-functions.json).
 
 There is no `module` or `control` field, because only the M131E dial, control 0, has functions.
 
@@ -52,12 +52,12 @@ There is no `module` or `control` field, because only the M131E dial, control 0,
 
 ### Why there is no schema 3
 
-`dial_functions` is an optional field and is allowed in schema 1 and schema 2:
+`dial_functions` is an optional field and is allowed in every schema:
 
 - **Old readers fail safely.** `Profile` already uses `deny_unknown_fields`. A build without this feature rejects a profile that has `dial_functions` with an `unknown field` error. It does not load the profile while silently ignoring the dial functions. A new schema version would produce the same rejection, only with a different message.
 - **Existing files do not change.** The field is skipped when absent. Every existing schema-1 and schema-2 profile parses and serializes exactly as before; a test re-encodes the bundled examples and compares them.
-- **No migration needed.** Schema 2 needed `into_v2` because it moved M4315 bindings into keypad tiles. Dial functions move nothing: a profile either has no functions, with flat M131E bindings as before, or has functions and no flat M131E bindings. `into_v2` keeps `dial_functions` unchanged.
-- **Downstream code keeps working.** The CLI and app compare `schema_version` with 1 and 2 in several places. A version 3 would need changes in all of them, while an optional field needs none.
+- **No migration needed.** Schema 2 needed an upgrade step because it moved M4315 bindings into keypad tiles. Dial functions move nothing: a profile either has no functions, with flat M131E bindings as before, or has functions and no flat M131E bindings. `into_current` keeps `dial_functions` unchanged.
+- **No bump for it.** The field is optional, so it did not raise the schema. Schema 3 came later for the upgrade path, not for this field; see [profile schema versions](masterhub-service.md#profile-schema-versions).
 
 The cost: a reader can tell that a profile uses dial functions only by looking for the field, not from the version number. Editors that rewrite profiles must carry the field through (see the checklist).
 
@@ -107,4 +107,4 @@ Status on 7 October 2026. Item numbers match the original list.
 8. **Editor**: done. `DialFunctionsPanel` in the encoder inspector adds, renames, reorders, and deletes functions (1 to 16, with inline name checks that mirror the service). Since 10 October 2026 the dial editor is a two-tab card — Functions and Display; the Display tab edits the profile's `dial_display` setting (the dial screen face, including an uploaded picture) and previews it with the same rasteriser the device gets. It edits each function's Right, Left, and Long press bindings with an optional serial, using the shared action picker. All edits go through the draft's undo history. Without functions the profile is unchanged until the user adds one, and deleting the last function removes `dial_functions`. Moving flat encoder bindings into a function is a separate button. It names every binding it drops: gestures no function can hold (Short press, Press, Release) and bindings whose gesture and serial the target function already has. Deleting a function or moving bindings asks for no confirmation; undo restores them. Previews sit in the same editor as the bindings: each function’s gestures and its Short press can be tested where the function is edited. While functions exist, the encoder inspector offers no flat editor — the dial editor replaces it. The binding list and its warnings include function bindings, and they warn about flat encoder bindings next to functions, functions without bindings, and invalid or duplicate names.
 9. **Simulation and status UI**: partly done. The editor previews any function's Right, Left, Long press, and Short press, and shows which function is previewed. The Profiles replay table shows the active function on each row and a distinct "Dial function: A → B (2/3)" row for a switch, which is not counted as unbound. The service activity log shows the current function on events and executed actions, and each switch as its own line. **Not done:** there is no dedicated live status field for the current function (it appears only in the activity log), and the Devices simulation still previews only the first function.
 10. **Display**: the faces drew correctly on a real M131E on 8 October 2026; short-click cycling through three functions also worked ([results](masterhub-hardware-results.md#m131e-dial)). `masterhub-service run --display-sync --dial-content function` draws the active function's name and position on the dial screen after each switch, at most once a second ([display sync](masterhub-display-sync.md#dial-run-on-one-m131e)). Since 10 October 2026 the desktop app derives `--dial-content` from each profile's own `dial_display` setting — the default is the function name, and the app's Display tab edits it; the global Settings choice (earlier, an experimental toggle) is gone. The `image` face has not run on hardware.
-11. **Hardware check**: not done. The click sequence, the 600 ms threshold, and that physical clicks never run an action still need checking on a device.
+11. **Hardware check**: done on 22 October 2026 except the exact 600 ms boundary. The click sequence (`pressed`, `released`, `short_press`), the cycling and wrap-around, per-function rotation, long press running only the current function's action, and short clicks never running an action all matched on a real M131E ([results](masterhub-hardware-results.md#m131e-dial)). Holds of 109 to 170 ms read as short and 661 ms and longer read as long; nothing between was tried.

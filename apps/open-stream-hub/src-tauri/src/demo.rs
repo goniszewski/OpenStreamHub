@@ -24,6 +24,7 @@ pub fn key_jpeg(image_base64: String) -> Result<String, String> {
         fit: Fit::Stretch,
         quarter_turns: 0,
         background: [0, 0, 0],
+        frame_budget_kib: None,
     })
     .map(|prepared| prepared.jpeg_base64)
 }

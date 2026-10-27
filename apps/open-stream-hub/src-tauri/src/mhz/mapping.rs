@@ -616,6 +616,9 @@ fn shortcut_count(action: &Action) -> usize {
     match action {
         Action::Shortcut { .. } => 1,
         Action::MultiAction { actions } => actions.iter().map(shortcut_count).sum(),
+        Action::Conditional {
+            then, otherwise, ..
+        } => then.iter().chain(otherwise).map(shortcut_count).sum(),
         _ => 0,
     }
 }
@@ -626,6 +629,9 @@ fn payload_bytes(action: &Action) -> usize {
         Action::Text { text, .. } => json_len(text),
         Action::OpenUrl { url } => json_len(url),
         Action::MultiAction { actions } => actions.iter().map(payload_bytes).sum(),
+        Action::Conditional {
+            then, otherwise, ..
+        } => then.iter().chain(otherwise).map(payload_bytes).sum(),
         _ => 0,
     }
 }
@@ -2111,7 +2117,7 @@ pub fn map_with_limit(
     );
 
     let mut profile = Profile {
-        schema_version: 2,
+        schema_version: Profile::CURRENT_SCHEMA,
         name: source_name.clone(),
         bindings: flat,
         keypad: Some(keypad),
@@ -2120,6 +2126,7 @@ pub fn map_with_limit(
         // profile shows the default face until the user picks one.
         dial_display: None,
         screen_brightness: None,
+        variables: Vec::new(),
     };
     let trimmed = fit_store_limit(&mut profile, &mut mapper, limit)?;
     if trimmed > 0 {

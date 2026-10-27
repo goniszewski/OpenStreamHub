@@ -2,6 +2,7 @@
 // Storage so it can be tested without a browser; every storage access is
 // guarded because storage may be unavailable, full or cleared at any time.
 import type { Profile } from './contracts';
+import { currentSchema, usesKeypadPages } from './contracts';
 import { stableStringify } from './draft-model';
 
 export const draftKeyPrefix = 'openstreamhub.draft.';
@@ -30,7 +31,7 @@ export class DraftStore {
     try {
       const value = JSON.parse(raw) as Partial<StoredDraft> | null;
       const profile = value?.profile as Profile | undefined;
-      const valid = profile && typeof profile === 'object' && typeof profile.name === 'string' && Array.isArray(profile.bindings) && profile.schema_version === 2
+      const valid = profile && typeof profile === 'object' && typeof profile.name === 'string' && Array.isArray(profile.bindings) && usesKeypadPages(profile) && profile.schema_version <= currentSchema
         && (value!.base_modified_at_ms === null || typeof value!.base_modified_at_ms === 'number') && typeof value!.saved_at === 'number';
       if (valid) {
         // Only a canonical lowercase UUID can name a saved profile; anything else is dropped, never passed on as a source.

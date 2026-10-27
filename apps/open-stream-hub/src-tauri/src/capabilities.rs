@@ -83,6 +83,27 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::Text { text, press_enter } => {
             set.insert(format!("text\0{text}\0{press_enter}"));
         }
+        // A variable is the profile's own memory: it reaches nothing outside
+        // the service, so it adds no capability (the actions it steers do).
+        Action::SetVariable { .. }
+        | Action::ToggleVariable { .. }
+        | Action::AddToVariable { .. } => {}
+        Action::Conditional {
+            when,
+            then,
+            otherwise,
+        } => {
+            // The test and both branches are the identity: a changed
+            // condition or a swapped branch is a new item. Every step of
+            // either branch could run, so each counts on its own too.
+            match serde_json::to_string(&(when, then, otherwise)) {
+                Ok(identity) => set.insert(format!("conditional\0{identity}")),
+                Err(_) => set.insert("conditional\0unnameable".into()),
+            };
+            for step in then.iter().chain(otherwise) {
+                visit(step, set);
+            }
+        }
         Action::MultiAction { actions } => {
             // The JSON of the typed steps is a stable identity, so a known
             // set of steps in a new order is still a new sequence item.
@@ -121,11 +142,20 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsVirtualCamera { op } => {
             set.insert(format!("obs_camera\0{op:?}"));
         }
+        Action::ObsStream { op, confirm } => {
+            set.insert(format!("obs_stream\0{op:?}\0{confirm:?}"));
+        }
+        Action::ObsRecord { op } => {
+            set.insert(format!("obs_record\0{op:?}"));
+        }
         Action::ObsReplayBuffer { op } => {
             set.insert(format!("obs_replay\0{op:?}"));
         }
         Action::ObsStudioMode { op } => {
             set.insert(format!("obs_studio_mode\0{op:?}"));
+        }
+        Action::ObsScreenshot => {
+            set.insert("obs_screenshot".into());
         }
         Action::ObsTransition => {
             set.insert("obs_transition".into());
@@ -146,6 +176,15 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         // names its level, like `set_volume`.
         Action::ObsInputVolumeFromPosition { input } => {
             set.insert(format!("obs_input_volume\0{input}"));
+        }
+        Action::ObsInputMute { input, op } => {
+            set.insert(format!("obs_input_mute\0{input}\0{op:?}"));
+        }
+        Action::ObsAdjustInputVolume { input, step_db } => {
+            set.insert(format!("obs_adjust_input_volume\0{input}\0{step_db}"));
+        }
+        Action::ObsMediaSource { input, op } => {
+            set.insert(format!("obs_media_source\0{input}\0{op:?}"));
         }
         Action::ObsSetInputVolume { input, percent } => {
             set.insert(format!("obs_set_input_volume\0{input}\0{percent}"));
@@ -201,6 +240,7 @@ mod tests {
             dial_functions: None,
             dial_display: None,
             screen_brightness: None,
+            variables: Vec::new(),
         }
     }
 
@@ -209,6 +249,56 @@ mod tests {
             text: text.into(),
             press_enter,
         }
+    }
+
+    #[test]
+    fn a_conditional_adds_its_test_its_branches_and_every_step() {
+        use cooltek_sdk_service::Condition;
+        let conditional = |when: Condition, then: Vec<Action>, otherwise: Vec<Action>| {
+            profile(vec![Action::Conditional {
+                when,
+                then,
+                otherwise,
+            }])
+        };
+        let held = conditional(
+            Condition::Recording(true),
+            vec![Action::ToggleMute],
+            vec![text("hi", false)],
+        );
+        assert!(!adds_capabilities(&held, &held));
+        // The same steps under another condition, or swapped between the
+        // branches, are a new conditional.
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Streaming(true),
+                vec![Action::ToggleMute],
+                vec![text("hi", false)]
+            )
+        ));
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Recording(true),
+                vec![text("hi", false)],
+                vec![Action::ToggleMute]
+            )
+        ));
+        // A step of a branch counts on its own: a new snippet is an addition.
+        assert!(adds_capabilities(
+            &held,
+            &conditional(
+                Condition::Recording(true),
+                vec![Action::ToggleMute],
+                vec![text("other", false)]
+            )
+        ));
+        // Without a conditional, the held steps alone do not cover it.
+        assert!(adds_capabilities(
+            &profile(vec![Action::ToggleMute, text("hi", false)]),
+            &held
+        ));
     }
 
     #[test]

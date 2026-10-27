@@ -346,6 +346,8 @@ export class ProfileSession {
     return { ...this.invalidateResults(), ...this.resetHistory(), draft: storedDraft(stored), draftGeneration: this.state.draftGeneration + 1, autosaveBlocked: false };
   }
 
+  // A new profile opens in the editor only. Choosing it in the profile picker is what runs it on the modules.
+  private openNote() { return this.desktop ? 'It is open in the editor, not running on the modules yet. Choose it in the profile picker to run it.' : 'It is now the open profile.'; }
   setError(error: string | null) { this.set({ error }); }
   setNotice(notice: string | null, action?: NoticeAction) { this.set({ notice, ...(action ? { noticeAction: action } : {}) }); }
 
@@ -641,7 +643,7 @@ export class ProfileSession {
   private async duplicate(source: 'saved' | 'draft') {
     const { profile, profileId } = this.state.draft;
     const read = async () => source === 'saved' && profileId ? upgradeKeypadProfile((await this.invoke<StoredProfile>('load_profile', { id: profileId })).profile) : profile;
-    const failure = await this.createProfile(read, 'Duplicating profile', copyName, name => `Created ${name}. It is now the open profile.`, this.state.draft.sourceId ?? profileId);
+    const failure = await this.createProfile(read, 'Duplicating profile', copyName, name => `Created ${name}. ${this.openNote()}`, this.state.draft.sourceId ?? profileId);
     if (failure) this.set({ error: `Could not duplicate profile: ${failure}` });
   }
 
@@ -649,7 +651,7 @@ export class ProfileSession {
   // one) and switches to it. The guard decides whether unsaved changes must
   // settle first.
   async createFromTemplate(profile: Profile): Promise<string | null> {
-    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. It is now the open profile.`,
+    return this.createProfile(() => profile, 'Creating starter profile', starterName, name => `Created ${name} from the starter. ${this.openNote()}`,
       null, undefined, (name, saved) => saved.find(item => item.name === name));
   }
 
@@ -675,7 +677,7 @@ export class ProfileSession {
       return;
     }
     this.guard('import this profile', () => {
-      void this.createProfile(() => profile, 'Importing profile', importName, name => `Imported ${name}. It is now the open profile.`)
+      void this.createProfile(() => profile, 'Importing profile', importName, name => `Imported ${name}. ${this.openNote()}`)
         .then(failure => { if (failure) this.set({ importError: `Could not import the profile: ${failure}` }); });
     });
   }

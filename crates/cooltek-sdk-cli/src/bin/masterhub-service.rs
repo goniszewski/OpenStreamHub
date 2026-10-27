@@ -530,10 +530,11 @@ fn check_display_sync(
     if !software_mode {
         return Err("--display-sync requires --software-mode".into());
     }
-    if dial_content == DialContent::Off && (profile.schema_version != 2 || profile.keypad.is_none())
+    if dial_content == DialContent::Off
+        && (!profile.uses_keypad_pages() || profile.keypad.is_none())
     {
         return Err(
-            "--display-sync requires a schema-2 keypad profile, or --dial-content for an M131E dial"
+            "--display-sync requires a keypad-page profile (schema 2 or later), or --dial-content for an M131E dial"
                 .into(),
         );
     }
@@ -565,7 +566,7 @@ fn live_bindings(
     } else if display_sync && module != ServiceModule::M4315 {
         return Err("--display-sync requires an M4315 keypad interface".into());
     }
-    if profile.schema_version == 2 {
+    if profile.uses_keypad_pages() {
         if module == ServiceModule::M4315 {
             if !display_sync {
                 return Err(cooltek_sdk_cli::service_events::NESTED_KEYPAD_REFUSAL.into());
@@ -645,6 +646,14 @@ impl Dispatcher {
 }
 
 impl ActionDispatcher for Dispatcher {
+    fn set_service_state(&mut self, state: cooltek_sdk_service::ServiceState) {
+        match self {
+            Self::Switchable { macos, .. } => macos.set_service_state(state),
+            Self::MacOs(dispatcher) => dispatcher.set_service_state(state),
+            Self::Preview { .. } => {}
+        }
+    }
+
     fn dispatch_with_execution(
         &mut self,
         action: &cooltek_sdk_service::Action,
@@ -1056,7 +1065,7 @@ mod tests {
         assert!(
             check_display_sync(true, true, off, &flat)
                 .unwrap_err()
-                .contains("schema-2 keypad profile")
+                .contains("keypad-page profile")
         );
     }
 
@@ -1500,6 +1509,7 @@ mod control_regressions {
             dropped_event_count: 0,
             dropped_dial_function_count: 0,
             merge_barrier: false,
+            variables: Vec::new(),
         };
         let mut output = Vec::new();
         process_work(

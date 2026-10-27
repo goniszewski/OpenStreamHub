@@ -55,6 +55,7 @@ import { DemoRuntime } from './demos/demo-runtime';
 import { demoTilePng } from './demos/TicTacToeScreen';
 import { AboutPage, CompatibilityPage, SettingsPage } from './InfoPages';
 import { AllowExecutionDialog, MhzImportReport } from './MhzImport';
+import { followRunProfile } from './follow-run-profile';
 import { readOpenPickers, subscribeOpenPickers } from './ActionPicker';
 import { readOpenKeyPickers, subscribeOpenKeyPickers } from './key-capture';
 import { isEditing } from './editing-hold';
@@ -338,6 +339,14 @@ export default function App() {
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
   const { profile, profileId, contentHash } = draft;
   const unsaved = isUnsaved(draft);
+  // A profile key switches the run's profile on the device; the editor follows it, unless that would replace unsaved changes.
+  const followed = useRef<Record<string, number> | null>(null);
+  useEffect(() => {
+    const step = followRunProfile(service.runs, followed.current, { profileId, unsaved });
+    followed.current = step.seen;
+    if (step.load) void session.load(step.load);
+    else if (step.held) session.setNotice(`A profile key switched the run to ${step.held}. Your unsaved changes stay open here.`);
+  }, [service.runs, profileId, unsaved, session]);
   // The open profile (saved, or a draft of it) imported from a .mhz file and not yet allowed to
   // execute actions; the confirmation lives here so it can open over the closed manager sheet.
   const flaggedProfile = state.profiles.find(item => item.id === profileId && item.dry_run_only);

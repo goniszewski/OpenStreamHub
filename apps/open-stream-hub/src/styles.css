@@ -260,19 +260,23 @@ html,body { overflow:clip; }
 .key-display:hover,.key-display.selected { background:linear-gradient(145deg,#a893ee70,#211733e6); }
 .key-display:active { box-shadow:inset 0 2px 5px #00000090; }
 .key-upright { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; width:100%; height:100%; }
-.key-display svg { width:42%; height:42%; flex:none; filter:drop-shadow(0 1px 2px #000); }
+.key-display svg:not(.key-label) { width:42%; height:42%; flex:none; filter:drop-shadow(0 1px 2px #000); }
 .display-label { font-size:10px; line-height:1.15; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .key-display .display-label { font-size:clamp(7px, .75vw, 10px); max-width:92%; text-shadow:0 1px 2px #000; }
 .display-depth { position:absolute; top:2px; right:2px; font-size:9px; font-weight:700; padding:1px 3px; border-radius:3px; background:#221735; color:#fff; }
 .display-empty { color:#b5a7c9; font-size:24px; }
 .keypad-tile .display-depth { top:4px; right:4px; font-size:11px; background:var(--panel); color:var(--text); border:1px solid var(--line); }
-.keypad-tile > svg { width:27px; height:27px; }
-.keypad-tile.back > svg { width:39px; height:39px; }
+.keypad-tile > svg:not(.key-label) { width:27px; height:27px; }
+.keypad-tile .key-label { width:min(100%,72px); }
+.keypad-tile.back > svg:not(.key-label) { width:39px; height:39px; }
 .keypad-tile .display-label { font-size:11px; }
 .encoder-display { position:absolute; left:17%; top:16%; width:65%; height:63%; border-radius:50%; background:radial-gradient(circle at 35% 25%,#343044,#13131b 80%); color:#f5f1ff; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; padding:12%; box-shadow:inset 0 2px 5px #ffffff16,inset 0 -3px 8px #00000070; pointer-events:none; }
 .encoder-display svg { width:38%; height:38%; flex:none; }
 .encoder-display .display-label { font-size:11px; text-align:center; white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .field-error { margin:6px 0 0; font-size:12px; line-height:1.5; color:var(--red); }
+.field-detail { margin:2px 0 0; font-size:12px; line-height:1.5; color:var(--muted); }
+.field-detail summary { cursor:pointer; user-select:none; }
+.field-detail p { margin:2px 0 0; overflow-wrap:anywhere; user-select:text; }
 input[aria-invalid="true"] { border-color:var(--red); }
 .alert-hint { display:block; margin-top:6px; font-size:12px; line-height:1.6; opacity:.9; }
 .alert .button.compact { flex:none; padding:6px 10px; border:1px solid currentColor; border-radius:7px; gap:6px; }
@@ -296,7 +300,15 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .rig-stage-turn.r270 { width:100cqh; height:100cqw; transform:translate(-50%,-50%) rotate(270deg); }
 .rig-stage-turn.r180 { width:100cqw; height:100cqh; transform:translate(-50%,-50%) rotate(180deg); }
 .base-orientation { flex:none; }
-.rig-stage .display-label,.rig-stage .display-depth { display:none; }
+.rig-stage .display-depth { display:none; }
+.rig-stage .display-label:not(.key-label) { display:none; }
+/* A key label is drawn in the module's own bitmap font, one SVG unit per font pixel, as wide as the key. Edges are anti-aliased: snapping them to whole pixels at a non-integer scale thickens the strokes. */
+/* A key drawn as the module draws it fills its screen; the highlight is an outline, as the picture covers the glass. */
+.key-display:has(.key-face) { background:#000; }
+.key-display .key-face { display:block; width:100%; height:100%; border-radius:9% / 10%; }
+.key-display:has(.key-face):hover { filter:brightness(1.2); }
+.key-display:has(.key-face).selected { outline:2px solid #b6a1ff; outline-offset:-2px; }
+.key-display .key-label { display:block; width:100%; height:auto; flex:none; padding:0 0 4%; filter:none; }
 .rig-stage .image-control.bound:not(.selected) { border-color:#a284ff80; }
 .rig-stage .fader { touch-action:none; cursor:ns-resize; }
 .fader-thumb { position:absolute; left:-25%; width:150%; height:6px; margin-bottom:-3px; border-radius:3px; background:#f5f1ff; box-shadow:0 0 6px #a284ff; pointer-events:none; }
@@ -501,6 +513,38 @@ input[aria-invalid="true"] { border-color:var(--red); }
 /* Action editor: text snippet and ordered multi-action steps. */
 .inspector textarea { width:100%; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); font:inherit; font-size:13px; color:inherit; resize:vertical; }.inspector textarea[aria-invalid="true"] { border-color:var(--red); }.inspector textarea:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 .action-steps { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }.action-steps>li { border:1px solid var(--line); border-radius:9px; padding:12px; }.action-steps>li>.button { margin-top:12px; }.action-fields .setting-toggle { display:flex; align-items:center; gap:7px; margin-top:12px; font-weight:400; }.obs-connection .obs-setup { border:0; background:none; padding:0; font:inherit; color:var(--accent); text-decoration:underline; cursor:pointer; }.obs-connection .obs-setup:hover { color:var(--text); }
+/* If / else editor: groups of tests that nest, step lists, grips and the thin drop slots between blocks. */
+.flow-block { display:block; }
+.flow-nested { margin-top:12px; padding:10px; border:1px dashed var(--line); border-radius:9px; background:color-mix(in srgb, var(--selected) 30%, transparent); }
+.flow-group { border:1px solid var(--line); border-radius:9px; padding:10px; margin-top:8px; }
+.flow-group-root { margin-top:0; }
+.flow-members { list-style:none; margin:6px 0; padding:0; }
+.flow-condition { border:1px solid var(--line); border-radius:9px; padding:10px; background:var(--panel); }
+.flow-condition-group { padding:0; border:0; background:none; }
+.flow-row-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.flow-row-head[draggable="true"] { cursor:grab; }
+.flow-row-head[draggable="true"]:active { cursor:grabbing; }
+.flow-row-head[draggable="true"] label { cursor:inherit; }
+.flow-row-head label { flex:1; margin:0; }
+.flow-buttons { display:inline-flex; gap:4px; margin-left:auto; flex:none; }
+.flow-icon { padding:5px 7px; min-width:0; }
+.flow-grip { display:inline-flex; flex:none; padding:3px; border-radius:6px; color:var(--muted); }
+.flow-row-head:hover .flow-grip { color:var(--text); }
+.flow-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.flow-slot { list-style:none; height:6px; margin:0; border:0; border-radius:4px; transition:height .1s ease, background-color .1s ease; }
+.flow-dragging .flow-slot { height:12px; }
+.flow-slot.flow-slot-active { background:color-mix(in srgb, var(--accent) 22%, transparent); }
+.flow-slot.flow-slot-over { height:18px; background:var(--accent); }
+.flow-dragged { opacity:.45; }
+.action-steps.flow-steps { gap:0; margin:8px 0; }
+.action-steps.flow-steps>li.flow-slot { border:0; padding:0; border-radius:4px; }
+.action-steps.flow-steps>li:not(.flow-slot) { margin:2px 0; }
+.variables-panel h3 { margin:0 0 8px; font-size:14px; }
+.variables-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }
+.variables-list>li { border:1px solid var(--line); border-radius:9px; padding:12px; }
+.variables-list>li>.button { margin-top:12px; }
+.variables-list label { font-weight:500; font-size:12px; }
+@media (prefers-reduced-motion: reduce) { .flow-slot { transition:none; } }
 /* OBS name fields: combobox choices under the input, the live cross-check note, and the
    listing row of the connection note (Refresh button plus why a listing failed). */
 .obs-name { position:relative; display:block; }
@@ -756,6 +800,18 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .colour-popover { position:absolute; z-index:40; top:calc(100% + 6px); right:0; width:240px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel, var(--header)); box-shadow:0 8px 24px rgba(0,0,0,.35); }
 
 .dial-image-look { display:grid; gap:8px; margin-top:12px; }
+.dial-display .compact-toggle { font-size:13px; font-weight:400; margin-top:6px; }
+.dial-variants { margin-top:12px; padding:10px; border:1px solid var(--line); border-radius:10px; display:grid; gap:8px; }
+.dial-variants-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.dial-variants-head h4 { margin:0; font-size:13px; }
+.dial-variants-nav { display:flex; align-items:center; gap:6px; }
+.dial-variant { display:grid; grid-template-columns:128px minmax(0, 1fr); gap:12px; align-items:start; }
+.dial-variant img, .dial-variant-missing { width:128px; height:128px; border-radius:50%; border:1px solid var(--line); object-fit:cover; display:block; }
+.dial-variant-text { display:grid; gap:4px; align-content:start; justify-items:start; text-align:left; }
+.dial-variant-text .fine-print { margin:0; }
+.dial-variant-name { font-weight:600; font-size:14px; display:flex; align-items:center; gap:8px; }
+.dial-variant-elsewhere { margin:0; display:flex; align-items:center; gap:8px; }
+.dial-variant-badge { font-size:11px; font-weight:500; padding:1px 8px; border-radius:999px; border:1px solid var(--line); }
 .dial-image-look>label { margin:0; font-size:12px; }
 .dial-image-rotate { display:flex; align-items:center; gap:12px; }
 

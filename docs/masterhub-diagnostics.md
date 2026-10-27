@@ -134,7 +134,7 @@ cargo run -p cooltek-sdk-cli --locked -- dial prepare-image artwork.png \
   --quality 90 --background 202020
 ```
 
-Preparation defaults to quality 100, no rotation, and `contain`: preserve the complete image with centered black margins. `cover` crops a centered square; `stretch` scales both axes independently. Rotation accepts 0, 90, 180, or 270 degrees clockwise, applied after fitting. `--background` is an RGB matte for transparency and contain-mode margins. Alpha is composited before filtering. EXIF orientation and color profiles are not automatically applied or copied. Progressive JPEG source images are decoded and re-encoded as baseline output. APNG, GIF, BMP, and other formats are rejected.
+Preparation defaults to quality 100, no rotation, and `contain`: preserve the complete image with centered black margins. `cover` crops a centered square; `stretch` scales both axes independently. Rotation accepts 0, 90, 180, or 270 degrees clockwise, applied after fitting. `--background` is an RGB matte for transparency and contain-mode margins. Alpha is composited before filtering. A JPEG's EXIF orientation (or a PNG `eXIf` chunk before the image data) is applied to the source before fitting (an explicit rotation then turns the fitted square); color profiles are not applied or copied. Progressive JPEG source images are decoded and re-encoded as baseline output. BMP is decoded like a PNG. APNG, GIF and other formats are rejected here; the desktop app prepares GIFs as key or dial animations.
 
 Source files are bounded to 16 MiB; decoded dimensions cannot exceed 4096 on either axis and raw decoded pixels cannot exceed 64 MiB. Decoder allocation limits are also requested, but are [best effort](https://docs.rs/image/0.25.10/image/struct.Limits.html), not a total process-memory cap. Complete decoding, fitting, encoding, and dial-framing validation finish before a new output file is created. Existing files are never overwritten. Preparation does not enumerate HID or establish physical image orientation, color calibration, or device acceptance.
 
@@ -195,13 +195,13 @@ cargo run -p cooltek-sdk-cli --locked -- keypad jpeg \
   --output /tmp/masterhub-keypad-plan.jsonl
 ```
 
-Key indices are zero-based, 0–14; their physical positions remain unverified. Preparation defaults to quality 100, contain fit, black background, and no rotation. Its baseline JFIF output policy follows the pinned Windows renderer's 72×72 JPEG path. The packet builder validates an 8-bit, three-component baseline JFIF JPEG with one interleaved scan; it checks framing and dimensions without decoding entropy data. These conservative constraints do not establish every format the firmware accepts.
+Key indices are zero-based, 0–14, numbered row by row from the top left of a 5-across, 3-down module (verified on hardware, 22 October 2026). Preparation defaults to quality 100, contain fit, black background, and no rotation. Its baseline JFIF output policy follows the pinned Windows renderer's 72×72 JPEG path. The packet builder validates an 8-bit, three-component baseline JFIF JPEG with one interleaved scan; it checks framing and dimensions without decoding entropy data. These conservative constraints do not establish every format the firmware accepts.
 
 `keypad jpeg` requires a saved binary descriptor containing output report ID `02` and a new output path. It has no live-device option, constructs no HIDAPI context, and sends no packets. Image, key index, and descriptor validation complete before file creation. The example reuses a synthetic 65-byte descriptor; its filename reflects the original dial tests, and its length is not hardware evidence.
 
 Plans identify `module: m4315` and `key_index` in their header, packet records, and footer. The eight-byte header is `02 36`, followed by a little-endian 16-bit sequence, a little-endian 16-bit payload length, the key index in byte 6, and the final flag in byte 7. Payload starts at byte 8; unused bytes are zeroed. Report lengths are bounded to 9–65,535 bytes and images to 16 MiB, with at most 65,536 chunks to prevent sequence wrap. The JSONL plan is separate from input captures and cannot be passed to `replay`.
 
-Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app sends images to module displays only through its experimental, off-by-default Settings toggle (see [display sync](masterhub-display-sync.md)); this CLI path stays offline-only except for an explicit `dial jpeg --path-hex`.
+Physical upload, key order, orientation, image acceptance, software-mode requirements, and refresh pacing remain hardware checks. The desktop app sends images to module displays only while Settings > Let OpenStreamHub drive the display is App, its default (see [display sync](masterhub-display-sync.md)); this CLI path stays offline-only except for an explicit `dial jpeg --path-hex`.
 
 ## SDK building blocks
 

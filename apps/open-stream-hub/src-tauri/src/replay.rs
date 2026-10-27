@@ -225,7 +225,7 @@ pub fn preview_binding(
         value,
     };
     event.validate_for(module)?;
-    let prime_release = profile.schema_version == 2
+    let prime_release = profile.uses_keypad_pages()
         && module == ServiceModule::M4315
         && gesture == Gesture::Released;
     let mut session = ProfileSession::new(profile)?;
@@ -273,7 +273,7 @@ pub fn preview_keypad(
 ) -> Result<KeypadPreview, String> {
     validate_profile(&profile)?;
     reject_blank_serial(&serial_number)?;
-    let mut session = ProfileSession::new(profile.into_v2()?)?;
+    let mut session = ProfileSession::new(profile.into_current()?)?;
     session.set_path(&path)?;
     let context = DeviceContext {
         module: ServiceModule::M4315,
@@ -928,7 +928,7 @@ mod tests {
     #[test]
     fn migrated_root_replay_preserves_flat_actions_and_capture_diagnostics() {
         let flat = replay_demo(all_modules(), DemoKind::Keys).unwrap();
-        let migrated = replay_demo(all_modules().into_v2().unwrap(), DemoKind::Keys).unwrap();
+        let migrated = replay_demo(all_modules().into_current().unwrap(), DemoKind::Keys).unwrap();
         assert_eq!(migrated.report_count, flat.report_count);
         assert_eq!(migrated.event_count, flat.event_count);
         assert_eq!(migrated.planned_action_count, flat.planned_action_count);

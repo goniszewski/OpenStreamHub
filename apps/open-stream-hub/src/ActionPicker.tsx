@@ -102,7 +102,7 @@ export function ActionPicker({ state, onStateChange, scope, action, triggerId, i
           <div className="picker-entries">{group.entries.map(entryButton)}</div>
         </section>)}
       </>}
-      {action && scope !== 'step' && <button type="button" className="picker-unbind" data-action-type="unbound"
+      {action && scope !== 'step' && scope !== 'branch' && <button type="button" className="picker-unbind" data-action-type="unbound"
         onClick={() => assign(null)}><Trash2 size={15} aria-hidden="true" />Remove action</button>}
     </div>}
   </span>;

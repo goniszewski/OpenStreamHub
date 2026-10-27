@@ -53,7 +53,7 @@ Set these as repository (or environment) secrets. Names follow Tauri 2's macOS s
 
 Tauri also supports App Store Connect API keys for notarization (`APPLE_API_ISSUER`, `APPLE_API_KEY`, `APPLE_API_KEY_PATH`). The workflow does not use them.
 
-The workflow exports these to the job environment only if **all six** are non-empty. If any is missing it emits a warning, builds without signing, and names the artifact `...-UNSIGNED`. Secrets are not available to workflows triggered from fork PRs, which is why signing lives only in the release workflow.
+The workflow exports these to the job environment only if **all six** are non-empty. If any is missing it emits a warning, sets `APPLE_SIGNING_IDENTITY=-` so Tauri ad-hoc signs the app and sidecar (without it the Intel build is not signed at all and the arm64 build is only linker-signed, as the 0.3.0 CI artifacts were), checks the ad-hoc signature with `codesign --verify`, and names the artifact `...-UNSIGNED`. Secrets are not available to workflows triggered from fork PRs, which is why signing lives only in the release workflow.
 
 ## Running a release
 

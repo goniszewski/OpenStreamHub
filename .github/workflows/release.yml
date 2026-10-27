@@ -91,7 +91,10 @@ jobs:
             echo "Apple credentials found: bundle will be signed and notarized."
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Apple signing secrets missing; producing an UNSIGNED, un-notarized bundle."
+            # Ad-hoc identity: without it Tauri leaves the app unsigned (Intel)
+            # or only linker-signed (arm64), and macOS refuses or rejects it.
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::Apple signing secrets missing; producing an UNSIGNED (ad-hoc signed), un-notarized bundle."
           fi
 
       # beforeBuildCommand runs `npm run sidecar:release`, then `npm run build`.
@@ -127,6 +130,16 @@ jobs:
           spctl --assess --type execute --verbose=4 OpenStreamHub.app
           xcrun stapler validate OpenStreamHub.app || true
           codesign --verify --strict --verbose=2 ../dmg/*.dmg
+
+      # The unsigned path must still be ad-hoc signed and internally
+      # consistent (0.3.0 shipped CI builds that were not).
+      - name: Verify ad-hoc signature
+        if: steps.signing.outputs.signed != 'true'
+        working-directory: apps/open-stream-hub/src-tauri/target/release/bundle/macos
+        run: |
+          codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/masterhub-service
+          codesign --verify --deep --strict --verbose=2 OpenStreamHub.app
+          codesign -dv OpenStreamHub.app 2>&1 | grep -q 'Signature=adhoc'
 
       - name: Archive bundle
         id: archive

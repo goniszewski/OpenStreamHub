@@ -1,0 +1,233 @@
+{
+ "schema_version": 5,
+ "name": "OSH flow check",
+ "bindings": [],
+ "variables": [
+  {
+   "name": "takes",
+   "value": 0
+  },
+  {
+   "name": "armed",
+   "value": false
+  }
+ ],
+ "keypad": {
+  "pages": [
+   {
+    "id": "root",
+    "name": "Root",
+    "slots": [
+     {
+      "type": "action",
+      "label": "Count +1",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "add_to_variable",
+         "name": "takes",
+         "amount": 1
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "3 or more?",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "conditional",
+         "when": {
+          "variable_at_least": {
+           "name": "takes",
+           "value": 3
+          }
+         },
+         "then": [
+          {
+           "type": "set_volume",
+           "percent": 40
+          }
+         ],
+         "else": [
+          {
+           "type": "set_volume",
+           "percent": 10
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "Reset count",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "set_variable",
+         "name": "takes",
+         "value": 0
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "Flip armed",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "toggle_variable",
+         "name": "armed"
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "If armed",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "conditional",
+         "when": {
+          "variable_is": {
+           "name": "armed",
+           "value": true
+          }
+         },
+         "then": [
+          {
+           "type": "set_volume",
+           "percent": 50
+          }
+         ],
+         "else": [
+          {
+           "type": "set_volume",
+           "percent": 20
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "Finder?",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "conditional",
+         "when": {
+          "focused_app": "com.apple.finder"
+         },
+         "then": [
+          {
+           "type": "set_volume",
+           "percent": 60
+          }
+         ],
+         "else": [
+          {
+           "type": "set_volume",
+           "percent": 15
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "Nested",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "conditional",
+         "when": {
+          "all": [
+           {
+            "variable_is": {
+             "name": "armed",
+             "value": true
+            }
+           },
+           {
+            "any": [
+             {
+              "variable_at_least": {
+               "name": "takes",
+               "value": 2
+              }
+             },
+             {
+              "focused_app": "com.apple.finder"
+             }
+            ]
+           }
+          ]
+         },
+         "then": [
+          {
+           "type": "conditional",
+           "when": {
+            "output_muted": true
+           },
+           "then": [
+            {
+             "type": "toggle_mute"
+            }
+           ],
+           "else": [
+            {
+             "type": "set_volume",
+             "percent": 70
+            }
+           ]
+          }
+         ],
+         "else": [
+          {
+           "type": "set_volume",
+           "percent": 25
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "type": "action",
+      "label": "Volume 30",
+      "bindings": [
+       {
+        "gesture": "pressed",
+        "action": {
+         "type": "set_volume",
+         "percent": 30
+        }
+       }
+      ]
+     },
+     null,
+     null,
+     null,
+     null,
+     null,
+     null,
+     null
+    ]
+   }
+  ]
+ }
+}

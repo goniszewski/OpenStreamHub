@@ -1,9 +1,10 @@
 name: Release (macOS bundle)
 
-# Builds the OpenStreamHub.app bundle. Never creates a GitHub release: the
-# result is only a workflow artifact. Signing and notarization run only when
-# the Apple secrets are configured; otherwise an artifact named "...-UNSIGNED"
-# is produced.
+# Builds the OpenStreamHub.app bundle and, when both architectures build, makes
+# a DRAFT GitHub release from them (zip and DMG per architecture, SHA256SUMS.txt,
+# docs/release-notes-<version>.md as the body). It never publishes: that stays a
+# manual step. Signing and notarization run only when the Apple secrets are
+# configured; otherwise the artifacts are named "...-UNSIGNED" (ad-hoc signed).
 
 on:
   push:
@@ -20,8 +21,20 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Cheap checks before the 15-minute macOS builds: the three version files
+  # match the tag, the release notes exist and the release process doc names
+  # the same version (scripts/check-release.sh).
+  preflight:
+    name: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-release.sh "$GITHUB_REF_NAME"
+
   bundle:
     name: bundle (${{ matrix.arch }})
+    needs: preflight
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     # Per-arch native builds, not universal: scripts/prepare-sidecar.mjs builds
@@ -167,3 +180,45 @@ jobs:
           path: ${{ steps.archive.outputs.path }}
           if-no-files-found: error
           retention-days: 14
+
+  # Needs contents: write, so it is a separate job: the build jobs keep a
+  # read-only token. Creates a draft only; an existing release is left alone.
+  draft-release:
+    name: draft release
+    needs: bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: OpenStreamHub-*
+          path: artifacts
+
+      - name: Draft the release
+        run: |
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          version="${version%%-*}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::warning::Release $tag already exists; leaving it alone."
+            exit 0
+          fi
+          mkdir release
+          # OpenStreamHub-<arch>-UNSIGNED.zip -> OpenStreamHub-<version>-<arch>-UNSIGNED.zip
+          for f in artifacts/*/*.zip artifacts/*/*.dmg; do
+            cp "$f" "release/$(basename "$f" | sed "s/^OpenStreamHub-/OpenStreamHub-$version-/")"
+          done
+          (cd release && sha256sum -- *.dmg *.zip > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          [ "$(ls release/*.dmg release/*.zip | wc -l)" -eq 4 ] || { echo "::error::expected 4 files (zip and dmg per architecture)"; exit 1; }
+          flags=""
+          case "$tag" in *-*) flags="--prerelease" ;; esac
+          gh release create "$tag" release/* --draft $flags \
+            --title "OpenStreamHub $version" \
+            --notes-file "docs/release-notes-$version.md" \
+            --verify-tag

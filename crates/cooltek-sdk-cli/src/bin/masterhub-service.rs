@@ -36,6 +36,7 @@ use cooltek_sdk_service::{
     display_sync::KeyImageProvider,
     macos::MacOsDispatcher,
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
+    streamlabs::STREAMLABS_UNAVAILABLE,
 };
 use serde_json::json;
 
@@ -645,6 +646,15 @@ impl Dispatcher {
     }
 }
 
+/// What a dry run (or a Test-mode action) reports as unavailable, as an
+/// executing run would: OBS actions without an endpoint, and Streamlabs
+/// actions, which this binary never configures yet.
+fn preview_unavailable(obs: bool, action: &cooltek_sdk_service::Action) -> Option<&'static str> {
+    (!obs && action.uses_obs())
+        .then_some(OBS_UNAVAILABLE)
+        .or_else(|| action.uses_streamlabs().then_some(STREAMLABS_UNAVAILABLE))
+}
+
 impl ActionDispatcher for Dispatcher {
     fn set_service_state(&mut self, state: cooltek_sdk_service::ServiceState) {
         match self {
@@ -696,10 +706,10 @@ impl ActionDispatcher for Dispatcher {
                 if execute.load(Ordering::SeqCst) {
                     macos.unavailable(action)
                 } else {
-                    (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE)
+                    preview_unavailable(*obs, action)
                 }
             }
-            Self::Preview { obs } => (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE),
+            Self::Preview { obs } => preview_unavailable(*obs, action),
             Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
     }
@@ -1429,6 +1439,11 @@ mod tests {
         let mut without = Dispatcher::new(false, None, Arc::clone(&abort), None);
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
+        // No run configures Streamlabs yet: a dry run reports it like an executing run.
+        assert_eq!(
+            without.unavailable(&Action::StreamlabsRecord),
+            Some(STREAMLABS_UNAVAILABLE)
+        );
         // A closed port: a dry run must plan without any connection attempt.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

@@ -189,6 +189,29 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::ObsSetInputVolume { input, percent } => {
             set.insert(format!("obs_set_input_volume\0{input}\0{percent}"));
         }
+        Action::StreamlabsRecord => {
+            set.insert("streamlabs_record".into());
+        }
+        Action::StreamlabsStream { confirm } => {
+            set.insert(format!("streamlabs_stream\0{confirm:?}"));
+        }
+        Action::StreamlabsStudioMode => {
+            set.insert("streamlabs_studio_mode".into());
+        }
+        Action::StreamlabsTransition => {
+            set.insert("streamlabs_transition".into());
+        }
+        Action::StreamlabsScene { scene, collection } => {
+            set.insert(format!("streamlabs_scene\0{scene}\0{collection:?}"));
+        }
+        Action::StreamlabsSourceVisibility { scene, source, op } => {
+            set.insert(format!("streamlabs_visibility\0{scene}\0{source}\0{op:?}"));
+        }
+        // Like `obs_set_input_volume`, the level (or step, or mute mode) is
+        // part of the item.
+        Action::StreamlabsAudio { source, op } => {
+            set.insert(format!("streamlabs_audio\0{source}\0{op:?}"));
+        }
     }
 }
 
@@ -424,6 +447,32 @@ mod tests {
         );
         assert_eq!(url_origin("http://example.com"), "http://example.com");
         assert_eq!(url_origin("not a url"), "not a url://");
+    }
+
+    #[test]
+    fn a_streamlabs_target_or_level_is_part_of_the_item() {
+        use cooltek_sdk_service::StreamlabsAudioOp;
+        let audio = |op| {
+            profile(vec![Action::StreamlabsAudio {
+                source: "Mic".into(),
+                op,
+            }])
+        };
+        let held = audio(StreamlabsAudioOp::Set(40));
+        assert!(!adds_capabilities(&held, &held));
+        assert!(adds_capabilities(&held, &audio(StreamlabsAudioOp::Set(90))));
+        let scene = |collection: Option<&str>| {
+            profile(vec![Action::StreamlabsScene {
+                scene: "Live".into(),
+                collection: collection.map(Into::into),
+            }])
+        };
+        assert!(adds_capabilities(&scene(None), &scene(Some("Podcast"))));
+        // The OBS action of the same name is a different capability.
+        assert!(adds_capabilities(
+            &profile(vec![Action::ObsTransition]),
+            &profile(vec![Action::StreamlabsTransition])
+        ));
     }
 
     #[test]

@@ -399,6 +399,24 @@ In the editor (`ObsFields` in `ActionFields.tsx`) the scene, source, filter, sce
 
 The Execute confirmation lists "Switches OBS scenes through the OBS WebSocket on this Mac" with every scene name (invisible characters made visible). It does not raise the risk level: the action only changes what OBS shows.
 
+## Streamlabs
+
+Seven Streamlabs Desktop action types exist in the service (`crates/cooltek-sdk-service/src/streamlabs.rs`), from [the official actions](research/masterhub-streamlabs-actions.md). Scenes, collections, items and audio sources are matched by exact name (the OBS name rules) and resolved to Streamlabs ids on the same connection:
+
+| Type | JSON | Requests |
+| --- | --- | --- |
+| `streamlabs_record` | `{"type":"streamlabs_record"}` | `StreamingService.toggleRecording` |
+| `streamlabs_stream` | `{"type":"streamlabs_stream"}`, optional `"confirm":"press_twice"` as for `obs_stream` | `StreamingService.toggleStreaming` |
+| `streamlabs_studio_mode` | `{"type":"streamlabs_studio_mode"}` | `TransitionsService.getModel`, then `enableStudioMode` or `disableStudioMode` |
+| `streamlabs_transition` | `{"type":"streamlabs_transition"}` | `TransitionsService.executeStudioModeTransition` |
+| `streamlabs_scene` | `{"type":"streamlabs_scene","scene":"Live","collection":"Podcast"}` (`collection` optional) | With a collection that is not active: `SceneCollectionsService.collections`, `load`, then `activeCollection` polled until it matches (within the 3 s action deadline, no fixed wait); then `ScenesService.getScenes` and `makeSceneActive` |
+| `streamlabs_source_visibility` | `{"type":"streamlabs_source_visibility","scene":"Live","source":"Camera","op":"toggle"}` (`toggle`, `show`, `hide`) | `ScenesService.getScenes`, then `<item resourceId>.setVisibility`. A folder sets every item inside it (nested folders too); `toggle` shows all when any is hidden. Only the active collection |
+| `streamlabs_audio` | `{"type":"streamlabs_audio","source":"Mic","op":{"set":40}}`; `{"adjust":-5}` (nonzero step of -100 to 100 percent, held between 0 and 100); `{"mute":"toggle"}` (`toggle`, `mute`, `unmute`) | `AudioService.getSources`, then `<source resourceId>.getModel` / `setDeflection` (0.0 to 1.0, not dB) / `setMuted` |
+
+Connection rules match OBS: loopback only (default `127.0.0.1:59650`), one connection per action, `TcpServerService.auth` with the API token first, the token never in a profile, log or error, 1 MiB frames. No run configures Streamlabs yet (no CLI flag, setting or Keychain entry), so every Streamlabs action is reported as unavailable and nothing is sent.
+
+**Unverified.** These actions are tested only against an in-process fake server. The transport (JSON-RPC text frames over SockJS's raw WebSocket endpoint `/api/websocket`) and the reply shapes (`nodes`, `sceneNodeType`, `parentId`, `fader.deflection`) come from a static reading and have not been checked against a real Streamlabs Desktop.
+
 ## Diagnostics bundle redaction
 
 When redaction is on (`redact_serials: true`), the diagnostics bundle (`apps/open-stream-hub/src-tauri/src/diagnostics.rs`) also removes action payloads from the included profile and from the client data (including `client.activity`). Any JSON object with `"type":"text"` has its `text` replaced with `<N chars>`, where N is the number of Unicode scalar values; any object with `"type":"timer"` has its `label`, and any object with `"type":"obs_scene"` its `scene`, replaced the same way. The OBS password is never in a bundle, redacted or not, because the app never writes it anywhere. Any object with `"type":"open_url"` has its `url` cut down to `scheme://host[:port]`, dropping user information, path, query and fragment. A value without `scheme://` becomes `<url>`. This applies at any depth: top-level bindings, `multi_action` steps, keypad tiles, `dial_functions` bindings and activity records. Raw snippets and URLs of 8 or more characters are also scrubbed from free text elsewhere in the bundle, such as error messages. Shorter ones are replaced only in their own field, so a short snippet that also appears inside free text survives there. Scene names are the exception: a shorter scene name found in the profile or client data is also replaced wherever it appears as a whole word in profile and client text (activity lines, errors), so `Live` or `BRB` never survives in the activity. When redaction is off, profile and client data, snippets and URLs included, appear in the bundle exactly as given.

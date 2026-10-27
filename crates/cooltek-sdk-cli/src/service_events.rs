@@ -534,6 +534,25 @@ pub fn loggable(action: &Action) -> Value {
             "type":"obs_input_volume_from_position",
             "input_chars":input.chars().count(),
         }),
+        // Streamlabs names are user text too: only lengths are logged.
+        Action::StreamlabsScene { scene, collection } => {
+            let mut value = json!({"type":"streamlabs_scene", "scene_chars":scene.chars().count()});
+            if let Some(collection) = collection {
+                value["collection_chars"] = json!(collection.chars().count());
+            }
+            value
+        }
+        Action::StreamlabsSourceVisibility { scene, source, op } => json!({
+            "type":"streamlabs_source_visibility",
+            "scene_chars":scene.chars().count(),
+            "source_chars":source.chars().count(),
+            "op":op,
+        }),
+        Action::StreamlabsAudio { source, op } => json!({
+            "type":"streamlabs_audio",
+            "source_chars":source.chars().count(),
+            "op":op,
+        }),
         other => json!(other),
     }
 }
@@ -1369,6 +1388,83 @@ mod tests {
                 assert_eq!(end["unavailable_action_count"], 1);
                 assert_eq!(end["failed_action_count"], 0);
             }
+        }
+    }
+
+    /// A dispatcher without Streamlabs: every Streamlabs action is unavailable.
+    struct NoStreamlabs;
+
+    impl ActionDispatcher for NoStreamlabs {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            panic!("{} reached the dispatcher", action.type_name())
+        }
+
+        fn unavailable(&self, action: &Action) -> Option<&'static str> {
+            action
+                .uses_streamlabs()
+                .then_some(cooltek_sdk_service::streamlabs::STREAMLABS_UNAVAILABLE)
+        }
+    }
+
+    #[test]
+    fn streamlabs_actions_without_a_client_are_unavailable_and_log_only_name_lengths() {
+        use cooltek_sdk_service::{ObsMuteOp, StreamlabsAudioOp, StreamlabsVisibilityOp};
+        for (action, logged) in [
+            (
+                Action::StreamlabsRecord,
+                json!({"type":"streamlabs_record"}),
+            ),
+            (
+                Action::StreamlabsStream { confirm: None },
+                json!({"type":"streamlabs_stream"}),
+            ),
+            (
+                Action::StreamlabsScene {
+                    scene: "Live".into(),
+                    collection: Some("Private show".into()),
+                },
+                json!({"type":"streamlabs_scene","scene_chars":4,"collection_chars":12}),
+            ),
+            (
+                Action::StreamlabsSourceVisibility {
+                    scene: "Live".into(),
+                    source: "Private cam".into(),
+                    op: StreamlabsVisibilityOp::Hide,
+                },
+                json!({"type":"streamlabs_source_visibility","scene_chars":4,"source_chars":11,"op":"hide"}),
+            ),
+            (
+                Action::StreamlabsAudio {
+                    source: "Mic".into(),
+                    op: StreamlabsAudioOp::Mute(ObsMuteOp::Toggle),
+                },
+                json!({"type":"streamlabs_audio","source_chars":3,"op":{"mute":"toggle"}}),
+            ),
+        ] {
+            assert_eq!(loggable(&action), logged);
+            let mut output = Vec::new();
+            let mut summary = LiveSummary::default();
+            process_work(
+                action_work(action),
+                &mut NoStreamlabs,
+                &mut output,
+                &AtomicBool::new(false),
+                true,
+                true,
+                true,
+                &mut TimerTable::default(),
+                0,
+                &mut summary,
+            )
+            .unwrap();
+            let records = records(&output);
+            assert_eq!(records[2]["type"], "action_unavailable", "{records:?}");
+            assert_eq!(records[2]["action"], logged);
+            assert_eq!(
+                records[2]["reason"],
+                cooltek_sdk_service::streamlabs::STREAMLABS_UNAVAILABLE
+            );
+            assert_eq!(summary.unavailable_action_count, 1);
         }
     }
 

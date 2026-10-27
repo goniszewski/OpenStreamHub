@@ -206,7 +206,15 @@ impl TileIcon {
             | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. }
             | Action::ObsInputVolumeFromPosition { .. } => Self::Obs,
-            Action::Shortcut { .. } => Self::Generic,
+            // No Streamlabs picture yet.
+            Action::Shortcut { .. }
+            | Action::StreamlabsRecord
+            | Action::StreamlabsStream { .. }
+            | Action::StreamlabsStudioMode
+            | Action::StreamlabsTransition
+            | Action::StreamlabsScene { .. }
+            | Action::StreamlabsSourceVisibility { .. }
+            | Action::StreamlabsAudio { .. } => Self::Generic,
         }
     }
 }

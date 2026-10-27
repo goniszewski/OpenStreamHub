@@ -304,6 +304,14 @@ export interface ObsSettingsView extends ObsSettings { password_set: boolean }
 // The obs_status reply: what "Test connection" found, with one line on what to do.
 export type ObsConnectionState = 'off' | 'connected' | 'not_running' | 'websocket_off' | 'wrong_port' | 'password_needed' | 'wrong_password' | 'failed';
 export interface ObsConnectionView { state: ObsConnectionState; message: string }
+// Streamlabs Desktop setting (src-tauri/src/streamlabs.rs, <app data>/streamlabs-settings.json), shaped like the OBS one.
+// The API token is never stored or returned: set_streamlabs_token({ token }) stores it in the macOS Keychain (null forgets
+// it) and every reply says only whether one is set. A run gets Streamlabs only while it is on and a token is set.
+export interface StreamlabsSettings { enabled: boolean; host: ObsHost; port: number }
+export interface StreamlabsSettingsView extends StreamlabsSettings { token_set: boolean }
+// The streamlabs_status reply: what "Test connection" found, with one line on what to do.
+export type StreamlabsConnectionState = 'off' | 'token_needed' | 'connected' | 'not_running' | 'remote_control_off' | 'wrong_port' | 'wrong_token' | 'failed';
+export interface StreamlabsConnectionView { state: StreamlabsConnectionState; message: string }
 // The OBS listings (obs_catalog, obs_source_filters, obs_scene_sources): what the editor pickers
 // offer. Names are exact, in OBS's own order (the store sorts them for display only).
 export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }

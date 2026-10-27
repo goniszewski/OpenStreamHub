@@ -174,9 +174,11 @@ pub struct ObsState {
 impl ObsState {
     pub fn open(app_data: Result<&Path, String>) -> Self {
         #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
-        let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::Keychain);
+        let vault: Box<dyn PasswordVault> =
+            Box::new(crate::keychain::Keychain(crate::keychain::OBS_PASSWORD));
         #[cfg(all(target_os = "macos", not(test), debug_assertions))]
-        let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::DevKeychain);
+        let vault: Box<dyn PasswordVault> =
+            Box::new(crate::keychain::DevKeychain(crate::keychain::OBS_PASSWORD));
         #[cfg(not(all(target_os = "macos", not(test))))]
         let vault: Box<dyn PasswordVault> = Box::new(crate::keychain::MemoryOnly);
         Self::open_with_vault(app_data, vault)

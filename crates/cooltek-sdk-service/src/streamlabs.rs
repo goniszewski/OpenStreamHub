@@ -38,6 +38,7 @@ use crate::profile::{Action, ObsMuteOp, StreamlabsAudioOp, StreamlabsVisibilityO
 use serde_json::{Value, json};
 use std::{
     fmt,
+    io::BufRead,
     sync::{Arc, atomic::AtomicBool},
     time::{Duration, Instant},
 };
@@ -53,8 +54,7 @@ pub const MAX_TOKEN_BYTES: usize = 256;
 pub const MAX_RESOURCE_BYTES: usize = 512;
 /// `action_unavailable` reason for a Streamlabs action in a run without a
 /// Streamlabs endpoint and token.
-pub const STREAMLABS_UNAVAILABLE: &str =
-    "Streamlabs is not configured for this run; no action was taken";
+pub const STREAMLABS_UNAVAILABLE: &str = "Streamlabs is not configured for this run (turn on Streamlabs in OpenStreamHub Settings and enter its API token, or pass --streamlabs-endpoint with --streamlabs-token-stdin); no action was taken";
 
 // ---- Transport: the one place to change after a real-app check. ----
 
@@ -170,6 +170,41 @@ impl StreamlabsToken {
         }
         Ok(Self(token))
     }
+
+    /// Reads the token from the next line of `reader` (the
+    /// `--streamlabs-token-stdin` channel, after the OBS password line when
+    /// both are given): at most [`MAX_TOKEN_BYTES`] bytes of UTF-8 followed
+    /// by an optional `\n` (or `\r\n`) or end of input.
+    pub fn read_line(reader: impl BufRead) -> Result<Self, String> {
+        let mut bytes = Vec::new();
+        reader
+            .take(MAX_TOKEN_BYTES as u64 + 3)
+            .read_until(b'\n', &mut bytes)
+            .map_err(|error| format!("could not read the Streamlabs token: {}", error.kind()))?;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        } else if bytes.len() > MAX_TOKEN_BYTES {
+            return Err(format!(
+                "Streamlabs token must be nonempty and at most {MAX_TOKEN_BYTES} bytes"
+            ));
+        }
+        let token = String::from_utf8(bytes)
+            .map_err(|_| "Streamlabs token must be valid UTF-8".to_string())?;
+        Self::new(token)
+    }
+
+    /// The exact bytes [`StreamlabsToken::read_line`] accepts: the token and
+    /// a newline. The only way to read the token outside this module, for a
+    /// supervisor that writes it to a child's stdin pipe.
+    pub fn stdin_line(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.0.len() + 1);
+        bytes.extend_from_slice(self.0.as_bytes());
+        bytes.push(b'\n');
+        bytes
+    }
 }
 
 impl fmt::Debug for StreamlabsToken {
@@ -256,6 +291,65 @@ impl StreamlabsClient {
     fn error(&self, detail: String) -> String {
         format!("Streamlabs at {}: {detail}", self.endpoint)
     }
+
+    /// Opens one connection, authenticates, reads `StreamingService.getModel`
+    /// (a read that changes nothing) and closes, to say why Streamlabs can or
+    /// cannot be used. Neither the token nor text Streamlabs sends is ever
+    /// part of the result.
+    pub fn probe(&self) -> StreamlabsStatus {
+        let deadline = Instant::now() + self.timeout;
+        let Ok(mut connection) = Connection::open(
+            SERVICE,
+            self.endpoint.0,
+            deadline,
+            self.cancellation.clone(),
+        ) else {
+            return StreamlabsStatus::Unreachable;
+        };
+        let status = self.probe_connection(&mut connection);
+        connection.close();
+        status
+    }
+
+    fn probe_connection(&self, connection: &mut Connection) -> StreamlabsStatus {
+        if connection.handshake(&self.endpoint.to_string()).is_err() {
+            return StreamlabsStatus::NotStreamlabs;
+        }
+        let mut session = Session {
+            connection,
+            next_id: 1,
+        };
+        match session.auth(&self.token) {
+            Ok(()) => {}
+            Err(error) if error == AUTH_FAILED => return StreamlabsStatus::TokenRefused,
+            Err(error) if error.contains("not JSON-RPC") => {
+                return StreamlabsStatus::NotStreamlabs;
+            }
+            Err(_) => return StreamlabsStatus::Failed,
+        }
+        match session.call("StreamingService", "getModel", &[]) {
+            Ok(Value::Object(_)) => StreamlabsStatus::Connected,
+            _ => StreamlabsStatus::Failed,
+        }
+    }
+}
+
+/// What [`StreamlabsClient::probe`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamlabsStatus {
+    /// Authentication and a harmless read succeeded.
+    Connected,
+    /// Nothing accepted the connection (Streamlabs Desktop closed, Remote
+    /// Control off, or another port).
+    Unreachable,
+    /// Something accepted the connection but did not upgrade to a WebSocket
+    /// or did not answer JSON-RPC.
+    NotStreamlabs,
+    /// Streamlabs rejected the API token.
+    TokenRefused,
+    /// Streamlabs answered, but authentication or the read failed in some
+    /// other way (including a timeout).
+    Failed,
 }
 
 /// An authenticated connection inside [`StreamlabsClient::session`].
@@ -271,6 +365,10 @@ impl Session<'_> {
         token: &StreamlabsToken,
     ) -> Result<(), String> {
         self.connection.handshake(&endpoint.to_string())?;
+        self.auth(token)
+    }
+
+    fn auth(&mut self, token: &StreamlabsToken) -> Result<(), String> {
         // The reply's error text is never shown: it could repeat the token.
         match self.call("TcpServerService", "auth", &[json!(token.0)]) {
             Ok(Value::Bool(true)) => Ok(()),
@@ -1340,5 +1438,96 @@ mod tests {
         let error = client(endpoint).run(&Action::StreamlabsRecord).unwrap_err();
         assert!(error.contains("is Streamlabs Desktop running"), "{error}");
         assert_no_secret(&error);
+    }
+
+    #[test]
+    fn the_token_is_read_from_one_stdin_line_and_written_back_the_same_way() {
+        let read = |bytes: &[u8]| StreamlabsToken::read_line(std::io::BufReader::new(bytes));
+        assert_eq!(
+            read(format!("{TOKEN}\n").as_bytes()).unwrap(),
+            StreamlabsToken::new(TOKEN.into()).unwrap()
+        );
+        assert!(read(format!("{TOKEN}\r\n").as_bytes()).is_ok());
+        assert!(read(TOKEN.as_bytes()).is_ok(), "end of input ends the line");
+        let token = StreamlabsToken::new("tok en 🎉".into()).unwrap();
+        assert_eq!(read(&token.stdin_line()).unwrap(), token);
+        for bad in [
+            b"\n".to_vec(),
+            Vec::new(),
+            b"\xff\xfe\n".to_vec(),
+            vec![b'x'; MAX_TOKEN_BYTES + 1],
+            [vec![b'x'; MAX_TOKEN_BYTES + 1], b"\n".to_vec()].concat(),
+        ] {
+            let error = read(&bad).unwrap_err();
+            assert!(error.contains("Streamlabs token"), "{error}");
+            assert!(!error.contains("xxx"), "{error}");
+        }
+        // Two secrets share one stdin: each read takes exactly its own line.
+        let mut stdin = std::io::BufReader::new(&b"obs-password\ns3cret-token\nrest"[..]);
+        crate::obs::ObsPassword::read_line(&mut stdin).unwrap();
+        assert_eq!(
+            StreamlabsToken::read_line(&mut stdin).unwrap(),
+            StreamlabsToken::new("s3cret-token".into()).unwrap()
+        );
+        let mut rest = String::new();
+        std::io::Read::read_to_string(&mut stdin, &mut rest).unwrap();
+        assert_eq!(rest, "rest");
+    }
+
+    #[test]
+    fn a_probe_authenticates_and_reads_only_the_streaming_model() {
+        let (endpoint, server) = serve(vec![ok(json!({"streamingStatus":"offline"}))]);
+        assert_eq!(client(endpoint).probe(), StreamlabsStatus::Connected);
+        let seen = server.join().unwrap();
+        assert_eq!(seen.requests[0]["method"], "auth");
+        assert_eq!(
+            seen.calls(),
+            [call("StreamingService", "getModel", json!([]))]
+        );
+
+        for (reply, expected) in [
+            (
+                Reply::Error(-32600, "Invalid token s3cret-token-0123456789abcdef"),
+                StreamlabsStatus::TokenRefused,
+            ),
+            (Reply::Result(json!(false)), StreamlabsStatus::TokenRefused),
+            (
+                Reply::Raw(frame(b"<html>not json</html>")),
+                StreamlabsStatus::NotStreamlabs,
+            ),
+            (Reply::Silent, StreamlabsStatus::Failed),
+        ] {
+            let (endpoint, server) = serve_raw(vec![reply]);
+            let client = client(endpoint);
+            assert_eq!(client.probe(), expected);
+            let seen = server.join().unwrap();
+            assert!(seen.requests.len() <= 1, "nothing after a failed auth");
+            assert_no_secret(&format!("{expected:?} {client:?}"));
+        }
+        // Authenticated, but the read is refused.
+        let (endpoint, server) = serve(vec![Reply::Error(-32601, "no such method")]);
+        assert_eq!(client(endpoint).probe(), StreamlabsStatus::Failed);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_probe_tells_nothing_listening_from_something_else() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint =
+            StreamlabsEndpoint::new("127.0.0.1", closed.local_addr().unwrap().port()).unwrap();
+        drop(closed);
+        assert_eq!(client(endpoint).probe(), StreamlabsStatus::Unreachable);
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = [0; 1024];
+            let _ = std::io::Read::read(&mut stream, &mut head);
+            std::io::Write::write_all(&mut stream, b"HTTP/1.1 404 Not Found\r\n\r\n").unwrap();
+        });
+        let endpoint = StreamlabsEndpoint::new("127.0.0.1", port).unwrap();
+        assert_eq!(client(endpoint).probe(), StreamlabsStatus::NotStreamlabs);
+        server.join().unwrap();
     }
 }

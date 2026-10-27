@@ -29,6 +29,7 @@ mod session;
 mod speed;
 mod startup;
 mod store;
+mod streamlabs;
 #[cfg(test)]
 mod test_profiles;
 mod turns;
@@ -60,6 +61,8 @@ struct AppState {
     last_profiles: startup::LastProfiles,
     /// The OBS endpoint setting and the in-memory OBS password.
     obs: obs::ObsState,
+    /// The Streamlabs endpoint setting and the held API token.
+    streamlabs: streamlabs::StreamlabsState,
     /// Import records and the dry-run-only flag of imported profiles.
     imports: import_flags::ImportFlags,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
@@ -91,6 +94,8 @@ impl AppState {
         let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
         let last_profiles = startup::LastProfiles::open(app_data.as_deref().map_err(Clone::clone));
         let obs = obs::ObsState::open(app_data.as_deref().map_err(Clone::clone));
+        let streamlabs =
+            streamlabs::StreamlabsState::open(app_data.as_deref().map_err(Clone::clone));
         let imports = import_flags::ImportFlags::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
@@ -103,6 +108,7 @@ impl AppState {
             display,
             last_profiles,
             obs,
+            streamlabs,
             imports,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
@@ -970,6 +976,7 @@ fn demo_start(
         source_profile_id: None,
         display: None,
         obs: None,
+        streamlabs: None,
     };
     run_service(&app, &request, None, ServiceEvents::Demo).inspect_err(|_| {
         let _ = state.sessions.release(&path_hex);
@@ -1351,6 +1358,10 @@ impl session::Runner for AppRunner {
 
     fn obs_launch(&mut self) -> Option<obs::ObsLaunch> {
         self.app.state::<AppState>().obs.for_new_session()
+    }
+
+    fn streamlabs_launch(&mut self) -> Option<streamlabs::StreamlabsLaunch> {
+        self.app.state::<AppState>().streamlabs.for_new_session()
     }
 
     fn execution_guard(&mut self) -> import_flags::ExecutionGuard {
@@ -1772,6 +1783,42 @@ fn obs_scene_sources(state: State<'_, AppState>, scene: String) -> Result<Vec<St
     ObsClient::new(launch.endpoint, launch.password).scene_sources(&scene)
 }
 
+// The Streamlabs Desktop setting (`streamlabs.rs`), like the OBS one: off by
+// default, loopback endpoints only, applied at the next Start. The API token
+// goes to the Keychain and is never returned: replies say only whether one is
+// set.
+#[tauri::command]
+fn streamlabs_settings(
+    state: State<'_, AppState>,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.get()
+}
+
+#[tauri::command]
+fn set_streamlabs_settings(
+    state: State<'_, AppState>,
+    settings: streamlabs::StreamlabsSettings,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.set(settings)
+}
+
+#[tauri::command]
+fn set_streamlabs_token(
+    state: State<'_, AppState>,
+    token: Option<String>,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.set_token(token)
+}
+
+// "Test connection": authenticates with the held token and reads
+// StreamingService.getModel, which changes nothing, then names the result.
+#[tauri::command(async)]
+fn streamlabs_status(
+    state: State<'_, AppState>,
+) -> Result<streamlabs::StreamlabsConnection, String> {
+    state.streamlabs.probe()
+}
+
 // The last app other than OpenStreamHub that was frontmost.
 #[tauri::command]
 fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
@@ -2032,6 +2079,10 @@ pub fn run() {
             obs_catalog,
             obs_source_filters,
             obs_scene_sources,
+            streamlabs_settings,
+            set_streamlabs_settings,
+            set_streamlabs_token,
+            streamlabs_status,
             switch_session_profile,
             session_profile,
             apply_saved_profile,
@@ -2117,6 +2168,7 @@ mod tests {
             display: display::DisplayState::open(Err("no app data".into())),
             last_profiles: startup::LastProfiles::open(Err("no app data".into())),
             obs: obs::ObsState::open(Err("no app data".into())),
+            streamlabs: streamlabs::StreamlabsState::open(Err("no app data".into())),
             imports: import_flags::ImportFlags::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }

@@ -91,6 +91,10 @@ pub struct StartRequest {
     /// or a frontend request can never choose where OBS actions connect.
     #[serde(skip)]
     pub obs: Option<crate::obs::ObsLaunch>,
+    /// The Streamlabs endpoint and token a managed session started with, set
+    /// like `obs` by the session driver only and never deserialized.
+    #[serde(skip)]
+    pub streamlabs: Option<crate::streamlabs::StreamlabsLaunch>,
 }
 
 /// True when `profile` binds a `profile` action anywhere: flat bindings,
@@ -824,7 +828,7 @@ impl Services {
         self.start_with_stdin(service_id, execute, program, args, profile, None, emit)
     }
 
-    /// [`Services::start`] that writes `stdin` (the OBS password line) to the
+    /// [`Services::start`] that writes `stdin` (the secret lines) to the
     /// child's stdin pipe right after spawning. The child's stdin is always a
     /// pipe, with or without `stdin`, and this process keeps its end open
     /// until the child is reaped: it closes only when the child exits or this
@@ -1182,8 +1186,9 @@ pub fn check_request(request: &StartRequest) -> Result<(), String> {
 /// `display_args` (from `display::display_args`, empty unless a managed
 /// session started with module control `App` on a keypad or dial) are
 /// appended unchanged, then the
-/// session's OBS arguments (`obs::obs_args`); its OBS password, if any, goes
-/// to the child's stdin only.
+/// session's OBS and Streamlabs arguments (`obs::obs_args`,
+/// `streamlabs::streamlabs_args`); its secrets go to the child's stdin only
+/// ([`secret_stdin`]).
 /// Failures after the id is known (except a duplicate) emit `failed`.
 #[allow(clippy::too_many_arguments)]
 pub fn start_service(
@@ -1232,15 +1237,34 @@ pub fn start_service(
     );
     args.extend(display_args);
     args.extend(crate::obs::obs_args(request.obs.as_ref()));
+    args.extend(crate::streamlabs::streamlabs_args(
+        request.streamlabs.as_ref(),
+    ));
     services.start_with_stdin(
         service_id,
         request.execute,
         &program,
         args,
         Some(profile),
-        crate::obs::password_stdin(request.obs.as_ref()),
+        secret_stdin(&request),
         emit,
     )
+}
+
+/// The child's stdin lines, in the order `masterhub-service` reads them: the
+/// OBS password line (with `--obs-password-stdin`), then the Streamlabs token
+/// line (with `--streamlabs-token-stdin`). Each is present exactly when its
+/// flag is, and neither can contain a newline, so the lines are unambiguous.
+fn secret_stdin(request: &StartRequest) -> Option<Vec<u8>> {
+    let obs = crate::obs::password_stdin(request.obs.as_ref());
+    let streamlabs = crate::streamlabs::token_stdin(request.streamlabs.as_ref());
+    match (obs, streamlabs) {
+        (Some(mut obs), Some(streamlabs)) => {
+            obs.extend(streamlabs);
+            Some(obs)
+        }
+        (obs, streamlabs) => obs.or(streamlabs),
+    }
 }
 
 /// Starts a feed (`start` registers it) only if no service owns its path,
@@ -1788,6 +1812,7 @@ mod tests {
             source_profile_id: None,
             display: None,
             obs: None,
+            streamlabs: None,
         };
         let id = start_service(
             &services,
@@ -1826,6 +1851,7 @@ mod tests {
             source_profile_id: None,
             display: None,
             obs: None,
+            streamlabs: None,
         };
 
         // A missing binary: one `failed` status, no snapshot left behind.
@@ -1984,6 +2010,7 @@ mod tests {
             source_profile_id: None,
             display: None,
             obs: None,
+            streamlabs: None,
         };
         let opened = AtomicBool::new(false);
         let source = feed::FeedSource::Live {
@@ -2031,9 +2058,10 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_obs_password_reaches_the_service_on_stdin_only() {
+    fn the_obs_password_and_streamlabs_token_reach_the_service_on_stdin_only() {
         use process::*;
         const PASSWORD: &str = "hunter2-obs-secret";
+        const TOKEN: &str = "s3cret-streamlabs-token";
         let services = Services::default();
         let root = tempfile::tempdir().unwrap();
         // Reports its arguments, whether stdin held exactly the password (read
@@ -2050,8 +2078,12 @@ mod tests {
                  *' --obs-password-stdin '*) IFS= read -r line; if [ \"$line\" = '{PASSWORD}' ]; then got=match; else got=other; fi ;;\n\
                  *) if [ -p /dev/stdin ]; then got=pipe; else got=other; fi ;;\n\
                  esac\n\
-                 env_hits=$(env | grep -c hunter2)\n\
-                 printf '{{\"args\":\"%s\",\"stdin\":\"%s\",\"env\":%d}}\\n' \"$*\" \"$got\" \"$env_hits\"\n\
+                 case \" $* \" in\n\
+                 *' --streamlabs-token-stdin '*) IFS= read -r line; if [ \"$line\" = '{TOKEN}' ]; then token=match; else token=other; fi ;;\n\
+                 *) token=none ;;\n\
+                 esac\n\
+                 env_hits=$(env | grep -c -e hunter2 -e s3cret)\n\
+                 printf '{{\"args\":\"%s\",\"stdin\":\"%s\",\"token\":\"%s\",\"env\":%d}}\\n' \"$*\" \"$got\" \"$token\" \"$env_hits\"\n\
                  exec cat >/dev/null\n"
             ),
         )
@@ -2063,7 +2095,13 @@ mod tests {
                 cooltek_sdk_service::obs::ObsPassword::new(password.into()).unwrap()
             }),
         };
-        let run = |obs: Option<crate::obs::ObsLaunch>| {
+        let streamlabs = || crate::streamlabs::StreamlabsLaunch {
+            endpoint: cooltek_sdk_service::streamlabs::StreamlabsEndpoint::parse("127.0.0.1:59650")
+                .unwrap(),
+            token: cooltek_sdk_service::streamlabs::StreamlabsToken::new(TOKEN.into()).unwrap(),
+        };
+        let run = |obs: Option<crate::obs::ObsLaunch>,
+                   streamlabs: Option<crate::streamlabs::StreamlabsLaunch>| {
             let (emit, messages) = collector();
             let request = StartRequest {
                 profile: test_profiles::folders(),
@@ -2074,6 +2112,7 @@ mod tests {
                 source_profile_id: None,
                 display: None,
                 obs,
+                streamlabs,
             };
             let id = start_service(
                 &services,
@@ -2098,9 +2137,10 @@ mod tests {
             let messages = messages.lock().unwrap().clone();
             let rendered = format!("{messages:?}");
             assert!(!rendered.contains("hunter2"), "{rendered}");
+            assert!(!rendered.contains("s3cret"), "{rendered}");
             records(&std::sync::Mutex::new(messages))[0].clone()
         };
-        let record = run(Some(launch(Some(PASSWORD))));
+        let record = run(Some(launch(Some(PASSWORD))), None);
         assert_eq!(record["stdin"], "match");
         assert_eq!(record["env"], 0);
         assert!(
@@ -2111,7 +2151,7 @@ mod tests {
             "{record}"
         );
         // No password: the endpoint only, and stdin is still an open pipe.
-        let record = run(Some(launch(None)));
+        let record = run(Some(launch(None)), None);
         assert_eq!(record["stdin"], "pipe");
         assert!(
             record["args"].as_str().unwrap().ends_with(
@@ -2120,13 +2160,34 @@ mod tests {
             "{record}"
         );
         // OBS off: no OBS arguments, and the same open stdin pipe.
-        let record = run(None);
+        let record = run(None, None);
         assert_eq!(record["stdin"], "pipe");
+        assert_eq!(record["token"], "none");
         assert!(
             record["args"]
                 .as_str()
                 .unwrap()
                 .ends_with(" --path-hex 4a --exit-on-stdin-eof --control")
+        );
+        // Both: the password line first, then the token line.
+        let record = run(Some(launch(Some(PASSWORD))), Some(streamlabs()));
+        assert_eq!(record["stdin"], "match");
+        assert_eq!(record["token"], "match");
+        assert_eq!(record["env"], 0);
+        assert!(
+            record["args"].as_str().unwrap().ends_with(
+                " --obs-endpoint 127.0.0.1:4455 --obs-password-stdin --streamlabs-endpoint 127.0.0.1:59650 --streamlabs-token-stdin"
+            ),
+            "{record}"
+        );
+        // Streamlabs alone: its token is the first line.
+        let record = run(None, Some(streamlabs()));
+        assert_eq!(record["token"], "match");
+        assert!(
+            record["args"].as_str().unwrap().ends_with(
+                " --control --streamlabs-endpoint 127.0.0.1:59650 --streamlabs-token-stdin"
+            ),
+            "{record}"
         );
     }
 
@@ -2135,7 +2196,14 @@ mod tests {
         let mut request = serde_json::json!({"profile":test_profiles::folders(),"path_hex":"41","execute":false,"software_mode":false});
         let parsed: StartRequest = serde_json::from_value(request.clone()).unwrap();
         assert_eq!(parsed.obs, None);
-        for field in ["obs", "obs_endpoint", "obs_password"] {
+        for field in [
+            "obs",
+            "obs_endpoint",
+            "obs_password",
+            "streamlabs",
+            "streamlabs_endpoint",
+            "streamlabs_token",
+        ] {
             request[field] = serde_json::json!({"endpoint":"192.168.1.2:4455"});
             let error = serde_json::from_value::<StartRequest>(request.clone()).unwrap_err();
             assert!(error.to_string().contains("unknown field"), "{error}");
@@ -2216,6 +2284,7 @@ mod tests {
             source_profile_id: None,
             display: None,
             obs: None,
+            streamlabs: None,
         };
         let error = start_service(
             &services,

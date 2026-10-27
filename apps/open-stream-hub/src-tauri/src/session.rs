@@ -1007,6 +1007,12 @@ pub trait Runner {
     fn obs_launch(&mut self) -> Option<crate::obs::ObsLaunch> {
         None
     }
+    /// The Streamlabs endpoint and token, read and kept like
+    /// [`Runner::obs_launch`]; `None` when Streamlabs is off, no token is
+    /// held or its settings are unreadable.
+    fn streamlabs_launch(&mut self) -> Option<crate::streamlabs::StreamlabsLaunch> {
+        None
+    }
     /// The dry-run-only flags, loaded once per check (`import_flags`). A
     /// list that cannot be read yields a guard that refuses every Execute run.
     fn execution_guard(&mut self) -> ExecutionGuard {
@@ -1449,6 +1455,7 @@ impl<R: Runner> Driver<R> {
         // The OBS setting is snapshotted the same way. It does not depend on
         // the module, so an unidentified device's run gets it too.
         request.obs = self.runner.obs_launch();
+        request.streamlabs = self.runner.streamlabs_launch();
         let id = if deferred {
             if device.is_none() {
                 return Err(if woke { JUST_WOKE } else { ASLEEP }.into());
@@ -2000,6 +2007,7 @@ impl<R: Runner> Driver<R> {
                 profile_id,
                 display: None,
                 obs: None,
+                streamlabs: None,
             };
             if let Err(error) = self.begin(request, now_ms, Some((settings, why))) {
                 self.cool_down(device.module, serial, now_ms);
@@ -2835,6 +2843,10 @@ pub mod fake {
         pub obs: Option<crate::obs::ObsLaunch>,
         /// Number of `obs_launch` reads.
         pub obs_reads: usize,
+        /// What `streamlabs_launch` returns.
+        pub streamlabs: Option<crate::streamlabs::StreamlabsLaunch>,
+        /// Number of `streamlabs_launch` reads.
+        pub streamlabs_reads: usize,
         /// Saved profile ids `execution_guard` refuses.
         pub dry_run_only: BTreeSet<String>,
         /// Number of `execution_guard` reads.
@@ -2960,6 +2972,11 @@ pub mod fake {
             self.obs.clone()
         }
 
+        fn streamlabs_launch(&mut self) -> Option<crate::streamlabs::StreamlabsLaunch> {
+            self.streamlabs_reads += 1;
+            self.streamlabs.clone()
+        }
+
         fn execution_guard(&mut self) -> ExecutionGuard {
             self.guard_reads += 1;
             ExecutionGuard::with_ids(self.dry_run_only.clone(), self.dry_run_hashes.clone())
@@ -3013,6 +3030,7 @@ pub mod fake {
             source_profile_id: None,
             display: None,
             obs: None,
+            streamlabs: None,
         }
     }
 
@@ -5553,10 +5571,23 @@ mod tests {
         })
     }
 
+    fn streamlabs_on() -> Option<crate::streamlabs::StreamlabsLaunch> {
+        Some(crate::streamlabs::StreamlabsLaunch {
+            endpoint: cooltek_sdk_service::streamlabs::StreamlabsEndpoint::parse("127.0.0.1:59650")
+                .unwrap(),
+            token: cooltek_sdk_service::streamlabs::StreamlabsToken::new(
+                "s3cret-streamlabs-token".into(),
+            )
+            .unwrap(),
+        })
+    }
+
     #[test]
-    fn obs_settings_are_read_once_per_start_and_kept_through_restarts_and_switches() {
+    fn obs_and_streamlabs_settings_are_read_once_per_start_and_kept_through_restarts_and_switches()
+    {
         let mut driver = Driver::new(FakeRunner {
             obs: obs_on(Some("hunter2-obs-secret")),
+            streamlabs: streamlabs_on(),
             ..FakeRunner::default()
         });
         driver.inventory(vec![dial("/a")], 0);
@@ -5564,8 +5595,11 @@ mod tests {
         let expected = obs_on(Some("hunter2-obs-secret"));
         assert_eq!(driver.runner().starts[0].obs, expected);
         assert_eq!(driver.runner().obs_reads, 1);
-        // Turning OBS off (or a new password) mid-run changes and restarts nothing.
+        assert_eq!(driver.runner().starts[0].streamlabs, streamlabs_on());
+        assert_eq!(driver.runner().streamlabs_reads, 1);
+        // Turning OBS or Streamlabs off (or a new secret) mid-run changes and restarts nothing.
         driver.runner().obs = None;
+        driver.runner().streamlabs = None;
         driver.tick(1_000_000);
         assert_eq!(starts(&mut driver), 1);
         assert!(driver.runner().stops.is_empty());
@@ -5589,15 +5623,19 @@ mod tests {
         assert_eq!(starts(&mut driver), 4);
         assert_eq!(driver.runner().starts[3].obs, expected);
         assert_eq!(driver.runner().obs_reads, 1, "read only at the user Start");
+        assert_eq!(driver.runner().starts[3].streamlabs, streamlabs_on());
+        assert_eq!(driver.runner().streamlabs_reads, 1);
         // The next Start reads the setting again.
         driver.stop(&id, true, 6_000);
         let current = driver.runner().stops.last().unwrap().clone();
         exit(&mut driver, &current, "", 6_001);
         driver.start(request(&dial("/a"), false), 7_000).unwrap();
         assert_eq!(driver.runner().starts[4].obs, None);
-        // Session state sent to the frontend never carries the password.
+        assert_eq!(driver.runner().starts[4].streamlabs, None);
+        // Session state sent to the frontend never carries a secret.
         let emitted = format!("{:?}", driver.runner().emitted);
         assert!(!emitted.contains("hunter2"), "{emitted}");
+        assert!(!emitted.contains("s3cret"), "{emitted}");
     }
 
     #[test]

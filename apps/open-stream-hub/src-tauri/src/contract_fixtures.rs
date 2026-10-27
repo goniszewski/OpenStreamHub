@@ -798,6 +798,46 @@ fn obs_settings_payloads_match_the_shared_fixture() {
 }
 
 #[test]
+fn streamlabs_settings_payloads_match_the_shared_fixture() {
+    use crate::streamlabs::{StreamlabsSettings, StreamlabsState};
+    let directory = tempfile::tempdir().unwrap();
+    let state = StreamlabsState::open(Ok(directory.path()));
+    let chosen = StreamlabsSettings {
+        enabled: true,
+        host: "::1".into(),
+        port: 59651,
+    };
+    let settings_args = json!({ "settings": chosen });
+    let parsed: StreamlabsSettings =
+        serde_json::from_value(settings_args["settings"].clone()).unwrap();
+    assert_eq!(parsed, chosen);
+    let default = state.get().unwrap();
+    let saved = state.set(chosen).unwrap();
+    let token_args = json!({ "token": "example-token" });
+    let with_token = state
+        .set_token(serde_json::from_value(token_args["token"].clone()).unwrap())
+        .unwrap();
+    let clear_args = json!({ "token": null });
+    let cleared = state
+        .set_token(serde_json::from_value(clear_args["token"].clone()).unwrap())
+        .unwrap();
+    let replies = json!([default, saved, with_token, cleared]).to_string();
+    assert!(!replies.contains("example-token"), "{replies}");
+    check_or_update(
+        "streamlabs-settings.json",
+        &json!({
+            "streamlabs_settings_default": default,
+            "set_streamlabs_settings_args": settings_args,
+            "set_streamlabs_settings_result": saved,
+            "set_streamlabs_token_args": token_args,
+            "set_streamlabs_token_result": with_token,
+            "clear_streamlabs_token_args": clear_args,
+            "clear_streamlabs_token_result": cleared,
+        }),
+    );
+}
+
+#[test]
 fn obs_listing_payloads_match_the_shared_fixture() {
     use cooltek_sdk_service::obs::ObsCatalog;
     // The reply shapes of `obs_catalog`, `obs_source_filters` and

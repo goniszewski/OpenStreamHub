@@ -1,10 +1,10 @@
 import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { defaultBindingAction } from './action-picker-model';
-import type { ObsStepAction, ObsStepType } from './action-model';
+import type { ObsStepAction, ObsStepType, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType } from './action-model';
 import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
 import { VariableActionFields } from './VariableFields';
@@ -17,8 +17,9 @@ import { IntegerField, SelectField } from './controls';
 import {
   conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
-  obsSwitchOpLabels, profileDirectionLabels, switchObsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
-  timerSoundLabels, urlIssue,
+  obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioLimits, streamlabsAudioMode, streamlabsAudioModeLabels, streamlabsNameIssue, streamlabsOperationLabels,
+  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
+  timerSoundLabels, urlIssue, defaultStreamlabsAudioOp,
 } from './action-model';
 
 type Change = (action: BindingAction | null, field?: string) => void;
@@ -39,6 +40,11 @@ const obsReloadMore = 'OBS applies the switch a moment after the press; nothing 
 function withConfirm(action: { type: 'obs_stream'; op: ObsOutputOp }, on: boolean): StepAction {
   return on ? { type: 'obs_stream', op: action.op, confirm: 'press_twice' } : { type: 'obs_stream', op: action.op };
 }
+
+// The press-twice note under a stream's checkbox, shared by OBS and Streamlabs.
+const confirmNote = (on: boolean) => on
+  ? 'The first press only arms the key; press it again within 3 seconds to run it. Not available inside a multi-action.'
+  : 'Without the option above, one press does this at once.';
 
 function ObsSwitchSelect({ id, value, onChange }: { id: string; value: ObsSwitchOp; onChange(op: ObsSwitchOp): void }) {
   return <SelectField id={id} value={value} onChange={event => onChange(event.target.value as ObsSwitchOp)}>{(Object.keys(obsSwitchOpLabels) as ObsSwitchOp[]).map(op => <option key={op} value={op}>{obsSwitchOpLabels[op]}</option>)}</SelectField>;
@@ -264,12 +270,16 @@ function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, 
     <StepList steps={steps} idBase="" noun="Step" minimum={multiActionSteps.minimum} maximum={multiActionSteps.maximum} selectorKey={selectorKey} update={update}
       onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
     {steps.some(step => step.type.startsWith('obs_')) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
+    {steps.some(step => step.type.startsWith('streamlabs_')) && <StreamlabsConnection onSetUp={onSetUpObs} />}
   </div>;
 }
 
 // Whether a flow reads from or acts on OBS anywhere: a test, a step, or inside a nested if / else.
 const flowUsesObs = (action: ConditionalAction): boolean =>
   conditionUsesObs(action.when) || action.then.concat(action.else ?? []).some(step => (step.type === 'conditional' ? flowUsesObs(step) : step.type.startsWith('obs_')));
+// Whether a flow acts on Streamlabs in any step (no condition reads Streamlabs).
+const flowUsesStreamlabs = (action: ConditionalAction): boolean =>
+  action.then.concat(action.else ?? []).some(step => (step.type === 'conditional' ? flowUsesStreamlabs(step) : step.type.startsWith('streamlabs_')));
 
 // If / else: tests read when the key is pressed (AND / OR groups that nest), a Then list and an Otherwise list whose steps
 // may be if / else blocks themselves. The tree, its drag-and-drop and its limits live in FlowEditor.
@@ -279,7 +289,10 @@ function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog,
       step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />,
       app: ({ inputId, bundleId, onChange: change }) => <LaunchAppFields inputId={inputId} bundleId={bundleId} invoke={invoke} onChange={change} />,
     }}
-    obsNote={flowUsesObs(action) ? <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} /> : undefined} />;
+    obsNote={flowUsesObs(action) || flowUsesStreamlabs(action) ? <>
+      {flowUsesObs(action) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
+      {flowUsesStreamlabs(action) && <StreamlabsConnection onSetUp={onSetUpObs} />}
+    </> : undefined} />;
 }
 
 // "Open app": choose an app with the system's picker (or type its bundle ID) and see its everyday name under the field.
@@ -361,6 +374,9 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
     case 'obs_filter': case 'obs_source_visibility': case 'obs_scene_collection': case 'obs_profile': case 'obs_set_input_volume':
     case 'obs_input_mute': case 'obs_adjust_input_volume': case 'obs_media_source':
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
+    case 'streamlabs_record': case 'streamlabs_stream': case 'streamlabs_studio_mode': case 'streamlabs_transition': case 'streamlabs_scene':
+    case 'streamlabs_source_visibility': case 'streamlabs_audio':
+      return <StreamlabsFields action={action} prefix={prefix} onChange={onChange} onSetUp={onSetUpObs} />;
     case 'set_variable': case 'toggle_variable': case 'add_to_variable': return <VariableActionFields prefix={prefix} action={action} onChange={onChange} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
@@ -395,7 +411,7 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
           {(Object.keys(obsOutputOpLabels) as ObsOutputOp[]).map(op => <option key={op} value={op}>{obsOutputOpLabels[op]}</option>)}
         </SelectField>
         <label className="setting-toggle"><input type="checkbox" checked={action.confirm === 'press_twice'} onChange={event => onChange(withConfirm(action, event.target.checked), 'obs-stream-confirm')} />Press twice to confirm</label>
-        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. {action.confirm === 'press_twice' ? 'The first press only arms the key; press it again within 3 seconds to run it. Not available inside a multi-action.' : 'Without the option above, one press does this at once.'}</p>
+        <p className="fine-print">Starting the stream goes live to your audience, and stopping it ends the broadcast. {confirmNote(action.confirm === 'press_twice')}</p>
         <Hint hint={obsSwitchHint}>{obsOutputNote} {obsSwitchMore}</Hint></>;
       break;
     case 'obs_record':
@@ -513,5 +529,106 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
     </SelectField>
     {fields}
     {prefix === '' && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
+  </div>;
+}
+
+// The one Streamlabs connection status, shown once per editor like ObsConnection. There is no
+// Streamlabs listing yet, so the name fields stay plain inputs.
+export function StreamlabsConnection({ onSetUp }: { onSetUp?: () => void }) {
+  return <div className="obs-connection" role="note">
+    <p className="fine-print">Connects to Streamlabs Desktop on this Mac while it runs with Remote Control on. {onSetUp && <button type="button" className="obs-setup" onClick={onSetUp}>Set up in Settings</button>}</p>
+    <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only, with the API token kept in Settings. Without it, the press is logged as unavailable and nothing runs. Scene, collection, source and audio source names are typed, not picked from a list: enter each exactly as Streamlabs shows it (up to {maxObsSceneBytes} bytes); a name Streamlabs does not have fails the press.</p></details>
+  </div>;
+}
+
+const streamlabsToggleMore = 'Streamlabs offers only a toggle here, so each press flips the current state; inside a multi-action, check the state it starts from.';
+
+// The one Streamlabs editor for the seven streamlabs_* actions, shaped like ObsFields: an
+// Operation select (keeping the scene and source names both operations share) and the chosen
+// operation's fields. The status shows once per editor: here for a top-level action, and once
+// for a multi-action or if / else with Streamlabs steps.
+export function StreamlabsFields({ action, prefix, onChange, onSetUp }: {
+  action: StreamlabsStepAction; prefix: string; onChange(action: StepAction, field?: string): void; onSetUp?: () => void;
+}) {
+  const id = (name: string) => `${prefix}${name}`;
+  let fields: ReactNode;
+  switch (action.type) {
+    case 'streamlabs_record':
+      fields = <Hint hint="Starts the Streamlabs recording when it is stopped and stops it when it runs.">{streamlabsToggleMore}</Hint>;
+      break;
+    case 'streamlabs_stream':
+      fields = <>
+        <label className="setting-toggle"><input type="checkbox" checked={action.confirm === 'press_twice'}
+          onChange={event => onChange(event.target.checked ? { type: 'streamlabs_stream', confirm: 'press_twice' } : { type: 'streamlabs_stream' }, 'streamlabs-stream-confirm')} />Press twice to confirm</label>
+        <p className="fine-print">Goes live to your audience when Streamlabs is not streaming, and ends the broadcast when it is. {confirmNote(action.confirm === 'press_twice')}</p>
+        <Hint hint="Follows Streamlabs' current state.">{streamlabsToggleMore}</Hint></>;
+      break;
+    case 'streamlabs_studio_mode':
+      fields = <Hint hint="Turns Streamlabs studio mode on when it is off, and off when it is on.">{streamlabsToggleMore}</Hint>;
+      break;
+    case 'streamlabs_transition':
+      fields = <p className="fine-print">Triggers the studio-mode transition from the preview to the program scene. Nothing checks that studio mode is on first.</p>;
+      break;
+    case 'streamlabs_scene': {
+      const collection = action.collection ?? '';
+      // An empty collection is omitted (the active one), never written as "" or null.
+      const withCollection = (next: string): StepAction => next ? { type: 'streamlabs_scene', scene: action.scene, collection: next } : { type: 'streamlabs_scene', scene: action.scene };
+      fields = <>
+        <ObsNameRow id={id('streamlabs-scene')} label="Streamlabs scene name" value={action.scene} entry={null} what="scene"
+          issue={streamlabsNameIssue(action.scene, 'scene')} onChange={scene => onChange({ ...action, scene }, 'streamlabs-scene')} />
+        <ObsNameRow id={id('streamlabs-scene-collection')} label="Scene collection (optional)" value={collection} entry={null} what="scene collection" spaced
+          issue={collection ? streamlabsNameIssue(collection, 'scene collection') : null} onChange={next => onChange(withCollection(next), 'streamlabs-scene-collection')} />
+        <Hint hint={`Makes this scene active in Streamlabs, matched exactly (up to ${maxObsSceneBytes} bytes each). Leave the collection empty for the active one.`}>A named collection that is not active is loaded first, which reloads Streamlabs' scenes and can interrupt a live stream or recording; the scene switch waits for the load, for up to 3 seconds.</Hint></>;
+      break;
+    }
+    case 'streamlabs_source_visibility':
+      fields = <>
+        <ObsNameRow id={id('streamlabs-visibility-scene')} label="Scene name" value={action.scene} entry={null} what="scene"
+          issue={streamlabsNameIssue(action.scene, 'scene')} onChange={scene => onChange({ ...action, scene }, 'streamlabs-visibility-scene')} />
+        <ObsNameRow id={id('streamlabs-visibility-source')} label="Source name" value={action.source} entry={null} what="source" spaced
+          issue={streamlabsNameIssue(action.source, 'source')} onChange={source => onChange({ ...action, source }, 'streamlabs-visibility-source')} />
+        <label className="spaced-label" htmlFor={id('streamlabs-visibility-op')}>Action</label>
+        <SelectField id={id('streamlabs-visibility-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as StreamlabsVisibilityOp }, 'streamlabs-visibility-op')}>
+          {(Object.keys(streamlabsVisibilityOpLabels) as StreamlabsVisibilityOp[]).map(op => <option key={op} value={op}>{streamlabsVisibilityOpLabels[op]}</option>)}
+        </SelectField>
+        <Hint hint={`Shows or hides the source in that scene of the active scene collection. Both names are matched exactly (up to ${maxObsSceneBytes} bytes each).`}>A folder name sets every item inside it; Toggle then shows them all when any is hidden. Show and Hide do not depend on the current state, which makes them safe inside a multi-action.</Hint></>;
+      break;
+    case 'streamlabs_audio': {
+      const mode = streamlabsAudioMode(action.op);
+      const op = action.op;
+      fields = <>
+        <ObsNameRow id={id('streamlabs-audio-source')} label="Streamlabs audio source name" value={action.source} entry={null} what="audio source"
+          issue={streamlabsNameIssue(action.source, 'audio source')} onChange={source => onChange({ ...action, source }, 'streamlabs-audio-source')} />
+        <label className="spaced-label" htmlFor={id('streamlabs-audio-mode')}>Change</label>
+        <SelectField id={id('streamlabs-audio-mode')} value={mode} onChange={event => onChange({ ...action, op: defaultStreamlabsAudioOp(event.target.value as StreamlabsAudioMode) }, 'streamlabs-audio-mode')}>
+          {(Object.keys(streamlabsAudioModeLabels) as StreamlabsAudioMode[]).map(item => <option key={item} value={item}>{streamlabsAudioModeLabels[item]}</option>)}
+        </SelectField>
+        {'set' in op && <>
+          <label className="spaced-label" htmlFor={id('streamlabs-audio-set')}>Level (%)</label>
+          <IntegerField id={id('streamlabs-audio-set')} value={op.set} minimum={streamlabsAudioLimits.set.minimum} maximum={streamlabsAudioLimits.set.maximum}
+            onCommit={set => onChange({ ...action, op: { set } }, 'streamlabs-audio-set')} />
+          <p className="fine-print">Moves the source's fader to this position: 0% is silent, 100% is the top of Streamlabs' fader. The scale is the fader's travel, not decibels.</p></>}
+        {'adjust' in op && <>
+          <label className="spaced-label" htmlFor={id('streamlabs-audio-adjust')}>Step (%)</label>
+          <IntegerField id={id('streamlabs-audio-adjust')} value={op.adjust} minimum={streamlabsAudioLimits.adjust.minimum} maximum={streamlabsAudioLimits.adjust.maximum} nonZero
+            onCommit={adjust => onChange({ ...action, op: { adjust } }, 'streamlabs-audio-adjust')} />
+          <p className="fine-print">Moves the fader by this share of its travel per press (negative is quieter, zero is not allowed). The result is held between 0% and 100%.</p></>}
+        {'mute' in op && <>
+          <label className="spaced-label" htmlFor={id('streamlabs-audio-mute')}>Action</label>
+          <SelectField id={id('streamlabs-audio-mute')} value={op.mute} onChange={event => onChange({ ...action, op: { mute: event.target.value as ObsMuteOp } }, 'streamlabs-audio-mute')}>
+            {(Object.keys(obsMuteOpLabels) as ObsMuteOp[]).map(item => <option key={item} value={item}>{obsMuteOpLabels[item]}</option>)}
+          </SelectField>
+          <p className="fine-print">Mutes or unmutes this Streamlabs audio source. Mute and Unmute do not depend on the current state, which makes them safe inside a multi-action.</p></>}
+      </>;
+      break;
+    }
+  }
+  return <div className="action-fields">
+    <label htmlFor={id('streamlabs-operation')}>Operation</label>
+    <SelectField id={id('streamlabs-operation')} value={action.type} onChange={event => onChange(switchStreamlabsOperation(action, event.target.value as StreamlabsStepType), 'streamlabs-operation')}>
+      {(Object.keys(streamlabsOperationLabels) as StreamlabsStepType[]).map(type => <option key={type} value={type}>{streamlabsOperationLabels[type]}</option>)}
+    </SelectField>
+    {fields}
+    {prefix === '' && <StreamlabsConnection onSetUp={onSetUp} />}
   </div>;
 }

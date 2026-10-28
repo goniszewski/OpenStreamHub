@@ -5,7 +5,8 @@ import {
   conditionLabel, conditionUsesObs, defaultCondition, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
-  profileDirectionLabels, stepActionTypes, switchObsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
+  profileDirectionLabels, stepActionTypes, streamlabsAudioMode, streamlabsNameIssue, streamlabsOperationLabels, streamlabsVisibilityOpLabels,
+  switchObsOperation, switchStreamlabsOperation, textIssue, timerDuration, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue,
 } from './action-model';
 import { actionLabel } from './ui-model';
@@ -413,5 +414,86 @@ describe('obs input volume', () => {
     expect(conditionLabel({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe('the output is muted or the output volume is at least 10%');
     expect(conditionUsesObs({ all: [{ output_muted: true }, { obs_streaming: true }] })).toBe(true);
     expect(conditionUsesObs({ any: [{ output_muted: true }, { output_volume_at_least: 10 }] })).toBe(false);
+  });
+});
+
+describe('streamlabs actions', () => {
+  type Loose = Record<string, unknown>;
+  // Mirrors the Rust shape and name checks of the seven streamlabs_* actions, so the shared fixture is explained on this side too.
+  const fields: Record<string, { required: string[]; optional?: string[] }> = {
+    streamlabs_record: { required: ['type'] }, streamlabs_stream: { required: ['type'], optional: ['confirm'] },
+    streamlabs_studio_mode: { required: ['type'] }, streamlabs_transition: { required: ['type'] },
+    streamlabs_scene: { required: ['type', 'scene'], optional: ['collection'] },
+    streamlabs_source_visibility: { required: ['type', 'scene', 'source', 'op'] }, streamlabs_audio: { required: ['type', 'source', 'op'] },
+  };
+  const audioOpValid = (op: unknown) => {
+    if (typeof op !== 'object' || op === null || Object.keys(op).length !== 1) return false;
+    const { set, adjust, mute } = op as Loose;
+    if ('set' in op) return Number.isInteger(set) && (set as number) >= 0 && (set as number) <= 100;
+    if ('adjust' in op) return Number.isInteger(adjust) && adjust !== 0 && (adjust as number) >= -100 && (adjust as number) <= 100;
+    return 'mute' in op && ['toggle', 'mute', 'unmute'].includes(String(mute));
+  };
+  const strictlyValid = (action: Loose): boolean | null => {
+    const spec = fields[String(action.type)];
+    if (!spec) return null;
+    const allowed = [...spec.required, ...(spec.optional ?? [])];
+    if (Object.keys(action).some(key => !allowed.includes(key)) || spec.required.some(key => !(key in action))) return false;
+    if ('confirm' in action && action.confirm !== 'press_twice') return false;
+    if (action.type === 'streamlabs_source_visibility' && !Object.keys(streamlabsVisibilityOpLabels).includes(String(action.op))) return false;
+    if (action.type === 'streamlabs_audio' && !audioOpValid(action.op)) return false;
+    return (['scene', 'source', 'collection'] as const).filter(key => key in action)
+      .every(key => typeof action[key] === 'string' && streamlabsNameIssue(action[key] as string, key === 'collection' ? 'scene collection' : key) === null);
+  };
+
+  it('agrees with the shared fixture on which Streamlabs actions are valid', () => {
+    const mine = (list: unknown) => (list as Loose[]).filter(action => strictlyValid(action) !== null);
+    expect(new Set(mine(fixture.valid).map(action => action.type))).toEqual(new Set(Object.keys(fields)));
+    for (const action of mine(fixture.valid)) expect(strictlyValid(action), JSON.stringify(action)).toBe(true);
+    expect(mine(fixture.invalid).length).toBeGreaterThan(20);
+    for (const action of mine(fixture.invalid)) expect(strictlyValid(action), JSON.stringify(action)).toBe(false);
+    // press_twice is a key's own safeguard: the service refuses a multi-action step that carries it.
+    expect((fixture.invalid as { type?: string; actions?: Loose[] }[]).some(action => action.type === 'multi_action'
+      && action.actions?.some(step => step.type === 'streamlabs_stream' && step.confirm === 'press_twice'))).toBe(true);
+  });
+
+  it('offers the seven operations as steps with valid defaults and one Operation list', () => {
+    const types = stepActionTypes.map(([type]) => type).filter(type => type.startsWith('streamlabs_'));
+    expect(types.sort()).toEqual(Object.keys(fields).sort());
+    expect(Object.keys(streamlabsOperationLabels).sort()).toEqual(types);
+    for (const type of types) expect(strictlyValid(defaultStepAction(type) as unknown as Loose), type).toBe(true);
+    expect(defaultStepAction('streamlabs_audio')).toEqual({ type: 'streamlabs_audio', source: 'Mic/Aux', op: { mute: 'toggle' } });
+    expect(streamlabsAudioMode({ set: 40 })).toBe('set');
+    expect(streamlabsAudioMode({ adjust: -5 })).toBe('adjust');
+    expect(streamlabsAudioMode({ mute: 'unmute' })).toBe('mute');
+  });
+
+  it('switches operation, keeping the scene and source names both share', () => {
+    expect(switchStreamlabsOperation({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }, 'streamlabs_source_visibility'))
+      .toEqual({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' });
+    expect(switchStreamlabsOperation({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Mic', op: 'hide' }, 'streamlabs_audio'))
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } });
+    // The collection is the scene operation's own setting and is dropped like the other operation settings.
+    expect(switchStreamlabsOperation({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }, 'streamlabs_scene'))
+      .toEqual({ type: 'streamlabs_scene', scene: 'Live' });
+    expect(switchStreamlabsOperation({ type: 'streamlabs_stream', confirm: 'press_twice' }, 'streamlabs_record')).toEqual({ type: 'streamlabs_record' });
+  });
+
+  it('applies the OBS name rules with Streamlabs wording', () => {
+    expect(streamlabsNameIssue('', 'audio source')).toBe('Enter the Streamlabs audio source name exactly as it appears in Streamlabs.');
+    expect(streamlabsNameIssue('x'.repeat(maxObsSceneBytes), 'scene')).toBeNull();
+    for (const bad of ['   ', 'x'.repeat(maxObsSceneBytes + 1), 'line\nbreak', 'zero\u200Bwidth']) expect(streamlabsNameIssue(bad, 'source'), JSON.stringify(bad)).not.toBeNull();
+  });
+
+  it('labels every operation, clipping names like the OBS labels', () => {
+    expect(actionLabel({ type: 'streamlabs_record' })).toBe('Streamlabs recording: Toggle');
+    expect(actionLabel({ type: 'streamlabs_stream', confirm: 'press_twice' })).toBe('Streamlabs stream: Toggle (press twice)');
+    expect(actionLabel({ type: 'streamlabs_studio_mode' })).toBe('Streamlabs studio mode: Toggle');
+    expect(actionLabel({ type: 'streamlabs_transition' })).toBe('Streamlabs studio transition');
+    expect(actionLabel({ type: 'streamlabs_scene', scene: 'Live' })).toBe('Streamlabs scene “Live”');
+    expect(actionLabel({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' })).toBe('Streamlabs scene “Live” in “Podcast”');
+    expect(actionLabel({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'x'.repeat(40), op: 'hide' })).toBe(`Streamlabs source “${'x'.repeat(24)}…”: Hide`);
+    expect(actionLabel({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } })).toBe('Streamlabs audio “Mic”: Set to 40%');
+    expect(actionLabel({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: 5 } })).toBe('Streamlabs audio “Mic”: +5%');
+    expect(actionLabel({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } })).toBe('Streamlabs audio “Mic”: Unmute');
   });
 });

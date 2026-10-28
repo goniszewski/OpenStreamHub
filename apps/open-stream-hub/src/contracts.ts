@@ -56,6 +56,17 @@ export type StepAction =
   | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }
   | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
   | { type: 'obs_media_source'; input: string; op: ObsMediaOp }
+  // Streamlabs Desktop over its local Remote Control API (the endpoint and API token are app settings, never part of a
+  // profile). Record, stream and studio mode are toggles; the transition runs the studio-mode transition. Scenes,
+  // collections, items and audio sources are exact names with the OBS name rules, resolved to Streamlabs ids at run time.
+  | { type: 'streamlabs_record' }
+  | { type: 'streamlabs_stream'; confirm?: ObsConfirm }
+  | { type: 'streamlabs_studio_mode' }
+  | { type: 'streamlabs_transition' }
+  // collection is omitted (never null or empty) for the active scene collection; a named one is loaded first.
+  | { type: 'streamlabs_scene'; scene: string; collection?: string }
+  | { type: 'streamlabs_source_visibility'; scene: string; source: string; op: StreamlabsVisibilityOp }
+  | { type: 'streamlabs_audio'; source: string; op: StreamlabsAudioOp }
   // The profile's own variables (declared in Profile.variables): set one, flip a bool, or add to a number (a result past the limits stops there).
   | { type: 'set_variable'; name: string; value: VariableValue }
   | { type: 'toggle_variable'; name: string }
@@ -73,6 +84,10 @@ export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
+// StreamlabsVisibilityOp and StreamlabsAudioOp in profile.rs. The audio op is a one-key object: set the fader to 0-100 %,
+// step it by a nonzero -100 to 100 % (held between 0 and 100), or mute, unmute or toggle the source.
+export type StreamlabsVisibilityOp = 'toggle' | 'show' | 'hide';
+export type StreamlabsAudioOp = { set: number } | { adjust: number } | { mute: ObsMuteOp };
 // The state a conditional tests (Condition in profile.rs): one key with a value, or all/any of several. The first four read an OBS output and
 // need the OBS connection; the last two read the default output of this Mac.
 export type Condition = LeafCondition | { all: Condition[] } | { any: Condition[] };

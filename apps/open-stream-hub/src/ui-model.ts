@@ -1,5 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -210,6 +210,13 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'obs_scene_collection': return `OBS scene collection “${clipLabel(action.name)}”`;
     case 'obs_profile': return `OBS profile “${clipLabel(action.name)}”`;
     case 'obs_scene': return `OBS scene “${clipLabel(action.scene)}”`;
+    case 'streamlabs_record': return 'Streamlabs recording: Toggle';
+    case 'streamlabs_stream': return `Streamlabs stream: Toggle${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'streamlabs_studio_mode': return 'Streamlabs studio mode: Toggle';
+    case 'streamlabs_transition': return 'Streamlabs studio transition';
+    case 'streamlabs_scene': return `Streamlabs scene “${clipLabel(action.scene)}”${action.collection ? ` in “${clipLabel(action.collection)}”` : ''}`;
+    case 'streamlabs_source_visibility': return `Streamlabs source “${clipLabel(action.source)}”: ${streamlabsVisibilityOpLabels[action.op] ?? action.op}`;
+    case 'streamlabs_audio': return `Streamlabs audio “${clipLabel(action.source)}”: ${streamlabsAudioOpLabel(action.op)}`;
   }
 }
 

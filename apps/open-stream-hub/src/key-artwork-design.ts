@@ -196,6 +196,8 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   obs_scene: ['clapperboard'], obs_virtual_camera: ['video', 'video-off'], obs_replay_buffer: ['film'], obs_stream: ['radio', 'cast'], obs_screenshot: ['camera'], obs_input_mute: ['mic-off', 'volume-x'], obs_adjust_input_volume: ['volume-2'], obs_media_source: ['play', 'pause'], obs_record: ['circle', 'pause'],
   obs_studio_mode: ['columns-2'], obs_transition: ['film', 'arrow-left-right'], obs_filter: ['sparkles'],
   obs_source_visibility: ['eye', 'eye-off'], obs_scene_collection: ['layers'], obs_profile: ['arrow-left-right'],
+  streamlabs_scene: ['clapperboard'], streamlabs_record: ['circle'], streamlabs_stream: ['radio', 'cast'], streamlabs_studio_mode: ['columns-2'],
+  streamlabs_transition: ['film', 'arrow-left-right'], streamlabs_source_visibility: ['eye', 'eye-off'], streamlabs_audio: ['volume-2', 'mic-off'],
 };
 const commandSuggestions: Record<string, string[]> = {
   play_pause: ['play', 'pause'], next_track: ['skip-forward'], previous_track: ['skip-back'], stop: ['square'],

@@ -41,6 +41,7 @@ export function tileIconOf(action?: BindingAction): TileIcon {
     case 'profile': return 'profile';
     case 'timer': return 'timer';
     case 'shortcut': return 'generic';
+    // No Streamlabs picture yet: streamlabs_* falls to generic, as in TileIcon::of.
     default: return action.type.startsWith('obs_') ? 'obs' : 'generic';
   }
 }

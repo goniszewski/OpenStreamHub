@@ -295,13 +295,15 @@ fn url_origin(url: &str) -> String {
 const OBS_LABEL_PREFIX_CHARS: usize = 24;
 
 /// Every field that carries an OBS name (scene, source, filter, scene collection
-/// or profile). These get the short-name and label-prefix scrubs.
-const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name"];
+/// or profile) or a Streamlabs one (scene, collection, source). These get the
+/// short-name and label-prefix scrubs.
+const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collection"];
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels and OBS scene, source, filter,
-/// scene collection and profile names become `<N chars>`, and `open_url` URLs keep only their origin. Long
+/// activity): `text` snippets, `timer` labels, OBS scene, source, filter,
+/// scene collection and profile names and Streamlabs scene, collection and
+/// source names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
 /// go to `short_scenes` for the whole-word scrub of profile and client text.
 fn redact_action_payloads(
@@ -320,6 +322,9 @@ fn redact_action_payloads(
                 Some("obs_scene_collection" | "obs_profile") => &["name"],
                 Some("obs_source_visibility") => &["scene", "source"],
                 Some("obs_set_input_volume" | "obs_input_volume_from_position") => &["input"],
+                Some("streamlabs_scene") => &["scene", "collection"],
+                Some("streamlabs_source_visibility") => &["scene", "source"],
+                Some("streamlabs_audio") => &["source"],
                 _ => &[],
             };
             for &field in fields {
@@ -1686,6 +1691,47 @@ mod tests {
         assert_eq!(steps[1]["filter"], "<10 chars>");
         let text = bundle.value.to_string();
         for name in ["Face cam", "Interview guest", "Chroma key"] {
+            assert!(!text.contains(name), "{name} survived: {text}");
+        }
+    }
+
+    #[test]
+    fn streamlabs_names_are_redacted_and_scrubbed_like_obs_names() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "streamlabs_scene", "scene": "Live", "collection": "Podcast" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "streamlabs_source_visibility", "scene": "Live", "source": "Face cam", "op": "hide" },
+                    { "type": "streamlabs_audio", "source": "Mic", "op": { "set": 40 } },
+                    { "type": "streamlabs_record" },
+                ] } },
+            ] })),
+            client: ClientContext {
+                activity: vec![activity_text("Switched Streamlabs to Live in Podcast.")],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let profile = &bundle.value["profile"]["bindings"];
+        assert_eq!(profile[0]["action"]["scene"], "<4 chars>");
+        assert_eq!(profile[0]["action"]["collection"], "<7 chars>");
+        let steps = &profile[1]["action"]["actions"];
+        assert_eq!(steps[0]["source"], "<8 chars>");
+        assert_eq!(steps[0]["op"], "hide");
+        assert_eq!(
+            steps[1],
+            json!({"type":"streamlabs_audio","source":"<3 chars>","op":{"set":40}})
+        );
+        assert_eq!(steps[2], json!({"type":"streamlabs_record"}));
+        assert_eq!(
+            bundle.value["runtime"]["client"]["activity"][0]["text"],
+            "Switched Streamlabs to <4 chars> in <7 chars>."
+        );
+        let text = bundle.value.to_string();
+        for name in ["Podcast", "Face cam"] {
             assert!(!text.contains(name), "{name} survived: {text}");
         }
     }

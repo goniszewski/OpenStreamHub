@@ -47,6 +47,9 @@ export interface ProfileCapabilities {
   // OBS scene collection and profile switches, one plain-language entry each (names shown clipped). OBS reloads, which
   // can interrupt a live output. Raises the risk to elevated.
   obsReloads: string[];
+  // Streamlabs Desktop actions, one plain-language entry each (names shown clipped), in profile order. Going live,
+  // recording and loading another scene collection raise the risk to elevated, like their OBS counterparts.
+  streamlabs: string[];
   // The steps of every distinct multi_action, in profile order.
   sequences: StepAction[][];
   // The steps of every distinct macro, in profile order.
@@ -138,6 +141,28 @@ const obsOpSets: Record<string, string[]> = {
   obs_studio_mode: ['toggle', 'on', 'off'], obs_filter: ['toggle', 'on', 'off'], obs_source_visibility: ['toggle', 'on', 'off'],
 };
 const opWord = (op: unknown, type: string) => typeof op === 'string' && obsOpSets[type]?.includes(op) ? op : `${clipped(String(op), 20)} (unrecognised)`;
+// A Streamlabs audio op is a one-key object; anything else (a hand-edited profile) is shown clipped and flagged.
+const streamlabsAudioWord = (op: unknown) => {
+  const value = isRecord(op) && Object.keys(op).length === 1 ? op : null;
+  if (value && Number.isInteger(value.set)) return `set the level to ${String(value.set)}%`;
+  if (value && Number.isInteger(value.adjust)) return `change the level by ${String(value.adjust)}%`;
+  if (value && typeof value.mute === 'string' && ['toggle', 'mute', 'unmute'].includes(value.mute)) return value.mute === 'toggle' ? 'toggle mute' : value.mute;
+  return `${clipped(JSON.stringify(op) ?? String(op), 20)} (unrecognised)`;
+};
+const streamlabsLine = (action: Record<string, unknown>): string => {
+  switch (action.type) {
+    case 'streamlabs_record': return 'Streamlabs recording: toggle';
+    case 'streamlabs_stream': return `Streamlabs stream: toggle${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'streamlabs_studio_mode': return 'Streamlabs studio mode: toggle';
+    case 'streamlabs_transition': return 'Streamlabs studio transition';
+    case 'streamlabs_scene': return `Streamlabs scene ${quoted(action.scene)}${typeof action.collection === 'string' ? ` in scene collection ${quoted(action.collection)} (loaded first when not active)` : ''}`;
+    case 'streamlabs_source_visibility': {
+      const op = typeof action.op === 'string' && ['toggle', 'show', 'hide'].includes(action.op) ? action.op : `${clipped(String(action.op), 20)} (unrecognised)`;
+      return `Streamlabs source ${quoted(action.source)} in scene ${quoted(action.scene)}: ${op}`;
+    }
+    default: return `Streamlabs audio source ${quoted(action.source)}: ${streamlabsAudioWord(action.op)}`;
+  }
+};
 
 export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const counts: Partial<Record<ActionKind, number>> = {};
@@ -148,6 +173,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
   const obsReloads = new Set<string>();
+  const streamlabs = new Set<string>();
   let liveOutput = false;
   const sequences = new Map<string, StepAction[]>();
   const macros = new Map<string, MacroStep[]>();
@@ -221,6 +247,14 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         obsReloads.add(obsReloadLine(action));
         if (codePoints(String(action.name ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
+      // Streamlabs Desktop over its loopback Remote Control API. Going live, recording and loading another scene
+      // collection (which can interrupt a live output) are elevated, like obs_stream, obs_record and the OBS reloads.
+      case 'streamlabs_record': case 'streamlabs_stream': case 'streamlabs_studio_mode': case 'streamlabs_transition':
+      case 'streamlabs_scene': case 'streamlabs_source_visibility': case 'streamlabs_audio':
+        streamlabs.add(streamlabsLine(action));
+        if (kind === 'streamlabs_record' || kind === 'streamlabs_stream' || (kind === 'streamlabs_scene' && typeof action.collection === 'string')) liveOutput = true;
+        for (const name of [action.scene, action.source, action.collection]) if (codePoints(String(name ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
       case 'conditional': {
         // Both branches are walked and disclosed like multi-action steps, since either can run. Which one depends on
@@ -277,6 +311,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     obsOutputs: [...obsOutputs],
     obsItems: [...obsItems],
     obsReloads: [...obsReloads],
+    streamlabs: [...streamlabs],
     sequences: [...sequences.values()],
     macros: [...macros.values()],
     risk: reasons.size > 0 ? 'high' : elevated ? 'elevated' : 'normal',
@@ -350,6 +385,8 @@ export function stepLabel(step: StepAction): string {
     case 'obs_replay_buffer': return `OBS replay buffer: ${opWord(step.op, 'obs_replay_buffer')}`;
     case 'obs_stream': return `OBS stream: ${opWord(step.op, 'obs_stream')}${step.confirm === 'press_twice' ? ' (press twice)' : ''}`;
     case 'obs_record': return `OBS recording: ${opWord(step.op, 'obs_record')}`;
+    case 'streamlabs_record': case 'streamlabs_stream': case 'streamlabs_studio_mode': case 'streamlabs_transition':
+    case 'streamlabs_scene': case 'streamlabs_source_visibility': case 'streamlabs_audio': return streamlabsLine(step);
     case 'text': {
       const preview = snippetPreview(typeof step.text === 'string' ? step.text : '');
       return `Paste “${preview.text}”${preview.more ? `… (${preview.more} more characters not shown)` : ''}${step.press_enter ? ', then press Return' : ''}`;
@@ -394,6 +431,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.obsOutputs.length) lines.push(`Controls OBS outputs through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsOutputs.join(', ')}.`);
   if (capabilities.obsItems.length) lines.push(`Changes OBS filters or source visibility through the OBS WebSocket on this Mac (when OBS is turned on in Settings): ${capabilities.obsItems.join('; ')}.`);
   if (capabilities.obsReloads.length) lines.push(`Switches the OBS scene collection or profile through the OBS WebSocket on this Mac (when OBS is turned on in Settings); OBS reloads and this can interrupt a live stream or recording: ${capabilities.obsReloads.join('; ')}.`);
+  if (capabilities.streamlabs.length) lines.push(`Controls Streamlabs Desktop through its Remote Control API on this Mac (when Streamlabs is turned on in Settings): ${capabilities.streamlabs.join('; ')}.`);
   if (sum(counts, ['volume', 'set_volume', 'toggle_mute', 'volume_from_position'])) lines.push('Changes the output volume or mute.');
   if (counts.mic_input_volume_from_position) lines.push('Sets the microphone input volume from a fader.');
   if (capabilities.mediaKeys) lines.push('Sends media keys (play/pause, next, previous) to whichever app controls playback. macOS may ask for Accessibility permission.');

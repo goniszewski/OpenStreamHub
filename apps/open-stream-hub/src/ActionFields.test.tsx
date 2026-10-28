@@ -2,9 +2,9 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsCombo, ObsConnection, ObsFields } from './ActionFields';
-import { obsOperationLabels } from './action-model';
-import type { ObsStepAction } from './action-model';
+import { ActionFields, ObsCombo, ObsConnection, ObsFields, StreamlabsFields } from './ActionFields';
+import { obsOperationLabels, streamlabsOperationLabels } from './action-model';
+import type { ObsStepAction, StreamlabsStepAction } from './action-model';
 import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
 import type { BindingAction, ObsNameList, StepAction } from './contracts';
 import { VariablesContext } from './variables-context';
@@ -288,6 +288,107 @@ describe('obs fields', () => {
     const bare = ObsConnection({}) as AnyElement;
     expect(elementsOf(bare).some(element => element.type === 'button')).toBe(false);
     expect(renderToStaticMarkup(bare)).not.toContain('Set up in Settings');
+  });
+});
+
+describe('streamlabs fields', () => {
+  it('edits every operation from one editor with an Operation select, plain name fields and one status', () => {
+    const markup = render({ type: 'streamlabs_scene', scene: 'Live' });
+    expect(markup).toContain('<label for="streamlabs-operation">Operation</label>');
+    expect(markup).toMatch(/<option value="streamlabs_scene" selected="">Scene<\/option>/);
+    expect(markup).toContain('<label for="streamlabs-scene">Streamlabs scene name</label>');
+    expect(markup).toContain('value="Live"');
+    expect(markup).toContain('>Streamlabs</span>');
+    // An empty collection means the active one: no error.
+    expect(markup).toContain('<label class="spaced-label" for="streamlabs-scene-collection">Scene collection (optional)</label>');
+    expect(markup).not.toContain('role="alert"');
+    // No Streamlabs listing yet: plain inputs even when the editor holds OBS's lists.
+    expect(renderToStaticMarkup(ActionFields({ action: { type: 'streamlabs_scene', scene: 'Live' }, fader: false, selectorKey: 'k', onChange: () => {}, catalog: catalogView() })))
+      .not.toContain('role="combobox"');
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
+    expect(markup).not.toContain('WebSocket server on');
+    expect(render({ type: 'streamlabs_scene', scene: 'Live' }, false, null)).not.toContain('Set up in Settings');
+    expectAccessible(markup);
+    const blank = render({ type: 'streamlabs_scene', scene: 'Live', collection: ' ' });
+    expect(blank).toContain('Enter the Streamlabs scene collection name');
+    expect(blank).toContain('aria-invalid="true"');
+    expectAccessible(blank);
+  });
+
+  it('offers the seven operations and their own fields', () => {
+    const markup = render({ type: 'streamlabs_transition' });
+    for (const [type, label] of Object.entries(streamlabsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
+    expect(markup).toContain('studio-mode transition');
+    expect(render({ type: 'streamlabs_record' })).toContain('stops it when it runs');
+    expect(render({ type: 'streamlabs_studio_mode' })).toContain('studio mode on when it is off');
+    const stream = render({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(stream).toMatch(/<input type="checkbox" checked=""\/>Press twice to confirm/);
+    expect(stream).toContain('press it again within 3 seconds');
+    expect(render({ type: 'streamlabs_stream' })).toContain('one press does this at once');
+    const visibility = render({ type: 'streamlabs_source_visibility', scene: 'Live', source: '', op: 'hide' });
+    expect(ids(visibility)).toEqual(expect.arrayContaining(['streamlabs-visibility-scene', 'streamlabs-visibility-source', 'streamlabs-visibility-op']));
+    expect(visibility).toMatch(/<option value="hide" selected="">Hide<\/option>/);
+    expect(visibility).toContain('Enter the Streamlabs source name');
+    expectAccessible(visibility);
+    const set = render({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } });
+    expect(set).toMatch(/<option value="set" selected="">Set the level<\/option>/);
+    expect(set).toMatch(/id="streamlabs-audio-set"[^>]*min="0"[^>]*max="100"/);
+    expect(set).toContain('not decibels');
+    expectAccessible(set);
+    const adjust = render({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: -5 } });
+    expect(adjust).toMatch(/id="streamlabs-audio-adjust"[^>]*min="-100"[^>]*max="100"/);
+    expect(ids(adjust)).not.toContain('streamlabs-audio-set');
+    const mute = render({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } });
+    expect(mute).toMatch(/<option value="unmute" selected="">Unmute<\/option>/);
+    expectAccessible(mute);
+  });
+
+  it('shows one status per editor next to the OBS one in a multi-action or if / else', () => {
+    const markup = render({ type: 'multi_action', actions: [
+      { type: 'streamlabs_scene', scene: 'Live' }, { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } }, { type: 'obs_transition' },
+    ] });
+    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-streamlabs-operation', 'step-1-streamlabs-scene', 'step-2-streamlabs-audio-source', 'step-2-streamlabs-audio-mute', 'step-3-obs-operation']));
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/WebSocket server on/g)).toHaveLength(1);
+    expectAccessible(markup);
+    const flow = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'streamlabs_record' }] });
+    expect(flow.match(/Remote Control on/g)).toHaveLength(1);
+    expect(flow).not.toContain('WebSocket server on');
+    expect(render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] })).not.toContain('Remote Control on');
+  });
+
+  it('switches operation and writes each field in the service shape', () => {
+    const run = (action: StreamlabsStepAction, id: string, value: string | boolean) => {
+      const result: { changed?: StepAction; field?: string } = {};
+      const tree = StreamlabsFields({ action, prefix: '', onChange: (changed, field) => { result.changed = changed; result.field = field; } }) as AnyElement;
+      const element = elementsOf(tree).find(item => item.props.id === id)
+        ?? elementsOf(tree).find(item => item.type === 'input' && item.props.type === 'checkbox');
+      expect(element, id).toBeTruthy();
+      const handler = (element!.props.onChange ?? element!.props.onCommit) as (value: unknown) => void;
+      handler(typeof value === 'boolean' ? { target: { checked: value } } : { target: { value } });
+      return result;
+    };
+    expect(run({ type: 'streamlabs_scene', scene: 'Live' }, 'streamlabs-operation', 'streamlabs_source_visibility'))
+      .toEqual({ changed: { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' }, field: 'streamlabs-operation' });
+    expect(run({ type: 'streamlabs_stream' }, 'checkbox', true).changed).toEqual({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(run({ type: 'streamlabs_stream', confirm: 'press_twice' }, 'checkbox', false).changed).toEqual({ type: 'streamlabs_stream' });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mode', 'adjust').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: 5 } });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mute', 'mute').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } });
+    expect(run({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'toggle' }, 'streamlabs-visibility-op', 'show').changed)
+      .toEqual({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'show' });
+    // The collection row takes the typed name; an empty one omits the key (never "" or null).
+    const collectionOf = (action: StreamlabsStepAction, typed: string) => {
+      let changed: StepAction | undefined;
+      const tree = StreamlabsFields({ action, prefix: '', onChange: next => { changed = next; } }) as AnyElement;
+      const row = elementsOf(tree).find(item => item.props.id === 'streamlabs-scene-collection');
+      (row!.props as { onChange(name: string): void }).onChange(typed);
+      return changed;
+    };
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live' }, 'Podcast')).toEqual({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' });
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }, '')).toEqual({ type: 'streamlabs_scene', scene: 'Live' });
   });
 });
 

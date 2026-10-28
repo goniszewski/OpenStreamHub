@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "name": "Streamlabs basics",
+  "bindings": [
+    {"module":"m003k","control":0,"gesture":"pressed","action":{"type":"streamlabs_record"}},
+    {"module":"m003k","control":0,"gesture":"clockwise","action":{"type":"streamlabs_audio","source":"Mic/Aux","op":{"adjust":5}}},
+    {"module":"m003k","control":0,"gesture":"counter_clockwise","action":{"type":"streamlabs_audio","source":"Mic/Aux","op":{"adjust":-5}}},
+    {"module":"m003k","control":1,"gesture":"pressed","action":{"type":"streamlabs_audio","source":"Mic/Aux","op":{"mute":"toggle"}}},
+    {"module":"m003k","control":2,"gesture":"pressed","action":{"type":"multi_action","actions":[{"type":"streamlabs_scene","scene":"Live","collection":"Podcast"},{"type":"streamlabs_source_visibility","scene":"Live","source":"Camera","op":"show"}]}},
+    {"module":"m4315","control":0,"gesture":"pressed","action":{"type":"streamlabs_stream","confirm":"press_twice"}},
+    {"module":"m4315","control":1,"gesture":"pressed","action":{"type":"streamlabs_studio_mode"}},
+    {"module":"m4315","control":2,"gesture":"pressed","action":{"type":"streamlabs_transition"}},
+    {"module":"m4315","control":3,"gesture":"pressed","action":{"type":"streamlabs_scene","scene":"Starting soon"}},
+    {"module":"m4315","control":4,"gesture":"pressed","action":{"type":"streamlabs_audio","source":"Desktop Audio","op":{"set":40}}}
+  ]
+}

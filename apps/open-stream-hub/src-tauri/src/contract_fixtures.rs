@@ -862,6 +862,28 @@ fn obs_listing_payloads_match_the_shared_fixture() {
 }
 
 #[test]
+fn streamlabs_listing_payloads_match_the_shared_fixture() {
+    use cooltek_sdk_service::streamlabs::StreamlabsCatalog;
+    // The reply shapes of `streamlabs_catalog` and `streamlabs_scene_sources`
+    // and the scene argument exactly as the frontend sends it.
+    let catalog = StreamlabsCatalog {
+        scenes: vec!["Live".into(), "Be right back".into()],
+        scene_collections: vec!["Main".into(), "Podcast".into()],
+        active_collection: Some("Main".into()),
+        audio_sources: vec!["Mic".into(), "Desktop Audio".into()],
+    };
+    check_or_update(
+        "streamlabs-catalog.json",
+        &json!({
+            "streamlabs_catalog_result": catalog,
+            "streamlabs_catalog_without_active_result": StreamlabsCatalog::default(),
+            "streamlabs_scene_sources_args": { "scene": "Live" },
+            "streamlabs_scene_sources_result": ["Camera", "Overlays", "Logo"],
+        }),
+    );
+}
+
+#[test]
 fn mhz_import_payloads_match_the_shared_fixture() {
     use crate::mhz::tests::{mhz, page, tile};
     let directory = tempfile::tempdir().unwrap();

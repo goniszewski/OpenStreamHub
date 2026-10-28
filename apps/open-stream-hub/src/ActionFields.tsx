@@ -12,6 +12,9 @@ import { MacroFields } from './MacroFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
 import { obsConnectionLabels } from './obs-settings';
+import { streamlabsSceneNames } from './streamlabs-catalog';
+import type { StreamlabsCatalogView } from './streamlabs-catalog';
+import { streamlabsConnectionLabels } from './streamlabs-settings';
 import type { Invoke } from './profile-session';
 import { IntegerField, SelectField } from './controls';
 import {
@@ -78,10 +81,10 @@ export function ObsConnection({ onSetUpObs, catalog }: { onSetUpObs?: () => void
 // option live in ObsNameField), so tests call it as a function.
 const comboLimit = 50;
 
-export function ObsCombo({ id, value, entry, open, onOpenChange, active, onActiveChange, onType, onPick, onOpenList, invalid, describedBy }: {
+export function ObsCombo({ id, value, entry, open, onOpenChange, active, onActiveChange, onType, onPick, onOpenList, invalid, describedBy, service = 'OBS' }: {
   id: string; value: string; entry: ObsNameList | null; open: boolean; onOpenChange(open: boolean): void;
   active: number; onActiveChange(active: number): void; onType(value: string): void; onPick(name: string): void; onOpenList?: () => void;
-  invalid?: boolean; describedBy?: string;
+  invalid?: boolean; describedBy?: string; service?: string;
 }) {
   const choicesId = `${id}-choices`;
   // Only names a profile can reference are offered; longer ones exist in OBS but cannot be saved.
@@ -118,15 +121,15 @@ export function ObsCombo({ id, value, entry, open, onOpenChange, active, onActiv
       aria-invalid={invalid || undefined} aria-describedby={describedBy} autoComplete="off" spellCheck={false} value={value}
       onClick={openList} onKeyDown={keyDown} onBlur={() => onOpenChange(false)}
       onChange={event => { onType(event.target.value); onActiveChange(0); }} />
-    {open && entry && <ul className="combo-list" id={choicesId} role="listbox" aria-label="Names OBS currently lists">
-      {entry.status === 'loading' && <li className="combo-note" role="status">Looking up OBS…</li>}
+    {open && entry && <ul className="combo-list" id={choicesId} role="listbox" aria-label={`Names ${service} currently lists`}>
+      {entry.status === 'loading' && <li className="combo-note" role="status">Looking up {service}…</li>}
       {entry.status === 'failed' && <li className="combo-note">{entry.error}</li>}
       {listed && shown.map((name, index) => (
         <li key={name} id={`${id}-choice-${index}`} role="option" aria-selected={name === value}
           className={index === at ? 'active' : undefined} onMouseDown={event => event.preventDefault()}
           onClick={() => { onPick(name); onOpenChange(false); }}>{name}</li>
       ))}
-      {listed && !matches.length && <li className="combo-note" role="status">Nothing in the OBS list matches. The name you type is kept.</li>}
+      {listed && !matches.length && <li className="combo-note" role="status">Nothing in the {service} list matches. The name you type is kept.</li>}
       {listed && matches.length > shown.length && <li className="combo-note">{matches.length - shown.length} more — keep typing to narrow the list.</li>}
     </ul>}
   </>;
@@ -134,9 +137,9 @@ export function ObsCombo({ id, value, entry, open, onOpenChange, active, onActiv
 
 // The field wrapper owning the combobox state, closing the choices on a press outside. Typing
 // keeps the choices open; picking one closes them.
-function ObsNameField({ id, value, entry, onCommit, onOpenList, invalid, describedBy }: {
+function ObsNameField({ id, value, entry, onCommit, onOpenList, invalid, describedBy, service }: {
   id: string; value: string; entry: ObsNameList | null; onCommit(name: string): void; onOpenList?: () => void;
-  invalid?: boolean; describedBy?: string;
+  invalid?: boolean; describedBy?: string; service?: string;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -149,23 +152,23 @@ function ObsNameField({ id, value, entry, onCommit, onOpenList, invalid, describ
   }, [open]);
   return <span className="obs-name" ref={wrapper}>
     <ObsCombo id={id} value={value} entry={entry} open={open} onOpenChange={setOpen} active={active} onActiveChange={setActive}
-      onType={onCommit} onPick={onCommit} onOpenList={onOpenList} invalid={invalid} describedBy={describedBy} />
+      onType={onCommit} onPick={onCommit} onOpenList={onOpenList} invalid={invalid} describedBy={describedBy} service={service} />
   </span>;
 }
 
 // Label, combobox input, and the two inline sayings: the saved-name rules (an error) and, when the
-// editor holds OBS's list and the exact name is not in it, the live cross-check (a note).
-function ObsNameRow({ id, label, value, entry, what, issue, onChange, onOpenList, spaced }: {
+// editor holds OBS's (or Streamlabs') list and the exact name is not in it, the live cross-check (a note).
+function ObsNameRow({ id, label, value, entry, what, issue, onChange, onOpenList, spaced, service }: {
   id: string; label: string; value: string; entry: ObsNameList | null; what: string; issue: string | null;
-  onChange(name: string): void; onOpenList?: () => void; spaced?: boolean;
+  onChange(name: string): void; onOpenList?: () => void; spaced?: boolean; service?: string;
 }) {
-  const warning = obsMissingWarning(value, entry, what);
+  const warning = obsMissingWarning(value, entry, what, service);
   const issueId = `${id}-error`;
   const warningId = `${id}-warning`;
   return <>
     <label className={spaced ? 'spaced-label' : undefined} htmlFor={id}>{label}</label>
     <ObsNameField id={id} value={value} entry={entry} onCommit={onChange} onOpenList={onOpenList} invalid={!!issue}
-      describedBy={issue ? issueId : warning ? warningId : undefined} />
+      describedBy={issue ? issueId : warning ? warningId : undefined} service={service} />
     {issue && <p id={issueId} className="field-error" role="alert">{issue}</p>}
     {!issue && warning && <p id={warningId} className="field-warning" role="note">{warning}</p>}
   </>;
@@ -174,10 +177,11 @@ function ObsNameRow({ id, label, value, entry, what, issue, onChange, onOpenList
 // The action picker and the parameter fields of the chosen action. Top-level ids keep their
 // historical names; multi-action steps prefix theirs with `step-N-`. onSetUpObs opens
 // Settings, where the OBS connection is configured. catalog carries OBS's current
-// listings for the OBS name fields; without it they stay plain inputs. invoke reaches
-// the macro editor's recorder and permission checks (desktop only).
-export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs, catalog, invoke }: {
-  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
+// listings for the OBS name fields and streamlabs Streamlabs' for its fields; without them
+// they stay plain inputs. invoke reaches the macro editor's recorder and permission checks
+// (desktop only).
+export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: {
+  action: BindingAction | null; fader: boolean; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke;
 }) {
   return <>
     <label htmlFor="binding-action">Action</label>
@@ -185,8 +189,8 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       onAssign={type => onChange(type === null ? null : defaultBindingAction(type))} />
     {action?.type === 'volume_from_position' && <p className="fine-print">Each position change plans an absolute output volume from 0% to 100%. It does not add a volume delta.</p>}
     {action?.type === 'macro' && <MacroFields steps={action.steps} disabled={false} onChange={steps => onChange({ type: 'macro', steps }, 'macro-steps')} invoke={invoke} />}
-    {action?.type === 'conditional' && <ConditionalFields action={action} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
-    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
+    {action?.type === 'conditional' && <ConditionalFields action={action} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />}
+    {action?.type === 'multi_action' && <MultiActionFields steps={action.actions} selectorKey={selectorKey} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />}
     {action?.type === 'profile' && <div className="action-fields"><label htmlFor="profile-direction">Profile</label>
       <SelectField id="profile-direction" value={action.direction} onChange={event => onChange({ type: 'profile', direction: event.target.value as ProfileDirection })}>
         {(Object.keys(profileDirectionLabels) as ProfileDirection[]).map(direction => <option key={direction} value={direction}>{profileDirectionLabels[direction]}</option>)}
@@ -196,7 +200,7 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
     {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">Each position change sets the default input device's volume (the microphone gain) from 0% to 100%. Some microphones have no software gain, and macOS then ignores it.</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
     {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'conditional' && action.type !== 'profile' && action.type !== 'timer' &&
-      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />}
+      <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />}
   </>;
 }
 
@@ -239,9 +243,9 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
 
 // Numbered steps with a picker each, Remove buttons and Add step: the list a multi-action and both branches of a
 // conditional edit. `idBase` keeps the ids apart (`step-2-action` for a multi-action, `then-step-2-action` in a branch).
-function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, onSetUpObs, catalog, invoke }: {
+function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, onSetUpObs, catalog, streamlabs, invoke }: {
   steps: StepAction[]; idBase: string; noun: string; minimum: number; maximum: number; selectorKey: string; update: (next: StepAction[], field?: string) => void;
-  onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
+  onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke;
 }) {
   return <>
     <ol className="action-steps">
@@ -252,7 +256,7 @@ function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, 
           <ActionPickerField triggerId={`${prefix}action`} idPrefix={prefix} scope="step" action={step} allowDrag={false}
             onAssign={type => { if (type) update(steps.map((item, at) => at === index ? defaultBindingAction(type) as StepAction : item)); }} />
           <StepFields prefix={prefix} action={step} inputKey={`${selectorKey}:${idBase}${index}:${steps.length}`}
-            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} />
+            onChange={(next, field) => update(steps.map((item, at) => at === index ? next : item), field && `${prefix}${field}`)} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} />
           <button type="button" className="button compact" disabled={steps.length <= minimum}
             aria-label={`Remove ${noun.toLowerCase()} ${index + 1}`} onClick={() => update(steps.filter((_, at) => at !== index))}><Trash2 size={16} />Remove</button>
         </li>;
@@ -263,14 +267,14 @@ function StepList({ steps, idBase, noun, minimum, maximum, selectorKey, update, 
   </>;
 }
 
-function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, invoke }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
+function MultiActionFields({ steps, selectorKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: { steps: StepAction[]; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke }) {
   const update = (next: StepAction[], field?: string) => onChange({ type: 'multi_action', actions: next }, field);
   return <div className="action-fields">
     <p className="fine-print">Runs {multiActionSteps.minimum}–{multiActionSteps.maximum} steps in order, 280 ms apart. The first failed step stops the rest. Steps cannot be multi-actions.</p>
     <StepList steps={steps} idBase="" noun="Step" minimum={multiActionSteps.minimum} maximum={multiActionSteps.maximum} selectorKey={selectorKey} update={update}
-      onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />
+      onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />
     {steps.some(step => step.type.startsWith('obs_')) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
-    {steps.some(step => step.type.startsWith('streamlabs_')) && <StreamlabsConnection onSetUp={onSetUpObs} />}
+    {steps.some(step => step.type.startsWith('streamlabs_')) && <StreamlabsConnection onSetUp={onSetUpObs} catalog={streamlabs} />}
   </div>;
 }
 
@@ -283,15 +287,15 @@ const flowUsesStreamlabs = (action: ConditionalAction): boolean =>
 
 // If / else: tests read when the key is pressed (AND / OR groups that nest), a Then list and an Otherwise list whose steps
 // may be if / else blocks themselves. The tree, its drag-and-drop and its limits live in FlowEditor.
-function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke }) {
+function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke }) {
   return <FlowEditor action={action} selectorKey={selectorKey} onChange={(next, field) => onChange(next, field)}
     render={{
-      step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} invoke={invoke} />,
+      step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />,
       app: ({ inputId, bundleId, onChange: change }) => <LaunchAppFields inputId={inputId} bundleId={bundleId} invoke={invoke} onChange={change} />,
     }}
     obsNote={flowUsesObs(action) || flowUsesStreamlabs(action) ? <>
       {flowUsesObs(action) && <ObsConnection onSetUpObs={onSetUpObs} catalog={catalog} />}
-      {flowUsesStreamlabs(action) && <StreamlabsConnection onSetUp={onSetUpObs} />}
+      {flowUsesStreamlabs(action) && <StreamlabsConnection onSetUp={onSetUpObs} catalog={streamlabs} />}
     </> : undefined} />;
 }
 
@@ -336,8 +340,8 @@ function LaunchAppFields({ inputId, bundleId, invoke, onChange }: { inputId: str
   </div>;
 }
 
-function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, invoke }: {
-  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void; catalog?: ObsCatalogView; invoke?: Invoke;
+function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: {
+  prefix: string; action: StepAction; inputKey: string; onChange(action: StepAction, field?: string): void; onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke;
 }) {
   const id = (name: string) => `${prefix}${name}`;
   switch (action.type) {
@@ -376,7 +380,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, i
       return <ObsFields action={action} prefix={prefix} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />;
     case 'streamlabs_record': case 'streamlabs_stream': case 'streamlabs_studio_mode': case 'streamlabs_transition': case 'streamlabs_scene':
     case 'streamlabs_source_visibility': case 'streamlabs_audio':
-      return <StreamlabsFields action={action} prefix={prefix} onChange={onChange} onSetUp={onSetUpObs} />;
+      return <StreamlabsFields action={action} prefix={prefix} onChange={onChange} onSetUp={onSetUpObs} catalog={streamlabs} />;
     case 'set_variable': case 'toggle_variable': case 'add_to_variable': return <VariableActionFields prefix={prefix} action={action} onChange={onChange} />;
     case 'system': return <div className="action-fields"><label htmlFor={id('system-command')}>System action</label><SelectField id={id('system-command')} value={action.command} onChange={event => onChange({ type: 'system', command: event.target.value as SystemCommand })}>{(Object.keys(systemLabels) as SystemCommand[]).map(command => <option key={command} value={command}>{systemLabels[command]}</option>)}</SelectField><p className="fine-print">{action.command === 'screenshot' ? 'Captures the whole screen to the clipboard. Needs macOS Screen Recording permission.' : `Sends ${action.command === 'undo' ? 'Command-Z' : 'Shift-Command-Z'} to the focused app.`}</p></div>;
   }
@@ -532,12 +536,20 @@ export function ObsFields({ action, prefix, onChange, onSetUpObs, catalog }: {
   </div>;
 }
 
-// The one Streamlabs connection status, shown once per editor like ObsConnection. There is no
-// Streamlabs listing yet, so the name fields stay plain inputs.
-export function StreamlabsConnection({ onSetUp }: { onSetUp?: () => void }) {
+// The one Streamlabs connection status, shown once per editor like ObsConnection, with the
+// Streamlabs listings hanging off it the same way: the Refresh press asks Streamlabs again, and a
+// listing that could not be loaded says so quietly, leaving the name fields plain inputs.
+export function StreamlabsConnection({ onSetUp, catalog }: { onSetUp?: () => void; catalog?: StreamlabsCatalogView }) {
   return <div className="obs-connection" role="note">
     <p className="fine-print">Connects to Streamlabs Desktop on this Mac while it runs with Remote Control on. {onSetUp && <button type="button" className="obs-setup" onClick={onSetUp}>Set up in Settings</button>}</p>
-    <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only, with the API token kept in Settings. Without it, the press is logged as unavailable and nothing runs. Scene, collection, source and audio source names are typed, not picked from a list: enter each exactly as Streamlabs shows it (up to {maxObsSceneBytes} bytes); a name Streamlabs does not have fails the press.</p></details>
+    {catalog && (catalog.desktop || catalog.status !== 'idle') && <div className="obs-catalog">
+      <button type="button" className="button compact" disabled={!catalog.desktop || catalog.status === 'loading'} onClick={catalog.refresh}>
+        <RotateCcw size={15} />{catalog.status === 'loading' ? 'Listing…' : 'Refresh from Streamlabs'}
+      </button>
+      {catalog.connection && <span className={`obs-chip obs-chip-${catalog.connection.state}`} title={catalog.connection.message}>{streamlabsConnectionLabels[catalog.connection.state]}</span>}
+      {catalog.status === 'failed' && <p className="fine-print" role="note">Could not load the Streamlabs names; typed names still work. {catalog.error}</p>}
+    </div>}
+    <details className="learn-more"><summary>Learn more</summary><p className="fine-print">The connection goes to this Mac only, with the API token kept in Settings. Without it, the press is logged as unavailable and nothing runs. Refresh asks Streamlabs for the scenes of its active scene collection, its scene collections, the items of a scene and its audio sources, so the name fields can offer choices; typing a name always works too. Enter each name exactly as Streamlabs shows it (up to {maxObsSceneBytes} bytes); a name Streamlabs does not have fails the press.</p></details>
   </div>;
 }
 
@@ -545,10 +557,11 @@ const streamlabsToggleMore = 'Streamlabs offers only a toggle here, so each pres
 
 // The one Streamlabs editor for the seven streamlabs_* actions, shaped like ObsFields: an
 // Operation select (keeping the scene and source names both operations share) and the chosen
-// operation's fields. The status shows once per editor: here for a top-level action, and once
-// for a multi-action or if / else with Streamlabs steps.
-export function StreamlabsFields({ action, prefix, onChange, onSetUp }: {
-  action: StreamlabsStepAction; prefix: string; onChange(action: StepAction, field?: string): void; onSetUp?: () => void;
+// operation's fields. The name fields are comboboxes while catalog holds Streamlabs' matching list
+// and plain inputs otherwise, as in ObsFields. The status shows once per editor: here for a
+// top-level action, and once for a multi-action or if / else with Streamlabs steps.
+export function StreamlabsFields({ action, prefix, onChange, onSetUp, catalog }: {
+  action: StreamlabsStepAction; prefix: string; onChange(action: StepAction, field?: string): void; onSetUp?: () => void; catalog?: StreamlabsCatalogView;
 }) {
   const id = (name: string) => `${prefix}${name}`;
   let fields: ReactNode;
@@ -574,19 +587,22 @@ export function StreamlabsFields({ action, prefix, onChange, onSetUp }: {
       // An empty collection is omitted (the active one), never written as "" or null.
       const withCollection = (next: string): StepAction => next ? { type: 'streamlabs_scene', scene: action.scene, collection: next } : { type: 'streamlabs_scene', scene: action.scene };
       fields = <>
-        <ObsNameRow id={id('streamlabs-scene')} label="Streamlabs scene name" value={action.scene} entry={null} what="scene"
+        <ObsNameRow id={id('streamlabs-scene')} label="Streamlabs scene name" value={action.scene} entry={streamlabsSceneNames(catalog, collection)} what="scene" service="Streamlabs"
           issue={streamlabsNameIssue(action.scene, 'scene')} onChange={scene => onChange({ ...action, scene }, 'streamlabs-scene')} />
-        <ObsNameRow id={id('streamlabs-scene-collection')} label="Scene collection (optional)" value={collection} entry={null} what="scene collection" spaced
+        <ObsNameRow id={id('streamlabs-scene-collection')} label="Scene collection (optional)" value={collection} entry={catalogNames(catalog, catalog?.names?.scene_collections)}
+          what="scene collection" spaced service="Streamlabs"
           issue={collection ? streamlabsNameIssue(collection, 'scene collection') : null} onChange={next => onChange(withCollection(next), 'streamlabs-scene-collection')} />
         <Hint hint={`Makes this scene active in Streamlabs, matched exactly (up to ${maxObsSceneBytes} bytes each). Leave the collection empty for the active one.`}>A named collection that is not active is loaded first, which reloads Streamlabs' scenes and can interrupt a live stream or recording; the scene switch waits for the load, for up to 3 seconds.</Hint></>;
       break;
     }
     case 'streamlabs_source_visibility':
       fields = <>
-        <ObsNameRow id={id('streamlabs-visibility-scene')} label="Scene name" value={action.scene} entry={null} what="scene"
+        <ObsNameRow id={id('streamlabs-visibility-scene')} label="Scene name" value={action.scene} entry={catalogNames(catalog, catalog?.names?.scenes)} what="scene" service="Streamlabs"
           issue={streamlabsNameIssue(action.scene, 'scene')} onChange={scene => onChange({ ...action, scene }, 'streamlabs-visibility-scene')} />
-        <ObsNameRow id={id('streamlabs-visibility-source')} label="Source name" value={action.source} entry={null} what="source" spaced
-          issue={streamlabsNameIssue(action.source, 'source')} onChange={source => onChange({ ...action, source }, 'streamlabs-visibility-source')} />
+        {/* The source choices are the items of the named scene (folders and what they hold), fetched when the choices open. */}
+        <ObsNameRow id={id('streamlabs-visibility-source')} label="Source name" value={action.source} entry={catalog?.list('sceneSources', action.scene) ?? null} what="source" spaced service="Streamlabs"
+          issue={streamlabsNameIssue(action.source, 'source')} onChange={source => onChange({ ...action, source }, 'streamlabs-visibility-source')}
+          onOpenList={() => catalog?.requestNames('sceneSources', action.scene)} />
         <label className="spaced-label" htmlFor={id('streamlabs-visibility-op')}>Action</label>
         <SelectField id={id('streamlabs-visibility-op')} value={action.op} onChange={event => onChange({ ...action, op: event.target.value as StreamlabsVisibilityOp }, 'streamlabs-visibility-op')}>
           {(Object.keys(streamlabsVisibilityOpLabels) as StreamlabsVisibilityOp[]).map(op => <option key={op} value={op}>{streamlabsVisibilityOpLabels[op]}</option>)}
@@ -597,7 +613,7 @@ export function StreamlabsFields({ action, prefix, onChange, onSetUp }: {
       const mode = streamlabsAudioMode(action.op);
       const op = action.op;
       fields = <>
-        <ObsNameRow id={id('streamlabs-audio-source')} label="Streamlabs audio source name" value={action.source} entry={null} what="audio source"
+        <ObsNameRow id={id('streamlabs-audio-source')} label="Streamlabs audio source name" value={action.source} entry={catalogNames(catalog, catalog?.names?.audio_sources)} what="audio source" service="Streamlabs"
           issue={streamlabsNameIssue(action.source, 'audio source')} onChange={source => onChange({ ...action, source }, 'streamlabs-audio-source')} />
         <label className="spaced-label" htmlFor={id('streamlabs-audio-mode')}>Change</label>
         <SelectField id={id('streamlabs-audio-mode')} value={mode} onChange={event => onChange({ ...action, op: defaultStreamlabsAudioOp(event.target.value as StreamlabsAudioMode) }, 'streamlabs-audio-mode')}>
@@ -629,6 +645,6 @@ export function StreamlabsFields({ action, prefix, onChange, onSetUp }: {
       {(Object.keys(streamlabsOperationLabels) as StreamlabsStepType[]).map(type => <option key={type} value={type}>{streamlabsOperationLabels[type]}</option>)}
     </SelectField>
     {fields}
-    {prefix === '' && <StreamlabsConnection onSetUp={onSetUp} />}
+    {prefix === '' && <StreamlabsConnection onSetUp={onSetUp} catalog={catalog} />}
   </div>;
 }

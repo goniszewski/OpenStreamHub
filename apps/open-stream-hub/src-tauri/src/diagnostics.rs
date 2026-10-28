@@ -294,15 +294,15 @@ fn url_origin(url: &str) -> String {
 /// label (`clipLabel` in `ui-model.ts`).
 const OBS_LABEL_PREFIX_CHARS: usize = 24;
 
-/// Every field that carries an OBS name (scene, source, filter, scene collection
-/// or profile) or a Streamlabs one (scene, collection, source). These get the
-/// short-name and label-prefix scrubs.
-const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collection"];
+/// Every field that carries an OBS name (scene, source, filter, scene
+/// collection, profile or input) or a Streamlabs one (scene, collection,
+/// source). These get the short-name and label-prefix scrubs.
+const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collection", "input"];
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
 /// activity): `text` snippets, `timer` labels, OBS scene, source, filter,
-/// scene collection and profile names and Streamlabs scene, collection and
+/// scene collection, profile and input names and Streamlabs scene, collection and
 /// source names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
 /// go to `short_scenes` for the whole-word scrub of profile and client text.
@@ -321,7 +321,13 @@ fn redact_action_payloads(
                 Some("obs_filter") => &["source", "filter"],
                 Some("obs_scene_collection" | "obs_profile") => &["name"],
                 Some("obs_source_visibility") => &["scene", "source"],
-                Some("obs_set_input_volume" | "obs_input_volume_from_position") => &["input"],
+                Some(
+                    "obs_set_input_volume"
+                    | "obs_input_volume_from_position"
+                    | "obs_input_mute"
+                    | "obs_adjust_input_volume"
+                    | "obs_media_source",
+                ) => &["input"],
                 Some("streamlabs_scene") => &["scene", "collection"],
                 Some("streamlabs_source_visibility") => &["scene", "source"],
                 Some("streamlabs_audio") => &["source"],
@@ -1732,6 +1738,55 @@ mod tests {
         );
         let text = bundle.value.to_string();
         for name in ["Podcast", "Face cam"] {
+            assert!(!text.contains(name), "{name} survived: {text}");
+        }
+    }
+
+    #[test]
+    fn obs_input_names_of_every_input_action_are_redacted_and_scrubbed() {
+        let validated = validate(DiagnosticsRequest {
+            include_profile: Some(json!({ "bindings": [
+                { "action": { "type": "obs_input_mute", "input": "Mic", "op": "toggle" } },
+                { "action": { "type": "multi_action", "actions": [
+                    { "type": "obs_adjust_input_volume", "input": "Desk audio", "step_db": -3 },
+                    { "type": "obs_media_source", "input": "Intro reel", "op": "play_pause" },
+                    { "type": "obs_set_input_volume", "input": "Guest", "percent": 40 },
+                ] } },
+                { "action": { "type": "obs_media_source", "input": "Sponsor clip for the private client", "op": "play_pause" } },
+            ] })),
+            client: ClientContext {
+                activity: vec![activity_text("Muted Mic, then lowered Guest.")],
+                notes: None,
+                extra: Map::new(),
+            },
+            ..request(true, false, 0.0)
+        })
+        .unwrap();
+        let bundle = build(&validated, &mut rig(), &|_| false, &Running::default());
+        let profile = &bundle.value["profile"]["bindings"];
+        assert_eq!(
+            profile[0]["action"],
+            json!({"type":"obs_input_mute","input":"<3 chars>","op":"toggle"})
+        );
+        let steps = &profile[1]["action"]["actions"];
+        assert_eq!(steps[0]["input"], "<10 chars>");
+        assert_eq!(steps[0]["step_db"], -3);
+        assert_eq!(steps[1]["input"], "<10 chars>");
+        assert_eq!(steps[1]["op"], "play_pause");
+        assert_eq!(steps[2]["input"], "<5 chars>");
+        assert_eq!(profile[2]["action"]["input"], "<35 chars>");
+        assert_eq!(
+            bundle.value["runtime"]["client"]["activity"][0]["text"],
+            "Muted <3 chars>, then lowered <5 chars>."
+        );
+        let text = bundle.value.to_string();
+        for name in [
+            "Desk audio",
+            "Intro reel",
+            "Guest",
+            "Sponsor clip",
+            "\"Mic\"",
+        ] {
             assert!(!text.contains(name), "{name} survived: {text}");
         }
     }

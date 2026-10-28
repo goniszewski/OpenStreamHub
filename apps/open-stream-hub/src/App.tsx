@@ -21,6 +21,7 @@ import { useBaseOrientation } from './base-orientation';
 import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
 import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
+import { StreamlabsCatalogStore } from './streamlabs-catalog';
 import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
@@ -125,6 +126,7 @@ export default function App() {
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
   const [streamlabsSettings] = useState(() => new StreamlabsSettingsStore((command, args) => invoke(command, args), desktop));
   const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
+  const [streamlabsCatalog] = useState(() => new StreamlabsCatalogStore((command, args) => invoke(command, args), desktop));
   // The lighting the Lighting page applies, kept per unit: the rig lights its
   // art with it, and a module that appears again (a replug, or the first
   // inventory after a launch) is sent the same writes once more.
@@ -668,7 +670,7 @@ export default function App() {
             <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} basePath={bases[0]?.path_hex ?? null} onPickUnit={path => moduleSelection.select(path)} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
           </div>
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} streamlabs={streamlabsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
         </div>}
         {page === 'lighting' && <>
           <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} lighting={lightingState} />

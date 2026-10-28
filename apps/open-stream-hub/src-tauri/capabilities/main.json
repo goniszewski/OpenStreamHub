@@ -65,6 +65,8 @@
     "allow-set-streamlabs-settings",
     "allow-set-streamlabs-token",
     "allow-streamlabs-status",
+    "allow-streamlabs-catalog",
+    "allow-streamlabs-scene-sources",
     "allow-switch-session-profile",
     "allow-session-profile",
     "allow-apply-saved-profile",

@@ -383,13 +383,13 @@ export function obsNameFits(name: string): boolean {
   return utf8.encode(name).length <= maxObsSceneBytes;
 }
 
-// Live cross-check against OBS's own lists: when the editor holds the matching list and the exact
-// name is not in it, say so without claiming the press must fail — the list may be stale, and a
-// Refresh re-checks. Only exact matches count, like the press itself.
-export function obsMissingWarning(value: string, list: ObsNameList | null, what: string): string | null {
+// Live cross-check against OBS's (or Streamlabs') own lists: when the editor holds the matching list
+// and the exact name is not in it, say so without claiming the press must fail — the list may be
+// stale, and a Refresh re-checks. Only exact matches count, like the press itself.
+export function obsMissingWarning(value: string, list: ObsNameList | null, what: string, service = 'OBS'): string | null {
   if (!value.trim() || list?.status !== 'ready') return null;
   if (list.names.includes(value)) return null;
-  return `OBS does not list this ${what} right now. Refresh the OBS lists, or check the exact spelling.`;
+  return `${service} does not list this ${what} right now. Refresh the ${service} lists, or check the exact spelling.`;
 }
 
 export function textIssue(text: string): string | null {

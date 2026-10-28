@@ -5,6 +5,8 @@ import type { Action, Binding, DialBinding, DialFunction, Profile, ReplayEvent }
 import { SelectField } from './controls';
 import { useObsCatalog } from './obs-catalog';
 import type { ObsCatalogStore } from './obs-catalog';
+import { useStreamlabsCatalog } from './streamlabs-catalog';
+import type { StreamlabsCatalogStore } from './streamlabs-catalog';
 import {
   addDialFunction, deleteDialFunction, dialBindingAt, dialFunctionGestures, dialFunctionNameIssue, dialSerialIssue,
   editDialBinding, flatDialBindings, maxDialFunctionNameBytes, maxDialFunctions, moveDialFunction, moveFlatDialBindings,
@@ -52,10 +54,11 @@ const bindingNames = (bindings: readonly Binding[]) =>
   bindings.map(item => `${gestureLabels[item.gesture]}${item.serial_number ? ` (serial ${item.serial_number})` : ''}`).join(', ');
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
-export function DialFunctionsPanel({ profile, session, state, disabled, initialSelected = 0, setPage, catalog: catalogStore }: {
-  profile: Profile; session: ProfileSession; state: SessionState; disabled: boolean; initialSelected?: number; setPage?: (page: Page) => void; catalog?: ObsCatalogStore;
+export function DialFunctionsPanel({ profile, session, state, disabled, initialSelected = 0, setPage, catalog: catalogStore, streamlabs: streamlabsStore }: {
+  profile: Profile; session: ProfileSession; state: SessionState; disabled: boolean; initialSelected?: number; setPage?: (page: Page) => void; catalog?: ObsCatalogStore; streamlabs?: StreamlabsCatalogStore;
 }) {
   const catalog = useObsCatalog(catalogStore);
+  const streamlabs = useStreamlabsCatalog(streamlabsStore);
   const functions = profile.dial_functions ?? [];
   const [chosen, setChosen] = useState(initialSelected);
   const [gesture, setGesture] = useState<DialGesture>('right');
@@ -132,7 +135,7 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
         <input id="dial-binding-serial" value={serial} spellCheck={false} placeholder="Any device serial" aria-invalid={!!serialIssue} aria-describedby={serialIssue ? 'dial-binding-serial-error' : undefined} onChange={event => setSerial(event.target.value)} />
         {serialIssue && <p id="dial-binding-serial-error" className="field-error" role="alert">{serialIssue}</p>}
         <fieldset disabled={disabled || !!serialIssue}>
-          <ActionFields action={binding?.action ?? null} fader={false} selectorKey={`dial:${selected}:${gesture}:${serial}`} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} onChange={(action, field) => {
+          <ActionFields action={binding?.action ?? null} fader={false} selectorKey={`dial:${selected}:${gesture}:${serial}`} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} streamlabs={streamlabs} onChange={(action, field) => {
             if (action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position') { session.setError('Dial functions cannot follow a fader position.'); return; }
             run(latest => editDialBinding(latest, selected, gesture, serial, action as Action | null), field && `dial:${field}:${selected}:${gesture}:${serial}`);
           }} />

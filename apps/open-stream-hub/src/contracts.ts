@@ -330,6 +330,10 @@ export interface StreamlabsConnectionView { state: StreamlabsConnectionState; me
 // The OBS listings (obs_catalog, obs_source_filters, obs_scene_sources): what the editor pickers
 // offer. Names are exact, in OBS's own order (the store sorts them for display only).
 export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }
+// The Streamlabs listings (streamlabs_catalog, streamlabs_scene_sources), shaped like the OBS ones: exact names of the
+// active collection's scenes, every scene collection and the audio sources, in Streamlabs' own order, each once, only
+// names a profile can save. active_collection is null when Streamlabs names none a profile could save.
+export interface StreamlabsCatalogNames { scenes: string[]; scene_collections: string[]; active_collection: string | null; audio_sources: string[] }
 // One name list an OBS editor field can offer: loading, the names, or why OBS could not be asked.
 export type ObsNameList = { status: 'loading' } | { status: 'ready'; names: string[] } | { status: 'failed'; error: string }
 

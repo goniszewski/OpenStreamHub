@@ -58,6 +58,8 @@ fn main() {
             "set_streamlabs_settings",
             "set_streamlabs_token",
             "streamlabs_status",
+            "streamlabs_catalog",
+            "streamlabs_scene_sources",
             "switch_session_profile",
             "session_profile",
             "apply_saved_profile",

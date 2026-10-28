@@ -647,6 +647,93 @@ fn ensure_collection(session: &mut Session<'_>, name: &str) -> Result<(), String
     }
 }
 
+/// What Streamlabs currently has, for the app's editor name fields: the scenes
+/// of the active scene collection, every scene collection, the active one and
+/// the audio sources. One reply of [`StreamlabsClient::catalog`]. Each list
+/// keeps Streamlabs' own order and holds each name once, and only names a
+/// profile can save (the OBS name rules) are listed. A list beyond
+/// [`obs::MAX_LISTED_NAMES`] entries is refused, not truncated, as for OBS.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct StreamlabsCatalog {
+    /// Scene names of the active scene collection.
+    pub scenes: Vec<String>,
+    /// Scene collection names.
+    pub scene_collections: Vec<String>,
+    /// The active scene collection, when Streamlabs names one a profile can
+    /// save. The scenes above belong to it.
+    pub active_collection: Option<String>,
+    /// Audio source names (the mixer).
+    pub audio_sources: Vec<String>,
+}
+
+/// Whether a profile could reference `name` (nonempty, at most 128 bytes, no
+/// control or invisible characters). Other names are left out of listings.
+fn savable(name: &str) -> bool {
+    crate::profile::validate_obs_name("", "", name).is_ok()
+}
+
+/// The `name` of every entry of a list reply, bounded, in order, each once.
+/// An entry without a string `name` is a malformed reply, never skipped.
+fn listed_names(value: &Value, what: &str) -> Result<Vec<String>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for item in listed(value, what)? {
+        let name = item
+            .get("name")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("Streamlabs response has an entry without a name in {what}"))?;
+        if savable(name) && seen.insert(name) {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
+}
+
+impl StreamlabsClient {
+    /// Asks Streamlabs for everything the editor name fields offer: one
+    /// connection, the read requests the actions themselves send
+    /// (`ScenesService.getScenes`, `SceneCollectionsService.collections` and
+    /// `activeCollection`, `AudioService.getSources`), one deadline. Nothing
+    /// is changed.
+    pub fn catalog(&self) -> Result<StreamlabsCatalog, String> {
+        self.session(|session| {
+            let scenes = listed_names(&session.call("ScenesService", "getScenes", &[])?, "scenes")?;
+            let scene_collections = listed_names(
+                &session.call("SceneCollectionsService", "collections", &[])?,
+                "scene collections",
+            )?;
+            let active_collection = session
+                .call("SceneCollectionsService", "activeCollection", &[])?
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|name| savable(name))
+                .map(str::to_owned);
+            let audio_sources = listed_names(
+                &session.call("AudioService", "getSources", &[])?,
+                "audio sources",
+            )?;
+            Ok(StreamlabsCatalog {
+                scenes,
+                scene_collections,
+                active_collection,
+                audio_sources,
+            })
+        })
+    }
+
+    /// The names of the items of one scene of the active collection, folders
+    /// and the items inside them included, in Streamlabs' own order: what a
+    /// source visibility in that scene can target. The scene is matched
+    /// exactly, as when the action runs; an error never names it.
+    pub fn scene_sources(&self, scene: &str) -> Result<Vec<String>, String> {
+        self.session(|session| {
+            let scenes = session.call("ScenesService", "getScenes", &[])?;
+            let scene = named(listed(&scenes, "scenes")?, scene, "scene")?;
+            listed_names(scene.get("nodes").unwrap_or(&Value::Null), "scene items")
+        })
+    }
+}
+
 /// A scripted fake Streamlabs server for this module's and other modules' tests.
 #[cfg(test)]
 pub(crate) mod tests_support {
@@ -1529,5 +1616,201 @@ mod tests {
         let endpoint = StreamlabsEndpoint::new("127.0.0.1", port).unwrap();
         assert_eq!(client(endpoint).probe(), StreamlabsStatus::NotStreamlabs);
         server.join().unwrap();
+    }
+
+    // ---- Listings for the editor name fields ----
+
+    fn catalog(replies: Vec<Reply>) -> (Result<StreamlabsCatalog, String>, Seen) {
+        let (endpoint, server) = serve(replies);
+        let result = client(endpoint).catalog();
+        (result, server.join().unwrap())
+    }
+
+    fn collections() -> Value {
+        json!([{"id":"col-a","name":"Main"},{"id":"col-b","name":"Podcast"}])
+    }
+
+    #[test]
+    fn the_catalog_reads_four_lists_on_one_connection_and_changes_nothing() {
+        let (result, seen) = catalog(vec![
+            ok(scenes()),
+            ok(collections()),
+            ok(json!({"id":"col-a","name":"Main"})),
+            ok(audio()),
+        ]);
+        assert_eq!(
+            result.unwrap(),
+            StreamlabsCatalog {
+                scenes: vec!["Live".into(), "Be right back".into()],
+                scene_collections: vec!["Main".into(), "Podcast".into()],
+                active_collection: Some("Main".into()),
+                audio_sources: vec!["Mic".into(), "Desktop Audio".into()],
+            }
+        );
+        assert_eq!(seen.requests[0]["method"], "auth");
+        assert_eq!(
+            seen.calls(),
+            [
+                call("ScenesService", "getScenes", json!([])),
+                call("SceneCollectionsService", "collections", json!([])),
+                call("SceneCollectionsService", "activeCollection", json!([])),
+                call("AudioService", "getSources", json!([])),
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(StreamlabsCatalog::default()).unwrap(),
+            json!({"scenes":[],"scene_collections":[],"active_collection":null,"audio_sources":[]})
+        );
+    }
+
+    #[test]
+    fn listed_names_are_savable_and_listed_once() {
+        let long = "x".repeat(Action::MAX_OBS_NAME_BYTES + 1);
+        let fits = "y".repeat(Action::MAX_OBS_NAME_BYTES);
+        let (result, _) = catalog(vec![
+            ok(json!([
+                {"id":"1","name":"Live"},
+                {"id":"2","name":"Live"},
+                {"id":"3","name":long},
+                {"id":"4","name":"Bell\u{7}"},
+                {"id":"5","name":"Zero\u{200B}width"},
+                {"id":"6","name":"   "},
+                {"id":"7","name":fits},
+                {"id":"8","name":"Live 🎬 \"2\""}
+            ])),
+            ok(json!([{"id":"c","name":"Main"},{"id":"d","name":"Main"}])),
+            // An active collection a profile could not name is left out.
+            ok(json!({"id":"c","name":"Bad\nname"})),
+            ok(json!([])),
+        ]);
+        let catalog = result.unwrap();
+        assert_eq!(
+            catalog.scenes,
+            ["Live".to_string(), fits, "Live 🎬 \"2\"".to_string()]
+        );
+        assert_eq!(catalog.scene_collections, ["Main".to_string()]);
+        assert_eq!(catalog.active_collection, None);
+        assert!(catalog.audio_sources.is_empty());
+        // A reply without a name keeps the field empty too: it only steers a warning.
+        let (result, _) = catalog_with_active(json!(null));
+        assert_eq!(result.unwrap().active_collection, None);
+    }
+
+    fn catalog_with_active(active: Value) -> (Result<StreamlabsCatalog, String>, Seen) {
+        catalog(vec![
+            ok(json!([])),
+            ok(json!([])),
+            ok(active),
+            ok(json!([])),
+        ])
+    }
+
+    #[test]
+    fn a_malformed_or_oversized_list_fails_the_catalog_without_inventing_one() {
+        let many: Vec<_> = (0..=obs::MAX_LISTED_NAMES)
+            .map(|index| json!({"name":format!("S{index}")}))
+            .collect();
+        for (reply, expected) in [
+            (json!({"scenes":[]}), "is not a list of scenes"),
+            (json!([{"id":"1"}]), "entry without a name in scenes"),
+            (json!([{"name":5}]), "entry without a name in scenes"),
+            (json!(["Live"]), "entry without a name in scenes"),
+            (json!(many), "lists more than 1000 scenes"),
+        ] {
+            let (result, seen) = catalog(vec![ok(reply)]);
+            let error = result.unwrap_err();
+            assert!(error.starts_with("Streamlabs at 127.0.0.1:"), "{error}");
+            assert!(error.contains(expected), "{error}");
+            assert_no_secret(&error);
+            // Nothing is read after the broken list.
+            assert_eq!(seen.calls().len(), 1);
+        }
+        let (result, seen) = catalog(vec![
+            ok(scenes()),
+            ok(collections()),
+            ok(json!({"name":"Main"})),
+            ok(json!({"sources":[]})),
+        ]);
+        assert!(
+            result
+                .unwrap_err()
+                .contains("is not a list of audio sources")
+        );
+        assert_eq!(seen.calls().len(), 4);
+    }
+
+    #[test]
+    fn a_refused_unauthenticated_or_silent_catalog_fails_without_the_token() {
+        let (result, _) = catalog(vec![ok(scenes()), Reply::Error(-32601, "no such method")]);
+        let error = result.unwrap_err();
+        assert!(
+            error.ends_with("Streamlabs refused collections (code -32601): no such method"),
+            "{error}"
+        );
+        let (endpoint, server) = serve_raw(vec![Reply::Error(
+            -32600,
+            "Invalid token s3cret-token-0123456789abcdef",
+        )]);
+        let error = client(endpoint).catalog().unwrap_err();
+        let seen = server.join().unwrap();
+        assert!(error.contains("rejected the API token"), "{error}");
+        assert_no_secret(&error);
+        assert_eq!(seen.requests.len(), 1, "nothing after a failed auth");
+        let (endpoint, server) = serve(vec![Reply::Silent]);
+        let error = client(endpoint)
+            .with_timeout(Duration::from_millis(300))
+            .catalog()
+            .unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        server.join().unwrap();
+    }
+
+    fn scene_sources(scene: &str, replies: Vec<Reply>) -> (Result<Vec<String>, String>, Seen) {
+        let (endpoint, server) = serve(replies);
+        let result = client(endpoint).scene_sources(scene);
+        (result, server.join().unwrap())
+    }
+
+    #[test]
+    fn scene_sources_list_items_and_folders_of_the_named_scene() {
+        let (result, seen) = scene_sources("Live", vec![ok(scenes())]);
+        // Folders, the items inside them and nested folders are all targets.
+        assert_eq!(
+            result.unwrap(),
+            ["Camera", "Overlays", "Logo", "Inner", "Ticker", "Empty"]
+        );
+        assert_eq!(
+            seen.calls(),
+            [call("ScenesService", "getScenes", json!([]))]
+        );
+        let (result, _) = scene_sources("Be right back", vec![ok(scenes())]);
+        assert!(result.unwrap().is_empty());
+        let twice = json!([{"id":"s","name":"Live","nodes":[
+            {"id":"1","name":"Cam"},{"id":"2","name":"Cam"},{"id":"3","name":"x\u{2028}y"}
+        ]}]);
+        let (result, _) = scene_sources("Live", vec![ok(twice)]);
+        assert_eq!(result.unwrap(), ["Cam"]);
+    }
+
+    #[test]
+    fn scene_sources_of_an_unknown_scene_or_a_broken_reply_fail_without_the_name() {
+        let (result, _) = scene_sources("Secret scene", vec![ok(scenes())]);
+        let error = result.unwrap_err();
+        assert!(error.contains("no scene with that name"), "{error}");
+        assert!(!error.contains("Secret"), "{error}");
+        let doubled = json!([{"name":"Live","nodes":[]},{"name":"Live","nodes":[]}]);
+        let (result, _) = scene_sources("Live", vec![ok(doubled)]);
+        assert!(result.unwrap_err().contains("more than one scene"));
+        let (result, _) = scene_sources("Live", vec![ok(json!([{"name":"Live"}]))]);
+        assert!(result.unwrap_err().contains("is not a list of scene items"));
+        let (result, _) = scene_sources(
+            "Live",
+            vec![ok(json!([{"name":"Live","nodes":[{"id":"1"}]}]))],
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .contains("entry without a name in scene items")
+        );
     }
 }

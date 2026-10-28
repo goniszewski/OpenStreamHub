@@ -23,7 +23,12 @@
 //! Desktop (see `docs/masterhub-actions.md`).
 
 use crate::{keychain::PasswordVault, store};
-use cooltek_sdk_service::streamlabs::{StreamlabsEndpoint, StreamlabsStatus, StreamlabsToken};
+use cooltek_sdk_service::{
+    obs::MAX_LISTED_NAME_BYTES,
+    streamlabs::{
+        StreamlabsCatalog, StreamlabsClient, StreamlabsEndpoint, StreamlabsStatus, StreamlabsToken,
+    },
+};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -279,6 +284,41 @@ impl StreamlabsState {
         })
     }
 
+    /// The connection for an editor listing (`streamlabs_catalog`,
+    /// `streamlabs_scene_sources`), like [`crate::obs::ObsState::for_listing`]:
+    /// an off switch or a missing token is an error the editor shows in place
+    /// of the names, and nothing connects; a damaged settings file is
+    /// reported too.
+    pub fn for_listing(&self) -> Result<StreamlabsLaunch, String> {
+        let settings = self.load()?;
+        if !settings.enabled {
+            return Err("Streamlabs is off in OpenStreamHub Settings".into());
+        }
+        let endpoint = settings.endpoint()?;
+        let token = self
+            .held_token()
+            .ok_or("Streamlabs has no API token in OpenStreamHub Settings")?;
+        Ok(StreamlabsLaunch { endpoint, token })
+    }
+
+    /// `streamlabs_catalog`: the editor's name lists, over one connection.
+    pub fn catalog(&self) -> Result<StreamlabsCatalog, String> {
+        let launch = self.for_listing()?;
+        StreamlabsClient::new(launch.endpoint, launch.token).catalog()
+    }
+
+    /// `streamlabs_scene_sources`: the item names of one scene. The name is
+    /// data, bounded by the profile's own limit before anything connects.
+    pub fn scene_sources(&self, scene: &str) -> Result<Vec<String>, String> {
+        if scene.len() > MAX_LISTED_NAME_BYTES {
+            return Err(format!(
+                "the scene name is longer than {MAX_LISTED_NAME_BYTES} bytes"
+            ));
+        }
+        let launch = self.for_listing()?;
+        StreamlabsClient::new(launch.endpoint, launch.token).scene_sources(scene)
+    }
+
     /// "Test connection": opens one connection to the saved endpoint with the
     /// held token and names what it found. Nothing is tried while the switch
     /// is off or no token is held; a damaged settings file is an error.
@@ -292,8 +332,7 @@ impl StreamlabsState {
         let Some(token) = self.held_token() else {
             return Ok(StreamlabsConnection::describe(Probe::NoToken, false, port));
         };
-        let status =
-            cooltek_sdk_service::streamlabs::StreamlabsClient::new(endpoint, token).probe();
+        let status = StreamlabsClient::new(endpoint, token).probe();
         Ok(StreamlabsConnection::describe(
             Probe::Done(status),
             status == StreamlabsStatus::Unreachable && streamlabs_process_running(),
@@ -637,5 +676,67 @@ mod tests {
             "{connection:?}"
         );
         assert!(!format!("{connection:?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn a_listing_never_connects_while_off_or_without_a_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let state =
+            StreamlabsState::open_with_vault(Ok(directory.path()), Box::new(FakeVault::default()));
+        assert_eq!(
+            state.for_listing().unwrap_err(),
+            "Streamlabs is off in OpenStreamHub Settings"
+        );
+        // A token alone does not turn Streamlabs on.
+        state.set_token(Some(TOKEN.into())).unwrap();
+        assert!(state.for_listing().unwrap_err().contains("is off"));
+        state.set_token(None).unwrap();
+        state.set(on()).unwrap();
+        assert_eq!(
+            state.for_listing().unwrap_err(),
+            "Streamlabs has no API token in OpenStreamHub Settings"
+        );
+        state.set_token(Some(TOKEN.into())).unwrap();
+        let listing = state.for_listing().unwrap();
+        assert_eq!(listing, launch());
+        assert!(!format!("{listing:?}").contains("s3cret"));
+        // On with a token, the listings connect to the saved endpoint only:
+        // nothing listens there, and no error carries the token.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        state.set(StreamlabsSettings { port, ..on() }).unwrap();
+        for error in [
+            state.catalog().unwrap_err(),
+            state.scene_sources("Live").unwrap_err(),
+        ] {
+            assert!(
+                error.starts_with(&format!("Streamlabs at 127.0.0.1:{port}:")),
+                "{error}"
+            );
+            assert!(error.contains("is Streamlabs Desktop running"), "{error}");
+            assert!(!error.contains("s3cret"), "{error}");
+        }
+        let error = state.scene_sources(&"x".repeat(129)).unwrap_err();
+        assert_eq!(error, "the scene name is longer than 128 bytes");
+        state.set_token(None).unwrap();
+        assert!(state.catalog().unwrap_err().contains("no API token"));
+        assert!(
+            state
+                .scene_sources("Live")
+                .unwrap_err()
+                .contains("no API token")
+        );
+        state
+            .set(StreamlabsSettings {
+                enabled: false,
+                ..on()
+            })
+            .unwrap();
+        assert!(state.catalog().unwrap_err().contains("is off"));
+        std::fs::write(directory.path().join(FILE_NAME), b"not json").unwrap();
+        let error = state.for_listing().unwrap_err();
+        assert!(error.contains("unreadable"), "{error}");
+        assert!(!error.contains("s3cret"), "{error}");
     }
 }

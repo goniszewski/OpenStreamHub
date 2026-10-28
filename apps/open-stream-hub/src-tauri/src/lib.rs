@@ -38,6 +38,7 @@ mod updates;
 use cooltek_sdk_service::{
     Gesture, InputValue, Profile, ServiceModule,
     obs::{MAX_LISTED_NAME_BYTES, ObsCatalog, ObsClient},
+    streamlabs::StreamlabsCatalog,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -1819,6 +1820,24 @@ fn streamlabs_status(
     state.streamlabs.probe()
 }
 
+// The Streamlabs listings for the editor name fields, like the OBS ones: one
+// short loopback connection per reply with the saved endpoint and the held
+// token, which never reaches the webview. Refused without connecting while
+// Streamlabs is off or no token is held. The scene name is data, bounded by
+// the profile's own limit.
+#[tauri::command(async)]
+fn streamlabs_catalog(state: State<'_, AppState>) -> Result<StreamlabsCatalog, String> {
+    state.streamlabs.catalog()
+}
+
+#[tauri::command(async)]
+fn streamlabs_scene_sources(
+    state: State<'_, AppState>,
+    scene: String,
+) -> Result<Vec<String>, String> {
+    state.streamlabs.scene_sources(&scene)
+}
+
 // The last app other than OpenStreamHub that was frontmost.
 #[tauri::command]
 fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
@@ -2083,6 +2102,8 @@ pub fn run() {
             set_streamlabs_settings,
             set_streamlabs_token,
             streamlabs_status,
+            streamlabs_catalog,
+            streamlabs_scene_sources,
             switch_session_profile,
             session_profile,
             apply_saved_profile,

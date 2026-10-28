@@ -1216,7 +1216,7 @@ where
 /// Checks an OBS name (scene, source, filter, scene collection or profile): the keypad label rules plus
 /// the invisible-character rule of text snippets, so the name OBS receives is
 /// exactly the one reviewed.
-fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
+pub(crate) fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
     if name.trim().is_empty()
         || name.len() > Action::MAX_OBS_NAME_BYTES
         || name.chars().any(char::is_control)

@@ -152,7 +152,7 @@ pub enum TileIcon {
     Sequence,
     /// Switch profile.
     Profile,
-    /// Any OBS action.
+    /// Any OBS or Streamlabs action (a clapperboard).
     Obs,
 }
 
@@ -205,16 +205,17 @@ impl TileIcon {
             | Action::ObsAdjustInputVolume { .. }
             | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. }
-            | Action::ObsInputVolumeFromPosition { .. } => Self::Obs,
-            // No Streamlabs picture yet.
-            Action::Shortcut { .. }
+            | Action::ObsInputVolumeFromPosition { .. }
+            // Streamlabs drives the same kind of streaming app: the same
+            // picture as every OBS action, with no live state.
             | Action::StreamlabsRecord
             | Action::StreamlabsStream { .. }
             | Action::StreamlabsStudioMode
             | Action::StreamlabsTransition
             | Action::StreamlabsScene { .. }
             | Action::StreamlabsSourceVisibility { .. }
-            | Action::StreamlabsAudio { .. } => Self::Generic,
+            | Action::StreamlabsAudio { .. } => Self::Obs,
+            Action::Shortcut { .. } => Self::Generic,
         }
     }
 }
@@ -1596,5 +1597,36 @@ mod tests {
             DisplayError::StalePlan
         );
         assert_eq!(sync.sync_page(&session, &art).unwrap().written.len(), 15);
+    }
+
+    #[test]
+    fn obs_and_streamlabs_actions_share_the_streaming_picture() {
+        // The editor's preview (`tileIconOf` in key-face.ts) checks the same
+        // rule against the same shared fixture.
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../tests/fixtures/actions.json")).unwrap();
+        let mut streamlabs = 0;
+        for json in fixture["valid"].as_array().unwrap() {
+            let action: Action = serde_json::from_value(json.clone()).unwrap();
+            let kind = json["type"].as_str().unwrap();
+            let streaming = kind.starts_with("obs_") || kind.starts_with("streamlabs_");
+            streamlabs += usize::from(kind.starts_with("streamlabs_"));
+            assert_eq!(TileIcon::of(&action) == TileIcon::Obs, streaming, "{json}");
+        }
+        assert!(streamlabs >= 7, "every Streamlabs action is in the fixture");
+        assert_eq!(
+            TileIcon::of(&Action::StreamlabsAudio {
+                source: "Mic".into(),
+                op: crate::profile::StreamlabsAudioOp::Set(40),
+            }),
+            TileIcon::Obs
+        );
+        assert_eq!(
+            TileIcon::of(&Action::Shortcut {
+                key: "v".into(),
+                modifiers: vec![],
+            }),
+            TileIcon::Generic
+        );
     }
 }

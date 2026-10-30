@@ -1,0 +1,311 @@
+{
+  "pack_version": 1,
+  "id": "illustrator",
+  "name": "Adobe Illustrator",
+  "description": "Tools, grouping and views for Illustrator: selection, pen, type and shape tools on the 15-key module, with undo and redo on the encoder and fit-to-window on its press.",
+  "app": {
+    "name": "Adobe Illustrator",
+    "bundle_id": "com.adobe.illustrator"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Illustrator's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions and workspaces, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.adobe.illustrator"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Adobe Illustrator",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "system",
+          "command": "redo"
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "system",
+          "command": "undo"
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "0",
+          "modifiers": [
+            "command"
+          ]
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Selection",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "v",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Direct select",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "a",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Pen",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "p",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Type",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Rectangle",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Ellipse",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "l",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Paintbrush",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "b",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Eyedropper",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "i",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Scissors",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "c",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Zoom",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "z",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Group",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "g",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Ungroup",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "g",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Outline view",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "y",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

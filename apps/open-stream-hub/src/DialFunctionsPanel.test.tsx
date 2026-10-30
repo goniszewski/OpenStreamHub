@@ -34,13 +34,13 @@ describe('DialFunctionsPanel markup', () => {
     const withFlow = editDialBinding(fixture(), 0, 'right', '', { type: 'conditional', when: { focused_app: 'com.apple.finder' }, then: [{ type: 'launch_app', bundle_id: 'com.apple.Music' }] });
     const panel = (backend?: Invoke) => renderToStaticMarkup(<DialFunctionsPanel profile={withFlow} session={session} state={session.getState()} disabled={false} invoke={backend} />);
     const desktop = panel(invoke);
-    expect(desktop).toMatch(/<select id="conditional-app"/);
-    expect(desktop).toMatch(/<select id="then-step-1-app-bundle-id"/);
-    expect(desktop.match(/Choose app…<\/button>/g)).toHaveLength(2);
+    expect(desktop).toMatch(/<button type="button" id="conditional-app"[^>]*aria-haspopup="listbox"/);
+    expect(desktop).toMatch(/<button type="button" id="then-step-1-app-bundle-id"[^>]*aria-haspopup="listbox"/);
+    expect(desktop.match(/Enter a bundle ID instead<\/button>/g)).toHaveLength(2);
     // The browser preview keeps the plain bundle ID fields.
     const browser = panel();
     expect(browser).toMatch(/<input id="conditional-app"[^>]*value="com.apple.finder"/);
-    expect(browser).not.toContain('Choose app…');
+    expect(browser).not.toContain('Enter a bundle ID instead');
   });
 
   it('offers to start dial functions without changing a profile that has none', () => {

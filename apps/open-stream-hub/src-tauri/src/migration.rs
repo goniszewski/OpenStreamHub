@@ -57,7 +57,7 @@ pub fn adopt_previous_identifier(app_data: &Path) -> Result<bool, String> {
 }
 
 /// Copies regular files and directories, keeping modification times. Symbolic
-/// links, other file types, .DS_Store and staging folders are skipped.
+/// links, other file types, files over 64 MiB, .DS_Store and staging folders are skipped.
 fn copy_tree(from: &Path, to: &Path, depth: usize, copied: &mut usize) -> Result<(), String> {
     if depth > MAX_ADOPTED_DEPTH {
         return Err("previous application data is nested too deeply".into());
@@ -94,8 +94,9 @@ fn copy_tree(from: &Path, to: &Path, depth: usize, copied: &mut usize) -> Result
             copy_tree(&entry.path(), &target, depth + 1, copied)?;
             continue;
         }
+        // An oversized file is left behind rather than blocking the launch on every start.
         if metadata.len() > MAX_ADOPTED_FILE {
-            return Err("a file in the previous application data is too large".into());
+            continue;
         }
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -426,6 +427,10 @@ mod tests {
         fs::write(previous.join("profiles/a.json"), b"{}").unwrap();
         fs::write(previous.join("profiles/.history/b.json"), b"[]").unwrap();
         fs::write(previous.join(".DS_Store"), b"x").unwrap();
+        File::create(previous.join("huge.bin"))
+            .unwrap()
+            .set_len(MAX_ADOPTED_FILE + 1)
+            .unwrap();
         std::os::unix::fs::symlink("/etc/hosts", previous.join("link")).unwrap();
         let old_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         File::options()
@@ -453,6 +458,7 @@ mod tests {
             old_time
         );
         assert!(!new_app.join(".DS_Store").exists());
+        assert!(!new_app.join("huge.bin").exists());
         assert!(!new_app.join("link").exists());
         assert!(previous.join("obs-settings.json").exists());
 

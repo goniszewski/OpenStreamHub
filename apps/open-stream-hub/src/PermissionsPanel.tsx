@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import type { InputPermissions } from './contracts';
+import { PermissionDragTile } from './PermissionDragTile';
 import type { Invoke } from './profile-session';
 
 export type Target = 'post_events' | 'listen_events' | 'automation';
@@ -71,14 +72,6 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
     const timer = setInterval(() => { void check(); }, 1500);
     return () => clearInterval(timer);
   }, [waiting, check]);
-  const startDrag = async () => {
-    if (!call.current) return;
-    try {
-      await call.current('start_permission_drag');
-    } catch (reason) {
-      setError(String(reason));
-    }
-  };
   const open = async (target: Target) => {
     if (!call.current) return;
     try {
@@ -99,10 +92,7 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
         <div><strong>{row.title}</strong><small>{row.detail}</small></div>
         <span className={`permission-status ${status}`} role="status">{permissionLabels[status]}</span>
         <button className="button" onClick={() => void open(row.target)}>Open</button>
-        {dragging === row.target && status !== 'granted' && <div className="permission-drag" role="group" aria-label="Drag OpenStreamHub into System Settings">
-          <button className="permission-drag-tile" onMouseDown={() => void startDrag()}><img src="/app-icon.png" alt="" width={32} height={32} />OpenStreamHub</button>
-          <small>Drag this onto the list in System Settings, then switch it on. This row turns green by itself.</small>
-        </div>}
+        {dragging === row.target && status !== 'granted' && invoke && <PermissionDragTile invoke={invoke} onError={message => setError(message)} />}
       </li>;
     })}</ul>}
     {available && <div className="settings-actions"><button className="button" disabled={busy} aria-busy={busy} onClick={() => void check(true)}>{busy ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}{busy ? 'Checking…' : 'Check again'}</button></div>}

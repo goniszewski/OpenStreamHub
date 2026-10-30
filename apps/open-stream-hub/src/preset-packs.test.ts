@@ -11,7 +11,7 @@ const withProfile = (patch: (pack: PresetPack) => void) => { const pack = base()
 describe('bundled packs', () => {
   it('are all valid, with no file refused', () => {
     expect(bundledPacks.rejected).toEqual([]);
-    expect(bundledPacks.packs.map(pack => pack.id)).toEqual(['illustrator', 'photoshop', 'premiere-pro', 'audacity', 'davinci-resolve', 'final-cut-pro', 'logic-pro', 'microsoft-teams', 'music-and-spotify', 'zoom']);
+    expect(bundledPacks.packs.map(pack => pack.id)).toEqual(['illustrator', 'photoshop', 'premiere-pro', 'audacity', 'davinci-resolve', 'discord', 'final-cut-pro', 'logic-pro', 'microsoft-teams', 'music-and-spotify', 'zoom']);
   });
   it('record a licence, a source and whether they were checked, and name the app they are for', () => {
     for (const pack of bundledPacks.packs) {

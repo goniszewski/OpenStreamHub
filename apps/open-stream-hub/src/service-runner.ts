@@ -205,6 +205,18 @@ function describeAction(action: unknown): string {
     case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
     case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;
     case 'obs_profile': return `OBS profile (${nameChars(action, 'name')} characters)`;
+    // Streamlabs: the same rule, only name lengths (the service logs *_chars).
+    case 'streamlabs_record': return 'Streamlabs recording toggle';
+    case 'streamlabs_stream': return `Streamlabs stream toggle${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'streamlabs_studio_mode': return 'Streamlabs studio mode toggle';
+    case 'streamlabs_transition': return 'Streamlabs studio transition';
+    case 'streamlabs_scene': return `Streamlabs scene (${nameChars(action, 'scene')}${'collection_chars' in action || typeof action.collection === 'string' ? ` + ${nameChars(action, 'collection')}` : ''} characters)`;
+    case 'streamlabs_source_visibility': return `Streamlabs source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
+    case 'streamlabs_audio': {
+      const op = isObject(action.op) ? action.op : {};
+      const what = typeof op.set === 'number' ? `level ${op.set}%` : typeof op.adjust === 'number' ? `level ${op.adjust > 0 ? '+' : ''}${op.adjust}%` : str(op.mute) ?? '?';
+      return `Streamlabs audio ${what} (${nameChars(action, 'source')} characters)`;
+    }
     case 'conditional': return isObject(action.when) ? `conditional (${Object.keys(action.when)[0] ?? '?'})` : 'conditional';
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     // The recorded keys read like typed text, so like a text snippet only the

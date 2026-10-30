@@ -623,6 +623,39 @@ fn replay_reports_obs_outputs_as_unavailable_without_an_endpoint() {
 }
 
 #[test]
+fn replay_reports_streamlabs_actions_as_unavailable_and_logs_only_name_lengths() {
+    let profile = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/profiles/streamlabs-basics.json");
+    let output = run(&[
+        "replay",
+        "--profile",
+        profile.to_str().unwrap(),
+        fixture("m003k-synthetic.jsonl").to_str().unwrap(),
+    ]);
+    assert!(output.status.success(), "{output:?}");
+    let records = output_records(&output);
+    let planned = planned_actions(&records);
+    for expected in [
+        json!({"type":"streamlabs_record"}),
+        json!({"type":"streamlabs_audio","source_chars":7,"op":{"adjust":5}}),
+        json!({"type":"multi_action","actions":[
+            {"type":"streamlabs_scene","scene_chars":4,"collection_chars":7},
+            {"type":"streamlabs_source_visibility","scene_chars":4,"source_chars":6,"op":"show"},
+        ]}),
+    ] {
+        assert!(planned.contains(&expected), "{expected} not in {planned:?}");
+    }
+    // The capture turns control 0 and presses controls 0 and 2.
+    let end = records.last().unwrap();
+    assert_eq!(end["unavailable_action_count"], 3);
+    assert_eq!(end["failed_action_count"], 0);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for name in ["Mic/Aux", "Podcast", "Camera"] {
+        assert!(!stdout.contains(name), "{name} was logged: {stdout}");
+    }
+}
+
+#[test]
 fn replay_plans_media_actions_without_executing_them() {
     let profile = TempFile::new(
         &json!({

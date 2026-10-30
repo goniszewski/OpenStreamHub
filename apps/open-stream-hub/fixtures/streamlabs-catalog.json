@@ -1,0 +1,31 @@
+{
+  "streamlabs_catalog_result": {
+    "active_collection": "Main",
+    "audio_sources": [
+      "Mic",
+      "Desktop Audio"
+    ],
+    "scene_collections": [
+      "Main",
+      "Podcast"
+    ],
+    "scenes": [
+      "Live",
+      "Be right back"
+    ]
+  },
+  "streamlabs_catalog_without_active_result": {
+    "active_collection": null,
+    "audio_sources": [],
+    "scene_collections": [],
+    "scenes": []
+  },
+  "streamlabs_scene_sources_args": {
+    "scene": "Live"
+  },
+  "streamlabs_scene_sources_result": [
+    "Camera",
+    "Overlays",
+    "Logo"
+  ]
+}

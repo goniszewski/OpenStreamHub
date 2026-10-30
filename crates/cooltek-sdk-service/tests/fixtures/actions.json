@@ -406,6 +406,117 @@
       "type": "obs_stream",
       "op": "toggle",
       "confirm": "press_twice"
+    },
+    {
+      "type": "streamlabs_record"
+    },
+    {
+      "type": "streamlabs_stream"
+    },
+    {
+      "type": "streamlabs_stream",
+      "confirm": "press_twice"
+    },
+    {
+      "type": "streamlabs_studio_mode"
+    },
+    {
+      "type": "streamlabs_transition"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Live"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Zażółć 🎥 \"quoted\"",
+      "collection": "Podcast"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "source": "Camera",
+      "op": "toggle"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "source": "Overlays",
+      "op": "show"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "source": "Camera",
+      "op": "hide"
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "set": 0
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "set": 100
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "adjust": -100
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Desktop Audio",
+      "op": {
+        "adjust": 5
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "mute": "toggle"
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "mute": "mute"
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "mute": "unmute"
+      }
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "streamlabs_scene",
+          "scene": "Live"
+        },
+        {
+          "type": "streamlabs_audio",
+          "source": "Mic",
+          "op": {
+            "mute": "unmute"
+          }
+        },
+        {
+          "type": "streamlabs_record"
+        }
+      ]
     }
   ],
   "invalid": [
@@ -870,6 +981,170 @@
       "type": "obs_record",
       "op": "toggle",
       "confirm": "press_twice"
+    },
+    {
+      "type": "streamlabs_record",
+      "op": "toggle"
+    },
+    {
+      "type": "streamlabs_stream",
+      "op": "start"
+    },
+    {
+      "type": "streamlabs_stream",
+      "confirm": "hold"
+    },
+    {
+      "type": "streamlabs_stream",
+      "confirm": null
+    },
+    {
+      "type": "streamlabs_studio_mode",
+      "op": "on"
+    },
+    {
+      "type": "streamlabs_transition",
+      "endpoint": "127.0.0.1:59650"
+    },
+    {
+      "type": "streamlabs_scene"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": ""
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "   "
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "line\nbreak"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "zero​width"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Live",
+      "collection": null
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Live",
+      "collection": ""
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Live",
+      "collection": "tab\t"
+    },
+    {
+      "type": "streamlabs_scene",
+      "scene": "Live",
+      "collection_id": "abc"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "source": "Camera",
+      "op": "on"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "op": "toggle"
+    },
+    {
+      "type": "streamlabs_source_visibility",
+      "scene": "Live",
+      "source": "",
+      "op": "hide"
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "set": 101
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "set": -1
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "adjust": 0
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "adjust": 101
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "adjust": -101
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "mute": "on"
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": {
+        "set": 40,
+        "adjust": 5
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "Mic",
+      "op": "toggle"
+    },
+    {
+      "type": "streamlabs_audio",
+      "op": {
+        "mute": "toggle"
+      }
+    },
+    {
+      "type": "streamlabs_audio",
+      "source": "bidi‮",
+      "op": {
+        "mute": "toggle"
+      }
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "streamlabs_stream",
+          "confirm": "press_twice"
+        },
+        {
+          "type": "streamlabs_record"
+        }
+      ]
     }
   ]
 }

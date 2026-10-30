@@ -982,6 +982,7 @@ mod tests {
             source_profile_id: None,
             display: Some(launch(ServiceModule::M4315, APP)),
             obs: None,
+            streamlabs: None,
         };
         assert_eq!(
             spawn_display(true, &request),
@@ -1121,6 +1122,7 @@ mod tests {
             source_profile_id: None,
             display: Some(launch(module, settings)),
             obs: None,
+            streamlabs: None,
         };
         let shown = spawn_display(true, &request(flat_keys(), APP, ServiceModule::M4315, true));
         assert_eq!(shown.args, ["--display-sync", "--press-feedback"]);
@@ -1517,6 +1519,7 @@ mod tests {
                 source_profile_id: None,
                 display: Some(launch(module, settings)),
                 obs: None,
+                streamlabs: None,
             };
             assert_eq!(spawn_display(true, &request), SpawnDisplay::default());
         }

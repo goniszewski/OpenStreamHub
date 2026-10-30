@@ -66,11 +66,11 @@ const MAX_HANDSHAKE_BYTES: usize = 8 * 1024;
 /// Frames read while waiting for one message (pings, pongs, OBS events).
 const MAX_FRAMES_PER_MESSAGE: usize = 16;
 /// Messages skipped while waiting for the request's response.
-const MAX_SKIPPED_MESSAGES: usize = 16;
+pub(crate) const MAX_SKIPPED_MESSAGES: usize = 16;
 const MAX_AUTH_FIELD_BYTES: usize = 256;
 const MAX_ERROR_CHARS: usize = 120;
 /// Read timeout slice, so cancellation is noticed while waiting on OBS.
-const POLL: Duration = Duration::from_millis(50);
+pub(crate) const POLL: Duration = Duration::from_millis(50);
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const SUBPROTOCOL: &str = "obswebsocket.json";
 const RPC_VERSION: u64 = 1;
@@ -163,7 +163,7 @@ impl ObsEndpoint {
     }
 
     /// Addresses to dial, in order. `localhost` never goes through DNS.
-    fn candidates(&self) -> Vec<SocketAddr> {
+    pub(crate) fn candidates(&self) -> Vec<SocketAddr> {
         let v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), self.port);
         let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), self.port);
         match self.host {
@@ -370,8 +370,9 @@ impl ObsClient {
         script: impl FnOnce(&mut ObsSession<'_>) -> Result<T, String>,
     ) -> Result<T, String> {
         let deadline = Instant::now() + self.timeout;
-        let mut connection = Connection::open(self.endpoint, deadline, self.cancellation.clone())
-            .map_err(|error| self.error(error))?;
+        let mut connection =
+            Connection::open(OBS, self.endpoint, deadline, self.cancellation.clone())
+                .map_err(|error| self.error(error))?;
         let result = self.identify(&mut connection).and_then(|()| {
             script(&mut ObsSession {
                 connection: &mut connection,
@@ -391,7 +392,7 @@ impl ObsClient {
     pub fn probe(&self) -> ObsStatus {
         let deadline = Instant::now() + self.timeout;
         let Ok(mut connection) =
-            Connection::open(self.endpoint, deadline, self.cancellation.clone())
+            Connection::open(OBS, self.endpoint, deadline, self.cancellation.clone())
         else {
             return ObsStatus::Unreachable;
         };
@@ -1170,7 +1171,7 @@ fn refusal_reason(request_type: &str, code: u64) -> String {
 
 /// Untrusted text for an error message: control and invisible characters
 /// become U+FFFD and the result is cut to 120 characters.
-fn sanitize(text: &str) -> String {
+pub(crate) fn sanitize(text: &str) -> String {
     let mut cleaned: String = text
         .chars()
         .take(MAX_ERROR_CHARS)
@@ -1245,8 +1246,43 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+/// The application at the other end of a [`Connection`]: how it upgrades
+/// and how errors name it. The WebSocket client is shared with the
+/// Streamlabs Desktop client (`crate::streamlabs`); [`OBS`] keeps every OBS
+/// message exactly as it was before the client was shared.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Service {
+    /// The name errors use, such as `OBS`.
+    pub(crate) name: &'static str,
+    /// Appended to a failed connect: what to check.
+    pub(crate) running_hint: &'static str,
+    /// The request path of the upgrade, such as `/`.
+    pub(crate) path: &'static str,
+    /// The `Sec-WebSocket-Protocol` to ask for, if any. Without one, a
+    /// server that picks a subprotocol anyway is refused.
+    pub(crate) subprotocol: Option<&'static str>,
+    /// Largest frame payload accepted from the server.
+    pub(crate) max_frame_bytes: usize,
+    /// The per-action limit named by a timeout error.
+    pub(crate) timeout: Duration,
+    /// The error for a close frame from the server, from its payload.
+    pub(crate) close_error: fn(&[u8]) -> String,
+}
+
+/// obs-websocket v5.
+const OBS: Service = Service {
+    name: "OBS",
+    running_hint: "is OBS running with its WebSocket server on?",
+    path: "/",
+    subprotocol: Some(SUBPROTOCOL),
+    max_frame_bytes: MAX_FRAME_BYTES,
+    timeout: DEFAULT_TIMEOUT,
+    close_error,
+};
+
 /// One WebSocket connection with a shared deadline.
-struct Connection {
+pub(crate) struct Connection {
+    service: Service,
     stream: TcpStream,
     buffer: Vec<u8>,
     deadline: Instant,
@@ -1254,15 +1290,16 @@ struct Connection {
 }
 
 impl Connection {
-    fn open(
+    pub(crate) fn open(
+        service: Service,
         endpoint: ObsEndpoint,
         deadline: Instant,
         cancellation: Option<Arc<AtomicBool>>,
     ) -> Result<Self, String> {
         let mut last_error = None;
         for address in endpoint.candidates() {
-            check_cancelled(cancellation.as_deref())?;
-            let remaining = remaining(deadline)?;
+            check_cancelled(&service, cancellation.as_deref())?;
+            let remaining = remaining(&service, deadline)?;
             match TcpStream::connect_timeout(&address, remaining) {
                 Ok(stream) => {
                     let peer = stream
@@ -1271,6 +1308,7 @@ impl Connection {
                     verify_peer(peer, address)?;
                     let _ = stream.set_nodelay(true);
                     return Ok(Self {
+                        service,
                         stream,
                         buffer: Vec::new(),
                         deadline,
@@ -1282,19 +1320,23 @@ impl Connection {
         }
         Err(match last_error {
             Some(error) if error.kind() == ErrorKind::TimedOut => {
-                "timed out connecting; is OBS running with its WebSocket server on?".into()
+                format!("timed out connecting; {}", service.running_hint)
             }
-            Some(error) => {
-                format!("could not connect ({error}); is OBS running with its WebSocket server on?")
-            }
+            Some(error) => format!("could not connect ({error}); {}", service.running_hint),
             None => "could not connect".into(),
         })
     }
 
-    fn handshake(&mut self, host: &str) -> Result<(), String> {
+    pub(crate) fn handshake(&mut self, host: &str) -> Result<(), String> {
         let key = BASE64.encode(random_bytes::<16>());
+        let protocol = self
+            .service
+            .subprotocol
+            .map(|protocol| format!("Sec-WebSocket-Protocol: {protocol}\r\n"))
+            .unwrap_or_default();
         let request = format!(
-            "GET / HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: {SUBPROTOCOL}\r\n\r\n"
+            "GET {} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n{protocol}\r\n",
+            self.service.path
         );
         self.write_all(request.as_bytes())?;
         let end = loop {
@@ -1314,49 +1356,60 @@ impl Connection {
             ));
         }
         let head: Vec<u8> = self.buffer.drain(..end + 4).collect();
-        check_upgrade(&head[..end], &key)
+        check_upgrade(&self.service, &head[..end], &key)
     }
 
     fn read_message(&mut self) -> Result<Message, String> {
+        let text = self.read_text()?;
+        serde_json::from_str(&text)
+            .map_err(|_| "OBS sent a message that is not obs-websocket JSON".into())
+    }
+
+    /// Reads the next text message, answering pings on the way.
+    pub(crate) fn read_text(&mut self) -> Result<String, String> {
+        let name = self.service.name;
         for _ in 0..MAX_FRAMES_PER_MESSAGE {
             let (opcode, payload) = self.read_frame()?;
             match opcode {
                 OPCODE_TEXT => {
-                    let text = std::str::from_utf8(&payload)
-                        .map_err(|_| "OBS sent a text frame that is not UTF-8".to_string())?;
-                    return serde_json::from_str(text)
-                        .map_err(|_| "OBS sent a message that is not obs-websocket JSON".into());
+                    return String::from_utf8(payload)
+                        .map_err(|_| format!("{name} sent a text frame that is not UTF-8"));
                 }
                 OPCODE_PING => self.send_frame(OPCODE_PONG, &payload)?,
                 OPCODE_PONG => {}
-                OPCODE_CLOSE => return Err(close_error(&payload)),
+                OPCODE_CLOSE => return Err((self.service.close_error)(&payload)),
                 _ => unreachable!("read_frame returns only supported opcodes"),
             }
         }
-        Err("OBS sent too many control frames".into())
+        Err(format!("{name} sent too many control frames"))
     }
 
     /// Reads one complete, unfragmented, unmasked frame of a supported type.
     fn read_frame(&mut self) -> Result<(u8, Vec<u8>), String> {
+        let (name, max_frame_bytes) = (self.service.name, self.service.max_frame_bytes);
         self.fill(2)?;
         let (first, second) = (self.buffer[0], self.buffer[1]);
         if first & 0x70 != 0 {
-            return Err("OBS sent a frame with reserved bits set".into());
+            return Err(format!("{name} sent a frame with reserved bits set"));
         }
         if second & 0x80 != 0 {
-            return Err("OBS sent a masked frame".into());
+            return Err(format!("{name} sent a masked frame"));
         }
         let opcode = first & 0x0F;
         match opcode {
             OPCODE_TEXT | OPCODE_CLOSE | OPCODE_PING | OPCODE_PONG => {}
             OPCODE_CONTINUATION => {
-                return Err("OBS sent a fragmented message, which is not supported".into());
+                return Err(format!(
+                    "{name} sent a fragmented message, which is not supported"
+                ));
             }
-            OPCODE_BINARY => return Err("OBS sent a binary frame".into()),
-            other => return Err(format!("OBS sent a frame with reserved opcode {other}")),
+            OPCODE_BINARY => return Err(format!("{name} sent a binary frame")),
+            other => return Err(format!("{name} sent a frame with reserved opcode {other}")),
         }
         if first & 0x80 == 0 {
-            return Err("OBS sent a fragmented message, which is not supported".into());
+            return Err(format!(
+                "{name} sent a fragmented message, which is not supported"
+            ));
         }
         let (header, length) = match second & 0x7F {
             126 => {
@@ -1374,16 +1427,16 @@ impl Connection {
             }
             short => (2, u64::from(short)),
         };
-        if length > MAX_FRAME_BYTES as u64 {
+        if length > max_frame_bytes as u64 {
             return Err(format!(
-                "OBS sent a frame larger than {MAX_FRAME_BYTES} bytes"
+                "{name} sent a frame larger than {max_frame_bytes} bytes"
             ));
         }
         if (header == 4 && length < 126) || (header == 10 && length <= u64::from(u16::MAX)) {
-            return Err("OBS sent a frame with a non-minimal length".into());
+            return Err(format!("{name} sent a frame with a non-minimal length"));
         }
         if opcode >= OPCODE_CLOSE && length > 125 {
-            return Err("OBS sent a control frame longer than 125 bytes".into());
+            return Err(format!("{name} sent a control frame longer than 125 bytes"));
         }
         let total = header + length as usize;
         self.fill(total)?;
@@ -1392,9 +1445,9 @@ impl Connection {
         Ok((opcode, payload))
     }
 
-    fn send_message(&mut self, message: &Value) -> Result<(), String> {
+    pub(crate) fn send_message(&mut self, message: &Value) -> Result<(), String> {
         let text = serde_json::to_vec(message)
-            .map_err(|_| "could not encode the OBS message".to_string())?;
+            .map_err(|_| format!("could not encode the {} message", self.service.name))?;
         self.send_frame(OPCODE_TEXT, &text)
     }
 
@@ -1405,12 +1458,26 @@ impl Connection {
     }
 
     /// Best effort: a normal-closure frame, then shutdown. Never waits.
-    fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         if let Ok(frame) = encode_frame(OPCODE_CLOSE, &1000u16.to_be_bytes(), random_bytes::<4>()) {
             let _ = self.stream.set_write_timeout(Some(POLL));
             let _ = self.stream.write_all(&frame);
         }
         let _ = self.stream.shutdown(Shutdown::Both);
+    }
+
+    /// Waits `duration` without reading, in [`POLL`] slices, failing as soon
+    /// as the deadline passes or the run is cancelled.
+    pub(crate) fn pause(&mut self, duration: Duration) -> Result<(), String> {
+        let until = Instant::now() + duration;
+        loop {
+            check_cancelled(&self.service, self.cancellation.as_deref())?;
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(());
+            }
+            std::thread::sleep(left.min(POLL).min(remaining(&self.service, self.deadline)?));
+        }
     }
 
     fn fill(&mut self, length: usize) -> Result<(), String> {
@@ -1423,13 +1490,15 @@ impl Connection {
     fn read_more(&mut self) -> Result<(), String> {
         let mut chunk = [0; 4096];
         loop {
-            check_cancelled(self.cancellation.as_deref())?;
-            let wait = remaining(self.deadline)?.min(POLL);
+            check_cancelled(&self.service, self.cancellation.as_deref())?;
+            let wait = remaining(&self.service, self.deadline)?.min(POLL);
             self.stream
                 .set_read_timeout(Some(wait))
                 .map_err(|error| format!("could not set a read timeout: {error}"))?;
             match self.stream.read(&mut chunk) {
-                Ok(0) => return Err("OBS closed the connection early".into()),
+                Ok(0) => {
+                    return Err(format!("{} closed the connection early", self.service.name));
+                }
                 Ok(read) => {
                     self.buffer.extend_from_slice(&chunk[..read]);
                     return Ok(());
@@ -1439,22 +1508,30 @@ impl Connection {
                         error.kind(),
                         ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
                     ) => {}
-                Err(error) => return Err(format!("reading from OBS failed: {error}")),
+                Err(error) => {
+                    return Err(format!(
+                        "reading from {} failed: {error}",
+                        self.service.name
+                    ));
+                }
             }
         }
     }
 
     fn write_all(&mut self, bytes: &[u8]) -> Result<(), String> {
-        check_cancelled(self.cancellation.as_deref())?;
-        let wait = remaining(self.deadline)?;
+        let name = self.service.name;
+        check_cancelled(&self.service, self.cancellation.as_deref())?;
+        let wait = remaining(&self.service, self.deadline)?;
         self.stream
             .set_write_timeout(Some(wait))
             .map_err(|error| format!("could not set a write timeout: {error}"))?;
         self.stream
             .write_all(bytes)
             .map_err(|error| match error.kind() {
-                ErrorKind::WouldBlock | ErrorKind::TimedOut => "timed out writing to OBS".into(),
-                _ => format!("writing to OBS failed: {error}"),
+                ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                    format!("timed out writing to {name}")
+                }
+                _ => format!("writing to {name} failed: {error}"),
             })
     }
 }
@@ -1484,7 +1561,8 @@ fn encode_frame(opcode: u8, payload: &[u8], mask: [u8; 4]) -> Result<Vec<u8>, St
 
 /// Validates the `101 Switching Protocols` response head (without its final
 /// blank line) for the request made with `key`.
-fn check_upgrade(head: &[u8], key: &str) -> Result<(), String> {
+fn check_upgrade(service: &Service, head: &[u8], key: &str) -> Result<(), String> {
+    let name = service.name;
     let head = std::str::from_utf8(head)
         .map_err(|_| "the WebSocket upgrade response is not text".to_string())?;
     let mut lines = head.split("\r\n");
@@ -1496,7 +1574,7 @@ fn check_upgrade(head: &[u8], key: &str) -> Result<(), String> {
             .filter(|code| code.len() == 3 && code.bytes().all(|byte| byte.is_ascii_digit()))
             .unwrap_or("unknown");
         return Err(format!(
-            "OBS did not accept the WebSocket upgrade (HTTP status {shown}); redirects are not followed"
+            "{name} did not accept the WebSocket upgrade (HTTP status {shown}); redirects are not followed"
         ));
     }
     let (mut upgrade, mut connection, mut accept, mut protocol) = (None, None, None, None);
@@ -1511,7 +1589,9 @@ fn check_upgrade(head: &[u8], key: &str) -> Result<(), String> {
             "sec-websocket-accept" => &mut accept,
             "sec-websocket-protocol" => &mut protocol,
             "sec-websocket-extensions" => {
-                return Err("OBS negotiated a WebSocket extension that was not requested".into());
+                return Err(format!(
+                    "{name} negotiated a WebSocket extension that was not requested"
+                ));
             }
             _ => continue,
         };
@@ -1531,8 +1611,18 @@ fn check_upgrade(head: &[u8], key: &str) -> Result<(), String> {
     if accept != Some(expected_accept(key).as_str()) {
         return Err("the WebSocket upgrade response has a wrong Sec-WebSocket-Accept".into());
     }
-    if protocol.is_some_and(|protocol| protocol != SUBPROTOCOL) {
-        return Err("OBS chose a WebSocket subprotocol other than obswebsocket.json".into());
+    match (protocol, service.subprotocol) {
+        (Some(chosen), Some(asked)) if chosen != asked => {
+            return Err(format!(
+                "{name} chose a WebSocket subprotocol other than {asked}"
+            ));
+        }
+        (Some(_), None) => {
+            return Err(format!(
+                "{name} chose a WebSocket subprotocol that was not requested"
+            ));
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -1544,21 +1634,25 @@ fn expected_accept(key: &str) -> String {
     BASE64.encode(hash.finalize())
 }
 
-fn remaining(deadline: Instant) -> Result<Duration, String> {
+pub(crate) fn remaining(service: &Service, deadline: Instant) -> Result<Duration, String> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         Err(format!(
-            "timed out waiting for OBS (at most {} s per action, less when a multi_action's deadline is near)",
-            DEFAULT_TIMEOUT.as_secs()
+            "timed out waiting for {} (at most {} s per action, less when a multi_action's deadline is near)",
+            service.name,
+            service.timeout.as_secs()
         ))
     } else {
         Ok(remaining)
     }
 }
 
-fn check_cancelled(cancellation: Option<&AtomicBool>) -> Result<(), String> {
+pub(crate) fn check_cancelled(
+    service: &Service,
+    cancellation: Option<&AtomicBool>,
+) -> Result<(), String> {
     if cancellation.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-        Err("cancelled before OBS answered".into())
+        Err(format!("cancelled before {} answered", service.name))
     } else {
         Ok(())
     }

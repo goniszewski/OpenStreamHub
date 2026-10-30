@@ -36,6 +36,7 @@ use cooltek_sdk_service::{
     display_sync::KeyImageProvider,
     macos::MacOsDispatcher,
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
+    streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient, StreamlabsEndpoint, StreamlabsToken},
 };
 use serde_json::json;
 
@@ -140,17 +141,34 @@ enum Command {
         /// is kept only in memory, and is never logged. Requires --obs-endpoint.
         #[arg(long, requires = "obs_endpoint")]
         obs_password_stdin: bool,
+        /// Loopback Streamlabs Desktop Remote Control endpoint for the
+        /// `streamlabs_*` action types: exactly 127.0.0.1:PORT, [::1]:PORT or
+        /// localhost:PORT (Streamlabs' default port is 59650). Without it such
+        /// an action is logged as `action_unavailable` and does nothing. Each
+        /// action opens one connection, bounded to 3 s, and closes it.
+        /// Requires --streamlabs-token-stdin. Unverified against a real
+        /// Streamlabs Desktop.
+        #[arg(long, value_parser = StreamlabsEndpoint::parse, requires = "streamlabs_token_stdin")]
+        streamlabs_endpoint: Option<StreamlabsEndpoint>,
+        /// Read the Streamlabs Remote Control API token from the next line of
+        /// stdin: the first line, or the second when --obs-password-stdin is
+        /// also given (the OBS password line always comes first). Never
+        /// accepted as an argument or environment variable, kept only in
+        /// memory, never logged. Requires --streamlabs-endpoint.
+        #[arg(long, requires = "streamlabs_endpoint")]
+        streamlabs_token_stdin: bool,
         /// End the session as Ctrl-C or SIGTERM would (hardware mode restored)
         /// when stdin reaches end of file, so a supervising process that dies,
         /// closing the stdin pipe it holds open, never leaves the device in
         /// software mode. The footer reason is then `stdin_closed`. stdin must
         /// be a pipe or socket that is still open when the run starts, checked
-        /// before the device is opened; the OBS password line, if requested,
-        /// is read first, and any later stdin data is ignored.
+        /// before the device is opened; the OBS password and Streamlabs token
+        /// lines, if requested, are read first, and any later stdin data is
+        /// ignored.
         #[arg(long)]
         exit_on_stdin_eof: bool,
         /// Accept control requests as JSON lines on stdin after the OBS
-        /// password line, answering each on stdout with a `control_result`
+        /// password and Streamlabs token lines, answering each on stdout with a `control_result`
         /// record: per-LED lighting for the knobs and faders written through
         /// the handle this run already holds, and a read of the module's own
         /// LED report. See `cooltek_sdk_cli::control`. Requires
@@ -202,6 +220,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             profile_switch_requests,
             obs_endpoint,
             obs_password_stdin,
+            streamlabs_endpoint,
+            streamlabs_token_stdin,
             exit_on_stdin_eof,
             control,
         } => {
@@ -214,6 +234,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // Read before any HID access, so a missing password never leaves
             // the device in software mode.
             let obs = obs_client(obs_endpoint, obs_password_stdin, &mut io::stdin().lock())?;
+            // The token line follows the password line on the same buffer.
+            let streamlabs = streamlabs_client(
+                streamlabs_endpoint,
+                streamlabs_token_stdin,
+                &mut io::stdin().lock(),
+            )?;
             // After the password line, before any HID access: a pipe whose
             // writer is gone would stop the run as soon as it started.
             if exit_on_stdin_eof {
@@ -318,13 +344,20 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             if let Some(obs) = &obs {
                 details["obs"] = obs_details(obs);
             }
+            if let Some(streamlabs) = &streamlabs {
+                details["streamlabs"] = streamlabs_details(streamlabs);
+            }
             let control_out = stdout.clone();
             // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
             // in place; without `--control` the dispatcher is fixed at start, as before.
             let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
             let switchable = mode.clone();
-            let factory =
-                move |abort| Ok((Dispatcher::new(execute, switchable, abort, obs), stdout));
+            let factory = move |abort| {
+                Ok((
+                    Dispatcher::new(execute, switchable, abort, obs, streamlabs),
+                    stdout,
+                ))
+            };
             // The handle is shared only when something else writes through it: the display, or control requests.
             // A plain run keeps reading it directly, as before.
             let (direct, shared) = if control || artwork.is_some() {
@@ -447,8 +480,23 @@ fn obs_client(
     Ok(Some(ObsClient::new(endpoint, password)))
 }
 
+/// The Streamlabs client for `--streamlabs-endpoint`, with the token read
+/// from the next line of `stdin` (clap makes the two flags require each
+/// other). No I/O happens beyond that read.
+fn streamlabs_client(
+    endpoint: Option<StreamlabsEndpoint>,
+    token_stdin: bool,
+    stdin: &mut impl io::BufRead,
+) -> Result<Option<StreamlabsClient>, String> {
+    let (Some(endpoint), true) = (endpoint, token_stdin) else {
+        return Ok(None);
+    };
+    let token = StreamlabsToken::read_line(stdin)?;
+    Ok(Some(StreamlabsClient::new(endpoint, token)))
+}
+
 /// The live options for `run`. With `--exit-on-stdin-eof` it also starts the
-/// stdin watchdog on what is left of `stdin` after the OBS password line, and
+/// stdin watchdog on what is left of `stdin` after the secret lines, and
 /// `stdin_closed` names the flag the watchdog sets before requesting a stop on
 /// `interrupted`. Without it nothing is started and stdin is not read again.
 #[allow(clippy::too_many_arguments)]
@@ -504,6 +552,12 @@ fn live_options(
 /// set, never the password.
 fn obs_details(obs: &ObsClient) -> serde_json::Value {
     json!({"endpoint":obs.endpoint().to_string(), "password":obs.has_password()})
+}
+
+/// `service_start` details for Streamlabs: the endpoint only, never the token
+/// (which every configured run has).
+fn streamlabs_details(streamlabs: &StreamlabsClient) -> serde_json::Value {
+    json!({"endpoint":streamlabs.endpoint().to_string()})
 }
 
 /// Prepared display artwork, chosen before any HID access.
@@ -609,13 +663,17 @@ enum Dispatcher {
         execute: Arc<AtomicBool>,
         /// Whether the run has an OBS endpoint, so a Test action is reported as an executing one would be.
         obs: bool,
+        /// The same for a Streamlabs endpoint and token.
+        streamlabs: bool,
         macos: MacOsDispatcher,
     },
-    /// Dry run and replay: validates only. `obs` records whether the run has
-    /// an OBS endpoint, so a dry run reports OBS actions exactly as an
-    /// executing run would (planned, or unavailable); it never connects.
+    /// Dry run and replay: validates only. `obs` and `streamlabs` record
+    /// whether the run has an OBS or Streamlabs endpoint, so a dry run
+    /// reports those actions exactly as an executing run would (planned, or
+    /// unavailable); it never connects.
     Preview {
         obs: bool,
+        streamlabs: bool,
     },
     MacOs(MacOsDispatcher),
 }
@@ -626,23 +684,47 @@ impl Dispatcher {
         switchable: Option<Arc<AtomicBool>>,
         abort: Arc<AtomicBool>,
         obs: Option<ObsClient>,
+        streamlabs: Option<StreamlabsClient>,
     ) -> Self {
-        if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
-            let has_obs = obs.is_some();
+        let (has_obs, has_streamlabs) = (obs.is_some(), streamlabs.is_some());
+        let macos = |abort: Arc<AtomicBool>| {
             let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
+            let streamlabs =
+                streamlabs.map(|streamlabs| streamlabs.with_cancellation(Arc::clone(&abort)));
+            MacOsDispatcher::with_cancellation(abort)
+                .with_obs(obs)
+                .with_streamlabs(streamlabs)
+        };
+        if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
             return Self::Switchable {
                 execute: flag,
                 obs: has_obs,
-                macos: MacOsDispatcher::with_cancellation(abort).with_obs(obs),
+                streamlabs: has_streamlabs,
+                macos: macos(abort),
             };
         }
         if execute {
-            let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
-            Self::MacOs(MacOsDispatcher::with_cancellation(abort).with_obs(obs))
+            Self::MacOs(macos(abort))
         } else {
-            Self::Preview { obs: obs.is_some() }
+            Self::Preview {
+                obs: has_obs,
+                streamlabs: has_streamlabs,
+            }
         }
     }
+}
+
+/// What a dry run (or a Test-mode action) reports as unavailable, as an
+/// executing run would: OBS actions without an OBS endpoint, and Streamlabs
+/// actions without a Streamlabs endpoint and token.
+fn preview_unavailable(
+    obs: bool,
+    streamlabs: bool,
+    action: &cooltek_sdk_service::Action,
+) -> Option<&'static str> {
+    (!obs && action.uses_obs())
+        .then_some(OBS_UNAVAILABLE)
+        .or_else(|| (!streamlabs && action.uses_streamlabs()).then_some(STREAMLABS_UNAVAILABLE))
 }
 
 impl ActionDispatcher for Dispatcher {
@@ -691,15 +773,16 @@ impl ActionDispatcher for Dispatcher {
             Self::Switchable {
                 execute,
                 obs,
+                streamlabs,
                 macos,
             } => {
                 if execute.load(Ordering::SeqCst) {
                     macos.unavailable(action)
                 } else {
-                    (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE)
+                    preview_unavailable(*obs, *streamlabs, action)
                 }
             }
-            Self::Preview { obs } => (!obs && action.uses_obs()).then_some(OBS_UNAVAILABLE),
+            Self::Preview { obs, streamlabs } => preview_unavailable(*obs, *streamlabs, action),
             Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
     }
@@ -766,8 +849,12 @@ fn replay(
         session.identity.serial_number.clone(),
     )?;
     let mut input = InputSession::new(device.module);
-    // Replay never has an OBS endpoint: OBS actions are reported as unavailable.
-    let mut dispatcher = Dispatcher::Preview { obs: false };
+    // Replay never has an OBS or Streamlabs endpoint: their actions are
+    // reported as unavailable.
+    let mut dispatcher = Dispatcher::Preview {
+        obs: false,
+        streamlabs: false,
+    };
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
     let mut matched_actions = 0u64;
@@ -1235,6 +1322,128 @@ mod tests {
         assert!(!error.contains("hunter2"), "{error}");
     }
 
+    fn streamlabs_args(extra: &[&str]) -> Result<(Option<String>, bool), clap::Error> {
+        let mut args = vec![
+            "masterhub-service",
+            "run",
+            "--profile",
+            "p.json",
+            "--path-hex",
+            "41",
+        ];
+        args.extend_from_slice(extra);
+        Cli::try_parse_from(args).map(|cli| match cli.command {
+            Command::Run {
+                streamlabs_endpoint,
+                streamlabs_token_stdin,
+                ..
+            } => (
+                streamlabs_endpoint.map(|endpoint| endpoint.to_string()),
+                streamlabs_token_stdin,
+            ),
+            _ => unreachable!(),
+        })
+    }
+
+    #[test]
+    fn streamlabs_flags_need_each_other_accept_only_loopback_and_no_token_value() {
+        assert_eq!(streamlabs_args(&[]).unwrap(), (None, false));
+        for value in ["127.0.0.1:59650", "[::1]:59650", "localhost:1"] {
+            let parsed =
+                streamlabs_args(&["--streamlabs-endpoint", value, "--streamlabs-token-stdin"])
+                    .unwrap();
+            assert_eq!(parsed, (Some(value.to_string()), true));
+        }
+        for bad in [
+            "192.168.1.5:59650",
+            "streamlabs.local:59650",
+            "http://127.0.0.1:59650",
+            "127.0.0.1:0",
+            "127.0.0.1",
+        ] {
+            assert!(
+                streamlabs_args(&["--streamlabs-endpoint", bad, "--streamlabs-token-stdin"])
+                    .is_err(),
+                "{bad:?}"
+            );
+        }
+        // The token is mandatory and travels on stdin only.
+        assert!(streamlabs_args(&["--streamlabs-endpoint", "127.0.0.1:59650"]).is_err());
+        assert!(streamlabs_args(&["--streamlabs-token-stdin"]).is_err());
+        for smuggled in [
+            &[
+                "--streamlabs-endpoint",
+                "127.0.0.1:59650",
+                "--streamlabs-token",
+                "x",
+            ][..],
+            &[
+                "--streamlabs-endpoint",
+                "127.0.0.1:59650",
+                "--streamlabs-token-stdin=s3cret",
+            ][..],
+        ] {
+            assert!(streamlabs_args(smuggled).is_err(), "{smuggled:?}");
+        }
+        // Both services together parse, OBS flags unchanged.
+        assert!(
+            streamlabs_args(&[
+                "--obs-endpoint",
+                "127.0.0.1:4455",
+                "--obs-password-stdin",
+                "--streamlabs-endpoint",
+                "127.0.0.1:59650",
+                "--streamlabs-token-stdin",
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn the_streamlabs_token_follows_the_obs_password_on_stdin_and_is_never_logged() {
+        let obs_endpoint = ObsEndpoint::parse("127.0.0.1:4455").unwrap();
+        let endpoint = StreamlabsEndpoint::parse("127.0.0.1:59650").unwrap();
+        // Not configured: stdin is never read.
+        let mut untouched = io::Cursor::new(b"s3cret-token\n".to_vec());
+        assert!(
+            streamlabs_client(None, false, &mut untouched)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(untouched.position(), 0);
+        // Both secrets: the OBS line first, then the token line, then the rest.
+        let mut stdin = io::Cursor::new(b"hunter2-secret\ns3cret-token\nlater\n".to_vec());
+        let obs = obs_client(Some(obs_endpoint), true, &mut stdin)
+            .unwrap()
+            .unwrap();
+        assert!(obs.has_password());
+        let streamlabs = streamlabs_client(Some(endpoint), true, &mut stdin)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stdin.position(),
+            "hunter2-secret\ns3cret-token\n".len() as u64
+        );
+        let details = streamlabs_details(&streamlabs);
+        assert_eq!(details, json!({"endpoint":"127.0.0.1:59650"}));
+        for rendered in [details.to_string(), format!("{streamlabs:?}")] {
+            assert!(!rendered.contains("s3cret"), "{rendered}");
+        }
+        // The token alone is the first line.
+        let mut stdin = io::Cursor::new(b"s3cret-token\n".to_vec());
+        assert!(
+            streamlabs_client(Some(endpoint), true, &mut stdin)
+                .unwrap()
+                .is_some()
+        );
+        for bad in [&b"\n"[..], b"", b"s3cret\x07token\n"] {
+            let error = streamlabs_client(Some(endpoint), true, &mut io::Cursor::new(bad.to_vec()))
+                .unwrap_err();
+            assert!(error.contains("Streamlabs token"), "{error}");
+            assert!(!error.contains("s3cret"), "{error}");
+        }
+    }
+
     fn wait_for(flag: &AtomicBool) -> bool {
         let deadline = std::time::Instant::now() + Duration::from_secs(1);
         while std::time::Instant::now() < deadline {
@@ -1403,6 +1612,7 @@ mod tests {
             Some(Arc::clone(&mode)),
             Arc::new(AtomicBool::new(false)),
             Some(ObsClient::new(endpoint, None)),
+            None,
         );
         assert_eq!(run.unavailable(&scene), None);
         run.dispatch(&scene).unwrap();
@@ -1411,7 +1621,13 @@ mod tests {
             "Test mode never connects to OBS, whatever the dispatcher can do"
         );
         // Without OBS a Test action is reported as unavailable, as in a dry run.
-        let mut bare = Dispatcher::new(false, Some(mode), Arc::new(AtomicBool::new(false)), None);
+        let mut bare = Dispatcher::new(
+            false,
+            Some(mode),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            None,
+        );
         assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert!(
             bare.timer_alerter(Arc::new(AtomicBool::new(false)))
@@ -1426,20 +1642,37 @@ mod tests {
             scene: "Live".into(),
         };
         let abort = Arc::new(AtomicBool::new(false));
-        let mut without = Dispatcher::new(false, None, Arc::clone(&abort), None);
+        let mut without = Dispatcher::new(false, None, Arc::clone(&abort), None, None);
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
+        // Without Streamlabs a dry run reports it like an executing run.
+        assert_eq!(
+            without.unavailable(&Action::StreamlabsRecord),
+            Some(STREAMLABS_UNAVAILABLE)
+        );
         // A closed port: a dry run must plan without any connection attempt.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let endpoint =
             ObsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap();
-        let mut with = Dispatcher::new(false, None, abort, Some(ObsClient::new(endpoint, None)));
+        let streamlabs = StreamlabsClient::new(
+            StreamlabsEndpoint::new("127.0.0.1", listener.local_addr().unwrap().port()).unwrap(),
+            StreamlabsToken::new("s3cret-token".into()).unwrap(),
+        );
+        let mut with = Dispatcher::new(
+            false,
+            None,
+            abort,
+            Some(ObsClient::new(endpoint, None)),
+            Some(streamlabs),
+        );
         assert_eq!(with.unavailable(&scene), None);
+        assert_eq!(with.unavailable(&Action::StreamlabsRecord), None);
         with.dispatch(&scene).unwrap();
+        with.dispatch(&Action::StreamlabsRecord).unwrap();
         assert!(
             listener.accept().is_err(),
-            "a dry run never connects to OBS"
+            "a dry run never connects to OBS or Streamlabs"
         );
         assert!(
             without
@@ -1479,6 +1712,7 @@ mod control_regressions {
             Some(mode.clone()),
             Arc::new(AtomicBool::new(false)),
             Some(ObsClient::new(endpoint, None)),
+            None,
         );
         mode.store(false, Ordering::SeqCst);
         let work = Work {

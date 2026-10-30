@@ -1,5 +1,5 @@
 import { groupItems, groupMode, isGroup } from './flow-model';
-import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -146,6 +146,9 @@ export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> =
   ['obs_source_visibility', 'OBS source visibility'], ['obs_scene_collection', 'Switch OBS scene collection'],
   ['obs_profile', 'Switch OBS profile'], ['obs_set_input_volume', 'Set OBS input volume'],
   ['obs_input_mute', 'OBS input mute'], ['obs_adjust_input_volume', 'Change OBS input volume'], ['obs_media_source', 'OBS media source'],
+  ['streamlabs_record', 'Streamlabs recording'], ['streamlabs_stream', 'Streamlabs stream'], ['streamlabs_studio_mode', 'Streamlabs studio mode'],
+  ['streamlabs_transition', 'Streamlabs studio transition'], ['streamlabs_scene', 'Switch Streamlabs scene'],
+  ['streamlabs_source_visibility', 'Streamlabs source visibility'], ['streamlabs_audio', 'Streamlabs audio source'],
   ['set_variable', 'Set a variable'], ['toggle_variable', 'Flip an on / off variable'], ['add_to_variable', 'Add to a number variable'],
 ];
 
@@ -176,6 +179,13 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'obs_input_mute': return { type, input: 'Mic/Aux', op: 'toggle' };
     case 'obs_adjust_input_volume': return { type, input: 'Mic/Aux', step_db: 3 };
     case 'obs_media_source': return { type, input: 'Media Source', op: 'play_pause' };
+    case 'streamlabs_record': return { type };
+    case 'streamlabs_stream': return { type };
+    case 'streamlabs_studio_mode': return { type };
+    case 'streamlabs_transition': return { type };
+    case 'streamlabs_scene': return { type, scene: 'Scene' };
+    case 'streamlabs_source_visibility': return { type, scene: 'Scene', source: 'Source', op: 'toggle' };
+    case 'streamlabs_audio': return { type, source: 'Mic/Aux', op: { mute: 'toggle' } };
     case 'set_variable': return { type, name: '', value: true };
     case 'toggle_variable': return { type, name: '' };
     case 'add_to_variable': return { type, name: '', amount: 1 };
@@ -208,6 +218,42 @@ export function switchObsOperation(action: ObsStepAction, next: ObsStepType): Ob
     if (typeof previous[field] === 'string' && field in target) target[field] = previous[field];
   }
   return target as unknown as ObsStepAction;
+}
+
+// The Streamlabs operations of the one Streamlabs editor, in the Operation list's order, like the OBS ones.
+export type StreamlabsStepType = Extract<StepActionType, `streamlabs_${string}`>;
+export type StreamlabsStepAction = Extract<StepAction, { type: StreamlabsStepType }>;
+
+export const streamlabsOperationLabels: Record<StreamlabsStepType, string> = {
+  streamlabs_scene: 'Scene', streamlabs_record: 'Recording', streamlabs_stream: 'Stream', streamlabs_studio_mode: 'Studio mode',
+  streamlabs_transition: 'Studio transition', streamlabs_source_visibility: 'Source visibility', streamlabs_audio: 'Audio source',
+};
+
+// Mirror StreamlabsVisibilityOp and StreamlabsAudioOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
+export const streamlabsVisibilityOpLabels: Record<StreamlabsVisibilityOp, string> = { toggle: 'Toggle', show: 'Show', hide: 'Hide' };
+export type StreamlabsAudioMode = 'set' | 'adjust' | 'mute';
+export const streamlabsAudioModeLabels: Record<StreamlabsAudioMode, string> = { set: 'Set the level', adjust: 'Change the level', mute: 'Mute or unmute' };
+// The Rust bounds of each audio mode: set 0 to 100, adjust a nonzero -100 to 100 (percent of the fader's travel).
+export const streamlabsAudioLimits = { set: { minimum: 0, maximum: 100 }, adjust: { minimum: -100, maximum: 100 } } as const;
+export const streamlabsAudioMode = (op: StreamlabsAudioOp): StreamlabsAudioMode => 'set' in op ? 'set' : 'adjust' in op ? 'adjust' : 'mute';
+export function defaultStreamlabsAudioOp(mode: StreamlabsAudioMode): StreamlabsAudioOp {
+  return mode === 'set' ? { set: 100 } : mode === 'adjust' ? { adjust: 5 } : { mute: 'toggle' };
+}
+// "Set to 40%", "+5%", "Mute": the label tail of a streamlabs_audio action.
+export function streamlabsAudioOpLabel(op: StreamlabsAudioOp): string {
+  if ('set' in op) return `Set to ${op.set}%`;
+  if ('adjust' in op) return `${op.adjust > 0 ? '+' : ''}${op.adjust}%`;
+  return obsMuteOpLabels[op.mute] ?? String(op.mute);
+}
+
+// Switching operation keeps the scene and source names both operations have; the rest resets, like switchObsOperation.
+export function switchStreamlabsOperation(action: StreamlabsStepAction, next: StreamlabsStepType): StreamlabsStepAction {
+  const target = { ...defaultStepAction(next) } as Record<string, unknown>;
+  const previous = action as unknown as Record<string, unknown>;
+  for (const field of ['scene', 'source'] as const) {
+    if (typeof previous[field] === 'string' && field in target) target[field] = previous[field];
+  }
+  return target as unknown as StreamlabsStepAction;
 }
 
 export function defaultTimerAction(): Action {
@@ -311,7 +357,16 @@ export const invisibleTextCharacter = /[\p{Cf}\p{Zl}\p{Zp}\u{2060}-\u{206F}]/u;
 // of text snippets, so the scene OBS receives is exactly the one reviewed.
 // The same rule applies to every OBS name (scene, source, filter, scene collection, profile): validate_obs_name in profile.rs.
 export function obsNameIssue(name: string, what: 'scene' | 'source' | 'filter' | 'scene collection' | 'profile' | 'input'): string | null {
-  if (!name.trim()) return `Enter the OBS ${what} name exactly as it appears in OBS.`;
+  return nameIssue(name, `Enter the OBS ${what} name exactly as it appears in OBS.`);
+}
+
+// Streamlabs names follow the same rules (validate_obs_name is shared in profile.rs).
+export function streamlabsNameIssue(name: string, what: 'scene' | 'scene collection' | 'source' | 'audio source'): string | null {
+  return nameIssue(name, `Enter the Streamlabs ${what} name exactly as it appears in Streamlabs.`);
+}
+
+function nameIssue(name: string, empty: string): string | null {
+  if (!name.trim()) return empty;
   if (utf8.encode(name).length > maxObsSceneBytes) return `Use at most ${maxObsSceneBytes} bytes.`;
   if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) return 'Remove line breaks, tabs and other control characters.';
   if (invisibleTextCharacter.test(name)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
@@ -328,13 +383,13 @@ export function obsNameFits(name: string): boolean {
   return utf8.encode(name).length <= maxObsSceneBytes;
 }
 
-// Live cross-check against OBS's own lists: when the editor holds the matching list and the exact
-// name is not in it, say so without claiming the press must fail — the list may be stale, and a
-// Refresh re-checks. Only exact matches count, like the press itself.
-export function obsMissingWarning(value: string, list: ObsNameList | null, what: string): string | null {
+// Live cross-check against OBS's (or Streamlabs') own lists: when the editor holds the matching list
+// and the exact name is not in it, say so without claiming the press must fail — the list may be
+// stale, and a Refresh re-checks. Only exact matches count, like the press itself.
+export function obsMissingWarning(value: string, list: ObsNameList | null, what: string, service = 'OBS'): string | null {
   if (!value.trim() || list?.status !== 'ready') return null;
   if (list.names.includes(value)) return null;
-  return `OBS does not list this ${what} right now. Refresh the OBS lists, or check the exact spelling.`;
+  return `${service} does not list this ${what} right now. Refresh the ${service} lists, or check the exact spelling.`;
 }
 
 export function textIssue(text: string): string | null {

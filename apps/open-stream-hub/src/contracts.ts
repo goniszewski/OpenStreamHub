@@ -56,6 +56,17 @@ export type StepAction =
   | { type: 'obs_input_mute'; input: string; op: ObsMuteOp }
   | { type: 'obs_adjust_input_volume'; input: string; step_db: number }
   | { type: 'obs_media_source'; input: string; op: ObsMediaOp }
+  // Streamlabs Desktop over its local Remote Control API (the endpoint and API token are app settings, never part of a
+  // profile). Record, stream and studio mode are toggles; the transition runs the studio-mode transition. Scenes,
+  // collections, items and audio sources are exact names with the OBS name rules, resolved to Streamlabs ids at run time.
+  | { type: 'streamlabs_record' }
+  | { type: 'streamlabs_stream'; confirm?: ObsConfirm }
+  | { type: 'streamlabs_studio_mode' }
+  | { type: 'streamlabs_transition' }
+  // collection is omitted (never null or empty) for the active scene collection; a named one is loaded first.
+  | { type: 'streamlabs_scene'; scene: string; collection?: string }
+  | { type: 'streamlabs_source_visibility'; scene: string; source: string; op: StreamlabsVisibilityOp }
+  | { type: 'streamlabs_audio'; source: string; op: StreamlabsAudioOp }
   // The profile's own variables (declared in Profile.variables): set one, flip a bool, or add to a number (a result past the limits stops there).
   | { type: 'set_variable'; name: string; value: VariableValue }
   | { type: 'toggle_variable'; name: string }
@@ -73,6 +84,10 @@ export type ObsMediaOp = 'play_pause' | 'play_stop' | 'play_restart' | 'stop';
 export type ObsOutputOp = 'toggle' | 'start' | 'stop';
 export type ObsReplayBufferOp = ObsOutputOp | 'save';
 export type ObsRecordOp = ObsOutputOp | 'pause' | 'resume' | 'toggle_pause';
+// StreamlabsVisibilityOp and StreamlabsAudioOp in profile.rs. The audio op is a one-key object: set the fader to 0-100 %,
+// step it by a nonzero -100 to 100 % (held between 0 and 100), or mute, unmute or toggle the source.
+export type StreamlabsVisibilityOp = 'toggle' | 'show' | 'hide';
+export type StreamlabsAudioOp = { set: number } | { adjust: number } | { mute: ObsMuteOp };
 // The state a conditional tests (Condition in profile.rs): one key with a value, or all/any of several. The first four read an OBS output and
 // need the OBS connection; the last two read the default output of this Mac.
 export type Condition = LeafCondition | { all: Condition[] } | { any: Condition[] };
@@ -304,9 +319,21 @@ export interface ObsSettingsView extends ObsSettings { password_set: boolean }
 // The obs_status reply: what "Test connection" found, with one line on what to do.
 export type ObsConnectionState = 'off' | 'connected' | 'not_running' | 'websocket_off' | 'wrong_port' | 'password_needed' | 'wrong_password' | 'failed';
 export interface ObsConnectionView { state: ObsConnectionState; message: string }
+// Streamlabs Desktop setting (src-tauri/src/streamlabs.rs, <app data>/streamlabs-settings.json), shaped like the OBS one.
+// The API token is never stored or returned: set_streamlabs_token({ token }) stores it in the macOS Keychain (null forgets
+// it) and every reply says only whether one is set. A run gets Streamlabs only while it is on and a token is set.
+export interface StreamlabsSettings { enabled: boolean; host: ObsHost; port: number }
+export interface StreamlabsSettingsView extends StreamlabsSettings { token_set: boolean }
+// The streamlabs_status reply: what "Test connection" found, with one line on what to do.
+export type StreamlabsConnectionState = 'off' | 'token_needed' | 'connected' | 'not_running' | 'remote_control_off' | 'wrong_port' | 'wrong_token' | 'failed';
+export interface StreamlabsConnectionView { state: StreamlabsConnectionState; message: string }
 // The OBS listings (obs_catalog, obs_source_filters, obs_scene_sources): what the editor pickers
 // offer. Names are exact, in OBS's own order (the store sorts them for display only).
 export interface ObsCatalogNames { scenes: string[]; sources: string[]; scene_collections: string[]; profiles: string[] }
+// The Streamlabs listings (streamlabs_catalog, streamlabs_scene_sources), shaped like the OBS ones: exact names of the
+// active collection's scenes, every scene collection and the audio sources, in Streamlabs' own order, each once, only
+// names a profile can save. active_collection is null when Streamlabs names none a profile could save.
+export interface StreamlabsCatalogNames { scenes: string[]; scene_collections: string[]; active_collection: string | null; audio_sources: string[] }
 // One name list an OBS editor field can offer: loading, the names, or why OBS could not be asked.
 export type ObsNameList = { status: 'loading' } | { status: 'ready'; names: string[] } | { status: 'failed'; error: string }
 

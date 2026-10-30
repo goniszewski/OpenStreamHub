@@ -1,7 +1,11 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import fixture from '../fixtures/key-faces.json';
 import { drawActionKey, drawBackKey, drawFolderKey, keyFaceFingerprint, keyLabelLines, tileIconOf } from './key-face';
 import type { TileIcon } from './key-face';
+import type { BindingAction } from './contracts';
+
+const actionFixture = JSON.parse(readFileSync(new URL('../../../crates/cooltek-sdk-service/tests/fixtures/actions.json', import.meta.url), 'utf8')) as { valid: unknown[] };
 
 const icons: TileIcon[] = ['generic', 'volume', 'mute', 'play', 'next', 'previous', 'stop', 'screenshot', 'undo', 'redo', 'timer', 'web', 'application', 'text', 'sequence', 'profile', 'obs'];
 const labels = ['', 'Record', 'Mute mic', 'Toggle microphone', 'A label far longer than the key can ever hold in full', 'Żółw 9'];
@@ -46,5 +50,16 @@ describe('tileIconOf', () => {
     expect(tileIconOf({ type: 'toggle_mute' })).toBe('mute');
     expect(tileIconOf({ type: 'shortcut', key: 'v', modifiers: ['command'] })).toBe('generic');
     expect(tileIconOf({ type: 'macro', steps: [] })).toBe('sequence');
+    expect(tileIconOf({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } })).toBe('obs');
+  });
+
+  it('draws every OBS and Streamlabs action of the shared fixture with the streaming picture, as the Rust test does', () => {
+    // obs_and_streamlabs_actions_share_the_streaming_picture in display_sync.rs checks the same rule.
+    const valid = actionFixture.valid as BindingAction[];
+    expect(valid.filter(action => action.type.startsWith('streamlabs_')).length).toBeGreaterThanOrEqual(7);
+    for (const action of valid) {
+      const streaming = action.type.startsWith('obs_') || action.type.startsWith('streamlabs_');
+      expect(tileIconOf(action) === 'obs', action.type).toBe(streaming);
+    }
   });
 });

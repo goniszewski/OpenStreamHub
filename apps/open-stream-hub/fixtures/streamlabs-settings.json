@@ -1,0 +1,39 @@
+{
+  "clear_streamlabs_token_args": {
+    "token": null
+  },
+  "clear_streamlabs_token_result": {
+    "enabled": true,
+    "host": "::1",
+    "port": 59651,
+    "token_set": false
+  },
+  "set_streamlabs_settings_args": {
+    "settings": {
+      "enabled": true,
+      "host": "::1",
+      "port": 59651
+    }
+  },
+  "set_streamlabs_settings_result": {
+    "enabled": true,
+    "host": "::1",
+    "port": 59651,
+    "token_set": false
+  },
+  "set_streamlabs_token_args": {
+    "token": "example-token"
+  },
+  "set_streamlabs_token_result": {
+    "enabled": true,
+    "host": "::1",
+    "port": 59651,
+    "token_set": true
+  },
+  "streamlabs_settings_default": {
+    "enabled": false,
+    "host": "127.0.0.1",
+    "port": 59650,
+    "token_set": false
+  }
+}

@@ -76,6 +76,7 @@
     "allow-prepare-dial-animation",
     "allow-save-artwork",
     "allow-app-icon",
+    "allow-app-icons",
     "allow-macro-record-start",
     "allow-macro-record-state",
     "allow-macro-record-stop",

@@ -1,9 +1,12 @@
-import { FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { AppWindow, Check, ChevronDown, FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, RunningApp, StepAction, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
-import { ActionPickerField } from './ActionPicker';
-import { defaultBindingAction } from './action-picker-model';
+import { ActionPickerField, focusTrigger } from './ActionPicker';
+import { defaultBindingAction, pickerWebStorage } from './action-picker-model';
+import { appIcons, appListKey, appOptions, appSections, closedAppList, openAppList, queryAppList, readRecentApps, recordRecentApp, triggerKey } from './app-picker-model';
+import type { AppListState } from './app-picker-model';
+import { dataUrl } from './artwork-model';
 import type { ObsStepAction, ObsStepType, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType } from './action-model';
 import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
@@ -302,18 +305,29 @@ function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog,
     </> : undefined} />;
 }
 
-// An app field, name first: the apps running now by name, the system's Choose app… picker for any other installed app,
-// and typing the bundle ID as the fallback. The stored value is always the bundle ID. A stored ID no running app has is
-// shown by its installed name (app_name), or as the raw ID with a note when no installed app has it. Without a desktop
-// backend (`state` null) it stays the plain bundle ID field. `inline` hides the picker's label where the sentence
-// around it already says what it is (the front-app test). Hook-free (LaunchAppFields owns the state), so tests call it.
+// An app field, name first, like the macOS app lists: a trigger with the app's icon and name opens a searchable list of
+// the apps running now and the recently chosen ones, each with its icon, then "Other app…" (the system's picker for any
+// other installed app); typing the bundle ID is the fallback. The stored value is always the bundle ID. A stored ID no
+// running app has is shown by its installed name (app_name), or as the raw ID with a note when no installed app has it.
+// Without a desktop backend (`state` null) it stays the plain bundle ID field. `inline` hides the picker's label where
+// the sentence around it already says what it is (the front-app test). Hook-free (LaunchAppFields owns the state, the
+// list logic is in app-picker-model), so tests call it. Icons arrive lazily; a placeholder glyph stands in meanwhile.
 export interface AppPickerState {
   apps: RunningApp[]; installedName: string | null | undefined; typing: boolean; choosing: boolean; error: string | null;
+  recent?: RunningApp[]; icons?: ReadonlyMap<string, string | null>; list?: AppListState;
 }
 
-export function AppPicker({ inputId, bundleId, label, inline, hint, state, onChange, onChoose, onTyping, onRefresh }: {
+const noIcons: ReadonlyMap<string, string | null> = new Map();
+
+// Icon bytes only ever reach this <img>: nothing is uploaded.
+function AppIcon({ png }: { png: string | null | undefined }) {
+  return png ? <img className="app-icon" src={dataUrl('image/png', png)} alt="" width={20} height={20} />
+    : <span className="app-icon app-icon-placeholder" aria-hidden="true"><AppWindow size={14} /></span>;
+}
+
+export function AppPicker({ inputId, bundleId, label, inline, hint, state, onChange, onPick, onChoose, onTyping, onList }: {
   inputId: string; bundleId: string; label: string; inline?: boolean; hint: string; state: AppPickerState | null;
-  onChange(bundleId: string): void; onChoose?: () => void; onTyping?: (typing: boolean) => void; onRefresh?: () => void;
+  onChange(bundleId: string): void; onPick?: (app: RunningApp) => void; onChoose?: () => void; onTyping?: (typing: boolean) => void; onList?: (next: AppListState) => void;
 }) {
   const trimmed = bundleId.trim();
   const noteId = `${inputId}-note`;
@@ -324,21 +338,78 @@ export function AppPicker({ inputId, bundleId, label, inline, hint, state, onCha
   </div>;
   const running = state.apps.find(app => app.bundle_id.toLowerCase() === trimmed.toLowerCase());
   const name = running?.name ?? state.installedName;
-  const sorted = [...state.apps].sort((a, b) => a.name.localeCompare(b.name));
   const note = trimmed !== '' && (state.typing || !running) && name !== undefined;
+  const list = state.list ?? closedAppList;
+  const icons = state.icons ?? noIcons;
+  const current = trimmed !== '' && !running ? { bundle_id: trimmed, name: name ?? trimmed } : null;
+  const sectionsFor = (query: string) => appSections(state.apps, state.recent ?? [], current, query);
+  const sections = list.open ? sectionsFor(list.query) : [];
+  const options = appOptions(sections);
+  const ids = { label: `${inputId}-label`, search: `${inputId}-search`, list: `${inputId}-list`, other: `${inputId}-other` };
+  const optionId = (index: number) => index < options.length ? `${inputId}-option-${index}` : ids.other;
+  const open = (query: string) => onList?.(openAppList(appOptions(sectionsFor(query)), trimmed, query));
+  const close = (refocus: boolean) => { onList?.(closedAppList); if (refocus) focusTrigger(inputId); };
+  const choose = (index: number) => {
+    close(true);
+    const app = options[index];
+    if (app) (onPick ?? (picked => onChange(picked.bundle_id)))(app); else onChoose?.();
+  };
+  const searchKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    const result = appListKey(list, event.key, options.length + 1);
+    if (!result) return;
+    if (result.handled) event.preventDefault();
+    if (result.choose !== undefined) { choose(result.choose); return; }
+    onList?.(result.next);
+    if (result.close === 'refocus') focusTrigger(inputId);
+  };
+  const option = (app: RunningApp, index: number) => {
+    const selected = app.bundle_id.toLowerCase() === trimmed.toLowerCase();
+    return <div key={app.bundle_id} id={optionId(index)} role="option" aria-selected={selected} title={app.bundle_id}
+      className={`app-option${index === list.active ? ' active' : ''}`} onMouseDown={event => event.preventDefault()}
+      onMouseMove={() => { if (index !== list.active) onList?.({ ...list, active: index }); }} onClick={() => choose(index)}>
+      <AppIcon png={icons.get(app.bundle_id)} /><span className="app-option-name">{app.name}</span>{selected && <Check size={15} aria-hidden="true" />}
+    </div>;
+  };
   return <div className="action-fields app-field">
-    <label className={inline && !state.typing ? 'sr-only' : undefined} htmlFor={inputId}>{state.typing ? 'App bundle ID' : label}</label>
-    <div className="focus-bundle-row">
-      {state.typing
-        ? <input id={inputId} spellCheck={false} autoComplete="off" autoFocus placeholder="com.apple.finder" value={bundleId} aria-describedby={note ? noteId : undefined} onChange={event => onChange(event.target.value)} />
-        : <SelectField id={inputId} value={running?.bundle_id ?? trimmed} aria-describedby={note ? noteId : undefined} onFocus={onRefresh}
-          onChange={event => { if (event.target.value) onChange(event.target.value); }}>
-          {trimmed === '' && <option value="" disabled>Choose an app…</option>}
-          {trimmed !== '' && !running && <option value={trimmed}>{name ?? trimmed}</option>}
-          {sorted.length > 0 && <optgroup label="Running now">{sorted.map(app => <option key={app.bundle_id} value={app.bundle_id}>{app.name}</option>)}</optgroup>}
-        </SelectField>}
-      <button type="button" className="button" disabled={state.choosing} onClick={onChoose}><FolderOpen size={16} aria-hidden="true" />{state.choosing ? 'Choosing…' : 'Choose app…'}</button>
-    </div>
+    <label id={ids.label} className={inline && !state.typing ? 'sr-only' : undefined} htmlFor={inputId}>{state.typing ? 'App bundle ID' : label}</label>
+    {state.typing
+      ? <div className="focus-bundle-row">
+        <input id={inputId} spellCheck={false} autoComplete="off" autoFocus placeholder="com.apple.finder" value={bundleId} aria-describedby={note ? noteId : undefined} onChange={event => onChange(event.target.value)} />
+        <button type="button" className="button" disabled={state.choosing} onClick={onChoose}><FolderOpen size={16} aria-hidden="true" />{state.choosing ? 'Choosing…' : 'Choose app…'}</button>
+      </div>
+      : <div className="app-picker">
+        <button type="button" id={inputId} className="action-picker-trigger app-picker-trigger" aria-haspopup="listbox" aria-expanded={list.open}
+          aria-controls={list.open ? ids.list : undefined} aria-labelledby={`${ids.label} ${inputId}`} aria-describedby={note ? noteId : undefined}
+          aria-busy={state.choosing || undefined} title={trimmed || undefined} onClick={() => { if (list.open) close(true); else if (!state.choosing) open(''); }}
+          onKeyDown={event => {
+            // Stays enabled while the system picker is open, so focus is still here when it closes.
+            const hit = list.open || state.choosing ? null : triggerKey(event.key, event.metaKey || event.ctrlKey || event.altKey);
+            if (hit) { event.preventDefault(); open(hit.query); }
+          }}>
+          <AppIcon png={trimmed ? icons.get(running?.bundle_id ?? trimmed) : undefined} />
+          <span className="action-picker-trigger-label">{state.choosing ? 'Choosing…' : trimmed ? name ?? trimmed : 'Choose an app…'}</span>
+          <ChevronDown size={17} aria-hidden="true" />
+        </button>
+        {list.open && <div className="action-picker-panel app-picker-panel">
+          <label className="sr-only" htmlFor={ids.search}>Search apps</label>
+          <input id={ids.search} type="search" role="combobox" aria-expanded="true" aria-controls={ids.list} aria-autocomplete="list"
+            aria-activedescendant={list.active >= 0 && list.active <= options.length ? optionId(list.active) : undefined}
+            placeholder="Search apps" autoComplete="off" spellCheck={false} autoFocus value={list.query}
+            onChange={event => onList?.(queryAppList(event.target.value))} onKeyDown={searchKey} />
+          {options.length === 0 && <p className="picker-empty" role="status">{list.query.trim() ? `No app matches “${list.query.trim()}”.` : 'No running apps found.'}</p>}
+          <div id={ids.list} role="listbox" aria-label="Apps" className="app-picker-list">
+            {sections.map(section => <div key={section.key} role="group" aria-labelledby={`${inputId}-group-${section.key}`}>
+              <div id={`${inputId}-group-${section.key}`} role="presentation" className="picker-group-label">{section.label}</div>
+              {section.apps.map(app => option(app, options.indexOf(app)))}
+            </div>)}
+            <div id={ids.other} role="option" aria-selected={false} className={`app-option app-option-other${list.active === options.length ? ' active' : ''}`}
+              onMouseDown={event => event.preventDefault()} onMouseMove={() => { if (list.active !== options.length) onList?.({ ...list, active: options.length }); }}
+              onClick={() => choose(options.length)}>
+              <span className="app-icon app-icon-placeholder" aria-hidden="true"><FolderOpen size={14} /></span><span className="app-option-name">Other app…</span>
+            </div>
+          </div>
+        </div>}
+      </div>}
     {note && <p id={noteId} className="fine-print" role="status">
       {name === null ? `No installed app has the bundle ID ${trimmed}.` : state.typing ? <>App: <strong>{name}</strong></> : `Bundle ID: ${trimmed}`}</p>}
     {state.error && <p className="field-error" role="alert">{state.error}</p>}
@@ -354,9 +425,12 @@ function LaunchAppFields({ inputId, bundleId, invoke, onChange, label = 'App', i
   const [typing, setTyping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [choosing, setChoosing] = useState(false);
+  const [list, setList] = useState<AppListState>(closedAppList);
+  useSyncExternalStore(appIcons.subscribe, appIcons.version, appIcons.version);
   const call = useRef(invoke);
   call.current = invoke;
   const trimmed = bundleId.trim();
+  const recent = list.open ? readRecentApps(pickerWebStorage) : [];
   const refresh = () => { if (call.current) void listRunningApps(call.current).then(setApps); };
   useEffect(refresh, []);
   useEffect(() => {
@@ -367,22 +441,41 @@ function LaunchAppFields({ inputId, bundleId, invoke, onChange, label = 'App', i
     }, 300);
     return () => { current = false; clearTimeout(timer); };
   }, [trimmed]);
+  // The trigger's icon right away; the rows' icons once the list opens, never blocking it.
+  const runningId = apps.find(app => app.bundle_id.toLowerCase() === trimmed.toLowerCase())?.bundle_id;
+  useEffect(() => {
+    if (call.current) void appIcons.load(call.current, [runningId ?? trimmed, ...(list.open ? [...apps, ...readRecentApps(pickerWebStorage)].map(app => app.bundle_id) : [])]);
+  }, [list.open, apps, trimmed, runningId]);
+  // A press outside the field closes the list without moving focus; the active row stays in view.
+  useEffect(() => {
+    if (!list.open) return;
+    const close = (event: PointerEvent) => { if (!document.getElementById(inputId)?.closest('.app-picker')?.contains(event.target as Node)) setList(closedAppList); };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [list.open, inputId]);
+  useEffect(() => {
+    if (!list.open) return;
+    const active = document.getElementById(`${inputId}-search`)?.getAttribute('aria-activedescendant');
+    if (active) document.getElementById(active)?.scrollIntoView?.({ block: 'nearest' });
+  }, [list.open, list.active, inputId]);
+  const pick = (app: RunningApp) => { recordRecentApp(pickerWebStorage, app); setFound({ id: app.bundle_id, name: app.name }); onChange(app.bundle_id); };
   const choose = async () => {
     if (!invoke || choosing) return;
     setChoosing(true);
     setError(null);
     try {
       const app = await invoke<{ bundle_id: string; name: string } | null>('choose_app');
-      if (app) { setFound({ id: app.bundle_id, name: app.name }); onChange(app.bundle_id); }
+      if (app) pick(app);
     } catch (reason) {
       setError(typeof reason === 'string' ? reason : 'Could not open the app picker. Enter the bundle ID instead.');
     } finally { setChoosing(false); }
   };
   const state: AppPickerState | null = invoke
-    ? { apps, installedName: found?.id === trimmed ? found.name : undefined, typing, choosing, error } : null;
-  const note = hint ?? (invoke ? 'Pick a running app, or use Choose app… for any other installed app. Tests do not open it.' : 'Type the app\'s bundle ID, for example com.apple.finder. Tests do not open it.');
-  return <AppPicker inputId={inputId} bundleId={bundleId} label={label} inline={inline} hint={note} state={state} onChange={onChange}
-    onChoose={() => { void choose(); }} onTyping={setTyping} onRefresh={refresh} />;
+    ? { apps, installedName: found?.id === trimmed ? found.name : undefined, typing, choosing, error, recent, icons: appIcons.icons, list } : null;
+  const note = hint ?? (invoke ? 'Pick a running app, or Other app… for any other installed app. Tests do not open it.' : 'Type the app\'s bundle ID, for example com.apple.finder. Tests do not open it.');
+  return <AppPicker inputId={inputId} bundleId={bundleId} label={label} inline={inline} hint={note} state={state} onChange={onChange} onPick={pick}
+    onChoose={() => { void choose(); }} onTyping={next => { setList(closedAppList); setTyping(next); }}
+    onList={next => { if (next.open && !list.open) refresh(); setList(next); }} />;
 }
 
 function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: {

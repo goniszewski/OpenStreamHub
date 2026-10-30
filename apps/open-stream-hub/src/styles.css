@@ -541,6 +541,20 @@ input[aria-invalid="true"] { border-color:var(--red); }
 /* The front-app test on one line, wrapping in a narrow inspector: "[The front app is ▾] [Finder ▾] [Choose app…]". */
 .flow-test-line { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; }.flow-test-line>.select-field { flex:0 1 auto; }.flow-test-line>.app-field { flex:1 1 220px; min-width:0; margin-top:0; }
 .app-field .focus-bundle-row .select-field { flex:1; min-width:0; }
+/* The app picker: a trigger with the app's icon, and a searchable list of apps with their icons (app-picker-model). */
+.app-picker { position:relative; }
+.app-picker-trigger { justify-content:flex-start; min-height:38px; padding:7px 11px; border-radius:8px; }.app-picker-trigger>svg:last-child { margin-left:auto; }
+.app-picker-trigger[aria-busy="true"] { opacity:.65; }
+.app-picker-panel { min-width:260px; max-height:340px; padding:8px; gap:2px; border-radius:10px; }
+.app-picker-list { display:grid; gap:1px; }.app-picker-list .picker-group-label { margin:7px 6px 2px; }
+.app-option { display:flex; align-items:center; gap:9px; min-height:32px; padding:5px 8px; border-radius:7px; font-size:13px; cursor:default; user-select:none; }
+.app-option.active { background:var(--selected); }
+.app-option[aria-selected="true"] { font-weight:600; }
+.app-option>svg { flex:none; margin-left:auto; color:var(--accent); }
+.app-option-other { margin-top:4px; border-top:1px solid var(--line); border-radius:0 0 7px 7px; padding-top:8px; }
+.app-option-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.app-icon { flex:none; width:20px; height:20px; border-radius:5px; }
+.app-icon-placeholder { display:inline-flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--line) 55%, transparent); color:var(--muted); }
 .flow-empty { margin:4px 0 8px; font-style:italic; }
 .action-steps.flow-steps>li:not(.flow-slot) { margin:2px 0; }
 .variables-panel h3 { margin:0 0 8px; font-size:14px; }

@@ -451,7 +451,7 @@ Profile limits are unchanged: 1 MiB of JSON and 256 bindings, where a multi-acti
 | `media.command` | `osascript` argv: a fixed JavaScript script plus, for keys, `--`, one item from `16`/`17`/`18` and one of `request`/`check` | Closed enum mapped in Rust; the script accepts only those values; `stop` takes no argv |
 | `text.text` | `pbcopy` stdin only | ≤ 2048 bytes, no control characters except newline and tab, no invisible format or separator characters; stdin is capped at 8 KiB so the write cannot block |
 | Previous clipboard text | `pbcopy` stdin only | Restored only when plain text with no `nspasteboard`/`concealed`/`transient` type marker, valid UTF-8, ≤ 8 KiB, and the clipboard still holds exactly the snippet after the wait |
-| `launch_app.bundle_id` (existing; the app's Choose app… picker only fills it) | `open -b` argv | Dotted ASCII identifier |
+| `launch_app.bundle_id` (existing; the app picker, including its Other app… row, only fills it) | `open -b` argv | Dotted ASCII identifier |
 | `multi_action.actions` | Each step as above | 2–8 steps, no nesting, every step validated first, 15 s overall deadline checked before each step |
 | `profile.direction` | A `profile_switch_requested` record, then the app's session driver | Closed enum (`next`, `previous`); no process is started; the driver re-parses the record strictly and only switches between saved, valid profiles |
 | `timer.label` | `osascript` argv (one item after `--`, read through `on run argv`) | ≤ 64 bytes, trimmed, no control characters (no newline or tab), no invisible format or separator characters; never part of the script text; never logged |

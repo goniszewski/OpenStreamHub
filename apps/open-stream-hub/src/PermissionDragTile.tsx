@@ -8,6 +8,6 @@ export function PermissionDragTile({ invoke, onError }: { invoke: Invoke; onErro
   return <div className="permission-drag" role="group" aria-label="Drag OpenStreamHub into System Settings">
     <span className="permission-drag-hint">Drag this icon into the list in System Settings, then switch it on.</span>
     <ArrowRight size={18} className="permission-drag-arrow" aria-hidden />
-    <button className="permission-drag-tile" onMouseDown={start}><img src="/app-icon.png" alt="" width={32} height={32} />OpenStreamHub</button>
+    <button className="permission-drag-tile" onMouseDown={event => { if (event.button === 0) start(); }}><img src="/app-icon.png" alt="" width={32} height={32} />OpenStreamHub</button>
   </div>;
 }

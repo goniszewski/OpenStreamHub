@@ -316,7 +316,7 @@ describe('encoder inspector with dial functions', () => {
     const markup = inspector(state);
     expect(markup).toContain('aria-label="Encoder bindings outside dial functions"');
     expect(markup).toContain('Move 1 encoder binding into Main');
-    expect(markup).not.toContain('The service rejects flat encoder bindings');
+    expect(markup).not.toContain('so the profile can&#x27;t be saved');
     expect(markup).not.toContain('Binding warnings');
   });
 

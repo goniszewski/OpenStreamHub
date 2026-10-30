@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { ArrowDown, ArrowUp, Play, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronDown, ChevronRight, Play, Plus, Trash2, TriangleAlert } from 'lucide-react';
 import { ActionFields } from './ActionFields';
 import type { Action, Binding, DialBinding, DialFunction, Profile, ReplayEvent } from './contracts';
-import { SelectField } from './controls';
 import { useObsCatalog } from './obs-catalog';
 import type { ObsCatalogStore } from './obs-catalog';
 import { useStreamlabsCatalog } from './streamlabs-catalog';
@@ -54,6 +53,32 @@ const bindingNames = (bindings: readonly Binding[]) =>
   bindings.map(item => `${gestureLabels[item.gesture]}${item.serial_number ? ` (serial ${item.serial_number})` : ''}`).join(', ');
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`;
 
+// The row label of a function gesture: rotation reads as a turn, Long press as is.
+export const dialGestureLabel = (gesture: DialGesture) => gesture === 'long_press' ? gestureLabels[gesture] : `Turn ${gestureLabels[gesture].toLowerCase()}`;
+
+// The muted summary on a function's row.
+export const dialActionCount = (item: DialFunction) => item.bindings.length ? plural(item.bindings.length, 'action') : 'No actions';
+
+// One row per bindable gesture of a function, for the given device serial ('' is
+// any serial): the action's summary, or null when it is not set, and how many
+// bindings of the same gesture belong to other serials.
+export function dialGestureRows(item: DialFunction, serial: string) {
+  return dialFunctionGestures.map(gesture => {
+    const same = item.bindings.filter(binding => binding.gesture === gesture);
+    const binding = same.find(other => (other.serial_number ?? '') === serial);
+    return { gesture, label: dialGestureLabel(gesture), summary: binding ? actionLabel(binding.action) : null, otherSerials: same.length - (binding ? 1 : 0) };
+  });
+}
+
+// What the Move button does to each flat encoder binding, one sentence per outcome.
+export function flatBindingOutcomes(flat: ReturnType<typeof flatDialBindings>, functionName: string): string[] {
+  return [
+    flat.moved.length ? `${plural(flat.moved.length, 'binding')} will move into ${functionName}: ${bindingNames(flat.moved)}.` : '',
+    flat.conflicting.length ? `${plural(flat.conflicting.length, 'binding')} will be dropped because ${functionName} already has the same gesture: ${bindingNames(flat.conflicting)}.` : '',
+    flat.dropped.length ? `${plural(flat.dropped.length, 'binding')} will be dropped because no function can hold ${flat.dropped.length === 1 ? 'it' : 'them'}: ${bindingNames(flat.dropped)}.` : '',
+  ].filter(Boolean);
+}
+
 export function DialFunctionsPanel({ profile, session, state, disabled, initialSelected = 0, setPage, catalog: catalogStore, streamlabs: streamlabsStore, invoke }: {
   profile: Profile; session: ProfileSession; state: SessionState; disabled: boolean; initialSelected?: number; setPage?: (page: Page) => void; catalog?: ObsCatalogStore; streamlabs?: StreamlabsCatalogStore;
   // The desktop backend, for the app pickers of Open app and the front-app test (absent in the browser preview).
@@ -65,6 +90,7 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
   const [chosen, setChosen] = useState(initialSelected);
   const [gesture, setGesture] = useState<DialGesture>('right');
   const [serial, setSerial] = useState('');
+  const [advanced, setAdvanced] = useState(false);
   const [previewed, setPreviewed] = useState<number | null>(null);
   // Undo, redo or a deletion can remove the chosen function.
   const selected = functions.length ? Math.min(Math.max(chosen, 0), functions.length - 1) : -1;
@@ -84,75 +110,98 @@ export function DialFunctionsPanel({ profile, session, state, disabled, initialS
     await session.previewBinding({ module: 'm131e', control: 0, gesture: previewGesture, serial, faderPosition: 0, dialFunction: selected });
   };
   const previewRunning = state.preview.status === 'running' || state.keypadPreview.status === 'running';
+  const previewDisabled = disabled || previewRunning || !!serialIssue;
+  const playButton = (item: DialGesture | 'short_press', label: string) =>
+    <button type="button" className="icon-button" aria-label={`Preview ${label} in ${currentName}`} title="Preview" disabled={previewDisabled} onClick={() => { void preview(item); }}><Play size={15} /></button>;
+  // Device serial lives under Advanced; editing a serial-specific binding opens it.
+  const editSerialBinding = (item: DialBinding) => { setGesture(item.gesture); setSerial(item.serial_number ?? ''); setAdvanced(true); };
+
+  const editor = current && <div className="dial-function-editor" role="group" aria-label={`Bindings of ${currentName}`}>
+    {serial && !serialIssue && <p className="small-label">For device serial {serial}</p>}
+    <ul className="dial-gesture-rows">
+      {dialGestureRows(current, serial).map(row => <li key={row.gesture} className={row.gesture === gesture ? 'selected' : undefined}>
+        <div className="dial-gesture-row">
+          <button type="button" className="dial-gesture-select" aria-pressed={row.gesture === gesture} onClick={() => setGesture(row.gesture)}>
+            <strong>{row.label}</strong><span className={row.summary ? undefined : 'muted'}>{row.summary ?? 'Not set'}{row.otherSerials > 0 ? ` · +${row.otherSerials} for other serials` : ''}</span>
+          </button>
+          {row.summary && <button type="button" className="button compact" aria-label={`Clear ${row.label}`} disabled={disabled || !!serialIssue} onClick={() => run(latest => editDialBinding(latest, selected, row.gesture, serial, null))}>Clear</button>}
+          {playButton(row.gesture, row.label)}
+        </div>
+        {row.gesture === gesture && <fieldset disabled={disabled || !!serialIssue}>
+          <ActionFields action={binding?.action ?? null} fader={false} selectorKey={`dial:${selected}:${gesture}:${serial}`} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} streamlabs={streamlabs} invoke={invoke} onChange={(action, field) => {
+            if (action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position') { session.setError('Dial functions cannot follow a fader position.'); return; }
+            run(latest => editDialBinding(latest, selected, gesture, serial, action as Action | null), field && `dial:${field}:${selected}:${gesture}:${serial}`);
+          }} />
+        </fieldset>}
+      </li>)}
+      <li className="note">
+        <div className="dial-gesture-row"><div><strong>Short press</strong><span className="muted">Switches function; cannot be bound</span></div>{playButton('short_press', 'Short press')}</div>
+      </li>
+    </ul>
+    {previewed === selected && state.preview.status !== 'idle' && <p role={state.preview.status === 'failed' ? 'alert' : 'status'} className="fine-print">
+      {state.preview.status === 'running' ? 'Resolving…' : state.preview.status === 'failed' ? state.preview.error : dialPreviewText(state.preview.event, current.name)}
+    </p>}
+    <button type="button" className="dial-advanced-toggle" aria-expanded={advanced} aria-controls="dial-function-advanced" onClick={() => setAdvanced(open => !open)}>{advanced ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}Advanced</button>
+    {advanced && <div id="dial-function-advanced" className="dial-advanced">
+      <label htmlFor="dial-binding-serial">Device serial (optional)</label>
+      <input id="dial-binding-serial" value={serial} spellCheck={false} placeholder="Any device serial" aria-invalid={!!serialIssue} aria-describedby={serialIssue ? 'dial-binding-serial-error' : undefined} onChange={event => setSerial(event.target.value)} />
+      {serialIssue && <p id="dial-binding-serial-error" className="field-error" role="alert">{serialIssue}</p>}
+      {current.bindings.some(item => item.serial_number) && <ul className="binding-list">{current.bindings.map((item, index) => item.serial_number ? <li key={`${item.gesture}:${item.serial_number}`} className="binding-row"><div>
+        <strong>{dialGestureLabel(item.gesture)} · serial {item.serial_number}</strong><span>{actionLabel(item.action)}</span></div>
+        <button type="button" className="button compact" onClick={() => editSerialBinding(item)}>Edit</button>
+        <button type="button" className="icon-button" aria-label={`Remove ${current.name} ${gestureLabels[item.gesture]} binding for serial ${item.serial_number}`} disabled={disabled} onClick={() => run(latest => removeDialBinding(latest, selected, index))}><Trash2 size={16} /></button>
+      </li> : null)}</ul>}
+    </div>}
+  </div>;
 
   return <section className="dial-functions" aria-labelledby={dialFunctionHeadingId}>
     <h3 id={dialFunctionHeadingId}>Dial functions <span className="small-label">{functions.length ? `${functions.length} of ${maxDialFunctions}` : 'Off'}</span></h3>
-    <p className="fine-print">A short press on the encoder switches to the next function and never runs an action. Rotation and long press use the current function. A run always starts at the first function and returns to it when it restarts. The encoder display shows the current function while OpenStreamHub drives the display (the default) and the dial screen is set to show the function name.</p>
+    <p className="dial-functions-intro">Short press switches function; turning and long press run the current one.</p>
+    <details className="learn-more"><summary>How functions work</summary><ul className="fine-print notes-list">
+      <li>A short press on the encoder switches to the next function and never runs an action. Turning and long press use the current function.</li>
+      <li>A run always starts at the first function and returns to it when it restarts.</li>
+      <li>The encoder display shows the current function while OpenStreamHub drives the display (the default) and the dial screen is set to show the function name.</li>
+      <li>Names must be unique, at most {maxDialFunctionNameBytes} bytes, without spaces at the start or end, and without control or invisible formatting characters.</li>
+      <li>Deleting the last function turns dial functions off. Undo brings it back.</li>
+    </ul></details>
     {!functions.length ? <>
-      <p className="empty-state">This profile has no dial functions. Encoder bindings work as before, including Short press.</p>
+      <p className="empty-state">No functions yet{flatCount > 0 ? `; the ${plural(flatCount, 'existing encoder binding')} will need to move into one` : ''}.</p>
       <button type="button" className="button" disabled={disabled} onClick={() => { run(latest => addDialFunction(latest)); choose(0); }}><Plus size={17} />Add dial functions</button>
-      {flatCount > 0 && <p className="fine-print">After adding functions, the {flatCount} existing encoder binding{flatCount === 1 ? '' : 's'} must move into a function or be removed before the profile can be saved.</p>}
     </> : <>
-      {flatCount > 0 && current && <div className="binding-warnings" role="region" aria-label="Encoder bindings outside dial functions">
-        <p>{flatCount} encoder binding{flatCount === 1 ? ' is' : 's are'} outside the dial functions and must move into one before the profile can be saved.</p>
-        {flat.conflicting.length > 0 && <p>{plural(flat.conflicting.length, 'binding')} will be dropped because {currentName} already has the same gesture: {bindingNames(flat.conflicting)}.</p>}
-        {flat.dropped.length > 0 && <p>{plural(flat.dropped.length, 'binding')} will be dropped because no function can hold {flat.dropped.length === 1 ? 'it' : 'them'}: {bindingNames(flat.dropped)}.</p>}
-        <button type="button" className="button compact" disabled={disabled} onClick={() => run(latest => moveFlatDialBindings(latest, selected))}>{flat.moved.length ? `Move ${plural(flat.moved.length, 'encoder binding')} into ${currentName}` : 'Remove the encoder bindings outside functions'}</button>
-        <p className="fine-print">Undo restores everything this removes.</p>
+      {flatCount > 0 && current && <div className="dial-flat-banner" role="region" aria-label="Encoder bindings outside dial functions">
+        <TriangleAlert size={16} aria-hidden="true" />
+        <div>
+          <p>{flatCount} encoder binding{flatCount === 1 ? " isn't" : "s aren't"} in a function yet and the profile can't be saved until {flatCount === 1 ? 'it is' : 'they are'}.</p>
+          <button type="button" className="button compact" disabled={disabled} onClick={() => run(latest => moveFlatDialBindings(latest, selected))}>{flat.moved.length ? `Move ${plural(flat.moved.length, 'encoder binding')} into ${currentName}` : 'Remove the encoder bindings outside functions'}</button>
+          <details className="learn-more"><summary>What happens to each binding</summary><ul className="fine-print notes-list">
+            {flatBindingOutcomes(flat, currentName).map(line => <li key={line}>{line}</li>)}
+            <li>Undo restores them.</li>
+          </ul></details>
+        </div>
       </div>}
       <ol className="dial-function-list">{functions.map((item, index) => {
         const issue = dialFunctionNameIssue(item.name, functions, index);
         const label = item.name.trim() || `function ${index + 1}`;
         return <li key={index} className={index === selected ? 'selected' : ''}>
-          <label htmlFor={dialFunctionNameId(index)}>Function {index + 1} name</label>
-          <input id={dialFunctionNameId(index)} disabled={disabled} value={item.name} spellCheck={false} aria-invalid={!!issue} aria-describedby={issue ? `${dialFunctionNameId(index)}-error` : undefined}
-            onFocus={() => { if (index !== selected) choose(index); }}
-            onChange={event => run(latest => renameDialFunction(latest, index, event.target.value), `dial-function-name:${index}`)} />
-          {issue && <p id={`${dialFunctionNameId(index)}-error`} className="field-error" role="alert">{issue}</p>}
-          <small>{item.bindings.length ? `${item.bindings.length} binding${item.bindings.length === 1 ? '' : 's'}` : 'No bindings: the encoder does nothing in this function'}</small>
-          <div className="dial-function-actions">
-            <button type="button" className="button compact" aria-pressed={index === selected} onClick={() => choose(index)}>Edit bindings</button>
-            <button type="button" className="icon-button" aria-label={`Move ${label} up`} title="Move up" disabled={disabled || index === 0} onClick={() => { run(latest => moveDialFunction(latest, index, -1)); setChosen(selectionAfterMove(selected, index, -1)); }}><ArrowUp size={16} /></button>
-            <button type="button" className="icon-button" aria-label={`Move ${label} down`} title="Move down" disabled={disabled || index === functions.length - 1} onClick={() => { run(latest => moveDialFunction(latest, index, 1)); setChosen(selectionAfterMove(selected, index, 1)); }}><ArrowDown size={16} /></button>
-            <button type="button" className="icon-button" aria-label={`Delete ${label}`} title={functions.length === 1 ? 'Delete the last function and turn dial functions off' : 'Delete function'} disabled={disabled} onClick={() => { run(latest => deleteDialFunction(latest, index)); if (index < selected) setChosen(selected - 1); }}><Trash2 size={16} /></button>
+          <div className="dial-function-row">
+            <label className="sr-only" htmlFor={dialFunctionNameId(index)}>Function {index + 1} name</label>
+            <input id={dialFunctionNameId(index)} disabled={disabled} value={item.name} spellCheck={false} aria-invalid={!!issue} aria-describedby={issue ? `${dialFunctionNameId(index)}-error` : undefined}
+              onFocus={() => { if (index !== selected) choose(index); }}
+              onChange={event => run(latest => renameDialFunction(latest, index, event.target.value), `dial-function-name:${index}`)} />
+            <button type="button" className="dial-function-summary" aria-pressed={index === selected} aria-label={`Edit ${label}, ${dialActionCount(item)}`} onClick={() => choose(index)}>{dialActionCount(item)}</button>
+            <div className="dial-function-actions">
+              <button type="button" className="icon-button" aria-label={`Move ${label} up`} title="Move up" disabled={disabled || index === 0} onClick={() => { run(latest => moveDialFunction(latest, index, -1)); setChosen(selectionAfterMove(selected, index, -1)); }}><ArrowUp size={15} /></button>
+              <button type="button" className="icon-button" aria-label={`Move ${label} down`} title="Move down" disabled={disabled || index === functions.length - 1} onClick={() => { run(latest => moveDialFunction(latest, index, 1)); setChosen(selectionAfterMove(selected, index, 1)); }}><ArrowDown size={15} /></button>
+              <button type="button" className="icon-button" aria-label={`Delete ${label}`} title={functions.length === 1 ? 'Delete the last function and turn dial functions off' : 'Delete function'} disabled={disabled} onClick={() => { run(latest => deleteDialFunction(latest, index)); if (index < selected) setChosen(selected - 1); }}><Trash2 size={15} /></button>
+            </div>
           </div>
+          {issue && <p id={`${dialFunctionNameId(index)}-error`} className="field-error" role="alert">{issue}</p>}
+          {index === selected && editor}
         </li>;
       })}</ol>
       <button type="button" className="button compact" disabled={disabled || functions.length >= maxDialFunctions} onClick={() => { run(latest => addDialFunction(latest)); choose(functions.length); }}><Plus size={16} />Add function</button>
       {functions.length >= maxDialFunctions && <p className="fine-print">A profile can have at most {maxDialFunctions} dial functions.</p>}
-      <p className="fine-print">Names must be unique, at most {maxDialFunctionNameBytes} bytes, without spaces at the start or end, and without control or invisible formatting characters. Deleting the last function turns dial functions off.</p>
-
-      {current && <div className="dial-function-editor" role="group" aria-label={`Bindings of ${current.name.trim() || `function ${selected + 1}`}`}>
-        <h4>{current.name.trim() || `Function ${selected + 1}`} bindings</h4>
-        {current.bindings.length > 0 && <ul className="binding-list">{current.bindings.map((item, index) => <li key={`${item.gesture}:${item.serial_number ?? ''}`} className="binding-row"><div>
-          <strong>{gestureLabels[item.gesture]}</strong><span>{actionLabel(item.action)}</span><small>{item.serial_number ? `Serial: ${item.serial_number}` : 'Any device serial'}</small></div>
-          <button type="button" className="button compact" onClick={() => { setGesture(item.gesture); setSerial(item.serial_number ?? ''); }}>Edit</button>
-          <button type="button" className="icon-button" aria-label={`Remove ${current.name} ${gestureLabels[item.gesture]} binding${item.serial_number ? ` for serial ${item.serial_number}` : ''}`} disabled={disabled} onClick={() => run(latest => removeDialBinding(latest, selected, index))}><Trash2 size={16} /></button>
-        </li>)}</ul>}
-        <label htmlFor="dial-binding-gesture">Gesture</label>
-        <SelectField id="dial-binding-gesture" value={gesture} onChange={event => setGesture(event.target.value as DialGesture)}>
-          {dialFunctionGestures.map(item => <option key={item} value={item}>{gestureLabels[item]}</option>)}
-        </SelectField>
-        <label className="spaced-label" htmlFor="dial-binding-serial">Device serial (optional)</label>
-        <input id="dial-binding-serial" value={serial} spellCheck={false} placeholder="Any device serial" aria-invalid={!!serialIssue} aria-describedby={serialIssue ? 'dial-binding-serial-error' : undefined} onChange={event => setSerial(event.target.value)} />
-        {serialIssue && <p id="dial-binding-serial-error" className="field-error" role="alert">{serialIssue}</p>}
-        <fieldset disabled={disabled || !!serialIssue}>
-          <ActionFields action={binding?.action ?? null} fader={false} selectorKey={`dial:${selected}:${gesture}:${serial}`} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} streamlabs={streamlabs} invoke={invoke} onChange={(action, field) => {
-            if (action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position') { session.setError('Dial functions cannot follow a fader position.'); return; }
-            run(latest => editDialBinding(latest, selected, gesture, serial, action as Action | null), field && `dial:${field}:${selected}:${gesture}:${serial}`);
-          }} />
-        </fieldset>
-        <div className="dial-preview" role="group" aria-label={`Preview ${current.name.trim() || `function ${selected + 1}`}`}>
-          <p className="small-label">Previewing function: {current.name.trim() || `Function ${selected + 1}`}</p>
-          <div className="event-buttons">
-            {dialFunctionGestures.map(item => <button key={item} type="button" className="button compact" disabled={disabled || previewRunning || !!serialIssue} onClick={() => { void preview(item); }}><Play size={15} />{gestureLabels[item]}</button>)}
-            <button type="button" className="button compact" disabled={disabled || previewRunning || !!serialIssue} onClick={() => { void preview('short_press'); }}><Play size={15} />Short press</button>
-          </div>
-          {previewed === selected && state.preview.status !== 'idle' && <p role={state.preview.status === 'failed' ? 'alert' : 'status'} className="fine-print">
-            {state.preview.status === 'running' ? 'Resolving…' : state.preview.status === 'failed' ? state.preview.error : dialPreviewText(state.preview.event , current.name)}
-          </p>}
-        </div>
-      </div>}
     </>}
   </section>;
 }
+

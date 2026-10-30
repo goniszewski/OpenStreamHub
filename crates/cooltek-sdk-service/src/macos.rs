@@ -4,6 +4,7 @@ use crate::{
     Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
     TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
+    streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
 };
 use std::{
     sync::{
@@ -340,6 +341,8 @@ pub struct MacOsDispatcher {
     sleeper: Box<dyn Sleeper>,
     /// The loopback OBS client for `obs_scene`, when this run has an endpoint.
     obs: Option<ObsClient>,
+    /// The loopback Streamlabs client for `streamlabs_*`, when this run has one.
+    streamlabs: Option<StreamlabsClient>,
     /// Set once a media key has asked macOS for the Accessibility prompt;
     /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
     media_access_requested: bool,
@@ -356,6 +359,7 @@ impl MacOsDispatcher {
             runner: Box::new(SystemProcessRunner { cancellation: None }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -373,6 +377,7 @@ impl MacOsDispatcher {
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -385,6 +390,14 @@ impl MacOsDispatcher {
     /// a direct dispatch fails without any I/O.
     pub fn with_obs(mut self, obs: Option<ObsClient>) -> Self {
         self.obs = obs;
+        self
+    }
+
+    /// Runs `streamlabs_*` actions through `streamlabs`, like
+    /// [`MacOsDispatcher::with_obs`]. Without a client they are unavailable
+    /// ([`STREAMLABS_UNAVAILABLE`]) and a direct dispatch does no I/O.
+    pub fn with_streamlabs(mut self, streamlabs: Option<StreamlabsClient>) -> Self {
+        self.streamlabs = streamlabs;
         self
     }
 
@@ -720,6 +733,13 @@ impl MacOsDispatcher {
             | Action::ObsAdjustInputVolume { .. }
             | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
+            Action::StreamlabsRecord
+            | Action::StreamlabsStream { .. }
+            | Action::StreamlabsStudioMode
+            | Action::StreamlabsTransition
+            | Action::StreamlabsScene { .. }
+            | Action::StreamlabsSourceVisibility { .. }
+            | Action::StreamlabsAudio { .. } => self.streamlabs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_steps(actions, "multi_action", deadline)?;
@@ -821,6 +841,8 @@ impl MacOsDispatcher {
                 self.run_conditional(step, deadline)
             } else if step.uses_obs() {
                 self.obs_action(step, Some(deadline))
+            } else if step.uses_streamlabs() {
+                self.streamlabs_action(step, Some(deadline))
             } else {
                 self.execute(step)
             };
@@ -948,6 +970,27 @@ impl MacOsDispatcher {
             ));
         }
         obs.clone().with_timeout(remaining).run(action)
+    }
+
+    /// Runs a Streamlabs action like [`MacOsDispatcher::obs_action`] runs an
+    /// OBS one: within `deadline` when given, never beyond the client's 3 s.
+    fn streamlabs_action(
+        &self,
+        action: &Action,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        let streamlabs = self.streamlabs.as_ref().ok_or(STREAMLABS_UNAVAILABLE)?;
+        let Some(deadline) = deadline else {
+            return streamlabs.run(action);
+        };
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "the multi_action's {} s overall deadline has passed; Streamlabs was not contacted",
+                MULTI_ACTION_DEADLINE.as_secs()
+            ));
+        }
+        streamlabs.clone().with_timeout(remaining).run(action)
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed
@@ -1084,7 +1127,12 @@ impl ActionDispatcher for MacOsDispatcher {
     }
 
     fn unavailable(&self, action: &Action) -> Option<&'static str> {
-        (self.obs.is_none() && action.uses_obs()).then_some(OBS_UNAVAILABLE)
+        (self.obs.is_none() && action.uses_obs())
+            .then_some(OBS_UNAVAILABLE)
+            .or_else(|| {
+                (self.streamlabs.is_none() && action.uses_streamlabs())
+                    .then_some(STREAMLABS_UNAVAILABLE)
+            })
     }
 
     /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
@@ -1140,6 +1188,7 @@ impl ActionDispatcher for MacOsDispatcher {
             runner: self.runner.fork(cancel)?,
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -1678,6 +1727,7 @@ mod tests {
             runner: Box::new(FakeRunner(state.clone())),
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -2270,6 +2320,7 @@ mod tests {
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -2362,6 +2413,7 @@ mod tests {
             runner: Box::new(CancelledRunner(AtomicBool::new(true))),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -3599,6 +3651,75 @@ mod tests {
     }
 
     #[test]
+    fn streamlabs_actions_without_a_client_are_unavailable_and_start_nothing() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for action in [
+            Action::StreamlabsRecord,
+            Action::StreamlabsAudio {
+                source: "Mic".into(),
+                op: crate::profile::StreamlabsAudioOp::Set(50),
+            },
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, Action::StreamlabsTransition],
+            },
+        ] {
+            assert_eq!(
+                dispatcher.unavailable(&action),
+                Some(STREAMLABS_UNAVAILABLE)
+            );
+            if !matches!(action, Action::MultiAction { .. }) {
+                assert_eq!(
+                    dispatcher.dispatch(&action).unwrap_err(),
+                    STREAMLABS_UNAVAILABLE
+                );
+            }
+        }
+        // OBS is reported first when a sequence needs both.
+        let both = Action::MultiAction {
+            actions: vec![Action::ObsTransition, Action::StreamlabsTransition],
+        };
+        assert_eq!(dispatcher.unavailable(&both), Some(OBS_UNAVAILABLE));
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn streamlabs_actions_and_steps_run_through_the_client() {
+        use crate::streamlabs::{
+            StreamlabsToken,
+            tests_support::{Reply, serve},
+        };
+        let token = || StreamlabsToken::new("token".into()).unwrap();
+        let (endpoint, server) = serve(vec![Reply::Result(serde_json::Value::Null)]);
+        let (dispatcher, state) = fake(vec![success("")]);
+        let mut dispatcher =
+            dispatcher.with_streamlabs(Some(StreamlabsClient::new(endpoint, token())));
+        assert_eq!(dispatcher.unavailable(&Action::StreamlabsRecord), None);
+        dispatcher.dispatch(&Action::StreamlabsRecord).unwrap();
+        assert_eq!(server.join().unwrap().calls()[0].1, "toggleRecording");
+
+        let (endpoint, server) = serve(vec![Reply::Result(serde_json::Value::Null)]);
+        let mut dispatcher =
+            dispatcher.with_streamlabs(Some(StreamlabsClient::new(endpoint, token())));
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::Shortcut {
+                        key: "a".into(),
+                        modifiers: vec![Modifier::Command],
+                    },
+                    Action::StreamlabsTransition,
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            server.join().unwrap().calls()[0].1,
+            "executeStudioModeTransition"
+        );
+        // Only the shortcut step used a subprocess.
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
+    }
+
+    #[test]
     fn an_obs_output_step_runs_inside_a_multi_action_in_order() {
         use crate::profile::ObsReplayBufferOp;
         let (dispatcher, state) = fake(vec![success("")]);
@@ -4002,6 +4123,7 @@ mod tests {
                 runner: Box::new(CancelledRunner(AtomicBool::new(true), 0)),
                 sleeper: Box::new(SystemSleeper),
                 obs: None,
+                streamlabs: None,
                 media_access_requested: false,
                 service_state: ServiceState::default(),
                 variables: Default::default(),
@@ -4573,6 +4695,7 @@ mod tests {
             }),
             sleeper: Box::new(CancellingSleeper(cancellation)),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),

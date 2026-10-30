@@ -9,6 +9,8 @@ import { DisplaySettingsStore } from './display-settings';
 import { DisplaySettingsPanel } from './DisplaySettingsPanel';
 import { ObsSettingsStore } from './obs-settings';
 import { ObsSettingsPanel } from './ObsSettingsPanel';
+import { StreamlabsSettingsStore } from './streamlabs-settings';
+import { StreamlabsSettingsPanel } from './StreamlabsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
 import { SquareEye } from './SquareEye';
@@ -19,6 +21,7 @@ import { useBaseOrientation } from './base-orientation';
 import { UpdatePrompt, UpdatesPanel } from './UpdatesPanel';
 import type { UpdateInfo } from './UpdatesPanel';
 import { ObsCatalogStore, exposePreviewSeeding, seedPreviewCatalog } from './obs-catalog';
+import { StreamlabsCatalogStore } from './streamlabs-catalog';
 import { setKeyArtwork } from './key-artwork';
 import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './NoticeRegion';
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
@@ -121,7 +124,9 @@ export default function App() {
   const [focusRules] = useState(() => new FocusRulesStore((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop, runner));
   const [displaySettings] = useState(() => new DisplaySettingsStore((command, args) => invoke(command, args), desktop));
   const [obsSettings] = useState(() => new ObsSettingsStore((command, args) => invoke(command, args), desktop));
+  const [streamlabsSettings] = useState(() => new StreamlabsSettingsStore((command, args) => invoke(command, args), desktop));
   const [obsCatalog] = useState(() => new ObsCatalogStore((command, args) => invoke(command, args), desktop));
+  const [streamlabsCatalog] = useState(() => new StreamlabsCatalogStore((command, args) => invoke(command, args), desktop));
   // The lighting the Lighting page applies, kept per unit: the rig lights its
   // art with it, and a module that appears again (a replug, or the first
   // inventory after a launch) is sent the same writes once more.
@@ -665,7 +670,7 @@ export default function App() {
             <DeviceWorkspace editor={editor} state={state} desktop={desktop} disabled={disabled} setPage={setPage} feed={feed} run={runSession} mac={mac} lighting={lightingState} pickedPath={pick.path} basePath={bases[0]?.path_hex ?? null} onPickUnit={path => moduleSelection.select(path)} />
             <BindingsDrawer open={bindingsOpen} onToggle={() => setBindingsOpen(value => !value)} profile={profile} session={session} editor={editor} disabled={disabled} />
           </div>
-          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
+          <Inspector editor={editor} session={session} state={state} disabled={disabled} desktop={desktop} invoke={desktop ? invokeCommand : undefined} setPage={setPage} catalog={obsCatalog} streamlabs={streamlabsCatalog} liveFader={deviceFeedState.live.m005s?.faders[editor.selection.control]} />
         </div>}
         {page === 'lighting' && <>
           <LightingPage desktop={desktop} invoke={desktop ? invokeCommand : undefined} devices={pickableModules} selection={moduleSelection} runner={runner} storage={webStorage()} lighting={lightingState} />
@@ -673,7 +678,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

@@ -2,10 +2,11 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsCombo, ObsConnection, ObsFields } from './ActionFields';
-import { obsOperationLabels } from './action-model';
-import type { ObsStepAction } from './action-model';
+import { ActionFields, ObsCombo, ObsConnection, ObsFields, StreamlabsConnection, StreamlabsFields } from './ActionFields';
+import { obsOperationLabels, streamlabsOperationLabels } from './action-model';
+import type { ObsStepAction, StreamlabsStepAction } from './action-model';
 import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
+import type { StreamlabsCatalogView } from './streamlabs-catalog';
 import type { BindingAction, ObsNameList, StepAction } from './contracts';
 import { VariablesContext } from './variables-context';
 
@@ -291,6 +292,107 @@ describe('obs fields', () => {
   });
 });
 
+describe('streamlabs fields', () => {
+  it('edits every operation from one editor with an Operation select, plain name fields and one status', () => {
+    const markup = render({ type: 'streamlabs_scene', scene: 'Live' });
+    expect(markup).toContain('<label for="streamlabs-operation">Operation</label>');
+    expect(markup).toMatch(/<option value="streamlabs_scene" selected="">Scene<\/option>/);
+    expect(markup).toContain('<label for="streamlabs-scene">Streamlabs scene name</label>');
+    expect(markup).toContain('value="Live"');
+    expect(markup).toContain('>Streamlabs</span>');
+    // An empty collection means the active one: no error.
+    expect(markup).toContain('<label class="spaced-label" for="streamlabs-scene-collection">Scene collection (optional)</label>');
+    expect(markup).not.toContain('role="alert"');
+    // OBS's lists never feed the Streamlabs fields: plain inputs without Streamlabs' own.
+    expect(renderToStaticMarkup(ActionFields({ action: { type: 'streamlabs_scene', scene: 'Live' }, fader: false, selectorKey: 'k', onChange: () => {}, catalog: catalogView() })))
+      .not.toContain('role="combobox"');
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
+    expect(markup).not.toContain('WebSocket server on');
+    expect(render({ type: 'streamlabs_scene', scene: 'Live' }, false, null)).not.toContain('Set up in Settings');
+    expectAccessible(markup);
+    const blank = render({ type: 'streamlabs_scene', scene: 'Live', collection: ' ' });
+    expect(blank).toContain('Enter the Streamlabs scene collection name');
+    expect(blank).toContain('aria-invalid="true"');
+    expectAccessible(blank);
+  });
+
+  it('offers the seven operations and their own fields', () => {
+    const markup = render({ type: 'streamlabs_transition' });
+    for (const [type, label] of Object.entries(streamlabsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
+    expect(markup).toContain('studio-mode transition');
+    expect(render({ type: 'streamlabs_record' })).toContain('stops it when it runs');
+    expect(render({ type: 'streamlabs_studio_mode' })).toContain('studio mode on when it is off');
+    const stream = render({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(stream).toMatch(/<input type="checkbox" checked=""\/>Press twice to confirm/);
+    expect(stream).toContain('press it again within 3 seconds');
+    expect(render({ type: 'streamlabs_stream' })).toContain('one press does this at once');
+    const visibility = render({ type: 'streamlabs_source_visibility', scene: 'Live', source: '', op: 'hide' });
+    expect(ids(visibility)).toEqual(expect.arrayContaining(['streamlabs-visibility-scene', 'streamlabs-visibility-source', 'streamlabs-visibility-op']));
+    expect(visibility).toMatch(/<option value="hide" selected="">Hide<\/option>/);
+    expect(visibility).toContain('Enter the Streamlabs source name');
+    expectAccessible(visibility);
+    const set = render({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } });
+    expect(set).toMatch(/<option value="set" selected="">Set the level<\/option>/);
+    expect(set).toMatch(/id="streamlabs-audio-set"[^>]*min="0"[^>]*max="100"/);
+    expect(set).toContain('not decibels');
+    expectAccessible(set);
+    const adjust = render({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: -5 } });
+    expect(adjust).toMatch(/id="streamlabs-audio-adjust"[^>]*min="-100"[^>]*max="100"/);
+    expect(ids(adjust)).not.toContain('streamlabs-audio-set');
+    const mute = render({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } });
+    expect(mute).toMatch(/<option value="unmute" selected="">Unmute<\/option>/);
+    expectAccessible(mute);
+  });
+
+  it('shows one status per editor next to the OBS one in a multi-action or if / else', () => {
+    const markup = render({ type: 'multi_action', actions: [
+      { type: 'streamlabs_scene', scene: 'Live' }, { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } }, { type: 'obs_transition' },
+    ] });
+    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-streamlabs-operation', 'step-1-streamlabs-scene', 'step-2-streamlabs-audio-source', 'step-2-streamlabs-audio-mute', 'step-3-obs-operation']));
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/WebSocket server on/g)).toHaveLength(1);
+    expectAccessible(markup);
+    const flow = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'streamlabs_record' }] });
+    expect(flow.match(/Remote Control on/g)).toHaveLength(1);
+    expect(flow).not.toContain('WebSocket server on');
+    expect(render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] })).not.toContain('Remote Control on');
+  });
+
+  it('switches operation and writes each field in the service shape', () => {
+    const run = (action: StreamlabsStepAction, id: string, value: string | boolean) => {
+      const result: { changed?: StepAction; field?: string } = {};
+      const tree = StreamlabsFields({ action, prefix: '', onChange: (changed, field) => { result.changed = changed; result.field = field; } }) as AnyElement;
+      const element = elementsOf(tree).find(item => item.props.id === id)
+        ?? elementsOf(tree).find(item => item.type === 'input' && item.props.type === 'checkbox');
+      expect(element, id).toBeTruthy();
+      const handler = (element!.props.onChange ?? element!.props.onCommit) as (value: unknown) => void;
+      handler(typeof value === 'boolean' ? { target: { checked: value } } : { target: { value } });
+      return result;
+    };
+    expect(run({ type: 'streamlabs_scene', scene: 'Live' }, 'streamlabs-operation', 'streamlabs_source_visibility'))
+      .toEqual({ changed: { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' }, field: 'streamlabs-operation' });
+    expect(run({ type: 'streamlabs_stream' }, 'checkbox', true).changed).toEqual({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(run({ type: 'streamlabs_stream', confirm: 'press_twice' }, 'checkbox', false).changed).toEqual({ type: 'streamlabs_stream' });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mode', 'adjust').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: 5 } });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mute', 'mute').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } });
+    expect(run({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'toggle' }, 'streamlabs-visibility-op', 'show').changed)
+      .toEqual({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'show' });
+    // The collection row takes the typed name; an empty one omits the key (never "" or null).
+    const collectionOf = (action: StreamlabsStepAction, typed: string) => {
+      let changed: StepAction | undefined;
+      const tree = StreamlabsFields({ action, prefix: '', onChange: next => { changed = next; } }) as AnyElement;
+      const row = elementsOf(tree).find(item => item.props.id === 'streamlabs-scene-collection');
+      (row!.props as { onChange(name: string): void }).onChange(typed);
+      return changed;
+    };
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live' }, 'Podcast')).toEqual({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' });
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }, '')).toEqual({ type: 'streamlabs_scene', scene: 'Live' });
+  });
+});
+
 // The catalog view ObsNameField-based tests use: scenes plus one per-name list, and spies for
 // refresh and on-demand fetches (the real view comes from useObsCatalog with the store).
 function catalogView(overrides?: Partial<ObsCatalogView>): ObsCatalogView {
@@ -408,6 +510,105 @@ describe('obs name listings', () => {
     }));
     expect((inStep.match(/Refresh from OBS/g) ?? []).length).toBe(1);
     expectAccessible(inStep);
+  });
+});
+
+// The Streamlabs listings a view holds in tests (the real one comes from useStreamlabsCatalog).
+function streamlabsView(overrides?: Partial<StreamlabsCatalogView>): StreamlabsCatalogView {
+  return {
+    desktop: true, status: 'ready', error: null, lists: {}, connection: null,
+    names: { scenes: ['Be right back', 'Live'], scene_collections: ['Main', 'Podcast'], active_collection: 'Main', audio_sources: ['Desktop Audio', 'Mic'] },
+    refresh: () => {}, list: () => null, requestNames: () => {},
+    ...overrides,
+  };
+}
+
+describe('streamlabs name listings', () => {
+  const renderAction = (action: BindingAction, streamlabs?: StreamlabsCatalogView) =>
+    renderToStaticMarkup(ActionFields({ action, fader: false, selectorKey: 'k', onChange: () => {}, onSetUpObs: () => {}, streamlabs }));
+
+  it('turns every Streamlabs name field into a combobox while its list is there, and says what Streamlabs does not list', () => {
+    const scene = renderAction({ type: 'streamlabs_scene', scene: 'Live' }, streamlabsView());
+    expect(scene).toMatch(/id="streamlabs-scene"[^>]*role="combobox"/);
+    expect(scene).toMatch(/id="streamlabs-scene-collection"[^>]*role="combobox"/);
+    expect(scene).not.toContain('field-warning');
+    expectAccessible(scene);
+    const missing = renderAction({ type: 'streamlabs_scene', scene: 'Liev', collection: 'Ghost' }, streamlabsView());
+    expect(missing).toContain('Streamlabs does not list this scene collection right now. Refresh the Streamlabs lists, or check the exact spelling.');
+    // A collection other than the active one: its scenes are not listed, so no scene warning.
+    expect(missing).not.toContain('Streamlabs does not list this scene right now');
+    expect(missing).not.toMatch(/id="streamlabs-scene"[^>]*role="combobox"/);
+    expect(renderAction({ type: 'streamlabs_scene', scene: 'Liev', collection: 'Main' }, streamlabsView()))
+      .toContain('Streamlabs does not list this scene right now.');
+    const audio = renderAction({ type: 'streamlabs_audio', source: 'Mice', op: { mute: 'toggle' } }, streamlabsView());
+    expect(audio).toMatch(/id="streamlabs-audio-source"[^>]*role="combobox"/);
+    expect(audio).toContain('Streamlabs does not list this audio source right now.');
+    expect(audio).not.toContain('OBS does not list');
+    // Without a list (none yet, or it failed) the fields are exactly the plain inputs; typing always works.
+    for (const view of [undefined, streamlabsView({ status: 'failed', names: null, error: 'Streamlabs is off in OpenStreamHub Settings' })]) {
+      const plain = renderAction({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } }, view);
+      expect(plain).not.toContain('role="combobox"');
+      expect(plain).toContain('value="Mic"');
+    }
+  });
+
+  it('checks a visibility source against the items of its scene, fetched when the choices open', () => {
+    const requested: string[] = [];
+    const view = streamlabsView({
+      list: (kind, name) => kind === 'sceneSources' && name === 'Live' ? { status: 'ready', names: ['Camera', 'Overlays'] } : null,
+      requestNames: (kind, name) => requested.push(`${kind}:${name}`),
+    });
+    const ghost = renderAction({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Ghost', op: 'toggle' }, view);
+    expect(ghost).toMatch(/id="streamlabs-visibility-scene"[^>]*role="combobox"/);
+    expect(ghost).toMatch(/id="streamlabs-visibility-source"[^>]*role="combobox"/);
+    expect(ghost).toContain('Streamlabs does not list this source right now.');
+    expectAccessible(ghost);
+    expect(renderAction({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Overlays', op: 'toggle' }, view)).not.toContain('field-warning');
+    // Another scene's items were never fetched: a plain field until its choices open.
+    expect(renderAction({ type: 'streamlabs_source_visibility', scene: 'Be right back', source: 'Ghost', op: 'toggle' }, view))
+      .not.toMatch(/id="streamlabs-visibility-source"[^>]*role="combobox"/);
+    const tree = StreamlabsFields({ action: { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'show' }, prefix: '', onChange: () => {}, catalog: view }) as AnyElement;
+    const row = elementsOf(tree).find(item => item.props.id === 'streamlabs-visibility-source');
+    (row!.props as { onOpenList(): void }).onOpenList();
+    expect(requested).toEqual(['sceneSources:Live']);
+  });
+
+  it('shows one Refresh row per editor with the Streamlabs state and a quiet note when the names could not be loaded', () => {
+    let refreshed = false;
+    const tree = StreamlabsConnection({ onSetUp: () => {}, catalog: streamlabsView({ refresh: () => { refreshed = true; } }) }) as AnyElement;
+    const refresh = elementsOf(tree).find(element => element.type === 'button' && String(element.props.className).includes('button compact'));
+    (refresh!.props as { onClick(): void }).onClick();
+    expect(refreshed).toBe(true);
+    expect(renderToStaticMarkup(tree)).toContain('Refresh from Streamlabs');
+    const failed = renderToStaticMarkup(StreamlabsConnection({ catalog: streamlabsView({
+      status: 'failed', names: null, error: 'Streamlabs has no API token in OpenStreamHub Settings', connection: { state: 'token_needed', message: 'Streamlabs asks for an API token.' },
+    }) }) as AnyElement);
+    expect(failed).toContain('obs-chip-token_needed" title="Streamlabs asks for an API token.">Token needed</span>');
+    expect(failed).toContain('Could not load the Streamlabs names; typed names still work. Streamlabs has no API token in OpenStreamHub Settings');
+    expect(failed).not.toContain('role="alert"');
+    expect(failed).not.toContain('obs-catalog-error');
+    expect(renderToStaticMarkup(StreamlabsConnection({ catalog: streamlabsView({ status: 'loading', names: null }) }) as AnyElement))
+      .toMatch(/<button[^>]*disabled=""[^>]*>.*Listing…<\/button>/);
+    // The browser preview and the bare note show no Refresh row.
+    expect(renderToStaticMarkup(StreamlabsConnection({ catalog: { ...streamlabsView(), desktop: false, status: 'idle', names: null } }) as AnyElement)).not.toContain('Refresh from Streamlabs');
+    expect(renderToStaticMarkup(StreamlabsConnection({}) as AnyElement)).not.toContain('Refresh from Streamlabs');
+    const steps = renderAction({ type: 'multi_action', actions: [{ type: 'streamlabs_scene', scene: 'Live' }, { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } }] }, streamlabsView());
+    expect(steps.match(/Refresh from Streamlabs/g)).toHaveLength(1);
+    expect(steps).toMatch(/id="step-1-streamlabs-scene"[^>]*role="combobox"/);
+    expect(steps).toMatch(/id="step-2-streamlabs-audio-source"[^>]*role="combobox"/);
+    expectAccessible(steps);
+    const flow = renderAction({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'streamlabs_scene', scene: 'Live' }] }, streamlabsView());
+    expect(flow.match(/Refresh from Streamlabs/g)).toHaveLength(1);
+    expect(flow).toMatch(/streamlabs-scene"[^>]*role="combobox"/);
+  });
+
+  it('names Streamlabs in the open choices', () => {
+    const markup = renderToStaticMarkup(ObsCombo({
+      id: 'x', value: '', entry: { status: 'loading' }, open: true, onOpenChange: () => {}, active: 0, onActiveChange: () => {},
+      onType: () => {}, onPick: () => {}, service: 'Streamlabs',
+    }));
+    expect(markup).toContain('aria-label="Names Streamlabs currently lists"');
+    expect(markup).toContain('Looking up Streamlabs…');
   });
 });
 

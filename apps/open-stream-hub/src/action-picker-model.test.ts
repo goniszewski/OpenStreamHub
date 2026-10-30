@@ -16,7 +16,7 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'streamlabs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -34,6 +34,14 @@ describe('picker catalogue', () => {
     expect(pickerEntryIsCurrent('obs', 'obs_filter')).toBe(true);
     expect(pickerEntryIsCurrent('obs', 'open_url')).toBe(false);
     expect(pickerEntryIsCurrent('open_url', 'open_url')).toBe(true);
+    // The same for the one Streamlabs entry and the seven streamlabs_* actions.
+    expect(pickerEntryLabel('streamlabs')).toBe('Streamlabs');
+    for (const type of ['streamlabs_scene', 'streamlabs_audio', 'streamlabs_stream'] as PickerActionType[]) {
+      expect(pickerEntryLabel(type)).toBe('Streamlabs');
+      expect(pickerEntryIsCurrent('streamlabs', type)).toBe(true);
+      expect(pickerEntryIsCurrent('obs', type)).toBe(false);
+    }
+    expect(pickerEntryIsCurrent('streamlabs', 'obs_scene')).toBe(false);
   });
 
   it('places every entry in a known category, in display order', () => {
@@ -76,12 +84,14 @@ describe('scope filtering', () => {
     expect(offered).not.toContain('volume_from_position');
     expect(offered).toContain('toggle_mute');
     expect(offered).toContain('obs');
+    expect(offered).toContain('streamlabs');
   });
 
   it('groups the visible entries by category and drops empty groups', () => {
     const groups = pickerGroups('', 'binding');
-    expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Timers & sequences', 'Variables', 'Navigation']);
+    expect(groups.map(group => group.label)).toEqual(['Audio', 'Keyboard', 'Apps & web', 'Media', 'System', 'OBS', 'Streamlabs', 'Timers & sequences', 'Variables', 'Navigation']);
     expect(groups.find(group => group.category === 'obs')!.entries).toHaveLength(1);
+    expect(groups.find(group => group.category === 'streamlabs')!.entries).toHaveLength(1);
     expect(pickerGroups('', 'binding-fader').map(group => group.label)).toEqual(['Audio', 'OBS']);
   });
 });
@@ -102,6 +112,11 @@ describe('search', () => {
     // Words match in any order.
     expect(types(searchPickerEntries('switch scene', binding))).toContain('obs');
     expect(searchPickerEntries('  ', binding)).toEqual(binding);
+    // The single Streamlabs entry too, and "obs" does not find it.
+    expect(types(searchPickerEntries('streamlabs', binding))).toEqual(['streamlabs']);
+    for (const word of ['record', 'studio', 'transition', 'visibility', 'collection', 'audio', 'mute']) {
+      expect(types(searchPickerEntries(word, binding))).toContain('streamlabs');
+    }
   });
 
   it('finds nothing for nonsense and never leaks the fader action into other scopes', () => {
@@ -113,7 +128,7 @@ describe('search', () => {
 
 describe('default actions', () => {
   it('builds the same defaults the flat select built, for every type', () => {
-    for (const entry of pickerEntries) expect(defaultBindingAction(entry.type).type).toBe(entry.type === 'obs' ? 'obs_scene' : entry.type);
+    for (const entry of pickerEntries) expect(defaultBindingAction(entry.type).type).toBe(entry.type === 'obs' ? 'obs_scene' : entry.type === 'streamlabs' ? 'streamlabs_scene' : entry.type);
     expect(defaultBindingAction('shortcut')).toEqual({ type: 'shortcut', key: 'c', modifiers: ['command'] });
     expect(defaultBindingAction('multi_action')).toEqual({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'shortcut', key: 'c', modifiers: ['command'] }] });
     expect(defaultBindingAction('profile')).toEqual({ type: 'profile', direction: 'next' });
@@ -123,6 +138,7 @@ describe('default actions', () => {
     expect(defaultBindingAction('obs_input_volume_from_position')).toEqual({ type: 'obs_input_volume_from_position', input: 'Mic/Aux' });
     // The OBS entry starts from the scene operation, which the editor's Operation dropdown changes.
     expect(defaultBindingAction('obs')).toEqual({ type: 'obs_scene', scene: 'Scene' });
+    expect(defaultBindingAction('streamlabs')).toEqual({ type: 'streamlabs_scene', scene: 'Scene' });
   });
 });
 

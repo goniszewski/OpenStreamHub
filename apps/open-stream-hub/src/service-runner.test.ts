@@ -181,6 +181,25 @@ describe('summarizeRecord', () => {
     expect(lines[3]).toContain('multi-action [OBS filter on (11 + 4 characters), OBS studio transition]');
     expect(at({ type: 'obs_studio_mode', op: 'toggle' })).toContain('OBS studio mode toggle');
   });
+  it('logs Streamlabs actions by closed words and name lengths only', () => {
+    const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
+    const lines = [
+      at({ type: 'streamlabs_scene', scene_chars: 4, collection_chars: 7 }),
+      at({ type: 'streamlabs_scene', scene: 'Secret scene' }),
+      at({ type: 'streamlabs_source_visibility', scene: 'Secret scene', source: 'Private cam', op: 'hide' }),
+      at({ type: 'streamlabs_audio', source_chars: 3, op: { adjust: -5 } }),
+      at({ type: 'multi_action', actions: [{ type: 'streamlabs_audio', source: 'Private cam', op: { mute: 'toggle' } }, { type: 'streamlabs_record' }] }),
+    ];
+    for (const line of lines) for (const name of ['Private cam', 'Secret scene']) expect(line).not.toContain(name);
+    expect(lines[0]).toContain('Streamlabs scene (4 + 7 characters)');
+    expect(lines[1]).toContain('Streamlabs scene (12 characters)');
+    expect(lines[2]).toContain('Streamlabs source hide (12 + 11 characters)');
+    expect(lines[3]).toContain('Streamlabs audio level -5% (3 characters)');
+    expect(lines[4]).toContain('multi-action [Streamlabs audio toggle (11 characters), Streamlabs recording toggle]');
+    expect(at({ type: 'streamlabs_audio', source_chars: 3, op: { set: 40 } })).toContain('Streamlabs audio level 40% (3 characters)');
+    expect(at({ type: 'streamlabs_stream', confirm: 'press_twice' })).toContain('Streamlabs stream toggle (press twice)');
+    expect(at({ type: 'streamlabs_transition' })).toContain('Streamlabs studio transition');
+  });
   it('logs only the length of an OBS scene name, from redacted (scene_chars) and old (scene) records alike', () => {
     const at = (action: unknown) => summarizeRecord({ type: 'action_executed', event, action }, 1)!.text;
     const long = 'Interview guest cam with a very long name';

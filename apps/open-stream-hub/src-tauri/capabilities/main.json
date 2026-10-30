@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main-window",
-  "description": "Local profile editing, in-memory import of official .mhz profiles as dry-run-only profiles, device-free replay, and read-only device input feeds, supervised masterhub-service action runs with sleep/wake and reconnect sessions, local diagnostic bundles, opt-in focused-app profile rules, offline display artwork preparation, the opt-in experimental module display setting, and the opt-in loopback OBS WebSocket setting (endpoint stored, password held in memory only) in the main window.",
+  "description": "Local profile editing, in-memory import of official .mhz profiles as dry-run-only profiles, device-free replay, and read-only device input feeds, supervised masterhub-service action runs with sleep/wake and reconnect sessions, local diagnostic bundles, opt-in focused-app profile rules, offline display artwork preparation, the opt-in experimental module display setting, and the opt-in loopback OBS WebSocket and Streamlabs Desktop settings (endpoints stored, the password and token kept in the Keychain) in the main window.",
   "windows": ["main"],
   "permissions": [
     "core:app:allow-version",
@@ -61,6 +61,12 @@
     "allow-obs-catalog",
     "allow-obs-source-filters",
     "allow-obs-scene-sources",
+    "allow-streamlabs-settings",
+    "allow-set-streamlabs-settings",
+    "allow-set-streamlabs-token",
+    "allow-streamlabs-status",
+    "allow-streamlabs-catalog",
+    "allow-streamlabs-scene-sources",
     "allow-switch-session-profile",
     "allow-session-profile",
     "allow-apply-saved-profile",

@@ -41,7 +41,8 @@ export function tileIconOf(action?: BindingAction): TileIcon {
     case 'profile': return 'profile';
     case 'timer': return 'timer';
     case 'shortcut': return 'generic';
-    default: return action.type.startsWith('obs_') ? 'obs' : 'generic';
+    // Streamlabs drives the same kind of streaming app, so streamlabs_* shares the OBS picture, as in TileIcon::of.
+    default: return action.type.startsWith('obs_') || action.type.startsWith('streamlabs_') ? 'obs' : 'generic';
   }
 }
 

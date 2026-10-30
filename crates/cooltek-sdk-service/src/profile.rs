@@ -412,6 +412,36 @@ pub enum ObsReplayBufferOp {
     Save,
 }
 
+/// What a `streamlabs_source_visibility` action does to a scene item (or to
+/// every item in a folder). `toggle` reads the current visibility first.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamlabsVisibilityOp {
+    /// Show it when hidden and hide it when shown. A folder shows all its
+    /// items when any is hidden, otherwise hides them all.
+    Toggle,
+    /// Show it.
+    Show,
+    /// Hide it.
+    Hide,
+}
+
+/// What a `streamlabs_audio` action does to a Streamlabs audio source, as a
+/// one-key JSON object: `{"set":PERCENT}`, `{"adjust":STEP}` or
+/// `{"mute":"toggle"|"mute"|"unmute"}`.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamlabsAudioOp {
+    /// Move the fader to an absolute position, 0 to 100 percent of its
+    /// travel (Streamlabs' deflection 0.0 to 1.0, not decibels).
+    Set(u8),
+    /// Move the fader by a signed step in percent of its travel, nonzero and
+    /// between -100 and 100, held between 0 and 100.
+    Adjust(i8),
+    /// Mute, unmute or toggle the source.
+    Mute(ObsMuteOp),
+}
+
 /// The end sound of a `timer`, from a closed set of macOS system sounds.
 ///
 /// Each name maps to one fixed file under `/System/Library/Sounds`; a profile
@@ -1128,6 +1158,49 @@ pub enum Action {
         /// Exact input (source) name.
         input: String,
     },
+    /// Toggle the Streamlabs Desktop recording over its local Remote Control
+    /// API. The endpoint and token are never part of a profile; a run without
+    /// them reports the action as unavailable.
+    StreamlabsRecord,
+    /// Toggle the Streamlabs Desktop stream, which goes live or ends a
+    /// broadcast. Needs a Streamlabs endpoint like `streamlabs_record`.
+    StreamlabsStream {
+        /// Optional safeguard, as for `obs_stream`: with `press_twice` a key
+        /// must be pressed twice within three seconds. Only a key's own
+        /// action can carry it, not a `multi_action` step.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        confirm: Option<ObsConfirm>,
+    },
+    /// Toggle Streamlabs studio mode (read it, then write the opposite).
+    StreamlabsStudioMode,
+    /// Trigger the Streamlabs studio-mode transition (preview to program).
+    StreamlabsTransition,
+    /// Make a scene active in Streamlabs, by name. With `collection`, that
+    /// scene collection is loaded first when it is not already active.
+    StreamlabsScene {
+        /// Exact scene name, validated like an OBS name.
+        scene: String,
+        /// Exact scene collection name; absent means the active one.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        collection: Option<String>,
+    },
+    /// Show or hide a scene item (or every item of a folder) of a scene in
+    /// the active Streamlabs scene collection, both by name.
+    StreamlabsSourceVisibility {
+        /// Exact scene name.
+        scene: String,
+        /// Exact name of the item or folder in that scene.
+        source: String,
+        /// What to do with its visibility.
+        op: StreamlabsVisibilityOp,
+    },
+    /// Set, step or mute a Streamlabs audio source, by name.
+    StreamlabsAudio {
+        /// Exact audio source name.
+        source: String,
+        /// What to do with the source.
+        op: StreamlabsAudioOp,
+    },
 }
 
 /// Deserializes a present field as `Some`, so an explicit `null` is rejected
@@ -1143,7 +1216,7 @@ where
 /// Checks an OBS name (scene, source, filter, scene collection or profile): the keypad label rules plus
 /// the invisible-character rule of text snippets, so the name OBS receives is
 /// exactly the one reviewed.
-fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
+pub(crate) fn validate_obs_name(action: &str, field: &str, name: &str) -> Result<(), String> {
     if name.trim().is_empty()
         || name.len() > Action::MAX_OBS_NAME_BYTES
         || name.chars().any(char::is_control)
@@ -1423,6 +1496,27 @@ impl<'de> Deserialize<'de> for Action {
             ObsInputVolumeFromPosition {
                 input: String,
             },
+            StreamlabsRecord {},
+            StreamlabsStream {
+                #[serde(default, deserialize_with = "present")]
+                confirm: Option<ObsConfirm>,
+            },
+            StreamlabsStudioMode {},
+            StreamlabsTransition {},
+            StreamlabsScene {
+                scene: String,
+                #[serde(default, deserialize_with = "present")]
+                collection: Option<String>,
+            },
+            StreamlabsSourceVisibility {
+                scene: String,
+                source: String,
+                op: StreamlabsVisibilityOp,
+            },
+            StreamlabsAudio {
+                source: String,
+                op: StreamlabsAudioOp,
+            },
         }
         Ok(match Shape::deserialize(deserializer)? {
             Shape::Volume { delta } => Self::Volume { delta },
@@ -1486,6 +1580,17 @@ impl<'de> Deserialize<'de> for Action {
             Shape::ObsInputVolumeFromPosition { input } => {
                 Self::ObsInputVolumeFromPosition { input }
             }
+            Shape::StreamlabsRecord {} => Self::StreamlabsRecord,
+            Shape::StreamlabsStream { confirm } => Self::StreamlabsStream { confirm },
+            Shape::StreamlabsStudioMode {} => Self::StreamlabsStudioMode,
+            Shape::StreamlabsTransition {} => Self::StreamlabsTransition,
+            Shape::StreamlabsScene { scene, collection } => {
+                Self::StreamlabsScene { scene, collection }
+            }
+            Shape::StreamlabsSourceVisibility { scene, source, op } => {
+                Self::StreamlabsSourceVisibility { scene, source, op }
+            }
+            Shape::StreamlabsAudio { source, op } => Self::StreamlabsAudio { source, op },
         })
     }
 }
@@ -1563,6 +1668,13 @@ impl Action {
             Self::ObsAdjustInputVolume { .. } => "obs_adjust_input_volume",
             Self::ObsMediaSource { .. } => "obs_media_source",
             Self::ObsInputVolumeFromPosition { .. } => "obs_input_volume_from_position",
+            Self::StreamlabsRecord => "streamlabs_record",
+            Self::StreamlabsStream { .. } => "streamlabs_stream",
+            Self::StreamlabsStudioMode => "streamlabs_studio_mode",
+            Self::StreamlabsTransition => "streamlabs_transition",
+            Self::StreamlabsScene { .. } => "streamlabs_scene",
+            Self::StreamlabsSourceVisibility { .. } => "streamlabs_source_visibility",
+            Self::StreamlabsAudio { .. } => "streamlabs_audio",
         }
     }
 
@@ -1574,6 +1686,8 @@ impl Action {
             Self::ObsStream {
                 confirm: Some(ObsConfirm::PressTwice),
                 ..
+            } | Self::StreamlabsStream {
+                confirm: Some(ObsConfirm::PressTwice),
             }
         )
     }
@@ -1604,6 +1718,25 @@ impl Action {
                 otherwise,
             } => when.uses_obs() || then.iter().chain(otherwise).any(Self::uses_obs),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
+            _ => false,
+        }
+    }
+
+    /// True for a Streamlabs action (`streamlabs_*`), or a `multi_action` or
+    /// `conditional` with a Streamlabs step. No condition reads Streamlabs.
+    pub fn uses_streamlabs(&self) -> bool {
+        match self {
+            Self::StreamlabsRecord
+            | Self::StreamlabsStream { .. }
+            | Self::StreamlabsStudioMode
+            | Self::StreamlabsTransition
+            | Self::StreamlabsScene { .. }
+            | Self::StreamlabsSourceVisibility { .. }
+            | Self::StreamlabsAudio { .. } => true,
+            Self::Conditional {
+                then, otherwise, ..
+            } => then.iter().chain(otherwise).any(Self::uses_streamlabs),
+            Self::MultiAction { actions } => actions.iter().any(Self::uses_streamlabs),
             _ => false,
         }
     }
@@ -1732,6 +1865,28 @@ impl Action {
                 validate_obs_name("obs_source_visibility", "scene", scene)?;
                 validate_obs_name("obs_source_visibility", "source", source)
             }
+            Self::StreamlabsScene { scene, collection } => {
+                validate_obs_name("streamlabs_scene", "scene", scene)?;
+                collection.as_deref().map_or(Ok(()), |collection| {
+                    validate_obs_name("streamlabs_scene", "collection", collection)
+                })
+            }
+            Self::StreamlabsSourceVisibility { scene, source, .. } => {
+                validate_obs_name("streamlabs_source_visibility", "scene", scene)?;
+                validate_obs_name("streamlabs_source_visibility", "source", source)
+            }
+            Self::StreamlabsAudio { source, op } => {
+                validate_obs_name("streamlabs_audio", "source", source)?;
+                match op {
+                    StreamlabsAudioOp::Set(percent) if *percent > 100 => {
+                        Err("Streamlabs audio set must be between 0 and 100 percent".into())
+                    }
+                    StreamlabsAudioOp::Adjust(step) if *step == 0 || !(-100..=100).contains(step) => {
+                        Err("Streamlabs audio adjust must be nonzero and between -100 and 100 percent".into())
+                    }
+                    _ => Ok(()),
+                }
+            }
             Self::Text { text, .. } => {
                 if text.is_empty() || text.len() > Self::MAX_TEXT_BYTES {
                     return Err(format!(
@@ -1822,7 +1977,11 @@ impl Action {
             | Self::ObsReplayBuffer { .. }
             | Self::ObsStudioMode { .. }
             | Self::ObsTransition
-            | Self::ObsScreenshot => Ok(()),
+            | Self::ObsScreenshot
+            | Self::StreamlabsRecord
+            | Self::StreamlabsStream { .. }
+            | Self::StreamlabsStudioMode
+            | Self::StreamlabsTransition => Ok(()),
         }
     }
 
@@ -1952,6 +2111,7 @@ impl Action {
                         confirm: Some(_),
                         ..
                     }
+                    | Self::StreamlabsStream { confirm: Some(_) }
             ) {
                 return Err(format!(
                     "{label} step {}: {} cannot be a {noun} step",
@@ -4855,5 +5015,138 @@ mod tests {
                 .and_then(|action| action.validate_executable());
             assert!(rejected.is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn streamlabs_actions_have_a_strict_json_shape_and_name_rules() {
+        for (json, type_name) in [
+            (r#"{"type":"streamlabs_record"}"#, "streamlabs_record"),
+            (r#"{"type":"streamlabs_stream"}"#, "streamlabs_stream"),
+            (
+                r#"{"type":"streamlabs_stream","confirm":"press_twice"}"#,
+                "streamlabs_stream",
+            ),
+            (
+                r#"{"type":"streamlabs_studio_mode"}"#,
+                "streamlabs_studio_mode",
+            ),
+            (
+                r#"{"type":"streamlabs_transition"}"#,
+                "streamlabs_transition",
+            ),
+            (
+                r#"{"type":"streamlabs_scene","scene":"Live"}"#,
+                "streamlabs_scene",
+            ),
+            (
+                r#"{"type":"streamlabs_scene","scene":"Zażółć 🎥","collection":"Podcast \"B\""}"#,
+                "streamlabs_scene",
+            ),
+            (
+                r#"{"type":"streamlabs_source_visibility","scene":"Live","source":"Camera","op":"toggle"}"#,
+                "streamlabs_source_visibility",
+            ),
+            (
+                r#"{"type":"streamlabs_source_visibility","scene":"Live","source":"Overlays","op":"hide"}"#,
+                "streamlabs_source_visibility",
+            ),
+            (
+                r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":0}}"#,
+                "streamlabs_audio",
+            ),
+            (
+                r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":100}}"#,
+                "streamlabs_audio",
+            ),
+            (
+                r#"{"type":"streamlabs_audio","source":"Mic","op":{"adjust":-100}}"#,
+                "streamlabs_audio",
+            ),
+            (
+                r#"{"type":"streamlabs_audio","source":"Mic","op":{"mute":"unmute"}}"#,
+                "streamlabs_audio",
+            ),
+        ] {
+            let action: Action = serde_json::from_str(json).unwrap();
+            assert_eq!(action.type_name(), type_name);
+            assert!(action.uses_streamlabs(), "{json}");
+            assert!(!action.uses_obs(), "{json}");
+            action.validate_executable().unwrap();
+            assert_eq!(serde_json::to_string(&action).unwrap(), json);
+        }
+        let long = "x".repeat(Action::MAX_OBS_NAME_BYTES + 1);
+        for json in [
+            r#"{"type":"streamlabs_record","op":"toggle"}"#.to_string(),
+            r#"{"type":"streamlabs_stream","confirm":null}"#.into(),
+            r#"{"type":"streamlabs_stream","confirm":"hold"}"#.into(),
+            r#"{"type":"streamlabs_transition","endpoint":"127.0.0.1:59650"}"#.into(),
+            r#"{"type":"streamlabs_studio_mode","token":"x"}"#.into(),
+            r#"{"type":"streamlabs_scene"}"#.into(),
+            r#"{"type":"streamlabs_scene","scene":"Live","collection":null}"#.into(),
+            r#"{"type":"streamlabs_scene","scene":"Live","scene_id":"abc"}"#.into(),
+            r#"{"type":"streamlabs_scene","scene":" "}"#.into(),
+            r#"{"type":"streamlabs_scene","scene":"Live","collection":""}"#.into(),
+            format!(r#"{{"type":"streamlabs_scene","scene":"{long}"}}"#),
+            format!(r#"{{"type":"streamlabs_scene","scene":"Live","collection":"{long}"}}"#),
+            r#"{"type":"streamlabs_scene","scene":"Li\u200bve"}"#.into(),
+            r#"{"type":"streamlabs_source_visibility","scene":"Live","source":"Cam","op":"on"}"#
+                .into(),
+            r#"{"type":"streamlabs_source_visibility","scene":"Live","op":"show"}"#.into(),
+            format!(
+                r#"{{"type":"streamlabs_source_visibility","scene":"Live","source":"{long}","op":"show"}}"#
+            ),
+            r#"{"type":"streamlabs_audio","source":"Mic"}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":"mute"}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":101}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":-1}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"adjust":0}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"adjust":101}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"adjust":-101}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"mute":"on"}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":5,"adjust":5}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"db":-6}}"#.into(),
+            r#"{"type":"streamlabs_audio","source":"Mic","op":{"set":5},"resource_id":"x"}"#.into(),
+            format!(r#"{{"type":"streamlabs_audio","source":"{long}","op":{{"set":5}}}}"#),
+        ] {
+            let rejected = serde_json::from_str::<Action>(&json)
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable());
+            assert!(rejected.is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn a_streamlabs_stream_confirmation_works_like_obs_and_is_never_a_step() {
+        let confirmed = Action::StreamlabsStream {
+            confirm: Some(ObsConfirm::PressTwice),
+        };
+        assert!(confirmed.needs_confirmation());
+        assert!(!Action::StreamlabsStream { confirm: None }.needs_confirmation());
+        let error = Action::MultiAction {
+            actions: vec![Action::ToggleMute, confirmed],
+        }
+        .validate_executable()
+        .unwrap_err();
+        assert!(
+            error.contains("streamlabs_stream cannot be a multi_action step"),
+            "{error}"
+        );
+        let multi = Action::MultiAction {
+            actions: vec![
+                Action::StreamlabsScene {
+                    scene: "Live".into(),
+                    collection: None,
+                },
+                Action::StreamlabsRecord,
+            ],
+        };
+        multi.validate_executable().unwrap();
+        assert!(multi.uses_streamlabs() && !multi.uses_obs());
+        let conditional = Action::Conditional {
+            when: Condition::Recording(true),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![Action::StreamlabsTransition],
+        };
+        assert!(conditional.uses_streamlabs() && conditional.uses_obs());
     }
 }

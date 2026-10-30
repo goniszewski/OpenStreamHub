@@ -1523,6 +1523,20 @@ fn open_release_page() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn start_permission_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    // Synchronous commands already run on the main thread, which AppKit dragging needs.
+    #[cfg(target_os = "macos")]
+    {
+        recorder::start_permission_drag(&window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Dragging the app is available on macOS only".to_string())
+    }
+}
+
+#[tauri::command]
 fn open_permission_settings(target: recorder::PermissionTarget) -> Result<(), String> {
     recorder::open_permission_settings(target)
 }
@@ -2124,7 +2138,8 @@ pub fn run() {
             menubar_status,
             set_menubar,
             set_module_turns,
-            open_permission_settings
+            open_permission_settings,
+            start_permission_drag
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

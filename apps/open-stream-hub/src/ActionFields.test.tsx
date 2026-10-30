@@ -2,7 +2,9 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsCombo, ObsConnection, ObsFields, StreamlabsConnection, StreamlabsFields } from './ActionFields';
+import { ActionFields, AppPicker, ObsCombo, ObsConnection, ObsFields, StreamlabsConnection, StreamlabsFields } from './ActionFields';
+import type { AppPickerState } from './ActionFields';
+import type { Invoke } from './profile-session';
 import { obsOperationLabels, streamlabsOperationLabels } from './action-model';
 import type { ObsStepAction, StreamlabsStepAction } from './action-model';
 import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
@@ -789,7 +791,7 @@ describe('obs combo', () => {
     expect(two).toContain('for="conditional-value-2"');
     expect(two.match(/aria-label="Remove this test"/g)).toHaveLength(2);
     expect(two.match(/aria-label="Move this test up"/g)).toHaveLength(2);
-    expect(two).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(two).toContain('<option value="any" selected="">any one of these is true (OR)</option>');
     expect(two).toContain('Add AND group');
     expect(two).toContain('OBS must be running');
     // Each test has a grip to drag it by; the group itself is the root, so it has none.
@@ -823,7 +825,7 @@ describe('obs combo', () => {
     expect(markup).toContain('for="conditional-mode-2">If</label>');
     expect(markup).toContain('for="conditional-when-2-1">Test</label>');
     expect(markup).toContain('for="conditional-volume-2-2"');
-    expect(markup).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(markup).toContain('<option value="any" selected="">any one of these is true (OR)</option>');
     expect(markup).toContain('aria-label="Drag this group to move it"');
     expect(markup).toContain('aria-label="Move this group up"');
     expect(markup).toContain('aria-label="Remove this group"');
@@ -877,5 +879,119 @@ describe('obs combo', () => {
     const none = render({ type: 'toggle_variable', name: '' });
     expect(none).toContain('Add one under Variables in the inspector');
     expectAccessible(none);
+  });
+});
+
+describe('app picker', () => {
+  const invoke: Invoke = <T,>() => Promise.resolve(null as T);
+  const withDesktop = (action: BindingAction) => renderToStaticMarkup(<ActionFields action={action} fader={false} selectorKey="k" onChange={() => {}} invoke={invoke} />);
+  const finder = { bundle_id: 'com.apple.finder', name: 'Finder' };
+  const music = { bundle_id: 'com.apple.Music', name: 'Music' };
+  const state = (over: Partial<AppPickerState> = {}): AppPickerState => ({ apps: [music, finder], installedName: undefined, typing: false, choosing: false, error: null, ...over });
+  const picker = (bundleId: string, over: Partial<AppPickerState> | null = {}, inline = false) => renderToStaticMarkup(<AppPicker inputId="conditional-app" bundleId={bundleId} label="Front app" inline={inline}
+    hint="Hint." state={over === null ? null : state(over)} onChange={() => {}} />);
+
+  it('reaches the front-app test of an if / else, at the top level, in a multi-action and in a nested block', () => {
+    const top = withDesktop({ type: 'conditional', when: { focused_app: 'com.apple.finder' }, then: [{ type: 'toggle_mute' }] });
+    expect(top).toMatch(/<button type="button" id="conditional-app" class="action-picker-trigger app-picker-trigger" aria-haspopup="listbox" aria-expanded="false"/);
+    expect(top).toContain('aria-labelledby="conditional-app-label conditional-app"');
+    expect(top).toContain('Enter a bundle ID instead');
+    expect(top).toContain('<label id="conditional-app-label" class="sr-only" for="conditional-app">Front app</label>');
+    expect(top).toContain('flow-test-line');
+    expect(top).toContain('&quot;Otherwise do&quot; runs in every other app.');
+    expect(top).not.toContain('swap the two lists');
+    // Closed, the list and its rows are not rendered.
+    expect(top).not.toContain('role="listbox"');
+    expectAccessible(top);
+    const nested = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'conditional', when: { focused_app: 'com.apple.Music' }, then: [{ type: 'toggle_mute' }] }] });
+    expect(nested).toMatch(/<button type="button" id="then-1-conditional-app"[^>]*aria-haspopup="listbox"/);
+    const steps = withDesktop({ type: 'multi_action', actions: [{ type: 'launch_app', bundle_id: 'com.apple.finder' }, { type: 'toggle_mute' }] });
+    expect(steps).toMatch(/<button type="button" id="step-1-app-bundle-id"[^>]*aria-haspopup="listbox"/);
+    expect(steps).toContain('Other app… for any other installed app');
+    const open = withDesktop({ type: 'launch_app', bundle_id: 'com.apple.finder' });
+    expect(open).toContain('<label id="app-bundle-id-label" for="app-bundle-id">App</label>');
+    expectAccessible(open);
+  });
+
+  it('stays the plain bundle ID field without a desktop backend', () => {
+    const plain = picker('com.apple.Safari', null);
+    expect(plain).toContain('<label for="conditional-app">Application bundle ID</label>');
+    expect(plain).toContain('value="com.apple.Safari"');
+    expect(plain).not.toContain('Choose app…');
+    expect(plain).not.toContain('aria-haspopup');
+  });
+
+  it('shows the stored running app by name with its icon, matched case-insensitively', () => {
+    const markup = picker('COM.APPLE.FINDER', { icons: new Map([['com.apple.finder', 'iVBORw0K']]) });
+    expect(markup).toContain('<img class="app-icon" src="data:image/png;base64,iVBORw0K" alt="" width="20" height="20"/><span class="action-picker-trigger-label">Finder</span>');
+    expect(markup).not.toContain('Bundle ID:');
+    expect(markup).not.toContain('role="status"');
+    // Until its icon arrives the trigger shows the neutral placeholder.
+    expect(picker('com.apple.finder')).toMatch(/<span class="app-icon app-icon-placeholder" aria-hidden="true"><svg[^>]*lucide-app-window/);
+    expect(picker('')).toContain('<span class="action-picker-trigger-label">Choose an app…</span>');
+  });
+
+  it('names a stored app that is not running, or says when none is installed', () => {
+    const installed = picker('com.apple.Safari', { installedName: 'Safari', icons: new Map([['com.apple.Safari', 'U2FmYXJp']]) });
+    expect(installed).toContain('src="data:image/png;base64,U2FmYXJp" alt="" width="20" height="20"/><span class="action-picker-trigger-label">Safari</span>');
+    expect(installed).toContain('Bundle ID: com.apple.Safari');
+    expect(installed).toContain('aria-describedby="conditional-app-note"');
+    const pending = picker('com.apple.Safari');
+    expect(pending).toContain('<span class="action-picker-trigger-label">com.apple.Safari</span>');
+    expect(pending).not.toContain('role="status"');
+    const missing = picker('com.example.gone', { installedName: null });
+    expect(missing).toContain('<span class="action-picker-trigger-label">com.example.gone</span>');
+    expect(missing).toMatch(/<p id="conditional-app-note" class="fine-print" role="status">No installed app has the bundle ID com.example.gone.<\/p>/);
+  });
+
+  it('opens a searchable list of apps with icons, the stored one checked, then Other app…', () => {
+    const icons = new Map<string, string | null>([['com.apple.Music', 'TXVzaWM='], ['com.apple.finder', null]]);
+    const recent = [{ bundle_id: 'com.apple.Safari', name: 'Safari' }, finder];
+    const markup = picker('com.apple.finder', { icons, recent, list: { open: true, query: '', active: 0 } });
+    expect(markup).toContain('aria-expanded="true" aria-controls="conditional-app-list"');
+    expect(markup).toMatch(/<input id="conditional-app-search" type="search" role="combobox" aria-expanded="true" aria-controls="conditional-app-list" aria-autocomplete="list" aria-activedescendant="conditional-app-option-0"/);
+    expect(markup).toContain('<label class="sr-only" for="conditional-app-search">Search apps</label>');
+    expect(markup).toContain('<div id="conditional-app-list" role="listbox" aria-label="Apps" class="app-picker-list">');
+    // Running now by name, Finder first and checked; its icon failed, so it keeps the placeholder.
+    expect(markup).toMatch(/<div role="group" aria-labelledby="conditional-app-group-running"><div id="conditional-app-group-running" role="presentation" class="picker-group-label">Running now<\/div><div id="conditional-app-option-0" role="option" aria-selected="true" title="com.apple.finder" class="app-option active"><span class="app-icon app-icon-placeholder"[^]*?Finder<\/span><svg[^>]*lucide-check/);
+    expect(markup).toContain('<div id="conditional-app-option-1" role="option" aria-selected="false" title="com.apple.Music" class="app-option"><img class="app-icon" src="data:image/png;base64,TXVzaWM=" alt="" width="20" height="20"/><span class="app-option-name">Music</span></div>');
+    // Recent keeps only the apps not running now.
+    expect(markup).toContain('<div id="conditional-app-option-2" role="option" aria-selected="false" title="com.apple.Safari" class="app-option">');
+    expect(markup.match(/title="com.apple.finder"/g)).toHaveLength(2);
+    expect(markup).toMatch(/<div id="conditional-app-other" role="option" aria-selected="false" class="app-option app-option-other">[^]*Other app…<\/span><\/div><\/div><\/div><\/div>/);
+    expectAccessible(markup);
+  });
+
+  it('filters the list by the search text and says when nothing matches', () => {
+    const music = picker('', { list: { open: true, query: 'mus', active: 0 } });
+    expect(music).toContain('Music</span>');
+    expect(music).not.toContain('Finder</span>');
+    const none = picker('', { list: { open: true, query: 'zzz', active: 0 } });
+    expect(none).toContain('<p class="picker-empty" role="status">No app matches “zzz”.</p>');
+    // With no app rows, the first option is Other app….
+    expect(none).toContain('aria-activedescendant="conditional-app-other"');
+    expect(none).not.toContain('role="group"');
+    expect(picker('', { apps: [], list: { open: true, query: '', active: 0 } })).toContain('No running apps found.');
+  });
+
+  it('offers typing the bundle ID with a visible label and the found name, and shows picker errors', () => {
+    const typing = picker('com.apple.finder', { typing: true, installedName: 'Finder' }, true);
+    expect(typing).toContain('<label id="conditional-app-label" for="conditional-app">App bundle ID</label>');
+    expect(typing).toMatch(/<input id="conditional-app"[^>]*value="com.apple.finder"/);
+    expect(typing).toContain('App: <strong>Finder</strong>');
+    expect(typing).toContain('Pick the app by name instead');
+    expect(typing).toContain('Choose app…</button>');
+    const failed = picker('com.apple.finder', { error: 'No picker.', choosing: true });
+    expect(failed).toContain('<p class="field-error" role="alert">No picker.</p>');
+    expect(failed).toMatch(/<button type="button" id="conditional-app"[^>]*aria-busy="true"[^>]*>.*Choosing…<\/span>/);
+  });
+
+  it('says what happens when the Otherwise list is empty', () => {
+    const markup = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });
+    expect(markup).toContain('<h4 class="spaced-label">Then do</h4>');
+    expect(markup).toContain('<h4 class="spaced-label">Otherwise do (optional)</h4>');
+    expect(markup.match(/Nothing happens\./g)).toHaveLength(1);
+    const both = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }], else: [{ type: 'toggle_mute' }] });
+    expect(both).not.toContain('Nothing happens.');
   });
 });

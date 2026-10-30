@@ -69,6 +69,7 @@ fn main() {
             "prepare_dial_animation",
             "save_artwork",
             "app_icon",
+            "app_icons",
             "macro_record_start",
             "macro_record_state",
             "macro_record_stop",

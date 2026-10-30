@@ -131,7 +131,7 @@ function dialFunctionWarnings(profile: Profile, entries: BindingEntry[]): Bindin
   const flat = entries.filter(entry => entry.flat && entry.module === 'm131e');
   if (flat.length) warnings.push({
     id: 'dial-flat-conflict', kind: 'dial-flat-conflict', entryIds: flat.map(entry => entry.id),
-    message: `${flat.length === 1 ? 'An encoder binding is' : `${flat.length} encoder bindings are`} outside the dial functions. The service rejects flat encoder bindings while dial functions exist; move them into a function or remove them before saving.`,
+    message: `${flat.length === 1 ? "An encoder binding isn't" : `${flat.length} encoder bindings aren't`} in a dial function, so the profile can't be saved. Move ${flat.length === 1 ? 'it' : 'them'} into a function in the encoder's Dial functions editor, or remove ${flat.length === 1 ? 'it' : 'them'}.`,
   });
   if (functions.length === 0 || functions.length > maxDialFunctions) warnings.push({
     id: 'dial-function-count', kind: 'dial-function-count', entryIds: [],

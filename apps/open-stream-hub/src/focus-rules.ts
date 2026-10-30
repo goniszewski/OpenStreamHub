@@ -51,6 +51,15 @@ export function appChoices(apps: RunningApp[], rules: FocusRule[]): RunningApp[]
   return apps.filter(app => !ruled.has(app.bundle_id.toLowerCase()));
 }
 
+// The apps running now (list_running_apps), well-formed entries only; none when the list cannot be read. The action
+// editor's app pickers share it with the store.
+export async function listRunningApps(invoke: Invoke): Promise<RunningApp[]> {
+  try {
+    const apps = await invoke<RunningApp[]>('list_running_apps');
+    return Array.isArray(apps) ? apps.filter(app => typeof app?.bundle_id === 'string' && typeof app?.name === 'string') : [];
+  } catch { return []; }
+}
+
 // An app by its name when it is running, else by its bundle id.
 export const appName = (bundleId: string, apps: RunningApp[]): string =>
   apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? bundleId;
@@ -156,11 +165,7 @@ export class FocusRulesStore {
   // The apps running now, for the picker; none (without an error) when the list cannot be read, since typing the
   // bundle ID still works.
   async runningApps(): Promise<RunningApp[]> {
-    if (!this.state.desktop) return [];
-    try {
-      const apps = await this.invoke<RunningApp[]>('list_running_apps');
-      return Array.isArray(apps) ? apps.filter(app => typeof app?.bundle_id === 'string' && typeof app?.name === 'string') : [];
-    } catch { return []; }
+    return this.state.desktop ? listRunningApps(this.invoke) : [];
   }
 
   // The last app other than OpenStreamHub that was frontmost, or null with an explanation in `error`.

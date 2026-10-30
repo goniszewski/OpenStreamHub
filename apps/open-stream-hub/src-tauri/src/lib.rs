@@ -1577,6 +1577,19 @@ async fn app_icon(
         .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
 
+// The icons of the apps in an app picker's list, in one call instead of one
+// per row; the same worker queue as app_icon.
+#[tauri::command]
+async fn app_icons(
+    state: State<'_, AppState>,
+    request: app_icon::AppIconsRequest,
+) -> Result<app_icon::AppIconsResult, String> {
+    let _permit = state.artwork.lock().await;
+    tauri::async_runtime::spawn_blocking(move || app_icon::app_icons(&request))
+        .await
+        .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
 // Stopping a managed service's current process (or its session id) ends the
 // session, so it is not restarted.
 #[tauri::command(async)]
@@ -2117,6 +2130,7 @@ pub fn run() {
             prepare_dial_animation,
             save_artwork,
             app_icon,
+            app_icons,
             macro_record_start,
             macro_record_state,
             macro_record_stop,

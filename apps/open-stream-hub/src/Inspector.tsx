@@ -117,7 +117,7 @@ export function DialEditorTabs({ tab, onTab, profile, session, state, disabled, 
       <button type="button" role="tab" id="dial-tab-display" aria-selected={tab === 'display'} aria-controls="dial-panel-display" className={tab === 'display' ? 'active' : ''} onClick={() => onTab('display')}>{t('inspector.display')}</button>
     </div>
     {tab === 'functions'
-      ? <div role="tabpanel" id="dial-panel-functions" aria-labelledby="dial-tab-functions"><DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} streamlabs={streamlabsStore} /></div>
+      ? <div role="tabpanel" id="dial-panel-functions" aria-labelledby="dial-tab-functions"><DialFunctionsPanel profile={profile} session={session} state={state} disabled={disabled} setPage={setPage} catalog={catalogStore} streamlabs={streamlabsStore} invoke={invoke} /></div>
       : <div role="tabpanel" id="dial-panel-display" aria-labelledby="dial-tab-display"><DialDisplayPanel profile={profile} session={session} disabled={disabled} invoke={invoke} /></div>}
   </section>;
 }

@@ -1983,7 +1983,11 @@ pub fn run() {
             let app_data = app
                 .path()
                 .app_data_dir()
-                .map_err(|error| format!("could not resolve profile storage: {error}"));
+                .map_err(|error| format!("could not resolve profile storage: {error}"))
+                .and_then(|app_data| {
+                    migration::adopt_previous_identifier(&app_data)?;
+                    Ok(app_data)
+                });
             if let Ok(app_data) = &app_data {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
             }
@@ -2217,7 +2221,7 @@ mod tests {
     #[test]
     fn bootstrap_retry_reopens_storage_after_the_folder_is_fixed() {
         let directory = tempfile::tempdir().unwrap();
-        let app_data = directory.path().join("dev.cooltek.openstreamhub");
+        let app_data = directory.path().join("dev.openstreamhub");
         // A file where the app data folder belongs blocks opening storage.
         std::fs::write(&app_data, b"not a folder").unwrap();
         let state = AppState::open(Ok(app_data.clone()));

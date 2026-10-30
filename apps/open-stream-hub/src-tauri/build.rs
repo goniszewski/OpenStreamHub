@@ -81,6 +81,7 @@ fn main() {
             "set_menubar",
             "set_module_turns",
             "open_permission_settings",
+            "start_permission_drag",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

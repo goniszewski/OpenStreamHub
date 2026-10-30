@@ -944,6 +944,12 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 
 .permission-list { list-style:none; margin:14px 0 0; padding:0; }
 .permission-list li { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:14px; align-items:center; padding:13px 0; border-top:1px solid var(--line); }
+.permission-drag { grid-column:1 / -1; margin-top:12px; display:flex; align-items:center; gap:12px; padding:10px 12px; border:1px dashed var(--line); border-radius:10px; }
+.permission-drag-tile { display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; cursor:grab; font:inherit; }
+.permission-drag-hint { flex:1; font-size:12px; line-height:1.4; color:var(--muted); }
+.permission-drag-arrow { flex:none; color:var(--accent, currentColor); animation:permission-nudge 1.2s ease-in-out infinite; }
+@keyframes permission-nudge { 50% { transform:translateX(5px); } }
+@media (prefers-reduced-motion: reduce) { .permission-drag-arrow { animation:none; } }
 .permission-list small { display:block; color:var(--muted); margin-top:4px; font-size:11px; line-height:1.4; }
 .permission-status { font-size:11px; border:1px solid var(--line); padding:3px 8px; border-radius:6px; white-space:nowrap; color:var(--muted); }
 .permission-status.granted { color:var(--green); background:var(--soft-green); }

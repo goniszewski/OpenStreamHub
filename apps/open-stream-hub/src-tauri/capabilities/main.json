@@ -88,6 +88,7 @@
     "allow-menubar-status",
     "allow-set-menubar",
     "allow-set-module-turns",
-    "allow-open-permission-settings"
+    "allow-open-permission-settings",
+    "allow-start-permission-drag"
   ]
 }

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import type { InputPermissions } from './contracts';
+import { PermissionDragTile } from './PermissionDragTile';
 import type { Invoke } from './profile-session';
 
 export type Target = 'post_events' | 'listen_events' | 'automation';
@@ -33,6 +34,8 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
   const [permissions, setPermissions] = useState<InputPermissions | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The row whose System Settings pane was just opened; its drag tile shows until the permission is granted.
+  const [dragging, setDragging] = useState<Target | null>(null);
   const available = desktop && !!invoke;
   // The parent passes a new function on every render; keep the latest in a ref so a re-render never re-runs the check.
   const call = useRef(invoke);
@@ -62,10 +65,18 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, [available, check]);
+  // While a drag tile waits for its drop, re-check so the row turns green without a click.
+  const waiting = dragging !== null && permissionState(dragging, permissions) !== 'granted';
+  useEffect(() => {
+    if (!waiting) return;
+    const timer = setInterval(() => { void check(); }, 1500);
+    return () => clearInterval(timer);
+  }, [waiting, check]);
   const open = async (target: Target) => {
     if (!call.current) return;
     try {
       await call.current('open_permission_settings', { target });
+      setDragging(target === 'automation' ? null : target);
       setError(null);
     } catch (reason) {
       setError(String(reason));
@@ -81,6 +92,7 @@ export function PermissionsPanel({ desktop, invoke }: { desktop: boolean; invoke
         <div><strong>{row.title}</strong><small>{row.detail}</small></div>
         <span className={`permission-status ${status}`} role="status">{permissionLabels[status]}</span>
         <button className="button" onClick={() => void open(row.target)}>Open</button>
+        {dragging === row.target && status !== 'granted' && invoke && <PermissionDragTile invoke={invoke} onError={message => setError(message)} />}
       </li>;
     })}</ul>}
     {available && <div className="settings-actions"><button className="button" disabled={busy} aria-busy={busy} onClick={() => void check(true)}>{busy ? <LoaderCircle size={14} className="spinning" /> : <RefreshCw size={14} />}{busy ? 'Checking…' : 'Check again'}</button></div>}

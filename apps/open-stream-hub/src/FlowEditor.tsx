@@ -85,7 +85,7 @@ export function FlowEditor({ action, selectorKey, onChange, render, obsNote }: {
     <FlowBlock context={context} via={[]} depth={1} />
     {issue && <p className="field-error" role="alert">{issue}</p>}
     <p className="fine-print">Read when the key is pressed: if {conditionLabel(action.when)}. Every test is read{usesObs(action.when) ? ', and OBS must be running and set up' : ''}; if one cannot be read, the press fails and neither list runs. Drag a block by its grip, or use the arrows, to reorder it or move it into another group or list.</p>
-    <p className="fine-print">Each list runs up to {conditionalSteps.maximum} steps in order, 280 ms apart; the first failed step stops the rest of that list. If / else blocks nest {flowLimits.conditionalDepth} levels deep, with {flowLimits.steps} steps in all, and groups of tests nest {flowLimits.conditionDepth} levels deep with {flowLimits.conditionLeaves} tests in all.</p>
+    <details className="learn-more"><summary>Learn more</summary><p className="fine-print">Each list runs up to {conditionalSteps.maximum} steps in order, 280 ms apart; the first failed step stops the rest of that list. If / else blocks nest {flowLimits.conditionalDepth} levels deep, with {flowLimits.steps} steps in all, and groups of tests nest {flowLimits.conditionDepth} levels deep with {flowLimits.conditionLeaves} tests in all.</p></details>
     {obsNote}
   </div>;
 }
@@ -100,8 +100,8 @@ function FlowBlock({ context, via, depth }: { context: Context; via: Via; depth:
   if (!block) return null;
   return <div className={`flow-block${depth > 1 ? ' flow-nested' : ''}`} data-depth={depth}>
     <ConditionTree context={context} via={via} owner={owner} base={base} when={block.when} />
-    <FlowList context={context} list={{ via, branch: 'then' }} depth={depth} title="Then" base={base} />
-    <FlowList context={context} list={{ via, branch: 'else' }} depth={depth} title="Otherwise (optional)" base={base} />
+    <FlowList context={context} list={{ via, branch: 'then' }} depth={depth} title="Then do" base={base} />
+    <FlowList context={context} list={{ via, branch: 'else' }} depth={depth} title="Otherwise do (optional)" base={base} />
   </div>;
 }
 
@@ -146,14 +146,17 @@ function ConditionTree({ context, via, owner, base, when }: { context: Context; 
         <label htmlFor={id('when')}>{label}</label>
         {path.length > 0 && <ConditionButtons when={when} path={path} index={index} parent={parent} edit={edit} what="test" />}
       </div>
-      <SelectField id={id('when')} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey, variables), 'when')}>
-        {conditionKeys.map(([kind, text]) => <option key={kind} value={kind}>{text}</option>)}
-      </SelectField>
+      {/* The front-app test reads as one sentence: "[The front app is ▾] [Finder ▾]". */}
+      <div className={typeof value === 'string' ? 'flow-test-line' : undefined}>
+        <SelectField id={id('when')} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey, variables), 'when')}>
+          {conditionKeys.map(([kind, text]) => <option key={kind} value={kind}>{text}</option>)}
+        </SelectField>
+        {typeof value === 'string' && context.render.app({ inputId: id('app'), bundleId: value, onChange: bundleId => replace({ focused_app: bundleId }, 'app') })}
+      </div>
       {typeof value === 'object'
         ? <VariableTest idBase={id('variable')} node={node as VariableLeaf} onChange={next => replace(next, 'variable')} />
         : typeof value === 'string'
-        ? <>{context.render.app({ inputId: id('app'), bundleId: value, onChange: bundleId => replace({ focused_app: bundleId }, 'app') })}
-          <p className="fine-print">Compared with the front app's bundle ID when the key is pressed, without regard to letter case. To act in every other app, swap the two lists.</p></>
+        ? null
         : typeof value === 'number'
         ? <><label className="spaced-label" htmlFor={id('volume')}>Volume (%)</label>
           <IntegerField key={`${context.selectorKey}:${owner}:${path.join('.')}`} id={id('volume')} value={value} minimum={0} maximum={100} onCommit={percent => replace({ output_volume_at_least: percent }, 'volume')} /></>
@@ -179,7 +182,7 @@ function ConditionTree({ context, via, owner, base, when }: { context: Context; 
         {!isRoot && <Grip label="Drag this group to move it" />}
         <label htmlFor={modeId}>If</label>
         <SelectField id={modeId} value={mode} onChange={event => edit(setGroupMode(when, path, event.target.value as CombineMode), modeId)}>
-          <option value="all">All of these hold (AND)</option><option value="any">Any one holds (OR)</option>
+          <option value="all">all of these are true (AND)</option><option value="any">any one of these is true (OR)</option>
         </SelectField>
         {!isRoot && <ConditionButtons when={when} path={path} index={path[path.length - 1]} parent={parent} edit={edit} what="group" />}
       </div>
@@ -300,6 +303,7 @@ function FlowList({ context, list, depth, title, base }: { context: Context; lis
       })}
       {slot(steps.length)}
     </ol>
+    {steps.length === 0 && <p className="fine-print flow-empty">Nothing happens.</p>}
     <button type="button" id={`${listBase}add`} className="button compact" disabled={!addStep} onClick={() => apply(addStep)}><Plus size={16} />Add {noun.toLowerCase()}</button>
   </>;
 }

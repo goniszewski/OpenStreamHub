@@ -538,6 +538,10 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .flow-dragged { opacity:.45; }
 .action-steps.flow-steps { gap:0; margin:8px 0; }
 .action-steps.flow-steps>li.flow-slot { border:0; padding:0; border-radius:4px; }
+/* The front-app test on one line, wrapping in a narrow inspector: "[The front app is ▾] [Finder ▾] [Choose app…]". */
+.flow-test-line { display:flex; flex-wrap:wrap; align-items:flex-start; gap:8px; }.flow-test-line>.select-field { flex:0 1 auto; }.flow-test-line>.app-field { flex:1 1 220px; min-width:0; margin-top:0; }
+.app-field .focus-bundle-row .select-field { flex:1; min-width:0; }
+.flow-empty { margin:4px 0 8px; font-style:italic; }
 .action-steps.flow-steps>li:not(.flow-slot) { margin:2px 0; }
 .variables-panel h3 { margin:0 0 8px; font-size:14px; }
 .variables-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }

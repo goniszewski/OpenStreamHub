@@ -7,6 +7,15 @@ import {
 import { variablesOfKind } from './variable-model';
 import { useVariables } from './variables-context';
 
+// Opens the inspector's Variables section, brings it into view and puts the focus on Add variable.
+function showVariablesPanel() {
+  const section = document.querySelector<HTMLDetailsElement>('.inspector-variables');
+  if (!section) return;
+  section.open = true;
+  section.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  document.getElementById('variable-add')?.focus({ preventScroll: true });
+}
+
 // The variable choices of an action or a test: the declared variables of the kinds it can use. A name the profile no
 // longer declares stays selectable (marked) so the editor never silently swaps it; saving says it is not declared.
 export function VariableSelect({ id, label, value, kinds, onChange, spaced }: {
@@ -21,7 +30,8 @@ export function VariableSelect({ id, label, value, kinds, onChange, spaced }: {
       {value !== '' && !known && <option value={value}>{value} (not declared)</option>}
       {variables.map(variable => <option key={variable.name} value={variable.name}>{variable.name}</option>)}
     </SelectField>
-    {variables.length === 0 && <p className="fine-print" role="note">No {kinds.length === 1 && kinds[0] === 'number' ? 'number' : kinds.length === 1 && kinds[0] === 'bool' ? 'on / off' : ''} variable is declared yet. Add one under Variables in the inspector.</p>}
+    {variables.length === 0 && <p className="fine-print" role="note">No {kinds.length === 1 && kinds[0] === 'number' ? 'number' : kinds.length === 1 && kinds[0] === 'bool' ? 'on / off' : ''} variable is declared yet.{' '}
+      <button type="button" className="link-button" onClick={showVariablesPanel}>Add one under Variables</button>.</p>}
   </>;
 }
 
@@ -63,8 +73,8 @@ export function VariableActionFields({ prefix, action, onChange }: { prefix: str
             // The value takes the variable's kind, starting from its declared value.
             onChange({ type: 'set_variable', name, value: next ? next.value : action.value }, 'variable-name');
           }} />
-        <VariableValueField id={id('variable-value')} label="Set it to" spaced value={kind && kind !== variableKind(action.value) ? defaultVariableValue(kind) : action.value}
-          onChange={value => onChange({ type: 'set_variable', name: action.name, value }, 'variable-value')} />
+        {action.name !== '' && <VariableValueField id={id('variable-value')} label="Set it to" spaced value={kind && kind !== variableKind(action.value) ? defaultVariableValue(kind) : action.value}
+          onChange={value => onChange({ type: 'set_variable', name: action.name, value }, 'variable-value')} />}
         <p className="fine-print">Replaces the value. It is kept until the service stops; each module's service keeps its own.</p>
       </div>;
     case 'toggle_variable':

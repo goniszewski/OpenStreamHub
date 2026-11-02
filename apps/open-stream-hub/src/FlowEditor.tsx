@@ -250,8 +250,10 @@ function VariableTest({ idBase, node, onChange }: { idBase: string; node: Variab
   return <>
     <VariableSelect id={`${idBase}-name`} label="Variable" spaced value={name} kinds={['bool', 'number', 'text']}
       onChange={next => { const found = variables.find(variable => variable.name === next); onChange({ variable_is: { name: next, value: found ? found.value : value } }); }} />
-    <VariableValueField id={`${idBase}-value`} label="Is equal to" spaced value={value as VariableValue} onChange={next => onChange({ variable_is: { name, value: next } })} />
-    <p className="fine-print">A {variableKind(value)} variable is compared with a {variableKind(value)} value.</p>
+    {name !== '' && <>
+      <VariableValueField id={`${idBase}-value`} label="Is equal to" spaced value={value as VariableValue} onChange={next => onChange({ variable_is: { name, value: next } })} />
+      <p className="fine-print">A {variableKind(value)} variable is compared with a {variableKind(value)} value.</p>
+    </>}
   </>;
 }
 

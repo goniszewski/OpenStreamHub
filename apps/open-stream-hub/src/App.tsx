@@ -34,7 +34,7 @@ import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
+import { AppWindow, CheckCircle2, CircleHelp, FileText, Layers, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
 import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
@@ -632,7 +632,7 @@ export default function App() {
             {choices.map(item => <option key={item.value} value={item.value}>{item.builtIn ? `${item.name} (built-in)` : item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
-          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
+          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><Layers size={17} /></button>
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{t('header.status.count', { count: connectedModules })}</span>}<span className="sr-only">{deviceStatus}</span></span>

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { appDisplayName } from './app-names';
 import type { Action, Binding, BindingAction, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
 import { defaultBindingAction, isValidForControl, pickerEntryLabel, pickerWebStorage, recordRecentAction } from './action-picker-model';
 import { isFaderTemplate } from './action-model';
@@ -32,6 +33,9 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
 // The stored keypad view state, reset to the root page once the open folder is gone.
 // Returns the same object while the path is usable. Without the reset, undoing
 // Create folder and then redoing it would jump back into the folder.
+// A new key's label: an application's name, otherwise what the action does.
+const keyLabelFor = (action: BindingAction | null) => (action?.type === 'launch_app' ? appDisplayName(action.bundle_id) : actionLabel(action));
+
 export function syncKeypad(state: SessionState, keypad: { generation: number; path: string[] }) {
   const path = usablePath(state, keypad);
   return path === keypad.path ? keypad : { generation: state.draftGeneration, path };
@@ -42,7 +46,7 @@ export function syncKeypad(state: SessionState, keypad: { generation: number; pa
 // that cannot take a binding (a folder key, the reserved Back key).
 export function dropProfileEdit(profile: Profile, keypadPath: readonly string[], module: ServiceModule, control: number, type: PickerActionType): Profile {
   const action = defaultBindingAction(type);
-  if (module === 'm4315') return editKeypadBinding(profile, keypadPath, control, 'pressed', '', action as Action, clampUtf8(actionLabel(action)));
+  if (module === 'm4315') return editKeypadBinding(profile, keypadPath, control, 'pressed', '', action as Action, clampUtf8(keyLabelFor(action)));
   return editBinding(profile, { module, control, gesture: gestures[module][0], serial: '' }, action);
 }
 
@@ -105,7 +109,7 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     try {
       if (isKeypad) {
         if (isFaderTemplate(action)) throw new Error('This action is available only for faders.');
-        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(actionLabel(action))), key);
+        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(keyLabelFor(action))), key);
       } else session.edit(editBinding(profile, selection, action), key);
     } catch (reason) { session.setError(errorMessage(reason)); }
   }

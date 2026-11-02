@@ -1,4 +1,5 @@
 import { AppWindow, Check, ChevronDown, FolderOpen, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { rememberAppName } from './app-names';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, RunningApp, StepAction, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
@@ -431,13 +432,13 @@ function LaunchAppFields({ inputId, bundleId, invoke, onChange, label = 'App', i
   call.current = invoke;
   const trimmed = bundleId.trim();
   const recent = list.open ? readRecentApps(pickerWebStorage) : [];
-  const refresh = () => { if (call.current) void listRunningApps(call.current).then(setApps); };
+  const refresh = () => { if (call.current) void listRunningApps(call.current).then(list => { list.forEach(app => rememberAppName(app.bundle_id, app.name)); setApps(list); }); };
   useEffect(refresh, []);
   useEffect(() => {
     if (!call.current || trimmed === '') return;
     let current = true;
     const timer = setTimeout(() => {
-      call.current?.<string | null>('app_name', { bundleId: trimmed }).then(name => { if (current) setFound({ id: trimmed, name }); }, () => {});
+      call.current?.<string | null>('app_name', { bundleId: trimmed }).then(name => { rememberAppName(trimmed, name); if (current) setFound({ id: trimmed, name }); }, () => {});
     }, 300);
     return () => { current = false; clearTimeout(timer); };
   }, [trimmed]);
@@ -458,7 +459,7 @@ function LaunchAppFields({ inputId, bundleId, invoke, onChange, label = 'App', i
     const active = document.getElementById(`${inputId}-search`)?.getAttribute('aria-activedescendant');
     if (active) document.getElementById(active)?.scrollIntoView?.({ block: 'nearest' });
   }, [list.open, list.active, inputId]);
-  const pick = (app: RunningApp) => { recordRecentApp(pickerWebStorage, app); setFound({ id: app.bundle_id, name: app.name }); onChange(app.bundle_id); };
+  const pick = (app: RunningApp) => { rememberAppName(app.bundle_id, app.name); recordRecentApp(pickerWebStorage, app); setFound({ id: app.bundle_id, name: app.name }); onChange(app.bundle_id); };
   const choose = async () => {
     if (!invoke || choosing) return;
     setChoosing(true);

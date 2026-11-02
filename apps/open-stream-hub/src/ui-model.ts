@@ -1,4 +1,5 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
+import { appDisplayName } from './app-names';
 import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
@@ -172,7 +173,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'volume': return `Output volume ${action.delta > 0 ? '+' : ''}${action.delta} points`;
     case 'toggle_mute': return 'Toggle output mute';
     case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${keyLabel(action.key)}`;
-    case 'launch_app': return `Open ${action.bundle_id}`;
+    case 'launch_app': return `Open ${appDisplayName(action.bundle_id)}`;
     case 'volume_from_position': return 'Follow fader position for output volume';
     case 'mic_input_volume_from_position': return 'Follow fader position for microphone volume';
     case 'obs_input_volume_from_position': return `Follow fader position for OBS input “${clipLabel(action.input)}”`;

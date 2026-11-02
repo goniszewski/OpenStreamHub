@@ -141,3 +141,14 @@ describe('applying it to the key', () => {
     expect(next.state.draft.profile.keypad!.pages[0].artwork!['0'].design!.icon_id).toBe(appIconId('com.apple.mail'));
   });
 });
+
+describe('the key label on an application drawing', () => {
+  const app: AutoPlan = { kind: 'app', bundleId: 'com.apple.finder' };
+  it('draws the label as the text, and follows it only while the text is a label', () => {
+    expect(autoDesign(app, 'Finder').text).toBe('Finder');
+    const drawn = { ...prepared, design: storedKeyArtworkDesign(autoDesign(app, 'Finder')) };
+    expect(isAutoDrawn(drawn, ['', 'Finder'])).toBe(true);
+    expect(isAutoDrawn(drawn)).toBe(false);
+    expect(isAutoDrawn({ ...drawn, design: { ...drawn.design!, text: 'Mine' } }, ['', 'Finder'])).toBe(false);
+  });
+});

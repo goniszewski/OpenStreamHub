@@ -25,7 +25,7 @@ describe('FocusRulesPanel markup', () => {
     expect(markup).toContain('<label for="focus-rule-bundle-id">App bundle ID</label>');
     expect(markup).toContain('Use current app');
     expect(markup).toContain('<label for="focus-rule-profile">Profile</label>');
-    expect(markup).toContain('>Everyday</option>');
+    expect(markup).toContain('<span class="select-option-label">Everyday</span>');
     expect(markup).toContain('Add rule');
     expect(markup).not.toContain('aria-invalid="true"');
   });

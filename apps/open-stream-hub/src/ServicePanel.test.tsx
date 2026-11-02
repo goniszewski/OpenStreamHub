@@ -8,6 +8,7 @@ import { DisplaySettingsStore } from './display-settings';
 import { stableStringify } from './draft-model';
 import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
 import { DeviceFeed } from './device-feed';
+import { hasOption } from './select-markup';
 
 const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
@@ -1014,8 +1015,8 @@ describe('Run-panel selection across replug', () => {
     (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [replacement] };
     (runner as unknown as { state: unknown }).state = { ...runner.getState(), runs: { [run.serviceId]: run } };
     const markup = render({ feed, runner });
-    expect(markup).toContain(`<option value="${disconnectedServiceValue}" selected="">`);
-    expect(markup).toContain(`<option value="${dial.path_hex}">`);
+    expect(hasOption(markup, disconnectedServiceValue, null, true)).toBe(true);
+    expect(hasOption(markup, dial.path_hex, null, false)).toBe(true);
     expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).device).toBe(replacement);
     expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).run).toBeUndefined();
   });

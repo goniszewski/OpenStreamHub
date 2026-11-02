@@ -272,7 +272,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
   const status = running ? 'Receiving live input (read-only).' : feedState.error ?? (feedState.sessionModules.length ? 'Showing input from the running profile (read-only).' : enabled ? 'Live input is off.' : 'Live input needs the desktop app. Launch it to read hardware.');
   return <div className="live-controls">
     <label className="sr-only" htmlFor="rig-live-source">Live input source</label>
-    <select id="rig-live-source" value={running && source === 'off' ? 'running' : source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
+    <SelectField id="rig-live-source" value={running && source === 'off' ? 'running' : source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
       <option value="off">Live: Off</option>
       {running && source === 'off' && <option value="running">Live: Auto-detected</option>}
       {demoKinds.map(kind => <option key={kind} value={`demo:${kind}`}>Demo: {replayLabels[kind]}</option>)}
@@ -281,7 +281,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
         const position = device.base_cell ? ` · ${deviceLocation(device)} on base` : '';
         return <option key={device.path_hex} value={`live:${device.path_hex}`}>{short}{position} {device.serial_number ?? device.path_hex.slice(-6)}</option>;
       })}
-    </select>
+    </SelectField>
     {running ? <button type="button" className="button" onClick={stop}>Stop</button> : <button type="button" className="button" disabled={!enabled || source === 'off'} onClick={start}>Start</button>}
     {running && <span className="live-badge">Live</span>}
     {enabled && <label className="auto-detect"><input type="checkbox" checked={feedState.autoDetect} onChange={event => { writeAutoDetect(webStorage, event.target.checked); feed.setAutoDetect(event.target.checked); }} />Auto-detect modules</label>}

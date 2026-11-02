@@ -1,10 +1,105 @@
-import { Component, useEffect, useRef, useState } from 'react';
-import type { ReactNode, SelectHTMLAttributes } from 'react';
-import { ChevronDown, CircleHelp, RotateCcw } from 'lucide-react';
+import { Children, Component, Fragment, isValidElement, useEffect, useId, useRef, useState } from 'react';
+import type { FocusEventHandler, KeyboardEvent, ReactNode } from 'react';
+import { Check, ChevronDown, CircleHelp, RotateCcw } from 'lucide-react';
 import { labelIssue, parseIntegerInput } from './draft-model';
 
-export function SelectField({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement>) {
-  return <div className={`select-field${props.disabled ? ' disabled' : ''}`}><select {...props}>{children}</select><ChevronDown size={17} aria-hidden="true" /></div>;
+// A dropdown that looks like the rest of the app. A native select opens the system menu, which a webview cannot style, so
+// this is a select-only combobox (the ARIA pattern): a button that shows the choice and a listbox that opens under it.
+// Options are declared as <option> children, exactly as for a select, and onChange gets an event-like { target: { value } }.
+export type SelectChange = { target: { value: string } };
+export interface SelectChoice { value: string; label: string; disabled: boolean }
+
+const textOf = (node: ReactNode): string => Children.toArray(node).map(child => (typeof child === 'string' || typeof child === 'number'
+  ? String(child) : isValidElement<{ children?: ReactNode }>(child) ? textOf(child.props.children) : '')).join('');
+
+// The <option> children of a select (also inside fragments), as plain choices.
+export function selectChoices(children: ReactNode): SelectChoice[] {
+  return Children.toArray(children).flatMap((child): SelectChoice[] => {
+    if (!isValidElement<{ value?: string | number; disabled?: boolean; children?: ReactNode }>(child)) return [];
+    if (child.type === Fragment) return selectChoices(child.props.children);
+    if (child.type !== 'option') return [];
+    const label = textOf(child.props.children);
+    return [{ value: child.props.value === undefined ? label : String(child.props.value), label, disabled: !!child.props.disabled }];
+  });
+}
+
+// The next choice that can be picked, stepping through the list and wrapping; stays put when none can.
+export function nextChoice(choices: ReadonlyArray<SelectChoice>, from: number, delta: 1 | -1): number {
+  const count = choices.length;
+  const start = from < 0 && delta < 0 ? count : from;
+  for (let step = 1; step <= count; step += 1) {
+    const index = (((start + delta * step) % count) + count) % count;
+    if (!choices[index].disabled) return index;
+  }
+  return from;
+}
+
+export function SelectField({ id, value, onChange, disabled, children, onFocus, 'aria-describedby': describedBy }: {
+  id?: string; value: string | number; onChange(event: SelectChange): void; disabled?: boolean; children?: ReactNode;
+  onFocus?: FocusEventHandler<HTMLButtonElement>; 'aria-describedby'?: string;
+}) {
+  const generated = useId();
+  const triggerId = id ?? generated;
+  const listId = `${triggerId}-list`;
+  const optionId = (index: number) => `${triggerId}-option-${index}`;
+  const choices = selectChoices(children);
+  const selected = choices.findIndex(choice => choice.value === String(value));
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const typed = useRef({ text: '', at: 0 });
+  const list = useRef<HTMLUListElement>(null);
+
+  useEffect(() => {
+    if (open && active >= 0) list.current?.querySelector(`[id="${optionId(active)}"]`)?.scrollIntoView({ block: 'nearest' });
+  }, [open, active]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const show = () => { setActive(selected >= 0 ? selected : nextChoice(choices, -1, 1)); setOpen(true); };
+  const choose = (index: number) => {
+    const choice = choices[index];
+    if (!choice || choice.disabled) return;
+    setOpen(false);
+    if (index !== selected) onChange({ target: { value: choice.value } });
+  };
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    if (!open) {
+      if (['ArrowDown', 'ArrowUp', 'Enter', ' '].includes(event.key)) { event.preventDefault(); show(); }
+      return;
+    }
+    switch (event.key) {
+      case 'ArrowDown': event.preventDefault(); setActive(nextChoice(choices, active, 1)); break;
+      case 'ArrowUp': event.preventDefault(); setActive(nextChoice(choices, active, -1)); break;
+      case 'Home': event.preventDefault(); setActive(nextChoice(choices, -1, 1)); break;
+      case 'End': event.preventDefault(); setActive(nextChoice(choices, -1, -1)); break;
+      case 'Enter': case ' ': event.preventDefault(); choose(active); break;
+      case 'Escape': event.preventDefault(); event.stopPropagation(); setOpen(false); break;
+      case 'Tab': setOpen(false); break;
+      default:
+        if (event.key.length === 1) {
+          // Typing picks the next choice that starts with what was typed in the last moment.
+          const now = Date.now();
+          typed.current = { text: (now - typed.current.at < 700 ? typed.current.text : '') + event.key.toLowerCase(), at: now };
+          const from = active < 0 ? 0 : active;
+          const order = [...choices.keys()].map(offset => (from + offset + (typed.current.text.length === 1 ? 1 : 0)) % choices.length);
+          const hit = order.find(index => !choices[index].disabled && choices[index].label.toLowerCase().startsWith(typed.current.text));
+          if (hit !== undefined) setActive(hit);
+        }
+    }
+  };
+  return <div className={`select-field${disabled ? ' disabled' : ''}${open ? ' open' : ''}`}>
+    <button type="button" id={id} className="select-trigger" role="combobox" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
+      aria-activedescendant={open && active >= 0 ? optionId(active) : undefined} aria-describedby={describedBy} onFocus={onFocus}
+      onClick={() => (open ? setOpen(false) : show())} onBlur={() => setOpen(false)} onKeyDown={onKeyDown}>
+      <span className="select-value">{(choices[selected] ?? choices[0])?.label ?? ''}</span>
+    </button>
+    <ChevronDown size={17} aria-hidden="true" />
+    <ul id={listId} ref={list} className="select-list" role="listbox" hidden={!open} onMouseDown={event => event.preventDefault()}>
+      {choices.map((choice, index) => <li key={`${index}:${choice.value}`} id={optionId(index)} role="option" data-value={choice.value} aria-selected={index === selected} aria-disabled={choice.disabled || undefined}
+        className={`select-option${index === active ? ' active' : ''}`} onMouseEnter={() => !choice.disabled && setActive(index)} onClick={() => choose(index)}>
+        <span className="select-option-label">{choice.label}</span>{index === selected && <Check size={15} aria-hidden="true" />}
+      </li>)}
+    </ul>
+  </div>;
 }
 
 // Keeps the typed text locally and commits only whole numbers within range,

@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { AutoSwitchRow } from './AutoSwitchRow';
 import { FocusRulesStore, appChoices, appName, rulesForProfile } from './focus-rules';
 import type { FocusRule, RunningApp } from './contracts';
+import { triggerOf } from './select-markup';
 
 const rules: FocusRule[] = [
   { id: 'r1', app_bundle_id: 'com.apple.Safari', profile_id: 'p1' },
@@ -50,6 +51,6 @@ describe('AutoSwitchRow', () => {
     expect(markup).toContain('id="auto-switch-app"');
     expect(markup).toContain('Choose an app…');
     expect(markup).toContain('Another app (type its bundle ID)…');
-    expect(markup).toMatch(/<select[^>]*id="auto-switch-app"[^>]*disabled/);
+    expect(triggerOf(markup, 'auto-switch-app')).toContain('disabled=""');
   });
 });

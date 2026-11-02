@@ -4,14 +4,25 @@
 body { margin:0; font-size:14px; line-height:1.45; letter-spacing:-.1px; }
 button,input,select { font:inherit; color:inherit; }
 button { cursor:pointer; } button:disabled { cursor:default; opacity:.55; }
-button:focus-visible,input:focus-visible,select:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+button:focus-visible,input:focus-visible,select:focus-visible,.select-trigger:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
 button,input,select { -webkit-tap-highlight-color:transparent; }
-input,select { width:100%; min-height:43px; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); }
+input,select,.select-trigger { width:100%; min-height:43px; padding:9px 12px; border:1px solid var(--line); border-radius:9px; background:var(--control); }
 select { height:43px; -webkit-appearance:none; appearance:none; padding-right:35px; }
+.select-trigger { display:flex; align-items:center; height:43px; padding-right:35px; text-align:left; }
+.select-trigger:hover:enabled,.select-field.open .select-trigger { border-color:var(--accent); }
+.select-value { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.select-list { position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:40; display:grid; gap:2px; max-height:280px; overflow-y:auto; overscroll-behavior:contain; margin:0; padding:6px; list-style:none; border:1px solid var(--line); border-radius:11px; background:var(--panel); box-shadow:var(--shadow); }
+.select-list[hidden] { display:none; }
+.select-option { display:flex; align-items:center; gap:9px; min-height:32px; padding:5px 8px; border-radius:7px; font-size:13px; cursor:default; user-select:none; }
+.select-option.active { background:var(--selected); }
+.select-option[aria-selected="true"] { font-weight:600; }
+.select-option[aria-disabled="true"] { opacity:.5; }
+.select-option>svg { flex:none; margin-left:auto; color:var(--accent); }
+.select-option-label { min-width:0; overflow-wrap:anywhere; }
 .select-field { position:relative; width:100%; min-width:0; }
 .select-field>svg { position:absolute; top:50%; right:12px; transform:translateY(-50%); pointer-events:none; color:var(--muted); }
 .select-field.disabled>svg { opacity:.65; }
-input:disabled,select:disabled { opacity:.65; }
+input:disabled,select:disabled,.select-trigger:disabled { opacity:.65; }
 input[type="checkbox"] { width:16px; height:16px; min-height:0; accent-color:var(--accent); }
 label { display:block; font-weight:600; margin:0 0 9px; }
 fieldset { border:0; padding:0; margin:0; min-width:0; }
@@ -32,7 +43,7 @@ html,body { overflow:clip; }
 .profile-switcher { position: relative; display:flex; align-items:center; min-width:200px; max-width:300px; gap:10px; border:1px solid var(--line); border-radius:10px; padding:0 8px 0 12px; height:42px; background:var(--control); }
 .profile-switcher svg { flex:none; color:var(--muted); }
 .profile-switcher .select-field { flex:1; }
-.profile-switcher select { border:0; padding:0 24px 0 4px; background:transparent; min-height:37px; height:37px; width:100%; min-width:0; }
+.profile-switcher select,.profile-switcher .select-trigger { border:0; padding:0 24px 0 4px; background:transparent; min-height:37px; height:37px; width:100%; min-width:0; }
 .profile-switcher .select-field>svg { right:0; }
 .profile-switcher .manage-profiles { color:var(--muted); }
 .profile-switcher .manage-profiles:hover:enabled,.profile-switcher .manage-profiles[aria-expanded="true"] { color:var(--accent); background:var(--selected); }
@@ -169,7 +180,7 @@ html,body { overflow:clip; }
 .preview-line .error-text { color:var(--red); }
 .preview-line.done svg { color:var(--green); }
 .fine-print { font-size:11px; color:var(--muted); line-height:1.6; margin:11px 0 0; overflow-wrap:anywhere; }
-.inspector { border-left:1px solid var(--line); padding:34px 22px; min-width:0; }.inspector h2 { font-size:27px; margin-bottom:28px; letter-spacing:-.7px; }.inspector label { font-size:14px; }.inspector input,.inspector select { font-size:13px; }
+.inspector { border-left:1px solid var(--line); padding:34px 22px; min-width:0; }.inspector h2 { font-size:27px; margin-bottom:28px; letter-spacing:-.7px; }.inspector label { font-size:14px; }.inspector input,.inspector select,.inspector .select-trigger { font-size:13px; }
 .inspector-divider { height:1px; background:var(--line); margin:26px 0; }.action-fields { margin-top:18px; }.action-fields label { font-weight:500; font-size:12px; }.spaced-label { margin-top:15px; }.modifiers { display:grid; grid-template-columns:1fr 1fr; margin-top:18px; gap:9px; }.modifiers legend { font-size:12px; font-weight:600; margin-bottom:11px; }.modifiers label { display:flex; align-items:center; gap:7px; margin:0; font-size:12px; font-weight:400; }.inspector .full-width { margin-top:24px; font-size:12px; }
 /* The action picker: a trigger styled like the other inputs and its popover, which must be able
    to overflow the fieldset it lives in. */
@@ -222,7 +233,7 @@ html,body { overflow:clip; }
   .inspector { padding:41px 30px; }
   .inspector h2 { font-size:32px; }
   .inspector label { font-size:16px; }
-  .inspector input,.inspector select { font-size:16px; }
+  .inspector input,.inspector select,.inspector .select-trigger { font-size:16px; }
   .inspector .action-fields label,.inspector .modifiers label { font-size:14px; }
   .inspector .full-width { font-size:14px; }
 }
@@ -341,7 +352,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .live-controls { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:0 0 12px; padding-bottom:10px; border-bottom:1px solid var(--line); font-size:12px; }
 .live-controls .auto-detect { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; cursor:pointer; }.live-controls .auto-detect input { width:15px; min-height:0; height:15px; padding:0; accent-color:var(--accent); }
 .live-controls .live-status { flex:1 1 100%; min-width:0; overflow-wrap:anywhere; }
-.live-controls select { width:auto; min-width:150px; max-width:260px; height:32px; min-height:32px; padding-top:0; padding-bottom:0; font-size:12px; }
+.live-controls select,.live-controls .select-trigger { width:auto; min-width:150px; max-width:260px; height:32px; min-height:32px; padding-top:0; padding-bottom:0; font-size:12px; }
 .live-controls .button { height:32px; min-height:32px; padding:0 14px; }
 .live-badge { padding:2px 8px; border-radius:999px; background:var(--soft-green); color:var(--green); font-size:11px; font-weight:700; }
 .live-status { color:var(--muted); }.live-status.failed { color:var(--red); }
@@ -961,5 +972,14 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .running-profile { margin-top:auto; padding:10px 12px 12px; display:flex; flex-direction:column; gap:6px; }
 .running-profile + .sidebar-bottom { margin-top:0; }
 .running-profile label { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
-.running-profile select { width:100%; }
+.running-profile select,.running-profile .select-trigger { width:100%; }
 .running-profile .fine-print { margin:0; }
+
+.assignments { position:relative; display:flex; justify-content:center; margin:10px 0; }
+.assignments-chip.none { color:var(--muted); }
+.assignments-panel { position:absolute; top:calc(100% + 6px); left:50%; transform:translateX(-50%); z-index:40; width:min(420px,92vw); max-height:320px; overflow-y:auto; overscroll-behavior:contain; padding:12px; border:1px solid var(--line); border-radius:11px; background:var(--panel); box-shadow:var(--shadow); }
+.assignments-list { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
+.assignments-list li { display:grid; grid-template-columns:minmax(0,5fr) minmax(0,6fr); gap:12px; padding:7px 8px; border-radius:7px; font-size:13px; }
+.assignments-list li:nth-child(odd) { background:var(--selected); }
+.assignments-trigger { font-weight:600; overflow-wrap:anywhere; }
+.assignments-action { color:var(--muted); overflow-wrap:anywhere; }

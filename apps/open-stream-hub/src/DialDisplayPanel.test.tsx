@@ -6,6 +6,7 @@ import { DialDisplayPanel } from './DialDisplayPanel';
 import { DialEditorTabs } from './Inspector';
 import { ProfileSession } from './profile-session';
 import type { Invoke } from './profile-session';
+import { choicesOf, hasOption, shownBy } from './select-markup';
 
 const flat: Profile = { schema_version: 1, name: 'P', bindings: [{ module: 'm131e', control: 0, gesture: 'right', action: { type: 'volume', delta: 2 } }] };
 const clock: Profile = setDialDisplayContent(flat, 'clock');
@@ -28,19 +29,19 @@ describe('DialDisplayPanel markup', () => {
   it('offers every dial face, defaulting to the function name', () => {
     const { html } = render(flat);
     expect(html).toContain('aria-labelledby="dial-display-heading"');
-    expect(html).toMatch(/<select id="dial-display-mode"[^>]*>/);
-    for (const label of ['Function name (default)', 'Digital clock (HH:MM)', 'Analog clock', 'CPU usage (%, macOS only)', 'Custom image', 'Nothing (keys only)']) {
-      expect(html).toContain(`>${label}</option>`);
-    }
-    expect(html).toContain('<option value="function" selected="">');
+    expect(shownBy(html, 'dial-display-mode')).toBe('Function name (default)');
+    expect(choicesOf(html, 'dial-display-mode').map(choice => choice.label)).toEqual(
+      ['Function name (default)', 'Digital clock (HH:MM)', 'Analog clock', 'CPU usage (%, macOS only)', 'Custom image', 'Nothing (keys only)'],
+    );
+    expect(hasOption(html, 'function', null, true)).toBe(true);
     expect(html).toContain('aria-label="Preview of the dial screen face"');
     expect(html).toContain('<canvas width="240" height="240"');
   });
   it('keeps the profile choice selected and notes what it means', () => {
-    expect(render(clock).html).toContain('<option value="clock" selected="">');
+    expect(hasOption(render(clock).html, 'clock', null, true)).toBe(true);
     expect(render(clock).html).toContain('The clock faces follow the time on this computer.');
     const { html } = render(pictured);
-    expect(html).toContain('<option value="image" selected="">');
+    expect(hasOption(html, 'image', null, true)).toBe(true);
     expect(html).toContain('<img src="data:image/jpeg;base64,AAAA"');
     expect(html).toContain('aria-label="Custom dial image"');
     expect(html).toContain('Remove image');
@@ -51,7 +52,7 @@ describe('DialDisplayPanel markup', () => {
     const kept = setDialImage(flat, 'AAAA', { image: 'BBBB', fit: 'contain', quarter_turns: 1, background: [255, 0, 0] });
     const { html } = render(kept);
     expect(html).toContain('id="dial-image-fit"');
-    expect(html).toContain('<option value="contain" selected="">');
+    expect(hasOption(html, 'contain', null, true)).toBe(true);
     expect(html).toContain('value="#ff0000"');
     expect(html).toContain('>90°<');
     expect(html).not.toContain('choose the picture again');

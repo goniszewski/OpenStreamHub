@@ -3,6 +3,7 @@
 - All selects use a styled listbox dropdown instead of the unstyleable native popup.
 - Each module shows "x of y assigned" with a popup listing every hardware trigger and its action.
 - The Variables panel lists which bindings use a variable, and each one opens that binding in the workspace.
+- "Switch automatically when an app is in front" adds any installed app through the Finder dialog on Applications instead of a typed bundle ID.
 - The Manage profiles button uses a layers icon instead of one that looked like "add folder".
 
 ## Changes
@@ -11,12 +12,14 @@
 - `moduleAssignments` counts controls in use, folders included and the reserved Back key excluded on folder pages.
 - `ModuleAssignmentsChip` popup closes on outside click, Escape, and module or keypad page change.
 - "Used 1 time, by:" in the Variables panel now lists each trigger and its action; each trigger is a button that opens that binding in the workspace.
+- The auto-switch row's last option is now "Another app from Applications…", which runs `choose_app` (via a new `FocusRulesStore.chooseApp`) and selects the result; the bundle ID field and Use current app button are gone from that row (the focused-app rules panel keeps them).
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1356 tests)
+- [x] `tsc` and the full vitest suite pass (1358 tests)
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding
+- [ ] In Manage profiles, "Another app from Applications…" opens Finder; the chosen app can be added, and cancelling changes nothing
 - [ ] Add an If with no variables: no value field, link focuses Add variable
 

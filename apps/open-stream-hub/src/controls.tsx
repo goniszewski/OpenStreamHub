@@ -44,8 +44,10 @@ export function SelectField({ id, value, onChange, disabled, children, onFocus, 
   const optionId = (index: number) => `${triggerId}-option-${index}`;
   const choices = selectChoices(children);
   const selected = choices.findIndex(choice => choice.value === String(value));
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
+  const [openState, setOpen] = useState(false);
+  const open = openState && !disabled; // a select that gets disabled while open closes
+  const [activeState, setActive] = useState(-1);
+  const active = activeState < choices.length ? activeState : -1; // the choices can change under an open list
   const typed = useRef({ text: '', at: 0 });
   const list = useRef<HTMLUListElement>(null);
 
@@ -87,7 +89,7 @@ export function SelectField({ id, value, onChange, disabled, children, onFocus, 
     }
   };
   return <div className={`select-field${disabled ? ' disabled' : ''}${open ? ' open' : ''}`}>
-    <button type="button" id={id} className="select-trigger" role="combobox" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
+    <button type="button" id={triggerId} className="select-trigger" role="combobox" disabled={disabled} aria-haspopup="listbox" aria-expanded={open} aria-controls={listId}
       aria-activedescendant={open && active >= 0 ? optionId(active) : undefined} aria-describedby={describedBy} onFocus={onFocus}
       onClick={() => (open ? setOpen(false) : show())} onBlur={() => setOpen(false)} onKeyDown={onKeyDown}>
       <span className="select-value">{(choices[selected] ?? choices[0])?.label ?? ''}</span>

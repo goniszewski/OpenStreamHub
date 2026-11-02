@@ -986,3 +986,6 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .variable-users { list-style:none; margin:4px 0 8px; padding:0; display:grid; gap:4px; }
 .variable-users li { font-size:12px; line-height:1.4; }
 .variable-users .link-button { text-align:left; }
+
+/* Clear key sits apart from the label field above it and the gesture picker below it. */
+.clear-key { margin:14px 0 24px; }

@@ -983,3 +983,6 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .assignments-list li:nth-child(odd) { background:var(--selected); }
 .assignments-trigger { font-weight:600; overflow-wrap:anywhere; }
 .assignments-action { color:var(--muted); overflow-wrap:anywhere; }
+.variable-users { list-style:none; margin:4px 0 8px; padding:0; display:grid; gap:4px; }
+.variable-users li { font-size:12px; line-height:1.4; }
+.variable-users .link-button { text-align:left; }

@@ -4,6 +4,7 @@ import { IntegerField, SelectField } from './controls';
 import {
   defaultVariableValue, freshVariableName, variableKind, variableKindLabels, variableLimits, variableNameIssue, variablesIssue, variableValueIssue,
 } from './flow-model';
+import type { BindingEntry } from './binding-model';
 import { variablesOfKind } from './variable-model';
 import { useVariables } from './variables-context';
 
@@ -95,8 +96,8 @@ export function VariableActionFields({ prefix, action, onChange }: { prefix: str
 
 // The profile's variables: name, kind and starting value. Values are kept across key presses while the service runs and
 // start again from here when it starts. Each module's service has its own.
-export function VariablesPanel({ variables, uses, disabled, onChange, onRename }: {
-  variables: ReadonlyArray<Variable>; uses: ReadonlyMap<string, number>; disabled: boolean;
+export function VariablesPanel({ variables, uses, users, onShow, disabled, onChange, onRename }: {
+  variables: ReadonlyArray<Variable>; uses: ReadonlyMap<string, number>; users?: (name: string) => BindingEntry[]; onShow?: (entry: BindingEntry) => void; disabled: boolean;
   onChange(next: Variable[], field: string): void; onRename(from: string, to: string): void;
 }) {
   const issue = variablesIssue(variables);
@@ -120,7 +121,13 @@ export function VariablesPanel({ variables, uses, disabled, onChange, onRename }
             {(Object.keys(variableKindLabels) as VariableKind[]).map(item => <option key={item} value={item}>{variableKindLabels[item]}</option>)}
           </SelectField>
           <VariableValueField id={`variable-${index}-value`} label="Starts as" spaced value={variable.value} onChange={value => update(index, { ...variable, value }, `variable-${index}-value`)} />
-          <p className="fine-print">{used === 0 ? 'Not used yet.' : `Used ${used} ${used === 1 ? 'time' : 'times'}. Remove those first to delete it or change its kind.`}</p>
+          <p className="fine-print">{used === 0 ? 'Not used yet.' : `Used ${used} ${used === 1 ? 'time' : 'times'}${users && onShow ? ', by:' : '.'} Remove those first to delete it or change its kind.`}</p>
+          {used > 0 && users && onShow && <ul className="variable-users" aria-label={`Used by`}>
+            {users(variable.name).map(entry => <li key={entry.id}>
+              <button type="button" className="link-button" onClick={() => onShow(entry)}>{entry.title}</button>
+              <span className="fine-print"> {entry.actionText}</span>
+            </li>)}
+          </ul>}
           <button type="button" className="button compact" disabled={disabled || used > 0} aria-label={`Remove variable ${variable.name || index + 1}`}
             onClick={() => onChange(variables.filter((_, at) => at !== index), 'variable-remove')}><Trash2 size={16} />Remove</button>
         </li>;

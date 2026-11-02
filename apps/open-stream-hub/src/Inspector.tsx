@@ -8,7 +8,7 @@ import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { ActionFields } from './ActionFields';
 import { VariablesPanel } from './VariableFields';
 import { VariablesContext } from './variables-context';
-import { renameVariable, variableUseCounts } from './variable-model';
+import { renameVariable, variableUseCounts, variableUsers } from './variable-model';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
 import { useObsCatalog } from './obs-catalog';
@@ -20,7 +20,7 @@ import { KeyArtworkEditor } from './KeyArtworkEditor';
 import { actionLabel, controlLabel, faderMaximum, gestureLabels, gestures } from './ui-model';
 import type { Page } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
-import { ControlWarnings } from './BindingsPanel';
+import { ControlWarnings, showEntry } from './BindingsPanel';
 import { hint, isMacPlatform, withHint } from './shortcuts';
 import { editorGestures } from './binding-model';
 import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
@@ -96,7 +96,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <div className="inspector-divider" />
       <details className="advanced inspector-variables" open={declared.length > 0 || undefined}>
         <summary>Variables{declared.length > 0 ? ` (${declared.length})` : ''}</summary>
-        <VariablesPanel variables={declared} uses={variableUseCounts(profile)} disabled={disabled}
+        <VariablesPanel variables={declared} uses={variableUseCounts(profile)} users={name => variableUsers(profile, name)} onShow={entry => showEntry(editor, entry)} disabled={disabled}
           onChange={(next, field) => session.edit({ ...profile, variables: next.length > 0 ? next : undefined }, field)}
           onRename={(from, to) => session.edit(renameVariable(profile, from, to), `variable-rename:${from}`)} />
       </details>

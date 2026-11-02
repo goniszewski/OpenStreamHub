@@ -1,4 +1,6 @@
 import type { BindingAction, BranchStep, Condition, Profile, Variable, VariableKind } from './contracts';
+import type { BindingEntry } from './binding-model';
+import { listBindings } from './binding-model';
 import { groupItems, groupMode, isGroup, variableKind } from './flow-model';
 
 // Which variables the actions of a profile use, and the edits that keep every use in step with the declarations.
@@ -43,6 +45,14 @@ export function variableUseCounts(profile: Profile): Map<string, number> {
     for (const name of actionVariableNames(action)) counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return counts;
+}
+
+// The bindings whose action (or a test inside it) uses a variable, so the editor can show and open each one.
+export function variableUsers(profile: Profile, name: string): BindingEntry[] {
+  return listBindings(profile).filter(entry => {
+    const action = entry.flat?.action ?? entry.dialBinding?.action ?? entry.keypadBinding?.action;
+    return actionVariableNames(action).includes(name);
+  });
 }
 
 const renameCondition = (when: Condition, from: string, to: string): Condition => {

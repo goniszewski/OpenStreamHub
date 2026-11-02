@@ -117,7 +117,7 @@ export const en = {
   'auto.appLabel': 'App to switch on',
   'auto.addAnother': 'Add another app…',
   'auto.choose': 'Choose an app…',
-  'auto.other': 'Another app (type its bundle ID)…',
+  'auto.other': 'Another app from Applications…',
   'auto.add': 'Add',
   'auto.duplicate': 'That app already has a rule; edit or remove it in the focused-app rules below.',
   'auto.off': 'Automatic switching is off, so these rules do nothing yet.',

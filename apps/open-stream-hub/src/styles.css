@@ -827,8 +827,8 @@ dialog.macro-recorder .dialog-actions { margin-top:14px; }
 .auto-switch-apps { list-style:none; margin:0; padding:0; display:flex; flex-wrap:wrap; gap:6px; }
 .auto-switch-apps li { display:inline-flex; align-items:center; gap:2px; padding:2px 4px 2px 10px; border:1px solid var(--line); border-radius:999px; font-size:12px; }
 .auto-switch-apps .icon-button { width:24px; height:24px; }
-.auto-switch-add,.auto-switch-typed { display:flex; gap:8px; align-items:center; }
-.auto-switch-add .select-field,.auto-switch-typed input { flex:1; min-width:0; }
+.auto-switch-add { display:flex; gap:8px; align-items:center; }
+.auto-switch-add .select-field { flex:1; min-width:0; }
 .link-button { padding:0; border:0; background:transparent; color:var(--accent); text-decoration:underline; font:inherit; }
 
 /* App preset packs in the starter chooser. */

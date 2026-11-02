@@ -168,6 +168,20 @@ export class FocusRulesStore {
     return this.state.desktop ? listRunningApps(this.invoke) : [];
   }
 
+  // The system's file dialog on Applications (the same one the action editor's app picker uses). null when the user
+  // cancels or the choice is not an app; a failure is reported in `error`.
+  async chooseApp(): Promise<RunningApp | null> {
+    if (!this.state.desktop) return null;
+    try {
+      const app = await this.invoke<RunningApp | null>('choose_app');
+      this.set({ error: null });
+      return app && typeof app.bundle_id === 'string' && typeof app.name === 'string' ? app : null;
+    } catch (reason) {
+      this.set({ error: errorMessage(reason) });
+      return null;
+    }
+  }
+
   // The last app other than OpenStreamHub that was frontmost, or null with an explanation in `error`.
   async currentApp(): Promise<string | null> {
     if (!this.state.desktop) return null;

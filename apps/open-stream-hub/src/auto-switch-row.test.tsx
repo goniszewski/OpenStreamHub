@@ -36,6 +36,21 @@ describe('FocusRulesStore.runningApps', () => {
   });
 });
 
+describe('FocusRulesStore.chooseApp', () => {
+  const store = (invoke: (command: string) => Promise<unknown>, desktop = true) => new FocusRulesStore(invoke as never, (async () => () => {}) as never, desktop);
+  it('returns the app chosen in the Finder dialog, and null when cancelled or malformed', async () => {
+    expect(await store(async () => ({ bundle_id: 'com.apple.Safari', name: 'Safari' })).chooseApp()).toEqual({ bundle_id: 'com.apple.Safari', name: 'Safari' });
+    expect(await store(async () => null).chooseApp()).toBeNull();
+    expect(await store(async () => ({ bundle_id: 1 })).chooseApp()).toBeNull();
+  });
+  it('reports a failure and never throws; does nothing outside the desktop app', async () => {
+    const failing = store(async () => { throw 'Could not open the app picker.'; });
+    expect(await failing.chooseApp()).toBeNull();
+    expect(failing.getState().error).toBe('Could not open the app picker.');
+    expect(await store(async () => ({ bundle_id: 'a.b', name: 'AB' }), false).chooseApp()).toBeNull();
+  });
+});
+
 describe('AutoSwitchRow', () => {
   const render = (props: Partial<Parameters<typeof AutoSwitchRow>[0]> = {}) => renderToStaticMarkup(<AutoSwitchRow profileId="p1" profileName="Everyday" {...props} />);
 
@@ -50,7 +65,7 @@ describe('AutoSwitchRow', () => {
     expect(markup).toContain('aria-label="Switch automatically to Everyday"');
     expect(markup).toContain('id="auto-switch-app"');
     expect(markup).toContain('Choose an app…');
-    expect(markup).toContain('Another app (type its bundle ID)…');
+    expect(markup).toContain('Another app from Applications…');
     expect(triggerOf(markup, 'auto-switch-app')).toContain('disabled=""');
   });
 });

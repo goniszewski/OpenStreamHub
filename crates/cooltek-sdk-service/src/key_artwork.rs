@@ -53,6 +53,11 @@ pub struct KeyArtworkDesign {
     pub icon_colour: String,
     /// Background colour in the same bounded hex forms.
     pub background: String,
+    /// True when the app drew this artwork on its own (an application's icon, a site's globe), so it may be redrawn
+    /// when the key's action or label changes; false once the studio saved the design. Absent for artwork made by
+    /// earlier versions, which the app recognises by its content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -380,6 +385,7 @@ pub(crate) mod tests {
             text_colour: "#ffffff".into(),
             icon_colour: "#fff".into(),
             background: "204060".into(),
+            auto: None,
         }
     }
 
@@ -410,6 +416,28 @@ pub(crate) mod tests {
             serde_json::from_value::<KeyArtwork>(value).unwrap(),
             designed
         );
+        // The auto-drawn mark is written only when set (true or false), and reads as absent otherwise.
+        let marked = KeyArtwork {
+            frames: vec![frame(&jpeg(72, 40), 100)],
+            loop_count: 0,
+            design: Some(KeyArtworkDesign {
+                auto: Some(true),
+                ..design()
+            }),
+        };
+        let value = serde_json::to_value(&marked).unwrap();
+        assert_eq!(value["design"]["auto"], json!(true));
+        assert!(
+            serde_json::to_value(&designed).unwrap()["design"]
+                .get("auto")
+                .is_none()
+        );
+        let saved = KeyArtworkDesign {
+            auto: Some(false),
+            ..design()
+        };
+        assert_eq!(serde_json::to_value(&saved).unwrap()["auto"], json!(false));
+        assert_eq!(serde_json::from_value::<KeyArtwork>(value).unwrap(), marked);
         // A text-only design drops the absent icon id instead of writing null.
         let text_only = KeyArtwork {
             frames: vec![frame(&jpeg(72, 40), 100)],

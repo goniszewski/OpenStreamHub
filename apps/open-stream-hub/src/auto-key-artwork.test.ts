@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import type { KeyArtwork, Profile } from './contracts';
 import { applyAutoArtwork, autoDesign, buildAutoArtwork, isAutoDrawn, mayReplaceArtwork, planAutoArtwork, planKey, urlHost } from './auto-key-artwork';
 import type { AutoDeps, AutoPlan } from './auto-key-artwork';
-import { appIconId, storedKeyArtworkDesign } from './key-artwork-design';
+import { appIconId, storedKeyArtworkDesign as storedWithMark } from './key-artwork-design';
+
+// A drawing from before the mark existed: no `auto` field at all.
+const storedKeyArtworkDesign = (design: Parameters<typeof storedWithMark>[0]) => { const { auto: _auto, ...legacy } = storedWithMark(design); return legacy; };
 import { emptyKeypadPage } from './keypad-model';
 
 const profile = (): Profile => ({ schema_version: 2, name: 'Art', bindings: [], keypad: { pages: [emptyKeypadPage()] } });
@@ -54,7 +57,7 @@ describe('building the artwork', () => {
     expect(calls[0].command).toBe('prepare_key_artwork');
     expect(calls[0].args).toEqual({ request: expect.objectContaining({ image_base64: 'UE5H', target: 'keypad', background: [0, 0, 0] }) });
     expect(artwork.frames).toEqual(prepared.frames);
-    expect(artwork.design).toEqual(storedKeyArtworkDesign(autoDesign(finder)));
+    expect(artwork.design).toEqual({ ...storedKeyArtworkDesign(autoDesign(finder)), auto: true });
   });
 
   it('needs no application icon for a URL, and fails when the icon cannot be read', async () => {
@@ -100,7 +103,7 @@ describe('applying it to the key', () => {
     expect(await applyAutoArtwork(finder, made, session, ['root'], 2, context)).toBe(true);
     expect(edits).toHaveLength(1);
     expect(edits[0].key).toBe('key-artwork-auto');
-    expect(state.draft.profile.keypad!.pages[0].artwork!['2'].design).toEqual(storedKeyArtworkDesign(autoDesign(finder)));
+    expect(state.draft.profile.keypad!.pages[0].artwork!['2'].design).toEqual({ ...storedKeyArtworkDesign(autoDesign(finder)), auto: true });
   });
 
   it('leaves designed artwork alone, before and after drawing', async () => {
@@ -150,5 +153,15 @@ describe('the key label on an application drawing', () => {
     expect(isAutoDrawn(drawn, ['', 'Finder'])).toBe(true);
     expect(isAutoDrawn(drawn)).toBe(false);
     expect(isAutoDrawn({ ...drawn, design: { ...drawn.design!, text: 'Mine' } }, ['', 'Finder'])).toBe(false);
+  });
+  it('a marked drawing follows the label whatever its text; a studio save drops the mark and keeps the text', () => {
+    const marked = { ...prepared, design: { ...storedKeyArtworkDesign(autoDesign(app, 'Finder')), text: '', auto: true } };
+    expect(isAutoDrawn(marked)).toBe(true);
+    expect(isAutoDrawn({ ...marked, design: { ...marked.design!, text: 'Mine' } })).toBe(true);
+    // The studio's save writes the mark false, so even text it cleared is left alone.
+    const saved = { ...marked.design, auto: false };
+    expect(isAutoDrawn({ ...prepared, design: saved })).toBe(false);
+    expect(isAutoDrawn({ ...prepared, design: { ...saved, icon_id: 'volume-2' } })).toBe(false);
+    expect(isAutoDrawn({ ...prepared, design: { ...marked.design, icon_id: 'volume-2' } })).toBe(false);
   });
 });

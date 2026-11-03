@@ -143,6 +143,8 @@ export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
 export interface KeyArtworkDesignSpec {
   icon_id?: string | null; text: string; text_size: number; icon_size?: number; align: 'top' | 'middle' | 'bottom';
   text_colour: string; icon_colour: string; background: string;
+  // true on artwork the app drew by itself (an app's icon, a site's globe), false once the studio saved the design; absent on older artwork.
+  auto?: boolean;
 }
 /** loop_count: zero is infinite; positive values are total plays. */
 export interface KeyArtwork { frames: KeyArtworkFrame[]; loop_count: number; design?: KeyArtworkDesignSpec }

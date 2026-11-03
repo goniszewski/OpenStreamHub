@@ -43,19 +43,23 @@ export function autoDesign(plan: AutoPlan, label = ''): KeyArtworkDesign {
     : { ...defaultKeyArtworkDesign, iconId: 'globe', text: plan.host, textSize: 0 };
 }
 
-/** Whether artwork is exactly what an automatic drawing makes: its stored
-    design is the plan's design for the application or host it names. This
-    survives a reload and a restart, so the artwork keeps following the
-    action; a design changed in any field no longer matches and stays. */
+/** Whether artwork is still an automatic drawing: its stored design carries the
+    `auto` mark that only this module sets (the studio's save writes it false, so
+    anything the user saved there, text they cleared included, stays). Drawings
+    from before the mark (no `auto` at all) are recognised by being exactly the plan's design for the
+    application or host they name. Both survive a reload and a restart. */
 export function isAutoDrawn(artwork: KeyArtwork | undefined, texts: readonly string[] = ['']): boolean {
   const design = artwork?.design;
   if (!design) return false;
   const icon = design.icon_id ?? '';
   const plan: AutoPlan | null = icon.startsWith('app:') && icon.length > 4 ? { kind: 'app', bundleId: icon.slice(4) }
     : icon === 'globe' && design.text ? { kind: 'url', host: design.text } : null;
-  // An application's drawing carries the key label as its text: one of `texts` (the label, now or before); other text is the user's.
+  if (design.auto !== undefined) return plan !== null && design.auto; // the mark: set by this module's drawing, cleared when the studio saves
+  // Drawings made before the mark existed: an application's drawing carries the key label as its text: one of `texts` (the label, now or before); other text is the user's.
   const label = plan?.kind === 'app' ? (texts.includes(design.text) ? design.text : null) : '';
-  return plan !== null && label !== null && stableStringify({ icon_size: defaultKeyArtworkDesign.iconSize, ...design }) === stableStringify(storedKeyArtworkDesign(autoDesign(plan, label)));
+  if (plan === null || label === null) return false;
+  const { auto: _unmarked, ...expected } = storedKeyArtworkDesign(autoDesign(plan, label));
+  return stableStringify({ icon_size: defaultKeyArtworkDesign.iconSize, ...design }) === stableStringify(expected);
 }
 
 /** Whether a key's artwork may be replaced by an automatic one: it has none,
@@ -80,7 +84,7 @@ export async function buildAutoArtwork(plan: AutoPlan, deps: AutoDeps, label = '
   const built = buildKeyArtworkDesignRequest(design, png);
   if (!built.ok) throw new Error(built.error);
   const prepared = await deps.invoke<KeyArtwork>('prepare_key_artwork', { request: built.request });
-  return { ...prepared, design: storedKeyArtworkDesign(design) };
+  return { ...prepared, design: { ...storedKeyArtworkDesign(design), auto: true } };
 }
 
 /** What the editor knows at the moment the drawing finishes. */

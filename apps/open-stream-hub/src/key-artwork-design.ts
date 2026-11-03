@@ -72,7 +72,7 @@ export function initialKeyArtworkDesign(action?: BindingAction | null, label = '
 export function storedKeyArtworkDesign(design: KeyArtworkDesign): KeyArtworkDesignSpec {
   return {
     icon_id: design.iconId, text: design.text, text_size: design.textSize, icon_size: design.iconSize, align: design.align,
-    text_colour: design.textColour, icon_colour: design.iconColour, background: design.background,
+    text_colour: design.textColour, icon_colour: design.iconColour, background: design.background, auto: false,
   };
 }
 

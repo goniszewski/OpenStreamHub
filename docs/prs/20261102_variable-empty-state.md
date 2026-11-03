@@ -5,6 +5,7 @@
 - The Variables panel lists which bindings use a variable, and each one opens that binding in the workspace.
 - "Switch automatically when an app is in front" and the focused-app rules panel add any installed app through the Finder dialog on Applications instead of a typed bundle ID.
 - The Manage profiles button uses a layers icon instead of one that looked like "add folder".
+- A new app key is labelled with the app's name, and that label is drawn under the app icon on the key.
 
 ## Changes
 - Value fields stay hidden until a variable is chosen; "Add one under Variables" opens and focuses the Variables section.
@@ -14,14 +15,18 @@
 - "Used 1 time, by:" in the Variables panel now lists each trigger and its action; each trigger is a button that opens that binding in the workspace.
 - The auto-switch row's last option is now "Another app from Applications…", which runs `choose_app` (via a new `FocusRulesStore.chooseApp`) and selects the result; the bundle ID field and Use current app button are gone from that row.
 - The focused-app rules panel's bundle ID field is read-only and filled by a new Choose app… button (same dialog); Use current app stays.
+- `SelectField` closes when it becomes disabled, ignores a stale highlight when its options change, and always gives the trigger its id.
+- A new "Open app" key takes the app's name as its label (`app-names.ts` remembers names the picker has seen). The auto-drawn app artwork carries the key label as its text and is redrawn when the label changes; artwork you designed or uploaded, or text you typed in the studio, is never replaced.
+- The Clear key button gets space above and below it in the inspector.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1358 tests)
+- [x] `tsc` and the full vitest suite pass (1359 tests)
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding
 - [ ] In Manage profiles, "Another app from Applications…" opens Finder; the chosen app can be added, and cancelling changes nothing
 - [ ] In the focused-app rules panel, Choose app… fills the bundle ID from Finder; add and edit a rule with it
+- [ ] Pick an app for a new key: its name shows under the icon; edit Key label and the key redraws; Clear key has room around it
 - [ ] Add an If with no variables: no value field, link focuses Add variable
 

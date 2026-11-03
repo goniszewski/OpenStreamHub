@@ -11,7 +11,8 @@ const idle = () => idleFocusRulesState;
 const other = '__other';
 
 // "Switch automatically when [app] is in front", for the open profile: its rules as removable apps, and a picker of the
-// running apps (or any installed app, chosen in the Finder dialog on Applications) to add one. It edits the same rules as the focused-app rules panel below it
+// running apps (or any installed app, chosen in the Finder dialog on Applications) to add one.
+// It edits the same rules as the focused-app rules panel below it
 // and shares its on/off switch, so the two always agree. A profile that has not been saved yet has nothing to switch to.
 export function AutoSwitchRow({ store, profileId, profileName, disabled = false }: { store?: FocusRulesStore; profileId: string | null; profileName: string; disabled?: boolean }) {
   const t = useT();

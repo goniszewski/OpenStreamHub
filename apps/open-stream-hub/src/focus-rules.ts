@@ -1,4 +1,5 @@
 import type { FocusChangedPayload, FocusCurrentApp, FocusRule, FocusRuleInput, FocusRules, RunningApp } from './contracts';
+import { appDisplayName, rememberAppName } from './app-names';
 import type { Listen } from './device-feed';
 import type { Invoke } from './profile-session';
 import type { ServiceRun } from './service-runner';
@@ -60,9 +61,9 @@ export async function listRunningApps(invoke: Invoke): Promise<RunningApp[]> {
   } catch { return []; }
 }
 
-// An app by its name when it is running, else by its bundle id.
+// An app by its name when it is running or the picker has seen it, else by its bundle id.
 export const appName = (bundleId: string, apps: RunningApp[]): string =>
-  apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? bundleId;
+  apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? appDisplayName(bundleId);
 
 export interface FocusRulesState {
   desktop: boolean; loaded: boolean; busy: boolean; error: string | null;
@@ -175,7 +176,9 @@ export class FocusRulesStore {
     try {
       const app = await this.invoke<RunningApp | null>('choose_app');
       this.set({ error: null });
-      return app && typeof app.bundle_id === 'string' && typeof app.name === 'string' ? app : null;
+      if (!app || typeof app.bundle_id !== 'string' || typeof app.name !== 'string') return null;
+      rememberAppName(app.bundle_id, app.name);
+      return app;
     } catch (reason) {
       this.set({ error: errorMessage(reason) });
       return null;

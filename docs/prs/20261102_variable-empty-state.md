@@ -21,6 +21,7 @@
 - Changing a key's app moves its label with it while the label is still the automatic one; the app drawing follows every label edit, not just the last.
 - `SelectField` also closes on a press outside it (WebKit does not focus a clicked button) and keeps its highlight on the same choice when options change; the shared `useOutsidePress` hook serves it and the assignments popup.
 - Labels that name an app redraw as soon as the app's name is learned (`app-names.ts` notifies the app root).
+- Apps chosen in the Finder dialog keep their name in the auto-switch list even when they are not running.
 - The assignments popup, Variables panel and variable pickers take their text from the message catalogue. "Used by N triggers:" counts the triggers listed under it.
 - Tests: new DOM tests (`jsdom` as a dev dependency, `dom-test.ts` harness) drive the select, the assignments popup and the Variables links; Rust tests cover the app picker's cancel and failure paths and fake app bundles.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.

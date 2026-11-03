@@ -41,3 +41,15 @@ describe('the empty variable select', () => {
     expect(document.activeElement?.id).toBe('variable-add');
   });
 });
+
+describe('the usage sentence', () => {
+  it('counts the triggers listed under it, even when one trigger uses the variable twice', () => {
+    const twice = {
+      schema_version: 5, name: 'p', variables: [{ name: 'live', value: false }],
+      bindings: [{ module: 'm003k', control: 1, gesture: 'pressed', action: { type: 'multi_action', actions: [{ type: 'toggle_variable', name: 'live' }, { type: 'toggle_variable', name: 'live' }] } }],
+    } as unknown as Profile;
+    view = render(<VariablesPanel variables={twice.variables!} uses={variableUseCounts(twice)} users={name => variableUsers(twice, name)} onShow={() => {}} disabled={false} onChange={() => {}} onRename={() => {}} />);
+    expect(view.$$('.variable-users li')).toHaveLength(1);
+    expect(view.container.textContent).toContain('Used by 1 trigger:');
+  });
+});

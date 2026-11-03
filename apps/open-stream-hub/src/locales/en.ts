@@ -470,7 +470,7 @@ export const en = {
   'variables.startsAs': 'Starts as',
   'variables.unused': 'Not used yet.',
   'variables.used': { one: 'Used {count} time.', other: 'Used {count} times.' },
-  'variables.usedBy': { one: 'Used {count} time, by:', other: 'Used {count} times, by:' },
+  'variables.usedBy': { one: 'Used by {count} trigger:', other: 'Used by {count} triggers:' },
   'variables.usedTail': 'Remove those first to delete it or change its kind.',
   'variables.usersList': 'Used by',
   'variables.removeNamed': 'Remove variable {name}',

@@ -90,3 +90,26 @@ describe('SelectField in the DOM', () => {
     expect(trigger().getAttribute('aria-activedescendant')).toBeNull();
   });
 });
+
+describe('SelectField highlight and outside presses', () => {
+  it('closes on a press outside it, but not on one inside', () => {
+    view = render(<Harness />);
+    view.click(trigger());
+    view.pointerDown(view.$('.select-list'));
+    expect(list().hidden).toBe(false);
+    view.pointerDown(document);
+    expect(list().hidden).toBe(true);
+  });
+  it('keeps the highlight on the same choice when one is inserted above it', () => {
+    const seen: string[] = [];
+    const Shifting = ({ before }: { before: boolean }) => <SelectField id="pick" value="a" onChange={event => seen.push(event.target.value)}>
+      {before && <option value="z">Zulu</option>}<option value="a">Alpha</option><option value="c">Charlie</option><option value="d">Delta</option>
+    </SelectField>;
+    view = render(<Shifting before={false} />);
+    view.key(trigger(), 'Enter');
+    view.key(trigger(), 'ArrowDown'); // Charlie
+    view.rerender(<Shifting before />);
+    view.key(trigger(), 'Enter');
+    expect(seen).toEqual(['c']);
+  });
+});

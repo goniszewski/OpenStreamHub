@@ -126,7 +126,7 @@ export function VariablesPanel({ variables, uses, users, onShow, disabled, onCha
             {(Object.keys(variableKindLabels) as VariableKind[]).map(item => <option key={item} value={item}>{variableKindLabels[item]}</option>)}
           </SelectField>
           <VariableValueField id={`variable-${index}-value`} label={t('variables.startsAs')} spaced value={variable.value} onChange={value => update(index, { ...variable, value }, `variable-${index}-value`)} />
-          <p className="fine-print">{used === 0 ? t('variables.unused') : `${t(users && onShow ? 'variables.usedBy' : 'variables.used', { count: used })} ${t('variables.usedTail')}`}</p>
+          <p className="fine-print">{used === 0 ? t('variables.unused') : `${users && onShow ? t('variables.usedBy', { count: users(variable.name).length }) : t('variables.used', { count: used })} ${t('variables.usedTail')}`}</p>
           {used > 0 && users && onShow && <ul className="variable-users" aria-label={t('variables.usersList')}>
             {users(variable.name).map(entry => <li key={entry.id}>
               <button type="button" className="link-button" onClick={() => onShow(entry)}>{entry.title}</button>

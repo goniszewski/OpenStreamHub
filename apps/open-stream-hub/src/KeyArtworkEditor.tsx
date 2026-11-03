@@ -301,9 +301,12 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   // assignment, and anything the user designed is never replaced.
   const plan = planAutoArtwork(action);
   const planId = planKey(plan);
-  const prevLabel = useRef(initialText ?? '');
-  const latest = useRef({ planId, artwork, label: initialText ?? '', texts: ['', initialText ?? ''] as readonly string[] });
-  latest.current = { planId, artwork, label: initialText ?? '', texts: ['', initialText ?? '', prevLabel.current] };
+  // Every label this key has had while the editor is open: a drawing whose text is one of them is still this module's
+  // (typing a label passes through several values before a redraw lands).
+  const labels = useRef(new Set(['', initialText ?? '']));
+  labels.current.add(initialText ?? '');
+  const latest = useRef({ planId, artwork, label: initialText ?? '', texts: [...labels.current] as readonly string[] });
+  latest.current = { planId, artwork, label: initialText ?? '', texts: [...labels.current] };
   const previousPlan = useRef(planId);
   const declined = useRef<string | null>(null);
   useEffect(() => {
@@ -337,7 +340,6 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [label, artwork]);
-  useEffect(() => { prevLabel.current = label; }, [label]);
   async function choose(file: File) {
     const id = ++requestId.current;
     const busyToken = ++busyId.current;

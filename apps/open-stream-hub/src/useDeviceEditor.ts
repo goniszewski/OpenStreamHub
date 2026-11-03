@@ -6,7 +6,7 @@ import { isFaderTemplate } from './action-model';
 import type { PickerActionType } from './action-picker-model';
 import type { ContextMenuItem } from './controls';
 import { clampUtf8 } from './draft-model';
-import { clearKeypadSlot, copyKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot, moveKeypadSlot, pasteKeypadSlot } from './keypad-model';
+import { clearKeypadSlot, copyKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot, moveKeypadSlot, pasteKeypadSlot, renameKeypadAction } from './keypad-model';
 import type { KeyClipboard } from './keypad-model';
 import { hint } from './shortcuts';
 import type { ProfileSession, SessionState } from './profile-session';
@@ -35,6 +35,14 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
 // Create folder and then redoing it would jump back into the folder.
 // A new key's label: an application's name, otherwise what the action does.
 const keyLabelFor = (action: BindingAction | null) => (action?.type === 'launch_app' ? appDisplayName(action.bundle_id) : actionLabel(action));
+
+// The label a key should have after its action changes: when it is still the automatic label of the app it opened (its name,
+// or the bundle ID before the name was known), the key follows a new app; any other label is the user's and stays.
+export function followedKeyLabel(label: string, previous: BindingAction | null | undefined, next: BindingAction | null): string | null {
+  if (previous?.type !== 'launch_app' || next?.type !== 'launch_app' || previous.bundle_id === next.bundle_id) return null;
+  const automatic = label === appDisplayName(previous.bundle_id) || label === previous.bundle_id;
+  return automatic ? clampUtf8(keyLabelFor(next)) : null;
+}
 
 export function syncKeypad(state: SessionState, keypad: { generation: number; path: string[] }) {
   const path = usablePath(state, keypad);
@@ -109,7 +117,9 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     try {
       if (isKeypad) {
         if (isFaderTemplate(action)) throw new Error('This action is available only for faders.');
-        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(keyLabelFor(action))), key);
+        const edited = editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(keyLabelFor(action)));
+        const label = keypadSlot?.type === 'action' ? followedKeyLabel(keypadSlot.label, binding?.action, action) : null;
+        session.edit(label === null ? edited : renameKeypadAction(edited, keypadPath, selection.control, label), key);
       } else session.edit(editBinding(profile, selection, action), key);
     } catch (reason) { session.setError(errorMessage(reason)); }
   }

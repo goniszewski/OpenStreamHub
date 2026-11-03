@@ -22,7 +22,7 @@ describe('variableUsers', () => {
 describe('VariablesPanel used by', () => {
   it('names each trigger that uses the variable as a button', () => {
     const html = renderToStaticMarkup(<VariablesPanel variables={profile.variables!} uses={variableUseCounts(profile)} users={name => variableUsers(profile, name)} onShow={() => {}} disabled={false} onChange={() => {}} onRename={() => {}} />);
-    expect(html).toContain('Used 1 time, by:');
+    expect(html).toContain('Used by 1 trigger:');
     expect(html).toContain('class="link-button"');
     expect(html).toContain('Knob 2');
   });

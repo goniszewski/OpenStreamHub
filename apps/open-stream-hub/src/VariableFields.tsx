@@ -6,6 +6,7 @@ import {
 } from './flow-model';
 import type { BindingEntry } from './binding-model';
 import { useT } from './i18n-react';
+import { focusWhenRendered } from './NoticeRegion';
 import { variablesOfKind } from './variable-model';
 import { useVariables } from './variables-context';
 
@@ -15,7 +16,7 @@ function showVariablesPanel() {
   if (!section) return;
   section.open = true;
   section.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  document.getElementById('variable-add')?.focus({ preventScroll: true });
+  focusWhenRendered(() => document.getElementById('variable-add'));
 }
 
 // The variable choices of an action or a test: the declared variables of the kinds it can use. A name the profile no

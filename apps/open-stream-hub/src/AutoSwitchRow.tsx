@@ -27,13 +27,12 @@ export function AutoSwitchRow({ store, profileId, profileName, disabled = false 
   const mine = rulesForProfile(state.rules, profileId);
   const known = picked && !apps.some(app => app.bundle_id.toLowerCase() === picked.bundle_id.toLowerCase()) ? [...apps, picked] : apps;
   const choices = appChoices(known, state.rules);
-  const bundleId = choice;
-  const duplicate = bundleId !== '' && state.rules.some(rule => rule.app_bundle_id.toLowerCase() === bundleId.toLowerCase());
+  const duplicate = choice !== '' && state.rules.some(rule => rule.app_bundle_id.toLowerCase() === choice.toLowerCase());
   const full = state.rules.length >= maxFocusRules;
-  const canAdd = !off && bundleId !== '' && !duplicate && !full;
+  const canAdd = !off && choice !== '' && !duplicate && !full;
   const add = async () => {
     if (!store || !canAdd || profileId === null) return;
-    if (await store.save({ id: null, app_bundle_id: bundleId, profile_id: profileId })) { setChoice(''); setPicked(null); refresh(); }
+    if (await store.save({ id: null, app_bundle_id: choice, profile_id: profileId })) { setChoice(''); setPicked(null); refresh(); }
   };
   const browse = async () => {
     const app = await store?.chooseApp();

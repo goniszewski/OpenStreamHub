@@ -1,3 +1,4 @@
+import { useOutsidePress } from './use-outside-press';
 import { Children, Component, Fragment, isValidElement, useEffect, useId, useRef, useState } from 'react';
 import type { FocusEventHandler, KeyboardEvent, ReactNode } from 'react';
 import { Check, ChevronDown, CircleHelp, RotateCcw } from 'lucide-react';
@@ -58,13 +59,7 @@ export function SelectField({ id, value, onChange, disabled, children, onFocus, 
     if (open && active >= 0) list.current?.querySelector(`[id="${optionId(active)}"]`)?.scrollIntoView({ block: 'nearest' });
   }, [open, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => {
-    if (!open) return;
-    // A button is not always focused by a click (WebKit), so a press elsewhere closes the list as well as losing focus.
-    const outside = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('pointerdown', outside);
-    return () => document.removeEventListener('pointerdown', outside);
-  }, [open]);
+  useOutsidePress(root, open, () => setOpen(false));
 
   const show = () => { setActive(selected >= 0 ? selected : nextChoice(choices, -1, 1)); setOpen(true); };
   const choose = (index: number) => {

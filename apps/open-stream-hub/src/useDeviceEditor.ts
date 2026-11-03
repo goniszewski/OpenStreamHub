@@ -30,9 +30,6 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
   try { keypadPagesAtPath(state.draft.profile, keypad.path); return keypad.path; } catch { return [keypadRoot]; }
 }
 
-// The stored keypad view state, reset to the root page once the open folder is gone.
-// Returns the same object while the path is usable. Without the reset, undoing
-// Create folder and then redoing it would jump back into the folder.
 // A new key's label: an application's name, otherwise what the action does.
 const keyLabelFor = (action: BindingAction | null) => (action?.type === 'launch_app' ? appDisplayName(action.bundle_id) : actionLabel(action));
 
@@ -44,6 +41,9 @@ export function followedKeyLabel(label: string, previous: BindingAction | null |
   return automatic ? clampUtf8(keyLabelFor(next)) : null;
 }
 
+// The stored keypad view state, reset to the root page once the open folder is gone.
+// Returns the same object while the path is usable. Without the reset, undoing
+// Create folder and then redoing it would jump back into the folder.
 export function syncKeypad(state: SessionState, keypad: { generation: number; path: string[] }) {
   const path = usablePath(state, keypad);
   return path === keypad.path ? keypad : { generation: state.draftGeneration, path };

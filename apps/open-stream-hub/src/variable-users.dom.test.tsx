@@ -30,7 +30,7 @@ describe('the Variables panel in the DOM', () => {
 });
 
 describe('the empty variable select', () => {
-  it('opens and focuses the Variables section from its link', () => {
+  it('opens and focuses the Variables section from its link', async () => {
     document.body.insertAdjacentHTML('beforeend', '<details class="inspector-variables"><summary>Variables</summary><button id="variable-add">Add variable</button></details>');
     const details = document.querySelector<HTMLDetailsElement>('.inspector-variables')!;
     view = render(<VariableSelect id="v" label="Variable" value="" kinds={['bool']} onChange={() => {}} />);
@@ -38,6 +38,7 @@ describe('the empty variable select', () => {
     expect(details.open).toBe(false);
     view.click(view.$('.link-button'));
     expect(details.open).toBe(true);
+    await new Promise(resolve => setTimeout(resolve, 100)); // the focus follows on the next frame
     expect(document.activeElement?.id).toBe('variable-add');
   });
 });

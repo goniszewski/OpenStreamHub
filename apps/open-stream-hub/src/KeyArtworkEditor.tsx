@@ -307,6 +307,13 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   labels.current.add(initialText ?? '');
   const latest = useRef({ planId, artwork, label: initialText ?? '', texts: [...labels.current] as readonly string[] });
   latest.current = { planId, artwork, label: initialText ?? '', texts: [...labels.current] };
+  const redraw = (drawing: NonNullable<typeof plan>, label: string) => {
+    const id = ++requestId.current;
+    autoRequest.current = id;
+    void applyAutoArtwork(drawing, { invoke: invoke!, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke!, bundleId) }, session, path, control, {
+      planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current, texts: () => latest.current.texts,
+    }, label);
+  };
   const previousPlan = useRef(planId);
   const declined = useRef<string | null>(null);
   useEffect(() => {
@@ -314,13 +321,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     previousPlan.current = planId;
     if (!plan || !invoke || disabled || declined.current === planId) return;
     // The application field is typed into: settle before looking anything up.
-    const timer = setTimeout(() => {
-      const id = ++requestId.current;
-      autoRequest.current = id;
-      void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
-        planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current, texts: () => latest.current.texts,
-      }, latest.current.label);
-    }, autoArtworkDelayMs);
+    const timer = setTimeout(() => redraw(plan, latest.current.label), autoArtworkDelayMs);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planId]);
@@ -329,14 +330,7 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   const label = initialText ?? '';
   useEffect(() => {
     if (plan?.kind !== 'app' || !invoke || disabled || !artwork?.design || !isAutoDrawn(artwork, latest.current.texts) || artwork.design.text === label) return;
-    const drawn = artwork.design.text; // checked above to be this module's drawing, made with the label before
-    const timer = setTimeout(() => {
-      const id = ++requestId.current;
-      autoRequest.current = id;
-      void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
-        planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current, texts: () => [...latest.current.texts, drawn],
-      }, label);
-    }, autoArtworkDelayMs);
+    const timer = setTimeout(() => redraw(plan, label), autoArtworkDelayMs);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [label, artwork]);

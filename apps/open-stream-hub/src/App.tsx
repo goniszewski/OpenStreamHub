@@ -42,6 +42,7 @@ import { LightingPage } from './LightingPage';
 import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
+import { appNamesVersion, subscribeAppNames } from './app-names';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { RunningProfile, applyRunningProfile } from './RunningProfile';
@@ -112,6 +113,7 @@ function getAppearance(): Appearance {
 }
 
 export default function App() {
+  useSyncExternalStore(subscribeAppNames, appNamesVersion); // labels that name an app redraw once its name is learned
   const [session] = useState(() => new ProfileSession((command, args) => invoke(command, args), browserProfile, desktop, desktop ? draftPersister() : null));
   const [feed] = useState(() => {
     const created = new DeviceFeed((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop);

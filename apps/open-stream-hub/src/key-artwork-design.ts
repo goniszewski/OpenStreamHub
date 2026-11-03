@@ -6,6 +6,7 @@
 import type { BindingAction, KeyArtworkDesignSpec } from './contracts';
 import { parseHexColour, type PrepareRequest } from './artwork-model';
 import { keyIconById } from './key-icons';
+import { english } from './i18n-react';
 
 /** The app-icon suggestion uses the real .app icon, keyed by bundle id. */
 export const appIconPrefix = 'app:';
@@ -40,7 +41,7 @@ export type KeyIconSize = 0 | 1 | 2;
 
 export const keyTextAligns = ['top', 'middle', 'bottom'] as const;
 export type KeyTextAlign = (typeof keyTextAligns)[number];
-export const keyTextAlignLabels: Record<KeyTextAlign, string> = { top: 'Top', middle: 'Middle', bottom: 'Bottom' };
+export const keyTextAlignLabels: Record<KeyTextAlign, string> = { top: english('labels.textAlign.top'), middle: english('labels.textAlign.middle'), bottom: english('labels.textAlign.bottom') };
 
 export interface KeyArtworkDesign {
   /** A catalog icon id, an `app:<bundle id>` suggestion, or null for text only. */

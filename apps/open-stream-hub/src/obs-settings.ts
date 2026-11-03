@@ -1,4 +1,5 @@
 import type { ObsConnectionState, ObsConnectionView, ObsHost, ObsSettings, ObsSettingsView } from './contracts';
+import { english } from './i18n-react';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 
@@ -37,8 +38,9 @@ export function isObsSettingsView(value: unknown): value is ObsSettingsView {
 }
 
 export const obsConnectionLabels: Record<ObsConnectionState, string> = {
-  off: 'Off', connected: 'Connected', not_running: 'Not running', websocket_off: 'WebSocket off', wrong_port: 'Wrong port',
-  password_needed: 'Password needed', wrong_password: 'Wrong password', failed: 'Not connected',
+  off: english('labels.connection.off'), connected: english('labels.connection.connected'), not_running: english('labels.connection.notRunning'),
+  websocket_off: english('labels.connection.websocketOff'), wrong_port: english('labels.connection.wrongPort'),
+  password_needed: english('labels.connection.passwordNeeded'), wrong_password: english('labels.connection.wrongPassword'), failed: english('labels.connection.failed'),
 };
 
 export function isObsConnectionView(value: unknown): value is ObsConnectionView {

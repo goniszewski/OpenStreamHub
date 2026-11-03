@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoaderCircle, RefreshCw } from 'lucide-react';
 import type { InputPermissions } from './contracts';
 import { PermissionDragTile } from './PermissionDragTile';
+import { english } from './i18n-react';
 import type { Invoke } from './profile-session';
 
 export type Target = 'post_events' | 'listen_events' | 'automation';
@@ -13,7 +14,9 @@ export const permissionRows: { target: Target; title: string; detail: string; wh
 ];
 
 export type PermissionStatus = 'granted' | 'missing' | 'unknown' | 'ask';
-export const permissionLabels: Record<PermissionStatus, string> = { granted: 'Granted', missing: 'Not granted', unknown: 'Checking', ask: 'Asked when used' };
+export const permissionLabels: Record<PermissionStatus, string> = {
+  granted: english('labels.permission.granted'), missing: english('labels.permission.missing'), unknown: english('labels.permission.unknown'), ask: english('labels.permission.ask'),
+};
 
 // Automation has no passive check, so it is never reported as granted or missing.
 // The permissions macOS can report that are off, in list order. Automation has no passive check, so it never counts.

@@ -2,15 +2,16 @@ import { useState } from 'react';
 import { ShieldAlert, TriangleAlert } from 'lucide-react';
 import type { ImportCounts, ImportOutcome, ImportedProfile, MhzImportResult, Profile } from './contracts';
 import { ModalDialog } from './controls';
+import { english } from './i18n-react';
 import { capabilityLines, profileCapabilities, snippetPreview, stepLabel } from './profile-capabilities';
 
 // The official .mhz import report and the explicit step that lets an imported profile execute actions.
 
 export const outcomeLabels: Record<ImportOutcome, string> = {
-  imported: 'Imported',
-  imported_lossy: 'Imported with changes',
-  unbound_unsupported: 'Left unbound',
-  unbound_dangerous: 'Left unbound (dangerous)',
+  imported: english('labels.importOutcome.imported'),
+  imported_lossy: english('labels.importOutcome.importedLossy'),
+  unbound_unsupported: english('labels.importOutcome.unboundUnsupported'),
+  unbound_dangerous: english('labels.importOutcome.unboundDangerous'),
 };
 
 export function countsLine(counts: ImportCounts): string {

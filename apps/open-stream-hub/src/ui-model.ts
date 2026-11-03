@@ -1,5 +1,6 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
 import { appDisplayName } from './app-names';
+import { english } from './i18n-react';
 import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
@@ -119,9 +120,10 @@ export const modules: { id: ModuleId; name: string; shortName: string; art: stri
 ];
 
 export const gestureLabels: Record<Gesture, string> = {
-  clockwise: 'Clockwise', counter_clockwise: 'Counter-clockwise', pressed: 'Press', released: 'Release',
-  right: 'Right', left: 'Left', short_press: 'Short press', long_press: 'Long press',
-  position_changed: 'Position', up: 'Up', down: 'Down',
+  clockwise: english('labels.gesture.clockwise'), counter_clockwise: english('labels.gesture.counterClockwise'),
+  pressed: english('labels.gesture.pressed'), released: english('labels.gesture.released'), right: english('labels.gesture.right'), left: english('labels.gesture.left'),
+  short_press: english('labels.gesture.shortPress'), long_press: english('labels.gesture.longPress'),
+  position_changed: english('labels.gesture.positionChanged'), up: english('labels.gesture.up'), down: english('labels.gesture.down'),
 };
 
 export const gestures: Record<ServiceModule, Gesture[]> = {
@@ -135,8 +137,8 @@ export const gestures: Record<ServiceModule, Gesture[]> = {
 export const controlCounts: Record<ServiceModule, number> = { m003k: 3, m131e: 1, m4315: 15, m005s: 5, m032le: 2 };
 export const faderMaximum = 100;
 export const replayLabels: Record<ReplayKind, string> = {
-  knobs: '3-knob module sample', dial: 'Encoder module sample', keys: '15-key module sample',
-  faders: '5-fader module sample', rollers: '2-roller module sample',
+  knobs: english('labels.replay.knobs'), dial: english('labels.replay.dial'), keys: english('labels.replay.keys'),
+  faders: english('labels.replay.faders'), rollers: english('labels.replay.rollers'),
 };
 
 export function moduleNote(module: ServiceModule) {

@@ -1,6 +1,7 @@
 import type { BindingAction, ServiceModule } from './contracts';
 import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
 import type { StepActionType } from './action-model';
+import { english } from './i18n-react';
 
 // One file per picker entry: the step actions plus the binding-only ones, the one
 // OBS entry ('obs'), which stands in for the ten obs_* step action types, and the one
@@ -16,9 +17,12 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 ];
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
-const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['conditional', 'If / else'], ['profile', 'Switch profile'],
-  ['timer', 'Timer'], ['macro', 'Recorded macro'], ['volume_from_position', 'Output volume follows position'], ['mic_input_volume_from_position', 'Microphone volume follows position'],
-  ['obs_input_volume_from_position', 'OBS input volume follows position'], ['obs', 'OBS'], ['streamlabs', 'Streamlabs']]);
+const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', english('labels.picker.multiAction')],
+  ['conditional', english('labels.picker.conditional')], ['profile', english('labels.picker.profile')], ['timer', english('labels.picker.timer')],
+  ['macro', english('labels.picker.macro')], ['volume_from_position', english('labels.picker.volumeFromPosition')],
+  ['mic_input_volume_from_position', english('labels.picker.micVolumeFromPosition')],
+  ['obs_input_volume_from_position', english('labels.picker.obsVolumeFromPosition')], ['obs', english('labels.picker.obs')],
+  ['streamlabs', english('labels.picker.streamlabs')]]);
 
 export interface PickerEntry { type: PickerActionType; label: string; category: PickerCategory; keywords: string }
 

@@ -1,4 +1,5 @@
 import { groupItems, groupMode, isGroup } from './flow-model';
+import { english } from './i18n-react';
 import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
@@ -21,7 +22,7 @@ export const namedKeys: ReadonlyArray<readonly [string, string]> = [
 // media keys. They have no virtual key code, cannot combine with modifiers, and cannot be macro
 // keys (a recording cannot see them; the media action sends them on its own).
 export const mediaKeyLabels: Record<MediaKey, string> = {
-  play_pause: 'Play/Pause media key', next_track: 'Next-track media key', previous_track: 'Previous-track media key',
+  play_pause: english('labels.mediaKey.playPause'), next_track: english('labels.mediaKey.nextTrack'), previous_track: english('labels.mediaKey.previousTrack'),
 };
 
 export const isMediaKey = (key: string): key is MediaKey => key in mediaKeyLabels;
@@ -32,23 +33,26 @@ export function keyLabel(key: string) {
 }
 
 export const mediaLabels: Record<MediaCommand, string> = {
-  play_pause: 'Play/pause media', next_track: 'Next track', previous_track: 'Previous track', stop: 'Stop media',
+  play_pause: english('labels.media.playPause'), next_track: english('labels.media.nextTrack'), previous_track: english('labels.media.previousTrack'), stop: english('labels.media.stop'),
 };
 
 export const systemLabels: Record<SystemCommand, string> = {
-  undo: 'Undo', redo: 'Redo', screenshot: 'Screenshot to clipboard',
+  undo: english('labels.system.undo'), redo: english('labels.system.redo'), screenshot: english('labels.system.screenshot'),
 };
 
 // Mirrors ProfileDirection in crates/cooltek-sdk-service/src/profile.rs (a closed set).
 export const profileDirectionLabels: Record<ProfileDirection, string> = {
-  next: 'Next profile', previous: 'Previous profile',
+  next: english('labels.profileDirection.next'), previous: english('labels.profileDirection.previous'),
 };
 
 // Mirrors TimerSound in crates/cooltek-sdk-service/src/profile.rs (a closed set, in order). Each maps to a fixed
 // /System/Library/Sounds file in the service; a profile can never name a path.
 export const timerSoundLabels: Record<TimerSound, string> = {
-  basso: 'Basso', blow: 'Blow', bottle: 'Bottle', frog: 'Frog', funk: 'Funk', glass: 'Glass', hero: 'Hero', morse: 'Morse',
-  ping: 'Ping', pop: 'Pop', purr: 'Purr', sosumi: 'Sosumi', submarine: 'Submarine', tink: 'Tink', none: 'No sound',
+  basso: english('labels.timerSound.basso'), blow: english('labels.timerSound.blow'), bottle: english('labels.timerSound.bottle'),
+  frog: english('labels.timerSound.frog'), funk: english('labels.timerSound.funk'), glass: english('labels.timerSound.glass'),
+  hero: english('labels.timerSound.hero'), morse: english('labels.timerSound.morse'), ping: english('labels.timerSound.ping'),
+  pop: english('labels.timerSound.pop'), purr: english('labels.timerSound.purr'), sosumi: english('labels.timerSound.sosumi'),
+  submarine: english('labels.timerSound.submarine'), tink: english('labels.timerSound.tink'), none: english('labels.timerSound.none'),
 };
 export const defaultTimerSound: TimerSound = 'glass';
 
@@ -123,12 +127,16 @@ export function macroIssue(steps: MacroStep[]): string | null {
 }
 
 // Mirror ObsOutputOp and ObsReplayBufferOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
-export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: 'Toggle', start: 'Start', stop: 'Stop' };
-export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: 'Toggle', on: 'Turn on', off: 'Turn off' };
-export const obsMuteOpLabels: Record<ObsMuteOp, string> = { toggle: 'Toggle', mute: 'Mute', unmute: 'Unmute' };
-export const obsMediaOpLabels: Record<ObsMediaOp, string> = { play_pause: 'Play / pause', play_stop: 'Play / stop', play_restart: 'Play / restart', stop: 'Stop' };
-export const obsRecordOpLabels: Record<ObsRecordOp, string> = { ...obsOutputOpLabels, pause: 'Pause', resume: 'Resume', toggle_pause: 'Pause or resume' };
-export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: 'Save the last seconds' };
+export const obsOutputOpLabels: Record<ObsOutputOp, string> = { toggle: english('labels.op.toggle'), start: english('labels.op.start'), stop: english('labels.op.stop') };
+export const obsSwitchOpLabels: Record<ObsSwitchOp, string> = { toggle: english('labels.op.toggle'), on: english('labels.op.turnOn'), off: english('labels.op.turnOff') };
+export const obsMuteOpLabels: Record<ObsMuteOp, string> = { toggle: english('labels.op.toggle'), mute: english('labels.op.mute'), unmute: english('labels.op.unmute') };
+export const obsMediaOpLabels: Record<ObsMediaOp, string> = {
+  play_pause: english('labels.op.playPause'), play_stop: english('labels.op.playStop'), play_restart: english('labels.op.playRestart'), stop: english('labels.op.stop'),
+};
+export const obsRecordOpLabels: Record<ObsRecordOp, string> = {
+  ...obsOutputOpLabels, pause: english('labels.op.pause'), resume: english('labels.op.resume'), toggle_pause: english('labels.op.togglePause'),
+};
+export const obsReplayBufferOpLabels: Record<ObsReplayBufferOp, string> = { ...obsOutputOpLabels, save: english('labels.op.save') };
 
 export type StepActionType = StepAction['type'];
 
@@ -202,10 +210,14 @@ export type ObsStepType = Extract<StepActionType, `obs_${string}`>;
 export type ObsStepAction = Extract<StepAction, { type: ObsStepType }>;
 
 export const obsOperationLabels: Record<ObsStepType, string> = {
-  obs_scene: 'Scene', obs_virtual_camera: 'Virtual camera', obs_replay_buffer: 'Replay buffer', obs_stream: 'Stream', obs_record: 'Recording',
-  obs_studio_mode: 'Studio mode', obs_transition: 'Studio transition', obs_screenshot: 'Screenshot', obs_filter: 'Filter',
-  obs_source_visibility: 'Source visibility', obs_scene_collection: 'Scene collection', obs_profile: 'Profile', obs_set_input_volume: 'Input volume',
-  obs_input_mute: 'Input mute', obs_adjust_input_volume: 'Input volume step', obs_media_source: 'Media source',
+  obs_scene: english('labels.operation.scene'), obs_virtual_camera: english('labels.operation.virtualCamera'),
+  obs_replay_buffer: english('labels.operation.replayBuffer'), obs_stream: english('labels.operation.stream'),
+  obs_record: english('labels.operation.recording'), obs_studio_mode: english('labels.operation.studioMode'),
+  obs_transition: english('labels.operation.transition'), obs_screenshot: english('labels.operation.screenshot'),
+  obs_filter: english('labels.operation.filter'), obs_source_visibility: english('labels.operation.sourceVisibility'),
+  obs_scene_collection: english('labels.operation.sceneCollection'), obs_profile: english('labels.operation.profile'),
+  obs_set_input_volume: english('labels.operation.inputVolume'), obs_input_mute: english('labels.operation.inputMute'),
+  obs_adjust_input_volume: english('labels.operation.inputVolumeStep'), obs_media_source: english('labels.operation.mediaSource'),
 };
 
 // Switching operation starts from the new operation's defaults and keeps the names the two
@@ -225,14 +237,18 @@ export type StreamlabsStepType = Extract<StepActionType, `streamlabs_${string}`>
 export type StreamlabsStepAction = Extract<StepAction, { type: StreamlabsStepType }>;
 
 export const streamlabsOperationLabels: Record<StreamlabsStepType, string> = {
-  streamlabs_scene: 'Scene', streamlabs_record: 'Recording', streamlabs_stream: 'Stream', streamlabs_studio_mode: 'Studio mode',
-  streamlabs_transition: 'Studio transition', streamlabs_source_visibility: 'Source visibility', streamlabs_audio: 'Audio source',
+  streamlabs_scene: english('labels.operation.scene'), streamlabs_record: english('labels.operation.recording'),
+  streamlabs_stream: english('labels.operation.stream'), streamlabs_studio_mode: english('labels.operation.studioMode'),
+  streamlabs_transition: english('labels.operation.transition'), streamlabs_source_visibility: english('labels.operation.sourceVisibility'),
+  streamlabs_audio: english('labels.operation.audioSource'),
 };
 
 // Mirror StreamlabsVisibilityOp and StreamlabsAudioOp in crates/cooltek-sdk-service/src/profile.rs (closed sets).
-export const streamlabsVisibilityOpLabels: Record<StreamlabsVisibilityOp, string> = { toggle: 'Toggle', show: 'Show', hide: 'Hide' };
+export const streamlabsVisibilityOpLabels: Record<StreamlabsVisibilityOp, string> = { toggle: english('labels.op.toggle'), show: english('labels.op.show'), hide: english('labels.op.hide') };
 export type StreamlabsAudioMode = 'set' | 'adjust' | 'mute';
-export const streamlabsAudioModeLabels: Record<StreamlabsAudioMode, string> = { set: 'Set the level', adjust: 'Change the level', mute: 'Mute or unmute' };
+export const streamlabsAudioModeLabels: Record<StreamlabsAudioMode, string> = {
+  set: english('labels.audioMode.set'), adjust: english('labels.audioMode.adjust'), mute: english('labels.audioMode.mute'),
+};
 // The Rust bounds of each audio mode: set 0 to 100, adjust a nonzero -100 to 100 (percent of the fader's travel).
 export const streamlabsAudioLimits = { set: { minimum: 0, maximum: 100 }, adjust: { minimum: -100, maximum: 100 } } as const;
 export const streamlabsAudioMode = (op: StreamlabsAudioOp): StreamlabsAudioMode => 'set' in op ? 'set' : 'adjust' in op ? 'adjust' : 'mute';

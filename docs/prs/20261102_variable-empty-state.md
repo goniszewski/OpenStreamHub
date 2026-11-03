@@ -24,12 +24,13 @@
 - Apps chosen in the Finder dialog keep their name in the auto-switch list even when they are not running.
 - Artwork the app draws itself carries `auto: true` in its saved design (new optional field in the Rust `KeyArtworkDesign`); the studio's save writes `auto: false`, so text cleared in the studio is never redrawn. Artwork from earlier builds has no field and is still recognised by its content. Profiles with the field do not load in older builds (the design rejects unknown fields).
 - The action editor (`ActionFields.tsx`) takes its text from the message catalogue too, and the converted-files guard covers it.
+- The exported label maps (operations, gestures, connection states, session reasons, permissions, picker entries and others) take their text from the catalogue too, keeping their names and keys; `i18n-labels.test.ts` fails on an empty value or a raw message key. They are filled once at start-up, which suits the English-only app.
 - The assignments popup, Variables panel and variable pickers take their text from the message catalogue. "Used by N triggers:" counts the triggers listed under it.
 - Tests: new DOM tests (`jsdom` as a dev dependency, `dom-test.ts` harness) drive the select, the assignments popup and the Variables links; Rust tests cover the app picker's cancel and failure paths and fake app bundles.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1383 tests) and `cargo test` for the Tauri app
+- [x] `tsc` and the full vitest suite pass (1410 tests) and `cargo test` for the Tauri app
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding

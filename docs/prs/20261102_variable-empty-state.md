@@ -18,10 +18,14 @@
 - `SelectField` closes when it becomes disabled, ignores a stale highlight when its options change, and always gives the trigger its id.
 - A new "Open app" key takes the app's name as its label (`app-names.ts` remembers names the picker has seen). The auto-drawn app artwork carries the key label as its text and is redrawn when the label changes; artwork you designed or uploaded, or text you typed in the studio, is never replaced.
 - The Clear key button gets space above and below it in the inspector.
+- Changing a key's app moves its label with it while the label is still the automatic one; the app drawing follows every label edit, not just the last.
+- `SelectField` also closes on a press outside it (WebKit does not focus a clicked button) and keeps its highlight on the same choice when options change; the shared `useOutsidePress` hook serves it and the assignments popup.
+- The assignments popup, Variables panel and variable pickers take their text from the message catalogue. "Used by N triggers:" counts the triggers listed under it.
+- Tests: new DOM tests (`jsdom` as a dev dependency, `dom-test.ts` harness) drive the select, the assignments popup and the Variables links; Rust tests cover the app picker's cancel and failure paths and fake app bundles.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1359 tests)
+- [x] `tsc` and the full vitest suite pass (1380 tests) and `cargo test` for the Tauri app
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action, FaderTemplate, LiveDevice, Profile } from './contracts';
 import { labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
-import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, startersForModule, startersStorageKey } from './starter-model';
+import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, typingActionIssue, startersForModule, startersStorageKey } from './starter-model';
 import { controlCounts, gestures, modules } from './ui-model';
 
 const device = (path: string, module: LiveDevice['module']): LiveDevice => ({ path_hex: path, module, serial_number: null });
@@ -18,9 +18,9 @@ function* actionsOf(profile: Profile): Generator<{ action: Action | FaderTemplat
 
 describe('shipped starters', () => {
   it('are structurally valid profiles the service will accept', () => {
-    expect(starters.map(item => item.name)).toEqual(['Mac basics', 'Streaming (OBS)', 'Streamer', 'Editing and media']);
+    expect(starters.map(item => item.name)).toEqual(['Mac basics', 'Streaming (OBS)', 'Streamer', 'Editing and media', 'Terminal and AI agents']);
     for (const item of starters) {
-      expect(starterIssue(item.profile), item.id).toBeNull();
+      expect(starterIssue(item.profile, item.id === 'terminal-agents' ? typingActionIssue : undefined), item.id).toBeNull();
       expect(labelIssue(item.profile.name, 'Profile name'), item.id).toBeNull();
       const page = item.profile.keypad!.pages[0];
       expect(labelIssue(page.name, 'Page name'), item.id).toBeNull();
@@ -32,10 +32,16 @@ describe('shipped starters', () => {
   });
   it('stay dry-run safe: nothing that types, launches, opens or names an OBS item', () => {
     const allowed = new Set(['volume', 'toggle_mute', 'media', 'system', 'timer', 'volume_from_position', 'obs_virtual_camera', 'obs_replay_buffer', 'obs_transition', 'obs_studio_mode', 'obs_record', 'obs_screenshot', 'obs_stream']);
-    for (const item of starters) {
+    for (const item of starters.filter(starter => starter.id !== 'terminal-agents')) {
       for (const { action, where } of actionsOf(item.profile)) {
         expect(allowed.has(action.type), `${item.id} at ${where}`).toBe(true);
       }
+    }
+  });
+  it('let the terminal starter send keys and text, and nothing that launches, opens or reaches OBS', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!;
+    for (const { action, where } of actionsOf(terminal.profile)) {
+      expect(['shortcut', 'text'], where).toContain(action.type);
     }
   });
   it('hold the stream only behind the press-twice guard', () => {

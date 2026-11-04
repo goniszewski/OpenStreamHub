@@ -3,7 +3,7 @@
 // is offered, and which module an inventory change should prompt for. Rust
 // remains the authority on profile validity; the tests pin the structural
 // rules these templates must meet.
-import type { Action, Binding, BindingAction, KeypadPage, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
+import type { Action, Binding, Modifier, BindingAction, KeypadPage, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
 import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { controlCounts, gestures } from './ui-model';
@@ -135,7 +135,46 @@ const editing: StarterTemplate = {
   },
 };
 
-export const starters: StarterTemplate[] = [macBasics, streaming, streamer, editing];
+const shortcut = (key: string, ...modifiers: Modifier[]): Action => ({ type: 'shortcut', key, modifiers });
+const typed = (text: string): Action => ({ type: 'text', text, press_enter: true });
+
+// Keys for working with a coding agent (Claude Code, Codex) or any shell in a
+// terminal. Everything is sent to the app in front, so it suits the terminal
+// being the focused window. It types, so it is the one starter that is not
+// dry-run safe (see the starter tests).
+const terminalAgents: StarterTemplate = {
+  id: 'terminal-agents',
+  name: 'Terminal and AI agents',
+  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused.',
+  profile: {
+    schema_version: currentSchema,
+    name: 'Terminal and AI agents',
+    bindings: [
+      { module: 'm131e', control: 0, gesture: 'right', action: shortcut('arrow_down') },
+      { module: 'm131e', control: 0, gesture: 'left', action: shortcut('arrow_up') },
+      { module: 'm131e', control: 0, gesture: 'pressed', action: shortcut('return') },
+      { module: 'm003k', control: 0, gesture: 'clockwise', action: shortcut('page_down') },
+      { module: 'm003k', control: 0, gesture: 'counter_clockwise', action: shortcut('page_up') },
+      { module: 'm003k', control: 0, gesture: 'pressed', action: shortcut('escape') },
+    ],
+    keypad: keys(
+      key('Accept', shortcut('return')),
+      key('Interrupt', shortcut('escape')),
+      key('Cycle mode', shortcut('tab', 'shift')),
+      key('Continue', typed('continue')),
+      key('/clear', typed('/clear')),
+      key('/compact', typed('/compact')),
+      key('Ctrl+C', shortcut('c', 'control')),
+      key('Ctrl+D', shortcut('d', 'control')),
+      key('Ctrl+L', shortcut('l', 'control')),
+      key('New tab', shortcut('t', 'command')),
+      key('Next tab', shortcut(']', 'command', 'shift')),
+      key('Previous tab', shortcut('[', 'command', 'shift')),
+    ),
+  },
+};
+
+export const starters: StarterTemplate[] = [macBasics, streaming, streamer, editing, terminalAgents];
 
 // The modules a profile sets up: every module with a flat binding, plus the
 // 15-key module when its keypad page holds any tile. Used both for the
@@ -219,6 +258,10 @@ function bindingIssue(binding: Binding, check: ActionCheck): string | null {
   if (!gestures[binding.module].includes(binding.gesture)) return `Gesture ${binding.gesture} is unsupported for ${binding.module}.`;
   return check(binding.action);
 }
+
+// The terminal starter is the one that sends keys and text, so it is checked with this: keys and typed text on
+// top of what every starter may hold.
+export const typingActionIssue = (action: BindingAction): string | null => action.type === 'shortcut' || action.type === 'text' ? null : actionIssue(action);
 
 // Starters stay dry-run safe: nothing that types into apps, launches or opens
 // anything, and no OBS action that names a scene or source of a set-up OBS. Going live is allowed only behind the

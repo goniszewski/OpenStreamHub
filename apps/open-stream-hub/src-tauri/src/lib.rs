@@ -37,6 +37,7 @@ mod streamlabs;
 mod test_profiles;
 mod turns;
 mod updates;
+mod variable_carry;
 
 use cooltek_sdk_service::{
     Gesture, InputValue, Profile, ServiceModule,
@@ -1283,6 +1284,8 @@ fn run_service(
 struct AppRunner {
     app: tauri::AppHandle,
     sessions: mpsc::Sender<session::Input>,
+    /// Variable values of a run that is about to restart, handed to the next run of the module.
+    carry: variable_carry::VariableCarry,
 }
 
 impl AppRunner {
@@ -1316,16 +1319,21 @@ impl session::Runner for AppRunner {
         if let Ok(id) = service::service_id(&request.path_hex) {
             self.still_running(&id);
         }
-        run_service(
+        let started = run_service(
             &self.app,
             request,
             Some(self.sessions.clone()),
             ServiceEvents::Run,
-        )
+        );
+        if let Ok(id) = &started {
+            self.carry.restore(self.app.clone(), id);
+        }
+        started
     }
 
     fn stop(&mut self, service_id: &str) {
         let state = self.app.state::<AppState>();
+        self.carry.snapshot(&state.services, service_id);
         if let Err(error) = state.services.stop(service_id, service::STOP_GRACE) {
             eprintln!("could not stop {service_id}: {error}");
         }
@@ -1333,6 +1341,9 @@ impl session::Runner for AppRunner {
 
     fn stop_many(&mut self, service_ids: &[String]) {
         let state = self.app.state::<AppState>();
+        for id in service_ids {
+            self.carry.snapshot(&state.services, id);
+        }
         state.services.stop_many(service_ids, service::STOP_GRACE);
     }
 
@@ -2111,6 +2122,7 @@ pub fn run() {
             let runner = AppRunner {
                 app: app.handle().clone(),
                 sessions: sessions.clone(),
+                carry: variable_carry::VariableCarry::default(),
             };
             if let Err(error) = state.sessions.spawn(runner) {
                 eprintln!("{error}");

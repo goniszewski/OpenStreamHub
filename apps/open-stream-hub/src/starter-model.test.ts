@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Action, FaderTemplate, LiveDevice, Profile } from './contracts';
 import { labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
+import { bundleIdIssue } from './focus-rules';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, typingActionIssue, startersForModule, startersStorageKey } from './starter-model';
 import { controlCounts, gestures, modules } from './ui-model';
 
@@ -37,6 +38,13 @@ describe('shipped starters', () => {
         expect(allowed.has(action.type), `${item.id} at ${where}`).toBe(true);
       }
     }
+  });
+  it('name valid, distinct bundle IDs for the terminal starter to switch on', () => {
+    const apps = starters.find(item => item.id === 'terminal-agents')!.focusApps!;
+    expect(apps.length).toBeGreaterThan(0);
+    expect(new Set(apps.map(app => app.bundle_id.toLowerCase())).size).toBe(apps.length);
+    for (const app of apps) expect(bundleIdIssue(app.bundle_id), app.name).toBeNull();
+    expect(starters.filter(item => item.focusApps).map(item => item.id)).toEqual(['terminal-agents']);
   });
   it('let the terminal starter send keys and text, and nothing that launches, opens or reaches OBS', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;

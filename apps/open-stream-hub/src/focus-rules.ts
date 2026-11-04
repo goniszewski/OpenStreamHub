@@ -163,6 +163,22 @@ export class FocusRulesStore {
   remove(id: string) { return this.change('delete_focus_rule', { id }); }
   setEnabled(enabled: boolean) { return enabled ? this.run('set_focus_rules_enabled', { enabled }) : this.change('set_focus_rules_enabled', { enabled }); }
 
+  // Rules that switch to `profileId` when each of `apps` that is installed comes to the front. An app that already
+  // has a rule keeps it (the user's choice stands) and one that is not installed is left out. Turns the rules on.
+  async addForApps(profileId: string, apps: ReadonlyArray<RunningApp>): Promise<{ added: string[]; kept: string[] }> {
+    const added: string[] = [];
+    const kept: string[] = [];
+    if (!this.state.desktop) return { added, kept };
+    for (const app of apps) {
+      if (this.state.rules.some(rule => rule.app_bundle_id.toLowerCase() === app.bundle_id.toLowerCase())) { kept.push(app.name); continue; }
+      const installed = await this.invoke<string | null>('app_name', { bundleId: app.bundle_id }).catch(() => null);
+      if (installed === null) continue;
+      if (await this.save({ id: null, app_bundle_id: app.bundle_id, profile_id: profileId })) added.push(app.name);
+    }
+    if (added.length > 0 && !this.state.enabled) await this.setEnabled(true);
+    return { added, kept };
+  }
+
   // The apps running now, for the picker; none (without an error) when the list cannot be read, since typing the
   // bundle ID still works.
   async runningApps(): Promise<RunningApp[]> {

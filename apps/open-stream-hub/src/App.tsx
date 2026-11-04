@@ -31,11 +31,11 @@ import { bundledPacks, parsePack } from './preset-packs';
 import type { PresetPack, RejectedPack } from './preset-packs';
 import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
-import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
+import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { AppWindow, CheckCircle2, CircleHelp, FileText, Layers, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
-import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
+import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, RunningApp, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { LightingPage } from './LightingPage';
@@ -234,6 +234,22 @@ export default function App() {
     // After the editor's own "Loaded …" notice, so the result of the switch is the one left on screen.
     void Promise.all([loaded, applied]).then(([, notice]) => session.setNotice(notice)).finally(() => setRunningBusy(false));
   };
+  // A starter made for particular apps (the terminal one) offers to switch to its profile when they come to the front.
+  const offerFocusRules = (template: { profile: Profile; focusApps?: ReadonlyArray<RunningApp> } | undefined) => {
+    const { profileId, profile: created } = session.getState().draft;
+    if (!desktop || !template?.focusApps || !profileId) return;
+    const apps = template.focusApps;
+    session.setNotice(`Created ${created.name}.`, {
+      label: 'Switch to it when a terminal is in front',
+      run: () => {
+        void focusRules.addForApps(profileId, apps).then(({ added, kept }) => {
+          const names = (list: string[]) => list.join(', ');
+          if (added.length === 0) session.setNotice(kept.length > 0 ? `${names(kept)} already switch profiles, so nothing was added.` : 'None of the usual terminals are installed.');
+          else session.setNotice(`Switches to ${created.name} when ${names(added)} is in front.${kept.length > 0 ? ` ${names(kept)} keep their own rule.` : ''}`);
+        });
+      },
+    });
+  };
   const chooseProfile = (id: string) => session.guard('switch profiles', () => {
     const template = builtInOf(id);
     if (template) {
@@ -241,6 +257,7 @@ export default function App() {
         if (failure) { session.setError(`Could not create the profile: ${failure}`); return; }
         const created = session.getState().draft;
         if (desktop && created.profileId) applyEverywhere(created.profileId, created.profile.name, Promise.resolve());
+        offerFocusRules(template);
       });
       return;
     }
@@ -697,7 +714,7 @@ export default function App() {
         session.guard('switch to the starter profile', () => {
           void session.createFromTemplate(profile).then(failure => {
             if (failure) session.setError(`Could not create the starter profile: ${failure}`);
-            else setStarter(null);
+            else { setStarter(null); offerFocusRules(starters.find(item => item.profile === profile)); }
           });
         });
       }}

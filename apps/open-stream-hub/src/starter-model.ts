@@ -8,7 +8,23 @@ import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { controlCounts, gestures } from './ui-model';
 
-export interface StarterTemplate { id: string; name: string; description: string; profile: Profile }
+export interface StarterTemplate {
+  id: string; name: string; description: string; profile: Profile;
+  /** Apps this starter is meant for: offered as focused-app rules once the profile is created. */
+  focusApps?: ReadonlyArray<{ bundle_id: string; name: string }>;
+}
+
+// Terminals and editors with a terminal, by bundle ID, for the terminal starter's focused-app rules.
+export const terminalApps = [
+  { bundle_id: 'com.apple.Terminal', name: 'Terminal' },
+  { bundle_id: 'com.googlecode.iterm2', name: 'iTerm2' },
+  { bundle_id: 'com.mitchellh.ghostty', name: 'Ghostty' },
+  { bundle_id: 'dev.warp.Warp-Stable', name: 'Warp' },
+  { bundle_id: 'net.kovidgoyal.kitty', name: 'kitty' },
+  { bundle_id: 'com.github.wez.wezterm', name: 'WezTerm' },
+  { bundle_id: 'org.alacritty', name: 'Alacritty' },
+  { bundle_id: 'com.microsoft.VSCode', name: 'Visual Studio Code' },
+] as const;
 
 // One labelled 15-key tile with the action on press.
 const key = (label: string, action: Action) => ({ type: 'action', label, bindings: [{ gesture: 'pressed', action }] }) as KeypadSlot;
@@ -145,6 +161,7 @@ const typed = (text: string): Action => ({ type: 'text', text, press_enter: true
 const terminalAgents: StarterTemplate = {
   id: 'terminal-agents',
   name: 'Terminal and AI agents',
+  focusApps: terminalApps,
   description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused.',
   profile: {
     schema_version: currentSchema,

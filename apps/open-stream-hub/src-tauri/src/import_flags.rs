@@ -50,14 +50,14 @@ pub const MAX_RECORDS: usize = 1024;
 pub const MAX_HASHES: usize = 4096;
 
 /// Refusal of an Execute run of a flagged profile.
-pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file, an app preset pack, or a JSON file that opens a terminal) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
+pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file, an app preset pack, or a JSON file that opens a terminal or answers AI agent prompts) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
 const RECOVERY: &str = "actions stay off until you choose \"Mark all profiles as needing review\" in the Profiles page";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportRecord {
     /// `mhz` (imported), `pack` (created from an app preset pack), `import` (a JSON profile file that holds a
-    /// `terminal_command`, see [`needs_review`]), `derived` (saved from a flagged profile) or `review` (marked by
+    /// `terminal_command` or writes `agent_decision`, see [`needs_review`]), `derived` (saved from a flagged profile) or `review` (marked by
     /// the recovery action).
     pub source: String,
     pub dry_run_only: bool,
@@ -255,17 +255,25 @@ impl ImportedProfiles {
 /// reviewed and allowed, like an `.mhz` or pack profile: it does when any
 /// action anywhere in it (flat bindings, every keypad page, dial functions,
 /// and the steps of a sequence or an if / else, although validation keeps a
-/// terminal command out of steps) opens a terminal and runs a command line.
-/// Other JSON imports stay ordinary profiles that the Execute confirmation
-/// discloses in full.
+/// terminal command out of steps) opens a terminal and runs a command line,
+/// or writes `agent_decision` (sets, toggles or adds to it), which answers an
+/// AI agent's permission prompt through `osh agent ask`. Other JSON imports
+/// stay ordinary profiles that the Execute confirmation discloses in full.
+///
+/// The review is about those two actions only: a profile that opens a
+/// terminal app (`launch_app`) and types text into it is not flagged here;
+/// the Execute confirmation discloses both.
 pub fn needs_review(profile: &Profile) -> bool {
-    fn opens_terminal(action: &Action) -> bool {
+    fn reviewed_action(action: &Action) -> bool {
         match action {
             Action::TerminalCommand { .. } => true,
-            Action::MultiAction { actions } => actions.iter().any(opens_terminal),
+            Action::SetVariable { name, .. }
+            | Action::ToggleVariable { name }
+            | Action::AddToVariable { name, .. } => name == osh::AGENT_DECISION,
+            Action::MultiAction { actions } => actions.iter().any(reviewed_action),
             Action::Conditional {
                 then, otherwise, ..
-            } => then.iter().chain(otherwise).any(opens_terminal),
+            } => then.iter().chain(otherwise).any(reviewed_action),
             _ => false,
         }
     }
@@ -290,7 +298,7 @@ pub fn needs_review(profile: &Profile) -> bool {
         .map(|binding| &binding.action)
         .chain(keypad.map(|binding| &binding.action))
         .chain(dial.map(|binding| &binding.action))
-        .any(opens_terminal)
+        .any(reviewed_action)
 }
 
 /// SHA-256 (hex) of the canonical schema-2 profile JSON with an empty name.
@@ -750,6 +758,58 @@ mod tests {
             });
             assert!(needs_review(&stepped));
         }
+    }
+
+    #[test]
+    fn a_profile_that_answers_agent_prompts_needs_review() {
+        use cooltek_sdk_service::{
+            Binding, Condition, Gesture, KeypadBinding, KeypadLayout, KeypadPage, ServiceModule,
+            VariableValue,
+        };
+        let decide = |name: &str| Action::SetVariable {
+            name: name.into(),
+            value: VariableValue::Text("allow".into()),
+        };
+        let on_key = |action: Action| {
+            let mut profile = profile("Agents");
+            let mut page = KeypadPage {
+                id: "root".into(),
+                name: "Root".into(),
+                slots: (0..15).map(|_| None).collect(),
+                artwork: Default::default(),
+            };
+            page.slots[0] = Some(KeypadTile::Action {
+                label: "Accept".into(),
+                bindings: vec![KeypadBinding {
+                    gesture: Gesture::Pressed,
+                    serial_number: None,
+                    action,
+                }],
+                faces: Vec::new(),
+            });
+            profile.keypad = Some(KeypadLayout { pages: vec![page] });
+            profile
+        };
+        // The starter's own Accept key: an if / else that sets agent_decision while an agent waits.
+        assert!(needs_review(&on_key(Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![decide(osh::AGENT_DECISION)],
+            otherwise: vec![Action::ToggleMute],
+        })));
+        assert!(needs_review(&on_key(Action::ToggleVariable {
+            name: osh::AGENT_DECISION.into()
+        })));
+        let mut flat = profile("Agents");
+        flat.bindings.push(Binding {
+            module: ServiceModule::M003K,
+            control: 0,
+            gesture: Gesture::Pressed,
+            serial_number: None,
+            action: decide(osh::AGENT_DECISION),
+        });
+        assert!(needs_review(&flat));
+        // Any other variable stays an ordinary import.
+        assert!(!needs_review(&on_key(decide("agent_state"))));
     }
 
     #[test]

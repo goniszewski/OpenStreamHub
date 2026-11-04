@@ -31,12 +31,13 @@
 - Answer an AI agent's permission prompts from the deck: `osh agent setup claude|codex` prints a hook config; `osh agent ask` (a PermissionRequest hook) sets `agent_state` to waiting and waits for the starter's Accept or Deny key (which set `agent_decision`), then answers the agent. Any failure, timeout or closed app leaves the normal prompt; it never allows without a deck press. `osh agent state` sets working/done from other hooks and always exits 0. See `docs/agent-integration.md`. Not yet run against a real agent session.
 - New "Open terminal and run" action (`terminal_command`: Terminal or iTerm2, one command line, optional folder) and "Claude" / "Codex" keys in the terminal starter. The command reaches `osascript` as an argument, never as script text; it is a key's own action only, never a step. A JSON import that contains it is created dry-run only (new `import_profile` command, `import_flags::needs_review`) until reviewed and allowed in the profile manager; the Execute confirmation lists every command. Logs and diagnostics redact the command and folder.
 - Settings has an "AI agents (Claude Code, Codex)" panel: it shows the bundled `osh`, links or unlinks it as `~/.local/bin/osh` (only that symlink is ever created or removed), and shows the Claude Code and Codex hook snippets with Copy buttons. The app never edits those config files. `crates/osh` is now also a library so the app and the tool build identical snippets.
+- Hardening after review: only a deck key can write `agent_decision` allow/deny (the socket refuses it from outside); one `osh agent ask` at a time (file lock); the ask's clear must reach every module (`strict` set); writing `agent_decision` from a profile is a Live-swap capability and makes a JSON import dry-run only; the socket directory must be a real directory owned by the user, bad-token and slow clients are dropped; a failed key-face redraw is retried; an app run from a translocated path is told to move to Applications.
 - The assignments popup, Variables panel and variable pickers take their text from the message catalogue. "Used by N triggers:" counts the triggers listed under it.
 - Tests: new DOM tests (`jsdom` as a dev dependency, `dom-test.ts` harness) drive the select, the assignments popup and the Variables links; Rust tests cover the app picker's cancel and failure paths and fake app bundles.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1462 tests) and `cargo test` for the Tauri app
+- [x] `tsc` and the full vitest suite pass (1465 tests) and `cargo test` for the Tauri app
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding

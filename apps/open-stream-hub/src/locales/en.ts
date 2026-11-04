@@ -803,6 +803,7 @@ export const en = {
   'agents.desktopOnly': 'Set up in the desktop app.',
   'agents.loading': 'Looking for osh…',
   'agents.osh.found': 'Bundled osh found:',
+  'agents.osh.translocated': 'Move OpenStreamHub to Applications and open it from there. macOS runs this copy from a temporary location that changes at every launch, so hooks pointing at its osh would stop working.',
   'agents.osh.missing': 'The bundled osh was not found, so the hooks cannot be set up. Reinstall the app.',
   'agents.link.title': 'osh in the terminal',
   'agents.link.linked': 'osh is linked at {path}.',

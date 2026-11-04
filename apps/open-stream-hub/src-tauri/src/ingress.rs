@@ -1,12 +1,18 @@
 //! A local socket through which processes outside the app (agent hooks, the `osh` tool) read and set the
 //! variables of the running profiles.
 //!
-//! The socket and a token live in `<app data>/ingress/` (directory 0700, files 0600). The token is new at every
-//! launch; a request must carry it. Protocol: one JSON object per line, one JSON line back.
+//! The socket and a token live in `<app data>/ingress/` (a real directory owned by this user, 0700; files 0600).
+//! The token is new at every launch; a request must carry it, and a connection that sends a wrong one is closed.
+//! Protocol: one JSON object per line, one JSON line back; each line must arrive within `READ_TIMEOUT` (from the
+//! connection, or from the previous answer).
 //!
 //! - `{"token":"…","type":"ping"}`
 //! - `{"token":"…","type":"set_variable","name":"agent_state","value":"waiting"}`: the value as in a profile
 //!   (`true`, `3`, `"text"`). Sent to every running module; it succeeds when at least one declares the variable.
+//!   With `"strict":true` it succeeds only when every running module applied it, apart from the ones that do not
+//!   declare it (a module that fails for any other reason, or does not answer, counts as not applied).
+//!   `agent_decision` can only be set to `none` here (`osh::outside_write_allowed`): only a deck key answers an
+//!   agent's prompt.
 //! - `{"token":"…","type":"get_variables"}`: `result.variables` is `[{"service":..,"name":..,"value":..}]`.
 //!
 //! Answers are `{"ok":true,"result":{..}}` or `{"ok":false,"error":".."}`.
@@ -15,9 +21,9 @@ use crate::service::Services;
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Write},
     os::unix::{
-        fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
         net::{UnixListener, UnixStream},
     },
     path::{Path, PathBuf},
@@ -26,14 +32,15 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The longest request line.
 pub const MAX_LINE: usize = 8 * 1024;
 /// Connections served at once; more are answered with an error and closed.
 pub const MAX_CONNECTIONS: usize = 8;
-/// How long a connection may stay silent.
+/// How long one request line may take to arrive, in total: from the connection for the first line, from the
+/// previous answer for the next. A client that drips bytes cannot hold a connection slot longer.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(2);
 /// How long each running module has to answer a forwarded request.
 const FORWARD_TIMEOUT: Duration = Duration::from_secs(1);
@@ -76,6 +83,7 @@ fn token_matches(expected: &str, given: &str) -> bool {
 }
 
 const NOT_RUNNING: &str = "no module is running in OpenStreamHub";
+const BAD_TOKEN: &str = "the token is missing or wrong";
 
 fn refusal(answers: Answers) -> String {
     let mut errors: Vec<String> = answers
@@ -90,13 +98,33 @@ fn refusal(answers: Answers) -> String {
     }
 }
 
+/// Whether a module's refusal says only that its run does not declare the variable (a strict set skips those).
+fn undeclared(error: &str) -> bool {
+    error.contains("is not declared") || error == "this run has no variables"
+}
+
 fn set_variable(request: &Value, forward: &dyn Fn(&Value) -> Answers) -> Result<Value, String> {
     let name = request["name"]
         .as_str()
         .ok_or("set_variable needs a name")?;
     let value = request.get("value").ok_or("set_variable needs a value")?;
+    if !osh::outside_write_allowed(name, value) {
+        return Err(osh::DECISION_REFUSED.to_string());
+    }
     let answers = forward(&json!({"type":"set_variable","name":name,"value":value}));
     let applied = answers.iter().filter(|(_, answer)| answer.is_ok()).count();
+    if request["strict"] == true {
+        let failed = answers
+            .iter()
+            .filter(|(_, answer)| answer.as_ref().is_err_and(|error| !undeclared(error)))
+            .count();
+        if failed > 0 {
+            return Err(format!(
+                "{name} was applied by {applied} of {} running modules that may declare it",
+                applied + failed
+            ));
+        }
+    }
     if applied > 0 {
         Ok(json!({"applied": applied}))
     } else {
@@ -131,7 +159,7 @@ pub fn handle_line(line: &str, token: &str, forward: &dyn Fn(&Value) -> Answers)
             .as_str()
             .is_some_and(|given| token_matches(token, given))
         {
-            return Err("the token is missing or wrong".to_string());
+            return Err(BAD_TOKEN.to_string());
         }
         match request["type"].as_str() {
             Some("ping") => Ok(json!({})),
@@ -150,42 +178,106 @@ fn reply(mut stream: &UnixStream, answer: &Value) -> bool {
     stream.write_all(format!("{answer}\n").as_bytes()).is_ok()
 }
 
-/// Serves one connection until it closes, goes silent, or sends a line that is too long.
+/// One request line as read by `read_line`.
+enum Line {
+    Text(Vec<u8>),
+    TooLong,
+    /// Closed, failed, or not complete by the deadline.
+    Over,
+}
+
+/// Reads up to the next newline (or the end of the stream) into a line, keeping any bytes after it in `pending`.
+/// The whole line must arrive by `deadline`, however the bytes are spread out.
+fn read_line(mut stream: &UnixStream, pending: &mut Vec<u8>, deadline: Instant) -> Line {
+    let mut chunk = [0u8; 1024];
+    loop {
+        if let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+            if end > MAX_LINE {
+                return Line::TooLong;
+            }
+            let mut line: Vec<u8> = pending.drain(..=end).collect();
+            line.pop();
+            return Line::Text(line);
+        }
+        if pending.len() > MAX_LINE {
+            return Line::TooLong;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || stream.set_read_timeout(Some(left)).is_err() {
+            return Line::Over;
+        }
+        match stream.read(&mut chunk) {
+            Ok(0) if pending.is_empty() => return Line::Over,
+            Ok(0) => return Line::Text(std::mem::take(pending)),
+            Ok(read) => pending.extend_from_slice(&chunk[..read]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Line::Over,
+        }
+    }
+}
+
+/// Serves one connection until it closes, is late with a line, sends a line that is too long, or sends a wrong
+/// token (answered, then closed).
 fn serve(stream: UnixStream, token: &str, forward: &Forward) {
-    if stream.set_read_timeout(Some(READ_TIMEOUT)).is_err()
-        || stream.set_write_timeout(Some(READ_TIMEOUT)).is_err()
-    {
+    if stream.set_write_timeout(Some(READ_TIMEOUT)).is_err() {
         return;
     }
-    let mut reader = BufReader::new(&stream);
+    let mut pending = Vec::new();
+    let mut deadline = Instant::now() + READ_TIMEOUT;
     loop {
-        let mut line = Vec::new();
-        match reader
-            .by_ref()
-            .take(MAX_LINE as u64 + 1)
-            .read_until(b'\n', &mut line)
-        {
-            Ok(0) | Err(_) => return,
-            Ok(_) => {}
-        }
-        if line.last() == Some(&b'\n') {
-            line.pop();
-        }
-        if line.len() > MAX_LINE {
-            reply(
-                &stream,
-                &json!({"ok":false,"error":"the request line is too long"}),
-            );
-            return;
-        }
+        let line = match read_line(&stream, &mut pending, deadline) {
+            Line::Text(line) => line,
+            Line::TooLong => {
+                reply(
+                    &stream,
+                    &json!({"ok":false,"error":"the request line is too long"}),
+                );
+                return;
+            }
+            Line::Over => return,
+        };
         let answer = match std::str::from_utf8(&line) {
             Ok(text) => handle_line(text, token, forward.as_ref()),
             Err(_) => json!({"ok":false,"error":"the request is not UTF-8"}),
         };
-        if !reply(&stream, &answer) {
+        if !reply(&stream, &answer) || answer["error"] == BAD_TOKEN {
             return;
         }
+        deadline = Instant::now() + READ_TIMEOUT;
     }
+}
+
+/// Creates the ingress directory when it is missing, then accepts it only as a real directory (never a symbolic
+/// link) owned by this user, and makes it 0700. Anything else is refused, and ingress stays off.
+fn prepare_dir(dir: &Path) -> Result<(), String> {
+    let refused = |why: &str| {
+        format!(
+            "the ingress directory {} {why}, so agent hooks and osh cannot reach the app",
+            dir.display()
+        )
+    };
+    match fs::symlink_metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+            .map_err(|error| format!("could not create the ingress directory: {error}"))?,
+        Err(error) => return Err(format!("could not inspect the ingress directory: {error}")),
+        Ok(_) => {}
+    }
+    let metadata = fs::symlink_metadata(dir)
+        .map_err(|error| format!("could not inspect the ingress directory: {error}"))?;
+    if !metadata.file_type().is_dir() {
+        return Err(refused(
+            "is not a plain directory (a symbolic link or a file)",
+        ));
+    }
+    // SAFETY: getuid has no preconditions and cannot fail.
+    if metadata.uid() != unsafe { libc::getuid() } {
+        return Err(refused("belongs to another user"));
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("could not protect the ingress directory: {error}"))
 }
 
 /// A fresh 256-bit token as hex.
@@ -206,13 +298,7 @@ impl Ingress {
     /// Binds the socket in `dir` (replacing a stale one), writes a new token and serves on a background thread.
     pub fn start(dir: &Path, forward: Forward) -> Result<Self, String> {
         let failed = |what: &str, error: std::io::Error| format!("could not {what}: {error}");
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|error| failed("create the ingress directory", error))?;
-        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-            .map_err(|error| failed("protect the ingress directory", error))?;
+        prepare_dir(dir)?;
         let socket = dir.join(SOCKET_FILE);
         match fs::remove_file(&socket) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
@@ -286,6 +372,7 @@ impl Drop for Ingress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader};
     use std::sync::Mutex;
 
     fn fixed(answers: Answers) -> impl Fn(&Value) -> Answers {
@@ -406,6 +493,10 @@ mod tests {
         assert_eq!(ok["ok"], true, "{ok}");
         let wrong = exchange(&mut stream, b"{\"token\":\"x\",\"type\":\"ping\"}\n");
         assert_eq!(wrong["ok"], false);
+        // A wrong token closes the connection after its answer (macOS refuses a timeout on a closed socket).
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let mut rest = Vec::new();
+        assert_eq!(stream.read_to_end(&mut rest).unwrap(), 0);
         let mut long = vec![b' '; MAX_LINE + 10];
         long.push(b'\n');
         let mut other = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
@@ -443,5 +534,155 @@ mod tests {
         let mut answer = String::new();
         BufReader::new(&mut extra).read_line(&mut answer).unwrap();
         assert!(answer.contains("too many connections"), "{answer}");
+    }
+
+    #[test]
+    fn only_none_reaches_the_agent_decision_from_outside() {
+        let reached = Mutex::new(Vec::new());
+        let forward = |body: &Value| {
+            reached.lock().unwrap().push(body.clone());
+            vec![("a".to_string(), Ok(json!({})))]
+        };
+        for value in [r#""allow""#, r#""deny""#, r#""Allow""#, "true", "1"] {
+            let line = format!(
+                r#"{{"token":"abc","type":"set_variable","name":"agent_decision","value":{value}}}"#
+            );
+            let answer = handle_line(&line, "abc", &forward);
+            assert_eq!(answer["ok"], false, "{value}");
+            assert_eq!(answer["error"], osh::DECISION_REFUSED);
+        }
+        assert!(reached.lock().unwrap().is_empty(), "no module was asked");
+        let cleared = handle_line(
+            r#"{"token":"abc","type":"set_variable","name":"agent_decision","value":"none","strict":true}"#,
+            "abc",
+            &forward,
+        );
+        assert_eq!(cleared, json!({"ok":true,"result":{"applied":1}}));
+        // Other variables, agent_state among them, are set as before.
+        let state = handle_line(
+            r#"{"token":"abc","type":"set_variable","name":"agent_state","value":"working"}"#,
+            "abc",
+            &forward,
+        );
+        assert_eq!(state["ok"], true);
+        assert_eq!(reached.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_strict_set_needs_every_declaring_module() {
+        let line = r#"{"token":"abc","type":"set_variable","name":"agent_decision","value":"none","strict":true}"#;
+        let one_failing = fixed(vec![
+            ("a".into(), Ok(json!({}))),
+            ("b".into(), Err("the module did not answer in time".into())),
+        ]);
+        let answer = handle_line(line, "abc", &one_failing);
+        assert_eq!(answer["ok"], false);
+        assert_eq!(
+            answer["error"],
+            "agent_decision was applied by 1 of 2 running modules that may declare it"
+        );
+        // Without strict, one module is enough, as before.
+        let loose = line.replace(r#","strict":true"#, "");
+        assert_eq!(handle_line(&loose, "abc", &one_failing)["ok"], true);
+        // A module that does not declare the variable is not counted against it.
+        let undeclared = fixed(vec![
+            ("a".into(), Ok(json!({}))),
+            (
+                "b".into(),
+                Err("variable agent_decision is not declared; no action was taken".into()),
+            ),
+            ("c".into(), Err("this run has no variables".into())),
+        ]);
+        assert_eq!(
+            handle_line(line, "abc", &undeclared),
+            json!({"ok":true,"result":{"applied":1}})
+        );
+        // Strict with nothing applied anywhere is still refused.
+        let none = fixed(vec![("a".into(), Err("this run has no variables".into()))]);
+        assert_eq!(handle_line(line, "abc", &none)["ok"], false);
+    }
+
+    #[test]
+    fn a_slow_drip_client_loses_its_slot_at_the_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = dir(temp.path());
+        let _ingress = Ingress::start(&dir, Arc::new(|_| Vec::new())).unwrap();
+        let token = fs::read_to_string(dir.join(TOKEN_FILE)).unwrap();
+        let started = Instant::now();
+        // Every slot taken by a client that sends one byte every 200 ms and never a newline.
+        let drips: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| {
+                let mut stream = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+                thread::spawn(move || {
+                    let mut sent = 0;
+                    while started.elapsed() < READ_TIMEOUT * 3 {
+                        if stream.write_all(b" ").is_err() {
+                            break;
+                        }
+                        sent += 1;
+                        thread::sleep(Duration::from_millis(200));
+                    }
+                    (started.elapsed(), sent)
+                })
+            })
+            .collect();
+        thread::sleep(READ_TIMEOUT + Duration::from_millis(600));
+        // The deadline closed them all, although none was ever silent for long: a new client is served.
+        let mut stream = UnixStream::connect(dir.join(SOCKET_FILE)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let pong = exchange(
+            &mut stream,
+            format!("{{\"token\":\"{token}\",\"type\":\"ping\"}}\n").as_bytes(),
+        );
+        assert_eq!(pong["ok"], true, "{pong}");
+        for drip in drips {
+            let (stopped, sent) = drip.join().unwrap();
+            assert!(sent > 5, "{sent}");
+            assert!(
+                stopped < READ_TIMEOUT * 3,
+                "the server closed the connection"
+            );
+        }
+    }
+
+    #[test]
+    fn the_directory_must_be_a_real_directory_of_this_user() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        // A symbolic link to a directory is refused, and nothing is created where it points.
+        let elsewhere = temp.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        fs::set_permissions(&elsewhere, fs::Permissions::from_mode(0o755)).unwrap();
+        let linked = temp.path().join("linked");
+        symlink(&elsewhere, &linked).unwrap();
+        let error = Ingress::start(&linked, Arc::new(|_| Vec::new()))
+            .err()
+            .unwrap();
+        assert!(error.contains("not a plain directory"), "{error}");
+        assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+        assert_eq!(
+            fs::metadata(&elsewhere).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        // So is a file.
+        let file = temp.path().join("file");
+        fs::write(&file, "").unwrap();
+        assert!(Ingress::start(&file, Arc::new(|_| Vec::new())).is_err());
+        // A real directory of this user with loose permissions is tightened to 0700.
+        let loose = temp.path().join("loose");
+        fs::create_dir(&loose).unwrap();
+        fs::set_permissions(&loose, fs::Permissions::from_mode(0o777)).unwrap();
+        let _ingress = Ingress::start(&loose, Arc::new(|_| Vec::new())).unwrap();
+        assert_eq!(
+            fs::metadata(&loose).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        // A directory of another user (/usr, owned by root) is refused without touching it.
+        if unsafe { libc::getuid() } != 0 {
+            let error = prepare_dir(Path::new("/usr")).unwrap_err();
+            assert!(error.contains("another user"), "{error}");
+        }
     }
 }

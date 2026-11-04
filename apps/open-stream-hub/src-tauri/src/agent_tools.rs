@@ -17,8 +17,11 @@ const TOOL: &str = "osh";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AgentToolStatus {
-    /// The bundled `osh`, when it exists and is executable.
+    /// The bundled `osh`, when it exists, is executable and is not translocated.
     pub osh_path: Option<String>,
+    /// macOS runs the app from an App Translocation copy (a quarantined app opened where it was downloaded): its
+    /// path changes at every launch, so no link or hook is offered for it. `osh_path` is then empty.
+    pub translocated: bool,
     /// Where the link goes: `~/.local/bin/osh`, as an absolute path.
     pub link_path: String,
     /// The link exists and points at the bundled `osh`.
@@ -124,8 +127,18 @@ fn dir_on_path(dir: &Path, path_var: Option<&OsStr>) -> bool {
         .any(|entry| entry == dir || entry.canonicalize().is_ok_and(|entry| entry == wanted))
 }
 
+/// The bundled `osh` unless it is translocated, and whether it is.
+fn offered_osh(exe_dir: Option<&Path>) -> (Option<PathBuf>, bool) {
+    let found = exe_dir.and_then(bundled_osh);
+    let translocated = found
+        .as_deref()
+        .or(exe_dir)
+        .is_some_and(|path| osh::is_translocated(&path.to_string_lossy()));
+    (found.filter(|_| !translocated), translocated)
+}
+
 fn status_for(exe_dir: Option<&Path>, home: &Path, path_var: Option<&OsStr>) -> AgentToolStatus {
-    let bundled = exe_dir.and_then(bundled_osh);
+    let (bundled, translocated) = offered_osh(exe_dir);
     let link = link_path(home);
     let linked = matches!(classify(&link, bundled.as_deref()), Ok(LinkState::Current));
     let on_path = link.parent().is_some_and(|dir| dir_on_path(dir, path_var));
@@ -139,6 +152,7 @@ fn status_for(exe_dir: Option<&Path>, home: &Path, path_var: Option<&OsStr>) -> 
         osh_path: bundled
             .as_deref()
             .map(|path| path.to_string_lossy().into_owned()),
+        translocated,
         link_path: link.to_string_lossy().into_owned(),
         linked,
         on_path,
@@ -214,17 +228,18 @@ pub fn status() -> Result<AgentToolStatus, String> {
 
 pub fn link() -> Result<AgentToolStatus, String> {
     let home = home()?;
-    let bundled = exe_dir()
-        .as_deref()
-        .and_then(bundled_osh)
-        .ok_or("the bundled osh was not found; reinstall the app")?;
+    let (bundled, translocated) = offered_osh(exe_dir().as_deref());
+    if translocated {
+        return Err(format!("{}.", osh::TRANSLOCATED));
+    }
+    let bundled = bundled.ok_or("the bundled osh was not found; reinstall the app")?;
     create_link(&link_path(&home), &bundled)?;
     status()
 }
 
 pub fn unlink() -> Result<AgentToolStatus, String> {
     let home = home()?;
-    let bundled = exe_dir().as_deref().and_then(bundled_osh);
+    let bundled = offered_osh(exe_dir().as_deref()).0;
     remove_link(&link_path(&home), bundled.as_deref())?;
     status()
 }
@@ -399,5 +414,29 @@ mod tests {
         assert_eq!(missing.osh_path, None);
         assert_eq!(missing.claude_config, "");
         assert_eq!(missing.codex_config, "");
+    }
+
+    #[test]
+    fn a_translocated_copy_offers_no_osh() {
+        let root = tempfile::tempdir().unwrap();
+        let macos = root
+            .path()
+            .join("AppTranslocation/1234/d/OpenStreamHub.app/Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let osh = macos.join("osh");
+        std::fs::write(&osh, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&osh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let home = root.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let status = status_for(Some(&macos), &home, None);
+        assert!(status.translocated);
+        assert_eq!(status.osh_path, None);
+        assert_eq!(status.claude_config, "");
+        assert_eq!(status.codex_config, "");
+        // Not translocated in the usual place.
+        let (_root, macos, home) = setup();
+        let status = status_for(Some(&macos), &home, None);
+        assert!(!status.translocated);
+        assert!(status.osh_path.is_some());
     }
 }

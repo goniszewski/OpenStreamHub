@@ -163,7 +163,9 @@ const typed = (text: string): Action => ({ type: 'text', text, press_enter: true
 const session = (command: string): Action => ({ type: 'terminal_command', app: 'terminal', command });
 
 // While an agent waits on a permission prompt (`osh agent ask` set `agent_state` to waiting), the key answers it
-// by setting `agent_decision`; otherwise it sends its usual key.
+// by setting `agent_decision`; otherwise it sends its usual key. Writing `agent_decision` is a capability of its own
+// (the Execute confirmation names it, a Live save that adds it pauses, and a JSON import holding it needs review); a
+// starter is created in the app, not imported, so it is not flagged.
 const answerOr = (decision: 'allow' | 'deny', otherwise: BranchStep): ConditionalAction => ({
   type: 'conditional',
   when: { variable_is: { name: 'agent_state', value: 'waiting' } },

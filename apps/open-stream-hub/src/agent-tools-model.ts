@@ -4,6 +4,8 @@ import type { Invoke } from './profile-session';
 
 export interface AgentToolStatus {
   osh_path: string | null;
+  // macOS runs the app from an App Translocation copy, whose path changes at every launch: nothing is offered.
+  translocated: boolean;
   link_path: string;
   linked: boolean;
   // Only the app's own PATH is checked: a terminal's login shell may add ~/.local/bin, so false is not proof.
@@ -24,9 +26,9 @@ export const agentTargets = [
   { agent: 'codex', file: '~/.codex/config.toml', config: (status: AgentToolStatus) => status.codex_config },
 ] as const;
 
-export type OshState = 'missing' | 'linked' | 'unlinked';
+export type OshState = 'translocated' | 'missing' | 'linked' | 'unlinked';
 
-export const oshState = (status: AgentToolStatus): OshState => !status.osh_path ? 'missing' : status.linked ? 'linked' : 'unlinked';
+export const oshState = (status: AgentToolStatus): OshState => status.translocated ? 'translocated' : !status.osh_path ? 'missing' : status.linked ? 'linked' : 'unlinked';
 
 // The PATH line is offered while osh can be linked and the app could not see ~/.local/bin on its PATH.
 export const showPathHint = (status: AgentToolStatus) => !!status.osh_path && !status.on_path;

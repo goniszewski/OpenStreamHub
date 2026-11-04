@@ -421,7 +421,7 @@ impl AppState {
     }
 
     /// Imports a profile read from a JSON file as a new saved profile. One
-    /// that opens a terminal (`import_flags::needs_review`) is created dry run
+    /// that opens a terminal or answers AI agent prompts (`import_flags::needs_review`) is created dry run
     /// only, like a pack's profile, until the user reviews it and allows it to
     /// execute actions; any other is saved like a new profile (and still stays
     /// dry run only when its content hash is flagged, as for a re-imported

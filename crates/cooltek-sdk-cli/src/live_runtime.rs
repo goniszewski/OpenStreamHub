@@ -449,8 +449,12 @@ impl DisplayThread {
                         let mut animate = true;
                         let mut last_sync: Option<Instant> = None;
                         let faces_seen = std::cell::Cell::new(timer_faces.version());
+                        // The variable version the keys last showed in full. It moves only after a
+                        // sync that did not fail, so a failed redraw is tried again: at once on the
+                        // next sync, and by itself after `VARIABLE_RETRY`.
                         let variables_seen =
                             std::cell::Cell::new(variables.as_ref().map(SharedVariables::version));
+                        let variables_retry_at = std::cell::Cell::new(None::<Instant>);
                         loop {
                             // Frames are chosen from the run clock as of now, so a slow
                             // write never pushes later frames back; the gap is measured
@@ -500,9 +504,11 @@ impl DisplayThread {
                                 // becomes one redraw of the newest values.
                                 let version = variables.as_ref().map(SharedVariables::version);
                                 let rested = last_sync
-                                    .is_none_or(|last| last.elapsed() >= ANIMATION_MIN_INTERVAL);
+                                    .is_none_or(|last| last.elapsed() >= ANIMATION_MIN_INTERVAL)
+                                    && variables_retry_at
+                                        .get()
+                                        .is_none_or(|at| Instant::now() >= at);
                                 if rested && version != variables_seen.get() {
-                                    variables_seen.set(version);
                                     return Some(VARIABLE_TRIGGER);
                                 }
                                 None
@@ -531,6 +537,9 @@ impl DisplayThread {
                                 gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst)
                             };
                             let held = request.pressed.filter(|_| press_feedback);
+                            // Read before the sync, which reads the values: a change during it
+                            // stays unseen and is drawn next.
+                            let drawing = variables.as_ref().map(SharedVariables::version);
                             let began = Instant::now();
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -590,6 +599,14 @@ impl DisplayThread {
                                         .as_array()
                                         .is_some_and(|failed| !failed.is_empty())
                             });
+                            // Any sync draws the current faces, so one without a failure makes the
+                            // variables seen; after a failure the change stays unseen and is retried.
+                            if record.is_ok() && !failed_write {
+                                variables_seen.set(drawing);
+                                variables_retry_at.set(None);
+                            } else if drawing != variables_seen.get() {
+                                variables_retry_at.set(Some(Instant::now() + VARIABLE_RETRY));
+                            }
                             // A variable redraw leaves animation as it was either way.
                             let variable = request.trigger == VARIABLE_TRIGGER;
                             if !variable {
@@ -794,6 +811,10 @@ const ANIMATION_TRIGGER: &str = "animation";
 
 /// Trigger of a key sync started by a change of a variable value (key faces).
 const VARIABLE_TRIGGER: &str = "variable";
+
+/// Least time from a failed key sync to the retry of a variable redraw, so a display that keeps failing is
+/// retried (and logged) about once a second, not at every animation interval.
+const VARIABLE_RETRY: Duration = Duration::from_secs(1);
 
 /// Least time from one key sync to the next animation-timed one, however many
 /// keys' frame deadlines fall in between. Frames are still chosen from the run
@@ -5540,6 +5561,70 @@ mod tests {
         );
         assert!(after.len() <= 2, "the burst is coalesced: {after:?}");
         assert_eq!(fake.lock().unwrap().writes.last().unwrap().jpeg, resting);
+    }
+
+    #[test]
+    fn a_failed_variable_redraw_is_retried() {
+        use crate::display_artwork::{VariableFaces, tests::profile_with_faces};
+        use cooltek_sdk_service::VariableValue;
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        // The page draw succeeds; the first redraw of key 0 is short.
+        fake.lock().unwrap().fail_after(
+            DisplayTarget::Key(0),
+            1,
+            SinkError::ShortWrite {
+                written: 10,
+                expected: 65,
+            },
+        );
+        let abort = Arc::new(AtomicBool::new(false));
+        let profile = profile_with_faces(Vec::new());
+        let variables = SharedVariables::new();
+        variables.declare(&profile.variables);
+        let artwork = VariableFaces::prepare(
+            &profile,
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            variables.clone(),
+        )
+        .unwrap();
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            artwork,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_variables(variables.clone());
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut display =
+            DisplayThread::spawn(display, session.clone(), Arc::clone(&abort), records_tx).unwrap();
+        display.request(&session, "software_mode");
+        records.recv_timeout(Duration::from_secs(2)).unwrap();
+        let resting = fake.lock().unwrap().writes[0].jpeg.clone();
+
+        variables
+            .set("state", VariableValue::Text("waiting".into()))
+            .unwrap();
+        let failed = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(failed["trigger"], "variable");
+        assert_eq!(failed["failed"][0]["key_index"], 0);
+        let failed_at = Instant::now();
+        // With no further change or request, the redraw is tried again, after the retry delay, and succeeds.
+        let retried = records.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(failed_at.elapsed() >= VARIABLE_RETRY - Duration::from_millis(50));
+        assert_eq!(retried["trigger"], "variable");
+        assert_eq!(retried["written"], json!([0]));
+        assert_eq!(retried["complete"], true);
+        let last = fake.lock().unwrap().writes.last().unwrap().clone();
+        assert_eq!(last.target, DisplayTarget::Key(0));
+        assert!(last.fault.is_none());
+        assert_ne!(last.jpeg, resting);
+        // Seen now: nothing more is drawn.
+        thread::sleep(VARIABLE_RETRY + ANIMATION_MIN_INTERVAL);
+        assert!(records.try_recv().is_err());
+        assert!(display.finish(Duration::from_secs(2)));
     }
 
     #[test]

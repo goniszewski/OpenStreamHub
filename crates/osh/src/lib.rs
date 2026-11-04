@@ -1,4 +1,5 @@
-//! The pure part of `osh` the desktop app shares: the hook configuration `osh agent setup` prints.
+//! The pure part of `osh` the desktop app shares: the hook configuration `osh agent setup` prints, and the names
+//! and rules of the agent variables, which the app's socket enforces.
 //!
 //! The binary prints it for the `osh` that runs; the app's Settings shows the same text for the `osh` it bundles.
 //! Only `serde_json` is needed, so the app depending on this library adds nothing.
@@ -7,6 +8,32 @@ use serde_json::{Value, json};
 
 /// How long `agent ask` waits for the deck by default.
 pub const ASK_DEFAULT_SECS: u64 = 55;
+
+/// The text variable agent hooks set to show what an agent is doing (`idle`, `working`, `waiting`, `done`).
+pub const AGENT_STATE: &str = "agent_state";
+/// The text variable a deck key sets to answer an agent's permission prompt (`none`, `allow`, `deny`).
+pub const AGENT_DECISION: &str = "agent_decision";
+/// The one value of [`AGENT_DECISION`] a process outside the app may write: clearing it.
+pub const DECISION_CLEARED: &str = "none";
+/// Why the app's socket refuses any other value of [`AGENT_DECISION`].
+pub const DECISION_REFUSED: &str =
+    "only the deck can answer: agent_decision can be set only to none from outside the app";
+
+/// Whether a process outside the app (through its local socket) may set variable `name` to `value`. Only a deck
+/// key, an action inside the running module, writes `allow` or `deny` to [`AGENT_DECISION`]; from outside it can
+/// only be cleared.
+pub fn outside_write_allowed(name: &str, value: &Value) -> bool {
+    name != AGENT_DECISION || value == DECISION_CLEARED
+}
+
+/// What the app and `osh agent setup` say when macOS runs the app from a translocated copy.
+pub const TRANSLOCATED: &str = "Move OpenStreamHub to Applications and open it from there";
+
+/// Whether `path` lies inside a macOS App Translocation mount: a read-only copy that moves at every launch, so a
+/// hook calling an `osh` there stops working.
+pub fn is_translocated(path: &str) -> bool {
+    path.contains("/AppTranslocation/")
+}
 
 /// The coding agents `osh agent setup` writes a hook configuration for.
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -83,6 +110,26 @@ pub const CLAUDE_HEADER: &str = "# OpenStreamHub deck hooks for Claude Code. Mer
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outside_writes_only_clear_the_decision() {
+        assert!(outside_write_allowed(AGENT_DECISION, &json!("none")));
+        for value in [json!("allow"), json!("deny"), json!("Allow"), json!(true)] {
+            assert!(!outside_write_allowed(AGENT_DECISION, &value), "{value}");
+        }
+        assert!(outside_write_allowed(AGENT_STATE, &json!("waiting")));
+        assert!(outside_write_allowed("busy", &json!(true)));
+    }
+
+    #[test]
+    fn translocated_paths_are_recognised() {
+        assert!(is_translocated(
+            "/private/var/folders/x/T/AppTranslocation/ABC/d/OpenStreamHub.app/Contents/MacOS/osh"
+        ));
+        assert!(!is_translocated(
+            "/Applications/OpenStreamHub.app/Contents/MacOS/osh"
+        ));
+    }
 
     #[test]
     fn setup_prints_valid_configuration_with_a_quoted_path() {

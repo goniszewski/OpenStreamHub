@@ -117,6 +117,17 @@ describe('import', () => {
     expect(session.getState().notice).toBe('Imported Agents. It opens a terminal and runs a command, so it runs as a dry run until you review it and allow it to execute actions in the profile manager.');
   });
 
+  it('says a profile that answers AI agent prompts needs the review', async () => {
+    const { session, calls } = await open([stored('a', 'Alpha')]);
+    const answering = upgradeKeypadProfile({ schema_version: 1, name: 'Answers', variables: [{ name: 'agent_decision', value: 'none' }], bindings: [
+      { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'set_variable', name: 'agent_decision', value: 'allow' } },
+    ] });
+    await importFile(session, file(JSON.stringify(answering)));
+    await flush();
+    expect(names(calls, 'import_profile')).toEqual(['Answers']);
+    expect(session.getState().notice).toBe('Imported Answers. It answers AI agent permission prompts, so it runs as a dry run until you review it and allow it to execute actions in the profile manager.');
+  });
+
   it('suffixes a conflicting name instead of overwriting', async () => {
     const { session, calls } = await open([stored('a', 'Alpha'), stored('b', 'Alpha (imported)')]);
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Alpha', bindings: [] })));

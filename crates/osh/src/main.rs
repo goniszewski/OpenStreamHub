@@ -17,7 +17,10 @@
 //!
 //! `OSH_SOCKET` and `OSH_TOKEN_FILE` override where the socket and the token are found.
 
-use osh::{ASK_DEFAULT_SECS, Agent, CLAUDE_HEADER, setup};
+use osh::{
+    AGENT_DECISION as DECISION, AGENT_STATE as STATE, ASK_DEFAULT_SECS, Agent, CLAUDE_HEADER,
+    DECISION_CLEARED, TRANSLOCATED, is_translocated, setup,
+};
 use serde_json::{Value, json};
 use std::{
     env,
@@ -37,9 +40,7 @@ const MAX_ANSWER: u64 = 64 * 1024;
 
 const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n       osh get [name]\n       osh ping\n       osh agent state <working|waiting|done|idle>\n       osh agent ask [--timeout SECS]\n       osh agent setup <claude|codex>";
 
-/// The variables the terminal starter declares for agent hooks.
-const STATE: &str = "agent_state";
-const DECISION: &str = "agent_decision";
+/// The states `agent state` takes (the terminal starter's `agent_state`).
 const AGENT_STATES: [&str; 4] = ["working", "waiting", "done", "idle"];
 /// How long `agent ask` waits for the deck at most (the default is `osh::ASK_DEFAULT_SECS`).
 const ASK_MAX_SECS: u64 = 600;
@@ -48,6 +49,8 @@ const POLL: Duration = Duration::from_millis(200);
 /// How long a hook waits for its JSON on stdin, and the most read.
 const STDIN_WAIT: Duration = Duration::from_millis(500);
 const MAX_STDIN: u64 = 1024 * 1024;
+/// The lock file, next to the socket, that `agent ask` holds while it waits.
+const ASK_LOCK: &str = "ask.lock";
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -248,6 +251,81 @@ fn set_text(socket: &Path, token: &Path, name: &str, value: &str) -> Result<(), 
     .map(|_| ())
 }
 
+/// Clears `agent_decision` in strict mode: an error unless every running module that declares it cleared it.
+fn clear_decision(socket: &Path, token: &Path) -> Result<(), Failure> {
+    request(
+        socket,
+        token,
+        json!({"type":"set_variable","name":DECISION,"value":DECISION_CLEARED,"strict":true}),
+    )
+    .map(|_| ())
+}
+
+/// The lock `agent ask` holds while it waits, next to the socket.
+fn ask_lock_path(socket: &Path) -> PathBuf {
+    socket
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(ASK_LOCK)
+}
+
+/// Takes an exclusive advisory lock on `path` without waiting. `Ok(None)` when another process (or another open
+/// of the file) holds it. The lock lasts as long as the returned file is open, and the system releases it when the
+/// process dies. The file is created 0600 and never opened through a symbolic link.
+#[cfg(unix)]
+fn try_lock(path: &Path) -> std::io::Result<Option<std::fs::File>> {
+    use std::os::unix::{fs::OpenOptionsExt, io::AsRawFd};
+    #[cfg(any(target_os = "macos", not(target_os = "linux")))]
+    const O_NOFOLLOW: i32 = 0x0100;
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc64"
+        )
+    ))]
+    const O_NOFOLLOW: i32 = 0o100000;
+    #[cfg(all(
+        target_os = "linux",
+        not(any(
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "powerpc64"
+        ))
+    ))]
+    const O_NOFOLLOW: i32 = 0o400000;
+    // The same values on macOS and Linux.
+    const LOCK_EX: i32 = 2;
+    const LOCK_NB: i32 = 4;
+    unsafe extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(O_NOFOLLOW)
+        .open(path)?;
+    // The descriptor stays open for the call: `file` owns it.
+    if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } == 0 {
+        return Ok(Some(file));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.kind() == std::io::ErrorKind::WouldBlock {
+        Ok(None)
+    } else {
+        Err(error)
+    }
+}
+
+#[cfg(not(unix))]
+fn try_lock(_: &Path) -> std::io::Result<Option<std::fs::File>> {
+    Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+}
+
 /// Set by SIGINT or SIGTERM while `agent ask` waits.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -298,6 +376,10 @@ fn hook_answer(behavior: &str) -> String {
 /// Shows the request on the deck and waits for Accept or Deny. Returns what the hook prints: the answer, or
 /// nothing, which leaves the agent's own permission prompt in charge. Only an explicit `allow` on the deck allows;
 /// any error, the timeout or an interrupt prints nothing.
+///
+/// One ask at a time: it holds the ask lock for the whole wait, and an ask that finds it held prints nothing at
+/// once, so that agent shows its normal prompt. The decision is cleared in strict mode first; when that does not
+/// reach every module that declares it, the ask prints nothing.
 fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
     if hook
         .get("hook_event_name")
@@ -306,6 +388,9 @@ fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
         return String::new();
     }
     let deadline = Instant::now() + timeout;
+    let Ok(Some(_lock)) = try_lock(&ask_lock_path(socket)) else {
+        return String::new();
+    };
     let Ok(declared) = variables(socket, token) else {
         return String::new();
     };
@@ -315,11 +400,13 @@ fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
     {
         return String::new();
     }
-    let decision = set_text(socket, token, DECISION, "none")
-        .and_then(|()| set_text(socket, token, STATE, "waiting"))
+    if clear_decision(socket, token).is_err() {
+        return String::new();
+    }
+    let decision = set_text(socket, token, STATE, "waiting")
         .ok()
         .and_then(|()| await_decision(socket, token, deadline));
-    let _ = set_text(socket, token, DECISION, "none");
+    let _ = clear_decision(socket, token);
     match decision {
         Some(behavior) => {
             let _ = set_text(socket, token, STATE, "working");
@@ -362,6 +449,37 @@ fn await_decision(socket: &Path, token: &Path, deadline: Instant) -> Option<&'st
     }
 }
 
+/// The hook configuration for the `osh` at `osh` (resolved), refused when macOS runs it from a translocated copy:
+/// hooks calling that path would stop working at the next launch.
+fn setup_for(agent: Agent, osh: &Path) -> Result<String, Failure> {
+    let osh = osh.to_string_lossy();
+    if is_translocated(&osh) {
+        return Err(Failure(
+            1,
+            format!("osh: this copy runs from a temporary location. {TRANSLOCATED}."),
+        ));
+    }
+    if agent == Agent::Claude {
+        eprintln!("{CLAUDE_HEADER}");
+    }
+    Ok(setup(agent, &osh))
+}
+
+/// Sets `agent_state`, unless an `agent ask` holds the ask lock: its `waiting` stays until it ends. The lock is held
+/// for the one request, so an ask starting meanwhile finds it taken and leaves the prompt to the agent.
+fn set_state(socket: &Path, token: &Path, state: &str) {
+    match try_lock(&ask_lock_path(socket)) {
+        Ok(None) => {}
+        Ok(Some(_lock)) => {
+            let _ = set_text(socket, token, STATE, state);
+        }
+        // No lock to be had (the app never ran here, or the file is not a plain file): set as before.
+        Err(_) => {
+            let _ = set_text(socket, token, STATE, state);
+        }
+    }
+}
+
 /// Runs one command and returns what to print on stdout. `locate` finds the socket and the token file.
 fn run(args: &[String], locate: &dyn Fn() -> Result<Paths, Failure>) -> Result<String, Failure> {
     let command = parse(args)?;
@@ -370,15 +488,12 @@ fn run(args: &[String], locate: &dyn Fn() -> Result<Paths, Failure>) -> Result<S
             let osh = env::current_exe()
                 .and_then(|path| path.canonicalize())
                 .map_err(|error| Failure(1, format!("osh: cannot find its own path: {error}")))?;
-            if agent == Agent::Claude {
-                eprintln!("{CLAUDE_HEADER}");
-            }
-            return Ok(setup(agent, &osh.to_string_lossy()));
+            return setup_for(agent, &osh);
         }
         Command::AgentState(state) => {
             read_stdin();
             if let Ok((socket, token)) = locate() {
-                let _ = set_text(&socket, &token, STATE, &state);
+                set_state(&socket, &token, &state);
             }
             return Ok(String::new());
         }
@@ -626,6 +741,8 @@ mod tests {
         Silent,
         /// The app quits at the first read.
         Vanish,
+        /// Never answers, and refuses every strict set (a module that did not apply it).
+        RefuseStrict,
     }
 
     /// A fake app serving many connections: it keeps the declared text variables, logs every request, and plays
@@ -674,6 +791,11 @@ mod tests {
                             .map(|(name, value)| json!({"service":"m4315","name":name,"value":value}))
                             .collect();
                         json!({"ok":true,"result":{"variables":listed}})
+                    }
+                    Some("set_variable")
+                        if matches!(deck, Deck::RefuseStrict) && request["strict"] == true =>
+                    {
+                        json!({"ok":false,"error":"applied by 1 of 2 modules"})
                     }
                     Some("set_variable") => {
                         match variables
@@ -807,5 +929,99 @@ mod tests {
         for dir in [dir, other, third] {
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn an_ask_that_cannot_clear_the_decision_everywhere_prints_nothing() {
+        let dir = temp_dir("ask-strict");
+        let log = fake_service(&dir, &BOTH, Deck::RefuseStrict);
+        assert_eq!(ask_in(&dir, 5_000), "");
+        // Nothing but the refused clear: agent_state never says waiting.
+        assert_eq!(sets(&log), ["agent_decision=none"]);
+        let strict: Vec<Value> = log
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["type"] == "set_variable")
+            .map(|request| request["strict"].clone())
+            .collect();
+        assert_eq!(strict, [json!(true)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ask_lock_is_exclusive_and_released_when_closed() {
+        let dir = temp_dir("lock");
+        let path = dir.join(ASK_LOCK);
+        let held = try_lock(&path).unwrap().expect("free");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        // A second open of the same file, as another process would make, cannot take it.
+        assert!(try_lock(&path).unwrap().is_none());
+        drop(held);
+        assert!(try_lock(&path).unwrap().is_some());
+        // A symbolic link in its place is never followed.
+        std::fs::remove_file(&path).unwrap();
+        let target = dir.join("elsewhere");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(try_lock(&path).is_err());
+        assert!(!target.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_ask_at_a_time_and_its_waiting_state_is_kept() {
+        let dir = temp_dir("ask-two");
+        let log = fake_service(&dir, &BOTH, Deck::Silent);
+        let first = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_in(&dir, 1_500))
+        };
+        let waiting = Instant::now();
+        while !sets(&log).contains(&"agent_state=waiting".to_string()) {
+            assert!(
+                waiting.elapsed() < Duration::from_secs(3),
+                "the first ask waits"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A second ask meanwhile prints nothing at once and sends nothing.
+        let started = Instant::now();
+        assert_eq!(ask_in(&dir, 5_000), "");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // A state hook meanwhile leaves waiting alone, and still succeeds silently.
+        let paths = || Ok((dir.join("s"), dir.join("t")));
+        assert_eq!(run(&args("agent state done"), &paths), Ok(String::new()));
+        assert_eq!(
+            sets(&log),
+            ["agent_decision=none", "agent_state=waiting"],
+            "nothing else was set while the first ask waited"
+        );
+        assert_eq!(first.join().unwrap(), "");
+        // Once the ask ended, the lock is free and state hooks set again.
+        assert!(try_lock(&dir.join(ASK_LOCK)).unwrap().is_some());
+        assert_eq!(run(&args("agent state working"), &paths), Ok(String::new()));
+        assert_eq!(sets(&log).last().unwrap(), "agent_state=working");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn setup_refuses_a_translocated_copy() {
+        let failure = setup_for(
+            Agent::Codex,
+            Path::new("/private/var/folders/a/T/AppTranslocation/1/d/OpenStreamHub.app/Contents/MacOS/osh"),
+        )
+        .unwrap_err();
+        assert_eq!(failure.0, 1);
+        assert!(failure.1.contains(TRANSLOCATED), "{}", failure.1);
+        let config = setup_for(
+            Agent::Codex,
+            Path::new("/Applications/OpenStreamHub.app/Contents/MacOS/osh"),
+        )
+        .unwrap();
+        assert!(config.contains("/Applications/OpenStreamHub.app/Contents/MacOS/osh agent ask"));
     }
 }

@@ -7,7 +7,7 @@ With the **Terminal and AI agents** starter and a few agent hooks, the deck show
 The starter declares two text variables:
 
 - `agent_state`: `idle`, `working`, `waiting` or `done`. The Accept key shows Working (amber), Needs you (red) or Done (green); idle shows its normal face.
-- `agent_decision`: `none`, `allow` or `deny`. Only the deck writes `allow` or `deny`.
+- `agent_decision`: `none`, `allow` or `deny`. Only the deck writes `allow` or `deny`: the app's socket, which `osh` uses, refuses to set it to anything but `none` ("only the deck can answer").
 
 The hooks call the bundled `osh` tool:
 
@@ -17,7 +17,7 @@ The hooks call the bundled `osh` tool:
 
 When nothing is waiting, Accept still sends Return and Interrupt still sends Escape, as before.
 
-There is one `agent_state` and one `agent_decision` for all sessions. With several agents running at once, the deck shows whichever set the state last, and a key press answers whichever is asking. If two ask at the same time, one press can answer both. Use it with one agent at a time if that matters to you.
+There is one `agent_state` and one `agent_decision` for all sessions, and the deck answers one permission request at a time. While one `osh agent ask` waits, it holds a lock (`ask.lock` next to the app's socket); a second ask, from another agent or a parallel hook, prints nothing at once, so that agent shows its normal permission prompt. `osh agent state` hooks do not change `agent_state` while an ask holds the lock, so the deck keeps showing Needs you. The system releases the lock when the waiting `osh` ends, however it ends. With several agents running at once, the deck otherwise shows whichever set the state last.
 
 ## Start a session
 
@@ -31,7 +31,7 @@ It is not a general shell action: it only opens a terminal window with a command
 
 The first time a key opens a terminal, macOS asks whether OpenStreamHub may control Terminal (or iTerm2). Allow it in that prompt, or later in **System Settings > Privacy & Security > Automation**. Until you do, the key reports an error and opens nothing.
 
-A profile you import from a JSON file that holds this action, anywhere in it, needs the usual review, like an imported MasterHUB or preset profile: it runs only as a dry run until you open it in the profile manager, review what it does and allow it to execute actions. The Execute confirmation lists every command line, folder and terminal app.
+A profile you import from a JSON file that holds this action, or any action that writes `agent_decision`, anywhere in it, needs the usual review, like an imported MasterHUB or preset profile: it runs only as a dry run until you open it in the profile manager, review what it does and allow it to execute actions. The Execute confirmation lists every command line, folder and terminal app, and says when a key answers AI agent permission prompts. That review is about these two actions only: an imported profile can still open a terminal with **Open application** and type text into it without being flagged, although the Execute confirmation discloses both. Saving a running profile so that a key now answers agent prompts also counts as a new capability: a Live run pauses for one confirmation.
 
 ## Install
 
@@ -62,13 +62,15 @@ The permission hook waits up to 55 seconds (`--timeout`, at most 600), and the h
 - On timeout, `osh agent ask` prints nothing, sets `agent_decision` back to `none` and `agent_state` to `idle`, and the agent shows its usual prompt.
 - If the app is closed, no module runs a profile that declares both variables, or the app quits while `osh` waits, it prints nothing at once and the usual prompt appears.
 - If `osh` is stopped (Ctrl+C or a termination signal), it resets the variables the same way.
+- Before it waits, `osh agent ask` clears `agent_decision` in strict mode: every running module that declares it must apply the clear. If one does not (it fails or does not answer in time), the ask prints nothing.
+- Saving the running profile while an ask waits restarts a run that draws on the deck, which starts its variables again from their declared values (`agent_state` back to `idle`); the deck no longer shows Needs you and the waiting ask ends without an answer (at once when it cannot read the variables during the restart, else at its timeout), so answer the agent in its own prompt.
 - `osh agent state` always exits 0 and prints nothing, whether or not the app runs, so it never blocks a prompt.
 
 ## Safety
 
-- Only a deck press allows a request. `osh agent ask` clears `agent_decision` before it starts waiting, so an old `allow` does not count, and the keys write a decision only while `agent_state` is `waiting`.
+- Only a deck press allows a request. The app's socket accepts no `agent_decision` value but `none`, so neither `osh set` nor any other program talking to the socket can write `allow` or `deny`; a deck key, an action inside the running profile, is the only writer. `osh agent ask` clears `agent_decision` before it starts waiting, so an old `allow` does not count, and the keys write a decision only while `agent_state` is `waiting`.
 - `osh` never allows on an error: anything unexpected prints nothing, which leaves the decision to the agent's own prompt. A `deny` from any running module wins over an `allow`.
-- The app's socket is in `~/Library/Application Support/dev.openstreamhub/ingress/` (directory 0700, files 0600), and every request carries a token the app writes anew at each launch. Any program running as your user can read that token, so any of them could set `agent_decision` too. Treat it like the agent's own terminal: anything running as you could already type into it.
+- The app's socket is in `~/Library/Application Support/dev.openstreamhub/ingress/` (a directory owned by you, 0700, files 0600; the app turns the socket off if that path is a symbolic link or belongs to someone else), and every request carries a token the app writes anew at each launch. Any program running as your user can read that token, so it can set `agent_state`, clear `agent_decision`, or start an ask of its own; it cannot answer one. Treat it like the agent's own terminal: anything running as you could already type into it.
 
 ## Where osh is
 
@@ -87,6 +89,8 @@ ln -s /Applications/OpenStreamHub.app/Contents/MacOS/osh ~/.local/bin/osh
 ```
 
 `osh agent setup` writes the path of the `osh` you ran, so run it from where the hooks should find it.
+
+If macOS runs the app from where it was downloaded (App Translocation, a temporary copy whose path changes at every launch), the panel offers no link or configuration and `osh agent setup` exits with an error. Move OpenStreamHub to Applications and open it from there.
 
 ## Not yet verified
 

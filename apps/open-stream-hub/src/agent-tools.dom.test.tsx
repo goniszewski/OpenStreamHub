@@ -11,7 +11,7 @@ let view: Rendered | null = null;
 afterEach(() => { view?.unmount(); view = null; vi.useRealTimers(); });
 
 const status = (patch: Partial<AgentToolStatus> = {}): AgentToolStatus => ({
-  osh_path: '/Applications/OpenStreamHub.app/Contents/MacOS/osh', link_path: '/Users/a/.local/bin/osh', linked: false, on_path: false,
+  osh_path: '/Applications/OpenStreamHub.app/Contents/MacOS/osh', translocated: false, link_path: '/Users/a/.local/bin/osh', linked: false, on_path: false,
   claude_config: '{\n  "hooks": {}\n}', codex_config: '[[hooks.Stop]]', ...patch,
 });
 
@@ -91,6 +91,16 @@ describe('the AI agents panel in the DOM', () => {
     view = render(<AgentToolsPanel desktop invoke={invoke} />);
     await settle();
     expect(view.container.textContent).toContain('The bundled osh was not found');
+    expect(view.$$('pre')).toEqual([]);
+    expect(view.$$('button')).toEqual([]);
+  });
+
+  it('asks to move a translocated app to Applications, with no link button or configuration', async () => {
+    const { invoke } = fakeInvoke({ agent_tool_status: () => status({ osh_path: null, translocated: true, claude_config: '', codex_config: '' }) });
+    view = render(<AgentToolsPanel desktop invoke={invoke} />);
+    await settle();
+    expect(view.container.textContent).toContain('Move OpenStreamHub to Applications and open it from there.');
+    expect(view.container.textContent).not.toContain('The bundled osh was not found');
     expect(view.$$('pre')).toEqual([]);
     expect(view.$$('button')).toEqual([]);
   });

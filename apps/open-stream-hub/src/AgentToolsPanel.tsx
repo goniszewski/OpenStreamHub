@@ -57,8 +57,9 @@ export function AgentToolsPanel({ desktop, invoke, copy = copyText }: { desktop:
     <p>{t('agents.intro')}</p>
     {!available && <p className="fine-print">{t('agents.desktopOnly')}</p>}
     {available && !status && !error && <p className="fine-print" role="status">{t('agents.loading')}</p>}
+    {status && state === 'translocated' && <p className="fine-print permission-error" role="status">{t('agents.osh.translocated')}</p>}
     {status && state === 'missing' && <p className="fine-print permission-error" role="status">{t('agents.osh.missing')}</p>}
-    {status && status.osh_path && <>
+    {status && status.osh_path && !status.translocated && <>
       <label>{t('agents.osh.found')}</label>
       <code className="storage-path">{status.osh_path}</code>
       <h3>{t('agents.link.title')}</h3>

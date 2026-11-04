@@ -14,6 +14,9 @@
 use cooltek_sdk_service::{Action, KeypadTile, Profile};
 use std::collections::BTreeSet;
 
+/// The item of a key that sets `agent_decision`, as the confirmation names it.
+const AGENT_ANSWER: &str = "answers AI agent permission prompts";
+
 /// Every distinct capability of `profile`, as comparable items.
 fn items(profile: &Profile) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
@@ -92,11 +95,18 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::Text { text, press_enter } => {
             set.insert(format!("text\0{text}\0{press_enter}"));
         }
-        // A variable is the profile's own memory: it reaches nothing outside
-        // the service, so it adds no capability (the actions it steers do).
-        Action::SetVariable { .. }
-        | Action::ToggleVariable { .. }
-        | Action::AddToVariable { .. } => {}
+        // A variable is the profile's own memory and adds no capability (the
+        // actions it steers do), with one exception: `agent_decision` reaches
+        // outside the service, since `osh agent ask` answers an AI agent's
+        // permission prompt with it. Any write of it is one item, whatever
+        // the value: a key that answers agent prompts.
+        Action::SetVariable { name, .. }
+        | Action::ToggleVariable { name }
+        | Action::AddToVariable { name, .. } => {
+            if name == osh::AGENT_DECISION {
+                set.insert(AGENT_ANSWER.into());
+            }
+        }
         Action::Conditional {
             when,
             then,
@@ -515,5 +525,52 @@ mod tests {
         ] {
             assert!(adds_capabilities(&held, &profile(vec![next])));
         }
+    }
+
+    #[test]
+    fn a_key_that_answers_agent_prompts_is_an_addition() {
+        use cooltek_sdk_service::{Condition, VariableValue};
+        let decide = |value: &str| Action::SetVariable {
+            name: osh::AGENT_DECISION.into(),
+            value: VariableValue::Text(value.into()),
+        };
+        let held = profile(vec![Action::ToggleMute]);
+        assert!(items(&profile(vec![decide("allow")])).contains(AGENT_ANSWER));
+        assert!(adds_capabilities(&held, &profile(vec![decide("allow")])));
+        // Inside a sequence or an if / else too, and through a toggle or an add.
+        let nested = [
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, decide("allow")],
+            },
+            Action::Conditional {
+                when: Condition::OutputMuted(true),
+                then: vec![Action::ToggleMute],
+                otherwise: vec![decide("deny")],
+            },
+            Action::ToggleVariable {
+                name: osh::AGENT_DECISION.into(),
+            },
+            Action::AddToVariable {
+                name: osh::AGENT_DECISION.into(),
+                amount: 1,
+            },
+        ];
+        for action in nested {
+            assert!(
+                items(&profile(vec![action.clone()])).contains(AGENT_ANSWER),
+                "{action:?}"
+            );
+        }
+        // Once held, another value adds nothing new; other variables never count.
+        let answering = profile(vec![decide("allow")]);
+        assert!(!adds_capabilities(
+            &answering,
+            &profile(vec![decide("deny")])
+        ));
+        let other = profile(vec![Action::SetVariable {
+            name: "busy".into(),
+            value: VariableValue::Bool(true),
+        }]);
+        assert!(!adds_capabilities(&held, &other));
     }
 }

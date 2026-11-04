@@ -5,7 +5,7 @@ import type { AgentToolStatus } from './agent-tools-model';
 import type { Invoke } from './profile-session';
 
 const status = (patch: Partial<AgentToolStatus> = {}): AgentToolStatus => ({
-  osh_path: '/Applications/OpenStreamHub.app/Contents/MacOS/osh', link_path: '/Users/a/.local/bin/osh', linked: false, on_path: false,
+  osh_path: '/Applications/OpenStreamHub.app/Contents/MacOS/osh', translocated: false, link_path: '/Users/a/.local/bin/osh', linked: false, on_path: false,
   claude_config: '{"hooks":{}}', codex_config: '[[hooks.Stop]]', ...patch,
 });
 
@@ -14,6 +14,7 @@ describe('the AI agents panel model', () => {
     expect(oshState(status({ osh_path: null, linked: true }))).toBe('missing');
     expect(oshState(status())).toBe('unlinked');
     expect(oshState(status({ linked: true }))).toBe('linked');
+    expect(oshState(status({ osh_path: null, translocated: true }))).toBe('translocated');
   });
 
   it('offers the PATH line only while osh exists and ~/.local/bin is not seen on PATH', () => {

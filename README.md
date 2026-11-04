@@ -26,43 +26,28 @@ Feature parity is incomplete. The comparison below uses the official **MasterHUB
 
 ## Screenshots
 
-Tap or click any screenshot to open it at full size. They follow your light or dark theme.
+Tap or click any screenshot to open it at full size.
 
-<a href="docs/screenshots/light-1-workspace.png"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-1-workspace.png">
-  <img src="docs/screenshots/light-1-workspace.png" alt="Workspace: your modules, live key and dial artwork, and the editor for the selected control." width="100%">
-</picture></a>
+<a href="docs/screenshots/dark-1-workspace.png"><img src="docs/screenshots/dark-1-workspace.png" alt="Workspace: your modules, live key and dial artwork, and the editor for the selected control." width="100%"></a>
 
 <details>
 <summary>More views: lighting, demos, compatibility and settings</summary>
 
 **Lighting**
 
-<a href="docs/screenshots/light-2-lighting.png"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-2-lighting.png">
-  <img src="docs/screenshots/light-2-lighting.png" alt="Lighting: colour, effect and brightness for the knob and fader modules, and the dial's screen." width="100%">
-</picture></a>
+<a href="docs/screenshots/dark-2-lighting.png"><img src="docs/screenshots/dark-2-lighting.png" alt="Lighting: colour, effect and brightness for the knob and fader modules, and the dial's screen." width="100%"></a>
 
 **Demos**
 
-<a href="docs/screenshots/light-3-demos.png"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-3-demos.png">
-  <img src="docs/screenshots/light-3-demos.png" alt="Demos: small games and a display speed test that run on the modules." width="100%">
-</picture></a>
+<a href="docs/screenshots/dark-3-demos.png"><img src="docs/screenshots/dark-3-demos.png" alt="Demos: small games and a display speed test that run on the modules." width="100%"></a>
 
 **Compatibility**
 
-<a href="docs/screenshots/light-4-compatibility.png"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-4-compatibility.png">
-  <img src="docs/screenshots/light-4-compatibility.png" alt="Compatibility: what each module and action supports, and what has been tested on hardware." width="100%">
-</picture></a>
+<a href="docs/screenshots/dark-4-compatibility.png"><img src="docs/screenshots/dark-4-compatibility.png" alt="Compatibility: what each module and action supports, and what has been tested on hardware." width="100%"></a>
 
 **Settings**
 
-<a href="docs/screenshots/light-5-settings.png"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/dark-5-settings.png">
-  <img src="docs/screenshots/light-5-settings.png" alt="Settings: display control, run mode, profile storage, OBS, startup, permissions and updates." width="100%">
-</picture></a>
+<a href="docs/screenshots/dark-5-settings.png"><img src="docs/screenshots/dark-5-settings.png" alt="Settings: display control, run mode, profile storage, OBS, startup, permissions and updates." width="100%"></a>
 
 </details>
 
@@ -117,7 +102,7 @@ macOS asks for permission the first time an action needs it. Allow OpenStreamHub
 
 ## Quick start
 
-Build from source on **macOS 12.3 or later**, with **Node.js 22.12+**, **Rust 1.97+** and the **Xcode command-line tools** installed.
+Build from source on **macOS 12.3 or later**, with **Node.js 22.22+**, **Rust 1.97+** and the **Xcode command-line tools** installed.
 
 ```sh
 git clone git@github.com:goniszewski/OpenStreamHub.git
@@ -178,6 +163,7 @@ The app does not contact a remote service on its own. **Settings → Updates** h
 | [Focused-app rules](docs/masterhub-focus-rules.md) | [macOS roadmap](docs/masterhub-macos-plan.md) |
 | [Diagnostics and replay](docs/masterhub-diagnostics.md) | [Session lifecycle](docs/masterhub-session-manager.md) |
 | [Display sync](docs/masterhub-display-sync.md) | [Release process](docs/release-process.md) |
+| [AI agent prompts](docs/agent-integration.md) | [Status keys](docs/status-keys.md) |
 
 Try the [example profiles](examples/profiles/), including [macOS controls](examples/profiles/macos.json), [all modules](examples/profiles/all-modules.json), [keypad folders](examples/profiles/keypad-folders.json) and [dial functions](examples/profiles/dial-functions.json).
 

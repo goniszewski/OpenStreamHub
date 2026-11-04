@@ -1,4 +1,5 @@
 import type { FocusChangedPayload, FocusCurrentApp, FocusRule, FocusRuleInput, FocusRules, RunningApp } from './contracts';
+import { appDisplayName, rememberAppName } from './app-names';
 import type { Listen } from './device-feed';
 import type { Invoke } from './profile-session';
 import type { ServiceRun } from './service-runner';
@@ -60,9 +61,9 @@ export async function listRunningApps(invoke: Invoke): Promise<RunningApp[]> {
   } catch { return []; }
 }
 
-// An app by its name when it is running, else by its bundle id.
+// An app by its name when it is running or the picker has seen it, else by its bundle id.
 export const appName = (bundleId: string, apps: RunningApp[]): string =>
-  apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? bundleId;
+  apps.find(app => app.bundle_id.toLowerCase() === bundleId.toLowerCase())?.name ?? appDisplayName(bundleId);
 
 export interface FocusRulesState {
   desktop: boolean; loaded: boolean; busy: boolean; error: string | null;
@@ -162,10 +163,42 @@ export class FocusRulesStore {
   remove(id: string) { return this.change('delete_focus_rule', { id }); }
   setEnabled(enabled: boolean) { return enabled ? this.run('set_focus_rules_enabled', { enabled }) : this.change('set_focus_rules_enabled', { enabled }); }
 
+  // Rules that switch to `profileId` when each of `apps` that is installed comes to the front. An app that already
+  // has a rule keeps it (the user's choice stands) and one that is not installed is left out. Turns the rules on.
+  async addForApps(profileId: string, apps: ReadonlyArray<RunningApp>): Promise<{ added: string[]; kept: string[] }> {
+    const added: string[] = [];
+    const kept: string[] = [];
+    if (!this.state.desktop) return { added, kept };
+    for (const app of apps) {
+      if (this.state.rules.some(rule => rule.app_bundle_id.toLowerCase() === app.bundle_id.toLowerCase())) { kept.push(app.name); continue; }
+      const installed = await this.invoke<string | null>('app_name', { bundleId: app.bundle_id }).catch(() => null);
+      if (installed === null) continue;
+      if (await this.save({ id: null, app_bundle_id: app.bundle_id, profile_id: profileId })) added.push(app.name);
+    }
+    if (added.length > 0 && !this.state.enabled) await this.setEnabled(true);
+    return { added, kept };
+  }
+
   // The apps running now, for the picker; none (without an error) when the list cannot be read, since typing the
   // bundle ID still works.
   async runningApps(): Promise<RunningApp[]> {
     return this.state.desktop ? listRunningApps(this.invoke) : [];
+  }
+
+  // The system's file dialog on Applications (the same one the action editor's app picker uses). null when the user
+  // cancels or the choice is not an app; a failure is reported in `error`.
+  async chooseApp(): Promise<RunningApp | null> {
+    if (!this.state.desktop) return null;
+    try {
+      const app = await this.invoke<RunningApp | null>('choose_app');
+      this.set({ error: null });
+      if (!app || typeof app.bundle_id !== 'string' || typeof app.name !== 'string') return null;
+      rememberAppName(app.bundle_id, app.name);
+      return app;
+    } catch (reason) {
+      this.set({ error: errorMessage(reason) });
+      return null;
+    }
   }
 
   // The last app other than OpenStreamHub that was frontmost, or null with an explanation in `error`.

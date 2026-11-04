@@ -1,6 +1,6 @@
 use crate::{
-    Action, Binding, BindingEngine, DeviceContext, DialFunction, DialFunctionNavigation, Gesture,
-    InputEvent, KeyArtwork, Profile, ServiceModule,
+    Action, Binding, BindingEngine, Condition, DeviceContext, DialFunction, DialFunctionNavigation,
+    Gesture, InputEvent, KeyArtwork, Profile, ServiceModule,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -28,12 +28,58 @@ pub enum KeypadTile {
         label: String,
         /// Unique gesture/serial bindings for this tile.
         bindings: Vec<KeypadBinding>,
+        /// Alternative faces chosen by variable values; the first whose
+        /// `when` holds is shown, and none holding shows the normal face.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        faces: Vec<KeyFace>,
     },
     /// Enter a child page on a press; its page name supplies the folder label.
     Folder {
         /// ID of a page with exactly one parent.
         page_id: String,
     },
+}
+
+/// A face an action tile shows while a variable condition holds.
+///
+/// It replaces the tile's label and/or background (and any prepared artwork)
+/// for as long as `when` holds; the icon and bindings stay the tile's own.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeyFace {
+    /// Variable-only condition (`variable_is`, `variable_at_least`, and `all`/`any` of them).
+    pub when: Condition,
+    /// Label shown instead of the tile label; absent keeps the tile label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Background hex colour such as `#ff0000`; absent keeps the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background: Option<String>,
+}
+
+impl KeyFace {
+    /// Most faces one tile can carry.
+    pub const MAX_PER_TILE: usize = 8;
+
+    /// Checks the condition shape, label and colour; declared variables are checked by the profile.
+    pub fn validate(&self) -> Result<(), String> {
+        self.when.validate()?;
+        if !self.when.is_variable_only() {
+            return Err("a key face condition can only test variables".into());
+        }
+        if self.label.is_none() && self.background.is_none() {
+            return Err("a key face needs a label or a background".into());
+        }
+        if let Some(label) = &self.label {
+            validate_label(label, "key face label")?;
+        }
+        if let Some(background) = &self.background {
+            crate::key_artwork::validate_hex_colour(background).map_err(|_| {
+                "key face background must be a hex colour such as #000000 or #fff".to_string()
+            })?;
+        }
+        Ok(())
+    }
 }
 
 /// One fixed fifteen-key page in a keypad folder tree.
@@ -140,8 +186,24 @@ impl KeypadLayout {
                 }
             }
             for (slot, tile) in page.slots.iter().enumerate() {
-                if let Some(KeypadTile::Action { label, bindings }) = tile {
+                if let Some(KeypadTile::Action {
+                    label,
+                    bindings,
+                    faces,
+                }) = tile
+                {
                     validate_label(label, "tile label")?;
+                    if faces.len() > KeyFace::MAX_PER_TILE {
+                        return Err(format!(
+                            "page {:?} slot {slot}: at most {} key faces",
+                            page.id,
+                            KeyFace::MAX_PER_TILE
+                        ));
+                    }
+                    for face in faces {
+                        face.validate()
+                            .map_err(|error| format!("page {:?} slot {slot}: {error}", page.id))?;
+                    }
                     let mut selectors = HashSet::new();
                     for binding in bindings {
                         if !matches!(binding.gesture, Gesture::Pressed | Gesture::Released) {
@@ -974,6 +1036,111 @@ mod tests {
         assert_eq!(
             Profile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap(),
             profile
+        );
+    }
+
+    /// The fixture profile at schema 5 with the shared key face fixture's variables, and `faces` on root slot 0.
+    fn with_faces(faces: Value) -> Result<Profile, String> {
+        let shared: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/key-faces.json")).unwrap();
+        let mut value = serde_json::to_value(fixture()).unwrap();
+        value["schema_version"] = json!(5);
+        value["variables"] = shared["variables"].clone();
+        value["keypad"]["pages"][0]["slots"][0]["faces"] = faces;
+        Profile::from_json(&serde_json::to_vec(&value).unwrap())
+    }
+
+    /// Shared with the editor (`draft-model.test.ts`), which holds `keyFaceIssue` to the same cases.
+    #[test]
+    fn key_faces_follow_the_shared_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/key-faces.json")).unwrap();
+        let valid = fixture["valid"].clone();
+        let profile = with_faces(valid.clone()).unwrap();
+        let Some(KeypadTile::Action { faces, .. }) =
+            &profile.keypad.as_ref().unwrap().pages[0].slots[0]
+        else {
+            panic!("root slot 0 is an action tile");
+        };
+        assert_eq!(faces.len(), valid.as_array().unwrap().len());
+        // Round trip, with absent label or background left out.
+        let value = serde_json::to_value(&profile).unwrap();
+        assert_eq!(value["keypad"]["pages"][0]["slots"][0]["faces"], valid);
+        assert_eq!(
+            Profile::from_json(&serde_json::to_vec(&profile).unwrap()).unwrap(),
+            profile
+        );
+        for case in fixture["invalid"].as_array().unwrap() {
+            let error = with_faces(json!([case["face"]])).unwrap_err();
+            let expected = case["error"].as_str().unwrap();
+            assert!(error.contains(expected), "{expected}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_tile_without_faces_serializes_without_the_field_and_holds_at_most_eight() {
+        let value = serde_json::to_value(fixture()).unwrap();
+        assert!(
+            value["keypad"]["pages"][0]["slots"][0]
+                .get("faces")
+                .is_none()
+        );
+        let face =
+            json!({ "when": { "variable_is": { "name": "live", "value": true } }, "label": "On" });
+        assert!(with_faces(json!(vec![face.clone(); 8])).is_ok());
+        let error = with_faces(json!(vec![face; 9])).unwrap_err();
+        assert!(error.contains("at most 8 key faces"), "{error}");
+    }
+
+    #[test]
+    fn a_variable_condition_holds_against_the_current_values() {
+        use crate::VariableValue::{self, Bool, Number, Text};
+        let values = |name: &str| match name {
+            "state" => Some(Text("waiting".into())),
+            "count" => Some(Number(3)),
+            "live" => Some(Bool(true)),
+            _ => None,
+        };
+        let is = |name: &str, value: VariableValue| Condition::VariableIs {
+            name: name.into(),
+            value,
+        };
+        let at_least = |name: &str, value: i32| Condition::VariableAtLeast {
+            name: name.into(),
+            value,
+        };
+        let cases = [
+            (is("state", Text("waiting".into())), Some(true)),
+            (is("state", Text("idle".into())), Some(false)),
+            (is("live", Bool(false)), Some(false)),
+            (is("live", Number(1)), None),
+            (is("missing", Bool(true)), None),
+            (at_least("count", 3), Some(true)),
+            (at_least("count", 4), Some(false)),
+            (at_least("state", 1), None),
+            (
+                Condition::All(vec![is("live", Bool(true)), at_least("count", 4)]),
+                Some(false),
+            ),
+            (
+                Condition::Any(vec![is("live", Bool(true)), at_least("count", 4)]),
+                Some(true),
+            ),
+            (
+                Condition::Any(vec![is("live", Bool(true)), is("missing", Bool(true))]),
+                None,
+            ),
+            (Condition::Streaming(true), None),
+        ];
+        for (condition, expected) in cases {
+            assert_eq!(condition.holds_with(values), expected, "{condition:?}");
+        }
+        assert!(
+            Condition::Any(vec![is("live", Bool(true)), at_least("count", 1)]).is_variable_only()
+        );
+        assert!(
+            !Condition::All(vec![is("live", Bool(true)), Condition::OutputMuted(true)])
+                .is_variable_only()
         );
     }
 }

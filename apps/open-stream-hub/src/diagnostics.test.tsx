@@ -9,6 +9,7 @@ import type { DiagnosticsResult } from './diagnostics';
 import { idleFeedState } from './device-feed';
 import { emptyCounters, idleServiceState, summarizeRecord } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
+import { hasOption } from './select-markup';
 
 const profile: Profile = { schema_version: 1, name: 'P', bindings: [] };
 const run = (id: string, texts: string[], base = 0): ServiceRun => ({
@@ -106,7 +107,7 @@ describe('DiagnosticsPanel markup', () => {
     expect(html).toContain('The activity never shows text snippets, timer labels or OBS scene names, and shows web addresses only as their site address.');
     expect(html).toContain('Nothing is uploaded or sent');
     expect(html).toContain('0 / 2000');
-    expect(html).toContain('<option value="3" selected="">3 seconds</option>');
+    expect(hasOption(html, '3', '3 seconds', true)).toBe(true);
     expect(html).not.toContain('role="alert"');
   });
   it('is disabled in the browser preview', () => {

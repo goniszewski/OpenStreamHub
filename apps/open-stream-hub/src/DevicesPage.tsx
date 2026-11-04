@@ -6,7 +6,8 @@ import { DialFace, KeyDisplayContent } from './DisplayContent';
 import { isValidForControl, offersActionDrag, readActionDrag } from './action-picker-model';
 import type { PickerActionType } from './action-picker-model';
 import type { Profile, ServiceModule } from './contracts';
-import { bindingWarnings } from './binding-model';
+import { bindingWarnings, moduleAssignments } from './binding-model';
+import { ModuleAssignmentsChip } from './ModuleAssignments';
 import { BindingsPanel } from './BindingsPanel';
 import { profileBindingCount } from './keypad-model';
 import { keypadDepth, keypadIsBack } from './keypad-model';
@@ -81,6 +82,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
     <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
     <RigPreview editor={editor} state={state} feed={feed} runs={run?.service.runs} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
       dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
+    {selected.supported && <ModuleAssignmentsChip key={`${selection.module}:${isKeypad ? currentKeypadPage.id : ''}`} assignments={moduleAssignments(profile, selection.module, isKeypad ? currentKeypadPage.id : undefined)} moduleName={selected.name} />}
     {!onBase && devices.length > 0 && <div className="standalone-bar" role="status">
       <button type="button" className="button compact" onClick={goBack}><ArrowLeft size={15} aria-hidden="true" />Go back to the base layout</button>
       <span className="fine-print">{selected.shortName} is not connected, so it is shown on its own.</span>

@@ -1,7 +1,8 @@
 // Pure helpers for listing, searching and checking the bindings of a draft.
 import type { Binding, DialBinding, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
+import { keypadRoot } from './keypad-model';
 import { dialFunctionGestures, dialFunctionNameIssue, maxDialFunctions } from './dial-function-model';
-import { actionLabel, controlLabel, gestureLabels, gestures, modules } from './ui-model';
+import { actionLabel, controlCounts, controlLabel, gestureLabels, gestures, modules } from './ui-model';
 
 export interface BindingEntry {
   // Stable within one profile value: `flat:<index>`, `dial:<function>:<index>` or `keypad:<page>:<slot>:<index>`.
@@ -176,4 +177,23 @@ export function entryOnControl(entry: BindingEntry, selected: SelectedControl): 
 export function warningsForControl(warnings: BindingWarning[], entries: BindingEntry[], selected: SelectedControl): BindingWarning[] {
   const byId = new Map(entries.map(entry => [entry.id, entry]));
   return warnings.filter(warning => warning.entryIds.some(id => { const entry = byId.get(id); return entry !== undefined && !entry.dialFunction && entryOnControl(entry, selected); }));
+}
+
+// What a module's controls do in the profile: how many of its controls are in use (a binding, or on a keypad a folder
+// the key opens) and the bindings themselves in control order. A keypad is counted one page at a time (the page on show),
+// without the Back key every folder page reserves; a dial's function bindings belong to its one encoder control.
+export interface ModuleFolder { control: number; name: string }
+export interface ModuleAssignments { assigned: number; total: number; noun: string; entries: BindingEntry[]; folders: ModuleFolder[] }
+const controlNouns: Record<ServiceModule, [string, string]> = {
+  m003k: ['knob', 'knobs'], m131e: ['encoder', 'encoders'], m4315: ['key', 'keys'], m005s: ['fader', 'faders'], m032le: ['roller', 'rollers'],
+};
+export function moduleAssignments(profile: Profile, module: ServiceModule, keypadPageId?: string): ModuleAssignments {
+  const entries = listBindings(profile).filter(entry => entry.module === module && (module !== 'm4315' || entry.keypad?.pageId === keypadPageId))
+    .sort((a, b) => a.control - b.control);
+  const pages = profile.keypad?.pages ?? [];
+  const folders: ModuleFolder[] = module !== 'm4315' ? [] : (pages.find(page => page.id === keypadPageId)?.slots ?? []).flatMap((slot, control) =>
+    slot?.type === 'folder' ? [{ control, name: pages.find(page => page.id === slot.page_id)?.name ?? 'Folder' }] : []);
+  const reserved = module === 'm4315' && keypadPageId !== undefined && keypadPageId !== keypadRoot ? 1 : 0;
+  const total = controlCounts[module] - reserved;
+  return { assigned: new Set([...entries.map(entry => entry.control), ...folders.map(folder => folder.control)]).size, total, noun: controlNouns[module][total === 1 ? 0 : 1], entries, folders };
 }

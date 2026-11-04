@@ -12,6 +12,7 @@ import { ObsSettingsPanel } from './ObsSettingsPanel';
 import { StreamlabsSettingsStore } from './streamlabs-settings';
 import { StreamlabsSettingsPanel } from './StreamlabsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
+import { AgentToolsPanel } from './AgentToolsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
 import { SquareEye } from './SquareEye';
 import { StartupPanel } from './StartupPanel';
@@ -31,17 +32,18 @@ import { bundledPacks, parsePack } from './preset-packs';
 import type { PresetPack, RejectedPack } from './preset-packs';
 import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
-import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters } from './starter-model';
+import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starters } from './starter-model';
 import { markModuleControlNoticeShown, ModuleControlNotice, moduleControlNoticeVisible, shouldShowModuleControlNotice } from './ModuleControlNotice';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { AppWindow, CheckCircle2, CircleHelp, FileText, FolderCog, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
-import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, ServiceModule } from './contracts';
+import { AppWindow, CheckCircle2, CircleHelp, FileText, Layers, LoaderCircle, Monitor, Moon, Redo2, RotateCcw, Save, Sun, Undo2, Usb, X } from 'lucide-react';
+import type { DialDisplayContent, InputPermissions, KeyArtwork, LiveDevice, ObsCatalogNames, Profile, RunMode, RunningApp, ServiceModule } from './contracts';
 import { ModalDialog, SelectField } from './controls';
 import { BindingsDrawer, DeviceWorkspace } from './DevicesPage';
 import { LightingPage } from './LightingPage';
 import { LightingStateStore, appearedTargets, restoreLighting } from './lighting-state';
 import { ModuleDrawer } from './ModuleDrawer';
 import { HistoryMenu } from './HistoryMenu';
+import { appNamesVersion, subscribeAppNames } from './app-names';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
 import { RunningProfile, applyRunningProfile } from './RunningProfile';
@@ -112,6 +114,7 @@ function getAppearance(): Appearance {
 }
 
 export default function App() {
+  useSyncExternalStore(subscribeAppNames, appNamesVersion); // labels that name an app redraw once its name is learned
   const [session] = useState(() => new ProfileSession((command, args) => invoke(command, args), browserProfile, desktop, desktop ? draftPersister() : null));
   const [feed] = useState(() => {
     const created = new DeviceFeed((command, args) => invoke(command, args), (event, handler) => listen(event, handler), desktop);
@@ -232,6 +235,22 @@ export default function App() {
     // After the editor's own "Loaded …" notice, so the result of the switch is the one left on screen.
     void Promise.all([loaded, applied]).then(([, notice]) => session.setNotice(notice)).finally(() => setRunningBusy(false));
   };
+  // A starter made for particular apps (the terminal one) offers to switch to its profile when they come to the front.
+  const offerFocusRules = (template: { profile: Profile; focusApps?: ReadonlyArray<RunningApp> } | undefined) => {
+    const { profileId, profile: created } = session.getState().draft;
+    if (!desktop || !template?.focusApps || !profileId) return;
+    const apps = template.focusApps;
+    session.setNotice(`Created ${created.name}.`, {
+      label: 'Switch to it when a terminal is in front',
+      run: () => {
+        void focusRules.addForApps(profileId, apps).then(({ added, kept }) => {
+          const names = (list: string[]) => list.join(', ');
+          if (added.length === 0) session.setNotice(kept.length > 0 ? `${names(kept)} already switch profiles, so nothing was added.` : 'None of the usual terminals are installed.');
+          else session.setNotice(`Switches to ${created.name} when ${names(added)} is in front.${kept.length > 0 ? ` ${names(kept)} keep their own rule.` : ''}`);
+        });
+      },
+    });
+  };
   const chooseProfile = (id: string) => session.guard('switch profiles', () => {
     const template = builtInOf(id);
     if (template) {
@@ -239,6 +258,7 @@ export default function App() {
         if (failure) { session.setError(`Could not create the profile: ${failure}`); return; }
         const created = session.getState().draft;
         if (desktop && created.profileId) applyEverywhere(created.profileId, created.profile.name, Promise.resolve());
+        offerFocusRules(template);
       });
       return;
     }
@@ -632,7 +652,7 @@ export default function App() {
             {choices.map(item => <option key={item.value} value={item.value}>{item.builtIn ? `${item.name} (built-in)` : item.name}</option>)}
           </SelectField> : <span>{profile.name}</span>}
           {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
-          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><FolderCog size={17} /></button>
+          <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><Layers size={17} /></button>
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
         <div className="header-actions"><span className={`device-status-pill ${deviceStatusKind}`} role="status" data-tip={deviceStatus}><Usb size={17} aria-hidden="true" />{deviceStatusKind === 'connected' && <span className="device-status-count" aria-hidden="true">{t('header.status.count', { count: connectedModules })}</span>}<span className="sr-only">{deviceStatus}</span></span>
@@ -678,7 +698,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />
@@ -695,7 +715,7 @@ export default function App() {
         session.guard('switch to the starter profile', () => {
           void session.createFromTemplate(profile).then(failure => {
             if (failure) session.setError(`Could not create the starter profile: ${failure}`);
-            else setStarter(null);
+            else { setStarter(null); offerFocusRules(starters.find(item => item.profile === profile)); }
           });
         });
       }}

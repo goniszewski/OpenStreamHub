@@ -19,6 +19,9 @@ export interface ProfileCapabilities {
   urlOrigins: string[];
   // Distinct bundle ids of every launch_app.
   apps: string[];
+  // Every distinct terminal_command, one plain-language entry each with the command line made visible, in profile order.
+  // Each opens a terminal window and runs a line in the user's shell, so any raises the risk to high.
+  terminalCommands: string[];
   screenshot: boolean;
   // Undo or redo is sent to the focused app.
   undoRedo: boolean;
@@ -27,6 +30,9 @@ export interface ProfileCapabilities {
   launchApp: boolean;
   shortcut: boolean;
   multiAction: boolean;
+  // A key sets, toggles or adds to agent_decision, the variable `osh agent ask` passes to an AI agent as the answer
+  // to its permission prompt. It allows what the agent asked to do, so it raises the risk to high.
+  answersAgentPrompts: boolean;
   // A profile key (next/previous saved profile) is bound somewhere. It switches profiles in the app only.
   switchesProfile: boolean;
   // A timer is bound somewhere: at its end the service shows a notification and plays a fixed system sound. Low risk,
@@ -59,6 +65,8 @@ export interface ProfileCapabilities {
   riskReasons: string[];
 }
 
+// The variable a deck key sets to answer an agent's permission prompt (osh::AGENT_DECISION).
+const agentDecision = 'agent_decision';
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
 const codePoints = (text: string) => Array.from(text).length;
@@ -131,6 +139,12 @@ const obsInputVolumeLine = (action: Record<string, unknown>) => {
     default: return `OBS input ${quoted(action.input)}: volume follows the fader`;
   }
 };
+// A terminal_command as the confirmation names it: the app, the command line and the folder it starts in, all visible.
+const terminalLine = (action: Record<string, unknown>) => {
+  const app = action.app === 'terminal' ? 'Terminal' : action.app === 'iterm2' ? 'iTerm2' : `${clipped(String(action.app), 20)} (unrecognised)`;
+  const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
+  return `${app}: ${quoted(action.command)}${folder}`;
+};
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
@@ -169,6 +183,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const texts = new Map<string, TextSnippet>();
   const origins = new Set<string>();
   const apps = new Set<string>();
+  const terminalCommands = new Set<string>();
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
@@ -183,6 +198,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   let submits = false;
   let mediaKeys = false;
   let mediaStop = false;
+  let answersAgentPrompts = false;
 
   const visit = (action: unknown, depth: number) => {
     if (!isRecord(action)) return;
@@ -192,9 +208,15 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
     switch (kind) {
       // profile only asks the session manager for another saved profile; nothing runs on the host.
       // timer shows a notification and plays a fixed system sound; its label is plain notification text.
-      // A variable is the profile's own memory: it reaches nothing outside the service.
-      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer':
-      case 'set_variable': case 'toggle_variable': case 'add_to_variable': break;
+      case 'volume': case 'set_volume': case 'toggle_mute': case 'volume_from_position': case 'mic_input_volume_from_position': case 'profile': case 'timer': break;
+      // A variable is the profile's own memory, with one exception: agent_decision answers an AI agent's permission
+      // prompt through `osh agent ask` (capabilities.rs and import_flags::needs_review treat it the same way).
+      case 'set_variable': case 'toggle_variable': case 'add_to_variable':
+        if (action.name === agentDecision) {
+          answersAgentPrompts = true;
+          reasons.add('A key answers AI agent permission prompts: it can allow what Claude Code or Codex asks to do.');
+        }
+        break;
       // A media key or a stop of an already running player: disclosed, but low risk.
       case 'media': if (action.command === 'stop') mediaStop = true; else mediaKeys = true; break;
       case 'shortcut': if (submitKey(action)) submits = true; break;
@@ -212,6 +234,11 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         if (codePoints(String(action.url)) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'launch_app': apps.add(String(action.bundle_id)); break;
+      case 'terminal_command':
+        terminalCommands.add(terminalLine(action));
+        reasons.add('A key opens a terminal window and runs a command line in your shell.');
+        for (const field of [action.command, action.directory]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        break;
       // A host effect (a request to OBS on this Mac) that only changes the visible scene: shown, but low risk.
       case 'obs_scene':
         obsScenes.add(String(action.scene));
@@ -302,9 +329,10 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
-    urlOrigins: [...origins], apps: [...apps], screenshot, undoRedo, submitKey: submits,
+    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
+    answersAgentPrompts,
     timers: (counts.timer ?? 0) > 0,
     mediaKeys, mediaStop,
     obsScenes: [...obsScenes],
@@ -423,6 +451,8 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.screenshot) lines.push('Captures the whole screen to the clipboard.');
   if (capabilities.multiAction) lines.push(`Runs ${plural(capabilities.sequences.length, 'multi-step sequence')} (up to ${multiActionSteps.maximum} steps each, shown below).`);
   if (capabilities.macros.length) lines.push(`Replays ${plural(capabilities.macros.length, 'recorded macro')} of keystrokes with pauses between them (shown below).`);
+  if (capabilities.terminalCommands.length) lines.push(`Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: ${capabilities.terminalCommands.join('; ')}.`);
+  if (capabilities.answersAgentPrompts) lines.push('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
   if (capabilities.apps.length) lines.push(`Opens applications: ${capabilities.apps.join(', ')}.`);
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);
   if (capabilities.submitKey && capabilities.texts.length) lines.push('Has a key that submits a line (Return, Control+M, Control+J or Control+O). Pressed after pasted text, it runs commands in a terminal.');

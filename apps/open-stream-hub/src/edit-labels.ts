@@ -17,6 +17,14 @@ function slotLabel(slot: KeypadSlot | undefined): string {
   return action ? actionLabel(action) : 'no action';
 }
 
+// Whether an action tile changed only in its key faces (the faces section's edits).
+function facesOnly(before: KeypadSlot | undefined, after: KeypadSlot | undefined): boolean {
+  if (before?.type !== 'action' || after?.type !== 'action') return false;
+  const { faces: beforeFaces, ...beforeRest } = before;
+  const { faces: afterFaces, ...afterRest } = after;
+  return same(beforeRest, afterRest) && !same(beforeFaces ?? [], afterFaces ?? []);
+}
+
 // Keys whose slot or artwork changed on one page, as "Key 3" or "3 keys".
 function pageChange(before: KeypadPage | undefined, after: KeypadPage | undefined): string | null {
   if (!before && after) return `Added the key page “${clip(after.name)}”`;
@@ -33,6 +41,7 @@ function pageChange(before: KeypadPage | undefined, after: KeypadPage | undefine
   const [index] = changed;
   const artworkOnly = same(before.slots[index] ?? null, after.slots[index] ?? null);
   if (artworkOnly) return `Changed the artwork of Key ${index + 1}`;
+  if (facesOnly(before.slots[index], after.slots[index])) return `Changed the faces of Key ${index + 1}`;
   return `Key ${index + 1}: ${slotLabel(after.slots[index])}`;
 }
 

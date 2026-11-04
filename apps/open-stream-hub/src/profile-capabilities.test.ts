@@ -53,6 +53,32 @@ describe('profileCapabilities', () => {
     // A screenshot and a URL in separate bindings are not one sequence.
     expect(profileCapabilities(flat({ type: 'system', command: 'screenshot' }, { type: 'open_url', url: 'https://x.test' })).risk).toBe('elevated');
   });
+  it('is high for a terminal command and names each command line, folder and app in full', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+      { type: 'terminal_command', app: 'iterm2', command: 'codex --token "s3"\u200b', directory: '~/code' },
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+    ));
+    expect(capabilities.risk).toBe('high');
+    expect(capabilities.riskReasons).toContain('A key opens a terminal window and runs a command line in your shell.');
+    expect(capabilities.counts).toEqual({ terminal_command: 3 });
+    // Distinct lines only, with invisible characters made visible.
+    expect(capabilities.terminalCommands).toEqual(['Terminal: “claude”', 'iTerm2: “codex --token "s3"\\u{200B}” in “~/code”']);
+    expect(capabilityLines(capabilities)[0]).toBe('Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: Terminal: “claude”; iTerm2: “codex --token "s3"\\u{200B}” in “~/code”.');
+    expect(profileCapabilities(flat({ type: 'launch_app', bundle_id: 'com.apple.Terminal' })).terminalCommands).toEqual([]);
+  });
+  it('is high for a key that answers AI agent prompts, wherever it sets agent_decision', () => {
+    const answer = { type: 'set_variable', name: 'agent_decision', value: 'allow' } as Action;
+    const nested = { type: 'conditional', when: { variable_is: { name: 'agent_state', value: 'waiting' } }, then: [answer], else: [{ type: 'toggle_mute' }] } as Action;
+    for (const action of [answer, nested, { type: 'toggle_variable', name: 'agent_decision' } as Action]) {
+      const capabilities = profileCapabilities(flat(action));
+      expect(capabilities.answersAgentPrompts, action.type).toBe(true);
+      expect(capabilities.risk).toBe('high');
+      expect(capabilityLines(capabilities)).toContain('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
+    }
+    const other = profileCapabilities(flat({ type: 'set_variable', name: 'agent_state', value: 'idle' } as Action));
+    expect(other).toMatchObject({ answersAgentPrompts: false, risk: 'normal' });
+  });
   it('is high for text that presses Return or contains a line break', () => {
     const enter = profileCapabilities(flat({ type: 'text', text: 'rm -rf ~', press_enter: true }));
     expect(enter).toMatchObject({ risk: 'high', textPressesEnter: true, textHasNewline: false });

@@ -9,6 +9,7 @@ import type { DisplaySettingsState } from './display-settings';
 import { appliesNote, DisplaySettingsPanel, moduleControlCaveat, moduleControlDetails, moduleControlNotes, pressFeedbackNote, testWhileEditingNote } from './DisplaySettingsPanel';
 import { emptyCounters } from './service-runner';
 import type { ServiceRun, ServiceStoreState } from './service-runner';
+import { hasOption, triggerOf } from './select-markup';
 
 const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
@@ -262,8 +263,8 @@ describe('DisplaySettingsPanel markup', () => {
   it('shows the display control set to App by default, with the honest caveats', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({})} />);
     expect(markup).toContain('<h2 id="display-settings-title">Let OpenStreamHub drive the display</h2>');
-    expect(markup).toContain('<option value="app" selected="">App</option>');
-    expect(markup).toContain('<option value="built_in_animation">Built-in animation</option>');
+    expect(hasOption(markup, 'app', 'App', true)).toBe(true);
+    expect(hasOption(markup, 'built_in_animation', 'Built-in animation', false)).toBe(true);
     expect(markup).toContain(moduleControlNotes.app.replace(/"/g, '&quot;'));
     expect(markup).not.toContain('Experimental');
     expect(markup).not.toContain('never been tested');
@@ -290,7 +291,7 @@ describe('DisplaySettingsPanel markup', () => {
   });
   it('Built-in animation explains what it gives up', () => {
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ settings: builtIn })} />);
-    expect(markup).toContain('<option value="built_in_animation" selected="">Built-in animation</option>');
+    expect(hasOption(markup, 'built_in_animation', 'Built-in animation', true)).toBe(true);
     expect(markup).toContain(moduleControlNotes.built_in_animation.replace(/"/g, '&quot;'));
   });
   it('says running profiles keep their setting and are never restarted', () => {
@@ -302,7 +303,7 @@ describe('DisplaySettingsPanel markup', () => {
   });
   it('is disabled until loaded and in the browser preview', () => {
     const loading = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ loaded: false })} />);
-    expect(loading).toMatch(/<select id="display-module-control" disabled=""/);
+    expect(triggerOf(loading, 'display-module-control')).toContain('disabled=""');
     const preview = renderToStaticMarkup(<DisplaySettingsPanel />);
     expect(preview).toContain('This setting needs the desktop app.');
     const failed = renderToStaticMarkup(<DisplaySettingsPanel store={storeWith({ error: 'display settings are unreadable' })} />);

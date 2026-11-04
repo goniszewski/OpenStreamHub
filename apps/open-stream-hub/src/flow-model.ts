@@ -1,4 +1,5 @@
 import type { BranchStep, Condition, ConditionalAction, VariableKind, VariableValue } from './contracts';
+import { english } from './i18n-react';
 
 // The shape of an if / else flow and the moves that keep it valid. Mirrors Condition::validate and Action::validate in
 // crates/cooltek-sdk-service/src/profile.rs (the Rust validator is authoritative and runs on save); every move here is
@@ -300,7 +301,9 @@ export const variableLimits = { count: 16, nameBytes: 32, textBytes: 64, minimum
 
 export const variableKind = (value: VariableValue): VariableKind => (typeof value === 'boolean' ? 'bool' : typeof value === 'number' ? 'number' : 'text');
 
-export const variableKindLabels: Record<VariableKind, string> = { bool: 'On / off', number: 'Number', text: 'Text' };
+export const variableKindLabels: Record<VariableKind, string> = {
+  bool: english('labels.variableKind.bool'), number: english('labels.variableKind.number'), text: english('labels.variableKind.text'),
+};
 
 export function defaultVariableValue(kind: VariableKind): VariableValue {
   return kind === 'bool' ? false : kind === 'number' ? 0 : '';

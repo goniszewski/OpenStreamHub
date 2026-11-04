@@ -75,6 +75,20 @@ pub fn info_at(path: &str) -> Option<AppInfo> {
     Some(AppInfo { bundle_id, name })
 }
 
+/// What the picker's `osascript` run means: the chosen app, a cancelled dialog (`None`), or a failure.
+fn picked(success: bool, stdout: &[u8], stderr: &[u8]) -> Result<Option<AppInfo>, String> {
+    if !success {
+        let message = String::from_utf8_lossy(stderr);
+        // -128 is "User canceled".
+        if message.contains("-128") {
+            return Ok(None);
+        }
+        return Err("Could not open the app picker. Type the bundle ID instead.".into());
+    }
+    let path = String::from_utf8_lossy(stdout).trim().to_owned();
+    Ok(info_at(&path))
+}
+
 /// The system's file dialog on Applications. `None` when the user cancels or the choice is not an app.
 pub fn choose() -> Result<Option<AppInfo>, String> {
     let out = Command::new(OSASCRIPT)
@@ -82,16 +96,7 @@ pub fn choose() -> Result<Option<AppInfo>, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|error| format!("Could not open the app picker: {error}"))?;
-    if !out.status.success() {
-        let message = String::from_utf8_lossy(&out.stderr);
-        // -128 is "User canceled".
-        if message.contains("-128") {
-            return Ok(None);
-        }
-        return Err("Could not open the app picker. Type the bundle ID instead.".into());
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    Ok(info_at(&path))
+    picked(out.status.success(), &out.stdout, &out.stderr)
 }
 
 /// The everyday name of an installed app, or `None` when Spotlight does not know the id.
@@ -135,6 +140,93 @@ mod tests {
             Some("Safari")
         );
         assert_eq!(name_from_path("/"), None);
+    }
+
+    #[test]
+    fn a_cancelled_picker_is_no_choice_and_other_failures_are_errors() {
+        let cancelled = b"execution error: User canceled. (-128)";
+        assert_eq!(picked(false, b"", cancelled), Ok(None));
+        assert!(picked(false, b"", b"some other failure").is_err());
+        assert!(picked(false, b"", b"").is_err());
+    }
+
+    #[test]
+    fn a_pick_that_is_not_an_app_is_no_choice() {
+        assert_eq!(picked(true, b"", b""), Ok(None));
+        assert_eq!(picked(true, b"/no/such/place.app/\n", b""), Ok(None));
+    }
+
+    #[test]
+    fn names_ignore_trailing_slashes_and_blank_stems() {
+        assert_eq!(
+            name_from_path("/Applications/Safari.app/").as_deref(),
+            Some("Safari")
+        );
+        assert_eq!(name_from_path("/Applications/.app"), None);
+        assert_eq!(name_from_path(""), None);
+        assert_eq!(
+            name_from_path("/Applications/Plain").as_deref(),
+            Some("Plain")
+        );
+    }
+
+    #[test]
+    fn bundle_ids_have_a_length_limit() {
+        assert!(valid_bundle_id(&"a".repeat(300)));
+        assert!(!valid_bundle_id(&"a".repeat(301)));
+    }
+
+    #[cfg(target_os = "macos")]
+    mod bundles {
+        use super::*;
+        use std::fs;
+
+        /// A throwaway `.app` folder with an `Info.plist` holding `body`, removed again when dropped.
+        struct Fake(std::path::PathBuf);
+        impl Fake {
+            fn new(stem: &str, plist: Option<&str>) -> Self {
+                let root = std::env::temp_dir()
+                    .join(format!("osh-app-lookup-{}-{stem}", std::process::id()));
+                let app = root.join(format!("{stem}.app"));
+                fs::create_dir_all(app.join("Contents")).unwrap();
+                if let Some(body) = plist {
+                    fs::write(app.join("Contents/Info.plist"), body).unwrap();
+                }
+                Fake(app)
+            }
+            fn path(&self) -> &str {
+                self.0.to_str().unwrap()
+            }
+        }
+        impl Drop for Fake {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(self.0.parent().unwrap());
+            }
+        }
+
+        fn plist(id: &str) -> String {
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>CFBundleIdentifier</key><string>{id}</string></dict></plist>"
+            )
+        }
+
+        #[test]
+        fn a_bundle_gives_its_id_and_falls_back_to_the_file_name() {
+            let app = Fake::new("Zorblax Unit", Some(&plist("test.osh.zorblax")));
+            let info = info_at(app.path()).expect("bundle");
+            assert_eq!(info.bundle_id, "test.osh.zorblax");
+            // Spotlight has not indexed a throwaway bundle, so the name is the file's own.
+            assert_eq!(info.name, "Zorblax Unit");
+        }
+
+        #[test]
+        fn a_bundle_without_a_plist_or_with_a_bad_id_is_not_an_app() {
+            let bare = Fake::new("Bare", None);
+            assert_eq!(info_at(bare.path()), None);
+            let odd = Fake::new("Odd", Some(&plist("not a valid id")));
+            assert_eq!(info_at(odd.path()), None);
+            assert_eq!(info_at("/no/such/place.app"), None);
+        }
     }
 
     #[cfg(target_os = "macos")]

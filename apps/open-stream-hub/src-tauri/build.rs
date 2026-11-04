@@ -10,6 +10,7 @@ fn main() {
             "delete_profile",
             "import_mhz_profile",
             "create_pack_profile",
+            "import_profile",
             "allow_imported_profile_execution",
             "mark_all_profiles_for_review",
             "validate_profile",
@@ -83,6 +84,9 @@ fn main() {
             "set_module_turns",
             "open_permission_settings",
             "start_permission_drag",
+            "agent_tool_status",
+            "link_agent_tool",
+            "unlink_agent_tool",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

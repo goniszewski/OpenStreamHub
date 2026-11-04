@@ -11,6 +11,8 @@ export type MediaKey = 'play_pause' | 'next_track' | 'previous_track';
 export interface MacroStep { key: string; modifiers: Modifier[]; delay_before_ms: number; hold_ms: number }
 export type MediaCommand = 'play_pause' | 'next_track' | 'previous_track' | 'stop';
 export type SystemCommand = 'undo' | 'redo' | 'screenshot';
+// The terminal app a 'terminal_command' opens a window of (TerminalApp in profile.rs): a closed set.
+export type TerminalApp = 'terminal' | 'iterm2';
 // The neighbouring saved profile a 'profile' action asks for. The OpenStreamHub session manager resolves it.
 export type ProfileDirection = 'next' | 'previous';
 // End sound of a 'timer' action: a closed set of macOS system sounds (TimerSound in profile.rs). Absent means glass.
@@ -120,6 +122,9 @@ export type BindingAction =
   | { type: 'profile'; direction: ProfileDirection }
   // A countdown in the running service; pressing the same binding again cancels it. Never a multi_action step.
   | { type: 'timer'; seconds: number; label?: string; sound?: TimerSound }
+  // Opens a new window of Terminal or iTerm2 and runs one command line there (`cd <directory> && <command>` when a
+  // directory is set; directory is omitted, never empty or null, otherwise). Never a multi_action or conditional step.
+  | { type: 'terminal_command'; app: TerminalApp; command: string; directory?: string }
   | { type: 'volume_from_position' }
   | { type: 'mic_input_volume_from_position' }
   // Fader-only: each position change sets the named OBS input's volume (obs_set_input_volume with the fader's percentage).
@@ -134,7 +139,10 @@ export interface Binding {
   action: BindingAction;
 }
 export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
-export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
+// A face an action tile shows while `when` holds (KeyFace in keypad.rs): the first of up to 8 that holds wins, none shows
+// the normal face. `when` tests variables only; a face needs a label or a background (hex, as KeyArtworkDesignSpec).
+export interface KeyFace { when: Condition; label?: string; background?: string }
+export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[]; faces?: KeyFace[] } | { type: 'folder'; page_id: string } | null;
 export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
 // The icon-and-label design a key's artwork was prepared from, stored so the studio reopens
 // with it (absent for uploaded images). Pure metadata: nothing drawn reads it. icon_id is a
@@ -143,6 +151,8 @@ export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
 export interface KeyArtworkDesignSpec {
   icon_id?: string | null; text: string; text_size: number; icon_size?: number; align: 'top' | 'middle' | 'bottom';
   text_colour: string; icon_colour: string; background: string;
+  // true on artwork the app drew by itself (an app's icon, a site's globe), false once the studio saved the design; absent on older artwork.
+  auto?: boolean;
 }
 /** loop_count: zero is infinite; positive values are total plays. */
 export interface KeyArtwork { frames: KeyArtworkFrame[]; loop_count: number; design?: KeyArtworkDesignSpec }

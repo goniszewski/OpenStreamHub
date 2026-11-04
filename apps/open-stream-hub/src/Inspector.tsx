@@ -8,7 +8,7 @@ import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { ActionFields } from './ActionFields';
 import { VariablesPanel } from './VariableFields';
 import { VariablesContext } from './variables-context';
-import { renameVariable, variableUseCounts } from './variable-model';
+import { renameVariable, variableUseCounts, variableUsers } from './variable-model';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
 import { useObsCatalog } from './obs-catalog';
@@ -17,10 +17,11 @@ import { useStreamlabsCatalog } from './streamlabs-catalog';
 import type { StreamlabsCatalogStore } from './streamlabs-catalog';
 import type { KeypadPreview, Invoke, ProfileSession, SessionState } from './profile-session';
 import { KeyArtworkEditor } from './KeyArtworkEditor';
+import { KeyFacesSection } from './KeyFacesSection';
 import { actionLabel, controlLabel, faderMaximum, gestureLabels, gestures } from './ui-model';
 import type { Page } from './ui-model';
 import type { DeviceEditor, SerialScope } from './useDeviceEditor';
-import { ControlWarnings } from './BindingsPanel';
+import { ControlWarnings, showEntry } from './BindingsPanel';
 import { hint, isMacPlatform, withHint } from './shortcuts';
 import { editorGestures } from './binding-model';
 import { DialFunctionsPanel, bindingPreviewText } from './DialFunctionsPanel';
@@ -65,7 +66,8 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <ControlWarnings profile={profile} editor={editor} selected={{ module: selection.module, control: selection.control, keypadPageId: isKeypad ? currentKeypadPage.id : undefined }}
         excludeKinds={dialFunctionsActive ? ['dial-flat-conflict'] : undefined} />
       {isKeypad && !isBack && <KeyArtworkEditor key={`${state.draftGeneration}:${currentKeypadPage.id}:${selection.control}`} session={session} path={keypadPath} control={selection.control} artwork={currentKeypadPage.artwork?.[String(selection.control)]} action={keypadSlot?.type === 'action' ? keypadSlot.bindings[0]?.action : null} initialText={keypadSlot?.type === 'action' ? keypadSlot.label : ''} disabled={disabled} invoke={invoke} />}
-      {isKeypad && <>{isBack ? <p className="fine-print">{t('inspector.backNote')}</p> : folderPage ? <><button className="button" onClick={() => editor.navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />{t('inspector.openFolder', { name: folderPage.name })}</button><button className="button" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={17} />{t('inspector.deleteFolder')}</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">{t('inspector.keyLabel')}</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} aria-describedby="keypad-label-error" onChange={event => session.edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value), `key-label:${keypadPath.join('/')}:${selection.control}`)} /><LabelError id="keypad-label-error" value={keypadSlot.label} field="Key label" /><button className="button compact" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={16} />{t('inspector.clearKey')}</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={editor.createFolder}><Folder size={17} />{t('inspector.createFolder')}</button>}</>}</>}
+      {isKeypad && !isBack && keypadSlot?.type === 'action' && <><div className="inspector-divider" /><KeyFacesSection profile={profile} session={session} path={keypadPath} control={selection.control} slot={keypadSlot} disabled={disabled} /><div className="inspector-divider" /></>}
+      {isKeypad && <>{isBack ? <p className="fine-print">{t('inspector.backNote')}</p> : folderPage ? <><button className="button" onClick={() => editor.navigateKeypad([...keypadPath, folderPage.id])}><Folder size={17} />{t('inspector.openFolder', { name: folderPage.name })}</button><button className="button" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={17} />{t('inspector.deleteFolder')}</button></> : <>{keypadSlot?.type === 'action' ? <><label htmlFor="keypad-label">{t('inspector.keyLabel')}</label><input id="keypad-label" disabled={disabled} value={keypadSlot.label} aria-describedby="keypad-label-error" onChange={event => session.edit(renameKeypadAction(profile, keypadPath, selection.control, event.target.value), `key-label:${keypadPath.join('/')}:${selection.control}`)} /><LabelError id="keypad-label-error" value={keypadSlot.label} field="Key label" /><button className="button compact clear-key" disabled={disabled} onClick={() => editor.clearKey()}><Trash2 size={16} />{t('inspector.clearKey')}</button></> : <button className="button" disabled={disabled || keypadDepth(keypadPath) >= keypadMaximumDepth || profile.keypad!.pages.length >= keypadMaximumPages} onClick={editor.createFolder}><Folder size={17} />{t('inspector.createFolder')}</button>}</>}</>}
       {dialFunctionsActive ? <DialEditorTabs tab={dialTab} onTab={setDialTab} profile={profile} session={session} state={state} disabled={disabled} invoke={invoke} setPage={setPage} catalog={catalogStore} streamlabs={streamlabsStore} />
       : !(isKeypad && (isBack || folderPage)) && <>
       <label htmlFor="binding-gesture">{t('inspector.gesture')}</label><SelectField id="binding-gesture" disabled={!editorGestures(profile, selection.module).length} value={selection.gesture} onChange={event => editor.changeSelection({ ...selection, gesture: event.target.value as Gesture })}>
@@ -96,7 +98,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <div className="inspector-divider" />
       <details className="advanced inspector-variables" open={declared.length > 0 || undefined}>
         <summary>Variables{declared.length > 0 ? ` (${declared.length})` : ''}</summary>
-        <VariablesPanel variables={declared} uses={variableUseCounts(profile)} disabled={disabled}
+        <VariablesPanel variables={declared} uses={variableUseCounts(profile)} users={name => variableUsers(profile, name)} onShow={entry => showEntry(editor, entry)} disabled={disabled}
           onChange={(next, field) => session.edit({ ...profile, variables: next.length > 0 ? next : undefined }, field)}
           onRename={(from, to) => session.edit(renameVariable(profile, from, to), `variable-rename:${from}`)} />
       </details>

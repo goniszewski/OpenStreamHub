@@ -1,4 +1,5 @@
 import type { ObsHost, StreamlabsConnectionState, StreamlabsConnectionView, StreamlabsSettings, StreamlabsSettingsView } from './contracts';
+import { english } from './i18n-react';
 import { obsEndpoint, obsHostOptions } from './obs-settings';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
@@ -31,8 +32,9 @@ export function isStreamlabsSettingsView(value: unknown): value is StreamlabsSet
 }
 
 export const streamlabsConnectionLabels: Record<StreamlabsConnectionState, string> = {
-  off: 'Off', token_needed: 'Token needed', connected: 'Connected', not_running: 'Not running', remote_control_off: 'Remote Control off',
-  wrong_port: 'Wrong port', wrong_token: 'Wrong token', failed: 'Not connected',
+  off: english('labels.connection.off'), token_needed: english('labels.connection.tokenNeeded'), connected: english('labels.connection.connected'),
+  not_running: english('labels.connection.notRunning'), remote_control_off: english('labels.connection.remoteControlOff'),
+  wrong_port: english('labels.connection.wrongPort'), wrong_token: english('labels.connection.wrongToken'), failed: english('labels.connection.failed'),
 };
 
 export function isStreamlabsConnectionView(value: unknown): value is StreamlabsConnectionView {

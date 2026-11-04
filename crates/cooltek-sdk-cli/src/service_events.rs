@@ -441,7 +441,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
 }
 
 /// Redacts an action for a log record: snippet text and URL paths, queries and
-/// user information (often passwords or tokens), timer labels and OBS scene
+/// user information (often passwords or tokens), terminal command lines, timer labels and OBS scene
 /// names are never written. Every other action serializes unchanged.
 pub fn loggable(action: &Action) -> Value {
     match action {
@@ -449,6 +449,19 @@ pub fn loggable(action: &Action) -> Value {
             json!({"type":"text", "chars":text.chars().count(), "press_enter":press_enter})
         }
         Action::OpenUrl { url } => json!({"type":"open_url", "origin":url_origin(url)}),
+        // A command line can carry tokens and a directory a user name: only
+        // the app and the lengths are logged.
+        Action::TerminalCommand {
+            app,
+            command,
+            directory,
+        } => {
+            let mut value = json!({"type":"terminal_command", "app":app, "command_chars":command.chars().count()});
+            if let Some(directory) = directory {
+                value["directory_chars"] = json!(directory.chars().count());
+            }
+            value
+        }
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
@@ -1484,6 +1497,24 @@ mod tests {
         assert_eq!(
             loggable(&url),
             json!({"type":"open_url", "origin":"https://Example.com:8443"})
+        );
+        let terminal = Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Terminal,
+            command: "claude --token s3cr3t".into(),
+            directory: Some("~/clients/acme".into()),
+        };
+        assert_eq!(
+            loggable(&terminal),
+            json!({"type":"terminal_command", "app":"terminal", "command_chars":21, "directory_chars":14})
+        );
+        let bare = Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Iterm2,
+            command: "codex".into(),
+            directory: None,
+        };
+        assert_eq!(
+            loggable(&bare),
+            json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

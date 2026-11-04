@@ -11,6 +11,7 @@ import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
 import type { StreamlabsCatalogView } from './streamlabs-catalog';
 import type { BindingAction, ObsNameList, StepAction } from './contracts';
 import { VariablesContext } from './variables-context';
+import { choicesOf, hasOption } from './select-markup';
 
 const render = (action: BindingAction | null, fader = false, onSetUpObs: (() => void) | null = () => {}) =>
   renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} onSetUpObs={onSetUpObs ?? undefined} />);
@@ -97,7 +98,7 @@ describe('action fields', () => {
 
   it('renders the profile direction select without offering it as a multi-action step', () => {
     const markup = render({ type: 'profile', direction: 'previous' });
-    expect(markup).toMatch(/<option value="previous" selected="">Previous profile<\/option>/);
+    expect(hasOption(markup, 'previous', 'Previous profile', true)).toBe(true);
     expect(markup).toContain('value="next"');
     expect(markup).toContain('pause until you confirm the new profile');
     expect(markup).toContain('Only runs started from this app switch');
@@ -120,18 +121,36 @@ describe('action fields', () => {
     expect(ids(markup)).toEqual(expect.arrayContaining(['timer-seconds', 'timer-label', 'timer-sound']));
     expect(markup).toMatch(/id="timer-seconds"[^>]*min="1"[^>]*max="86400"/);
     // Absent sound shows the service default.
-    expect(markup).toMatch(/<option value="glass" selected="">Glass<\/option>/);
-    expect(markup.match(/<option value="[a-z]+"[^>]*>/g)?.filter(option => /basso|blow|bottle|frog|funk|glass|hero|morse|ping|pop|purr|sosumi|submarine|tink|none/.test(option))).toHaveLength(15);
+    expect(hasOption(markup, 'glass', 'Glass', true)).toBe(true);
+    expect(choicesOf(markup, 'timer-sound').filter(choice => /^(basso|blow|bottle|frog|funk|glass|hero|morse|ping|pop|purr|sosumi|submarine|tink|none)$/.test(choice.value))).toHaveLength(15);
     expect(markup).toContain('not shown on the key');
     expect(markup).toContain('pressing the same control again cancels it');
     expect(markup).not.toContain('role="alert"');
     expectAccessible(markup);
     const labelled = render({ type: 'timer', seconds: 5, label: 'Tea', sound: 'none' });
     expect(labelled).toContain('value="Tea"');
-    expect(labelled).toMatch(/<option value="none" selected="">No sound<\/option>/);
+    expect(hasOption(labelled, 'none', 'No sound', true)).toBe(true);
     const bad = render({ type: 'timer', seconds: 5, label: ' padded' });
     expect(bad).toContain('aria-invalid="true"');
     expect(bad).toContain('id="timer-label-error"');
+    expectAccessible(bad);
+  });
+
+  it('renders the terminal app, command and folder fields with accessible ids and the trust note', () => {
+    const markup = render({ type: 'terminal_command', app: 'iterm2', command: 'codex', directory: '~/code' });
+    expect(markup).toContain('>Open terminal and run</span>');
+    expect(ids(markup)).toEqual(expect.arrayContaining(['terminal-app', 'terminal-command', 'terminal-directory']));
+    expect(choicesOf(markup, 'terminal-app').map(choice => choice.value)).toEqual(['terminal', 'iterm2']);
+    expect(hasOption(markup, 'iterm2', 'iTerm2', true)).toBe(true);
+    expect(markup).toContain('value="codex"');
+    expect(markup).toContain('value="~/code"');
+    expect(markup).toContain('only bind commands you trust');
+    expect(markup).toContain('runs as a dry run until you review it');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const bad = render({ type: 'terminal_command', app: 'terminal', command: '', directory: 'relative' });
+    expect(bad).toContain('id="terminal-command-error"');
+    expect(bad).toContain('id="terminal-directory-error"');
     expectAccessible(bad);
   });
 
@@ -155,7 +174,7 @@ describe('obs fields', () => {
   it('edits every operation from one editor with an Operation select and one connection status', () => {
     const markup = render({ type: 'obs_scene', scene: 'Live' });
     expect(markup).toContain('<label for="obs-operation">Operation</label>');
-    expect(markup).toMatch(/<option value="obs_scene" selected="">Scene<\/option>/);
+    expect(hasOption(markup, 'obs_scene', 'Scene', true)).toBe(true);
     expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
     expect(markup).toContain('value="Live"');
     expect(markup).toContain('>OBS</span>');
@@ -178,8 +197,8 @@ describe('obs fields', () => {
 
   it('offers the nine operations in the Operation select', () => {
     const markup = render({ type: 'obs_transition' });
-    for (const [type, label] of Object.entries(obsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
-    expect(markup).toMatch(/<option value="obs_transition" selected="">Studio transition<\/option>/);
+    for (const [type, label] of Object.entries(obsOperationLabels)) expect(hasOption(markup, type, label)).toBe(true);
+    expect(hasOption(markup, 'obs_transition', 'Studio transition', true)).toBe(true);
     // The transition has no parameters of its own, only the shared status.
     expect(ids(markup)).toEqual(expect.arrayContaining(['obs-operation']));
     expect(markup).toContain('studio-mode transition');
@@ -189,12 +208,12 @@ describe('obs fields', () => {
   it('keeps the historical parameter fields of every operation', () => {
     const camera = render({ type: 'obs_virtual_camera', op: 'start' });
     expect(camera).toContain('<label for="obs-virtual-camera-op">Action</label>');
-    expect(camera).toMatch(/<option value="start" selected="">Start<\/option>/);
+    expect(hasOption(camera, 'start', 'Start', true)).toBe(true);
     expect(camera).not.toContain('value="save"');
     const buffer = render({ type: 'obs_replay_buffer', op: 'save' });
     expect(buffer).toContain('<label for="obs-replay-buffer-op">Action</label>');
-    expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
-    expect(render({ type: 'obs_studio_mode', op: 'on' })).toMatch(/<option value="on" selected="">Turn on<\/option>/);
+    expect(hasOption(buffer, 'save', 'Save the last seconds', true)).toBe(true);
+    expect(hasOption(render({ type: 'obs_studio_mode', op: 'on' }), 'on', 'Turn on', true)).toBe(true);
     expect(ids(render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' })))
       .toEqual(expect.arrayContaining(['obs-filter-source', 'obs-filter-name', 'obs-filter-op']));
     expect(ids(render({ type: 'obs_source_visibility', scene: 'Live', source: 'Cam', op: 'off' })))
@@ -298,7 +317,7 @@ describe('streamlabs fields', () => {
   it('edits every operation from one editor with an Operation select, plain name fields and one status', () => {
     const markup = render({ type: 'streamlabs_scene', scene: 'Live' });
     expect(markup).toContain('<label for="streamlabs-operation">Operation</label>');
-    expect(markup).toMatch(/<option value="streamlabs_scene" selected="">Scene<\/option>/);
+    expect(hasOption(markup, 'streamlabs_scene', 'Scene', true)).toBe(true);
     expect(markup).toContain('<label for="streamlabs-scene">Streamlabs scene name</label>');
     expect(markup).toContain('value="Live"');
     expect(markup).toContain('>Streamlabs</span>');
@@ -307,7 +326,7 @@ describe('streamlabs fields', () => {
     expect(markup).not.toContain('role="alert"');
     // OBS's lists never feed the Streamlabs fields: plain inputs without Streamlabs' own.
     expect(renderToStaticMarkup(ActionFields({ action: { type: 'streamlabs_scene', scene: 'Live' }, fader: false, selectorKey: 'k', onChange: () => {}, catalog: catalogView() })))
-      .not.toContain('role="combobox"');
+      .not.toMatch(/<input[^>]*role="combobox"/);
     expect(markup.match(/Remote Control on/g)).toHaveLength(1);
     expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
     expect(markup).not.toContain('WebSocket server on');
@@ -321,7 +340,7 @@ describe('streamlabs fields', () => {
 
   it('offers the seven operations and their own fields', () => {
     const markup = render({ type: 'streamlabs_transition' });
-    for (const [type, label] of Object.entries(streamlabsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
+    for (const [type, label] of Object.entries(streamlabsOperationLabels)) expect(hasOption(markup, type, label)).toBe(true);
     expect(markup).toContain('studio-mode transition');
     expect(render({ type: 'streamlabs_record' })).toContain('stops it when it runs');
     expect(render({ type: 'streamlabs_studio_mode' })).toContain('studio mode on when it is off');
@@ -331,11 +350,11 @@ describe('streamlabs fields', () => {
     expect(render({ type: 'streamlabs_stream' })).toContain('one press does this at once');
     const visibility = render({ type: 'streamlabs_source_visibility', scene: 'Live', source: '', op: 'hide' });
     expect(ids(visibility)).toEqual(expect.arrayContaining(['streamlabs-visibility-scene', 'streamlabs-visibility-source', 'streamlabs-visibility-op']));
-    expect(visibility).toMatch(/<option value="hide" selected="">Hide<\/option>/);
+    expect(hasOption(visibility, 'hide', 'Hide', true)).toBe(true);
     expect(visibility).toContain('Enter the Streamlabs source name');
     expectAccessible(visibility);
     const set = render({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } });
-    expect(set).toMatch(/<option value="set" selected="">Set the level<\/option>/);
+    expect(hasOption(set, 'set', 'Set the level', true)).toBe(true);
     expect(set).toMatch(/id="streamlabs-audio-set"[^>]*min="0"[^>]*max="100"/);
     expect(set).toContain('not decibels');
     expectAccessible(set);
@@ -343,7 +362,7 @@ describe('streamlabs fields', () => {
     expect(adjust).toMatch(/id="streamlabs-audio-adjust"[^>]*min="-100"[^>]*max="100"/);
     expect(ids(adjust)).not.toContain('streamlabs-audio-set');
     const mute = render({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } });
-    expect(mute).toMatch(/<option value="unmute" selected="">Unmute<\/option>/);
+    expect(hasOption(mute, 'unmute', 'Unmute', true)).toBe(true);
     expectAccessible(mute);
   });
 
@@ -423,7 +442,7 @@ describe('obs name listings', () => {
 
   it('turns the OBS name fields into comboboxes only while the list is there', () => {
     const plain = renderAction({ type: 'obs_scene', scene: 'Live' });
-    expect(plain).not.toContain('role="combobox"');
+    expect(plain).not.toMatch(/<input[^>]*role="combobox"/);
     expect(plain).not.toContain('Refresh from OBS');
     expectAccessible(plain);
     const withCatalog = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView());
@@ -433,9 +452,9 @@ describe('obs name listings', () => {
     expectAccessible(withCatalog);
     // While listing, the fields stay comboboxes (their popups say so) and the press is off;
     // a failed listing leaves plain inputs, says why, and keeps the Refresh press.
-    expect(renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'loading', names: null }))).toContain('role="combobox"');
+    expect(renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'loading', names: null }))).toMatch(/<input[^>]*role="combobox"/);
     const failed = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'failed', names: null, error: 'OBS at 127.0.0.1:4455: could not connect' }));
-    expect(failed).not.toContain('role="combobox"');
+    expect(failed).not.toMatch(/<input[^>]*role="combobox"/);
     expect(failed).toContain('could not connect');
     expect(failed).not.toMatch(/disabled=""[^>]*>.*Refresh from OBS/);
     expectAccessible(failed);
@@ -549,7 +568,7 @@ describe('streamlabs name listings', () => {
     // Without a list (none yet, or it failed) the fields are exactly the plain inputs; typing always works.
     for (const view of [undefined, streamlabsView({ status: 'failed', names: null, error: 'Streamlabs is off in OpenStreamHub Settings' })]) {
       const plain = renderAction({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } }, view);
-      expect(plain).not.toContain('role="combobox"');
+      expect(plain).not.toMatch(/<input[^>]*role="combobox"/);
       expect(plain).toContain('value="Mic"');
     }
   });
@@ -769,7 +788,7 @@ describe('obs combo', () => {
     expectAccessible(markup);
     const yesNo = render({ type: 'conditional', when: { obs_recording: false }, then: [{ type: 'obs_record', op: 'start' }] });
     expect(yesNo).toContain('for="conditional-value"');
-    expect(yesNo).toContain('<option value="false" selected="">False</option>');
+    expect(hasOption(yesNo, 'false', 'False', true)).toBe(true);
     expect(yesNo).toContain('OBS');
     expect(yesNo).not.toContain('else-step-1-action');
     expectAccessible(yesNo);
@@ -791,7 +810,7 @@ describe('obs combo', () => {
     expect(two).toContain('for="conditional-value-2"');
     expect(two.match(/aria-label="Remove this test"/g)).toHaveLength(2);
     expect(two.match(/aria-label="Move this test up"/g)).toHaveLength(2);
-    expect(two).toContain('<option value="any" selected="">any one of these is true (OR)</option>');
+    expect(hasOption(two, 'any', 'any one of these is true (OR)', true)).toBe(true);
     expect(two).toContain('Add AND group');
     expect(two).toContain('OBS must be running');
     // Each test has a grip to drag it by; the group itself is the root, so it has none.
@@ -804,11 +823,11 @@ describe('obs combo', () => {
     expect(and).not.toContain('OBS must be running');
     expectAccessible(and);
     const timer = render({ type: 'conditional', when: { timer_running: false }, then: [{ type: 'toggle_mute' }] });
-    expect(timer).toContain('<option value="timer_running" selected="">A timer is running</option>');
+    expect(hasOption(timer, 'timer_running', 'A timer is running', true)).toBe(true);
     expect(timer).toContain('no timer is running');
     expect(timer).not.toContain('OBS must be running');
     const app = render({ type: 'conditional', when: { focused_app: 'com.apple.Safari' }, then: [{ type: 'toggle_mute' }] });
-    expect(app).toContain('<option value="focused_app" selected="">The front app is</option>');
+    expect(hasOption(app, 'focused_app', 'The front app is', true)).toBe(true);
     expect(app).toContain('id="conditional-app"');
     expect(app).toContain('value="com.apple.Safari"');
     expect(app).not.toContain('for="conditional-value"');
@@ -825,7 +844,7 @@ describe('obs combo', () => {
     expect(markup).toContain('for="conditional-mode-2">If</label>');
     expect(markup).toContain('for="conditional-when-2-1">Test</label>');
     expect(markup).toContain('for="conditional-volume-2-2"');
-    expect(markup).toContain('<option value="any" selected="">any one of these is true (OR)</option>');
+    expect(hasOption(markup, 'any', 'any one of these is true (OR)', true)).toBe(true);
     expect(markup).toContain('aria-label="Drag this group to move it"');
     expect(markup).toContain('aria-label="Move this group up"');
     expect(markup).toContain('aria-label="Remove this group"');
@@ -856,9 +875,9 @@ describe('obs combo', () => {
     const withVariables = (action: BindingAction) => renderToStaticMarkup(<VariablesContext.Provider value={variables}>
       <ActionFields action={action} fader={false} selectorKey="k" onChange={() => {}} /></VariablesContext.Provider>);
     const test = withVariables({ type: 'conditional', when: { variable_at_least: { name: 'takes', value: 3 } }, then: [{ type: 'toggle_variable', name: 'live' }] });
-    expect(test).toContain('<option value="variable_at_least" selected="">A number variable is at least</option>');
+    expect(hasOption(test, 'variable_at_least', 'A number variable is at least', true)).toBe(true);
     expect(test).toContain('for="conditional-variable-name">Number variable</label>');
-    expect(test).toContain('<option value="takes" selected="">takes</option>');
+    expect(hasOption(test, 'takes', 'takes', true)).toBe(true);
     expect(test).not.toContain('>scene</option>');
     expect(test).toContain('for="conditional-variable-value">At least</label>');
     expect(test).toContain('for="then-step-1-variable-name">On / off variable</label>');
@@ -871,14 +890,21 @@ describe('obs combo', () => {
     expectAccessible(equal);
     const set = withVariables({ type: 'set_variable', name: 'live', value: true });
     expect(set).toContain('for="variable-name">Variable</label>');
-    expect(set).toContain('<option value="on" selected="">On</option>');
+    expect(hasOption(set, 'on', 'On', true)).toBe(true);
     // An undeclared name is kept and marked, never swapped silently.
     const missing = withVariables({ type: 'toggle_variable', name: 'gone' });
     expect(missing).toContain('gone (not declared)');
     // Nothing declared: the choices say where to add one.
     const none = render({ type: 'toggle_variable', name: '' });
-    expect(none).toContain('Add one under Variables in the inspector');
+    expect(none).toContain('<button type="button" class="link-button">Add one under Variables</button>');
     expectAccessible(none);
+    // With nothing to compare against yet, no value field appears (and no bool default is implied).
+    const noneTest = render({ type: 'conditional', when: { variable_is: { name: '', value: false } }, then: [{ type: 'toggle_mute' }] });
+    expect(noneTest).toContain('Choose a variable');
+    expect(noneTest).not.toContain('Is equal to');
+    expect(noneTest).not.toContain('is compared with');
+    const noneSet = render({ type: 'set_variable', name: '', value: false });
+    expect(noneSet).not.toContain('Set it to');
   });
 });
 
@@ -901,7 +927,7 @@ describe('app picker', () => {
     expect(top).toContain('&quot;Otherwise do&quot; runs in every other app.');
     expect(top).not.toContain('swap the two lists');
     // Closed, the list and its rows are not rendered.
-    expect(top).not.toContain('role="listbox"');
+    expect(top).not.toContain('class="app-picker-list"');
     expectAccessible(top);
     const nested = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'conditional', when: { focused_app: 'com.apple.Music' }, then: [{ type: 'toggle_mute' }] }] });
     expect(nested).toMatch(/<button type="button" id="then-1-conditional-app"[^>]*aria-haspopup="listbox"/);

@@ -1,11 +1,12 @@
 import { useState } from 'react';
+import { appDisplayName } from './app-names';
 import type { Action, Binding, BindingAction, Gesture, KeypadBinding, Profile, ServiceModule } from './contracts';
 import { defaultBindingAction, isValidForControl, pickerEntryLabel, pickerWebStorage, recordRecentAction } from './action-picker-model';
 import { isFaderTemplate } from './action-model';
 import type { PickerActionType } from './action-picker-model';
 import type { ContextMenuItem } from './controls';
 import { clampUtf8 } from './draft-model';
-import { clearKeypadSlot, copyKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot, moveKeypadSlot, pasteKeypadSlot } from './keypad-model';
+import { clearKeypadSlot, copyKeypadSlot, createKeypadFolder, editKeypadBinding, keypadBackPath, keypadBindingAt, keypadIsBack, keypadPagesAtPath, keypadPathToPage, keypadRoot, moveKeypadSlot, pasteKeypadSlot, renameKeypadAction } from './keypad-model';
 import type { KeyClipboard } from './keypad-model';
 import { hint } from './shortcuts';
 import type { ProfileSession, SessionState } from './profile-session';
@@ -29,6 +30,17 @@ export function usablePath(state: SessionState, keypad: { generation: number; pa
   try { keypadPagesAtPath(state.draft.profile, keypad.path); return keypad.path; } catch { return [keypadRoot]; }
 }
 
+// A new key's label: an application's name, otherwise what the action does.
+const keyLabelFor = (action: BindingAction | null) => (action?.type === 'launch_app' ? appDisplayName(action.bundle_id) : actionLabel(action));
+
+// The label a key should have after its action changes: when it is still the automatic label of the app it opened (its name,
+// or the bundle ID before the name was known), the key follows a new app; any other label is the user's and stays.
+export function followedKeyLabel(label: string, previous: BindingAction | null | undefined, next: BindingAction | null): string | null {
+  if (previous?.type !== 'launch_app' || next?.type !== 'launch_app' || previous.bundle_id === next.bundle_id) return null;
+  const automatic = label === appDisplayName(previous.bundle_id) || label === previous.bundle_id;
+  return automatic ? clampUtf8(keyLabelFor(next)) : null;
+}
+
 // The stored keypad view state, reset to the root page once the open folder is gone.
 // Returns the same object while the path is usable. Without the reset, undoing
 // Create folder and then redoing it would jump back into the folder.
@@ -42,7 +54,7 @@ export function syncKeypad(state: SessionState, keypad: { generation: number; pa
 // that cannot take a binding (a folder key, the reserved Back key).
 export function dropProfileEdit(profile: Profile, keypadPath: readonly string[], module: ServiceModule, control: number, type: PickerActionType): Profile {
   const action = defaultBindingAction(type);
-  if (module === 'm4315') return editKeypadBinding(profile, keypadPath, control, 'pressed', '', action as Action, clampUtf8(actionLabel(action)));
+  if (module === 'm4315') return editKeypadBinding(profile, keypadPath, control, 'pressed', '', action as Action, clampUtf8(keyLabelFor(action)));
   return editBinding(profile, { module, control, gesture: gestures[module][0], serial: '' }, action);
 }
 
@@ -105,7 +117,9 @@ export function useDeviceEditor(session: ProfileSession, state: SessionState, co
     try {
       if (isKeypad) {
         if (isFaderTemplate(action)) throw new Error('This action is available only for faders.');
-        session.edit(editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(actionLabel(action))), key);
+        const edited = editKeypadBinding(profile, keypadPath, selection.control, selection.gesture as KeypadBinding['gesture'], selection.serial, action, clampUtf8(keyLabelFor(action)));
+        const label = keypadSlot?.type === 'action' ? followedKeyLabel(keypadSlot.label, binding?.action, action) : null;
+        session.edit(label === null ? edited : renameKeypadAction(edited, keypadPath, selection.control, label), key);
       } else session.edit(editBinding(profile, selection, action), key);
     } catch (reason) { session.setError(errorMessage(reason)); }
   }

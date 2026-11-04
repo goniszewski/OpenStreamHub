@@ -9,6 +9,11 @@ describe('prepare-sidecar helpers', () => {
     expect(() => sidecar.parseHostTriple('nothing')).toThrow(/host:/);
   });
 
+  it('builds osh next to the service, from its own package', () => {
+    expect(sidecar.SIDECARS).toEqual([{ bin: 'masterhub-service', pkg: 'cooltek-sdk-cli' }, { bin: 'osh', pkg: 'osh' }]);
+    expect(sidecar.sidecarFileName('aarch64-apple-darwin', 'osh')).toBe('osh-aarch64-apple-darwin');
+    expect(sidecar.builtBinaryPath({ workspaceRoot: '/ws', triple: 'aarch64-apple-darwin', release: true, bin: 'osh' })).toBe('/ws/target/release/osh');
+  });
   it('names sidecars with the triple and a windows suffix', () => {
     expect(sidecar.sidecarFileName('aarch64-apple-darwin')).toBe('masterhub-service-aarch64-apple-darwin');
     expect(sidecar.sidecarFileName('x86_64-pc-windows-msvc')).toBe('masterhub-service-x86_64-pc-windows-msvc.exe');

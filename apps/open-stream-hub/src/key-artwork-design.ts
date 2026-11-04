@@ -6,6 +6,7 @@
 import type { BindingAction, KeyArtworkDesignSpec } from './contracts';
 import { parseHexColour, type PrepareRequest } from './artwork-model';
 import { keyIconById } from './key-icons';
+import { english } from './i18n-react';
 
 /** The app-icon suggestion uses the real .app icon, keyed by bundle id. */
 export const appIconPrefix = 'app:';
@@ -40,7 +41,7 @@ export type KeyIconSize = 0 | 1 | 2;
 
 export const keyTextAligns = ['top', 'middle', 'bottom'] as const;
 export type KeyTextAlign = (typeof keyTextAligns)[number];
-export const keyTextAlignLabels: Record<KeyTextAlign, string> = { top: 'Top', middle: 'Middle', bottom: 'Bottom' };
+export const keyTextAlignLabels: Record<KeyTextAlign, string> = { top: english('labels.textAlign.top'), middle: english('labels.textAlign.middle'), bottom: english('labels.textAlign.bottom') };
 
 export interface KeyArtworkDesign {
   /** A catalog icon id, an `app:<bundle id>` suggestion, or null for text only. */
@@ -72,7 +73,7 @@ export function initialKeyArtworkDesign(action?: BindingAction | null, label = '
 export function storedKeyArtworkDesign(design: KeyArtworkDesign): KeyArtworkDesignSpec {
   return {
     icon_id: design.iconId, text: design.text, text_size: design.textSize, icon_size: design.iconSize, align: design.align,
-    text_colour: design.textColour, icon_colour: design.iconColour, background: design.background,
+    text_colour: design.textColour, icon_colour: design.iconColour, background: design.background, auto: false,
   };
 }
 
@@ -185,6 +186,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   toggle_mute: ['volume-x', 'mic-off'],
   shortcut: ['keyboard'],
   launch_app: [appIconId(''), 'app-window'],
+  terminal_command: ['terminal', 'app-window'],
   open_url: ['globe', 'link'],
   text: ['type'],
   media: ['play', 'pause'],
@@ -207,7 +209,8 @@ const commandSuggestions: Record<string, string[]> = {
 /** Suggested icon ids for an action, empty when nothing fits. */
 export function suggestedIconIds(action?: BindingAction | null): string[] {
   if (!action) return [];
-  const byCommand = 'command' in action ? commandSuggestions[action.command] : undefined;
+  // A terminal command line is user text, never a key into the closed command table.
+  const byCommand = (action.type === 'media' || action.type === 'system') && Object.prototype.hasOwnProperty.call(commandSuggestions, action.command) ? commandSuggestions[action.command] : undefined;
   return (byCommand ?? actionSuggestions[action.type] ?? [])
     .map(id => isAppIconId(id) && 'bundle_id' in action ? appIconId(action.bundle_id) : id);
 }

@@ -97,7 +97,7 @@ describe('ObsSettingsPanel markup', () => {
     expect(markup).toMatch(/<input type="checkbox"(?![^>]*checked)[^>]*>Let OBS actions connect to OBS on this Mac/);
     expect(markup).toContain('<input id="obs-password" type="password" autoComplete="off"');
     expect(markup).toMatch(/id="obs-password"[^>]*value=""/);
-    expect(markup).toContain('>localhost (this Mac)</option>');
+    expect(markup).toContain('<span class="select-option-label">localhost (this Mac)</span>');
     expect(markup).toContain('127.0.0.1:4455');
     expect(markup).toContain(obsPasswordNote);
     expect(obsPasswordNote).toContain('macOS Keychain');

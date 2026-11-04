@@ -26,8 +26,17 @@ describe('key pictures match the ones the service draws', () => {
     for (let depth = 1; depth <= 8; depth += 1) expect(keyFaceFingerprint(drawBackKey(depth))).toBe(expected[`back|${depth}`]);
   });
 
+  it('draws key faces on a dark and a bright background as the fixture does', () => {
+    const expected = fixture as Record<string, string>;
+    const backgrounds: [readonly [number, number, number], string][] = [[[200, 30, 30], 'c81e1e'], [[255, 220, 0], 'ffdc00']];
+    const pictures: [TileIcon, string][] = [['mute', 'Mute mic'], ['generic', '']];
+    for (const [background, name] of backgrounds) for (const [icon, label] of pictures) {
+      expect(keyFaceFingerprint(drawActionKey(icon, label, background)), `${icon}|${label}|${name}`).toBe(expected[`${icon}|${label}|${name}`]);
+    }
+  });
+
   it('has a fingerprint for exactly the pictures it draws', () => {
-    expect(Object.keys(fixture)).toHaveLength(icons.length * labels.length + 1 + 8);
+    expect(Object.keys(fixture)).toHaveLength(icons.length * labels.length + 4 + 1 + 8);
   });
 });
 

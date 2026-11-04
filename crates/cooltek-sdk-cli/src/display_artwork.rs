@@ -11,8 +11,8 @@
 use std::{collections::BTreeMap, io::Cursor, time::Duration};
 
 use cooltek_sdk_masterhub::keypad;
-use cooltek_sdk_service::KeypadTile;
 use cooltek_sdk_service::display_sync::{KeyContent, KeyImageProvider, KeyImageRequest, TileIcon};
+use cooltek_sdk_service::{Condition, KeypadTile, SharedVariables};
 use image::{ImageFormat, Rgb, RgbImage};
 
 use crate::image_prep::{PrepareOptions, prepare_keypad_image};
@@ -157,7 +157,10 @@ impl PreparedKeyArtwork {
                 }
                 // An action tile without artwork of its own gets its icon over its label, drawn once here.
                 for (index, slot) in page.slots.iter().enumerate() {
-                    let Some(KeypadTile::Action { label, bindings }) = slot else {
+                    let Some(KeypadTile::Action {
+                        label, bindings, ..
+                    }) = slot
+                    else {
                         continue;
                     };
                     let key = u8::try_from(index).map_err(|_| "invalid slot index")?;
@@ -355,6 +358,97 @@ impl<P: KeyImageProvider> KeyImageProvider for BrightKeys<P> {
     }
 }
 
+/// A key face's condition and its encoded picture.
+type DrawnFace = (Condition, Vec<u8>);
+
+/// Wraps a provider so an action tile shows its first key face whose condition holds for the current variable
+/// values; without one, the inner provider's image (prepared artwork or the generated tile) is shown. Every face is
+/// drawn and encoded once in [`VariableFaces::prepare`]; serving one only reads the variables and clones bytes.
+/// Animation timing is the inner provider's.
+pub struct VariableFaces<P> {
+    pub inner: P,
+    /// Per (page, key), the faces in profile order with their encoded pictures.
+    faces: BTreeMap<(String, u8), Vec<DrawnFace>>,
+    variables: SharedVariables,
+}
+
+impl<P> VariableFaces<P> {
+    /// Draws every key face of `profile`: the face's label (else the tile's) and background over the tile's icon.
+    ///
+    /// # Errors
+    /// Fails when the profile is invalid or a picture cannot be encoded.
+    pub fn prepare(
+        profile: &cooltek_sdk_service::Profile,
+        inner: P,
+        variables: SharedVariables,
+    ) -> Result<Self, String> {
+        profile.validate()?;
+        let mut faces = BTreeMap::new();
+        for page in profile.keypad.iter().flat_map(|layout| &layout.pages) {
+            for (index, slot) in page.slots.iter().enumerate() {
+                let Some(KeypadTile::Action {
+                    label,
+                    bindings,
+                    faces: tile_faces,
+                }) = slot
+                else {
+                    continue;
+                };
+                if tile_faces.is_empty() {
+                    continue;
+                }
+                let icon = bindings
+                    .first()
+                    .map_or(TileIcon::Generic, |binding| TileIcon::of(&binding.action));
+                let drawn = tile_faces
+                    .iter()
+                    .map(|face| {
+                        let background = match &face.background {
+                            Some(colour) => Some(
+                                tile_artwork::parse_hex_colour(colour)
+                                    .ok_or("invalid key face background")?,
+                            ),
+                            None => None,
+                        };
+                        let label = face.label.as_deref().unwrap_or(label);
+                        let jpeg = encode(&tile_artwork::draw_with(icon, label, background))?;
+                        Ok((face.when.clone(), jpeg))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let key = u8::try_from(index).map_err(|_| "invalid slot index")?;
+                faces.insert((page.id.clone(), key), drawn);
+            }
+        }
+        Ok(Self {
+            inner,
+            faces,
+            variables,
+        })
+    }
+}
+
+impl<P: KeyImageProvider> KeyImageProvider for VariableFaces<P> {
+    fn key_image(&self, request: &KeyImageRequest) -> Option<Vec<u8>> {
+        if let KeyContent::Action { page_id, .. } = &request.content
+            && let Some(faces) = self.faces.get(&(page_id.clone(), request.key_index))
+            && let Some((_, jpeg)) = faces
+                .iter()
+                .find(|(when, _)| when.holds_with(|name| self.variables.get(name)) == Some(true))
+        {
+            return Some(jpeg.clone());
+        }
+        self.inner.key_image(request)
+    }
+
+    fn advance(&mut self, page_id: &str, elapsed: std::time::Duration) {
+        self.inner.advance(page_id, elapsed);
+    }
+
+    fn next_frame_in(&self) -> Option<std::time::Duration> {
+        self.inner.next_frame_in()
+    }
+}
+
 /// Wraps a provider so one held key shows dimmed; every other key, and the
 /// held key's animation frames, come from the inner provider unchanged.
 pub struct PressedKey<'a> {
@@ -445,7 +539,7 @@ pub(crate) mod tests {
 
     use super::*;
     use base64::Engine;
-    use cooltek_sdk_service::{KeyArtwork, KeyArtworkFrame};
+    use cooltek_sdk_service::{KeyArtwork, KeyArtworkFrame, VariableValue};
 
     /// A 72 x 72 key image with a red top-left quarter on a dark background.
     fn red_corner() -> Vec<u8> {
@@ -840,5 +934,77 @@ pub(crate) mod tests {
         let mut art = PreparedKeyArtwork::prepare().unwrap();
         at(&mut art, "root", 0);
         assert_eq!(art.next_frame_in(), None);
+    }
+
+    /// The folders fixture (schema 5) with a text variable `state` and two faces on root key 0, the "Mute" tile:
+    /// `state == "waiting"` shows "Wait" on yellow, and `count >= 1` shows the tile label on red.
+    pub(crate) fn profile_with_faces(artwork: Vec<(usize, &str, KeyArtwork)>) -> Profile {
+        let mut value = serde_json::to_value(profile_with(artwork)).unwrap();
+        value["schema_version"] = serde_json::json!(5);
+        value["variables"] = serde_json::json!([
+            { "name": "state", "value": "idle" },
+            { "name": "count", "value": 0 }
+        ]);
+        value["keypad"]["pages"][0]["slots"][0]["faces"] = serde_json::json!([
+            { "when": { "variable_is": { "name": "state", "value": "waiting" } }, "label": "Wait", "background": "#ffdc00" },
+            { "when": { "variable_at_least": { "name": "count", "value": 1 } }, "background": "#c81e1e" }
+        ]);
+        Profile::from_json(&serde_json::to_vec(&value).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn variable_faces_show_the_first_face_that_holds_and_otherwise_the_inner_image() {
+        let profile = profile_with_faces(vec![(0, "0", key_artwork(&[(10, 100)], 0))]);
+        let variables = SharedVariables::new();
+        variables.declare(&profile.variables);
+        let inner = PreparedKeyArtwork::prepare_profile(&profile).unwrap();
+        let faces = VariableFaces::prepare(&profile, inner.clone(), variables.clone()).unwrap();
+        let request = |key_index| KeyImageRequest {
+            key_index,
+            content: KeyContent::Action {
+                page_id: "root".into(),
+                label: "Mute".into(),
+                icon: TileIcon::Mute,
+            },
+        };
+        let wait = encode(&tile_artwork::draw_with(
+            TileIcon::Mute,
+            "Wait",
+            Some([255, 220, 0]),
+        ))
+        .unwrap();
+        let busy = encode(&tile_artwork::draw_with(
+            TileIcon::Mute,
+            "Mute",
+            Some([200, 30, 30]),
+        ))
+        .unwrap();
+        // No face holds: the key's own artwork.
+        assert_eq!(faces.key_image(&request(0)), Some(solid(10)));
+        variables.set("count", VariableValue::Number(2)).unwrap();
+        assert_eq!(faces.key_image(&request(0)), Some(busy));
+        // Both hold: the first listed wins, over the key's artwork.
+        variables
+            .set("state", VariableValue::Text("waiting".into()))
+            .unwrap();
+        assert_eq!(faces.key_image(&request(0)), Some(wait));
+        // Other keys and pages are the inner provider's.
+        assert_eq!(faces.key_image(&request(3)), inner.key_image(&request(3)));
+        let other_page = KeyImageRequest {
+            key_index: 0,
+            content: KeyContent::Action {
+                page_id: "development".into(),
+                label: "Mute".into(),
+                icon: TileIcon::Mute,
+            },
+        };
+        assert_eq!(faces.key_image(&other_page), inner.key_image(&other_page));
+        variables.set("count", VariableValue::Number(0)).unwrap();
+        variables
+            .set("state", VariableValue::Text("idle".into()))
+            .unwrap();
+        assert_eq!(faces.key_image(&request(0)), Some(solid(10)));
+        // Timing is the inner provider's.
+        assert_eq!(faces.next_frame_in(), inner.next_frame_in());
     }
 }

@@ -10,6 +10,7 @@ import { autoActionsNoticeText, markModuleControlNoticeShown, ModuleControlNotic
 import { autoStartNote, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import type { RunSessionOptions } from './ServicePanel';
 import { autoStartLabel, deviceTakenError, isStale, reasonLabels, ServiceRunner } from './service-runner';
+import { hasOption } from './select-markup';
 
 const [dialState, keypadState] = autoStart.events as SessionStatePayload[];
 const draft: Profile = { schema_version: 1, name: 'Everyday', bindings: [] };
@@ -209,8 +210,8 @@ describe('automatic actions', () => {
     await store.loadDefaultProfile();
     expect(store.getState().defaultProfile).toMatchObject({ loaded: true, profileId: 'p-1' });
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={store} profiles={[{ id: 'p-1', name: 'Everyday' }, { id: 'p-2', name: 'Streaming' }]} />);
-    expect(markup).toContain('<option value="">No default</option>');
-    expect(markup).toContain('<option value="p-1" selected="">Everyday</option>');
+    expect(hasOption(markup, '', 'No default', false)).toBe(true);
+    expect(hasOption(markup, 'p-1', 'Everyday', true)).toBe(true);
     expect(markup).toContain(defaultProfileNote);
     expect(markup).toContain('is the run mode in the header');
     expect(await store.setDefaultProfile(null)).toBe(true);

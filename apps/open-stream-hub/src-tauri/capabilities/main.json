@@ -17,6 +17,7 @@
     "allow-delete-profile",
     "allow-import-mhz-profile",
     "allow-create-pack-profile",
+    "allow-import-profile",
     "allow-allow-imported-profile-execution",
     "allow-mark-all-profiles-for-review",
     "allow-validate-profile",
@@ -89,6 +90,9 @@
     "allow-set-menubar",
     "allow-set-module-turns",
     "allow-open-permission-settings",
-    "allow-start-permission-drag"
+    "allow-start-permission-drag",
+    "allow-agent-tool-status",
+    "allow-link-agent-tool",
+    "allow-unlink-agent-tool"
   ]
 }

@@ -179,7 +179,8 @@ impl TileIcon {
                 SystemCommand::Screenshot => Self::Screenshot,
             },
             Action::OpenUrl { .. } => Self::Web,
-            Action::LaunchApp { .. } => Self::Application,
+            // A terminal session opens an app window, like a launch.
+            Action::LaunchApp { .. } | Action::TerminalCommand { .. } => Self::Application,
             Action::Text { .. } => Self::Text,
             Action::MultiAction { .. }
             | Action::Conditional { .. }
@@ -445,7 +446,9 @@ impl DisplayPlan {
                     None => KeyContent::Empty {
                         page_id: page.id.clone(),
                     },
-                    Some(KeypadTile::Action { label, bindings }) => KeyContent::Action {
+                    Some(KeypadTile::Action {
+                        label, bindings, ..
+                    }) => KeyContent::Action {
                         page_id: page.id.clone(),
                         label: label.clone(),
                         icon: bindings

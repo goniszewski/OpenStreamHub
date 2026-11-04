@@ -140,7 +140,7 @@ describe('stored designs', () => {
   };
 
   it('stores a design as the wire shape and reopens it unchanged', () => {
-    expect(storedKeyArtworkDesign(designed)).toEqual(spec);
+    expect(storedKeyArtworkDesign(designed)).toEqual({ ...spec, auto: false }); // a studio save is marked as the user's
     expect(keyDesignFromSpec(spec)).toEqual(designed);
     // A design that reopens losslessly prepares the same request again.
     const first = buildKeyArtworkDesignRequest(designed, 'QUJD');

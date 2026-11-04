@@ -348,8 +348,8 @@ pub struct MacOsDispatcher {
     media_access_requested: bool,
     /// The service state handed over before the current action.
     service_state: ServiceState,
-    /// Current values of the declared variables, by name.
-    variables: std::collections::HashMap<String, crate::profile::VariableValue>,
+    /// Current values of the declared variables, shared with the control channel.
+    variables: crate::SharedVariables,
 }
 
 impl MacOsDispatcher {
@@ -398,6 +398,13 @@ impl MacOsDispatcher {
     /// ([`STREAMLABS_UNAVAILABLE`]) and a direct dispatch does no I/O.
     pub fn with_streamlabs(mut self, streamlabs: Option<StreamlabsClient>) -> Self {
         self.streamlabs = streamlabs;
+        self
+    }
+
+    /// Keeps variable values in `variables`, so the control channel can read
+    /// and set them while the run goes on.
+    pub fn with_variables(mut self, variables: crate::SharedVariables) -> Self {
+        self.variables = variables;
         self
     }
 
@@ -744,39 +751,9 @@ impl MacOsDispatcher {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_steps(actions, "multi_action", deadline)?;
             }
-            Action::SetVariable { name, value } => {
-                let slot = self.variable_mut(name)?;
-                if slot.kind() != value.kind() {
-                    return Err(format!(
-                        "variable {name} is {}, not {}; no action was taken",
-                        slot.kind().name(),
-                        value.kind().name()
-                    ));
-                }
-                *slot = value.clone();
-            }
-            Action::ToggleVariable { name } => match self.variable_mut(name)? {
-                VariableValue::Bool(flag) => *flag = !*flag,
-                other => {
-                    return Err(format!(
-                        "variable {name} is {}, not bool; no action was taken",
-                        other.kind().name()
-                    ));
-                }
-            },
-            Action::AddToVariable { name, amount } => match self.variable_mut(name)? {
-                VariableValue::Number(number) => {
-                    *number = number
-                        .saturating_add(*amount)
-                        .clamp(VariableValue::MIN_NUMBER, VariableValue::MAX_NUMBER);
-                }
-                other => {
-                    return Err(format!(
-                        "variable {name} is {}, not number; no action was taken",
-                        other.kind().name()
-                    ));
-                }
-            },
+            Action::SetVariable { name, value } => self.variables.set(name, value.clone())?,
+            Action::ToggleVariable { name } => self.variables.toggle(name)?,
+            Action::AddToVariable { name, amount } => self.variables.add(name, *amount)?,
             Action::Conditional { .. } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_conditional(action, deadline)?;
@@ -893,13 +870,6 @@ impl MacOsDispatcher {
         }
     }
 
-    /// The current value of a declared variable.
-    fn variable_mut(&mut self, name: &str) -> Result<&mut VariableValue, String> {
-        self.variables
-            .get_mut(name)
-            .ok_or_else(|| format!("variable {name} is not declared; no action was taken"))
-    }
-
     /// Reads a condition about the default output from macOS.
     fn system_condition_holds(
         &mut self,
@@ -911,7 +881,7 @@ impl MacOsDispatcher {
             Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
             Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
             Condition::VariableIs { name, value } => match self.variables.get(name) {
-                Some(current) if current.kind() == value.kind() => Ok(current == value),
+                Some(current) if current.kind() == value.kind() => Ok(current == *value),
                 Some(current) => Err(format!(
                     "variable {name} is {}, not {}",
                     current.kind().name(),
@@ -920,7 +890,7 @@ impl MacOsDispatcher {
                 None => Err(format!("variable {name} is not declared")),
             },
             Condition::VariableAtLeast { name, value } => match self.variables.get(name) {
-                Some(VariableValue::Number(current)) => Ok(current >= value),
+                Some(VariableValue::Number(current)) => Ok(current >= *value),
                 Some(other) => Err(format!(
                     "variable {name} is {}, not number",
                     other.kind().name()
@@ -1107,15 +1077,7 @@ impl ActionDispatcher for MacOsDispatcher {
     fn set_service_state(&mut self, state: ServiceState) {
         // A variable keeps its value while its name and kind stay; anything
         // else starts at the declared value, and an undeclared one is dropped.
-        let mut kept = std::collections::HashMap::new();
-        for variable in &state.variables {
-            let value = match self.variables.remove(&variable.name) {
-                Some(current) if current.kind() == variable.value.kind() => current,
-                _ => variable.value.clone(),
-            };
-            kept.insert(variable.name.clone(), value);
-        }
-        self.variables = kept;
+        self.variables.declare(&state.variables);
         self.service_state = state;
     }
 
@@ -3245,7 +3207,7 @@ mod tests {
             .dispatch(&add(VariableValue::MAX_NUMBER))
             .unwrap();
         assert_eq!(
-            dispatcher.variables["takes"],
+            dispatcher.variables.get("takes").unwrap(),
             VariableValue::Number(VariableValue::MAX_NUMBER)
         );
         dispatcher
@@ -3254,7 +3216,10 @@ mod tests {
                 value: VariableValue::Number(1),
             })
             .unwrap();
-        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
+            VariableValue::Number(1)
+        );
 
         // A wrong kind or an undeclared name fails and changes nothing.
         let error = dispatcher
@@ -3270,7 +3235,10 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("not declared"), "{error}");
-        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
+            VariableValue::Number(1)
+        );
 
         // A swap keeps a variable of the same name and kind, starts a new one
         // at its declared value, and drops what is no longer declared.
@@ -3291,13 +3259,19 @@ mod tests {
             ],
             ..Default::default()
         });
-        assert_eq!(dispatcher.variables["live"], VariableValue::Bool(true));
         assert_eq!(
-            dispatcher.variables["takes"],
+            dispatcher.variables.get("live").unwrap(),
+            VariableValue::Bool(true)
+        );
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
             VariableValue::Text("changed kind".into())
         );
-        assert_eq!(dispatcher.variables["fresh"], VariableValue::Number(9));
-        assert_eq!(dispatcher.variables.len(), 3);
+        assert_eq!(
+            dispatcher.variables.get("fresh").unwrap(),
+            VariableValue::Number(9)
+        );
+        assert_eq!(dispatcher.variables.values().len(), 3);
     }
 
     #[test]

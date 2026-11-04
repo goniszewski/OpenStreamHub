@@ -13,6 +13,8 @@ mod export;
 mod feed;
 mod focus;
 mod import_flags;
+#[cfg(unix)]
+mod ingress;
 mod keychain;
 mod lighting;
 mod menubar;
@@ -2017,6 +2019,23 @@ pub fn run() {
                 });
             if let Ok(app_data) = &app_data {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
+                // The socket outside processes (agent hooks, `osh`) use to set profile variables.
+                #[cfg(unix)]
+                {
+                    let handle = app.handle().clone();
+                    let forward: ingress::Forward = Arc::new(move |body| {
+                        handle
+                            .try_state::<AppState>()
+                            .map(|state| ingress::forward_to(&state.services, body))
+                            .unwrap_or_default()
+                    });
+                    match ingress::Ingress::start(&ingress::dir(app_data), forward) {
+                        Ok(ingress) => {
+                            app.manage(ingress);
+                        }
+                        Err(error) => eprintln!("{error}"),
+                    }
+                }
             }
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
@@ -2173,6 +2192,10 @@ pub fn run() {
             state.services.stop_all(service::STOP_GRACE);
             state.feeds.stop_all();
             state.inventory.stop();
+            #[cfg(unix)]
+            if let Some(ingress) = app.try_state::<ingress::Ingress>() {
+                ingress.stop();
+            }
             return;
         }
         // Only user/system exit requests (code None) are routed through the

@@ -317,6 +317,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 selected.product_id,
                 selected.serial_number.clone(),
             )?;
+            // Variable values live here for the whole run, so the control channel can read and set them.
+            let variables = cooltek_sdk_service::SharedVariables::new();
+            variables.declare(&profile.variables);
             let engine = live_bindings(profile, device.module, display_sync, dial_content)?;
             if let Some(functions) = dial_function_details(&engine, &device) {
                 // stdout carries JSONL only; the same facts are in `service_start`.
@@ -352,9 +355,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // in place; without `--control` the dispatcher is fixed at start, as before.
             let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
             let switchable = mode.clone();
+            let dispatcher_variables = variables.clone();
             let factory = move |abort| {
                 Ok((
-                    Dispatcher::new(execute, switchable, abort, obs, streamlabs),
+                    Dispatcher::new(
+                        execute,
+                        switchable,
+                        abort,
+                        obs,
+                        streamlabs,
+                        dispatcher_variables,
+                    ),
                     stdout,
                 ))
             };
@@ -381,7 +392,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         execute,
                         can_execute: cfg!(target_os = "macos"),
                     }),
+                    variables: Some(variables.clone()),
                     profile: profile_slot.map(|slot| {
+                        let variables = variables.clone();
                         Box::new(move |value: &serde_json::Value| {
                             // A run that draws on the module holds the engine and the artwork on its display thread, so
                             // it takes a new profile by restarting.
@@ -393,9 +406,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                             }
                             let profile = Profile::from_json(value.to_string().as_bytes())
                                 .map_err(|error| error.to_string())?;
+                            let declared = profile.variables.clone();
                             let engine = live_bindings(profile, module, false, DialContent::Off)?;
                             *slot.lock().map_err(|_| "the profile slot failed".to_string())? =
                                 Some(engine);
+                            // Declared now, so a new variable can be set before the next press.
+                            variables.declare(&declared);
                             Ok(())
                         }) as cooltek_sdk_cli::control::ProfileSwap
                     }),
@@ -685,6 +701,7 @@ impl Dispatcher {
         abort: Arc<AtomicBool>,
         obs: Option<ObsClient>,
         streamlabs: Option<StreamlabsClient>,
+        variables: cooltek_sdk_service::SharedVariables,
     ) -> Self {
         let (has_obs, has_streamlabs) = (obs.is_some(), streamlabs.is_some());
         let macos = |abort: Arc<AtomicBool>| {
@@ -694,6 +711,7 @@ impl Dispatcher {
             MacOsDispatcher::with_cancellation(abort)
                 .with_obs(obs)
                 .with_streamlabs(streamlabs)
+                .with_variables(variables)
         };
         if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
             return Self::Switchable {
@@ -1613,6 +1631,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             Some(ObsClient::new(endpoint, None)),
             None,
+            Default::default(),
         );
         assert_eq!(run.unavailable(&scene), None);
         run.dispatch(&scene).unwrap();
@@ -1627,6 +1646,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             None,
             None,
+            Default::default(),
         );
         assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert!(
@@ -1642,7 +1662,14 @@ mod tests {
             scene: "Live".into(),
         };
         let abort = Arc::new(AtomicBool::new(false));
-        let mut without = Dispatcher::new(false, None, Arc::clone(&abort), None, None);
+        let mut without = Dispatcher::new(
+            false,
+            None,
+            Arc::clone(&abort),
+            None,
+            None,
+            Default::default(),
+        );
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
         // Without Streamlabs a dry run reports it like an executing run.
@@ -1665,6 +1692,7 @@ mod tests {
             abort,
             Some(ObsClient::new(endpoint, None)),
             Some(streamlabs),
+            Default::default(),
         );
         assert_eq!(with.unavailable(&scene), None);
         assert_eq!(with.unavailable(&Action::StreamlabsRecord), None);
@@ -1713,6 +1741,7 @@ mod control_regressions {
             Arc::new(AtomicBool::new(false)),
             Some(ObsClient::new(endpoint, None)),
             None,
+            Default::default(),
         );
         mode.store(false, Ordering::SeqCst);
         let work = Work {

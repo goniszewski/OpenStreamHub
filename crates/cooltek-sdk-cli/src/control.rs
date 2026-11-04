@@ -32,6 +32,13 @@
 //!   run already holds the dial in software mode, so nothing else is sent. There is no colour: the dial's solid
 //!   colour is a fill of the whole screen, which would wipe the picture the run draws.
 //!
+//! Variables, for a run whose profile declares them:
+//!
+//! - `{"id":7,"type":"set_variable","name":"agent_state","value":"waiting"}` sets one declared variable. The value is
+//!   written as in a profile (`true`, `3`, `"text"`) and must match the variable's kind; numbers are clamped.
+//! - `{"id":8,"type":"get_variables"}` answers `variables` (`[{"name":..,"value":..}]`, in declaration order) and
+//!   `version`, a counter that grows with every change.
+//!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
 use cooltek_sdk_masterhub::{
@@ -62,6 +69,8 @@ pub struct Hooks {
     pub key_images: bool,
     /// Whether the run accepts `dial_look`: an M131E held in software mode.
     pub dial_lighting: bool,
+    /// The run's variables, read and set by `get_variables` and `set_variable`.
+    pub variables: Option<cooltek_sdk_service::SharedVariables>,
     /// The key report length, read from the module's descriptor with the first key image only.
     #[doc(hidden)]
     pub key_report_length: OnceLock<usize>,
@@ -106,6 +115,12 @@ enum Request {
     DialLook {
         backlight: u8,
     },
+    SetVariable {
+        name: String,
+        // Read as a plain value first, so a value of no variable kind is answered with the request's id.
+        value: Value,
+    },
+    GetVariables,
 }
 
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
@@ -193,6 +208,24 @@ pub fn answer<T: ReportTransport + ?Sized>(
                 Err("this run does not take dial lighting".to_string())
             }
         }
+        (Request::SetVariable { name, value }, _) => match &hooks.variables {
+            Some(variables) => serde_json::from_value::<cooltek_sdk_service::VariableValue>(value)
+                .map_err(|_| "a variable value is true or false, a whole number, or text".to_string())
+                .and_then(|value| variables.set(&name, value))
+                .map(|()| json!({"name": name, "value": variables.get(&name), "version": variables.version()})),
+            None => Err("this run has no variables".to_string()),
+        },
+        (Request::GetVariables, _) => match &hooks.variables {
+            Some(variables) => Ok(json!({
+                "variables": variables
+                    .values()
+                    .into_iter()
+                    .map(|(name, value)| json!({"name": name, "value": value}))
+                    .collect::<Vec<_>>(),
+                "version": variables.version(),
+            })),
+            None => Err("this run has no variables".to_string()),
+        },
         (_, None) => Err("this module has no per-LED lighting".to_string()),
         (
             Request::LedLook {
@@ -542,6 +575,74 @@ mod tests {
             None,
             &Hooks::default(),
             r#"{"id":3,"type":"profile","profile":{}}"#,
+        );
+        assert_eq!(without["ok"], false);
+    }
+
+    #[test]
+    fn variables_are_set_and_read_only_as_declared() {
+        use cooltek_sdk_service::{SharedVariables, Variable, VariableValue};
+        let variables = SharedVariables::new();
+        variables.declare(&[
+            Variable {
+                name: "agent_state".into(),
+                value: VariableValue::Text("idle".into()),
+            },
+            Variable {
+                name: "busy".into(),
+                value: VariableValue::Bool(false),
+            },
+        ]);
+        let hooks = Hooks {
+            variables: Some(variables.clone()),
+            ..Hooks::default()
+        };
+        let set = answer(
+            &fake(),
+            None,
+            &hooks,
+            r#"{"id":1,"type":"set_variable","name":"agent_state","value":"waiting"}"#,
+        );
+        assert_eq!(set["ok"], true, "{set}");
+        assert_eq!(set["value"], "waiting");
+        assert_eq!(
+            variables.get("agent_state"),
+            Some(VariableValue::Text("waiting".into()))
+        );
+        let read = answer(&fake(), None, &hooks, r#"{"id":2,"type":"get_variables"}"#);
+        assert_eq!(read["ok"], true);
+        assert_eq!(
+            read["variables"],
+            json!([{"name":"agent_state","value":"waiting"},{"name":"busy","value":false}])
+        );
+        assert_eq!(read["version"], variables.version());
+        for (id, line) in [
+            (
+                3,
+                r#"{"id":3,"type":"set_variable","name":"busy","value":"yes"}"#,
+            ),
+            (
+                4,
+                r#"{"id":4,"type":"set_variable","name":"nope","value":true}"#,
+            ),
+            (
+                5,
+                r#"{"id":5,"type":"set_variable","name":"busy","value":{"a":1}}"#,
+            ),
+        ] {
+            let refused = answer(&fake(), None, &hooks, line);
+            assert_eq!(
+                (refused["ok"].as_bool(), refused["id"].as_u64()),
+                (Some(false), Some(id)),
+                "{line}"
+            );
+        }
+        assert_eq!(variables.get("busy"), Some(VariableValue::Bool(false)));
+        let without = answer(
+            &fake(),
+            None,
+            &Hooks::default(),
+            r#"{"id":6,"type":"get_variables"}"#,
         );
         assert_eq!(without["ok"], false);
     }

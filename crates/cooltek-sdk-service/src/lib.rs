@@ -13,6 +13,7 @@ mod key_artwork;
 mod keypad;
 mod profile;
 mod timer;
+mod variables;
 
 pub mod display_sync;
 pub mod macos;
@@ -43,3 +44,4 @@ pub use profile::{
 pub use timer::{
     Confirmation, RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration,
 };
+pub use variables::SharedVariables;

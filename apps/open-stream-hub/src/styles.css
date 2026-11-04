@@ -573,6 +573,14 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .variables-list>li { border:1px solid var(--line); border-radius:9px; padding:12px; }
 .variables-list>li>.button { margin-top:12px; }
 .variables-list label { font-weight:500; font-size:12px; }
+.key-faces-list { list-style:none; margin:12px 0; padding:0; display:grid; gap:14px; }
+.key-faces-list>li { border:1px solid var(--line); border-radius:9px; padding:12px; }
+.key-faces-list fieldset { border:0; margin:0; padding:0; min-width:0; }
+.key-faces-list label { font-weight:500; font-size:12px; }
+.key-face-row-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+.key-face-preview { width:48px; height:48px; border-radius:9% / 10%; image-rendering:pixelated; }
+.key-face-background-toggle { display:flex; align-items:center; gap:6px; }
+.key-face-buttons { display:flex; gap:6px; margin-top:12px; }
 @media (prefers-reduced-motion: reduce) { .flow-slot { transition:none; } }
 /* OBS name fields: combobox choices under the input, the live cross-check note, and the
    listing row of the connection note (Refresh button plus why a listing failed). */

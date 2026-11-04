@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action, FaderTemplate, LiveDevice, Profile } from './contracts';
-import { labelIssue } from './draft-model';
+import { keyFaceIssue, labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
 import { namedKeys } from './action-model';
 import { bundleIdIssue } from './focus-rules';
@@ -55,6 +55,35 @@ describe('shipped starters', () => {
         expect(accepted, `${item.id} at ${where}: ${action.key}`).toBe(true);
       }
     }
+  });
+  it('let the terminal starter\'s Accept key follow the agent_state variable', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!;
+    expect(terminal.profile.variables).toEqual([{ name: 'agent_state', value: 'idle' }]);
+    const [accept, ...rest] = terminal.profile.keypad!.pages[0].slots;
+    expect(accept?.type === 'action' && accept.label).toBe('Accept');
+    const faces = accept?.type === 'action' ? accept.faces ?? [] : [];
+    expect(faces.map(face => [face.when, face.label, face.background])).toEqual([
+      [{ variable_is: { name: 'agent_state', value: 'working' } }, 'Working', '#d98e04'],
+      [{ variable_is: { name: 'agent_state', value: 'waiting' } }, 'Needs you', '#c81e1e'],
+      [{ variable_is: { name: 'agent_state', value: 'done' } }, 'Done', '#1f9d55'],
+    ]);
+    for (const face of faces) expect(keyFaceIssue(face, terminal.profile.variables!), face.label).toBeNull();
+    // Idle has no face: the key shows its normal face. No other tile has faces.
+    expect(rest.filter(slot => slot?.type === 'action' && slot.faces)).toEqual([]);
+    expect(terminal.description).toContain('agent_state');
+    expect(terminal.description).toContain('osh');
+  });
+  it('refuse faces and variables the service would refuse', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!.profile;
+    const withAccept = (patch: object): Profile => {
+      const [accept, ...rest] = terminal.keypad!.pages[0].slots;
+      return { ...terminal, keypad: { pages: [{ ...terminal.keypad!.pages[0], slots: [{ ...accept!, ...patch } as typeof accept, ...rest] }] } };
+    };
+    const face = { when: { variable_is: { name: 'agent_state', value: 'done' } }, label: 'Done' };
+    expect(starterIssue(withAccept({ faces: Array(9).fill(face) }), typingActionIssue)).toContain('at most 8 faces');
+    expect(starterIssue(withAccept({ faces: [{ ...face, when: { variable_is: { name: 'missing', value: 'x' } } }] }), typingActionIssue)).toContain('not declared');
+    expect(starterIssue(withAccept({ faces: [{ ...face, background: 'amber' }] }), typingActionIssue)).toContain('hex colour');
+    expect(starterIssue({ ...terminal, variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_state', value: 'x' }] }, typingActionIssue)).toContain('declared twice');
   });
   it('let the terminal starter send keys and text, and nothing that launches, opens or reaches OBS', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;

@@ -3,9 +3,11 @@
 // is offered, and which module an inventory change should prompt for. Rust
 // remains the authority on profile validity; the tests pin the structural
 // rules these templates must meet.
-import type { Action, Binding, Modifier, BindingAction, KeypadPage, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
+import type { Action, Binding, Modifier, BindingAction, KeyFace, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
 import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
+import { keyFaceIssue, maximumKeyFaces } from './draft-model';
+import { variablesIssue } from './flow-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -26,8 +28,8 @@ export const terminalApps = [
   { bundle_id: 'com.microsoft.VSCode', name: 'Visual Studio Code' },
 ] as const;
 
-// One labelled 15-key tile with the action on press.
-const key = (label: string, action: Action) => ({ type: 'action', label, bindings: [{ gesture: 'pressed', action }] }) as KeypadSlot;
+// One labelled 15-key tile with the action on press, and the faces it shows while a variable test holds.
+const key = (label: string, action: Action, faces?: KeyFace[]) => ({ type: 'action', label, bindings: [{ gesture: 'pressed', action }], ...(faces ? { faces } : {}) }) as KeypadSlot;
 
 // A root keypad page with labelled tiles in the first slots and empty ones after.
 const keys = (...slots: KeypadSlot[]) => ({
@@ -151,21 +153,27 @@ const editing: StarterTemplate = {
   },
 };
 
+// A face shown while the text variable `agent_state` holds `value`.
+const agentFace = (value: string, label: string, background: string): KeyFace => ({ when: { variable_is: { name: 'agent_state', value } }, label, background });
+
 const shortcut = (key: string, ...modifiers: Modifier[]): Action => ({ type: 'shortcut', key, modifiers });
 const typed = (text: string): Action => ({ type: 'text', text, press_enter: true });
 
 // Keys for working with a coding agent (Claude Code, Codex) or any shell in a
 // terminal. Everything is sent to the app in front, so it suits the terminal
 // being the focused window. It types, so it is the one starter that is not
-// dry-run safe (see the starter tests).
+// dry-run safe (see the starter tests). The Accept key follows the text variable `agent_state`, which an agent's hooks
+// set through the bundled `osh` tool: amber while it works, red when it needs you, green when it is done, and its
+// normal face while idle.
 const terminalAgents: StarterTemplate = {
   id: 'terminal-agents',
   name: 'Terminal and AI agents',
   focusApps: terminalApps,
-  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused.',
+  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool.',
   profile: {
     schema_version: currentSchema,
     name: 'Terminal and AI agents',
+    variables: [{ name: 'agent_state', value: 'idle' }],
     bindings: [
       { module: 'm131e', control: 0, gesture: 'right', action: shortcut('arrow_down') },
       { module: 'm131e', control: 0, gesture: 'left', action: shortcut('arrow_up') },
@@ -175,7 +183,11 @@ const terminalAgents: StarterTemplate = {
       { module: 'm003k', control: 0, gesture: 'pressed', action: shortcut('escape') },
     ],
     keypad: keys(
-      key('Accept', shortcut('return')),
+      key('Accept', shortcut('return'), [
+        agentFace('working', 'Working', '#d98e04'),
+        agentFace('waiting', 'Needs you', '#c81e1e'),
+        agentFace('done', 'Done', '#1f9d55'),
+      ]),
       key('Interrupt', shortcut('escape')),
       key('Cycle mode', shortcut('tab', 'shift')),
       key('Continue', typed('continue')),
@@ -244,6 +256,9 @@ export type ActionCheck = (action: BindingAction) => string | null;
 export function starterIssue(profile: Profile, check: ActionCheck = actionIssue): string | null {
   if (!usesKeypadPages(profile) || profile.schema_version > currentSchema) return 'Starters are keypad-page profiles (schema 2 or 3).';
   if (!profile.name.trim()) return 'Profile name cannot be empty.';
+  const variables = profile.variables ?? [];
+  const variableIssue = variablesIssue(variables);
+  if (variableIssue) return variableIssue;
   const flat = new Set<string>();
   for (const binding of profile.bindings) {
     const issue = bindingIssue(binding, check);
@@ -259,6 +274,12 @@ export function starterIssue(profile: Profile, check: ActionCheck = actionIssue)
     if (slot === null) continue;
     if (slot.type !== 'action') return 'Starters use action tiles only.';
     if (slot.bindings.length !== 1) return 'A starter tile holds one binding.';
+    const faces = slot.faces ?? [];
+    if (faces.length > maximumKeyFaces) return `A key holds at most ${maximumKeyFaces} faces.`;
+    for (const face of faces) {
+      const issue = keyFaceIssue(face, variables);
+      if (issue) return issue;
+    }
     for (const keypadBinding of slot.bindings) {
       if (keypadBinding.gesture !== 'pressed') return 'Starter tiles bind press only.';
       const issue = check(keypadBinding.action);

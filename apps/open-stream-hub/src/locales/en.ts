@@ -477,6 +477,26 @@ export const en = {
   'variables.remove': 'Remove',
   'variables.add': 'Add variable',
 
+  // The inspector's Faces section: what a key tile shows while a variable test holds.
+  'faces.heading': 'Faces',
+  'faces.intro': 'The tile shows the first face whose variable test holds; otherwise its normal face. A face replaces the tile\'s artwork while it shows.',
+  'faces.face': 'Face {number}',
+  'faces.variable': 'When variable',
+  'faces.comparison': 'Comparison',
+  'faces.is': 'is',
+  'faces.atLeast': 'is at least',
+  'faces.value': 'Value',
+  'faces.label': 'Label (empty keeps the tile\'s)',
+  'faces.background': 'Colour the background',
+  'faces.preview': 'Preview of face {number}',
+  'faces.combined': 'This face tests several conditions together. It is kept as it is; edit it in the profile file or remove it here.',
+  'faces.moveUp': 'Move face {number} up',
+  'faces.moveDown': 'Move face {number} down',
+  'faces.remove': 'Remove',
+  'faces.removeNamed': 'Remove face {number}',
+  'faces.add': 'Add face',
+  'faces.limit': 'A key holds at most {max} faces.',
+
   // The action editor: the fields of each action, the OBS and Streamlabs editors and the app picker.
   'actions.learnMore': 'Learn more',
   'actions.action': 'Action',

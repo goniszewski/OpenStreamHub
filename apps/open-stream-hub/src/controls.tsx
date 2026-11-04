@@ -1,5 +1,5 @@
 import { useOutsidePress } from './use-outside-press';
-import { Children, Component, Fragment, isValidElement, useEffect, useId, useRef, useState } from 'react';
+import { Children, Component, Fragment, isValidElement, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { FocusEventHandler, KeyboardEvent, ReactNode } from 'react';
 import { Check, ChevronDown, CircleHelp, RotateCcw } from 'lucide-react';
 import { labelIssue, parseIntegerInput } from './draft-model';
@@ -35,6 +35,32 @@ export function nextChoice(choices: ReadonlyArray<SelectChoice>, from: number, d
   return from;
 }
 
+const LIST_MAX = 280;
+const LIST_GAP = 6;
+const LIST_MARGIN = 8;
+
+/** Where a select's list goes: its box in window coordinates, below the trigger or above it. */
+export function listPlacement(trigger: { left: number; right: number; top: number; bottom: number }, windowHeight: number, wanted: number): { left: number; width: number; top?: number; bottom?: number; maxHeight: number } {
+  const below = windowHeight - trigger.bottom - LIST_GAP - LIST_MARGIN;
+  const above = trigger.top - LIST_GAP - LIST_MARGIN;
+  const height = Math.min(wanted, LIST_MAX);
+  const up = below < height && above > below;
+  const room = Math.max(up ? above : below, 80);
+  const base = { left: trigger.left, width: trigger.right - trigger.left, maxHeight: Math.min(LIST_MAX, room) };
+  return up ? { ...base, bottom: windowHeight - trigger.top + LIST_GAP } : { ...base, top: trigger.bottom + LIST_GAP };
+}
+
+function placeList(element: HTMLElement, trigger: DOMRect, windowHeight: number) {
+  const place = listPlacement(trigger, windowHeight, element.scrollHeight);
+  element.style.position = 'fixed';
+  element.style.right = 'auto';
+  element.style.left = `${place.left}px`;
+  element.style.width = `${place.width}px`;
+  element.style.maxHeight = `${place.maxHeight}px`;
+  element.style.top = place.top === undefined ? 'auto' : `${place.top}px`;
+  element.style.bottom = place.bottom === undefined ? 'auto' : `${place.bottom}px`;
+}
+
 export function SelectField({ id, value, onChange, disabled, children, onFocus, 'aria-describedby': describedBy }: {
   id?: string; value: string | number; onChange(event: SelectChange): void; disabled?: boolean; children?: ReactNode;
   onFocus?: FocusEventHandler<HTMLButtonElement>; 'aria-describedby'?: string;
@@ -60,6 +86,22 @@ export function SelectField({ id, value, onChange, disabled, children, onFocus, 
   }, [open, active]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useOutsidePress(root, open, () => setOpen(false));
+  // The list is placed on the window, not inside whatever scrolls around the select: inside, it would lengthen a
+  // scrolling sidebar or panel (a second scrollbar) or be clipped by it. It opens below the select, or above it
+  // when there is more room there.
+  useLayoutEffect(() => {
+    const element = list.current;
+    if (!open || !element || !root.current) return;
+    const place = () => placeList(element, root.current!.getBoundingClientRect(), window.innerHeight);
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+      element.removeAttribute('style');
+    };
+  }, [open]);
 
   const show = () => { setActive(selected >= 0 ? selected : nextChoice(choices, -1, 1)); setOpen(true); };
   const choose = (index: number) => {

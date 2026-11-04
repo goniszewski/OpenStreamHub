@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { nextChoice, SelectField, selectChoices } from './controls';
+import { listPlacement, nextChoice, SelectField, selectChoices } from './controls';
 import { choicesOf, shownBy } from './select-markup';
 
 describe('SelectField', () => {
@@ -43,5 +43,22 @@ describe('SelectField', () => {
       { value: 'a', label: 'Alpha', selected: false, disabled: false },
       { value: 'c', label: 'Option c', selected: true, disabled: false },
     ]);
+  });
+});
+
+describe('listPlacement', () => {
+  const trigger = (top: number) => ({ left: 20, right: 170, top, bottom: top + 36 });
+  it('opens below the select when the list fits there, in window coordinates', () => {
+    expect(listPlacement(trigger(100), 800, 200)).toEqual({ left: 20, width: 150, top: 142, maxHeight: 280 });
+  });
+  it('opens above the select near the bottom of the window, when there is more room above', () => {
+    // The sidebar's profile select: low in a short window.
+    expect(listPlacement(trigger(440), 525, 400)).toEqual({ left: 20, width: 150, bottom: 91, maxHeight: 280 });
+  });
+  it('stays below and shrinks when neither side has room for it and below has more', () => {
+    expect(listPlacement(trigger(50), 300, 400)).toEqual({ left: 20, width: 150, top: 92, maxHeight: 200 });
+  });
+  it('never gives the list less than a few rows', () => {
+    expect(listPlacement(trigger(10), 100, 400).maxHeight).toBe(80);
   });
 });

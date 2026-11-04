@@ -1,0 +1,30 @@
+{
+  "variables": [
+    { "name": "agent_state", "value": "idle" },
+    { "name": "count", "value": 0 },
+    { "name": "live", "value": false }
+  ],
+  "valid": [
+    { "when": { "variable_is": { "name": "agent_state", "value": "waiting" } }, "label": "Waiting", "background": "#ffdc00" },
+    { "when": { "variable_at_least": { "name": "count", "value": 3 } }, "label": "Busy" },
+    { "when": { "variable_is": { "name": "live", "value": true } }, "background": "c00" },
+    {
+      "when": { "any": [
+        { "variable_is": { "name": "live", "value": true } },
+        { "all": [ { "variable_at_least": { "name": "count", "value": 1 } }, { "variable_is": { "name": "agent_state", "value": "done" } } ] }
+      ] },
+      "label": "Look"
+    }
+  ],
+  "invalid": [
+    { "face": { "when": { "variable_is": { "name": "live", "value": true } }, "label": "On", "colour": "#fff" }, "error": "unknown field", "rust_only": true },
+    { "face": { "when": { "variable_is": { "name": "missing", "value": true } }, "label": "On" }, "error": "not declared" },
+    { "face": { "when": { "variable_at_least": { "name": "agent_state", "value": 1 } }, "label": "On" }, "error": "not number" },
+    { "face": { "when": { "variable_is": { "name": "count", "value": "one" } }, "label": "On" }, "error": "not text" },
+    { "face": { "when": { "obs_streaming": true }, "label": "Live" }, "error": "only test variables" },
+    { "face": { "when": { "all": [ { "variable_is": { "name": "live", "value": true } }, { "output_muted": true } ] }, "label": "On" }, "error": "only test variables" },
+    { "face": { "when": { "variable_is": { "name": "live", "value": true } } }, "error": "needs a label or a background" },
+    { "face": { "when": { "variable_is": { "name": "live", "value": true } }, "background": "#12" }, "error": "hex colour" },
+    { "face": { "when": { "variable_is": { "name": "live", "value": true } }, "label": "  " }, "error": "label" }
+  ]
+}

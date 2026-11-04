@@ -352,8 +352,63 @@ fn lines_of(label: &str) -> (Vec<String>, i32) {
     (lines, 1)
 }
 
+/// `#rgb`, `rgb`, `#rrggbb`, or `rrggbb` as RGB; a three-digit colour doubles each digit.
+pub fn parse_hex_colour(colour: &str) -> Option<[u8; 3]> {
+    let digits = colour.strip_prefix('#').unwrap_or(colour);
+    if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+    let channel = |text: &str| u8::from_str_radix(text, 16).ok();
+    match digits.len() {
+        3 => {
+            let mut rgb = [0; 3];
+            for (index, digit) in digits.chars().enumerate() {
+                rgb[index] = channel(&format!("{digit}{digit}"))?;
+            }
+            Some(rgb)
+        }
+        6 => Some([
+            channel(&digits[0..2])?,
+            channel(&digits[2..4])?,
+            channel(&digits[4..6])?,
+        ]),
+        _ => None,
+    }
+}
+
+/// Black on a bright background, else white. The editor preview uses the same integer rule.
+fn foreground_on(background: [u8; 3]) -> [u8; 3] {
+    let [red, green, blue] = background.map(u32::from);
+    if red * 299 + green * 587 + blue * 114 >= 160_000 {
+        [0, 0, 0]
+    } else {
+        WHITE
+    }
+}
+
 /// The picture of an action tile: its icon above its label, or a larger icon alone without a label.
 pub fn draw(kind: TileIcon, label: &str) -> RgbImage {
+    draw_with(kind, label, None)
+}
+
+/// As [`draw`], on `background` instead of the default; the icon and label turn black when it is bright.
+pub fn draw_with(kind: TileIcon, label: &str, background: Option<[u8; 3]>) -> RgbImage {
+    let mut image = draw_default(kind, label);
+    if let Some(background) = background {
+        // The default picture holds only BACKGROUND and WHITE pixels, so recolouring is exact.
+        let foreground = foreground_on(background);
+        for pixel in image.pixels_mut() {
+            pixel.0 = if pixel.0 == BACKGROUND {
+                background
+            } else {
+                foreground
+            };
+        }
+    }
+    image
+}
+
+fn draw_default(kind: TileIcon, label: &str) -> RgbImage {
     let mut image = RgbImage::from_pixel(SIDE, SIDE, Rgb(BACKGROUND));
     let (lines, scale) = lines_of(label);
     if lines.is_empty() {
@@ -465,6 +520,30 @@ mod tests {
     }
 
     #[test]
+    fn a_face_background_recolours_the_picture_with_a_readable_foreground() {
+        assert_eq!(parse_hex_colour("#fff"), Some([255, 255, 255]));
+        assert_eq!(parse_hex_colour("c81e1e"), Some([200, 30, 30]));
+        assert_eq!(parse_hex_colour("#12345"), None);
+        assert_eq!(parse_hex_colour("#ggg"), None);
+        assert_eq!(
+            draw_with(TileIcon::Play, "Go", None),
+            draw(TileIcon::Play, "Go")
+        );
+        let dark = draw_with(TileIcon::Play, "Go", Some([200, 30, 30]));
+        let bright = draw_with(TileIcon::Play, "Go", Some([255, 220, 0]));
+        assert_eq!(dark.get_pixel(0, 0).0, [200, 30, 30]);
+        assert_eq!(bright.get_pixel(0, 0).0, [255, 220, 0]);
+        let colours = |image: &RgbImage| {
+            let mut seen: Vec<[u8; 3]> = image.pixels().map(|pixel| pixel.0).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            seen
+        };
+        assert_eq!(colours(&dark), vec![[200, 30, 30], WHITE]);
+        assert_eq!(colours(&bright), vec![[0, 0, 0], [255, 220, 0]]);
+    }
+
+    #[test]
     fn drawing_is_deterministic() {
         assert_eq!(
             draw(TileIcon::Timer, "Break"),
@@ -508,6 +587,16 @@ mod tests {
                 actual.insert(
                     format!("{}|{label}", name.as_str().unwrap()),
                     fingerprint(&draw(icon, label)).into(),
+                );
+            }
+        }
+        // Key faces: the same pictures on a dark and a bright background.
+        for (background, name) in [([200, 30, 30], "c81e1e"), ([255, 220, 0], "ffdc00")] {
+            for (icon, label) in [(TileIcon::Mute, "Mute mic"), (TileIcon::Generic, "")] {
+                let icon_name = serde_json::to_value(icon).unwrap();
+                actual.insert(
+                    format!("{}|{label}|{name}", icon_name.as_str().unwrap()),
+                    fingerprint(&draw_with(icon, label, Some(background))).into(),
                 );
             }
         }

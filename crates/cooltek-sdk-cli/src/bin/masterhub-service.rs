@@ -19,7 +19,7 @@ use cooltek_sdk_cli::{
     control::SharedRecords,
     device::{DevicePath, TIMEOUT_MS_RANGE, parse_path, select_device},
     dial_artwork::{DialArtwork, DialContent, SystemClock},
-    display_artwork::{BoxedKeys, BrightKeys, PreparedKeyArtwork, TurnedKeys},
+    display_artwork::{BoxedKeys, BrightKeys, PreparedKeyArtwork, TurnedKeys, VariableFaces},
     display_sink::{SharedTransport, live_dial_display, live_display},
     interrupt::WatchedStdin,
     live_output::TimedStdout,
@@ -257,16 +257,26 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // sampled at most once a second, on the display thread).
             // Quarter turns clockwise that undo the module's own turn on the base.
             let undo_turn = undo_quarter_turns(&display_turn);
+            // Variable values live here for the whole run, so the control channel can read and set them and key
+            // faces can follow them.
+            let variables = cooltek_sdk_service::SharedVariables::new();
+            variables.declare(&profile.variables);
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
                 (true, DialContent::Off) => {
+                    // Key faces sit inside the brightness and turn wrappers, so they are dimmed and turned too.
+                    let faces = VariableFaces::prepare(
+                        &profile,
+                        PreparedKeyArtwork::prepare_profile(&profile)?,
+                        variables.clone(),
+                    )?;
                     let keys = match brightness.keys.filter(|&percent| percent < 100) {
                         Some(percent) => Box::new(BrightKeys {
-                            inner: PreparedKeyArtwork::prepare_profile(&profile)?,
+                            inner: faces,
                             percent,
                         })
                             as Box<dyn KeyImageProvider + Send>,
-                        None => Box::new(PreparedKeyArtwork::prepare_profile(&profile)?),
+                        None => Box::new(faces),
                     };
                     Some(Artwork::Keys(BoxedKeys(if undo_turn == 0 {
                         keys
@@ -317,9 +327,6 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 selected.product_id,
                 selected.serial_number.clone(),
             )?;
-            // Variable values live here for the whole run, so the control channel can read and set them.
-            let variables = cooltek_sdk_service::SharedVariables::new();
-            variables.declare(&profile.variables);
             let engine = live_bindings(profile, device.module, display_sync, dial_content)?;
             if let Some(functions) = dial_function_details(&engine, &device) {
                 // stdout carries JSONL only; the same facts are in `service_start`.
@@ -457,7 +464,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     // not run live without its display.
                     let display = Some(match artwork {
                         Artwork::Keys(artwork) => live_display(&shared, selected.module, artwork)?
-                            .with_press_feedback(press_feedback),
+                            .with_press_feedback(press_feedback)
+                            .with_variables(variables.clone()),
                         Artwork::Dial(artwork) => {
                             live_dial_display(&shared, selected.module, artwork)?
                         }

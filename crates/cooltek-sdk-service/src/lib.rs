@@ -30,8 +30,8 @@ pub use dial::{
 pub use input::{InputEvent, InputSession, InputUpdate, InputValue};
 pub use key_artwork::{KeyArtwork, KeyArtworkDesign, KeyArtworkFrame, KeyArtworkTextAlign};
 pub use keypad::{
-    KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution, KeypadTile,
-    ProfileResolution, ProfileSession,
+    KeyFace, KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution,
+    KeypadTile, ProfileResolution, ProfileSession,
 };
 pub use macos::MacOsDispatcher;
 pub use profile::{

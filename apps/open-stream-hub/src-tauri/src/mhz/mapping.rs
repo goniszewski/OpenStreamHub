@@ -1626,6 +1626,7 @@ impl Mapper {
                 Some(KeypadTile::Action {
                     label,
                     bindings: Vec::new(),
+                    faces: Vec::new(),
                 })
             };
             match func {
@@ -1777,7 +1778,11 @@ impl Mapper {
                             }]
                         })
                         .unwrap_or_default();
-                    slots[slot] = Some(KeypadTile::Action { label, bindings });
+                    slots[slot] = Some(KeypadTile::Action {
+                        label,
+                        bindings,
+                        faces: Vec::new(),
+                    });
                 }
             }
         }

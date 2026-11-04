@@ -240,8 +240,24 @@ export function keyLabelLines(label: string): { lines: string[]; scale: 1 | 2 } 
   return { lines, scale: 1 };
 }
 
-// An action tile: its icon above its label, or a larger icon alone without a label.
-export function drawActionKey(kind: TileIcon, label: string): KeyFace {
+// Black on a bright background, else white. Mirrors `tile_artwork::foreground_on`.
+const foregroundOn = ([red, green, blue]: Colour): Colour => (red * 299 + green * 587 + blue * 114 >= 160_000 ? BLACK : WHITE);
+
+// An action tile: its icon above its label, or a larger icon alone without a label. With `background` (a key face),
+// the picture is drawn on that colour instead, black icon and label on a bright one. Mirrors `tile_artwork::draw_with`.
+export function drawActionKey(kind: TileIcon, label: string, background?: Colour): KeyFace {
+  const image = drawDefaultActionKey(kind, label);
+  if (!background) return image;
+  // The default picture holds only BACKGROUND and WHITE pixels, so recolouring is exact.
+  const foreground = foregroundOn(background);
+  for (let at = 0; at < image.length; at += 3) {
+    const isBackground = image[at] === BACKGROUND[0] && image[at + 1] === BACKGROUND[1] && image[at + 2] === BACKGROUND[2];
+    image.set(isBackground ? background : foreground, at);
+  }
+  return image;
+}
+
+function drawDefaultActionKey(kind: TileIcon, label: string): KeyFace {
   const image = blank(BACKGROUND);
   const { lines, scale } = keyLabelLines(label);
   if (lines.length === 0) {

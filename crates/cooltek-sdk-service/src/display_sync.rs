@@ -445,7 +445,9 @@ impl DisplayPlan {
                     None => KeyContent::Empty {
                         page_id: page.id.clone(),
                     },
-                    Some(KeypadTile::Action { label, bindings }) => KeyContent::Action {
+                    Some(KeypadTile::Action {
+                        label, bindings, ..
+                    }) => KeyContent::Action {
                         page_id: page.id.clone(),
                         label: label.clone(),
                         icon: bindings

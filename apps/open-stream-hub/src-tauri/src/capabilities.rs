@@ -410,6 +410,7 @@ mod tests {
                 serial_number: None,
                 action: text("secret", false),
             }],
+            faces: Vec::new(),
         });
         held.keypad = Some(KeypadLayout { pages: vec![page] });
         // The same snippet moved to the dial: nothing new.

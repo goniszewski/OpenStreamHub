@@ -134,7 +134,10 @@ export interface Binding {
   action: BindingAction;
 }
 export interface KeypadBinding { gesture: 'pressed' | 'released'; serial_number?: string; action: Action }
-export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[] } | { type: 'folder'; page_id: string } | null;
+// A face an action tile shows while `when` holds (KeyFace in keypad.rs): the first of up to 8 that holds wins, none shows
+// the normal face. `when` tests variables only; a face needs a label or a background (hex, as KeyArtworkDesignSpec).
+export interface KeyFace { when: Condition; label?: string; background?: string }
+export type KeypadSlot = { type: 'action'; label: string; bindings: KeypadBinding[]; faces?: KeyFace[] } | { type: 'folder'; page_id: string } | null;
 export interface KeyArtworkFrame { jpeg_base64: string; delay_ms: number }
 // The icon-and-label design a key's artwork was prepared from, stored so the studio reopens
 // with it (absent for uploaded images). Pure metadata: nothing drawn reads it. icon_id is a

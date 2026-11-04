@@ -153,7 +153,7 @@ impl KeyArtworkDesign {
 }
 
 /// `#rgb`, `rgb`, `#rrggbb`, or `rrggbb` — the shapes the studio stores.
-fn validate_hex_colour(colour: &str) -> Result<(), ()> {
+pub(crate) fn validate_hex_colour(colour: &str) -> Result<(), ()> {
     let digits = colour.strip_prefix('#').unwrap_or(colour);
     if (digits.len() != 3 && digits.len() != 6)
         || !digits.bytes().all(|byte| byte.is_ascii_hexdigit())

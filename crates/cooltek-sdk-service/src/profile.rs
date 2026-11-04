@@ -844,6 +844,47 @@ impl Condition {
         }
     }
 
+    /// Whether every test in this condition reads a variable (and so needs no OBS or macOS read).
+    pub fn is_variable_only(&self) -> bool {
+        match self {
+            Self::VariableIs { .. } | Self::VariableAtLeast { .. } => true,
+            Self::All(items) | Self::Any(items) => items.iter().all(Self::is_variable_only),
+            _ => false,
+        }
+    }
+
+    /// Evaluates a variable-only condition with `get` supplying current values.
+    ///
+    /// `None` when a test is not about variables, names an unknown variable,
+    /// or compares a value of another kind. `all` and `any` read every item.
+    pub fn holds_with(&self, get: impl Fn(&str) -> Option<VariableValue>) -> Option<bool> {
+        self.holds_with_ref(&get)
+    }
+
+    fn holds_with_ref(&self, get: &dyn Fn(&str) -> Option<VariableValue>) -> Option<bool> {
+        match self {
+            Self::VariableIs { name, value } => {
+                let current = get(name)?;
+                (current.kind() == value.kind()).then(|| current == *value)
+            }
+            Self::VariableAtLeast { name, value } => match get(name)? {
+                VariableValue::Number(current) => Some(current >= *value),
+                _ => None,
+            },
+            Self::All(items) => items
+                .iter()
+                .map(|item| item.holds_with_ref(get))
+                .collect::<Option<Vec<_>>>()
+                .map(|results| results.into_iter().all(|holds| holds)),
+            Self::Any(items) => items
+                .iter()
+                .map(|item| item.holds_with_ref(get))
+                .collect::<Option<Vec<_>>>()
+                .map(|results| results.into_iter().any(|holds| holds)),
+            _ => None,
+        }
+    }
+
     /// Number of single tests in this condition.
     pub fn leaf_count(&self) -> usize {
         match self {
@@ -2407,7 +2448,22 @@ impl Profile {
                 result = action.check_variables(&self.variables);
             }
         });
-        result
+        result?;
+        // Key faces test variables too.
+        for page in self.keypad.iter().flat_map(|keypad| &keypad.pages) {
+            for (slot, tile) in page.slots.iter().enumerate() {
+                if let Some(KeypadTile::Action { faces, .. }) = tile {
+                    for face in faces {
+                        face.when
+                            .check_variables(&self.variables)
+                            .map_err(|error| {
+                                format!("page {:?} slot {slot}: key face: {error}", page.id)
+                            })?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Counts flat bindings, nested keypad action tile bindings, and dial function bindings.
@@ -2444,6 +2500,7 @@ impl Profile {
                     slots[binding.control as usize].get_or_insert_with(|| KeypadTile::Action {
                         label: format!("Key {}", binding.control + 1),
                         bindings: Vec::new(),
+                        faces: Vec::new(),
                     });
                 let KeypadTile::Action { bindings, .. } = tile else {
                     unreachable!("migration creates only action tiles")

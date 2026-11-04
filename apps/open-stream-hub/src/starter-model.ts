@@ -185,8 +185,8 @@ const terminalAgents: StarterTemplate = {
       key('Ctrl+D', shortcut('d', 'control')),
       key('Ctrl+L', shortcut('l', 'control')),
       key('New tab', shortcut('t', 'command')),
-      key('Next tab', shortcut(']', 'command', 'shift')),
-      key('Previous tab', shortcut('[', 'command', 'shift')),
+      key('Next tab', shortcut('tab', 'control')),
+      key('Previous tab', shortcut('tab', 'control', 'shift')),
     ),
   },
 };

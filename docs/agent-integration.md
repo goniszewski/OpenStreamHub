@@ -35,16 +35,23 @@ A profile you import from a JSON file that holds this action, anywhere in it, ne
 
 ## Install
 
-1. Create a profile from the **Terminal and AI agents** starter and run it. A profile made from an older version of the starter lacks `agent_decision`: create it again, or declare `agent_decision` (text, `none`) and set up the two keys yourself.
-2. Print the hook configuration. It uses the absolute path of the `osh` you run:
+1. Create a profile from the **Terminal and AI agents** starter (**Manage profiles** in the header, then **New from a starter**) and run it. A profile made from an older version of the starter lacks `agent_decision`: create it again, or declare `agent_decision` (text, `none`) and set up the two keys yourself.
+2. Open **Settings > AI agents (Claude Code, Codex)**. The panel shows the bundled `osh` it found and the hook configuration for each agent, already written with that `osh`'s absolute path, each with a **Copy** button.
+3. **Claude Code:** merge the copied `hooks` object into `~/.claude/settings.json` (or a project's `.claude/settings.json`). If the file already has hooks for `UserPromptSubmit`, `PermissionRequest` or `Stop`, add the new entries to those arrays.
+4. **Codex:** add the copied lines to `~/.codex/config.toml`. Codex runs new hooks only after you review and trust them, so run `/hooks` in Codex once after adding them. Codex's `notify` setting only reports a finished turn, so the `Stop` hook is used instead.
 
-   ```sh
-   /Applications/OpenStreamHub.app/Contents/MacOS/osh agent setup claude
-   /Applications/OpenStreamHub.app/Contents/MacOS/osh agent setup codex
-   ```
+The app never edits these files: you paste the configuration yourself. The hooks call `osh` by its full path, so they work whether or not `osh` is on your PATH.
 
-3. **Claude Code:** merge the printed `hooks` object into `~/.claude/settings.json` (or a project's `.claude/settings.json`). If the file already has hooks for `UserPromptSubmit`, `PermissionRequest` or `Stop`, add the new entries to those arrays. The merge instructions are printed on stderr, so `osh agent setup claude > hooks.json` gives plain JSON.
-4. **Codex:** add the printed lines to `~/.codex/config.toml`. Codex runs new hooks only after you review and trust them, so run `/hooks` in Codex once after adding them. Codex's `notify` setting only reports a finished turn, so the `Stop` hook is used instead.
+### From the command line
+
+Without the panel (or to script it), `osh` prints the same configurations. They use the absolute path of the `osh` you run:
+
+```sh
+/Applications/OpenStreamHub.app/Contents/MacOS/osh agent setup claude
+/Applications/OpenStreamHub.app/Contents/MacOS/osh agent setup codex
+```
+
+For Claude Code the merge instructions are printed on stderr, so `osh agent setup claude > hooks.json` gives plain JSON.
 
 The permission hook waits up to 55 seconds (`--timeout`, at most 600), and the hook's own timeout is 65 seconds, so `osh` always gives up first.
 
@@ -65,10 +72,18 @@ The permission hook waits up to 55 seconds (`--timeout`, at most 600), and the h
 
 ## Where osh is
 
-`osh` ships inside the app at `/Applications/OpenStreamHub.app/Contents/MacOS/osh`. To call it as `osh`, link it onto your PATH:
+`osh` ships inside the app at `/Applications/OpenStreamHub.app/Contents/MacOS/osh`. To call it as `osh` in a terminal, press **Make `osh` available in the terminal** in the AI agents panel. It creates one symbolic link, `~/.local/bin/osh`, to the bundled `osh` (and `~/.local/bin` if it is missing). It never replaces a regular file there, or a link to another program; a link to the `osh` of another copy of OpenStreamHub is updated. **Remove link** deletes only that link, and only while it points at an OpenStreamHub `osh`.
+
+macOS does not put `~/.local/bin` on the PATH by itself. The app sees only its own PATH, not your shell's, so when it cannot confirm the folder is there it shows the line to add to `~/.zshrc` (or `~/.bash_profile`):
 
 ```sh
-ln -s /Applications/OpenStreamHub.app/Contents/MacOS/osh /usr/local/bin/osh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Without the panel, link it yourself, for example:
+
+```sh
+ln -s /Applications/OpenStreamHub.app/Contents/MacOS/osh ~/.local/bin/osh
 ```
 
 `osh agent setup` writes the path of the `osh` you ran, so run it from where the hooks should find it.

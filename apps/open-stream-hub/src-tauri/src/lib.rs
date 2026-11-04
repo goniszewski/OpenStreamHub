@@ -1,3 +1,4 @@
+mod agent_tools;
 mod app_icon;
 mod app_lookup;
 mod artwork;
@@ -1925,6 +1926,24 @@ fn choose_app() -> Result<Option<app_lookup::AppInfo>, String> {
     app_lookup::choose()
 }
 
+// The bundled `osh`, its `~/.local/bin/osh` link and the agent hook configurations for the AI agents panel.
+#[tauri::command(async)]
+fn agent_tool_status() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::status()
+}
+
+// Creates `~/.local/bin/osh` as a link to the bundled `osh`; refuses a regular file or a link to anything else.
+#[tauri::command(async)]
+fn link_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::link()
+}
+
+// Removes `~/.local/bin/osh` only when it links to an OpenStreamHub `osh`.
+#[tauri::command(async)]
+fn unlink_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::unlink()
+}
+
 // The everyday name of an installed app by bundle id, or none when it is not found.
 #[tauri::command(async)]
 fn app_name(bundle_id: String) -> Option<String> {
@@ -2223,7 +2242,10 @@ pub fn run() {
             set_menubar,
             set_module_turns,
             open_permission_settings,
-            start_permission_drag
+            start_permission_drag,
+            agent_tool_status,
+            link_agent_tool,
+            unlink_agent_tool
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

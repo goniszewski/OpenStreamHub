@@ -17,6 +17,7 @@
 //!
 //! `OSH_SOCKET` and `OSH_TOKEN_FILE` override where the socket and the token are found.
 
+use osh::{ASK_DEFAULT_SECS, Agent, CLAUDE_HEADER, setup};
 use serde_json::{Value, json};
 use std::{
     env,
@@ -40,20 +41,13 @@ const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n  
 const STATE: &str = "agent_state";
 const DECISION: &str = "agent_decision";
 const AGENT_STATES: [&str; 4] = ["working", "waiting", "done", "idle"];
-/// How long `agent ask` waits for the deck by default, and at most.
-const ASK_DEFAULT_SECS: u64 = 55;
+/// How long `agent ask` waits for the deck at most (the default is `osh::ASK_DEFAULT_SECS`).
 const ASK_MAX_SECS: u64 = 600;
 /// How often `agent ask` reads the decision.
 const POLL: Duration = Duration::from_millis(200);
 /// How long a hook waits for its JSON on stdin, and the most read.
 const STDIN_WAIT: Duration = Duration::from_millis(500);
 const MAX_STDIN: u64 = 1024 * 1024;
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum Agent {
-    Claude,
-    Codex,
-}
 
 #[derive(Debug, PartialEq)]
 enum Command {
@@ -367,71 +361,6 @@ fn await_decision(socket: &Path, token: &Path, deadline: Instant) -> Option<&'st
         std::thread::sleep(POLL.min(left));
     }
 }
-
-/// A path as one `sh` word: as it is when it holds only safe characters, else single-quoted.
-fn shell_word(path: &str) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-+:@%,".contains(c);
-    if !path.is_empty() && path.chars().all(safe) {
-        path.to_string()
-    } else {
-        format!("'{}'", path.replace('\'', r"'\''"))
-    }
-}
-
-/// The hook configuration for `agent`, calling `osh` (an absolute path): what `osh agent setup` prints.
-fn setup(agent: Agent, osh: &str) -> String {
-    let osh = shell_word(osh);
-    let working = format!("{osh} agent state working");
-    let ask = format!("{osh} agent ask --timeout {ASK_DEFAULT_SECS}");
-    let done = format!("{osh} agent state done");
-    match agent {
-        Agent::Claude => {
-            let hook = |command: &str, extra: Value| {
-                let mut hook = json!({"type":"command","command":command});
-                hook.as_object_mut()
-                    .unwrap()
-                    .extend(extra.as_object().cloned().unwrap_or_default());
-                json!([{"hooks":[hook]}])
-            };
-            let config = json!({"hooks":{
-                "UserPromptSubmit": hook(&working, json!({"async":true})),
-                "PermissionRequest": hook(&ask, json!({"timeout":ASK_DEFAULT_SECS + 10})),
-                "Stop": hook(&done, json!({"async":true})),
-            }});
-            serde_json::to_string_pretty(&config).unwrap_or_default()
-        }
-        Agent::Codex => {
-            // TOML basic strings take the same escapes serde_json writes.
-            let table = |event: &str, command: &str, timeout: Option<u64>| {
-                let mut text = format!(
-                    "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = {}\n",
-                    json!(command)
-                );
-                if let Some(timeout) = timeout {
-                    text.push_str(&format!("timeout = {timeout}\n"));
-                }
-                text
-            };
-            [
-                "# OpenStreamHub deck hooks for Codex. Add these lines to ~/.codex/config.toml, next to any\n\
-                 # [[hooks.*]] tables already there. Codex runs new hooks only after you review and trust them:\n\
-                 # run /hooks in Codex once after adding them.\n"
-                    .to_string(),
-                table("UserPromptSubmit", &working, None),
-                table("PermissionRequest", &ask, Some(ASK_DEFAULT_SECS + 10)),
-                table("Stop", &done, None),
-            ]
-            .join("\n")
-            .trim_end()
-            .to_string()
-        }
-    }
-}
-
-/// How to merge the Claude Code snippet, printed on stderr so stdout stays plain JSON.
-const CLAUDE_HEADER: &str = "# OpenStreamHub deck hooks for Claude Code. Merge the \"hooks\" object below into\n\
-# ~/.claude/settings.json (or a project's .claude/settings.json). Where the file already has hooks for\n\
-# UserPromptSubmit, PermissionRequest or Stop, add these entries to those arrays.";
 
 /// Runs one command and returns what to print on stdout. `locate` finds the socket and the token file.
 fn run(args: &[String], locate: &dyn Fn() -> Result<Paths, Failure>) -> Result<String, Failure> {
@@ -878,74 +807,5 @@ mod tests {
         for dir in [dir, other, third] {
             let _ = std::fs::remove_dir_all(&dir);
         }
-    }
-
-    #[test]
-    fn setup_prints_valid_configuration_with_a_quoted_path() {
-        assert_eq!(
-            shell_word("/Applications/OpenStreamHub.app/Contents/MacOS/osh"),
-            "/Applications/OpenStreamHub.app/Contents/MacOS/osh"
-        );
-        assert_eq!(
-            shell_word("/Users/a b/it's/osh"),
-            r"'/Users/a b/it'\''s/osh'"
-        );
-
-        let claude: Value = serde_json::from_str(&setup(Agent::Claude, "/Users/a b/osh")).unwrap();
-        let hooks = &claude["hooks"];
-        let hook = |event: &str| hooks[event][0]["hooks"][0].clone();
-        assert_eq!(
-            hook("PermissionRequest"),
-            json!({"type":"command","command":"'/Users/a b/osh' agent ask --timeout 55","timeout":65})
-        );
-        assert_eq!(
-            hook("UserPromptSubmit"),
-            json!({"type":"command","command":"'/Users/a b/osh' agent state working","async":true})
-        );
-        assert_eq!(
-            hook("Stop"),
-            json!({"type":"command","command":"'/Users/a b/osh' agent state done","async":true})
-        );
-        assert_eq!(hooks.as_object().unwrap().len(), 3);
-
-        let codex = setup(Agent::Codex, "/opt/osh\"x");
-        assert!(codex.contains("/hooks"));
-        let mut tables = Vec::new();
-        for line in codex
-            .lines()
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        {
-            if let Some(table) = line
-                .strip_prefix("[[")
-                .and_then(|line| line.strip_suffix("]]"))
-            {
-                tables.push(table.to_string());
-                continue;
-            }
-            let (key, value) = line.split_once(" = ").expect(line);
-            match key {
-                "type" => assert_eq!(value, "\"command\""),
-                "timeout" => assert_eq!(value, "65"),
-                "command" => {
-                    let command: String = serde_json::from_str(value).unwrap();
-                    assert!(command.starts_with(r#"'/opt/osh"x' agent "#), "{command}");
-                }
-                _ => panic!("unexpected key {key}"),
-            }
-        }
-        assert_eq!(
-            tables,
-            [
-                "hooks.UserPromptSubmit",
-                "hooks.UserPromptSubmit.hooks",
-                "hooks.PermissionRequest",
-                "hooks.PermissionRequest.hooks",
-                "hooks.Stop",
-                "hooks.Stop.hooks"
-            ]
-        );
-        assert!(
-            codex.contains("command = \"'/opt/osh\\\"x' agent ask --timeout 55\"\ntimeout = 65")
-        );
     }
 }

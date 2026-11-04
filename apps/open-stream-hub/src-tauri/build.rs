@@ -84,6 +84,9 @@ fn main() {
             "set_module_turns",
             "open_permission_settings",
             "start_permission_drag",
+            "agent_tool_status",
+            "link_agent_tool",
+            "unlink_agent_tool",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

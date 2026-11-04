@@ -496,6 +496,7 @@ input[aria-invalid="true"] { border-color:var(--red); }
 .setting-toggle { display:flex; align-items:center; gap:9px; margin-top:12px; cursor:pointer; }
 .display-warning { display:flex; gap:7px; align-items:flex-start; margin:12px 0 0; color:var(--accent); }.display-warning svg { flex:none; margin-top:2px; }.display-settings-panel>label:not(.setting-toggle) { display:block; font-size:12px; margin-top:14px; }
 .settings-actions { display:flex; gap:10px; margin-top:12px; }
+.agent-tools-panel h3 { font-size:13px; margin:22px 0 0; }.agent-tools-config { margin:8px 0 0; white-space:pre; overflow-x:auto; overflow-wrap:normal; user-select:text; }.agent-tools-copy { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:8px; }.agent-tools-copy .storage-path { flex:1; min-width:0; user-select:all; }
 .onboarding-dialog { width:min(560px,calc(100vw - 36px)); }
 .onboarding-steps { display:flex; gap:6px; margin:0 0 16px; padding:0; list-style:none; }
 .onboarding-steps li { flex:1; height:4px; border-radius:2px; background:var(--line); }.onboarding-steps li.done { background:var(--accent); }.onboarding-steps li.current { background:var(--accent); }

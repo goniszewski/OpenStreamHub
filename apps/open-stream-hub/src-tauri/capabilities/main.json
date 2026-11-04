@@ -90,6 +90,9 @@
     "allow-set-menubar",
     "allow-set-module-turns",
     "allow-open-permission-settings",
-    "allow-start-permission-drag"
+    "allow-start-permission-drag",
+    "allow-agent-tool-status",
+    "allow-link-agent-tool",
+    "allow-unlink-agent-tool"
   ]
 }

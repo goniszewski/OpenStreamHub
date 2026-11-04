@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT OR Apache-2.0",
-  "engines": { "node": ">=22.12" },
+  "engines": { "node": ">=22.22" },
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "tsc --noEmit && vite build",

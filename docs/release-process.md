@@ -34,7 +34,7 @@ The release builds one app per architecture on native runners. A universal build
 ## Prerequisites
 
 - Apple Developer Program membership and a **Developer ID Application** certificate (not "Apple Development").
-- Rust >= 1.97 (`rust-toolchain.toml` tracks `stable`), Node >= 22.12.
+- Rust >= 1.97 (`rust-toolchain.toml` tracks `stable`), Node >= 22.22.
 - Export the certificate with its private key as a `.p12` from Keychain Access, then base64 it: `base64 -i cert.p12 | pbcopy`.
 - An app-specific password for the Apple ID (appleid.apple.com), used for notarization.
 

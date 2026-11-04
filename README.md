@@ -102,7 +102,7 @@ macOS asks for permission the first time an action needs it. Allow OpenStreamHub
 
 ## Quick start
 
-Build from source on **macOS 12.3 or later**, with **Node.js 22.12+**, **Rust 1.97+** and the **Xcode command-line tools** installed.
+Build from source on **macOS 12.3 or later**, with **Node.js 22.22+**, **Rust 1.97+** and the **Xcode command-line tools** installed.
 
 ```sh
 git clone git@github.com:goniszewski/OpenStreamHub.git

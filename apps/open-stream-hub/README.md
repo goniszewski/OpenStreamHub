@@ -6,7 +6,7 @@ OpenStreamHub is not affiliated with or endorsed by Cooler Master. MasterHUB ide
 
 ## Run locally
 
-The app requires macOS 12.3 or later. For development, use Node.js 22.12 or later, Rust 1.97 or later, and the macOS Xcode command-line tools. From this directory:
+The app requires macOS 12.3 or later. For development, use Node.js 22.22 or later, Rust 1.97 or later, and the macOS Xcode command-line tools. From this directory:
 
 ```sh
 npm ci

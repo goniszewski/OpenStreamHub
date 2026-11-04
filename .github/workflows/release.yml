@@ -139,6 +139,7 @@ jobs:
         working-directory: apps/open-stream-hub/src-tauri/target/release/bundle/macos
         run: |
           codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/masterhub-service
+          codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/osh
           codesign --verify --deep --strict --verbose=2 OpenStreamHub.app
           spctl --assess --type execute --verbose=4 OpenStreamHub.app
           xcrun stapler validate OpenStreamHub.app || true
@@ -151,6 +152,7 @@ jobs:
         working-directory: apps/open-stream-hub/src-tauri/target/release/bundle/macos
         run: |
           codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/masterhub-service
+          codesign --verify --strict --verbose=2 OpenStreamHub.app/Contents/MacOS/osh
           codesign --verify --deep --strict --verbose=2 OpenStreamHub.app
           codesign -dv OpenStreamHub.app 2>&1 | grep -q 'Signature=adhoc'
 

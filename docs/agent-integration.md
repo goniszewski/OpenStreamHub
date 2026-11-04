@@ -19,6 +19,20 @@ When nothing is waiting, Accept still sends Return and Interrupt still sends Esc
 
 There is one `agent_state` and one `agent_decision` for all sessions. With several agents running at once, the deck shows whichever set the state last, and a key press answers whichever is asking. If two ask at the same time, one press can answer both. Use it with one agent at a time if that matters to you.
 
+## Start a session
+
+The starter's **Claude** and **Codex** keys use the **Open terminal and run** action (`terminal_command`): a press opens a new Terminal window and runs `claude` or `codex` there, as if you had typed it. You can add your own in the editor:
+
+- **Terminal app:** Terminal or iTerm2. These two are the only choices, because they can be told to run a command in a new window.
+- **Command:** one line of up to 512 bytes, run by your own login shell, so it can do anything you could type yourself. Only bind commands you trust.
+- **Start in folder** (optional): a path starting with `/` or `~/`. The window runs `cd <folder> && <command>`, with the folder quoted so that nothing in it runs as a command.
+
+It is not a general shell action: it only opens a terminal window with a command. It cannot be a step of a multi-action or an if / else, so no sequence can type into the window it opens. The command is passed to the terminal as data, never as part of the AppleScript that opens the window, and the activity log records only its length.
+
+The first time a key opens a terminal, macOS asks whether OpenStreamHub may control Terminal (or iTerm2). Allow it in that prompt, or later in **System Settings > Privacy & Security > Automation**. Until you do, the key reports an error and opens nothing.
+
+A profile you import from a JSON file that holds this action, anywhere in it, needs the usual review, like an imported MasterHUB or preset profile: it runs only as a dry run until you open it in the profile manager, review what it does and allow it to execute actions. The Execute confirmation lists every command line, folder and terminal app.
+
 ## Install
 
 1. Create a profile from the **Terminal and AI agents** starter and run it. A profile made from an older version of the starter lacks `agent_decision`: create it again, or declare `agent_decision` (text, `none`) and set up the two keys yourself.

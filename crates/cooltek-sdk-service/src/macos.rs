@@ -2,7 +2,7 @@
 
 use crate::{
     Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
-    TimerAlert, TimerAlerter, VariableValue,
+    TerminalApp, TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
     streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
 };
@@ -170,6 +170,78 @@ const UTF8_ENV: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.U
 const MULTI_ACTION_DEADLINE: Duration = Duration::from_secs(15);
 /// Clipboard type names that `clipboard info` reports for plain text only.
 const PLAIN_TEXT_TYPES: &[&str] = &["«class utf8»", "«class ut16»", "string", "Unicode text"];
+
+/// Bound for a `terminal_command`: a terminal that is not running yet has to
+/// start before it can open the window, which can take longer than the usual
+/// bound on a cold start.
+const TERMINAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Fixed AppleScript that opens a new Terminal window running one command
+/// line. The line arrives as the only `argv` item after `--`, so no profile
+/// text is ever part of the script; `do script` without a target opens a new
+/// window. Needs the Automation permission for Terminal.
+const TERMINAL_SCRIPT: &[&str] = &[
+    "on run argv",
+    "if (count of argv) is not 1 then error \"terminal-command: expected one command line\"",
+    "tell application id \"com.apple.Terminal\"",
+    "activate",
+    "do script (item 1 of argv)",
+    "end tell",
+    "end run",
+];
+/// Fixed AppleScript that opens a new iTerm2 window with the default profile
+/// and types one command line (with Return) into its session, the line again
+/// arriving only as the `argv` item. Needs the Automation permission for iTerm2.
+const ITERM2_SCRIPT: &[&str] = &[
+    "on run argv",
+    "if (count of argv) is not 1 then error \"terminal-command: expected one command line\"",
+    "tell application id \"com.googlecode.iterm2\"",
+    "activate",
+    "set newWindow to (create window with default profile)",
+    "tell current session of newWindow to write text (item 1 of argv)",
+    "end tell",
+    "end run",
+];
+
+/// Quotes `value` as one POSIX shell word: inside single quotes nothing is
+/// special, and a single quote is written as `'\''` (close, escaped quote, reopen).
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// The line a `terminal_command` hands the terminal: the user's command as
+/// written, after `cd <directory> && ` when a directory is set. The directory
+/// is one quoted shell word, so nothing in it can end the `cd` or start
+/// another command; a leading `~` becomes `"$HOME"` outside the quotes, so the
+/// shell still expands it. The command is the user's own line for their own
+/// shell, which is the point of the action; validation keeps it to one line.
+pub(crate) fn terminal_shell_line(command: &str, directory: Option<&str>) -> String {
+    let Some(directory) = directory else {
+        return command.to_owned();
+    };
+    let target = if directory == "~" {
+        "\"$HOME\"".to_owned()
+    } else if let Some(rest) = directory.strip_prefix("~/") {
+        format!("\"$HOME\"/{}", shell_quote(rest))
+    } else {
+        shell_quote(directory)
+    };
+    format!("cd {target} && {command}")
+}
+
+/// The `osascript` arguments of a `terminal_command`: the app's fixed script
+/// lines as `-e` items, then `--` and the shell line as the one `argv` item.
+pub(crate) fn terminal_script_args(app: TerminalApp, shell_line: String) -> Vec<String> {
+    let script = match app {
+        TerminalApp::Terminal => TERMINAL_SCRIPT,
+        TerminalApp::Iterm2 => ITERM2_SCRIPT,
+    };
+    let mut args = Vec::with_capacity(script.len() * 2 + 2);
+    for line in script {
+        args.extend(["-e".to_string(), (*line).to_string()]);
+    }
+    args.extend(["--".to_string(), shell_line]);
+    args
+}
 
 /// Fixed JavaScript for Automation script that replays a `macro`: it reads the
 /// step list from stdin as a JSON array, validates every field against the
@@ -504,7 +576,8 @@ impl MacOsDispatcher {
         {
             return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
         }
-        // Only the fixed timer constants of this module set their own bound.
+        // Only the fixed timer and terminal constants of this module set their
+        // own bound.
         let timeout = if request.timeout.is_zero() {
             PROCESS_TIMEOUT
         } else {
@@ -691,6 +764,11 @@ impl MacOsDispatcher {
                 // read as an option; -u forces URL handling even if it matches a path.
                 self.run(OPEN, vec!["-u".into(), url.clone()])?;
             }
+            Action::TerminalCommand {
+                app,
+                command,
+                directory,
+            } => self.terminal_command(*app, command, directory.as_deref())?,
             Action::Media { command } => self.media(*command)?,
             Action::System { command } => match command {
                 SystemCommand::Undo => {
@@ -961,6 +1039,34 @@ impl MacOsDispatcher {
             ));
         }
         streamlabs.clone().with_timeout(remaining).run(action)
+    }
+
+    /// Opens a new window of `app` running the command line (see
+    /// [`TERMINAL_SCRIPT`] and [`ITERM2_SCRIPT`]). The failure never carries
+    /// stderr, which could echo the command.
+    fn terminal_command(
+        &mut self,
+        app: TerminalApp,
+        command: &str,
+        directory: Option<&str>,
+    ) -> Result<(), String> {
+        let name = match app {
+            TerminalApp::Terminal => "Terminal",
+            TerminalApp::Iterm2 => "iTerm2",
+        };
+        self.run_quiet(ProcessRequest {
+            program: OSASCRIPT,
+            args: terminal_script_args(app, terminal_shell_line(command, directory)),
+            env: UTF8_ENV,
+            timeout: TERMINAL_TIMEOUT,
+            ..ProcessRequest::default()
+        })
+        .map(drop)
+        .map_err(|error| {
+            format!(
+                "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
+            )
+        })
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed
@@ -1854,6 +1960,143 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.requests[0].program, OPEN);
         assert_eq!(state.requests[0].args, ["-b", "com.apple.TextEdit"]);
+    }
+
+    #[test]
+    fn terminal_command_passes_the_line_only_as_an_argv_item() {
+        for (app, script, target) in [
+            (TerminalApp::Terminal, TERMINAL_SCRIPT, "com.apple.Terminal"),
+            (TerminalApp::Iterm2, ITERM2_SCRIPT, "com.googlecode.iterm2"),
+        ] {
+            let command = r#"claude "say \"hi\"" 'x' \ $(id) `id` ; end tell"#;
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher
+                .dispatch(&Action::TerminalCommand {
+                    app,
+                    command: command.into(),
+                    directory: Some("~/my dir/it's".into()),
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            let request = &state.requests[0];
+            assert_eq!(request.program, OSASCRIPT);
+            assert_eq!(request.timeout, TERMINAL_TIMEOUT);
+            assert!(request.stdin.is_none());
+            // Only the fixed lines are script text; the line is the one item after `--`.
+            let expected_script: Vec<String> = script
+                .iter()
+                .flat_map(|line| ["-e".to_string(), (*line).to_string()])
+                .collect();
+            assert_eq!(request.args[..expected_script.len()], expected_script[..]);
+            assert_eq!(request.args.len(), expected_script.len() + 2);
+            assert_eq!(request.args[expected_script.len()], "--");
+            assert_eq!(
+                *request.args.last().unwrap(),
+                format!(r#"cd "$HOME"/'my dir/it'\''s' && {command}"#)
+            );
+            assert!(script.iter().any(|line| line.contains(target)));
+            assert!(script.iter().all(|line| !line.contains("claude")));
+        }
+        // An invalid action starts nothing.
+        let (mut dispatcher, state) = fake(vec![]);
+        assert!(
+            dispatcher
+                .dispatch(&Action::TerminalCommand {
+                    app: TerminalApp::Terminal,
+                    command: "claude\nid".into(),
+                    directory: None,
+                })
+                .is_err()
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn terminal_command_failure_never_shows_stderr() {
+        let (mut dispatcher, _) = fake(vec![failure("secret-token in the command line")]);
+        let error = dispatcher
+            .dispatch(&Action::TerminalCommand {
+                app: TerminalApp::Iterm2,
+                command: "codex secret-token".into(),
+                directory: None,
+            })
+            .unwrap_err();
+        assert!(
+            error.starts_with("iTerm2 could not open a window"),
+            "{error}"
+        );
+        assert!(!error.contains("secret-token"), "{error}");
+    }
+
+    #[test]
+    fn terminal_shell_line_quotes_only_the_directory() {
+        assert_eq!(terminal_shell_line("claude", None), "claude");
+        assert_eq!(
+            terminal_shell_line("claude", Some("~")),
+            r#"cd "$HOME" && claude"#
+        );
+        assert_eq!(
+            terminal_shell_line("claude", Some("~/")),
+            r#"cd "$HOME"/'' && claude"#
+        );
+        assert_eq!(
+            terminal_shell_line("codex", Some("/Users/me/My Code")),
+            "cd '/Users/me/My Code' && codex"
+        );
+        assert_eq!(
+            terminal_shell_line("codex", Some("/tmp/a'b; rm -rf ~ $(id) `x` \"q\" \\")),
+            r#"cd '/tmp/a'\''b; rm -rf ~ $(id) `x` "q" \' && codex"#
+        );
+        // `~` inside the path is literal; only the leading one stands for home.
+        assert_eq!(
+            terminal_shell_line("ls", Some("/tmp/~/x")),
+            "cd '/tmp/~/x' && ls"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_shell_line_changes_into_exactly_the_quoted_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "osh-terminal-line-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let odd = "dir with 'quote' $(touch pwned) `x` \"q\" \\ ~";
+        let directory = base.join(odd);
+        std::fs::create_dir_all(&directory).unwrap();
+        let run = |line: String, home: &std::path::Path| {
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(line)
+                .env("HOME", home)
+                .current_dir(&base)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let canonical = std::fs::canonicalize(&directory).unwrap();
+        let printed = run(
+            terminal_shell_line("pwd -P", Some(directory.to_str().unwrap())),
+            &base,
+        );
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        let printed = run(
+            terminal_shell_line("pwd -P", Some(&format!("~/{odd}"))),
+            &base,
+        );
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        let printed = run(terminal_shell_line("pwd -P", Some("~")), &directory);
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        // Nothing in the directory ran as a command.
+        assert!(!base.join("pwned").exists());
+        assert!(!directory.join("pwned").exists());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

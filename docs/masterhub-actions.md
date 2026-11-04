@@ -452,6 +452,7 @@ Profile limits are unchanged: 1 MiB of JSON and 256 bindings, where a multi-acti
 | `text.text` | `pbcopy` stdin only | ≤ 2048 bytes, no control characters except newline and tab, no invisible format or separator characters; stdin is capped at 8 KiB so the write cannot block |
 | Previous clipboard text | `pbcopy` stdin only | Restored only when plain text with no `nspasteboard`/`concealed`/`transient` type marker, valid UTF-8, ≤ 8 KiB, and the clipboard still holds exactly the snippet after the wait |
 | `launch_app.bundle_id` (existing; the app picker, including its Other app… row, only fills it) | `open -b` argv | Dotted ASCII identifier |
+| `terminal_command.command`, `.directory` | `osascript` argv (one item after `--`, read through `on run argv`): `<command>`, or `cd <directory> && <command>` with the directory single-quoted (a leading `~` becomes `"$HOME"`); the fixed script hands it to Terminal (`do script`) or iTerm2 (`write text` in a new window) | `app` is a closed enum (`terminal`, `iterm2`); command and directory 1–512 bytes, one line, no control or invisible characters, command not blank, directory `~` or starting with `/` or `~/`; never a multi-action or if / else step; never part of the script text; only lengths are logged; a JSON import holding it is dry run only until allowed |
 | `multi_action.actions` | Each step as above | 2–8 steps, no nesting, every step validated first, 15 s overall deadline checked before each step |
 | `profile.direction` | A `profile_switch_requested` record, then the app's session driver | Closed enum (`next`, `previous`); no process is started; the driver re-parses the record strictly and only switches between saved, valid profiles |
 | `timer.label` | `osascript` argv (one item after `--`, read through `on run argv`) | ≤ 64 bytes, trimmed, no control characters (no newline or tab), no invisible format or separator characters; never part of the script text; never logged |
@@ -461,7 +462,7 @@ Profile limits are unchanged: 1 MiB of JSON and 256 bindings, where a multi-acti
 | `--obs-endpoint` (not a profile field) | TCP connect | Exactly `127.0.0.1`, `[::1]` or `localhost` (no DNS) with port 1–65535; the connected peer must be the dialled loopback address |
 | OBS replies (untrusted) | The client parser, error messages | 8 KiB headers, 64 KiB frames, strict framing, 3 s deadline; comments cleaned and cut to 120 characters; close reasons never shown |
 
-Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the timer notification, 6 s for the timer sound) and 16 KiB stdout/stderr limits, and is never retried.
+Every subprocess uses an absolute system path, has a 5 s timeout (3 s for the timer notification, 6 s for the timer sound, 15 s for opening a terminal window, which may have to start the terminal app first) and 16 KiB stdout/stderr limits, and is never retried.
 
 ## Not implemented
 

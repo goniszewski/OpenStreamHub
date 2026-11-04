@@ -416,6 +416,42 @@ impl AppState {
         profile: Profile,
         now_ms: u64,
     ) -> Result<store::StoredProfile, String> {
+        self.create_flagged_profile(profile, "pack", now_ms)
+    }
+
+    /// Imports a profile read from a JSON file as a new saved profile. One
+    /// that opens a terminal (`import_flags::needs_review`) is created dry run
+    /// only, like a pack's profile, until the user reviews it and allows it to
+    /// execute actions; any other is saved like a new profile (and still stays
+    /// dry run only when its content hash is flagged, as for a re-imported
+    /// export of a flagged profile).
+    fn import_profile(
+        &self,
+        profile: Profile,
+        now_ms: u64,
+    ) -> Result<store::StoredProfile, String> {
+        replay::validate_profile(&profile)?;
+        if import_flags::needs_review(&profile) {
+            self.create_flagged_profile(profile, "import", now_ms)
+        } else {
+            self.save_profile(SaveProfileRequest {
+                id: None,
+                profile,
+                expected_modified_at_ms: None,
+                source_profile_id: None,
+                keep_version: false,
+            })
+        }
+    }
+
+    /// Creates `profile` as a new saved profile flagged dry run only, its
+    /// record naming `source`.
+    fn create_flagged_profile(
+        &self,
+        profile: Profile,
+        source: &str,
+        now_ms: u64,
+    ) -> Result<store::StoredProfile, String> {
         replay::validate_profile(&profile)?;
         self.with_store(|store| {
             let listing = store.list()?;
@@ -428,7 +464,7 @@ impl AppState {
             let id = uuid::Uuid::new_v4().to_string();
             let hash = tracked_hash(&profile, &import_flags::content_hash(&profile));
             self.imports.update(&saved_hashes(store)?, |records| {
-                let _ = records.flag(&id, &hash, "pack", now_ms);
+                let _ = records.flag(&id, &hash, source, now_ms);
                 Ok(())
             })?;
             match store.create(&id, profile) {
@@ -767,6 +803,16 @@ fn create_pack_profile(
     profile: Profile,
 ) -> Result<store::StoredProfile, String> {
     state.create_pack_profile(profile, now_ms())
+}
+
+// A profile read from a JSON file in the app (the webview parses and checks the file first). One that opens a terminal
+// is created dry run only until the user allows it, like a pack's profile; any other is saved as a new profile.
+#[tauri::command(async)]
+fn import_profile(
+    state: State<'_, AppState>,
+    profile: Profile,
+) -> Result<store::StoredProfile, String> {
+    state.import_profile(profile, now_ms())
 }
 
 // The explicit "Allow this imported profile to execute actions" action. The
@@ -2104,6 +2150,7 @@ pub fn run() {
             delete_profile,
             import_mhz_profile,
             create_pack_profile,
+            import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,
             validate_profile,
@@ -2463,6 +2510,69 @@ mod tests {
             .unwrap();
         assert_ne!(second.id, created.id);
         assert_eq!(state.list().unwrap().profiles.len(), 4);
+    }
+
+    #[test]
+    fn a_json_import_that_opens_a_terminal_is_dry_run_only_until_allowed() {
+        let (_directory, state) = open_state();
+        let mut terminal = pack_profile("Agents");
+        terminal.bindings[0].action = cooltek_sdk_service::Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Iterm2,
+            command: "codex".into(),
+            directory: Some("~/code".into()),
+        };
+        let imported = state.import_profile(terminal.clone(), 11).unwrap();
+        let flagged = |id: &str| flagged(&state, id);
+        assert!(flagged(&imported.id));
+        let record = &state.imports.load().unwrap().profiles[&imported.id];
+        assert_eq!(
+            (
+                record.source.as_str(),
+                record.dry_run_only,
+                record.imported_at_ms
+            ),
+            ("import", true, 11)
+        );
+        // An Execute run refuses it until it is allowed.
+        assert_eq!(
+            state
+                .execution_guard()
+                .blocks(Some(&imported.id), None, &imported.profile),
+            refused()
+        );
+        // A copy stays flagged by its content.
+        let copy = save(&state, None, &terminal, None).unwrap();
+        assert!(flagged(&copy.id));
+        // The usual review clears it.
+        state
+            .allow_execution(AllowRequest {
+                id: imported.id.clone(),
+                content_hash: imported.content_hash.clone(),
+            })
+            .unwrap();
+        assert!(!flagged(&imported.id));
+
+        // A JSON import without one stays an ordinary profile.
+        let plain = state.import_profile(pack_profile("Plain"), 12).unwrap();
+        assert!(!flagged(&plain.id));
+        assert!(
+            !state
+                .imports
+                .load()
+                .unwrap()
+                .profiles
+                .contains_key(&plain.id)
+        );
+        // An invalid profile creates nothing.
+        let before = state.list().unwrap().profiles.len();
+        let mut invalid = terminal;
+        invalid.bindings[0].action = cooltek_sdk_service::Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Terminal,
+            command: "claude\nid".into(),
+            directory: None,
+        };
+        assert!(state.import_profile(invalid, 13).is_err());
+        assert_eq!(state.list().unwrap().profiles.len(), before);
     }
 
     #[test]

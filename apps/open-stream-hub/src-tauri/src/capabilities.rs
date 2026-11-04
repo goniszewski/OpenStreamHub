@@ -67,6 +67,15 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         Action::LaunchApp { bundle_id } => {
             set.insert(format!("app\0{bundle_id}"));
         }
+        // The whole command line is the item: the app, the directory and the
+        // command all decide what runs. Neither field can hold NUL.
+        Action::TerminalCommand {
+            app,
+            command,
+            directory,
+        } => {
+            set.insert(format!("terminal\0{app:?}\0{directory:?}\0{command}"));
+        }
         // Only the origin is an item, as the confirmation shows it: a path
         // or query change of a known origin is not a new capability.
         Action::OpenUrl { url } => {
@@ -487,5 +496,24 @@ mod tests {
                 direction: ProfileDirection::Previous,
             }])
         ));
+    }
+    #[test]
+    fn a_terminal_command_line_is_the_whole_item() {
+        use cooltek_sdk_service::TerminalApp;
+        let terminal =
+            |app: TerminalApp, command: &str, directory: Option<&str>| Action::TerminalCommand {
+                app,
+                command: command.into(),
+                directory: directory.map(Into::into),
+            };
+        let held = profile(vec![terminal(TerminalApp::Terminal, "claude", None)]);
+        assert!(!adds_capabilities(&held, &held.clone()));
+        for next in [
+            terminal(TerminalApp::Terminal, "claude --yolo", None),
+            terminal(TerminalApp::Iterm2, "claude", None),
+            terminal(TerminalApp::Terminal, "claude", Some("~/code")),
+        ] {
+            assert!(adds_capabilities(&held, &profile(vec![next])));
+        }
     }
 }

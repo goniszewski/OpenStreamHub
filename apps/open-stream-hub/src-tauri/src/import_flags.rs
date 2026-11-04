@@ -30,7 +30,7 @@
 //! dialog is for.
 
 use crate::store;
-use cooltek_sdk_service::Profile;
+use cooltek_sdk_service::{Action, KeypadTile, Profile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -50,14 +50,15 @@ pub const MAX_RECORDS: usize = 1024;
 pub const MAX_HASHES: usize = 4096;
 
 /// Refusal of an Execute run of a flagged profile.
-pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file or an app preset pack) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
+pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file, an app preset pack, or a JSON file that opens a terminal) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
 const RECOVERY: &str = "actions stay off until you choose \"Mark all profiles as needing review\" in the Profiles page";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportRecord {
-    /// `mhz` (imported), `pack` (created from an app preset pack), `derived` (saved from a flagged profile) or
-    /// `review` (marked by the recovery action).
+    /// `mhz` (imported), `pack` (created from an app preset pack), `import` (a JSON profile file that holds a
+    /// `terminal_command`, see [`needs_review`]), `derived` (saved from a flagged profile) or `review` (marked by
+    /// the recovery action).
     pub source: String,
     pub dry_run_only: bool,
     pub imported_at_ms: u64,
@@ -248,6 +249,48 @@ impl ImportedProfiles {
             error: None,
         }
     }
+}
+
+/// Whether a profile from a JSON file must run as a dry run until it is
+/// reviewed and allowed, like an `.mhz` or pack profile: it does when any
+/// action anywhere in it (flat bindings, every keypad page, dial functions,
+/// and the steps of a sequence or an if / else, although validation keeps a
+/// terminal command out of steps) opens a terminal and runs a command line.
+/// Other JSON imports stay ordinary profiles that the Execute confirmation
+/// discloses in full.
+pub fn needs_review(profile: &Profile) -> bool {
+    fn opens_terminal(action: &Action) -> bool {
+        match action {
+            Action::TerminalCommand { .. } => true,
+            Action::MultiAction { actions } => actions.iter().any(opens_terminal),
+            Action::Conditional {
+                then, otherwise, ..
+            } => then.iter().chain(otherwise).any(opens_terminal),
+            _ => false,
+        }
+    }
+    let keypad = profile
+        .keypad
+        .iter()
+        .flat_map(|keypad| &keypad.pages)
+        .flat_map(|page| {
+            page.slots.iter().flatten().flat_map(|slot| match slot {
+                KeypadTile::Action { bindings, .. } => bindings.as_slice(),
+                _ => &[],
+            })
+        });
+    let dial = profile
+        .dial_functions
+        .iter()
+        .flatten()
+        .flat_map(|function| &function.bindings);
+    profile
+        .bindings
+        .iter()
+        .map(|binding| &binding.action)
+        .chain(keypad.map(|binding| &binding.action))
+        .chain(dial.map(|binding| &binding.action))
+        .any(opens_terminal)
 }
 
 /// SHA-256 (hex) of the canonical schema-2 profile JSON with an empty name.
@@ -602,6 +645,111 @@ mod tests {
         let mut profile = crate::test_profiles::folders();
         profile.name = name.into();
         profile
+    }
+
+    #[test]
+    fn only_a_profile_that_opens_a_terminal_needs_review() {
+        use cooltek_sdk_service::{
+            Binding, Condition, DialBinding, DialFunction, Gesture, KeypadBinding, KeypadLayout,
+            KeypadPage, ServiceModule, TerminalApp,
+        };
+        let terminal = Action::TerminalCommand {
+            app: TerminalApp::Terminal,
+            command: "claude".into(),
+            directory: None,
+        };
+        let plain = profile("Plain");
+        assert!(!needs_review(&plain));
+        // The actions that type into apps, launch or open anything stay
+        // ordinary imports: the Execute confirmation discloses them.
+        let mut others = plain.clone();
+        for action in [
+            Action::LaunchApp {
+                bundle_id: "com.apple.Terminal".into(),
+            },
+            Action::OpenUrl {
+                url: "https://example.com".into(),
+            },
+            Action::Text {
+                text: "claude".into(),
+                press_enter: true,
+            },
+        ] {
+            others.bindings.push(Binding {
+                module: ServiceModule::M003K,
+                control: 0,
+                gesture: Gesture::Pressed,
+                serial_number: None,
+                action,
+            });
+        }
+        assert!(!needs_review(&others));
+
+        let mut flat = plain.clone();
+        flat.bindings.push(Binding {
+            module: ServiceModule::M003K,
+            control: 0,
+            gesture: Gesture::Pressed,
+            serial_number: None,
+            action: terminal.clone(),
+        });
+        assert!(needs_review(&flat));
+
+        // A tile on any keypad page counts, not only the first.
+        let mut keypad = plain.clone();
+        let mut page = KeypadPage {
+            id: "later".into(),
+            name: "Later".into(),
+            slots: (0..15).map(|_| None).collect(),
+            artwork: Default::default(),
+        };
+        page.slots[14] = Some(KeypadTile::Action {
+            label: "Claude".into(),
+            bindings: vec![KeypadBinding {
+                gesture: Gesture::Pressed,
+                serial_number: None,
+                action: terminal.clone(),
+            }],
+            faces: Vec::new(),
+        });
+        let layout = keypad
+            .keypad
+            .get_or_insert(KeypadLayout { pages: Vec::new() });
+        layout.pages.push(page);
+        assert!(needs_review(&keypad));
+
+        let mut dial = plain.clone();
+        dial.dial_functions = Some(vec![DialFunction {
+            name: "Agents".into(),
+            bindings: vec![DialBinding {
+                gesture: Gesture::Pressed,
+                serial_number: None,
+                action: terminal.clone(),
+            }],
+        }]);
+        assert!(needs_review(&dial));
+
+        // Validation keeps it out of steps; a hand-built one still counts.
+        for nested in [
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, terminal.clone()],
+            },
+            Action::Conditional {
+                when: Condition::OutputMuted(true),
+                then: vec![Action::ToggleMute],
+                otherwise: vec![terminal.clone()],
+            },
+        ] {
+            let mut stepped = plain.clone();
+            stepped.bindings.push(Binding {
+                module: ServiceModule::M003K,
+                control: 0,
+                gesture: Gesture::Pressed,
+                serial_number: None,
+                action: nested,
+            });
+            assert!(needs_review(&stepped));
+        }
     }
 
     #[test]

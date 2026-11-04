@@ -16,7 +16,8 @@ const types = (entries: readonly { type: PickerActionType }[]) => entries.map(en
 describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
-      'launch_app', 'open_url', 'media', 'system', 'obs', 'streamlabs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable'];
+      'launch_app', 'open_url', 'media', 'system', 'obs', 'streamlabs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable',
+      'terminal_command'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -82,6 +83,9 @@ describe('scope filtering', () => {
     expect(offered).not.toContain('profile');
     expect(offered).not.toContain('timer');
     expect(offered).not.toContain('volume_from_position');
+    // A terminal session is never a step: no sequence can type into the window it opens.
+    expect(offered).not.toContain('terminal_command');
+    expect(types(entriesForScope('branch'))).not.toContain('terminal_command');
     expect(offered).toContain('toggle_mute');
     expect(offered).toContain('obs');
     expect(offered).toContain('streamlabs');
@@ -104,6 +108,7 @@ describe('search', () => {
     expect(types(searchPickerEntries('spotify', binding))).toEqual(['media']);
     expect(types(searchPickerEntries('countdown', binding))).toEqual(['timer']);
     expect(types(searchPickerEntries('url', binding))).toEqual(['open_url']);
+    for (const word of ['terminal', 'iterm', 'claude', 'codex', 'shell']) expect(types(searchPickerEntries(word, binding))).toEqual(['terminal_command']);
     // The single OBS entry stays findable by each of the nine operations.
     for (const word of ['scene', 'camera', 'replay', 'studio', 'transition', 'filter', 'visibility', 'collection', 'profile']) {
       expect(types(searchPickerEntries(word, binding))).toContain('obs');

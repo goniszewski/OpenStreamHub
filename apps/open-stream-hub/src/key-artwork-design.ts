@@ -186,6 +186,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   toggle_mute: ['volume-x', 'mic-off'],
   shortcut: ['keyboard'],
   launch_app: [appIconId(''), 'app-window'],
+  terminal_command: ['terminal', 'app-window'],
   open_url: ['globe', 'link'],
   text: ['type'],
   media: ['play', 'pause'],
@@ -208,7 +209,8 @@ const commandSuggestions: Record<string, string[]> = {
 /** Suggested icon ids for an action, empty when nothing fits. */
 export function suggestedIconIds(action?: BindingAction | null): string[] {
   if (!action) return [];
-  const byCommand = 'command' in action ? commandSuggestions[action.command] : undefined;
+  // A terminal command line is user text, never a key into the closed command table.
+  const byCommand = (action.type === 'media' || action.type === 'system') && Object.prototype.hasOwnProperty.call(commandSuggestions, action.command) ? commandSuggestions[action.command] : undefined;
   return (byCommand ?? actionSuggestions[action.type] ?? [])
     .map(id => isAppIconId(id) && 'bundle_id' in action ? appIconId(action.bundle_id) : id);
 }

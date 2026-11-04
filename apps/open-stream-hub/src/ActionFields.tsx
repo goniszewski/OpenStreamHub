@@ -2,13 +2,13 @@ import { AppWindow, Check, ChevronDown, FolderOpen, Plus, RotateCcw, Trash2 } fr
 import { rememberAppName } from './app-names';
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, RunningApp, StepAction, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
+import type { BindingAction, ConditionalAction, MediaCommand, Modifier, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, RunningApp, StepAction, StreamlabsVisibilityOp, SystemCommand, TerminalApp, TimerSound } from './contracts';
 import { ActionPickerField, focusTrigger } from './ActionPicker';
 import { defaultBindingAction, pickerWebStorage } from './action-picker-model';
 import { appIcons, appListKey, appOptions, appSections, closedAppList, openAppList, queryAppList, readRecentApps, recordRecentApp, triggerKey } from './app-picker-model';
 import type { AppListState } from './app-picker-model';
 import { dataUrl } from './artwork-model';
-import type { ObsStepAction, ObsStepType, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType } from './action-model';
+import type { ObsStepAction, ObsStepType, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType, TerminalCommandAction } from './action-model';
 import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
 import { VariableActionFields } from './VariableFields';
@@ -28,7 +28,7 @@ import {
   conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioLimits, streamlabsAudioMode, streamlabsAudioModeLabels, streamlabsNameIssue, streamlabsOperationLabels,
-  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, textIssue, timerLabelIssue, timerSeconds,
+  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue, defaultStreamlabsAudioOp,
 } from './action-model';
 
@@ -200,9 +200,10 @@ export function ActionFields({ action, fader, selectorKey, onChange, onSetUpObs,
       </SelectField>
       <Hint hint={t('actions.profile.hint')}>{t('actions.profile.more')}</Hint></div>}
     {action?.type === 'timer' && <TimerFields action={action} inputKey={selectorKey} onChange={onChange} />}
+    {action?.type === 'terminal_command' && <TerminalCommandFields action={action} onChange={onChange} />}
     {action?.type === 'mic_input_volume_from_position' && <p className="fine-print">{t('actions.micVolumeFromPosition')}</p>}
     {action?.type === 'obs_input_volume_from_position' && <FaderObsInputFields action={action} onChange={onChange} onSetUpObs={onSetUpObs} catalog={catalog} />}
-    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'conditional' && action.type !== 'profile' && action.type !== 'timer' &&
+    {action && !isFaderTemplate(action) && action.type !== 'macro' && action.type !== 'multi_action' && action.type !== 'conditional' && action.type !== 'profile' && action.type !== 'timer' && action.type !== 'terminal_command' &&
       <StepFields prefix="" action={action} inputKey={selectorKey} onChange={(next, field) => onChange(next, field)} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />}
   </>;
 }
@@ -243,6 +244,36 @@ function TimerFields({ action, inputKey, onChange }: { action: TimerAction; inpu
       {(Object.keys(timerSoundLabels) as TimerSound[]).map(sound => <option key={sound} value={sound}>{timerSoundLabels[sound]}</option>)}
     </SelectField>
     <Hint hint={t('actions.timer.hint')}>{t('actions.timer.more', { max: maxRunningTimers })}</Hint>
+  </div>;
+}
+
+// A terminal session: the app (a closed set), the command line and an optional folder to start in. An empty folder is
+// omitted, never written as "" (which the service rejects).
+function TerminalCommandFields({ action, onChange }: { action: TerminalCommandAction; onChange: Change }) {
+  const t = useT();
+  const commandIssue = terminalCommandIssue(action.command);
+  const directoryIssue = terminalDirectoryIssue(action.directory ?? '');
+  const withDirectory = (directory: string): TerminalCommandAction => {
+    const { directory: _previous, ...rest } = action;
+    return directory ? { ...rest, directory } : rest;
+  };
+  return <div className="action-fields">
+    <label htmlFor="terminal-app">{t('actions.terminal.app')}</label>
+    <SelectField id="terminal-app" value={action.app} onChange={event => onChange({ ...action, app: event.target.value as TerminalApp }, 'terminal-app')}>
+      {(Object.keys(terminalAppLabels) as TerminalApp[]).map(app => <option key={app} value={app}>{terminalAppLabels[app]}</option>)}
+    </SelectField>
+    <label className="spaced-label" htmlFor="terminal-command">{t('actions.terminal.command')}</label>
+    <input id="terminal-command" spellCheck={false} autoCapitalize="off" autoCorrect="off" value={action.command}
+      aria-invalid={!!commandIssue} aria-describedby={commandIssue ? 'terminal-command-error' : undefined}
+      onChange={event => onChange({ ...action, command: event.target.value }, 'terminal-command')} />
+    {commandIssue && <p id="terminal-command-error" className="field-error" role="alert">{commandIssue}</p>}
+    <label className="spaced-label" htmlFor="terminal-directory">{t('actions.terminal.directory')}</label>
+    <input id="terminal-directory" spellCheck={false} autoCapitalize="off" autoCorrect="off" value={action.directory ?? ''}
+      placeholder={t('actions.terminal.directoryPlaceholder')}
+      aria-invalid={!!directoryIssue} aria-describedby={directoryIssue ? 'terminal-directory-error' : undefined}
+      onChange={event => onChange(withDirectory(event.target.value), 'terminal-directory')} />
+    {directoryIssue && <p id="terminal-directory-error" className="field-error" role="alert">{directoryIssue}</p>}
+    <Hint hint={t('actions.terminal.hint')}>{t('actions.terminal.more', { max: maxTerminalCommandBytes })}</Hint>
   </div>;
 }
 

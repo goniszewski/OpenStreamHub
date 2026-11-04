@@ -1,7 +1,7 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
 import { appDisplayName } from './app-names';
 import { english } from './i18n-react';
-import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, timerDuration } from './action-model';
+import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, terminalAppLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -201,6 +201,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'macro': return `Macro: ${action.steps.length} keystroke${action.steps.length === 1 ? '' : 's'}, ${macroDurationLabel(macroDurationMs(action.steps))} planned`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
+    case 'terminal_command': return `Run “${clipLabel(action.command)}” in ${terminalAppLabels[action.app] ?? action.app}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
     case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
     case 'obs_record': return `OBS recording: ${obsRecordOpLabels[action.op] ?? action.op}`;

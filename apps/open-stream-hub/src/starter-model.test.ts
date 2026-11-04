@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { Action, BranchStep, FaderTemplate, LiveDevice, Profile } from './contracts';
+import type { Action, BindingAction, BranchStep, FaderTemplate, LiveDevice, Profile } from './contracts';
 import { keyFaceIssue, labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
 import { namedKeys } from './action-model';
 import { bundleIdIssue } from './focus-rules';
-import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, typingActionIssue, startersForModule, startersStorageKey } from './starter-model';
+import { actionIssue, markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starterIssue, starters, typingActionIssue, startersForModule, startersStorageKey } from './starter-model';
 import { controlCounts, gestures, modules } from './ui-model';
 
 const device = (path: string, module: LiveDevice['module']): LiveDevice => ({ path_hex: path, module, serial_number: null });
@@ -128,12 +128,45 @@ describe('shipped starters', () => {
     expect(starterIssue(withAccept({ faces: [{ ...face, background: 'amber' }] }), typingActionIssue)).toContain('hex colour');
     expect(starterIssue({ ...terminal, variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_state', value: 'x' }] }, typingActionIssue)).toContain('declared twice');
   });
-  it('let the terminal starter send keys and text and answer agent hooks, and nothing that launches, opens or reaches OBS', () => {
+  it('let the terminal starter send keys and text, start agent sessions and answer agent hooks, and nothing else that launches, opens or reaches OBS', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;
     for (const { action, where } of actionsOf(terminal.profile)) {
-      expect(['shortcut', 'text', 'conditional', 'set_variable'], where).toContain(action.type);
+      expect(['shortcut', 'text', 'conditional', 'set_variable', 'terminal_command'], where).toContain(action.type);
       if (action.type === 'set_variable') expect(action.name, where).toBe('agent_decision');
+      // Only a key's own action opens a terminal, never a step of an if / else.
+      if (action.type === 'terminal_command') expect(where, where).toMatch(/^keypad\/root\/\d+$/);
     }
+  });
+  it('give the terminal starter Claude and Codex keys that each open a Terminal window running that agent', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!;
+    const slots = terminal.profile.keypad!.pages[0].slots;
+    const sessions = slots.flatMap(slot => (slot?.type === 'action' && slot.bindings[0].action.type === 'terminal_command' ? [[slot.label, slot.bindings[0].action]] : []));
+    expect(sessions).toEqual([
+      ['Claude', { type: 'terminal_command', app: 'terminal', command: 'claude' }],
+      ['Codex', { type: 'terminal_command', app: 'terminal', command: 'codex' }],
+    ]);
+    // They take free slots: the existing keys keep their places and one slot stays free.
+    expect(slots.slice(0, 12).map(slot => slot?.type === 'action' ? slot.label : null)).toEqual(['Accept', 'Interrupt', 'Cycle mode', 'Continue', '/clear', '/compact', 'Ctrl+C', 'Ctrl+D', 'Ctrl+L', 'New tab', 'Next tab', 'Previous tab']);
+    expect(slots.filter(slot => slot === null)).toHaveLength(1);
+    expect(terminal.description).toContain('Claude and Codex keys');
+  });
+  it('check a terminal session in the terminal starter only, and never as a step', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!.profile;
+    const withAccept = (action: object): Profile => {
+      const [accept, ...rest] = terminal.keypad!.pages[0].slots;
+      const slot = { ...accept!, bindings: [{ gesture: 'pressed', action }], faces: undefined } as unknown as typeof accept;
+      return { ...terminal, keypad: { pages: [{ ...terminal.keypad!.pages[0], slots: [slot, ...rest] }] } };
+    };
+    const session = { type: 'terminal_command', app: 'iterm2', command: 'codex', directory: '~/code' };
+    expect(starterIssue(withAccept(session), typingActionIssue)).toBeNull();
+    // The dry-run-safe check every other starter uses refuses it.
+    expect(actionIssue(session as BindingAction)).toContain('terminal_command does not belong in a starter');
+    expect(starterIssue(withAccept({ ...session, command: 'codex\nrm -rf ~' }), typingActionIssue)).toContain('one line');
+    expect(starterIssue(withAccept({ ...session, command: ' ' }), typingActionIssue)).toContain('Enter the command');
+    expect(starterIssue(withAccept({ ...session, directory: 'code' }), typingActionIssue)).toContain('starting with / or ~/');
+    expect(starterIssue(withAccept({ ...session, app: 'ghostty' }), typingActionIssue)).toContain('Unknown terminal app');
+    const when = { variable_is: { name: 'agent_state', value: 'waiting' } };
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: [session] }), typingActionIssue)).toContain('cannot be an if / else step');
   });
   it('hold the stream only behind the press-twice guard', () => {
     for (const item of starters) {

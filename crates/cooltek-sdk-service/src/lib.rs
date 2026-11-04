@@ -38,7 +38,7 @@ pub use profile::{
     Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
     ScreenBrightness, ServiceModule, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand,
-    TimerSound, Variable, VariableKind, VariableValue, is_invisible_text_character,
+    TerminalApp, TimerSound, Variable, VariableKind, VariableValue, is_invisible_text_character,
     key_for_virtual_code, virtual_key_code,
 };
 pub use timer::{

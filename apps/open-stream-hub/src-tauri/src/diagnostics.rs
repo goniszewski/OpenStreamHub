@@ -301,7 +301,7 @@ const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collect
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels, OBS scene, source, filter,
+/// activity): `text` snippets, `timer` labels, `terminal_command` command lines and directories, OBS scene, source, filter,
 /// scene collection, profile and input names and Streamlabs scene, collection and
 /// source names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
@@ -317,6 +317,8 @@ fn redact_action_payloads(
                 Some("text") => &["text"],
                 Some("open_url") => &["url"],
                 Some("timer") => &["label"],
+                // The command line can carry tokens and the directory a user name.
+                Some("terminal_command") => &["command", "directory"],
                 Some("obs_scene") => &["scene"],
                 Some("obs_filter") => &["source", "filter"],
                 Some("obs_scene_collection" | "obs_profile") => &["name"],
@@ -1487,6 +1489,7 @@ mod tests {
             "keypad": { "pages": [{ "slots": [
                 { "type": "action", "action": { "type": "text", "text": "keypad tile snippet", "press_enter": false } },
                 { "type": "action", "action": { "type": "timer", "seconds": 300, "label": "call the doctor", "sound": "glass" } },
+                { "type": "action", "action": { "type": "terminal_command", "app": "iterm2", "command": "codex --api-key sk-live-123", "directory": "~/clients/acme" } },
             ] }] },
             "dial_functions": [{ "name": "Links", "bindings": [
                 { "gesture": "right", "action": { "type": "open_url", "url": "https://dial.example.org/a/b" } },
@@ -1527,6 +1530,8 @@ mod tests {
             "secret-path",
             "not a url",
             "call the doctor",
+            "sk-live-123",
+            "clients/acme",
             "Private call",
             "Interview guest",
         ] {
@@ -1536,6 +1541,11 @@ mod tests {
         assert_eq!(
             timer,
             &json!({ "type": "timer", "seconds": 300, "label": "<15 chars>", "sound": "glass" })
+        );
+        let terminal = &bundle.value["profile"]["keypad"]["pages"][0]["slots"][2]["action"];
+        assert_eq!(
+            terminal,
+            &json!({ "type": "terminal_command", "app": "iterm2", "command": "<27 chars>", "directory": "<14 chars>" })
         );
         let profile = &bundle.value["profile"];
         assert_eq!(profile["bindings"][0]["action"]["text"], "<19 chars>");

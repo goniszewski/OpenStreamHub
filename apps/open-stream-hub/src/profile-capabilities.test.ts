@@ -53,6 +53,20 @@ describe('profileCapabilities', () => {
     // A screenshot and a URL in separate bindings are not one sequence.
     expect(profileCapabilities(flat({ type: 'system', command: 'screenshot' }, { type: 'open_url', url: 'https://x.test' })).risk).toBe('elevated');
   });
+  it('is high for a terminal command and names each command line, folder and app in full', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+      { type: 'terminal_command', app: 'iterm2', command: 'codex --token "s3"\u200b', directory: '~/code' },
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+    ));
+    expect(capabilities.risk).toBe('high');
+    expect(capabilities.riskReasons).toContain('A key opens a terminal window and runs a command line in your shell.');
+    expect(capabilities.counts).toEqual({ terminal_command: 3 });
+    // Distinct lines only, with invisible characters made visible.
+    expect(capabilities.terminalCommands).toEqual(['Terminal: “claude”', 'iTerm2: “codex --token "s3"\\u{200B}” in “~/code”']);
+    expect(capabilityLines(capabilities)[0]).toBe('Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: Terminal: “claude”; iTerm2: “codex --token "s3"\\u{200B}” in “~/code”.');
+    expect(profileCapabilities(flat({ type: 'launch_app', bundle_id: 'com.apple.Terminal' })).terminalCommands).toEqual([]);
+  });
   it('is high for text that presses Return or contains a line break', () => {
     const enter = profileCapabilities(flat({ type: 'text', text: 'rm -rf ~', press_enter: true }));
     expect(enter).toMatchObject({ risk: 'high', textPressesEnter: true, textHasNewline: false });

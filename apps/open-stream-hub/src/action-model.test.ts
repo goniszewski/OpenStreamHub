@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  conditionLabel, conditionUsesObs, defaultCondition, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  conditionLabel, conditionUsesObs, defaultCondition, defaultTerminalCommand, maxTerminalCommandBytes, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, streamlabsAudioMode, streamlabsNameIssue, streamlabsOperationLabels, streamlabsVisibilityOpLabels,
@@ -58,6 +58,46 @@ describe('timer contract', () => {
     expect(actionLabel({ type: 'timer', seconds: 90, label: 'Tea' })).toBe('Timer 1:30 “Tea”');
     expect(actionLabel(defaultTimerAction())).toBe('Timer 5:00');
     expect(timerAccepted(defaultTimerAction() as LooseTimer)).toBe(true);
+  });
+});
+
+describe('terminal_command contract', () => {
+  type LooseTerminal = { type?: string; app?: unknown; command?: unknown; directory?: unknown; actions?: { type?: string }[] };
+  // Mirrors the Rust checks for one terminal_command, so the fixture's invalid entries are explained on this side too.
+  const terminalAccepted = (action: LooseTerminal) =>
+    Object.keys(action).every(key => ['type', 'app', 'command', 'directory'].includes(key))
+    && typeof action.app === 'string' && Object.keys(terminalAppLabels).includes(action.app)
+    && typeof action.command === 'string' && terminalCommandIssue(action.command) === null
+    && (action.directory === undefined || (typeof action.directory === 'string' && action.directory !== '' && terminalDirectoryIssue(action.directory) === null));
+
+  it('agrees with the shared fixture on valid and invalid terminal commands', () => {
+    const valid = fixture.valid.filter(action => action.type === 'terminal_command');
+    expect(valid.length).toBeGreaterThan(2);
+    for (const action of valid) expect(terminalAccepted(action as LooseTerminal), JSON.stringify(action)).toBe(true);
+    const invalid = (fixture.invalid as LooseTerminal[]).filter(action => action.type === 'terminal_command');
+    expect(invalid.length).toBeGreaterThan(10);
+    for (const action of invalid) expect(terminalAccepted(action), JSON.stringify(action)).toBe(false);
+    // Never a step, on either side.
+    expect(stepActionTypes.map(([type]) => type)).not.toContain('terminal_command');
+    expect((fixture.invalid as LooseTerminal[]).some(action => action.type === 'multi_action' && action.actions?.some(step => step.type === 'terminal_command'))).toBe(true);
+  });
+
+  it('flags command lines and folders the service rejects', () => {
+    for (const command of ['claude', 'codex --model "o3" \'x\' $(pwd) `id` \\', 'é'.repeat(maxTerminalCommandBytes / 2)]) expect(terminalCommandIssue(command), command).toBeNull();
+    for (const command of ['', '  ', 'a\nb', 'a\rb', 'tab\tx', 'esc\u001b[2J', 'zw\u200bsp', 'line\u2028sep', 'x'.repeat(maxTerminalCommandBytes + 1)]) {
+      expect(terminalCommandIssue(command), JSON.stringify(command)).not.toBeNull();
+    }
+    for (const directory of ['', '~', '/', '/tmp', '~/', '~/My Code/it\'s']) expect(terminalDirectoryIssue(directory), directory).toBeNull();
+    for (const directory of ['code', '~user', ' /tmp', './x', '/tmp\nx', `/${'x'.repeat(maxTerminalCommandBytes)}`]) {
+      expect(terminalDirectoryIssue(directory), JSON.stringify(directory)).not.toBeNull();
+    }
+  });
+
+  it('labels it and starts from claude in Terminal', () => {
+    expect(defaultTerminalCommand()).toEqual({ type: 'terminal_command', app: 'terminal', command: 'claude' });
+    expect(terminalAccepted(defaultTerminalCommand())).toBe(true);
+    expect(actionLabel(defaultTerminalCommand())).toBe('Run “claude” in Terminal');
+    expect(actionLabel({ type: 'terminal_command', app: 'iterm2', command: 'codex --full-auto --model o3-pro-max', directory: '~/x' })).toBe("Run “codex --full-auto --mode…” in iTerm2");
   });
 });
 

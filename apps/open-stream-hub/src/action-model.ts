@@ -1,6 +1,6 @@
 import { groupItems, groupMode, isGroup } from './flow-model';
 import { english } from './i18n-react';
-import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TimerSound } from './contracts';
+import type { Action, BindingAction, Condition, LeafCondition, Variable, VariableValue, FaderTemplate, MacroStep, MediaCommand, MediaKey, ObsNameList, ObsMediaOp, ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, ProfileDirection, StepAction, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand, TerminalApp, TimerSound } from './contracts';
 
 // Mirrors NAMED_KEYS in crates/cooltek-sdk-service/src/profile.rs. The Rust
 // service holds the authoritative allow-list and rejects anything else; the
@@ -414,6 +414,33 @@ export function textIssue(text: string): string | null {
   if (/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(text)) return 'Only newlines and tabs are allowed as control characters.';
   if (invisibleTextCharacter.test(text)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
   return null;
+}
+
+// A terminal_command's command and directory: one line of 1-512 bytes each (Action::MAX_TERMINAL_COMMAND_BYTES).
+export const maxTerminalCommandBytes = 512;
+export const terminalAppLabels: Record<TerminalApp, string> = { terminal: english('labels.terminalApp.terminal'), iterm2: english('labels.terminalApp.iterm2') };
+export type TerminalCommandAction = Extract<BindingAction, { type: 'terminal_command' }>;
+export const defaultTerminalCommand = (): TerminalCommandAction => ({ type: 'terminal_command', app: 'terminal', command: 'claude' });
+
+// Mirrors validate_terminal_line in profile.rs: one line, no control or invisible characters.
+function terminalLineIssue(value: string): string | null {
+  if (utf8.encode(value).length > maxTerminalCommandBytes) return `Use at most ${maxTerminalCommandBytes} bytes.`;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(value)) return 'Use one line without tabs or control characters.';
+  if (invisibleTextCharacter.test(value)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
+  return null;
+}
+
+// Mirrors the terminal_command command check in profile.rs.
+export function terminalCommandIssue(command: string): string | null {
+  if (!command.trim()) return 'Enter the command to run, such as claude.';
+  return terminalLineIssue(command);
+}
+
+// Mirrors the terminal_command directory check in profile.rs. An empty field means no folder (the key is omitted).
+export function terminalDirectoryIssue(directory: string): string | null {
+  if (!directory) return null;
+  if (!(directory === '~' || directory.startsWith('/') || directory.startsWith('~/'))) return 'Use a full path starting with / or ~/.';
+  return terminalLineIssue(directory);
 }
 
 // Mirrors validate_timer_label in profile.rs. An empty field means no label (the key is omitted), so '' is fine here.

@@ -299,6 +299,27 @@ pub enum SystemCommand {
     Screenshot,
 }
 
+/// The terminal app a `terminal_command` opens a new window of. A closed set:
+/// these two can be told over AppleScript to run a command in a new window.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TerminalApp {
+    /// Apple's Terminal (`com.apple.Terminal`).
+    Terminal,
+    /// iTerm2 (`com.googlecode.iterm2`).
+    Iterm2,
+}
+
+impl TerminalApp {
+    /// The app's bundle identifier.
+    pub fn bundle_id(self) -> &'static str {
+        match self {
+            Self::Terminal => "com.apple.Terminal",
+            Self::Iterm2 => "com.googlecode.iterm2",
+        }
+    }
+}
+
 /// Which neighbouring saved profile a `profile` action asks for.
 ///
 /// The service does not own the profile list: it only reports the request.
@@ -994,6 +1015,21 @@ pub enum Action {
         /// Printable ASCII URL with a host and no user information.
         url: String,
     },
+    /// Open a new window of a terminal app and run one command line there,
+    /// optionally after changing to a directory. Only a key's own action: never
+    /// a `multi_action` or `conditional` step.
+    TerminalCommand {
+        /// The terminal app.
+        app: TerminalApp,
+        /// The command line the user's shell runs, such as `claude`: trimmed
+        /// nonempty, at most [`Action::MAX_TERMINAL_COMMAND_BYTES`], one line
+        /// without control or invisible characters.
+        command: String,
+        /// Directory to start in: `~`, or a path starting with `/` or `~/`,
+        /// with the command's limits.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
     /// Send a media transport command: a hardware media key on macOS for
     /// play/pause, next and previous; `stop` reaches only an already running
     /// Apple Music or Spotify.
@@ -1306,6 +1342,29 @@ pub fn is_invisible_text_character(c: char) -> bool {
     crate::dial::is_format_character(c) || matches!(c, '\u{2028}' | '\u{2029}' | '\u{2065}')
 }
 
+/// Checks a `terminal_command` field: 1 to [`Action::MAX_TERMINAL_COMMAND_BYTES`]
+/// bytes on one line, without control (newline and tab included) or invisible
+/// characters, so what runs is exactly the line that was reviewed.
+fn validate_terminal_line(field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > Action::MAX_TERMINAL_COMMAND_BYTES {
+        return Err(format!(
+            "terminal_command {field} must be 1 to {} bytes",
+            Action::MAX_TERMINAL_COMMAND_BYTES
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(format!(
+            "terminal_command {field} must be one line without control characters"
+        ));
+    }
+    if value.chars().any(is_invisible_text_character) {
+        return Err(format!(
+            "terminal_command {field} must not contain invisible format or line/paragraph separator characters"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_url(url: &str) -> Result<(), String> {
     const ALLOWED: &[u8] = b"-._~:/?#[]@!$&'()*+,;=%";
     if url.len() > Action::MAX_URL_BYTES {
@@ -1435,6 +1494,12 @@ impl<'de> Deserialize<'de> for Action {
             },
             OpenUrl {
                 url: String,
+            },
+            TerminalCommand {
+                app: TerminalApp,
+                command: String,
+                #[serde(default, deserialize_with = "present")]
+                directory: Option<String>,
             },
             Media {
                 command: MediaCommand,
@@ -1569,6 +1634,15 @@ impl<'de> Deserialize<'de> for Action {
             Shape::Shortcut { key, modifiers } => Self::Shortcut { key, modifiers },
             Shape::LaunchApp { bundle_id } => Self::LaunchApp { bundle_id },
             Shape::OpenUrl { url } => Self::OpenUrl { url },
+            Shape::TerminalCommand {
+                app,
+                command,
+                directory,
+            } => Self::TerminalCommand {
+                app,
+                command,
+                directory,
+            },
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
@@ -1639,6 +1713,8 @@ impl<'de> Deserialize<'de> for Action {
 impl Action {
     /// Maximum `open_url` URL length in bytes.
     pub const MAX_URL_BYTES: usize = 2048;
+    /// Maximum `terminal_command` command and directory length in UTF-8 bytes.
+    pub const MAX_TERMINAL_COMMAND_BYTES: usize = 512;
     /// Maximum `text` snippet length in UTF-8 bytes.
     pub const MAX_TEXT_BYTES: usize = 2048;
     /// Minimum number of `multi_action` steps.
@@ -1681,6 +1757,7 @@ impl Action {
             Self::Shortcut { .. } => "shortcut",
             Self::LaunchApp { .. } => "launch_app",
             Self::OpenUrl { .. } => "open_url",
+            Self::TerminalCommand { .. } => "terminal_command",
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
@@ -1872,6 +1949,26 @@ impl Action {
             }
             Self::LaunchApp { bundle_id } => validate_bundle_id(bundle_id),
             Self::OpenUrl { url } => validate_url(url),
+            Self::TerminalCommand {
+                command, directory, ..
+            } => {
+                validate_terminal_line("command", command)?;
+                if command.trim().is_empty() {
+                    return Err("terminal_command command must not be blank".into());
+                }
+                if let Some(directory) = directory {
+                    validate_terminal_line("directory", directory)?;
+                    if !(directory == "~"
+                        || directory.starts_with('/')
+                        || directory.starts_with("~/"))
+                    {
+                        return Err(
+                            "terminal_command directory must be ~ or start with / or ~/".into()
+                        );
+                    }
+                }
+                Ok(())
+            }
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
                 validate_obs_name("obs_scene_collection", "name", name)
@@ -2148,6 +2245,7 @@ impl Action {
                     | Self::ObsInputVolumeFromPosition { .. }
                     | Self::Profile { .. }
                     | Self::Timer { .. }
+                    | Self::TerminalCommand { .. }
                     | Self::ObsStream {
                         confirm: Some(_),
                         ..
@@ -5072,6 +5170,126 @@ mod tests {
                 .and_then(|action| action.validate_executable());
             assert!(rejected.is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn terminal_command_has_a_strict_shape_and_one_line_rules() {
+        let parse = |json: &str| {
+            serde_json::from_str::<Action>(json)
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable().map(|()| action))
+        };
+        let action =
+            parse(r#"{"type":"terminal_command","app":"terminal","command":"claude"}"#).unwrap();
+        assert_eq!(
+            action,
+            Action::TerminalCommand {
+                app: TerminalApp::Terminal,
+                command: "claude".into(),
+                directory: None,
+            }
+        );
+        assert_eq!(action.type_name(), "terminal_command");
+        // The absent directory stays absent, so the JSON round-trips.
+        assert_eq!(
+            serde_json::to_string(&action).unwrap(),
+            r#"{"type":"terminal_command","app":"terminal","command":"claude"}"#
+        );
+        let with_directory = Action::TerminalCommand {
+            app: TerminalApp::Iterm2,
+            command: "codex \"$(id)\" 'x' \\".into(),
+            directory: Some("~/My Projects/it's".into()),
+        };
+        let json = serde_json::to_string(&with_directory).unwrap();
+        assert_eq!(parse(&json).unwrap(), with_directory);
+        assert_eq!(TerminalApp::Terminal.bundle_id(), "com.apple.Terminal");
+        assert_eq!(TerminalApp::Iterm2.bundle_id(), "com.googlecode.iterm2");
+        for directory in ["~", "/", "/tmp", "~/", "~/code/app"] {
+            let action = Action::TerminalCommand {
+                app: TerminalApp::Terminal,
+                command: "claude".into(),
+                directory: Some(directory.into()),
+            };
+            action.validate().unwrap();
+        }
+        let long = "x".repeat(Action::MAX_TERMINAL_COMMAND_BYTES);
+        Action::TerminalCommand {
+            app: TerminalApp::Terminal,
+            command: long.clone(),
+            directory: Some(format!("/{}", &long[1..])),
+        }
+        .validate()
+        .unwrap();
+        for (command, directory) in [
+            ("", None),
+            ("  ", None),
+            ("claude\nrm -rf ~", None),
+            ("claude\r", None),
+            ("claude\tx", None),
+            ("claude\u{1b}[2J", None),
+            ("claude\u{0}", None),
+            ("cla\u{200b}ude", None),
+            ("claude\u{2028}", None),
+            (&*format!("{long}x"), None),
+            ("claude", Some("")),
+            ("claude", Some("relative")),
+            ("claude", Some("~user")),
+            ("claude", Some(" /tmp")),
+            ("claude", Some("/tmp\nx")),
+            ("claude", Some("/tmp\u{7f}")),
+            ("claude", Some(&*format!("/{long}"))),
+        ] {
+            let action = Action::TerminalCommand {
+                app: TerminalApp::Terminal,
+                command: command.into(),
+                directory: directory.map(Into::into),
+            };
+            assert!(action.validate().is_err(), "{command:?} {directory:?}");
+        }
+        for json in [
+            r#"{"type":"terminal_command","app":"ghostty","command":"claude"}"#,
+            r#"{"type":"terminal_command","app":"Terminal","command":"claude"}"#,
+            r#"{"type":"terminal_command","app":"terminal","command":"claude","shell":"sh"}"#,
+            r#"{"type":"terminal_command","app":"terminal","command":"claude","directory":null}"#,
+            r#"{"type":"terminal_command","command":"claude"}"#,
+            r#"{"type":"terminal_command","app":"terminal"}"#,
+            r#"{"type":"terminal_command","app":"terminal","command":7}"#,
+        ] {
+            assert!(parse(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn terminal_command_is_never_a_step() {
+        let terminal = Action::TerminalCommand {
+            app: TerminalApp::Terminal,
+            command: "claude".into(),
+            directory: None,
+        };
+        let text = Action::Text {
+            text: "hi".into(),
+            press_enter: true,
+        };
+        let sequence = Action::MultiAction {
+            actions: vec![terminal.clone(), text.clone()],
+        };
+        assert!(
+            sequence
+                .validate()
+                .unwrap_err()
+                .contains("terminal_command cannot be a multi_action step")
+        );
+        let conditional = Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![terminal],
+            otherwise: vec![text],
+        };
+        assert!(
+            conditional
+                .validate()
+                .unwrap_err()
+                .contains("terminal_command cannot be a conditional step")
+        );
     }
 
     #[test]

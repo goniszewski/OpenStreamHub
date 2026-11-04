@@ -136,6 +136,24 @@ describe('action fields', () => {
     expectAccessible(bad);
   });
 
+  it('renders the terminal app, command and folder fields with accessible ids and the trust note', () => {
+    const markup = render({ type: 'terminal_command', app: 'iterm2', command: 'codex', directory: '~/code' });
+    expect(markup).toContain('>Open terminal and run</span>');
+    expect(ids(markup)).toEqual(expect.arrayContaining(['terminal-app', 'terminal-command', 'terminal-directory']));
+    expect(choicesOf(markup, 'terminal-app').map(choice => choice.value)).toEqual(['terminal', 'iterm2']);
+    expect(hasOption(markup, 'iterm2', 'iTerm2', true)).toBe(true);
+    expect(markup).toContain('value="codex"');
+    expect(markup).toContain('value="~/code"');
+    expect(markup).toContain('only bind commands you trust');
+    expect(markup).toContain('runs as a dry run until you review it');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const bad = render({ type: 'terminal_command', app: 'terminal', command: '', directory: 'relative' });
+    expect(bad).toContain('id="terminal-command-error"');
+    expect(bad).toContain('id="terminal-directory-error"');
+    expectAccessible(bad);
+  });
+
   it('renders ordered multi-action steps with unique ids and bounded add/remove', () => {
     const steps: StepAction[] = [{ type: 'volume', delta: 5 }, { type: 'shortcut', key: 'tab', modifiers: ['command'] }];
     const two = render({ type: 'multi_action', actions: steps });

@@ -8,6 +8,7 @@ import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { keyFaceIssue, maximumKeyFaces } from './draft-model';
 import { flowIssue, groupItems, isGroup, variableKind, variableNameIssue, variableValueIssue, variablesIssue } from './flow-model';
+import { terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -158,6 +159,8 @@ const agentFace = (value: string, label: string, background: string): KeyFace =>
 
 const shortcut = (key: string, ...modifiers: Modifier[]): Action & BranchStep => ({ type: 'shortcut', key, modifiers });
 const typed = (text: string): Action => ({ type: 'text', text, press_enter: true });
+// A new Terminal window running `command`: how the agent keys start a session.
+const session = (command: string): Action => ({ type: 'terminal_command', app: 'terminal', command });
 
 // While an agent waits on a permission prompt (`osh agent ask` set `agent_state` to waiting), the key answers it
 // by setting `agent_decision`; otherwise it sends its usual key.
@@ -169,8 +172,9 @@ const answerOr = (decision: 'allow' | 'deny', otherwise: BranchStep): Conditiona
 });
 
 // Keys for working with a coding agent (Claude Code, Codex) or any shell in a
-// terminal. Everything is sent to the app in front, so it suits the terminal
-// being the focused window. It types, so it is the one starter that is not
+// terminal. Everything else is sent to the app in front, so it suits the terminal
+// being the focused window. It types, and its Claude and Codex keys open a new
+// Terminal window running that agent, so it is the one starter that is not
 // dry-run safe (see the starter tests). The Accept key follows the text variable `agent_state`, which an agent's hooks
 // set through the bundled `osh` tool: amber while it works, red when it needs you, green when it is done, and its
 // normal face while idle. While the agent waits on a permission prompt, Accept and the Interrupt key (then showing
@@ -179,7 +183,7 @@ const terminalAgents: StarterTemplate = {
   id: 'terminal-agents',
   name: 'Terminal and AI agents',
   focusApps: terminalApps,
-  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool. With the hook installed (osh agent setup claude), Accept and Deny answer permission prompts.',
+  description: 'Keys for Claude Code, Codex and any terminal: Claude and Codex keys that open a new Terminal window running that agent, then interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. The other keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool. With the hook installed (osh agent setup claude), Accept and Deny answer permission prompts.',
   profile: {
     schema_version: currentSchema,
     name: 'Terminal and AI agents',
@@ -209,6 +213,8 @@ const terminalAgents: StarterTemplate = {
       key('New tab', shortcut('t', 'command')),
       key('Next tab', shortcut('tab', 'control')),
       key('Previous tab', shortcut('tab', 'control', 'shift')),
+      key('Claude', session('claude')),
+      key('Codex', session('codex')),
     ),
   },
 };
@@ -330,20 +336,24 @@ function variableUseIssue(action: BindingAction, variables: ReadonlyArray<Variab
   return null;
 }
 
-// The terminal starter is the one that sends keys and text and answers agent hooks, so it is checked with this:
-// keys, typed text, setting a variable and if / else on top of what every starter may hold. An if / else keeps the
-// limits Rust enforces, and its steps are checked the same way.
+// The terminal starter is the one that sends keys and text, starts agent sessions and answers agent hooks, so it is
+// checked with this: keys, typed text, opening a terminal window with a command, setting a variable and if / else on
+// top of what every starter may hold. Nothing else launches or opens anything. An if / else keeps the limits Rust
+// enforces, and its steps are checked the same way; a terminal command is never one of them.
 export function typingActionIssue(action: BindingAction): string | null {
   switch (action.type) {
     case 'shortcut':
     case 'text':
       return null;
+    case 'terminal_command':
+      if (!(action.app in terminalAppLabels)) return `Unknown terminal app ${String(action.app)}.`;
+      return terminalCommandIssue(action.command) ?? terminalDirectoryIssue(action.directory ?? '');
     case 'set_variable': return variableNameIssue(action.name) ?? variableValueIssue(action.value);
     case 'conditional': {
       const flow = flowIssue(action);
       if (flow) return flow;
       for (const step of action.then.concat(action.else ?? [])) {
-        const issue = typingActionIssue(step);
+        const issue = (step as BindingAction).type === 'terminal_command' ? 'terminal_command cannot be an if / else step.' : typingActionIssue(step);
         if (issue) return issue;
       }
       return null;

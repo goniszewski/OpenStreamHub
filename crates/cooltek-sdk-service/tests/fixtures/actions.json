@@ -517,6 +517,23 @@
           "type": "streamlabs_record"
         }
       ]
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude"
+    },
+    {
+      "type": "terminal_command",
+      "app": "iterm2",
+      "command": "codex --model \"o3\" 'quoted' $(pwd)",
+      "directory": "~/Projects/my app"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "ls -la",
+      "directory": "/tmp"
     }
   ],
   "invalid": [
@@ -1143,6 +1160,91 @@
         },
         {
           "type": "streamlabs_record"
+        }
+      ]
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude\nrm -rf ~"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude\u001b"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "   "
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": ""
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "type": "terminal_command",
+      "app": "ghostty",
+      "command": "claude"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "shell": "/bin/sh"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "directory": "relative/path"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "directory": "~user/x"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "directory": "/tmp\nx"
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "directory": ""
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal",
+      "command": "claude",
+      "directory": null
+    },
+    {
+      "type": "terminal_command",
+      "app": "terminal"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "terminal_command",
+          "app": "terminal",
+          "command": "claude"
+        },
+        {
+          "type": "text",
+          "text": "hi",
+          "press_enter": true
         }
       ]
     }

@@ -1,12 +1,12 @@
 import type { BindingAction, ServiceModule } from './contracts';
-import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
+import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTerminalCommand, defaultTimerAction, stepActionTypes } from './action-model';
 import type { StepActionType } from './action-model';
 import { english } from './i18n-react';
 
 // One file per picker entry: the step actions plus the binding-only ones, the one
 // OBS entry ('obs'), which stands in for the ten obs_* step action types, and the one
 // Streamlabs entry ('streamlabs') for the seven streamlabs_* types.
-export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs' | 'streamlabs';
+export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'terminal_command' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs' | 'streamlabs';
 
 export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'streamlabs' | 'sequences' | 'variables' | 'navigation';
 
@@ -19,7 +19,7 @@ export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
 const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', english('labels.picker.multiAction')],
   ['conditional', english('labels.picker.conditional')], ['profile', english('labels.picker.profile')], ['timer', english('labels.picker.timer')],
-  ['macro', english('labels.picker.macro')], ['volume_from_position', english('labels.picker.volumeFromPosition')],
+  ['macro', english('labels.picker.macro')], ['terminal_command', english('labels.picker.terminalCommand')], ['volume_from_position', english('labels.picker.volumeFromPosition')],
   ['mic_input_volume_from_position', english('labels.picker.micVolumeFromPosition')],
   ['obs_input_volume_from_position', english('labels.picker.obsVolumeFromPosition')], ['obs', english('labels.picker.obs')],
   ['streamlabs', english('labels.picker.streamlabs')]]);
@@ -38,6 +38,7 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['text', 'keyboard', 'type snippet clipboard string enter'],
   ['launch_app', 'apps', 'launch app program start bundle'],
   ['open_url', 'apps', 'website link address browser http web page'],
+  ['terminal_command', 'apps', 'terminal iterm shell command session console claude codex agent cli run'],
   ['media', 'media', 'play pause next previous track stop music spotify itunes'],
   ['system', 'system', 'undo redo screenshot clipboard'],
   // One OBS entry: the operation is chosen in the editor afterwards. The keywords keep the nine
@@ -87,7 +88,8 @@ export type PickerScope = 'binding' | 'binding-fader' | 'step' | 'branch';
 
 const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position'];
 // A macro is a binding-level sequence like a multi-action: never a step.
-const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditional', 'macro', 'profile', 'timer', ...faderTypes];
+// A terminal session is a key's own action too: never a step, so no sequence can type into the window it opens.
+const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditional', 'macro', 'profile', 'timer', 'terminal_command', ...faderTypes];
 
 export function entriesForScope(scope: PickerScope): ReadonlyArray<PickerEntry> {
   if (scope === 'binding-fader') return pickerEntries.filter(entry => faderTypes.includes(entry.type));
@@ -128,7 +130,7 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 export function defaultBindingAction(type: PickerActionType): BindingAction {
   return type === 'volume_from_position' || type === 'mic_input_volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction() : type === 'conditional' ? defaultConditional()
     : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
-    : type === 'macro' ? defaultMacro()
+    : type === 'macro' ? defaultMacro() : type === 'terminal_command' ? defaultTerminalCommand()
     : type === 'obs' ? defaultStepAction('obs_scene') : type === 'streamlabs' ? defaultStepAction('streamlabs_scene') : defaultStepAction(type);
 }
 

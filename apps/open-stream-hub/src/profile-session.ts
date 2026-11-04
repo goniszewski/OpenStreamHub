@@ -7,6 +7,7 @@ import { newDraftKey, restoreDecision, timeoutSchedule } from './draft-store';
 import type { Cancel, DraftPersister, Schedule, StoredDraft } from './draft-store';
 import { copyName, ImportError, importName, parseImportedProfile, starterName, withName } from './profile-library';
 import { keypadPagesAtPath, upgradeKeypadProfile } from './keypad-model';
+import { profileCapabilities } from './profile-capabilities';
 import type { ApplySavedResult } from './service-runner';
 import { errorMessage, faderMaximum, replayLabels, versionTimeLabel } from './ui-model';
 
@@ -676,8 +677,13 @@ export class ProfileSession {
       this.set({ importError: reason instanceof ImportError ? reason.message : `This file is not a valid profile: ${errorMessage(reason)}` });
       return;
     }
+    // The backend creates it: one that opens a terminal and runs a command is dry run only until the user reviews it
+    // and allows it to execute actions (import_flags::needs_review decides; this only words the notice).
+    const reviewed = profileCapabilities(profile).terminalCommands.length > 0;
     this.guard('import this profile', () => {
-      void this.createProfile(() => profile, 'Importing profile', importName, name => `Imported ${name}. ${this.openNote()}`)
+      void this.createProfile(() => profile, 'Importing profile', importName,
+        name => reviewed ? `Imported ${name}. It opens a terminal and runs a command, so it runs as a dry run until you review it and allow it to execute actions in the profile manager.` : `Imported ${name}. ${this.openNote()}`,
+        null, created => this.invoke<StoredProfile>('import_profile', { profile: created }))
         .then(failure => { if (failure) this.set({ importError: `Could not import the profile: ${failure}` }); });
     });
   }

@@ -184,6 +184,8 @@ function describeAction(action: unknown): string {
       return `shortcut ${[...modifiers, String(action.key)].join('+')}`;
     }
     case 'launch_app': return `open ${String(action.bundle_id)}`;
+    // The service logs only the command line's length, never its text.
+    case 'terminal_command': return `run a command in ${action.app === 'iterm2' ? 'iTerm2' : 'Terminal'} (${typeof action.command_chars === 'number' ? action.command_chars : (typeof action.command === 'string' ? [...action.command].length : 0)} characters)`;
     // Only the origin: paths and queries can carry tokens.
     case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;
     case 'media': return `media ${String(action.command)}`;

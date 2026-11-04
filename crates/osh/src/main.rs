@@ -10,6 +10,9 @@
 //! osh set --kind text label 42     # force a kind
 //! osh get [name]
 //! osh ping
+//! osh agent state working          # for agent hooks: always exits 0, prints nothing
+//! osh agent ask [--timeout 55]     # for a PermissionRequest hook: waits for Accept or Deny on the deck
+//! osh agent setup claude|codex     # prints the hook configuration for this osh
 //! ```
 //!
 //! `OSH_SOCKET` and `OSH_TOKEN_FILE` override where the socket and the token are found.
@@ -18,9 +21,10 @@ use serde_json::{Value, json};
 use std::{
     env,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 
 /// The app's bundle identifier (tauri.conf.json), which names its data directory.
@@ -30,13 +34,35 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// The longest answer read back.
 const MAX_ANSWER: u64 = 64 * 1024;
 
-const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n       osh get [name]\n       osh ping";
+const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n       osh get [name]\n       osh ping\n       osh agent state <working|waiting|done|idle>\n       osh agent ask [--timeout SECS]\n       osh agent setup <claude|codex>";
+
+/// The variables the terminal starter declares for agent hooks.
+const STATE: &str = "agent_state";
+const DECISION: &str = "agent_decision";
+const AGENT_STATES: [&str; 4] = ["working", "waiting", "done", "idle"];
+/// How long `agent ask` waits for the deck by default, and at most.
+const ASK_DEFAULT_SECS: u64 = 55;
+const ASK_MAX_SECS: u64 = 600;
+/// How often `agent ask` reads the decision.
+const POLL: Duration = Duration::from_millis(200);
+/// How long a hook waits for its JSON on stdin, and the most read.
+const STDIN_WAIT: Duration = Duration::from_millis(500);
+const MAX_STDIN: u64 = 1024 * 1024;
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Agent {
+    Claude,
+    Codex,
+}
 
 #[derive(Debug, PartialEq)]
 enum Command {
     Set { name: String, value: Value },
     Get { name: Option<String> },
     Ping,
+    AgentState(String),
+    AgentAsk { timeout: Duration },
+    AgentSetup(Agent),
 }
 
 /// An error with its exit code: 2 for usage, 3 when the app is not reachable, 1 for a refused request.
@@ -97,9 +123,43 @@ fn parse(args: &[String]) -> Result<Command, Failure> {
             _ => Err(usage("get takes at most one name")),
         },
         Some("ping") if rest.next().is_none() => Ok(Command::Ping),
+        Some("agent") => parse_agent(&rest.collect::<Vec<_>>()),
         Some("-h" | "--help" | "help") => Err(Failure(0, USAGE.to_string())),
         _ => Err(usage("unknown command")),
     }
+}
+
+fn parse_agent(args: &[&str]) -> Result<Command, Failure> {
+    match args {
+        ["state", state] if AGENT_STATES.contains(state) => {
+            Ok(Command::AgentState(state.to_string()))
+        }
+        ["ask"] => Ok(Command::AgentAsk {
+            timeout: Duration::from_secs(ASK_DEFAULT_SECS),
+        }),
+        ["ask", "--timeout", secs] => match secs.parse::<u64>() {
+            Ok(secs @ 1..=ASK_MAX_SECS) => Ok(Command::AgentAsk {
+                timeout: Duration::from_secs(secs),
+            }),
+            _ => Err(usage(&format!(
+                "--timeout takes 1 to {ASK_MAX_SECS} seconds"
+            ))),
+        },
+        ["setup", "claude"] => Ok(Command::AgentSetup(Agent::Claude)),
+        ["setup", "codex"] => Ok(Command::AgentSetup(Agent::Codex)),
+        _ => Err(usage(
+            "agent takes state <working|waiting|done|idle>, ask [--timeout SECS] or setup <claude|codex>",
+        )),
+    }
+}
+
+/// `agent state` and `agent ask` run as agent hooks, where a failing exit code can block the agent (exit 2 blocks
+/// a prompt in Claude Code), so they always exit 0.
+fn is_hook(args: &[String]) -> bool {
+    args.first().is_some_and(|arg| arg == "agent")
+        && args
+            .get(1)
+            .is_some_and(|arg| arg == "state" || arg == "ask")
 }
 
 fn data_dir() -> Option<PathBuf> {
@@ -114,7 +174,7 @@ fn data_dir() -> Option<PathBuf> {
     Some(base.join(APP_IDENTIFIER).join("ingress"))
 }
 
-fn locate() -> Result<(PathBuf, PathBuf), Failure> {
+fn locate() -> Result<Paths, Failure> {
     let dir = data_dir();
     let pick = |variable: &str, file: &str| {
         env::var_os(variable)
@@ -128,17 +188,15 @@ fn locate() -> Result<(PathBuf, PathBuf), Failure> {
     ))
 }
 
+type Paths = (PathBuf, PathBuf);
+
 fn not_running() -> Failure {
     Failure(3, "osh: OpenStreamHub is not running".to_string())
 }
 
 /// Sends one request line with the token and returns the answer's `result`.
 #[cfg(unix)]
-fn request(
-    socket: &std::path::Path,
-    token_file: &std::path::Path,
-    mut body: Value,
-) -> Result<Value, Failure> {
+fn request(socket: &Path, token_file: &Path, mut body: Value) -> Result<Value, Failure> {
     use std::io::Read;
     let token = std::fs::read_to_string(token_file).map_err(|_| not_running())?;
     body["token"] = json!(token.trim());
@@ -166,7 +224,7 @@ fn request(
 }
 
 #[cfg(not(unix))]
-fn request(_: &std::path::Path, _: &std::path::Path, _: Value) -> Result<Value, Failure> {
+fn request(_: &Path, _: &Path, _: Value) -> Result<Value, Failure> {
     Err(Failure(
         3,
         "osh: only macOS and Linux are supported".to_string(),
@@ -181,9 +239,229 @@ fn plain(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-/// Runs one command and returns what to print on stdout.
-fn run(args: &[String]) -> Result<String, Failure> {
+/// The variables of every running module: `[{"service":..,"name":..,"value":..}]`.
+fn variables(socket: &Path, token: &Path) -> Result<Vec<Value>, Failure> {
+    let result = request(socket, token, json!({"type":"get_variables"}))?;
+    Ok(result["variables"].as_array().cloned().unwrap_or_default())
+}
+
+fn set_text(socket: &Path, token: &Path, name: &str, value: &str) -> Result<(), Failure> {
+    request(
+        socket,
+        token,
+        json!({"type":"set_variable","name":name,"value":value}),
+    )
+    .map(|_| ())
+}
+
+/// Set by SIGINT or SIGTERM while `agent ask` waits.
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(unix)]
+fn catch_interrupts() {
+    extern "C" fn on_signal(_: i32) {
+        INTERRUPTED.store(true, Ordering::SeqCst);
+    }
+    unsafe extern "C" {
+        fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+    }
+    // SIGINT and SIGTERM are 2 and 15 on macOS and Linux. The handler only stores to an atomic.
+    unsafe {
+        signal(2, on_signal);
+        signal(15, on_signal);
+    }
+}
+
+#[cfg(not(unix))]
+fn catch_interrupts() {}
+
+/// The hook's JSON from stdin, or empty: never read from a terminal, and never waited on for long, so a hook
+/// runner that keeps stdin open cannot stall the hook.
+fn read_stdin() -> String {
+    use std::io::{IsTerminal, Read};
+    if std::io::stdin().is_terminal() {
+        return String::new();
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::stdin().take(MAX_STDIN).read_to_string(&mut text);
+        let _ = sender.send(text);
+    });
+    receiver.recv_timeout(STDIN_WAIT).unwrap_or_default()
+}
+
+/// What a PermissionRequest hook prints for the deck's answer.
+fn hook_answer(behavior: &str) -> String {
+    let mut decision = json!({"behavior": behavior});
+    if behavior == "deny" {
+        decision["message"] = json!("Denied on the deck");
+    }
+    json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":decision}})
+        .to_string()
+}
+
+/// Shows the request on the deck and waits for Accept or Deny. Returns what the hook prints: the answer, or
+/// nothing, which leaves the agent's own permission prompt in charge. Only an explicit `allow` on the deck allows;
+/// any error, the timeout or an interrupt prints nothing.
+fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
+    if hook
+        .get("hook_event_name")
+        .is_some_and(|event| event != "PermissionRequest")
+    {
+        return String::new();
+    }
+    let deadline = Instant::now() + timeout;
+    let Ok(declared) = variables(socket, token) else {
+        return String::new();
+    };
+    if ![STATE, DECISION]
+        .iter()
+        .all(|name| declared.iter().any(|variable| variable["name"] == *name))
+    {
+        return String::new();
+    }
+    let decision = set_text(socket, token, DECISION, "none")
+        .and_then(|()| set_text(socket, token, STATE, "waiting"))
+        .ok()
+        .and_then(|()| await_decision(socket, token, deadline));
+    let _ = set_text(socket, token, DECISION, "none");
+    match decision {
+        Some(behavior) => {
+            let _ = set_text(socket, token, STATE, "working");
+            hook_answer(behavior)
+        }
+        None => {
+            let _ = set_text(socket, token, STATE, "idle");
+            String::new()
+        }
+    }
+}
+
+/// Polls `agent_decision` until the deck says `allow` or `deny` (a `deny` from any module wins). None on the
+/// deadline, an interrupt, or when the app or the variable goes away.
+fn await_decision(socket: &Path, token: &Path, deadline: Instant) -> Option<&'static str> {
+    loop {
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            return None;
+        }
+        let decisions: Vec<Value> = variables(socket, token)
+            .ok()?
+            .into_iter()
+            .filter(|variable| variable["name"] == DECISION)
+            .map(|variable| variable["value"].clone())
+            .collect();
+        if decisions.is_empty() {
+            return None;
+        }
+        if decisions.iter().any(|value| value == "deny") {
+            return Some("deny");
+        }
+        if decisions.iter().any(|value| value == "allow") {
+            return Some("allow");
+        }
+        let left = deadline.checked_duration_since(Instant::now())?;
+        if left.is_zero() {
+            return None;
+        }
+        std::thread::sleep(POLL.min(left));
+    }
+}
+
+/// A path as one `sh` word: as it is when it holds only safe characters, else single-quoted.
+fn shell_word(path: &str) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "/._-+:@%,".contains(c);
+    if !path.is_empty() && path.chars().all(safe) {
+        path.to_string()
+    } else {
+        format!("'{}'", path.replace('\'', r"'\''"))
+    }
+}
+
+/// The hook configuration for `agent`, calling `osh` (an absolute path): what `osh agent setup` prints.
+fn setup(agent: Agent, osh: &str) -> String {
+    let osh = shell_word(osh);
+    let working = format!("{osh} agent state working");
+    let ask = format!("{osh} agent ask --timeout {ASK_DEFAULT_SECS}");
+    let done = format!("{osh} agent state done");
+    match agent {
+        Agent::Claude => {
+            let hook = |command: &str, extra: Value| {
+                let mut hook = json!({"type":"command","command":command});
+                hook.as_object_mut()
+                    .unwrap()
+                    .extend(extra.as_object().cloned().unwrap_or_default());
+                json!([{"hooks":[hook]}])
+            };
+            let config = json!({"hooks":{
+                "UserPromptSubmit": hook(&working, json!({"async":true})),
+                "PermissionRequest": hook(&ask, json!({"timeout":ASK_DEFAULT_SECS + 10})),
+                "Stop": hook(&done, json!({"async":true})),
+            }});
+            serde_json::to_string_pretty(&config).unwrap_or_default()
+        }
+        Agent::Codex => {
+            // TOML basic strings take the same escapes serde_json writes.
+            let table = |event: &str, command: &str, timeout: Option<u64>| {
+                let mut text = format!(
+                    "[[hooks.{event}]]\n[[hooks.{event}.hooks]]\ntype = \"command\"\ncommand = {}\n",
+                    json!(command)
+                );
+                if let Some(timeout) = timeout {
+                    text.push_str(&format!("timeout = {timeout}\n"));
+                }
+                text
+            };
+            [
+                "# OpenStreamHub deck hooks for Codex. Add these lines to ~/.codex/config.toml, next to any\n\
+                 # [[hooks.*]] tables already there. Codex runs new hooks only after you review and trust them:\n\
+                 # run /hooks in Codex once after adding them.\n"
+                    .to_string(),
+                table("UserPromptSubmit", &working, None),
+                table("PermissionRequest", &ask, Some(ASK_DEFAULT_SECS + 10)),
+                table("Stop", &done, None),
+            ]
+            .join("\n")
+            .trim_end()
+            .to_string()
+        }
+    }
+}
+
+/// How to merge the Claude Code snippet, printed on stderr so stdout stays plain JSON.
+const CLAUDE_HEADER: &str = "# OpenStreamHub deck hooks for Claude Code. Merge the \"hooks\" object below into\n\
+# ~/.claude/settings.json (or a project's .claude/settings.json). Where the file already has hooks for\n\
+# UserPromptSubmit, PermissionRequest or Stop, add these entries to those arrays.";
+
+/// Runs one command and returns what to print on stdout. `locate` finds the socket and the token file.
+fn run(args: &[String], locate: &dyn Fn() -> Result<Paths, Failure>) -> Result<String, Failure> {
     let command = parse(args)?;
+    match command {
+        Command::AgentSetup(agent) => {
+            let osh = env::current_exe()
+                .and_then(|path| path.canonicalize())
+                .map_err(|error| Failure(1, format!("osh: cannot find its own path: {error}")))?;
+            if agent == Agent::Claude {
+                eprintln!("{CLAUDE_HEADER}");
+            }
+            return Ok(setup(agent, &osh.to_string_lossy()));
+        }
+        Command::AgentState(state) => {
+            read_stdin();
+            if let Ok((socket, token)) = locate() {
+                let _ = set_text(&socket, &token, STATE, &state);
+            }
+            return Ok(String::new());
+        }
+        Command::AgentAsk { timeout } => {
+            catch_interrupts();
+            let hook = serde_json::from_str(&read_stdin()).unwrap_or(Value::Null);
+            return Ok(locate()
+                .map(|(socket, token)| ask(&socket, &token, &hook, timeout))
+                .unwrap_or_default());
+        }
+        _ => {}
+    }
     let (socket, token) = locate()?;
     match command {
         Command::Ping => request(&socket, &token, json!({"type":"ping"})).map(|_| "ok".into()),
@@ -194,8 +472,7 @@ fn run(args: &[String]) -> Result<String, Failure> {
         )
         .map(|_| String::new()),
         Command::Get { name } => {
-            let result = request(&socket, &token, json!({"type":"get_variables"}))?;
-            let variables = result["variables"].as_array().cloned().unwrap_or_default();
+            let variables = variables(&socket, &token)?;
             let lines: Vec<String> = match &name {
                 Some(name) => variables
                     .iter()
@@ -217,12 +494,15 @@ fn run(args: &[String]) -> Result<String, Failure> {
                 _ => Ok(lines.join("\n")),
             }
         }
+        Command::AgentState(_) | Command::AgentAsk { .. } | Command::AgentSetup(_) => {
+            unreachable!("handled above")
+        }
     }
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    match run(&args) {
+    match run(&args, &locate) {
         Ok(output) => {
             if !output.is_empty() {
                 println!("{output}");
@@ -235,7 +515,7 @@ fn main() -> ExitCode {
             } else {
                 eprintln!("{message}");
             }
-            ExitCode::from(code)
+            ExitCode::from(if is_hook(&args) { 0 } else { code })
         }
     }
 }
@@ -342,5 +622,330 @@ mod tests {
         let stale = request(&dir.join("s"), &dir.join("t"), json!({"type":"ping"})).unwrap_err();
         assert_eq!(stale, not_running());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_commands_are_parsed_strictly() {
+        assert_eq!(
+            parse(&args("agent state waiting")).unwrap(),
+            Command::AgentState("waiting".into())
+        );
+        assert_eq!(
+            parse(&args("agent ask")).unwrap(),
+            Command::AgentAsk {
+                timeout: Duration::from_secs(55)
+            }
+        );
+        assert_eq!(
+            parse(&args("agent ask --timeout 600")).unwrap(),
+            Command::AgentAsk {
+                timeout: Duration::from_secs(600)
+            }
+        );
+        assert_eq!(
+            parse(&args("agent setup codex")).unwrap(),
+            Command::AgentSetup(Agent::Codex)
+        );
+        for bad in [
+            "agent",
+            "agent state",
+            "agent state busy",
+            "agent state done now",
+            "agent ask --timeout",
+            "agent ask --timeout 0",
+            "agent ask --timeout 601",
+            "agent ask --timeout -1",
+            "agent ask 5",
+            "agent setup",
+            "agent setup gemini",
+        ] {
+            assert_eq!(parse(&args(bad)).unwrap_err().0, 2, "{bad}");
+        }
+        assert!(is_hook(&args("agent state nope")));
+        assert!(is_hook(&args("agent ask --timeout 0")));
+        assert!(!is_hook(&args("agent setup claude")));
+        assert!(!is_hook(&args("set agent_state done")));
+    }
+
+    #[test]
+    fn agent_state_succeeds_silently_whether_or_not_the_app_answers() {
+        let dir = temp_dir("state");
+        let paths = || Ok((dir.join("s"), dir.join("t")));
+        // Not running.
+        assert_eq!(run(&args("agent state working"), &paths), Ok(String::new()));
+        // Running, but the variable is not declared: the refusal is swallowed.
+        let app = fake_app(
+            &dir,
+            json!({"ok":false,"error":"variable agent_state is not declared"}),
+        );
+        assert_eq!(run(&args("agent state done"), &paths), Ok(String::new()));
+        let sent = app.join().unwrap();
+        assert_eq!(sent["name"], "agent_state");
+        assert_eq!(sent["value"], "done");
+        // No HOME or override: still nothing.
+        let nowhere = || Err(not_running());
+        assert_eq!(run(&args("agent state idle"), &nowhere), Ok(String::new()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What the fake deck does once `agent_state` is set to waiting.
+    #[derive(Clone, Copy)]
+    enum Deck {
+        /// Sets `agent_decision` to this after the second read.
+        Press(&'static str),
+        /// Never answers.
+        Silent,
+        /// The app quits at the first read.
+        Vanish,
+    }
+
+    /// A fake app serving many connections: it keeps the declared text variables, logs every request, and plays
+    /// `deck` once `agent_state` is set to waiting.
+    fn fake_service(
+        dir: &Path,
+        declared: &[(&str, &str)],
+        deck: Deck,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+        let listener = UnixListener::bind(dir.join("s")).unwrap();
+        std::fs::write(dir.join("t"), "abc\n").unwrap();
+        let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = log.clone();
+        let mut variables: Vec<(String, Value)> = declared
+            .iter()
+            .map(|(name, value)| (name.to_string(), json!(value)))
+            .collect();
+        std::thread::spawn(move || {
+            let mut reads_while_waiting = 0;
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { break };
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let waiting = variables
+                    .iter()
+                    .any(|(name, value)| name == STATE && value == "waiting");
+                let answer = match request["type"].as_str() {
+                    Some("get_variables") => {
+                        if waiting {
+                            reads_while_waiting += 1;
+                            match deck {
+                                Deck::Vanish => break,
+                                Deck::Press(value) if reads_while_waiting == 2 => {
+                                    for (name, slot) in &mut variables {
+                                        if name == DECISION {
+                                            *slot = json!(value);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let listed: Vec<Value> = variables
+                            .iter()
+                            .map(|(name, value)| json!({"service":"m4315","name":name,"value":value}))
+                            .collect();
+                        json!({"ok":true,"result":{"variables":listed}})
+                    }
+                    Some("set_variable") => {
+                        match variables
+                            .iter_mut()
+                            .find(|(name, _)| request["name"] == *name)
+                        {
+                            Some((_, slot)) => {
+                                *slot = request["value"].clone();
+                                json!({"ok":true,"result":{"applied":1}})
+                            }
+                            None => json!({"ok":false,"error":"not declared"}),
+                        }
+                    }
+                    _ => json!({"ok":true,"result":{}}),
+                };
+                seen.lock().unwrap().push(request);
+                (&stream)
+                    .write_all(format!("{answer}\n").as_bytes())
+                    .unwrap();
+            }
+        });
+        log
+    }
+
+    /// The `set_variable` requests the fake saw, as `name=value`.
+    fn sets(log: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request["type"] == "set_variable")
+            .map(|request| format!("{}={}", plain(&request["name"]), plain(&request["value"])))
+            .collect()
+    }
+
+    const BOTH: [(&str, &str); 2] = [(STATE, "idle"), (DECISION, "none")];
+    const HOOK: &str = r#"{"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+
+    fn ask_in(dir: &Path, timeout_ms: u64) -> String {
+        let hook: Value = serde_json::from_str(HOOK).unwrap();
+        ask(
+            &dir.join("s"),
+            &dir.join("t"),
+            &hook,
+            Duration::from_millis(timeout_ms),
+        )
+    }
+
+    #[test]
+    fn ask_allows_only_on_an_allow_from_the_deck() {
+        let dir = temp_dir("allow");
+        let log = fake_service(&dir, &BOTH, Deck::Press("allow"));
+        let output: Value = serde_json::from_str(&ask_in(&dir, 5_000)).unwrap();
+        assert_eq!(
+            output,
+            json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
+        );
+        assert_eq!(
+            sets(&log),
+            [
+                "agent_decision=none",
+                "agent_state=waiting",
+                "agent_decision=none",
+                "agent_state=working"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_denies_with_a_message() {
+        let dir = temp_dir("deny");
+        let log = fake_service(&dir, &BOTH, Deck::Press("deny"));
+        let output: Value = serde_json::from_str(&ask_in(&dir, 5_000)).unwrap();
+        assert_eq!(
+            output["hookSpecificOutput"]["decision"],
+            json!({"behavior":"deny","message":"Denied on the deck"})
+        );
+        assert_eq!(sets(&log).last().unwrap(), "agent_state=working");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_times_out_to_the_normal_prompt_and_ignores_a_stale_allow() {
+        let dir = temp_dir("timeout");
+        // An allow left over from before the request must not count: ask clears it first.
+        let log = fake_service(&dir, &[(STATE, "idle"), (DECISION, "allow")], Deck::Silent);
+        let started = Instant::now();
+        assert_eq!(ask_in(&dir, 600), "");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(
+            sets(&log),
+            [
+                "agent_decision=none",
+                "agent_state=waiting",
+                "agent_decision=none",
+                "agent_state=idle"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ask_prints_nothing_when_the_app_is_missing_quits_or_lacks_the_variables() {
+        let dir = temp_dir("ask-none");
+        let started = Instant::now();
+        assert_eq!(ask_in(&dir, 5_000), "");
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        let log = fake_service(&dir, &[(STATE, "idle")], Deck::Press("allow"));
+        assert_eq!(ask_in(&dir, 5_000), "");
+        assert_eq!(sets(&log), Vec::<String>::new());
+
+        let other = temp_dir("ask-vanish");
+        fake_service(&other, &BOTH, Deck::Vanish);
+        assert_eq!(ask_in(&other, 5_000), "");
+
+        // Wired to another event, ask does nothing at all.
+        let third = temp_dir("ask-event");
+        let log = fake_service(&third, &BOTH, Deck::Press("allow"));
+        let hook = json!({"hook_event_name":"PreToolUse"});
+        assert_eq!(
+            ask(
+                &third.join("s"),
+                &third.join("t"),
+                &hook,
+                Duration::from_secs(5)
+            ),
+            ""
+        );
+        assert!(log.lock().unwrap().is_empty());
+        for dir in [dir, other, third] {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn setup_prints_valid_configuration_with_a_quoted_path() {
+        assert_eq!(
+            shell_word("/Applications/OpenStreamHub.app/Contents/MacOS/osh"),
+            "/Applications/OpenStreamHub.app/Contents/MacOS/osh"
+        );
+        assert_eq!(
+            shell_word("/Users/a b/it's/osh"),
+            r"'/Users/a b/it'\''s/osh'"
+        );
+
+        let claude: Value = serde_json::from_str(&setup(Agent::Claude, "/Users/a b/osh")).unwrap();
+        let hooks = &claude["hooks"];
+        let hook = |event: &str| hooks[event][0]["hooks"][0].clone();
+        assert_eq!(
+            hook("PermissionRequest"),
+            json!({"type":"command","command":"'/Users/a b/osh' agent ask --timeout 55","timeout":65})
+        );
+        assert_eq!(
+            hook("UserPromptSubmit"),
+            json!({"type":"command","command":"'/Users/a b/osh' agent state working","async":true})
+        );
+        assert_eq!(
+            hook("Stop"),
+            json!({"type":"command","command":"'/Users/a b/osh' agent state done","async":true})
+        );
+        assert_eq!(hooks.as_object().unwrap().len(), 3);
+
+        let codex = setup(Agent::Codex, "/opt/osh\"x");
+        assert!(codex.contains("/hooks"));
+        let mut tables = Vec::new();
+        for line in codex
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        {
+            if let Some(table) = line
+                .strip_prefix("[[")
+                .and_then(|line| line.strip_suffix("]]"))
+            {
+                tables.push(table.to_string());
+                continue;
+            }
+            let (key, value) = line.split_once(" = ").expect(line);
+            match key {
+                "type" => assert_eq!(value, "\"command\""),
+                "timeout" => assert_eq!(value, "65"),
+                "command" => {
+                    let command: String = serde_json::from_str(value).unwrap();
+                    assert!(command.starts_with(r#"'/opt/osh"x' agent "#), "{command}");
+                }
+                _ => panic!("unexpected key {key}"),
+            }
+        }
+        assert_eq!(
+            tables,
+            [
+                "hooks.UserPromptSubmit",
+                "hooks.UserPromptSubmit.hooks",
+                "hooks.PermissionRequest",
+                "hooks.PermissionRequest.hooks",
+                "hooks.Stop",
+                "hooks.Stop.hooks"
+            ]
+        );
+        assert!(
+            codex.contains("command = \"'/opt/osh\\\"x' agent ask --timeout 55\"\ntimeout = 65")
+        );
     }
 }

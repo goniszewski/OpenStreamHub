@@ -178,6 +178,7 @@ The app does not contact a remote service on its own. **Settings → Updates** h
 | [Focused-app rules](docs/masterhub-focus-rules.md) | [macOS roadmap](docs/masterhub-macos-plan.md) |
 | [Diagnostics and replay](docs/masterhub-diagnostics.md) | [Session lifecycle](docs/masterhub-session-manager.md) |
 | [Display sync](docs/masterhub-display-sync.md) | [Release process](docs/release-process.md) |
+| [AI agent prompts](docs/agent-integration.md) | |
 
 Try the [example profiles](examples/profiles/), including [macOS controls](examples/profiles/macos.json), [all modules](examples/profiles/all-modules.json), [keypad folders](examples/profiles/keypad-folders.json) and [dial functions](examples/profiles/dial-functions.json).
 

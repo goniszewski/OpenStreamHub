@@ -28,12 +28,13 @@
 - A "Terminal and AI agents" starter (declares an `agent_state` variable; its Accept key shows Working / Needs you / Done faces for the values `working` / `waiting` / `done`): Accept, Interrupt, Cycle mode, Continue, /clear, /compact, Ctrl+C/D/L and tab keys, with the knobs on prompt history and scrolling. It is the one starter that sends keys and text, so `typingActionIssue` checks it and the dry-run-safe test leaves it out (a separate test limits it to shortcuts and text). After creating it, a notice offers "Switch to it when a terminal is in front": one focused-app rule for each installed terminal (Terminal, iTerm2, Ghostty, Warp, kitty, WezTerm, Alacritty, VS Code) via `FocusRulesStore.addForApps`, which keeps an app's existing rule and turns the rules on.
 - Outside tools can read and set variables of a running profile: the app listens on an owner-only socket in `<app data>/ingress/` guarded by a per-launch token, and the new `osh` tool (`osh set|get|ping`) talks to it. The service keeps variable values in a shared store (`SharedVariables`) so a set applies at once; new `set_variable` and `get_variables` control requests carry it. `osh` ships inside the app (`OpenStreamHub.app/Contents/MacOS/osh`, built by `npm run sidecar` next to the service and checked for its signature in the release workflow).
 - Key faces (service side): an action tile may carry `faces` (a variable test, then a label and/or background colour); the first that holds is drawn instead of the tile's normal face, redrawn within about 50 ms of a variable change (key press or `osh set`), with a minimum gap between redraws. Faces are drawn once at start-up with the built-in font, so they replace artwork on that tile while active. Profiles that use `faces` do not load in older builds (the schema number is unchanged). The inspector has a Faces section under the key artwork (variable, comparison, value, label, background colour, preview, reorder, at most 8).
+- Answer an AI agent's permission prompts from the deck: `osh agent setup claude|codex` prints a hook config; `osh agent ask` (a PermissionRequest hook) sets `agent_state` to waiting and waits for the starter's Accept or Deny key (which set `agent_decision`), then answers the agent. Any failure, timeout or closed app leaves the normal prompt; it never allows without a deck press. `osh agent state` sets working/done from other hooks and always exits 0. See `docs/agent-integration.md`. Not yet run against a real agent session.
 - The assignments popup, Variables panel and variable pickers take their text from the message catalogue. "Used by N triggers:" counts the triggers listed under it.
 - Tests: new DOM tests (`jsdom` as a dev dependency, `dom-test.ts` harness) drive the select, the assignments popup and the Variables links; Rust tests cover the app picker's cancel and failure paths and fake app bundles.
 - The header's Manage profiles button swaps lucide `FolderCog` for `Layers`; the folder-with-cog glyph read as "add folder" at 17px.
 
 ## Test plan
-- [x] `tsc` and the full vitest suite pass (1440 tests) and `cargo test` for the Tauri app
+- [x] `tsc` and the full vitest suite pass (1442 tests) and `cargo test` for the Tauri app
 - [ ] Open a dropdown near the bottom of the inspector and check it is not clipped
 - [ ] Click and keyboard use of the dropdown and the assignments popup in the built app
 - [ ] Click a trigger under "Used … by:" in the Variables panel and check it opens that binding
@@ -42,5 +43,6 @@
 - [ ] Pick an app for a new key: its name shows under the icon; edit Key label and the key redraws; Clear key has room around it
 - [ ] Create the Terminal and AI agents starter, use the notice's button, and check the rules for your installed terminals appear and the profile switches when one is in front
 - [ ] Add a face to a key in the inspector, then `osh set agent_state working` (app bundle: `Contents/MacOS/osh`) and check the key changes within a moment
+- [ ] Install the hooks with `osh agent setup claude`, trigger a permission prompt in Claude Code, and answer it with Accept and Deny on the deck; let one time out and check the normal prompt appears
 - [ ] Add an If with no variables: no value field, link focuses Add variable
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Action, FaderTemplate, LiveDevice, Profile } from './contracts';
+import type { Action, BranchStep, FaderTemplate, LiveDevice, Profile } from './contracts';
 import { keyFaceIssue, labelIssue } from './draft-model';
 import { FakeStorage } from './fake-storage';
 import { namedKeys } from './action-model';
@@ -9,12 +9,18 @@ import { controlCounts, gestures, modules } from './ui-model';
 
 const device = (path: string, module: LiveDevice['module']): LiveDevice => ({ path_hex: path, module, serial_number: null });
 
-// Walks every action in a starter profile, including the keypad tiles.
-function* actionsOf(profile: Profile): Generator<{ action: Action | FaderTemplate; where: string }> {
-  for (const binding of profile.bindings) yield { action: binding.action, where: `${binding.module}/${binding.control}/${binding.gesture}` };
+// Walks every action in a starter profile, including the keypad tiles and the steps inside an if / else.
+function* actionsOf(profile: Profile): Generator<{ action: Action | FaderTemplate | BranchStep; where: string }> {
+  function* withSteps(action: Action | FaderTemplate | BranchStep, where: string): Generator<{ action: Action | FaderTemplate | BranchStep; where: string }> {
+    yield { action, where };
+    if (action.type !== 'conditional') return;
+    for (const [index, step] of action.then.entries()) yield* withSteps(step, `${where}/then/${index}`);
+    for (const [index, step] of (action.else ?? []).entries()) yield* withSteps(step, `${where}/else/${index}`);
+  }
+  for (const binding of profile.bindings) yield* withSteps(binding.action, `${binding.module}/${binding.control}/${binding.gesture}`);
   for (const page of profile.keypad?.pages ?? []) for (const [index, slot] of page.slots.entries()) {
     if (slot?.type !== 'action') continue;
-    for (const keypadBinding of slot.bindings) yield { action: keypadBinding.action, where: `keypad/${page.id}/${index}` };
+    for (const keypadBinding of slot.bindings) yield* withSteps(keypadBinding.action, `keypad/${page.id}/${index}`);
   }
 }
 
@@ -58,8 +64,8 @@ describe('shipped starters', () => {
   });
   it('let the terminal starter\'s Accept key follow the agent_state variable', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;
-    expect(terminal.profile.variables).toEqual([{ name: 'agent_state', value: 'idle' }]);
-    const [accept, ...rest] = terminal.profile.keypad!.pages[0].slots;
+    expect(terminal.profile.variables).toEqual([{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }]);
+    const [accept, , ...rest] = terminal.profile.keypad!.pages[0].slots;
     expect(accept?.type === 'action' && accept.label).toBe('Accept');
     const faces = accept?.type === 'action' ? accept.faces ?? [] : [];
     expect(faces.map(face => [face.when, face.label, face.background])).toEqual([
@@ -68,10 +74,47 @@ describe('shipped starters', () => {
       [{ variable_is: { name: 'agent_state', value: 'done' } }, 'Done', '#1f9d55'],
     ]);
     for (const face of faces) expect(keyFaceIssue(face, terminal.profile.variables!), face.label).toBeNull();
-    // Idle has no face: the key shows its normal face. No other tile has faces.
+    // Idle has no face: the key shows its normal face. Only Accept and Interrupt have faces.
     expect(rest.filter(slot => slot?.type === 'action' && slot.faces)).toEqual([]);
     expect(terminal.description).toContain('agent_state');
     expect(terminal.description).toContain('osh');
+  });
+  it('let Accept and Interrupt answer a waiting permission prompt and otherwise send their keys', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!;
+    const [accept, deny] = terminal.profile.keypad!.pages[0].slots;
+    const waiting = { variable_is: { name: 'agent_state', value: 'waiting' } };
+    const action = (slot: typeof accept) => (slot?.type === 'action' ? slot.bindings[0].action : null);
+    expect(action(accept)).toEqual({ type: 'conditional', when: waiting, then: [{ type: 'set_variable', name: 'agent_decision', value: 'allow' }], else: [{ type: 'shortcut', key: 'return', modifiers: [] }] });
+    expect(action(deny)).toEqual({ type: 'conditional', when: waiting, then: [{ type: 'set_variable', name: 'agent_decision', value: 'deny' }], else: [{ type: 'shortcut', key: 'escape', modifiers: [] }] });
+    expect(deny?.type === 'action' && deny.label).toBe('Interrupt');
+    expect(deny?.type === 'action' && deny.faces).toEqual([{ when: waiting, label: 'Deny', background: '#c81e1e' }]);
+    expect(terminal.description).toContain('osh agent setup claude');
+    expect(terminal.description).toContain('Accept and Deny answer permission prompts');
+  });
+  it('check if / else and variable steps in the terminal starter only, nested steps included', () => {
+    const terminal = starters.find(item => item.id === 'terminal-agents')!.profile;
+    const withAccept = (action: object): Profile => {
+      const [accept, ...rest] = terminal.keypad!.pages[0].slots;
+      const slot = { ...accept!, bindings: [{ gesture: 'pressed', action }] } as typeof accept;
+      return { ...terminal, keypad: { pages: [{ ...terminal.keypad!.pages[0], slots: [slot, ...rest] }] } };
+    };
+    const when = { variable_is: { name: 'agent_state', value: 'waiting' } };
+    const set = (name: string, value: string | number) => ({ type: 'set_variable', name, value });
+    // The dry-run-safe check every other starter uses refuses both.
+    expect(starterIssue(terminal)).toContain('does not belong in a starter');
+    expect(starterIssue(withAccept(set('agent_decision', 'allow')))).toContain('does not belong in a starter');
+    // A step that launches is refused inside a branch.
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: [{ type: 'launch_app', bundle_id: 'com.apple.Terminal' }] }), typingActionIssue)).toContain('launch_app does not belong');
+    // Undeclared or mistyped variables, in the test or a step.
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: [set('missing', 'x')] }), typingActionIssue)).toContain('missing is not declared');
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: [set('agent_decision', 3)] }), typingActionIssue)).toContain('is text, not number');
+    expect(starterIssue(withAccept({ type: 'conditional', when: { variable_is: { name: 'nope', value: 'x' } }, then: [set('agent_decision', 'allow')] }), typingActionIssue)).toContain('nope is not declared');
+    // The flow limits Rust enforces.
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: [] }), typingActionIssue)).toContain('at least one Then step');
+    expect(starterIssue(withAccept({ type: 'conditional', when, then: Array(9).fill(set('agent_decision', 'allow')) }), typingActionIssue)).toContain('at most 8 steps');
+    const nested = (depth: number): object => ({ type: 'conditional', when, then: [depth > 1 ? nested(depth - 1) : set('agent_decision', 'allow')] });
+    expect(starterIssue(withAccept(nested(3)), typingActionIssue)).toBeNull();
+    expect(starterIssue(withAccept(nested(4)), typingActionIssue)).toContain('3 levels deep');
   });
   it('refuse faces and variables the service would refuse', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!.profile;
@@ -85,10 +128,11 @@ describe('shipped starters', () => {
     expect(starterIssue(withAccept({ faces: [{ ...face, background: 'amber' }] }), typingActionIssue)).toContain('hex colour');
     expect(starterIssue({ ...terminal, variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_state', value: 'x' }] }, typingActionIssue)).toContain('declared twice');
   });
-  it('let the terminal starter send keys and text, and nothing that launches, opens or reaches OBS', () => {
+  it('let the terminal starter send keys and text and answer agent hooks, and nothing that launches, opens or reaches OBS', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;
     for (const { action, where } of actionsOf(terminal.profile)) {
-      expect(['shortcut', 'text'], where).toContain(action.type);
+      expect(['shortcut', 'text', 'conditional', 'set_variable'], where).toContain(action.type);
+      if (action.type === 'set_variable') expect(action.name, where).toBe('agent_decision');
     }
   });
   it('hold the stream only behind the press-twice guard', () => {

@@ -3,11 +3,11 @@
 // is offered, and which module an inventory change should prompt for. Rust
 // remains the authority on profile validity; the tests pin the structural
 // rules these templates must meet.
-import type { Action, Binding, Modifier, BindingAction, KeyFace, KeypadSlot, LiveDevice, Profile, ServiceModule } from './contracts';
+import type { Action, Binding, BranchStep, Condition, ConditionalAction, Modifier, BindingAction, KeyFace, KeypadSlot, LiveDevice, Profile, ServiceModule, Variable, VariableValue } from './contracts';
 import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { keyFaceIssue, maximumKeyFaces } from './draft-model';
-import { variablesIssue } from './flow-model';
+import { flowIssue, groupItems, isGroup, variableKind, variableNameIssue, variableValueIssue, variablesIssue } from './flow-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -156,24 +156,34 @@ const editing: StarterTemplate = {
 // A face shown while the text variable `agent_state` holds `value`.
 const agentFace = (value: string, label: string, background: string): KeyFace => ({ when: { variable_is: { name: 'agent_state', value } }, label, background });
 
-const shortcut = (key: string, ...modifiers: Modifier[]): Action => ({ type: 'shortcut', key, modifiers });
+const shortcut = (key: string, ...modifiers: Modifier[]): Action & BranchStep => ({ type: 'shortcut', key, modifiers });
 const typed = (text: string): Action => ({ type: 'text', text, press_enter: true });
+
+// While an agent waits on a permission prompt (`osh agent ask` set `agent_state` to waiting), the key answers it
+// by setting `agent_decision`; otherwise it sends its usual key.
+const answerOr = (decision: 'allow' | 'deny', otherwise: BranchStep): ConditionalAction => ({
+  type: 'conditional',
+  when: { variable_is: { name: 'agent_state', value: 'waiting' } },
+  then: [{ type: 'set_variable', name: 'agent_decision', value: decision }],
+  else: [otherwise],
+});
 
 // Keys for working with a coding agent (Claude Code, Codex) or any shell in a
 // terminal. Everything is sent to the app in front, so it suits the terminal
 // being the focused window. It types, so it is the one starter that is not
 // dry-run safe (see the starter tests). The Accept key follows the text variable `agent_state`, which an agent's hooks
 // set through the bundled `osh` tool: amber while it works, red when it needs you, green when it is done, and its
-// normal face while idle.
+// normal face while idle. While the agent waits on a permission prompt, Accept and the Interrupt key (then showing
+// Deny) answer it through `agent_decision` (docs/agent-integration.md).
 const terminalAgents: StarterTemplate = {
   id: 'terminal-agents',
   name: 'Terminal and AI agents',
   focusApps: terminalApps,
-  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool.',
+  description: 'Keys for Claude Code, Codex and any terminal: interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. Keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool. With the hook installed (osh agent setup claude), Accept and Deny answer permission prompts.',
   profile: {
     schema_version: currentSchema,
     name: 'Terminal and AI agents',
-    variables: [{ name: 'agent_state', value: 'idle' }],
+    variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }],
     bindings: [
       { module: 'm131e', control: 0, gesture: 'right', action: shortcut('arrow_down') },
       { module: 'm131e', control: 0, gesture: 'left', action: shortcut('arrow_up') },
@@ -183,12 +193,12 @@ const terminalAgents: StarterTemplate = {
       { module: 'm003k', control: 0, gesture: 'pressed', action: shortcut('escape') },
     ],
     keypad: keys(
-      key('Accept', shortcut('return'), [
+      key('Accept', answerOr('allow', shortcut('return')), [
         agentFace('working', 'Working', '#d98e04'),
         agentFace('waiting', 'Needs you', '#c81e1e'),
         agentFace('done', 'Done', '#1f9d55'),
       ]),
-      key('Interrupt', shortcut('escape')),
+      key('Interrupt', answerOr('deny', shortcut('escape')), [agentFace('waiting', 'Deny', '#c81e1e')]),
       key('Cycle mode', shortcut('tab', 'shift')),
       key('Continue', typed('continue')),
       key('/clear', typed('/clear')),
@@ -261,7 +271,7 @@ export function starterIssue(profile: Profile, check: ActionCheck = actionIssue)
   if (variableIssue) return variableIssue;
   const flat = new Set<string>();
   for (const binding of profile.bindings) {
-    const issue = bindingIssue(binding, check);
+    const issue = bindingIssue(binding, check, variables);
     if (issue) return issue;
     flat.add(`${binding.module}/${binding.control}/${binding.gesture}`);
   }
@@ -282,24 +292,65 @@ export function starterIssue(profile: Profile, check: ActionCheck = actionIssue)
     }
     for (const keypadBinding of slot.bindings) {
       if (keypadBinding.gesture !== 'pressed') return 'Starter tiles bind press only.';
-      const issue = check(keypadBinding.action);
+      const issue = check(keypadBinding.action) ?? variableUseIssue(keypadBinding.action, variables);
       if (issue) return issue;
     }
   }
   return null;
 }
 
-function bindingIssue(binding: Binding, check: ActionCheck): string | null {
+function bindingIssue(binding: Binding, check: ActionCheck, variables: ReadonlyArray<Variable>): string | null {
   if (!(binding.module in controlCounts)) return `Unknown module ${binding.module}.`;
   if (binding.module === 'm4315') return 'The 15-key module is bound through the keypad pages, not flat bindings.';
   if (binding.control < 0 || binding.control >= controlCounts[binding.module]) return `Control ${binding.control} is out of range for ${binding.module}.`;
   if (!gestures[binding.module].includes(binding.gesture)) return `Gesture ${binding.gesture} is unsupported for ${binding.module}.`;
-  return check(binding.action);
+  return check(binding.action) ?? variableUseIssue(binding.action, variables);
 }
 
-// The terminal starter is the one that sends keys and text, so it is checked with this: keys and typed text on
-// top of what every starter may hold.
-export const typingActionIssue = (action: BindingAction): string | null => action.type === 'shortcut' || action.type === 'text' ? null : actionIssue(action);
+// Every variable an action sets or tests, nested steps included, is declared with the kind it uses
+// (Action::check_variables in profile.rs).
+function variableUseIssue(action: BindingAction, variables: ReadonlyArray<Variable>): string | null {
+  const use = (name: string, value: VariableValue, wanted = variableKind(value)): string | null => {
+    const declared = variables.find(variable => variable.name === name);
+    if (!declared) return `Variable ${name} is not declared.`;
+    return variableKind(declared.value) === wanted ? null : `Variable ${name} is ${variableKind(declared.value)}, not ${wanted}.`;
+  };
+  if (action.type === 'set_variable') return use(action.name, action.value);
+  if (action.type !== 'conditional') return null;
+  const leaves = (condition: Condition): Condition[] => (isGroup(condition) ? groupItems(condition).flatMap(leaves) : [condition]);
+  for (const leaf of leaves(action.when)) {
+    const issue = 'variable_is' in leaf ? use(leaf.variable_is.name, leaf.variable_is.value)
+      : 'variable_at_least' in leaf ? use(leaf.variable_at_least.name, leaf.variable_at_least.value, 'number') : null;
+    if (issue) return issue;
+  }
+  for (const step of action.then.concat(action.else ?? [])) {
+    const issue = variableUseIssue(step, variables);
+    if (issue) return issue;
+  }
+  return null;
+}
+
+// The terminal starter is the one that sends keys and text and answers agent hooks, so it is checked with this:
+// keys, typed text, setting a variable and if / else on top of what every starter may hold. An if / else keeps the
+// limits Rust enforces, and its steps are checked the same way.
+export function typingActionIssue(action: BindingAction): string | null {
+  switch (action.type) {
+    case 'shortcut':
+    case 'text':
+      return null;
+    case 'set_variable': return variableNameIssue(action.name) ?? variableValueIssue(action.value);
+    case 'conditional': {
+      const flow = flowIssue(action);
+      if (flow) return flow;
+      for (const step of action.then.concat(action.else ?? [])) {
+        const issue = typingActionIssue(step);
+        if (issue) return issue;
+      }
+      return null;
+    }
+    default: return actionIssue(action);
+  }
+}
 
 // Starters stay dry-run safe: nothing that types into apps, launches or opens
 // anything, and no OBS action that names a scene or source of a set-up OBS. Going live is allowed only behind the

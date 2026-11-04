@@ -17,6 +17,8 @@
 //!
 //! `OSH_SOCKET` and `OSH_TOKEN_FILE` override where the socket and the token are found.
 
+mod registry;
+
 use osh::{
     AGENT_DECISION as DECISION, AGENT_STATE as STATE, ASK_DEFAULT_SECS, Agent, CLAUDE_HEADER,
     DECISION_CLEARED, TRANSLOCATED, is_translocated, setup,
@@ -38,10 +40,21 @@ const TIMEOUT: Duration = Duration::from_secs(3);
 /// The longest answer read back.
 const MAX_ANSWER: u64 = 64 * 1024;
 
-const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n       osh get [name]\n       osh ping\n       osh agent state <working|waiting|done|idle>\n       osh agent ask [--timeout SECS]\n       osh agent setup <claude|codex>";
+const USAGE: &str = "usage: osh set [--kind bool|number|text] <name> <value>\n       osh get [name]\n       osh ping\n       osh agent state <working|waiting|done|idle|end>\n       osh agent ask [--timeout SECS]\n       osh agent setup <claude|codex>";
 
 /// The states `agent state` takes (the terminal starter's `agent_state`).
-const AGENT_STATES: [&str; 4] = ["working", "waiting", "done", "idle"];
+const AGENT_STATES: [&str; 5] = ["working", "waiting", "done", "idle", "end"];
+
+/// The number variable counting the sessions that wait for the deck (optional in a profile).
+const WAITING: &str = "agent_waiting";
+/// The registry of sessions and its lock, next to the socket.
+const REGISTRY: &str = "agents.json";
+const REGISTRY_LOCK: &str = "agents.lock";
+/// How long a hook waits for the registry lock.
+const REGISTRY_WAIT: Duration = Duration::from_secs(2);
+/// After one prompt is answered the next waits this long, showing Working, before it asks: a repeated press for the
+/// first prompt must not answer the second, which was never shown.
+const SETTLE: Duration = Duration::from_millis(1500);
 /// How long `agent ask` waits for the deck at most (the default is `osh::ASK_DEFAULT_SECS`).
 const ASK_MAX_SECS: u64 = 600;
 /// How often `agent ask` reads the decision.
@@ -145,7 +158,7 @@ fn parse_agent(args: &[&str]) -> Result<Command, Failure> {
         ["setup", "claude"] => Ok(Command::AgentSetup(Agent::Claude)),
         ["setup", "codex"] => Ok(Command::AgentSetup(Agent::Codex)),
         _ => Err(usage(
-            "agent takes state <working|waiting|done|idle>, ask [--timeout SECS] or setup <claude|codex>",
+            "agent takes state <working|waiting|done|idle|end>, ask [--timeout SECS] or setup <claude|codex>",
         )),
     }
 }
@@ -373,13 +386,69 @@ fn hook_answer(behavior: &str) -> String {
         .to_string()
 }
 
+/// Takes the registry lock, waiting a little for another hook that holds it.
+fn registry_lock(socket: &Path) -> Option<std::fs::File> {
+    let path = dir_of(socket).join(REGISTRY_LOCK);
+    let deadline = Instant::now() + REGISTRY_WAIT;
+    loop {
+        match try_lock(&path) {
+            Ok(Some(file)) => return Some(file),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            _ => return None,
+        }
+    }
+}
+
+fn dir_of(socket: &Path) -> &Path {
+    socket.parent().unwrap_or_else(|| Path::new("."))
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// Records one entry's state and shows the summary of all entries on the deck.
+fn publish(socket: &Path, token: &Path, changes: &[(&str, &str)]) {
+    // Without the lock nothing is written: a raw state could hide another session's prompt.
+    let Some(_lock) = registry_lock(socket) else {
+        return;
+    };
+    let path = dir_of(socket).join(REGISTRY);
+    let now = now_ms();
+    let mut sessions = registry::load(&path);
+    registry::prune(&mut sessions, now, &registry::alive);
+    for (id, state) in changes {
+        registry::record(&mut sessions, id, state, now, std::process::id());
+    }
+    let _ = registry::save(&path, &sessions);
+    let summary = registry::summary(&sessions);
+    let _ = set_text(socket, token, STATE, summary.state);
+    // Optional: a profile that does not declare it refuses, which is fine.
+    let _ = request(
+        socket,
+        token,
+        json!({"type":"set_variable","name":WAITING,"value":summary.waiting}),
+    );
+}
+
+/// Whether session `id` is the one whose ask goes next (the registry says nothing against it).
+fn is_next(socket: &Path, id: &str) -> bool {
+    let path = dir_of(socket).join(REGISTRY);
+    let mut sessions = registry::load(&path);
+    registry::prune(&mut sessions, now_ms(), &registry::alive);
+    registry::front(&sessions).is_none_or(|front| front == id)
+}
+
 /// Shows the request on the deck and waits for Accept or Deny. Returns what the hook prints: the answer, or
 /// nothing, which leaves the agent's own permission prompt in charge. Only an explicit `allow` on the deck allows;
 /// any error, the timeout or an interrupt prints nothing.
 ///
-/// One ask at a time: it holds the ask lock for the whole wait, and an ask that finds it held prints nothing at
-/// once, so that agent shows its normal prompt. The decision is cleared in strict mode first; when that does not
-/// reach every module that declares it, the ask prints nothing.
+/// Sessions share the deck: this one is recorded as waiting (the deck shows Needs you, and the count of those
+/// waiting), then it queues for the ask lock, oldest first, so Accept and Deny answer one prompt at a time. The
+/// timeout covers the queue too. The decision is cleared in strict mode before the wait; when that does not reach
+/// every module that declares it, the ask prints nothing.
 fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
     if hook
         .get("hook_event_name")
@@ -388,9 +457,6 @@ fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
         return String::new();
     }
     let deadline = Instant::now() + timeout;
-    let Ok(Some(_lock)) = try_lock(&ask_lock_path(socket)) else {
-        return String::new();
-    };
     let Ok(declared) = variables(socket, token) else {
         return String::new();
     };
@@ -400,22 +466,67 @@ fn ask(socket: &Path, token: &Path, hook: &Value, timeout: Duration) -> String {
     {
         return String::new();
     }
-    if clear_decision(socket, token).is_err() {
-        return String::new();
+    let session = registry::session_id(hook);
+    let key = registry::ask_key(&session, std::process::id());
+    publish(socket, token, &[(&key, "waiting")]);
+    // The lock is held until the decision is cleared again, so the next ask in line starts from a clean slate.
+    let turn = queue_for_turn(socket, &key, deadline);
+    let decision = turn.as_ref().and_then(|(_, queued)| {
+        if *queued {
+            // The press that answered the previous prompt may be repeated: show Working for a moment, clear what
+            // that left behind, and only then ask, so a late press never reaches this prompt.
+            publish(socket, token, &[(&key, "settling")]);
+            sleep_until(Instant::now() + SETTLE, deadline);
+            clear_decision(socket, token).ok()?;
+            publish(socket, token, &[(&key, "waiting")]);
+        }
+        clear_decision(socket, token).ok()?;
+        await_decision(socket, token, deadline)
+    });
+    // Only the ask whose turn it was may clear: another's answer could be waiting.
+    if turn.is_some() {
+        let _ = clear_decision(socket, token);
     }
-    let decision = set_text(socket, token, STATE, "waiting")
-        .ok()
-        .and_then(|()| await_decision(socket, token, deadline));
-    let _ = clear_decision(socket, token);
+    drop(turn);
     match decision {
         Some(behavior) => {
-            let _ = set_text(socket, token, STATE, "working");
+            // The session carries on with the tool: it works until its own hooks say more.
+            publish(socket, token, &[(&key, "idle"), (&session, "working")]);
             hook_answer(behavior)
         }
         None => {
-            let _ = set_text(socket, token, STATE, "idle");
+            publish(socket, token, &[(&key, "idle")]);
             String::new()
         }
+    }
+}
+
+/// Sleeps until `until` or the deadline, and stops early on an interrupt.
+fn sleep_until(until: Instant, deadline: Instant) {
+    let end = until.min(deadline);
+    while Instant::now() < end && !INTERRUPTED.load(Ordering::SeqCst) {
+        std::thread::sleep(POLL.min(end.saturating_duration_since(Instant::now())));
+    }
+}
+
+/// Waits until this ask is first in line and takes the ask lock; the lock is the returned file, with whether the
+/// ask had to queue. None on the deadline, an interrupt, or when no lock can be had.
+fn queue_for_turn(socket: &Path, key: &str, deadline: Instant) -> Option<(std::fs::File, bool)> {
+    let lock = ask_lock_path(socket);
+    let mut queued = false;
+    loop {
+        if INTERRUPTED.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            return None;
+        }
+        if is_next(socket, key) {
+            match try_lock(&lock) {
+                Ok(Some(file)) => return Some((file, queued)),
+                Ok(None) => {}
+                Err(_) => return None,
+            }
+        }
+        queued = true;
+        std::thread::sleep(POLL);
     }
 }
 
@@ -465,19 +576,9 @@ fn setup_for(agent: Agent, osh: &Path) -> Result<String, Failure> {
     Ok(setup(agent, &osh))
 }
 
-/// Sets `agent_state`, unless an `agent ask` holds the ask lock: its `waiting` stays until it ends. The lock is held
-/// for the one request, so an ask starting meanwhile finds it taken and leaves the prompt to the agent.
-fn set_state(socket: &Path, token: &Path, state: &str) {
-    match try_lock(&ask_lock_path(socket)) {
-        Ok(None) => {}
-        Ok(Some(_lock)) => {
-            let _ = set_text(socket, token, STATE, state);
-        }
-        // No lock to be had (the app never ran here, or the file is not a plain file): set as before.
-        Err(_) => {
-            let _ = set_text(socket, token, STATE, state);
-        }
-    }
+/// Records the state of the session a hook belongs to; the deck shows the summary of all sessions.
+fn set_state(socket: &Path, token: &Path, hook: &Value, state: &str) {
+    publish(socket, token, &[(&registry::session_id(hook), state)]);
 }
 
 /// Runs one command and returns what to print on stdout. `locate` finds the socket and the token file.
@@ -491,9 +592,9 @@ fn run(args: &[String], locate: &dyn Fn() -> Result<Paths, Failure>) -> Result<S
             return setup_for(agent, &osh);
         }
         Command::AgentState(state) => {
-            read_stdin();
+            let hook = serde_json::from_str(&read_stdin()).unwrap_or(Value::Null);
             if let Ok((socket, token)) = locate() {
-                set_state(&socket, &token, &state);
+                set_state(&socket, &token, &hook, &state);
             }
             return Ok(String::new());
         }
@@ -820,13 +921,21 @@ mod tests {
         log
     }
 
-    /// The `set_variable` requests the fake saw, as `name=value`.
-    fn sets(log: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+    /// Every `set_variable` request the fake saw, as `name=value`.
+    fn all_sets(log: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
         log.lock()
             .unwrap()
             .iter()
             .filter(|request| request["type"] == "set_variable")
             .map(|request| format!("{}={}", plain(&request["name"]), plain(&request["value"])))
+            .collect()
+    }
+
+    /// The sets without the optional waiting counter.
+    fn sets(log: &std::sync::Mutex<Vec<Value>>) -> Vec<String> {
+        all_sets(log)
+            .into_iter()
+            .filter(|set| !set.starts_with("agent_waiting="))
             .collect()
     }
 
@@ -853,12 +962,14 @@ mod tests {
             json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}})
         );
         assert_eq!(
-            sets(&log),
+            all_sets(&log),
             [
-                "agent_decision=none",
                 "agent_state=waiting",
+                "agent_waiting=1",
                 "agent_decision=none",
-                "agent_state=working"
+                "agent_decision=none",
+                "agent_state=working",
+                "agent_waiting=0"
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -888,8 +999,8 @@ mod tests {
         assert_eq!(
             sets(&log),
             [
-                "agent_decision=none",
                 "agent_state=waiting",
+                "agent_decision=none",
                 "agent_decision=none",
                 "agent_state=idle"
             ]
@@ -936,16 +1047,24 @@ mod tests {
         let dir = temp_dir("ask-strict");
         let log = fake_service(&dir, &BOTH, Deck::RefuseStrict);
         assert_eq!(ask_in(&dir, 5_000), "");
-        // Nothing but the refused clear: agent_state never says waiting.
-        assert_eq!(sets(&log), ["agent_decision=none"]);
+        // The refused clear ends the ask: the deck goes back to idle and nothing is answered.
+        assert_eq!(
+            sets(&log),
+            [
+                "agent_state=waiting",
+                "agent_decision=none",
+                "agent_decision=none",
+                "agent_state=idle"
+            ]
+        );
         let strict: Vec<Value> = log
             .lock()
             .unwrap()
             .iter()
-            .filter(|request| request["type"] == "set_variable")
+            .filter(|request| request["type"] == "set_variable" && request["name"] == DECISION)
             .map(|request| request["strict"].clone())
             .collect();
-        assert_eq!(strict, [json!(true)]);
+        assert!(!strict.is_empty() && strict.iter().all(|strict| *strict == json!(true)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -972,39 +1091,151 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn one_ask_at_a_time_and_its_waiting_state_is_kept() {
-        let dir = temp_dir("ask-two");
-        let log = fake_service(&dir, &BOTH, Deck::Silent);
-        let first = {
-            let dir = dir.clone();
-            std::thread::spawn(move || ask_in(&dir, 1_500))
-        };
-        let waiting = Instant::now();
-        while !sets(&log).contains(&"agent_state=waiting".to_string()) {
+    fn ask_as(dir: &Path, session: &str, timeout_ms: u64) -> String {
+        let hook = json!({"hook_event_name":"PermissionRequest","session_id":session});
+        ask(
+            &dir.join("s"),
+            &dir.join("t"),
+            &hook,
+            Duration::from_millis(timeout_ms),
+        )
+    }
+
+    /// Waits until the fake has seen `set` (as `name=value`).
+    fn wait_for(log: &std::sync::Mutex<Vec<Value>>, set: &str) {
+        let started = Instant::now();
+        while !all_sets(log).iter().any(|seen| seen == set) {
             assert!(
-                waiting.elapsed() < Duration::from_secs(3),
-                "the first ask waits"
+                started.elapsed() < Duration::from_secs(5),
+                "waiting for {set}"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        // A second ask meanwhile prints nothing at once and sends nothing.
-        let started = Instant::now();
-        assert_eq!(ask_in(&dir, 5_000), "");
-        assert!(started.elapsed() < Duration::from_millis(500));
-        // A state hook meanwhile leaves waiting alone, and still succeeds silently.
-        let paths = || Ok((dir.join("s"), dir.join("t")));
-        assert_eq!(run(&args("agent state done"), &paths), Ok(String::new()));
-        assert_eq!(
-            sets(&log),
-            ["agent_decision=none", "agent_state=waiting"],
-            "nothing else was set while the first ask waited"
+    }
+
+    #[test]
+    fn sessions_share_the_deck_one_prompt_at_a_time_and_the_count_shows() {
+        let dir = temp_dir("ask-two");
+        // The deck presses allow on the second read while waiting: that answers the first ask only.
+        let log = fake_service(
+            &dir,
+            &[(STATE, "idle"), (DECISION, "none"), (WAITING, "0")],
+            Deck::Press("allow"),
         );
-        assert_eq!(first.join().unwrap(), "");
-        // Once the ask ended, the lock is free and state hooks set again.
-        assert!(try_lock(&dir.join(ASK_LOCK)).unwrap().is_some());
-        assert_eq!(run(&args("agent state working"), &paths), Ok(String::new()));
+        let first = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_as(&dir, "one", 4_000))
+        };
+        wait_for(&log, "agent_waiting=1");
+        let second = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_as(&dir, "two", 1_500))
+        };
+        wait_for(&log, "agent_waiting=2");
+        let answer: Value = serde_json::from_str(&first.join().unwrap()).unwrap();
+        assert_eq!(
+            answer["hookSpecificOutput"]["decision"]["behavior"],
+            "allow"
+        );
+        // The other session queued behind it and was never answered, so it falls back to its own prompt.
+        assert_eq!(second.join().unwrap(), "");
+        let sets = sets(&log);
+        // The first's answer did not end Needs you while the second still waited; the deck ends on the first
+        // session's work once the second gave up.
+        let working = sets
+            .iter()
+            .position(|set| set == "agent_state=working")
+            .unwrap();
+        assert!(
+            sets[..working]
+                .iter()
+                .filter(|set| *set == "agent_state=waiting")
+                .count()
+                >= 2,
+            "{sets:?}"
+        );
+        assert_eq!(sets.last().unwrap(), "agent_state=working", "{sets:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_queued_ask_shows_working_before_it_asks_so_a_repeated_press_misses_it() {
+        let dir = temp_dir("ask-settle");
+        let log = fake_service(
+            &dir,
+            &[(STATE, "idle"), (DECISION, "none"), (WAITING, "0")],
+            Deck::Press("allow"),
+        );
+        let first = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_as(&dir, "one", 6_000))
+        };
+        wait_for(&log, "agent_waiting=1");
+        let second = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_as(&dir, "two", 3_000))
+        };
+        assert!(first.join().unwrap().contains("allow"));
+        assert_eq!(second.join().unwrap(), "");
+        let states: Vec<String> = sets(&log)
+            .into_iter()
+            .filter(|set| set.starts_with("agent_state="))
+            .collect();
+        // The second ask went waiting -> working (settling) -> waiting, and every decision clear of its turn came
+        // after the settle (the first working of the second's turn).
+        let text = states.join(",");
+        assert!(
+            text.contains("agent_state=working,agent_state=waiting"),
+            "{text}"
+        );
+        let sets = sets(&log);
+        let settle = sets
+            .iter()
+            .position(|set| set == "agent_state=working")
+            .unwrap();
+        let clears_after = sets[settle..]
+            .iter()
+            .filter(|set| *set == "agent_decision=none")
+            .count();
+        assert!(clears_after >= 2, "{sets:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_state_hook_of_another_session_does_not_hide_a_prompt() {
+        let dir = temp_dir("ask-state");
+        let log = fake_service(&dir, &BOTH, Deck::Silent);
+        let asking = {
+            let dir = dir.clone();
+            std::thread::spawn(move || ask_as(&dir, "asker", 1_200))
+        };
+        wait_for(&log, "agent_state=waiting");
+        let paths = || Ok((dir.join("s"), dir.join("t")));
+        // Another session finishes (and one hand-typed hook has no session at all): the deck still says waiting.
+        for state in ["agent state done", "agent state working"] {
+            assert_eq!(run(&args(state), &paths), Ok(String::new()));
+        }
+        assert_eq!(
+            sets(&log)
+                .iter()
+                .filter(|s| s.starts_with("agent_state="))
+                .collect::<Vec<_>>(),
+            ["agent_state=waiting"; 3]
+        );
+        assert_eq!(asking.join().unwrap(), "");
+        // Once nothing waits, the other session's work shows.
         assert_eq!(sets(&log).last().unwrap(), "agent_state=working");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_that_ends_leaves_the_summary() {
+        let dir = temp_dir("ask-end");
+        let log = fake_service(&dir, &BOTH, Deck::Silent);
+        let paths = || Ok((dir.join("s"), dir.join("t")));
+        assert_eq!(run(&args("agent state working"), &paths), Ok(String::new()));
+        assert_eq!(run(&args("agent state end"), &paths), Ok(String::new()));
+        assert_eq!(sets(&log), ["agent_state=working", "agent_state=idle"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

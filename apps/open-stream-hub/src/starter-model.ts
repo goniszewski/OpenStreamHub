@@ -185,11 +185,11 @@ const terminalAgents: StarterTemplate = {
   id: 'terminal-agents',
   name: 'Terminal and AI agents',
   focusApps: terminalApps,
-  description: 'Keys for Claude Code, Codex and any terminal: Claude and Codex keys that open a new Terminal window running that agent, then interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. The other keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool. With the hook installed (osh agent setup claude), Accept and Deny answer permission prompts.',
+  description: 'Keys for Claude Code, Codex and any terminal: Claude and Codex keys that open a new Terminal window running that agent, then interrupt, accept, cycle the permission mode, /clear, /compact and continue, plus Ctrl+C, Ctrl+D and Ctrl+L. The knob walks the prompt history. The other keys act on the app in front, so keep the terminal focused. The Accept key shows Working, Needs you or Done while the agent_state variable says so: agent hooks can set it with the bundled osh tool. With the hook installed (osh agent setup claude), Accept and Deny answer permission prompts. The Dictate key sends F19: choose it as the Dictation shortcut in the Keyboard settings of macOS.',
   profile: {
     schema_version: currentSchema,
     name: 'Terminal and AI agents',
-    variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }],
+    variables: [{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }, { name: 'agent_waiting', value: 0 }],
     bindings: [
       { module: 'm131e', control: 0, gesture: 'right', action: shortcut('arrow_down') },
       { module: 'm131e', control: 0, gesture: 'left', action: shortcut('arrow_up') },
@@ -200,6 +200,8 @@ const terminalAgents: StarterTemplate = {
     ],
     keypad: keys(
       key('Accept', answerOr('allow', shortcut('return')), [
+        // Several sessions wait for the deck (the agent hooks count them in agent_waiting); Accept answers the oldest.
+        { when: { variable_at_least: { name: 'agent_waiting', value: 2 } }, label: '2+ waiting', background: '#8f0f0f' },
         agentFace('working', 'Working', '#d98e04'),
         agentFace('waiting', 'Needs you', '#c81e1e'),
         agentFace('done', 'Done', '#1f9d55'),
@@ -217,6 +219,8 @@ const terminalAgents: StarterTemplate = {
       key('Previous tab', shortcut('tab', 'control', 'shift')),
       key('Claude', session('claude')),
       key('Codex', session('codex')),
+      // Starts and stops macOS dictation: set Dictation's shortcut to this key's F19 (docs/agent-integration.md).
+      key('Dictate', shortcut('f19')),
     ),
   },
 };

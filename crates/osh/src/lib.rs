@@ -6,6 +6,9 @@
 
 use serde_json::{Value, json};
 
+/// How long a `PostToolUse` hook may take (seconds); `osh agent state` answers in milliseconds.
+const POST_TOOL_TIMEOUT: u64 = 5;
+
 /// How long `agent ask` waits for the deck by default.
 pub const ASK_DEFAULT_SECS: u64 = 55;
 
@@ -13,6 +16,8 @@ pub const ASK_DEFAULT_SECS: u64 = 55;
 pub const AGENT_STATE: &str = "agent_state";
 /// The text variable a deck key sets to answer an agent's permission prompt (`none`, `allow`, `deny`).
 pub const AGENT_DECISION: &str = "agent_decision";
+/// The optional number variable counting the agent sessions that wait for the deck.
+pub const AGENT_WAITING: &str = "agent_waiting";
 /// The one value of [`AGENT_DECISION`] a process outside the app may write: clearing it.
 pub const DECISION_CLEARED: &str = "none";
 /// Why the app's socket refuses any other value of [`AGENT_DECISION`].
@@ -58,6 +63,7 @@ pub fn setup(agent: Agent, osh: &str) -> String {
     let working = format!("{osh} agent state working");
     let ask = format!("{osh} agent ask --timeout {ASK_DEFAULT_SECS}");
     let done = format!("{osh} agent state done");
+    let ended = format!("{osh} agent state end");
     match agent {
         Agent::Claude => {
             let hook = |command: &str, extra: Value| {
@@ -69,8 +75,11 @@ pub fn setup(agent: Agent, osh: &str) -> String {
             };
             let config = json!({"hooks":{
                 "UserPromptSubmit": hook(&working, json!({"async":true})),
+                // Not async: it must finish before the Stop hook so a finished turn is not shown as working.
+                "PostToolUse": hook(&working, json!({"timeout":POST_TOOL_TIMEOUT})),
                 "PermissionRequest": hook(&ask, json!({"timeout":ASK_DEFAULT_SECS + 10})),
                 "Stop": hook(&done, json!({"async":true})),
+                "SessionEnd": hook(&ended, json!({"async":true})),
             }});
             serde_json::to_string_pretty(&config).unwrap_or_default()
         }
@@ -92,6 +101,7 @@ pub fn setup(agent: Agent, osh: &str) -> String {
                  # run /hooks in Codex once after adding them.\n"
                     .to_string(),
                 table("UserPromptSubmit", &working, None),
+                table("PostToolUse", &working, Some(POST_TOOL_TIMEOUT)),
                 table("PermissionRequest", &ask, Some(ASK_DEFAULT_SECS + 10)),
                 table("Stop", &done, None),
             ]
@@ -105,7 +115,7 @@ pub fn setup(agent: Agent, osh: &str) -> String {
 /// How to merge the Claude Code snippet, printed on stderr so stdout stays plain JSON.
 pub const CLAUDE_HEADER: &str = "# OpenStreamHub deck hooks for Claude Code. Merge the \"hooks\" object below into\n\
 # ~/.claude/settings.json (or a project's .claude/settings.json). Where the file already has hooks for\n\
-# UserPromptSubmit, PermissionRequest or Stop, add these entries to those arrays.";
+# UserPromptSubmit, PostToolUse, PermissionRequest, Stop or SessionEnd, add these entries to those arrays.";
 
 #[cfg(test)]
 mod tests {
@@ -157,7 +167,15 @@ mod tests {
             hook("Stop"),
             json!({"type":"command","command":"'/Users/a b/osh' agent state done","async":true})
         );
-        assert_eq!(hooks.as_object().unwrap().len(), 3);
+        assert_eq!(
+            hook("PostToolUse"),
+            json!({"type":"command","command":"'/Users/a b/osh' agent state working","timeout":5})
+        );
+        assert_eq!(
+            hook("SessionEnd"),
+            json!({"type":"command","command":"'/Users/a b/osh' agent state end","async":true})
+        );
+        assert_eq!(hooks.as_object().unwrap().len(), 5);
 
         let codex = setup(Agent::Codex, "/opt/osh\"x");
         assert!(codex.contains("/hooks"));
@@ -176,7 +194,7 @@ mod tests {
             let (key, value) = line.split_once(" = ").expect(line);
             match key {
                 "type" => assert_eq!(value, "\"command\""),
-                "timeout" => assert_eq!(value, "65"),
+                "timeout" => assert!(value == "65" || value == "5", "{value}"),
                 "command" => {
                     let command: String = serde_json::from_str(value).unwrap();
                     assert!(command.starts_with(r#"'/opt/osh"x' agent "#), "{command}");
@@ -189,6 +207,8 @@ mod tests {
             [
                 "hooks.UserPromptSubmit",
                 "hooks.UserPromptSubmit.hooks",
+                "hooks.PostToolUse",
+                "hooks.PostToolUse.hooks",
                 "hooks.PermissionRequest",
                 "hooks.PermissionRequest.hooks",
                 "hooks.Stop",

@@ -64,11 +64,12 @@ describe('shipped starters', () => {
   });
   it('let the terminal starter\'s Accept key follow the agent_state variable', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!;
-    expect(terminal.profile.variables).toEqual([{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }]);
+    expect(terminal.profile.variables).toEqual([{ name: 'agent_state', value: 'idle' }, { name: 'agent_decision', value: 'none' }, { name: 'agent_waiting', value: 0 }]);
     const [accept, , ...rest] = terminal.profile.keypad!.pages[0].slots;
     expect(accept?.type === 'action' && accept.label).toBe('Accept');
     const faces = accept?.type === 'action' ? accept.faces ?? [] : [];
     expect(faces.map(face => [face.when, face.label, face.background])).toEqual([
+      [{ variable_at_least: { name: 'agent_waiting', value: 2 } }, '2+ waiting', '#8f0f0f'],
       [{ variable_is: { name: 'agent_state', value: 'working' } }, 'Working', '#d98e04'],
       [{ variable_is: { name: 'agent_state', value: 'waiting' } }, 'Needs you', '#c81e1e'],
       [{ variable_is: { name: 'agent_state', value: 'done' } }, 'Done', '#1f9d55'],
@@ -145,10 +146,13 @@ describe('shipped starters', () => {
       ['Claude', { type: 'terminal_command', app: 'terminal', command: 'claude' }],
       ['Codex', { type: 'terminal_command', app: 'terminal', command: 'codex' }],
     ]);
-    // They take free slots: the existing keys keep their places and one slot stays free.
+    // They take free slots: the existing keys keep their places, and Dictate (F19) takes the last one.
     expect(slots.slice(0, 12).map(slot => slot?.type === 'action' ? slot.label : null)).toEqual(['Accept', 'Interrupt', 'Cycle mode', 'Continue', '/clear', '/compact', 'Ctrl+C', 'Ctrl+D', 'Ctrl+L', 'New tab', 'Next tab', 'Previous tab']);
-    expect(slots.filter(slot => slot === null)).toHaveLength(1);
+    const dictate = slots[14];
+    expect(dictate?.type === 'action' && [dictate.label, dictate.bindings[0].action]).toEqual(['Dictate', { type: 'shortcut', key: 'f19', modifiers: [] }]);
+    expect(slots.filter(slot => slot === null)).toHaveLength(0);
     expect(terminal.description).toContain('Claude and Codex keys');
+    expect(terminal.description).toContain('F19');
   });
   it('check a terminal session in the terminal starter only, and never as a step', () => {
     const terminal = starters.find(item => item.id === 'terminal-agents')!.profile;

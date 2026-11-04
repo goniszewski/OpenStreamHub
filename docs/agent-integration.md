@@ -4,20 +4,27 @@ With the **Terminal and AI agents** starter and a few agent hooks, the deck show
 
 ## What it does
 
-The starter declares two text variables:
+The starter declares three variables:
 
-- `agent_state`: `idle`, `working`, `waiting` or `done`. The Accept key shows Working (amber), Needs you (red) or Done (green); idle shows its normal face.
+- `agent_state`: `idle`, `working`, `waiting` or `done`, the summary of all your agent sessions (see below). The Accept key shows Working (amber), Needs you (red) or Done (green); idle shows its normal face.
+- `agent_waiting`: a number, how many sessions wait for the deck. From 2 up the Accept key shows "2+ waiting" in dark red. The variable is optional: a profile without it works, without the count.
 - `agent_decision`: `none`, `allow` or `deny`. Only the deck writes `allow` or `deny`: the app's socket, which `osh` uses, refuses to set it to anything but `none` ("only the deck can answer").
 
 The hooks call the bundled `osh` tool:
 
-- When you send a prompt, `osh agent state working`.
+- When you send a prompt, and after each tool the agent ran (`PostToolUse`), `osh agent state working`. The second one matters when you answered a prompt in the terminal yourself: the deck goes back to Working. It is not asynchronous, so it always finishes before the `Stop` hook of the same turn.
 - When the agent asks for permission, `osh agent ask`. It sets `agent_state` to `waiting` and waits for the deck. While it waits, **Accept** sets `agent_decision` to `allow` and the **Interrupt** key (now showing a red Deny) sets it to `deny`. `osh` then answers the agent's prompt with that decision.
-- When the agent finishes, `osh agent state done`.
+- When the agent finishes, `osh agent state done`. When a Claude Code session ends, `osh agent state end` (`SessionEnd`) forgets it. Codex has no such event: a finished session counts as Done for 30 minutes at most.
 
 When nothing is waiting, Accept still sends Return and Interrupt still sends Escape, as before.
 
-There is one `agent_state` and one `agent_decision` for all sessions, and the deck answers one permission request at a time. While one `osh agent ask` waits, it holds a lock (`ask.lock` next to the app's socket); a second ask, from another agent or a parallel hook, prints nothing at once, so that agent shows its normal permission prompt. `osh agent state` hooks do not change `agent_state` while an ask holds the lock, so the deck keeps showing Needs you. The system releases the lock when the waiting `osh` ends, however it ends. With several agents running at once, the deck otherwise shows whichever set the state last.
+### Several sessions at once
+
+Every hook tells `osh` its `session_id`, and `osh` keeps what each session is doing in `agents.json` next to the app's socket (guarded by `agents.lock`). The deck shows the summary: `waiting` if any session waits for you, else `working` if any works, else `done` if any finished, else `idle`. A session you did not name (a hand-typed `osh agent state working`) counts as one session called `default`.
+
+The deck answers one permission request at a time. A second `osh agent ask` registers its session as waiting, then queues for the ask lock (`ask.lock`), oldest first, and shows its prompt on the deck when the first one is answered. Accept and Deny always answer the oldest waiting prompt. Every ask has its own timeout, which includes the time in the queue: one that waits too long prints nothing, so that agent shows its normal prompt. A state hook never hides a prompt that a live `osh agent ask` owns. The registry forgets sessions that were silent for 12 hours, finished ones after 30 minutes, and waiting ones whose `osh agent ask` is gone (killed, for instance) or that waited longer than the longest ask (11 minutes). A hook that cannot get the registry lock within 2 seconds changes nothing. The system releases the lock when the waiting `osh` ends, however it ends.
+
+Between two prompts the deck shows Working for about a second and a half, then Needs you again for the next prompt. Press Accept or Deny once per prompt and wait for Needs you: the next ask clears every earlier press before it starts listening, so a repeated press for the first prompt cannot answer the second, which you had not seen. During that pause a press does what the key does outside a prompt (Accept sends Return to the app in front). Two asks of one session (a subagent, parallel tools) take separate places in line.
 
 ## Start a session
 
@@ -37,7 +44,7 @@ A profile you import from a JSON file that holds this action, or any action that
 
 1. Create a profile from the **Terminal and AI agents** starter (**Manage profiles** in the header, then **New from a starter**) and run it. A profile made from an older version of the starter lacks `agent_decision`: create it again, or declare `agent_decision` (text, `none`) and set up the two keys yourself.
 2. Open **Settings > AI agents (Claude Code, Codex)**. The panel shows the bundled `osh` it found and the hook configuration for each agent, already written with that `osh`'s absolute path, each with a **Copy** button.
-3. **Claude Code:** merge the copied `hooks` object into `~/.claude/settings.json` (or a project's `.claude/settings.json`). If the file already has hooks for `UserPromptSubmit`, `PermissionRequest` or `Stop`, add the new entries to those arrays.
+3. **Claude Code:** merge the copied `hooks` object into `~/.claude/settings.json` (or a project's `.claude/settings.json`). If the file already has hooks for `UserPromptSubmit`, `PostToolUse`, `PermissionRequest`, `Stop` or `SessionEnd`, add the new entries to those arrays. A configuration you installed with an earlier version still works; copy the new one to get `PostToolUse` and `SessionEnd`.
 4. **Codex:** add the copied lines to `~/.codex/config.toml`. Codex runs new hooks only after you review and trust them, so run `/hooks` in Codex once after adding them. Codex's `notify` setting only reports a finished turn, so the `Stop` hook is used instead.
 
 The app never edits these files: you paste the configuration yourself. The hooks call `osh` by its full path, so they work whether or not `osh` is on your PATH.
@@ -55,6 +62,10 @@ For Claude Code the merge instructions are printed on stderr, so `osh agent setu
 
 The permission hook waits up to 55 seconds (`--timeout`, at most 600), and the hook's own timeout is 65 seconds, so `osh` always gives up first.
 
+## Dictation key
+
+The starter's last key, **Dictate**, sends F19. macOS can start and stop dictation from a custom shortcut: open **System Settings > Keyboard > Dictation**, choose **Shortcut > Customize…** and press the Dictate key. Each press then starts or stops dictation in the app in front (keep the terminal focused). A key press cannot be held, so this is not push-to-talk. Until the shortcut is set, the key does nothing.
+
 ## When the deck is not there
 
 `osh` fails open: the agent's normal permission prompt appears whenever the deck cannot answer.
@@ -63,7 +74,7 @@ The permission hook waits up to 55 seconds (`--timeout`, at most 600), and the h
 - If the app is closed, no module runs a profile that declares both variables, or the app quits while `osh` waits, it prints nothing at once and the usual prompt appears.
 - If `osh` is stopped (Ctrl+C or a termination signal), it resets the variables the same way.
 - Before it waits, `osh agent ask` clears `agent_decision` in strict mode: every running module that declares it must apply the clear. If one does not (it fails or does not answer in time), the ask prints nothing.
-- Saving the running profile while an ask waits restarts a run that draws on the deck, which starts its variables again from their declared values (`agent_state` back to `idle`); the deck no longer shows Needs you and the waiting ask ends without an answer (at once when it cannot read the variables during the restart, else at its timeout), so answer the agent in its own prompt.
+- Saving the running profile restarts a run that draws on the deck. The app reads the variables just before it stops the run and gives them back to the new run (those the new profile still declares, with the same kind; within 20 seconds), so `agent_state` survives a save. Not carried: `agent_decision` (it starts at `none`, so an old Accept cannot answer a prompt in the next run), `agent_waiting`, and an `agent_state` of `waiting`, because the ask that showed it cannot survive the restart; the deck shows the next hook's state instead.
 - `osh agent state` always exits 0 and prints nothing, whether or not the app runs, so it never blocks a prompt.
 
 ## Safety
@@ -95,4 +106,5 @@ If macOS runs the app from where it was downloaded (App Translocation, a tempora
 ## Not yet verified
 
 - Whether `PermissionRequest` fires in Claude Code's auto-accept or bypass-permissions modes, or with Codex's approval policies that skip prompts. When it does not fire, the deck is not asked.
+- Whether Codex accepts the `PostToolUse` hook name used in its snippet (it is in Codex's hook documentation; if `/hooks` rejects it, delete that table), and whether Claude Code and Codex send `session_id` in every hook (without it all hooks count as the one `default` session, as before).
 - The hook configurations were written from the Claude Code and Codex documentation. `osh` itself is tested against a fake app, but neither agent has been run end to end with the deck yet.

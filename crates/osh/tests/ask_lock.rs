@@ -1,5 +1,5 @@
-//! The real `osh` binary: an `agent ask` that is killed while it waits releases the ask lock, so the next hooks
-//! work again.
+//! The real `osh` binary: asks of several sessions queue, and an `agent ask` that is killed while it waits hands
+//! its turn on, so the next session's prompt reaches the deck.
 #![cfg(unix)]
 
 use serde_json::{Value, json};
@@ -32,10 +32,13 @@ fn fake_app(dir: &Path) -> Arc<Mutex<Vec<String>>> {
                     {"service":"m4315","name":"agent_decision","value":"none"},
                 ]}}),
                 Some("set_variable") => {
+                    let value = match &request["value"] {
+                        Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
                     seen.lock().unwrap().push(format!(
-                        "{}={}",
-                        request["name"].as_str().unwrap_or_default(),
-                        request["value"].as_str().unwrap_or_default()
+                        "{}={value}",
+                        request["name"].as_str().unwrap_or_default()
                     ));
                     json!({"ok":true,"result":{"applied":1}})
                 }
@@ -66,41 +69,85 @@ fn temp_dir() -> PathBuf {
     dir
 }
 
-#[test]
-fn a_killed_ask_releases_the_lock() {
-    let dir = temp_dir();
-    let log = fake_app(&dir);
-    let mut asking = osh(&dir, &["agent", "ask", "--timeout", "30"])
+fn count(log: &Mutex<Vec<String>>, set: &str) -> usize {
+    log.lock()
+        .unwrap()
+        .iter()
+        .filter(|seen| *seen == set)
+        .count()
+}
+
+fn wait_for(log: &Mutex<Vec<String>>, set: &str, times: usize) {
+    let started = Instant::now();
+    while count(log, set) < times {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waiting for {set} x{times}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn ask(dir: &Path, session: &str) -> std::process::Child {
+    let mut asking = osh(dir, &["agent", "ask", "--timeout", "30"])
         .spawn()
         .unwrap();
     asking
         .stdin
         .take()
         .unwrap()
-        .write_all(br#"{"hook_event_name":"PermissionRequest"}"#)
+        .write_all(
+            format!(r#"{{"hook_event_name":"PermissionRequest","session_id":"{session}"}}"#)
+                .as_bytes(),
+        )
         .unwrap();
-    let started = Instant::now();
-    while !log.lock().unwrap().contains(&"agent_state=waiting".into()) {
-        assert!(started.elapsed() < Duration::from_secs(5), "the ask waits");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    asking
+}
 
-    // While it waits, a second ask prints nothing at once and a state hook changes nothing.
-    let second = osh(&dir, &["agent", "ask"]).output().unwrap();
-    assert!(second.status.success());
-    assert!(second.stdout.is_empty());
-    let state = osh(&dir, &["agent", "state", "done"]).output().unwrap();
-    assert!(state.status.success());
+fn state(dir: &Path, session: &str, state: &str) {
+    let mut hook = osh(dir, &["agent", "state", state]).spawn().unwrap();
+    hook.stdin
+        .take()
+        .unwrap()
+        .write_all(format!(r#"{{"session_id":"{session}"}}"#).as_bytes())
+        .unwrap();
+    assert!(hook.wait_with_output().unwrap().status.success());
+}
+
+#[test]
+fn asks_of_two_sessions_queue_and_a_killed_ask_hands_its_turn_on() {
+    let dir = temp_dir();
+    let log = fake_app(&dir);
+    let mut first = ask(&dir, "one");
+    wait_for(&log, "agent_waiting=1", 1);
+    // A second session's ask queues behind it: the deck counts both, and the second has not cleared the decision.
+    let mut second = ask(&dir, "two");
+    wait_for(&log, "agent_waiting=2", 1);
+    let clears = count(&log, "agent_decision=none");
+    // A state hook of a third session changes nothing visible while two wait.
+    state(&dir, "three", "done");
+    assert_eq!(log.lock().unwrap().last().unwrap(), "agent_waiting=2");
+    assert_eq!(count(&log, "agent_state=waiting"), 3);
+
+    // Killed outright (no signal handler runs), the first leaves the lock to the system and its entry to the
+    // liveness check: the second takes its turn.
+    first.kill().unwrap();
+    first.wait().unwrap();
+    wait_for(&log, "agent_decision=none", clears + 1);
+
+    // When the second goes too, a later hook finds nobody waiting and shows the third session's finished work.
+    second.kill().unwrap();
+    second.wait().unwrap();
+    state(&dir, "three", "done");
+    assert_eq!(count(&log, "agent_state=done"), 1);
     assert_eq!(
-        *log.lock().unwrap(),
-        ["agent_decision=none", "agent_state=waiting"]
+        log.lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|s| s.starts_with("agent_waiting="))
+            .unwrap(),
+        "agent_waiting=0"
     );
-
-    // Killed outright (no signal handler runs), it leaves the lock to the system, which releases it.
-    asking.kill().unwrap();
-    asking.wait().unwrap();
-    let state = osh(&dir, &["agent", "state", "idle"]).output().unwrap();
-    assert!(state.status.success());
-    assert_eq!(log.lock().unwrap().last().unwrap(), "agent_state=idle");
     let _ = std::fs::remove_dir_all(&dir);
 }

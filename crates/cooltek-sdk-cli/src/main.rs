@@ -125,8 +125,8 @@ enum Command {
     /// control request (SET_IDLE: 0x21 0x0A, value 0, interface 0, no data) and
     /// counts the input reports that arrive while you turn the rollers. It sends no
     /// feature report, output report or mode command. With several rollers, choose
-    /// one with --path-hex. Prints one JSON line. Hardware verification is pending
-    /// (GitHub issue #4).
+    /// one with --path-hex. Prints one JSON line. Verified on one unit on 5 November
+    /// 2026 (GitHub issue #4).
     RollerSetIdle {
         /// Hexadecimal device path copied from `list`; needed only with several rollers.
         #[arg(long, value_parser = parse_path)]
@@ -911,8 +911,14 @@ fn record_path(
         .write(true)
         .create_new(true)
         .open(&output)?;
-    let device = match registry.open(selected) {
-        Ok(device) => device,
+    // A roller reports nothing on macOS until it gets SET_IDLE, so a capture sends it too.
+    let device = match registry.open_prepared(selected) {
+        Ok((device, set_idle)) => {
+            if let Some(outcome) = set_idle {
+                eprintln!("roller SET_IDLE {}", outcome.status());
+            }
+            device
+        }
         Err(error) => {
             // This call created the file and wrote nothing; do not leave it behind.
             drop(file);

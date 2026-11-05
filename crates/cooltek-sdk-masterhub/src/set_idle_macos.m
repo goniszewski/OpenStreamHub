@@ -32,7 +32,10 @@ int cooltek_roller_set_idle(uint64_t registry_id, char *error, size_t error_leng
                 IOObjectRelease(entry);
                 entry = kr == KERN_SUCCESS ? parent : IO_OBJECT_NULL;
             }
-            if (entry == IO_OBJECT_NULL) {
+            if (entry == IO_OBJECT_NULL || !IOObjectConformsTo(entry, "IOUSBHostDevice")) {
+                if (entry != IO_OBJECT_NULL) {
+                    IOObjectRelease(entry);
+                }
                 set_error(error, error_length, @"no IOUSBHostDevice above the HID service");
                 return 1;
             }

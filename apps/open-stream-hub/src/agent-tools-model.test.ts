@@ -68,9 +68,12 @@ describe('agentChecklist', () => {
     expect(steps.map(step => step.done)).toEqual([true, false, false, false]);
     expect(ready).toBe(false);
   });
-  it('is ready only when every step is seen', () => {
+  it('is ready when osh is found, one agent is configured and a prompt was answered', () => {
     expect(agentChecklist(status(), { claude: true, codex: true }).ready).toBe(false);
     expect(agentChecklist(status(), { claude: true, codex: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { codex: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { claude: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { answered: true }).ready).toBe(false);
   });
 });
 

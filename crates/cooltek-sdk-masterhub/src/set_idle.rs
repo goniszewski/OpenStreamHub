@@ -4,7 +4,7 @@
 //! SET_IDLE(0). Linux and Windows send it when they bind any HID device; macOS only does so
 //! for keyboards and mice. The effect is lost whenever the module resets (replug, base power
 //! loss, sleep), so it must be sent every time the roller is opened. Credit: KamilKobylarek,
-//! GitHub issue #4. Hardware verification is pending.
+//! GitHub issue #4. Verified on one unit on 5 November 2026, including recovery after a replug.
 //!
 //! On macOS the request goes to the `IOUSBHostDevice` without capturing it, so the system HID
 //! driver keeps the interface. No root or entitlement is needed. Other platforms already send

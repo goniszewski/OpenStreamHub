@@ -68,7 +68,9 @@ export const agentChecklist = (status: AgentToolStatus, seen: AgentSignals = {})
     { step: 'codex' as const, done: !!seen.codex },
     { step: 'answered' as const, done: !!seen.answered },
   ];
-  return { steps, ready: steps.every(step => step.done) };
+  // Ready needs only one agent: someone who uses Claude Code alone would otherwise never leave the checklist.
+  const [osh, claude, codex, answered] = steps;
+  return { steps, ready: osh.done && (claude.done || codex.done) && answered.done };
 };
 
 export interface ClipboardLike { writeText(text: string): Promise<void> }

@@ -33,7 +33,7 @@ export function SidebarNav({ page, setPage, onGuide, themePicker, collapsed, onT
   const t = useT();
   const mac = isMacPlatform(typeof navigator === 'undefined' ? undefined : navigator);
   // The key chip shown while the modifier is held: only the pages that have a number shortcut.
-  const chip = (target: Page) => { const index = shortcutPages.indexOf(target); return index >= 0 ? { 'data-shortcut': hint(String(index + 1), mac) } : {}; };
+  const chip = (target: Page) => { const index = shortcutPages.indexOf(target); return index >= 0 ? { 'data-shortcut': hint(String(index + 1), mac), 'aria-keyshortcuts': `${mac ? 'Meta' : 'Control'}+${index + 1}` } : {}; };
   // Expanded buttons show their label; collapsed ones carry it as the tooltip instead.
   const tip = (label: string) => collapsed ? { 'data-tip': label, 'aria-label': label } : {};
   const current = (target: Page) => ({ 'aria-current': page === target ? ('page' as const) : undefined });

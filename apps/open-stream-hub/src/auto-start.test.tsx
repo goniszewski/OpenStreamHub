@@ -81,7 +81,10 @@ describe('automatically started sessions', () => {
     const t = setup(); t.runner.connect(); await tick();
     t.state(dialState);
     const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
-    expect(markup).toContain(autoStartNote('app_opened', true));
+    expect(markup).toContain('Started automatically (Live mode) when the app opened.');
+    expect(markup).toContain('<summary>Why?</summary>');
+    expect(markup).toContain('Actions run without asking. Stop it, or switch the header mode to Test, to end them.');
+    expect(markup.match(/shown and switched by the badge/g)).toHaveLength(1);
     expect(markup).toContain('Live: actions run on this Mac');
     expect(markup).not.toContain('Profile changed since start');
     expect(markup).toContain('aria-label="Pause"');

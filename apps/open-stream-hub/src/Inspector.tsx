@@ -77,7 +77,6 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
       <fieldset disabled={disabled || serialMissing || !editorGestures(profile, selection.module).length}>
         <ActionFields action={binding?.action ?? null} fader={selection.module === 'm005s'} selectorKey={selectorKey} onChange={editor.mutateAction} onSetUpObs={setPage ? () => setPage('settings') : undefined} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />
       </fieldset>
-      <div className="inspector-divider" />
       <details className="advanced">
         <summary>{t('inspector.advanced')}</summary>
         <label htmlFor="serial-scope">{t('inspector.limit')}</label><SelectField id="serial-scope" value={serialScope} onChange={event => editor.changeSerialScope(event.target.value as SerialScope)}><option value="any">{t('inspector.anyDevice')}</option><option value="exact">{t('inspector.oneDevice')}</option></SelectField>
@@ -95,7 +94,6 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
           them (flat bindings keep working until then), and with functions on it is the only
           editor, since every encoder binding then belongs to a function. */}
       {!dialFunctionsActive && selection.module === 'm131e' && <DialEditorTabs tab={dialTab} onTab={setDialTab} profile={profile} session={session} state={state} disabled={disabled} invoke={invoke} setPage={setPage} catalog={catalogStore} streamlabs={streamlabsStore} />}
-      <div className="inspector-divider" />
       <details className="advanced inspector-variables" open={declared.length > 0 || undefined}>
         <summary>Variables{declared.length > 0 ? ` (${declared.length})` : ''}</summary>
         <VariablesPanel variables={declared} uses={variableUseCounts(profile)} users={name => variableUsers(profile, name)} onShow={entry => showEntry(editor, entry)} disabled={disabled}

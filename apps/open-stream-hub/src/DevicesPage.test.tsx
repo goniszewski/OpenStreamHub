@@ -237,7 +237,7 @@ describe('3-knob module wording', () => {
     // The 15-key module and the dial: what one module each showed on hardware, nothing more.
     expect(rows.filter(row => row.includes('<td>Input and key images verified on one module (software mode)</td>'))).toHaveLength(1);
     expect(rows.filter(row => row.includes('<td>Input and dial faces verified on one module (software mode)</td>'))).toHaveLength(1);
-    expect(rows.filter(row => row.includes('<td>Unverified</td>'))).toHaveLength(modules.length - 4);
+    expect(rows.filter(row => row.includes('<td>Input verified on one module (needs a SET_IDLE request the app sends on connect); direction and one event per click checked</td>'))).toHaveLength(modules.length - 4);
     expect(rows.filter(row => row.includes('Input verified on all five faders'))).toHaveLength(1);
   });
 });
@@ -261,7 +261,9 @@ describe('inspector test button and one-line result', () => {
     const markup = inspector(editor);
     expect(markup).toContain('>Test gesture</button>');
     expect(markup).toContain('Run a test to preview what the binding would do.');
-    expect(markup).toContain('Tests never execute anything');
+    expect(markup).toContain('Tests never run actions.');
+    expect(markup).not.toContain('press Save profile');
+    expect(markup).toContain('class="inspector-test"');
     const failed = { ...session.getState(), preview: { status: 'failed', error: 'No action is bound.' } as const };
     const failedMarkup = inspector(editor, failed);
     expect(failedMarkup).toContain('role="alert"');

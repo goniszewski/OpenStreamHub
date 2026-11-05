@@ -60,6 +60,12 @@ describe('onboarding steps', () => {
 });
 
 describe('Settings entries', () => {
+  it('states the current mode in short points with the detail collapsed', () => {
+    const markup = renderToStaticMarkup(<SettingsPage desktop themePicker={null} storagePath="" />);
+    expect(markup).toContain('<li>Actions run only in Live mode; in Test mode presses only log.</li>');
+    expect(markup).toContain('<details class="fine-print mode-details">');
+    expect(markup).toContain('The modules keep no profile of their own');
+  });
   it('offers the guide, the connection notices toggle and the automatic-saving toggle', () => {
     const markup = renderToStaticMarkup(<SettingsPage desktop themePicker={null} storagePath="" noticesEnabled onNoticesEnabled={() => {}} onShowGuide={() => {}} />);
     expect(markup).toContain('Show the getting-started guide');

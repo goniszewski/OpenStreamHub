@@ -79,7 +79,7 @@ export function DeviceWorkspace({ editor, state, desktop, disabled, setPage, fee
     editor.chooseModule(target.module);
   };
   return <section className="workspace" aria-label="Device controls">
-    <div className="page-heading"><h1>Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
+    <div className="page-heading"><h1 className="sr-only">Your controls</h1><HardwareStatus feed={feed} desktop={desktop} /></div>
     <RigPreview editor={editor} state={state} feed={feed} runs={run?.service.runs} lighting={lighting} layout={onBase} pickedPath={pickedPath} basePath={basePath} onPickUnit={onPickUnit}
       dropHandlers={(module, control) => controlDropHandlers(module, control, disabled ? undefined : type => editor.dropAction(module, control, type))} />
     {selected.supported && <ModuleAssignmentsChip key={`${selection.module}:${isKeypad ? currentKeypadPage.id : ''}`} assignments={moduleAssignments(profile, selection.module, isKeypad ? currentKeypadPage.id : undefined)} moduleName={selected.name} />}

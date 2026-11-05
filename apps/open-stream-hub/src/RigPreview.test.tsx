@@ -45,6 +45,12 @@ describe('RigPreview canvas', () => {
     ]);
     const markup = renderToStaticMarkup(<RigPreview editor={editorFor(state)} state={state} feed={await feedOf(positioned)} />);
     expect(markup).toContain('Connected base layout');
+    expect(markup).toContain('aria-label="Rotate base"');
+    expect(markup).toContain('aria-label="Rotate base to 90 degrees"');
+    expect(markup).toContain('title="Rotate base to 270 degrees"');
+    expect(markup).toContain('>Fit to window</button>');
+    expect(markup).toContain('base-fit" aria-pressed="false"');
+    expect(markup).not.toContain('base-layout fit');
     expect(markup).toContain('MasterHUB base layout: 15-key IPS display at Top-left (1 row past the top edge), 2-roller scroll module at Bottom-left, Encoder IPS display at Top-right, 3-knob module at Bottom-right');
     // The dial screen shows the profile's dial display face, and each module carries its own hit areas.
     expect(markup).toContain('<canvas width="240" height="240" class="dial-face"');

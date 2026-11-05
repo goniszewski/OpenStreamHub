@@ -335,7 +335,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     functions["count"]
                 );
             }
-            let opened = registry.open(selected)?;
+            let (opened, set_idle) = registry.open_prepared(selected)?;
             let mut details = json!({
                 "source":"hardware", "profile":profile_name, "path_hex":encode_hex(&path_hex),
                 "vendor_id":selected.vendor_id, "product_id":selected.product_id,
@@ -347,6 +347,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "display_sync_requested":display_sync,
                 "profile_switch_requests":profile_switch_requests,
             });
+            // Roller only: whether the SET_IDLE it needs to report on macOS was accepted.
+            if let Some(outcome) = &set_idle {
+                details["roller_set_idle"] =
+                    json!({"status":outcome.status(), "detail":outcome.detail()});
+            }
             // Only when set, so default runs log exactly what they did before.
             if dial_content != DialContent::Off {
                 details["dial_content"] = json!(dial_content.as_str());

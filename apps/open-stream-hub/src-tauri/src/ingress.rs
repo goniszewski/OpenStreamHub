@@ -126,6 +126,9 @@ fn set_variable(request: &Value, forward: &dyn Fn(&Value) -> Answers) -> Result<
         }
     }
     if applied > 0 {
+        if name == osh::AGENT_DECISION && value == "none" {
+            crate::agent_tools::note_decision_cleared();
+        }
         Ok(json!({"applied": applied}))
     } else {
         Err(refusal(answers))
@@ -144,6 +147,12 @@ fn get_variables(forward: &dyn Fn(&Value) -> Answers) -> Result<Value, String> {
             variables
                 .push(json!({"service":service,"name":variable["name"],"value":variable["value"]}));
         }
+    }
+    for variable in variables
+        .iter()
+        .filter(|variable| variable["name"] == osh::AGENT_DECISION)
+    {
+        crate::agent_tools::note_decision(&variable["value"]);
     }
     Ok(json!({"variables": variables}))
 }

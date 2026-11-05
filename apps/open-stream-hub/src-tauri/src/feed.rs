@@ -525,7 +525,7 @@ fn open_live(
     let selected = select_device(&devices, &path, false)?;
     let module = replay::service_module(selected.module)
         .ok_or("the selected interface is not a supported input module")?;
-    let device = registry.open(selected).map_err(|error| {
+    let (device, _set_idle) = registry.open_prepared(selected).map_err(|error| {
         format!(
             "could not open the module: {error}. Another program (for example \
              masterhub-service) may be holding the device."

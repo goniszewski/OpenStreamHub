@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { PATH_EXPORT, agentTargets, copyText, oshState, runAgentTool, showPathHint } from './agent-tools-model';
+import { PATH_EXPORT, agentChecklist, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
 import type { AgentToolStatus } from './agent-tools-model';
 import type { Invoke } from './profile-session';
 
@@ -53,5 +53,39 @@ describe('the AI agents panel model', () => {
     execCommand.mockReturnValue(false);
     expect(await copyText('d', undefined, document)).toBe(false);
     expect(await copyText('e', undefined, undefined)).toBe(false);
+  });
+});
+
+describe('agentChecklist', () => {
+  it('marks osh done once the bundled one is found at a stable path, linked or not', () => {
+    expect(agentChecklist(status()).steps[0]).toEqual({ step: 'osh', done: true });
+    expect(agentChecklist(status({ linked: true })).steps[0].done).toBe(true);
+    expect(agentChecklist(status({ osh_path: null })).steps[0].done).toBe(false);
+    expect(agentChecklist(status({ translocated: true })).steps[0].done).toBe(false);
+  });
+  it('leaves the steps the app cannot observe not done, so it is never ready on its own', () => {
+    const { steps, ready } = agentChecklist(status());
+    expect(steps.map(step => step.done)).toEqual([true, false, false, false]);
+    expect(ready).toBe(false);
+  });
+  it('is ready when osh is found, one agent is configured and a prompt was answered', () => {
+    expect(agentChecklist(status(), { claude: true, codex: true }).ready).toBe(false);
+    expect(agentChecklist(status(), { claude: true, codex: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { codex: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { claude: true, answered: true }).ready).toBe(true);
+    expect(agentChecklist(status(), { answered: true }).ready).toBe(false);
+  });
+});
+
+describe('signalsSeen', () => {
+  it('is done only for configured hooks and a positive answer count', () => {
+    expect(signalsSeen(null)).toEqual({ claude: false, codex: false, answered: false });
+    expect(signalsSeen({ claude: 'configured', codex: 'unreadable', answered: 0, last_answer_ms: null })).toEqual({ claude: true, codex: false, answered: false });
+    expect(signalsSeen({ claude: 'not_configured', codex: 'configured', answered: 3, last_answer_ms: 9 })).toEqual({ claude: false, codex: true, answered: true });
+  });
+  it('asks the app for agent_signals', async () => {
+    const invoke = vi.fn(async () => ({ claude: 'configured' })) as unknown as Invoke;
+    await readAgentSignals(invoke);
+    expect(invoke).toHaveBeenCalledWith('agent_signals');
   });
 });

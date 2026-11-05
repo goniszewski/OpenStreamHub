@@ -244,6 +244,184 @@ pub fn unlink() -> Result<AgentToolStatus, String> {
     status()
 }
 
+/// Whether an agent's settings file holds a hook that calls `osh agent …`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookState {
+    Configured,
+    /// The file is missing, or holds no such hook.
+    NotConfigured,
+    /// The file exists but could not be read (an I/O error, not UTF-8, or JSON that does not parse).
+    Unreadable,
+}
+
+/// What the checklist in the AI agents panel reads. Nothing here writes to the agents' files.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AgentSignals {
+    pub claude: HookState,
+    pub codex: HookState,
+    /// Prompts the deck answered with Accept or Deny since the app started. Never stored.
+    pub answered: u32,
+    /// When the last one was answered, in milliseconds since the Unix epoch.
+    pub last_answer_ms: Option<u64>,
+}
+
+/// Whether a hook command is one of ours: the `osh` tool (quoted or not) followed by `agent ask` or `agent state`,
+/// the text `osh::setup` writes. The path before `osh` is not compared, so an older or moved app still counts.
+fn is_deck_hook(command: &str) -> bool {
+    ["", "'", "\""].iter().any(|quote| {
+        ["ask", "state"]
+            .iter()
+            .any(|sub| command.contains(&format!("{TOOL}{quote} agent {sub}")))
+    })
+}
+
+/// Reads `path` as text: `Ok(None)` when it does not exist.
+fn read_settings(path: &Path) -> Result<Option<String>, ()> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
+fn state(found: bool) -> HookState {
+    if found {
+        HookState::Configured
+    } else {
+        HookState::NotConfigured
+    }
+}
+
+/// Claude Code's `settings.json`: a hook command under `hooks.<event>[].hooks[].command`.
+fn claude_hooks(path: &Path) -> HookState {
+    let Ok(text) = read_settings(path) else {
+        return HookState::Unreadable;
+    };
+    let Some(text) = text else {
+        return HookState::NotConfigured;
+    };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return HookState::Unreadable;
+    };
+    let found = settings["hooks"].as_object().is_some_and(|events| {
+        events
+            .values()
+            .flat_map(|entries| entries.as_array())
+            .flatten()
+            .any(|entry| {
+                entry["hooks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .any(|hook| hook["command"].as_str().is_some_and(is_deck_hook))
+            })
+    });
+    state(found)
+}
+
+/// The string after `=` in a TOML `command = "…"` line: a basic string (JSON escapes) or a literal one.
+fn toml_command(line: &str) -> Option<String> {
+    let value = line
+        .trim_start()
+        .strip_prefix("command")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    if let Some(literal) = value.strip_prefix('\'') {
+        return literal.split('\'').next().map(str::to_string);
+    }
+    serde_json::Deserializer::from_str(value)
+        .into_iter::<String>()
+        .next()?
+        .ok()
+}
+
+/// Codex's `config.toml`. No TOML parser is linked, so the `command = "…"` lines of the hook tables are scanned;
+/// only a file that cannot be read as text is unreadable.
+fn codex_hooks(path: &Path) -> HookState {
+    let Ok(text) = read_settings(path) else {
+        return HookState::Unreadable;
+    };
+    state(text.is_some_and(|text| {
+        text.lines()
+            .filter_map(toml_command)
+            .any(|command| is_deck_hook(&command))
+    }))
+}
+
+/// Remembers, for this run only, how many prompts the deck answered. It sees the `agent_decision` variable as
+/// `osh agent ask` polls it: a new `allow` or `deny` counts once, until `osh` clears it. No prompt text reaches it.
+#[derive(Debug)]
+pub struct AnswerLog {
+    pending: bool,
+    count: u32,
+    last_ms: Option<u64>,
+}
+
+impl AnswerLog {
+    const fn new() -> Self {
+        Self {
+            pending: false,
+            count: 0,
+            last_ms: None,
+        }
+    }
+
+    /// A poll of the variables saw the decision as `value`.
+    pub fn seen(&mut self, value: &serde_json::Value, now_ms: u64) {
+        if !self.pending && (value == "allow" || value == "deny") {
+            self.pending = true;
+            self.count = self.count.saturating_add(1);
+            self.last_ms = Some(now_ms);
+        }
+    }
+
+    /// The decision was cleared (`osh` consumed the answer, or began a new prompt).
+    pub fn cleared(&mut self) {
+        self.pending = false;
+    }
+}
+
+static ANSWERS: std::sync::Mutex<AnswerLog> = std::sync::Mutex::new(AnswerLog::new());
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+/// Called by the ingress socket with every `agent_decision` value a poll returned.
+pub fn note_decision(value: &serde_json::Value) {
+    if let Ok(mut log) = ANSWERS.lock() {
+        log.seen(value, now_ms());
+    }
+}
+
+/// Called by the ingress socket when `agent_decision` is set back to `none`.
+pub fn note_decision_cleared() {
+    if let Ok(mut log) = ANSWERS.lock() {
+        log.cleared();
+    }
+}
+
+fn signals_for(home: &Path, log: &AnswerLog) -> AgentSignals {
+    AgentSignals {
+        claude: claude_hooks(&home.join(".claude").join("settings.json")),
+        codex: codex_hooks(&home.join(".codex").join("config.toml")),
+        answered: log.count,
+        last_answer_ms: log.last_ms,
+    }
+}
+
+pub fn signals() -> Result<AgentSignals, String> {
+    let home = home()?;
+    let log = ANSWERS
+        .lock()
+        .map_err(|_| "the answer record is unavailable".to_string())?;
+    Ok(signals_for(&home, &log))
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -438,5 +616,82 @@ mod tests {
         let status = status_for(Some(&macos), &home, None);
         assert!(!status.translocated);
         assert!(status.osh_path.is_some());
+    }
+
+    #[test]
+    fn finds_deck_hooks_in_claude_settings_without_writing() {
+        let (_root, _macos, home) = setup();
+        let dir = home.join(".claude");
+        let file = dir.join("settings.json");
+        let log = AnswerLog::new();
+        assert_eq!(signals_for(&home, &log).claude, HookState::NotConfigured);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            &file,
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo hi"}]}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(claude_hooks(&file), HookState::NotConfigured);
+        let ours = osh::setup(
+            osh::Agent::Claude,
+            "/Applications/OpenStreamHub.app/Contents/MacOS/osh",
+        );
+        std::fs::write(&file, &ours).unwrap();
+        assert_eq!(claude_hooks(&file), HookState::Configured);
+        let spaced = osh::setup(osh::Agent::Claude, "/Users/a b/osh");
+        std::fs::write(&file, &spaced).unwrap();
+        assert_eq!(claude_hooks(&file), HookState::Configured);
+        std::fs::write(&file, "{ not json").unwrap();
+        assert_eq!(claude_hooks(&file), HookState::Unreadable);
+        std::fs::write(&file, [0xff, 0xfe]).unwrap();
+        assert_eq!(claude_hooks(&file), HookState::Unreadable);
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(claude_hooks(&file), HookState::NotConfigured);
+        // Read only: the file is as written.
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}");
+    }
+
+    #[test]
+    fn finds_deck_hooks_in_codex_config() {
+        let (_root, _macos, home) = setup();
+        let file = home.join(".codex").join("config.toml");
+        assert_eq!(codex_hooks(&file), HookState::NotConfigured);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            "model = \"x\"\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand = \"echo\"\n",
+        )
+        .unwrap();
+        assert_eq!(codex_hooks(&file), HookState::NotConfigured);
+        for path in [
+            "/Applications/OpenStreamHub.app/Contents/MacOS/osh",
+            "/Users/a b/osh",
+        ] {
+            std::fs::write(&file, osh::setup(osh::Agent::Codex, path)).unwrap();
+            assert_eq!(codex_hooks(&file), HookState::Configured, "{path}");
+        }
+        std::fs::write(&file, "command = 'osh agent state done'\n").unwrap();
+        assert_eq!(codex_hooks(&file), HookState::Configured);
+        std::fs::write(&file, "# command = \"osh agent ask\"\n").unwrap();
+        assert_eq!(codex_hooks(&file), HookState::NotConfigured);
+        std::fs::write(&file, [0xff, 0xfe]).unwrap();
+        assert_eq!(codex_hooks(&file), HookState::Unreadable);
+    }
+
+    #[test]
+    fn counts_each_deck_answer_once() {
+        let mut log = AnswerLog::new();
+        log.seen(&serde_json::json!("none"), 1);
+        assert_eq!(log.count, 0);
+        // Polled several times before osh clears it: one answer.
+        log.seen(&serde_json::json!("allow"), 5);
+        log.seen(&serde_json::json!("allow"), 6);
+        assert_eq!((log.count, log.last_ms), (1, Some(5)));
+        log.cleared();
+        log.seen(&serde_json::json!("deny"), 9);
+        assert_eq!((log.count, log.last_ms), (2, Some(9)));
+        let (_root, _macos, home) = setup();
+        let signals = signals_for(&home, &log);
+        assert_eq!((signals.answered, signals.last_answer_ms), (2, Some(9)));
     }
 }

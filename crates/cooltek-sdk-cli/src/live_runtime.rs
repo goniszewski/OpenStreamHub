@@ -1858,10 +1858,10 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     }
 }
 
-/// Folds already-queued work into `work` while each next item is one absolute
-/// position (a fader) that merges into the last event (see [`merge_event`]). The first item
-/// that does not merge is parked in `carried` so the order of everything else
-/// is unchanged.
+/// Folds already-queued work into `work` while each next item is one continuous
+/// input (a fader position, or a knob, roller or dial step) that merges into the
+/// last event (see [`merge_event`]). The first item that does not merge is parked
+/// in `carried` so the order of everything else is unchanged.
 fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option<Work>) -> Work {
     while let Ok(next) = receiver.try_recv() {
         let mergeable = !work.merge_barrier
@@ -1869,10 +1869,6 @@ fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option
             && next.dropped_dial_function_count == 0
             && next.coalesced_parse_error_count == 0
             && next.status == "decoded"
-            && next
-                .events
-                .iter()
-                .all(|planned| planned.event.gesture == Gesture::PositionChanged)
             && matches!(next.events.as_slice(), [planned]
             if work.events.last().is_some_and(|last| {
                 last.event.control == planned.event.control && merge_event(last, planned).is_some()
@@ -3905,6 +3901,54 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_worker_sums_queued_rotation_steps_and_keeps_other_gestures_apart() {
+        let step =
+            |gesture, delta| work(vec![planned(0, gesture, action(Action::Volume { delta }))]);
+        let (sender, receiver) = mpsc::sync_channel(16);
+        for _ in 0..4 {
+            sender.send(step(Gesture::Clockwise, 5)).unwrap();
+        }
+        // A turn the other way is a different gesture: it must not cancel the earlier ones.
+        sender.send(step(Gesture::CounterClockwise, -5)).unwrap();
+        sender.send(step(Gesture::CounterClockwise, -5)).unwrap();
+        let mut carried = None;
+        let folded = absorb_queued(step(Gesture::Clockwise, 5), &receiver, &mut carried);
+        assert_eq!(folded.report_count, 5);
+        assert_eq!(
+            folded.events[0].resolution,
+            action(Action::Volume { delta: 25 })
+        );
+        let parked = carried.expect("the opposite turn starts a new run of steps");
+        assert_eq!(parked.events[0].event.gesture, Gesture::CounterClockwise);
+        let next = absorb_queued(parked, &receiver, &mut None);
+        assert_eq!(
+            next.events[0].resolution,
+            action(Action::Volume { delta: -10 })
+        );
+    }
+
+    #[test]
+    fn a_waiting_worker_never_folds_steps_that_run_other_actions() {
+        // A scroll roller sends one key per click: every click must still run.
+        let key = |gesture| {
+            work(vec![planned(
+                0,
+                gesture,
+                action(Action::Shortcut {
+                    key: "j".into(),
+                    modifiers: Vec::new(),
+                }),
+            )])
+        };
+        let (sender, receiver) = mpsc::sync_channel(8);
+        sender.send(key(Gesture::Down)).unwrap();
+        let mut carried = None;
+        let folded = absorb_queued(key(Gesture::Down), &receiver, &mut carried);
+        assert_eq!(folded.report_count, 1);
+        assert!(carried.is_some(), "the second click is parked, not merged");
+    }
+
+    #[test]
     fn coalescing_sums_steps_keeps_last_position_and_never_merges_buttons() {
         let volume = |delta| planned(0, Gesture::Clockwise, action(Action::Volume { delta }));
         let merged = merge_event(&volume(60), &volume(60)).unwrap();
@@ -4394,7 +4438,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(received.lock().unwrap().len(), 3);
+        // Rotation steps that queue up while an action runs are summed into one
+        // (see `absorb_queued`), so three steps run as one to three actions. Every
+        // step still counts as a failed event, and each action logs one failure.
+        let attempts = received.lock().unwrap().len();
+        assert!((1..=3).contains(&attempts));
         assert_eq!(summary.failed_action_count, 3);
         assert_eq!(summary.action_count, 0);
         assert_eq!(summary.processed_report_count, 3);
@@ -4404,7 +4452,7 @@ mod tests {
             .iter()
             .filter(|row| row["type"] == "action_failed")
             .collect();
-        assert_eq!(failed.len(), 3);
+        assert_eq!(failed.len(), attempts);
         assert!(failed.iter().all(|row| row["schema_version"] == 1));
         let footer = rows.last().unwrap();
         assert_eq!(footer["reason"], "max_reports");

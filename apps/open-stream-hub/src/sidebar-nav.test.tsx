@@ -19,6 +19,7 @@ describe('SidebarNav', () => {
     expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)3"/);
     expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)4"/);
     expect(markup).toMatch(/data-shortcut="(⌘|Ctrl\+)5"/);
+    expect(markup).toMatch(/aria-keyshortcuts="(Meta|Control)\+1"/);
     expect(markup).toContain('class="theme-picker"');
     expect(markup).toContain('aria-label="Collapse sidebar"');
     expect(markup).toContain('aria-expanded="true"');

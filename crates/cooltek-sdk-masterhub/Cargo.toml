@@ -12,3 +12,6 @@ rust-version = "1.97.0"
 
 [dependencies]
 hidapi = { version = "2", features = ["macos-shared-device"] }
+
+[build-dependencies]
+cc = "1"

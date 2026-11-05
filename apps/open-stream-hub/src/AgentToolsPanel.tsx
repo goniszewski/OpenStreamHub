@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Check, Copy, LoaderCircle, RefreshCw } from 'lucide-react';
-import { PATH_EXPORT, agentTargets, copyText, oshState, runAgentTool, showPathHint } from './agent-tools-model';
-import type { AgentToolCommand, AgentToolStatus } from './agent-tools-model';
+import { Check, Circle, Copy, LoaderCircle, RefreshCw } from 'lucide-react';
+import { PATH_EXPORT, agentChecklist, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
+import type { AgentSignalsReply, AgentToolCommand, AgentToolStatus } from './agent-tools-model';
 import { useT } from './i18n-react';
 import type { Invoke } from './profile-session';
 
@@ -23,11 +23,48 @@ function CopyButton({ text, label, copy }: { text: string; label: string; copy(t
   </>;
 }
 
+// First-run checklist: done steps get a check, the others a circle with a hint underneath and an action on the right.
+// Collapses to one line when all are done.
+function SetupChecklist({ status, signals, copy }: { status: AgentToolStatus; signals: AgentSignalsReply | null; copy(text: string): Promise<boolean> }) {
+  const t = useT();
+  const { steps, ready } = agentChecklist(status, signalsSeen(signals));
+  if (ready) return <p className="fine-print agent-tools-ready" role="status"><Check size={14} /> {t('agents.check.ready')}</p>;
+  const hookHint = (step: 'claude' | 'codex') => {
+    if (!signals) return t('agents.check.notChecked');
+    const file = agentTargets.find(target => target.agent === step)!.file;
+    return t(signals[step] === 'unreadable' ? 'agents.check.hook.unreadable' : 'agents.check.hook.missing', { file });
+  };
+  return <div className="agent-tools-checklist">
+    <h3>{t('agents.check.title')}</h3>
+    <ul>
+      {steps.map(({ step, done }) => {
+        const name = t(step === 'codex' ? 'agents.codex.title' : 'agents.claude.title');
+        const hint = done ? null
+          : step === 'osh' ? t(status.translocated ? 'agents.check.osh.translocated' : 'agents.check.osh.missing')
+          : step === 'answered' ? t('agents.check.answered.hint')
+          : hookHint(step);
+        return <li key={step} className={`agent-tools-step agent-tools-step-${step}`} data-done={done}>
+          {done ? <Check size={14} aria-label={t('agents.check.done')} /> : <Circle size={14} aria-label={t('agents.check.todo')} />}
+          <div className="agent-tools-step-text">
+            <span>{t(`agents.check.${step}`)}</span>
+            {hint && <span className="fine-print">{hint}</span>}
+          </div>
+          <div className="agent-tools-step-action">
+            {!done && (step === 'claude' || step === 'codex') && status.osh_path && !status.translocated && <CopyButton text={agentTargets.find(target => target.agent === step)!.config(status)} label={t('agents.copyConfig', { name })} copy={copy} />}
+          </div>
+        </li>;
+      })}
+    </ul>
+    <p className="fine-print agent-tools-caveat">{t('agents.check.caveat')}</p>
+  </div>;
+}
+
 // Settings panel for the AI agent hooks: finds the bundled osh, links it into ~/.local/bin on request and shows the
 // Claude Code and Codex hook configurations to paste. The agents' settings files are never edited by the app.
 export function AgentToolsPanel({ desktop, invoke, copy = copyText }: { desktop: boolean; invoke?: Invoke; copy?(text: string): Promise<boolean> }) {
   const t = useT();
   const [status, setStatus] = useState<AgentToolStatus | null>(null);
+  const [signals, setSignals] = useState<AgentSignalsReply | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -40,6 +77,8 @@ export function AgentToolsPanel({ desktop, invoke, copy = copyText }: { desktop:
     setBusy(true);
     try {
       setStatus(await runAgentTool(call.current, command));
+      // The checklist's own readings are refreshed with the status (on mount and on "Check again"); a failure leaves it unchecked.
+      if (command === 'agent_tool_status') setSignals(await readAgentSignals(call.current).catch(() => null));
       setError(null);
       setResult(done ?? null);
     } catch (reason) {
@@ -57,6 +96,7 @@ export function AgentToolsPanel({ desktop, invoke, copy = copyText }: { desktop:
     <p>{t('agents.intro')}</p>
     {!available && <p className="fine-print">{t('agents.desktopOnly')}</p>}
     {available && !status && !error && <p className="fine-print" role="status">{t('agents.loading')}</p>}
+    {status && <SetupChecklist status={status} signals={signals} copy={copy} />}
     {status && state === 'translocated' && <p className="fine-print permission-error" role="status">{t('agents.osh.translocated')}</p>}
     {status && state === 'missing' && <p className="fine-print permission-error" role="status">{t('agents.osh.missing')}</p>}
     {status && status.osh_path && !status.translocated && <>

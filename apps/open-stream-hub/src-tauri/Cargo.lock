@@ -634,6 +634,7 @@ dependencies = [
 name = "cooltek-sdk-masterhub"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "hidapi",
 ]
 

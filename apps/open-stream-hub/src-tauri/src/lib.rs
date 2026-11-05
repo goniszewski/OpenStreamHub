@@ -1583,6 +1583,11 @@ fn open_release_page() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_about_link(target: String, hash: Option<String>) -> Result<(), String> {
+    updates::open_about_link(&target, hash.as_deref())
+}
+
+#[tauri::command]
 fn start_permission_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     // Synchronous commands already run on the main thread, which AppKit dragging needs.
     #[cfg(target_os = "macos")]
@@ -1949,6 +1954,13 @@ fn link_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
     agent_tools::link()
 }
 
+// What the AI agents checklist reads: whether Claude Code's and Codex's settings hold our hooks (read only), and how
+// many prompts the deck answered this session.
+#[tauri::command(async)]
+fn agent_signals() -> Result<agent_tools::AgentSignals, String> {
+    agent_tools::signals()
+}
+
 // Removes `~/.local/bin/osh` only when it links to an OpenStreamHub `osh`.
 #[tauri::command(async)]
 fn unlink_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
@@ -2249,6 +2261,7 @@ pub fn run() {
             autostart_status,
             check_for_updates,
             open_release_page,
+            open_about_link,
             set_autostart,
             menubar_status,
             set_menubar,
@@ -2257,7 +2270,8 @@ pub fn run() {
             start_permission_drag,
             agent_tool_status,
             link_agent_tool,
-            unlink_agent_tool
+            unlink_agent_tool,
+            agent_signals
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");

@@ -122,6 +122,72 @@ pub fn open_release_page() -> Result<(), String> {
         .ok_or_else(|| "Could not open the release page.".to_string())
 }
 
+const ABOUT_REPOSITORY: &str = "https://github.com/goniszewski/OpenStreamHub";
+const ABOUT_UPSTREAM: &str = "https://github.com/projectzero7/cooltek-sdk";
+
+/// The only addresses the About page can open: this project, the SDK it builds on, and a commit
+/// of either, named by its hexadecimal hash. Nothing else is accepted, so the page cannot send the
+/// system browser anywhere else.
+pub fn about_link_url(target: &str, hash: Option<&str>) -> Option<String> {
+    let base = match target {
+        "repository" | "repository-commit" => ABOUT_REPOSITORY,
+        "upstream" | "upstream-commit" => ABOUT_UPSTREAM,
+        _ => return None,
+    };
+    if !target.ends_with("-commit") {
+        return Some(base.to_string());
+    }
+    let hash = hash?;
+    let valid = (7..=40).contains(&hash.len()) && hash.bytes().all(|byte| byte.is_ascii_hexdigit());
+    valid.then(|| format!("{base}/commit/{}", hash.to_ascii_lowercase()))
+}
+
+pub fn open_about_link(target: &str, hash: Option<&str>) -> Result<(), String> {
+    let url =
+        about_link_url(target, hash).ok_or_else(|| "That link is not available.".to_string())?;
+    let status = Command::new(OPEN)
+        .arg(url)
+        .status()
+        .map_err(|_| "Could not open the link.".to_string())?;
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| "Could not open the link.".to_string())
+}
+
+#[cfg(test)]
+mod about_link_tests {
+    use super::about_link_url;
+
+    #[test]
+    fn only_fixed_github_addresses_are_built() {
+        assert_eq!(
+            about_link_url("repository", None).as_deref(),
+            Some("https://github.com/goniszewski/OpenStreamHub")
+        );
+        assert_eq!(
+            about_link_url("upstream", None).as_deref(),
+            Some("https://github.com/projectzero7/cooltek-sdk")
+        );
+        assert_eq!(
+            about_link_url("repository-commit", Some("9B58EC8")).as_deref(),
+            Some("https://github.com/goniszewski/OpenStreamHub/commit/9b58ec8")
+        );
+        assert_eq!(
+            about_link_url("upstream-commit", Some("d996ede")).as_deref(),
+            Some("https://github.com/projectzero7/cooltek-sdk/commit/d996ede")
+        );
+        assert_eq!(about_link_url("repository-commit", None), None);
+        assert_eq!(about_link_url("repository-commit", Some("abc")), None);
+        assert_eq!(about_link_url("repository-commit", Some("zzzzzzzz")), None);
+        assert_eq!(
+            about_link_url("repository-commit", Some("9b58ec8/../../x")),
+            None
+        );
+        assert_eq!(about_link_url("https://evil.example", None), None);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

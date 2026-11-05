@@ -46,7 +46,7 @@ import { HistoryMenu } from './HistoryMenu';
 import { appNamesVersion, subscribeAppNames } from './app-names';
 import { useT } from './i18n-react';
 import { SidebarNav, readNavCollapsed, writeNavCollapsed } from './SidebarNav';
-import { RunningProfile, applyRunningProfile } from './RunningProfile';
+import { RunningProfile, applyRunningProfile, runningProfileValue } from './RunningProfile';
 import { BuiltInProfiles } from './BuiltInProfilesPanel';
 import { builtInOf, profileChoices, useHiddenBuiltIns } from './builtin-profiles';
 import { drawerTiles, readDrawerOpen, reconcilePicks, writeDrawerOpen } from './module-drawer-model';
@@ -639,19 +639,21 @@ export default function App() {
   // stay listed even when hidden, so a picker can always show its own value.
   const kept = new Set([...(profileId ? [profileId] : []), ...Object.values(runSession.service.runs).flatMap(run => run.profileId ? [run.profileId] : [])]);
   const choices = profileChoices(state.profiles, hiddenBuiltIns, kept);
+  const runningId = runningProfileValue(runSession.service.runs, display.defaultProfile.profileId);
+  const differsFromRunning = runningId !== '' && runningId !== profileId;
   return <div className="app-shell">
     <header className="app-header">
       <div className="header-row">
         <div className="brand"><SquareEye /><span>OpenStreamHub</span><span className="version-label">Desktop</span></div>
-        <div className="profile-switcher" ref={switcherRef}><FileText size={18} /><label className="sr-only" htmlFor="active-profile">Active profile</label>
+        <div className="profile-switcher" ref={switcherRef} title={profile.name}><FileText size={18} /><div className="profile-switcher-field"><div className="profile-switcher-label-row"><label className="profile-switcher-label" htmlFor="active-profile">{t('header.editing')}</label>{desktop && differsFromRunning && <span className="profile-differs-dot" role="img" title={t('header.editingDifferent')} aria-label={t('header.editingDifferent')} data-tip={t('header.editingDifferent')} />}</div>
           {desktop ? <SelectField id="active-profile" value={profileId ?? '__new'} disabled={disabled} onChange={event => {
             const id = event.target.value; if (id !== '__new') chooseProfile(id);
           }}>
             {!profileId && <option value="__new">{profile.name}</option>}
             {profileId && !state.profiles.some(item => item.id === profileId) && <option value={profileId}>{profile.name}</option>}
             {choices.map(item => <option key={item.value} value={item.value}>{item.builtIn ? `${item.name} (built-in)` : item.name}</option>)}
-          </SelectField> : <span>{profile.name}</span>}
-          {unsaved && <span className="draft-dot" title="Unsaved changes" aria-label="Unsaved changes" />}
+          </SelectField> : <span>{profile.name}</span>}</div>
+          {unsaved && <span className="draft-dot" title={t('header.unsaved')} aria-label={t('header.unsaved')} />}
           <button type="button" className="icon-button manage-profiles" aria-expanded={managerOpen} aria-controls="profile-manager-sheet" aria-label={t('header.manageProfiles')} data-tip={t('header.manageProfiles')} onClick={() => setManagerOpen(value => !value)}><Layers size={17} /></button>
           {managerOpen && <ProfileManagerSheet session={session} state={state} desktop={desktop} disabled={disabled} confirm={setConfirmation} mac={mac} focusRules={focusRules} onAllow={() => { setManagerOpen(false); setAllowExecutionOpen(true); }} onStarters={() => { setManagerOpen(false); setStarter({ entry: 'manager', module: null }); }} onClose={() => setManagerOpen(false)} />}
         </div>
@@ -664,7 +666,7 @@ export default function App() {
             <HistoryMenu undo={state.undoLabels} redo={state.redoLabels} disabled={disabled} onUndo={steps => { session.undoSteps(steps); }} onRedo={steps => { session.redoSteps(steps); }}
               undoHint={hint('Z', mac)} redoHint={redoHint(mac)} storage={webStorage()} />
           </div>
-          <button className="button" disabled={disabled || !unsaved} data-shortcut={hint('S', mac)} data-tip={withHint(t('header.save'), 'S', mac)} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? t('header.saving') : t('header.save')}</button>
+          <button className={`button save-button${unsaved ? ' primary dirty' : ''}`} disabled={disabled || !unsaved} data-shortcut={hint('S', mac)} title={unsaved ? t('header.unsaved') : t('header.noChanges')} data-tip={unsaved ? withHint(t('header.unsaved'), 'S', mac) : t('header.noChanges')} onClick={() => { void session.save(); }}><Save size={17} />{busy === 'Saving profile' ? t('header.saving') : t('header.save')}{unsaved && <span className="save-dot" aria-hidden="true" />}</button>
         </div>
       </div>
       <RunBlockerNotice run={runSession} />
@@ -697,7 +699,7 @@ export default function App() {
         </>}
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
-        {page === 'about' && <AboutPage />}
+        {page === 'about' && <AboutPage invoke={desktop ? ((command, args) => invoke(command, args)) : undefined} />}
         {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>

@@ -30,6 +30,14 @@ Inventory enumerates all Cooler Master VID `0x2516` HID interfaces, including un
 
 Each entry includes a lossless `path_hex`, VID/PID, serial and manufacturer/product strings where available, release number, interface number, usage page, usage, and recognized model. A recognized model is metadata, not proof that its capabilities are implemented. Save the inventory alongside the firmware/app/version notes in the first hardware session.
 
+## Roller SET_IDLE test
+
+```sh
+cargo run -p cooltek-sdk-cli --locked -- roller-set-idle --seconds 5
+```
+
+Finds the M032LE roller (`2516:0204`; `--path-hex` from `list` if several), opens it shared, sends one HID SET_IDLE(0) class request (`bmRequestType 0x21`, `bRequest 0x0A`, `wValue 0`, `wIndex 0` = interface 0, no data) to its USB device without capturing it from the system HID driver, then counts input reports for `--seconds` (1 to 60, default 5) while you turn both rollers. It sends no feature report, output report or mode command. Stop `masterhub-service` and the app first so nothing else holds the roller. The last stdout line is JSON with `set_idle` (`accepted`, `failed` with `detail`, or `skipped`) and `input_reports`; it reports 0 when the request is accepted but the rollers did not report. The macOS firmware needs this request again after replug, base power loss or sleep. The service records the same outcome as `details.roller_set_idle` in `service_start`. Idea and fix by KamilKobylarek ([issue #4](https://github.com/goniszewski/OpenStreamHub/issues/4)); hardware verification is pending.
+
 ## Bounded input recording
 
 Copy the exact `path_hex` for the intended interface from inventory. Use a new filename for each experiment:

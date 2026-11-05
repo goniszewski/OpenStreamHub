@@ -119,6 +119,22 @@ enum Command {
         #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u64).range(1..=60))]
         duration_secs: u64,
     },
+    /// Send the HID SET_IDLE(0) request to an M032LE roller, then count its input reports.
+    ///
+    /// Finds the roller (2516:0204 or 2516:9995), opens it shared, sends exactly one
+    /// control request (SET_IDLE: 0x21 0x0A, value 0, interface 0, no data) and
+    /// counts the input reports that arrive while you turn the rollers. It sends no
+    /// feature report, output report or mode command. With several rollers, choose
+    /// one with --path-hex. Prints one JSON line. Hardware verification is pending
+    /// (GitHub issue #4).
+    RollerSetIdle {
+        /// Hexadecimal device path copied from `list`; needed only with several rollers.
+        #[arg(long, value_parser = parse_path)]
+        path_hex: Option<DevicePath>,
+        /// How long to count reports after the request (1 to 60 seconds).
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..=60))]
+        seconds: u64,
+    },
     /// Decode a completed JSONL capture without opening any hardware.
     Replay { file: PathBuf },
     /// Preview software-derived dial commands or explicitly send to a selected dial.
@@ -386,6 +402,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 duration: Duration::from_secs(duration_secs),
             },
         ),
+        Command::RollerSetIdle { path_hex, seconds } => roller_set_idle(path_hex, seconds),
         Command::Replay { file } => replay(file),
         Command::Dial { command } => dial_command(command),
         Command::Keypad { command } => keypad_command(command),
@@ -534,6 +551,49 @@ fn features(path: &[u8], settings: ProbeSettings) -> Result<(), Box<dyn Error>> 
     let mut output = io::stdout().lock();
     probe(&reader, &identity(selected), settings, &mut output)?;
     Ok(())
+}
+
+/// Sends SET_IDLE(0) to one roller and counts input reports for `seconds`.
+fn roller_set_idle(path: Option<DevicePath>, seconds: u64) -> Result<(), Box<dyn Error>> {
+    let registry = DeviceRegistry::new()?;
+    let devices = registry.devices();
+    let rollers: Vec<&ModuleIdentity> = devices
+        .iter()
+        .filter(|device| device.module == Some(ModuleKind::M032LE))
+        .filter(|device| {
+            path.as_ref()
+                .is_none_or(|path| device.path.as_bytes() == &path[..])
+        })
+        .collect();
+    let selected = match rollers.as_slice() {
+        [] => return Err("no M032LE roller (2516:0204) found; check the cable and base".into()),
+        [one] => *one,
+        _ => {
+            return Err("several rollers found; choose one with --path-hex from `list`".into());
+        }
+    };
+    let (device, outcome) = registry.open_prepared(selected)?;
+    let outcome = outcome.ok_or("the selected interface is not a roller")?;
+    eprintln!(
+        "SET_IDLE {}; turn the rollers now ({seconds} s)",
+        outcome.status()
+    );
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    let (mut reports, mut buffer) = (0u64, [0u8; 4096]);
+    while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+        let wait = i32::try_from(left.as_millis().min(100))
+            .unwrap_or(100)
+            .max(1);
+        if device.read_timeout(&mut buffer, wait)? > 0 {
+            reports += 1;
+        }
+    }
+    print_json(&serde_json::json!({
+        "type":"roller_set_idle", "path_hex":encode_hex(selected.path.as_bytes()),
+        "vendor_id":selected.vendor_id, "product_id":selected.product_id,
+        "set_idle":outcome.status(), "detail":outcome.detail(),
+        "seconds":seconds, "input_reports":reports,
+    }))
 }
 
 fn identity(device: &ModuleIdentity) -> Identity {

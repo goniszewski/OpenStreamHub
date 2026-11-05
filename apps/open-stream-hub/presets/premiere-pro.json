@@ -1,0 +1,336 @@
+{
+  "pack_version": 1,
+  "id": "premiere-pro",
+  "name": "Adobe Premiere Pro",
+  "description": "Transport, razor and trim tools for Premiere Pro: the encoder steps frames, a knob shuttles with J, K and L, and the 15-key module holds tools, marks and edits.",
+  "app": {
+    "name": "Adobe Premiere Pro"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Premiere Pro's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions and workspaces, and a changed one can be edited in the profile.",
+  "verified": false,
+  "profile": {
+    "schema_version": 2,
+    "name": "Adobe Premiere Pro",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_right",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "shortcut",
+          "key": "arrow_left",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "space",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "l",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "shortcut",
+          "key": "j",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "k",
+          "modifiers": []
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Selection",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "v",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Razor",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "c",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Ripple edit",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "b",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Track select",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "a",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Slip",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "y",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Hand",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "h",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mark in",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "i",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Mark out",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "o",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Add edit",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "k",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Snap",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Ripple delete",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "delete",
+                    "modifiers": [
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Marker",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

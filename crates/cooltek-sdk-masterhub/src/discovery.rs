@@ -1,5 +1,6 @@
 use std::ffi::CString;
 
+use crate::set_idle::SetIdleOutcome;
 use hidapi::{DeviceInfo, HidApi, HidDevice, HidError, HidResult};
 
 /// Recognized MasterHUB model, independent of implemented protocol capabilities.
@@ -184,6 +185,21 @@ impl DeviceRegistry {
             |path| self.api.open_path(path),
             |device| Ok(ModuleIdentity::from(&device.get_device_info()?)),
         )
+    }
+
+    /// Like [`Self::open`], and for an M032LE roller also sends the HID SET_IDLE request it
+    /// needs before it reports anything on macOS (see [`crate::set_idle`]).
+    ///
+    /// The request is best effort: its outcome is returned and never fails the open. Other
+    /// models return `None`. Call it on every open; the roller forgets SET_IDLE on reset.
+    pub fn open_prepared(
+        &self,
+        identity: &ModuleIdentity,
+    ) -> HidResult<(HidDevice, Option<SetIdleOutcome>)> {
+        let device = self.open(identity)?;
+        let outcome = (identity.module == Some(ModuleKind::M032LE))
+            .then(|| crate::set_idle::send_set_idle(&identity.path));
+        Ok((device, outcome))
     }
 }
 

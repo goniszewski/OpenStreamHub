@@ -2,12 +2,16 @@ import { isValidElement } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ActionFields, ObsCombo, ObsConnection, ObsFields } from './ActionFields';
-import { obsOperationLabels } from './action-model';
-import type { ObsStepAction } from './action-model';
+import { ActionFields, AppPicker, ObsCombo, ObsConnection, ObsFields, StreamlabsConnection, StreamlabsFields } from './ActionFields';
+import type { AppPickerState } from './ActionFields';
+import type { Invoke } from './profile-session';
+import { obsOperationLabels, streamlabsOperationLabels } from './action-model';
+import type { ObsStepAction, StreamlabsStepAction } from './action-model';
 import type { ObsCatalogView, ObsNameKind } from './obs-catalog';
+import type { StreamlabsCatalogView } from './streamlabs-catalog';
 import type { BindingAction, ObsNameList, StepAction } from './contracts';
 import { VariablesContext } from './variables-context';
+import { choicesOf, hasOption } from './select-markup';
 
 const render = (action: BindingAction | null, fader = false, onSetUpObs: (() => void) | null = () => {}) =>
   renderToStaticMarkup(<ActionFields action={action} fader={fader} selectorKey="m4315:root:0:pressed:" onChange={() => {}} onSetUpObs={onSetUpObs ?? undefined} />);
@@ -94,7 +98,7 @@ describe('action fields', () => {
 
   it('renders the profile direction select without offering it as a multi-action step', () => {
     const markup = render({ type: 'profile', direction: 'previous' });
-    expect(markup).toMatch(/<option value="previous" selected="">Previous profile<\/option>/);
+    expect(hasOption(markup, 'previous', 'Previous profile', true)).toBe(true);
     expect(markup).toContain('value="next"');
     expect(markup).toContain('pause until you confirm the new profile');
     expect(markup).toContain('Only runs started from this app switch');
@@ -117,18 +121,36 @@ describe('action fields', () => {
     expect(ids(markup)).toEqual(expect.arrayContaining(['timer-seconds', 'timer-label', 'timer-sound']));
     expect(markup).toMatch(/id="timer-seconds"[^>]*min="1"[^>]*max="86400"/);
     // Absent sound shows the service default.
-    expect(markup).toMatch(/<option value="glass" selected="">Glass<\/option>/);
-    expect(markup.match(/<option value="[a-z]+"[^>]*>/g)?.filter(option => /basso|blow|bottle|frog|funk|glass|hero|morse|ping|pop|purr|sosumi|submarine|tink|none/.test(option))).toHaveLength(15);
+    expect(hasOption(markup, 'glass', 'Glass', true)).toBe(true);
+    expect(choicesOf(markup, 'timer-sound').filter(choice => /^(basso|blow|bottle|frog|funk|glass|hero|morse|ping|pop|purr|sosumi|submarine|tink|none)$/.test(choice.value))).toHaveLength(15);
     expect(markup).toContain('not shown on the key');
     expect(markup).toContain('pressing the same control again cancels it');
     expect(markup).not.toContain('role="alert"');
     expectAccessible(markup);
     const labelled = render({ type: 'timer', seconds: 5, label: 'Tea', sound: 'none' });
     expect(labelled).toContain('value="Tea"');
-    expect(labelled).toMatch(/<option value="none" selected="">No sound<\/option>/);
+    expect(hasOption(labelled, 'none', 'No sound', true)).toBe(true);
     const bad = render({ type: 'timer', seconds: 5, label: ' padded' });
     expect(bad).toContain('aria-invalid="true"');
     expect(bad).toContain('id="timer-label-error"');
+    expectAccessible(bad);
+  });
+
+  it('renders the terminal app, command and folder fields with accessible ids and the trust note', () => {
+    const markup = render({ type: 'terminal_command', app: 'iterm2', command: 'codex', directory: '~/code' });
+    expect(markup).toContain('>Open terminal and run</span>');
+    expect(ids(markup)).toEqual(expect.arrayContaining(['terminal-app', 'terminal-command', 'terminal-directory']));
+    expect(choicesOf(markup, 'terminal-app').map(choice => choice.value)).toEqual(['terminal', 'iterm2']);
+    expect(hasOption(markup, 'iterm2', 'iTerm2', true)).toBe(true);
+    expect(markup).toContain('value="codex"');
+    expect(markup).toContain('value="~/code"');
+    expect(markup).toContain('only bind commands you trust');
+    expect(markup).toContain('runs as a dry run until you review it');
+    expect(markup).not.toContain('role="alert"');
+    expectAccessible(markup);
+    const bad = render({ type: 'terminal_command', app: 'terminal', command: '', directory: 'relative' });
+    expect(bad).toContain('id="terminal-command-error"');
+    expect(bad).toContain('id="terminal-directory-error"');
     expectAccessible(bad);
   });
 
@@ -152,7 +174,7 @@ describe('obs fields', () => {
   it('edits every operation from one editor with an Operation select and one connection status', () => {
     const markup = render({ type: 'obs_scene', scene: 'Live' });
     expect(markup).toContain('<label for="obs-operation">Operation</label>');
-    expect(markup).toMatch(/<option value="obs_scene" selected="">Scene<\/option>/);
+    expect(hasOption(markup, 'obs_scene', 'Scene', true)).toBe(true);
     expect(markup).toContain('<label for="obs-scene">OBS scene name</label>');
     expect(markup).toContain('value="Live"');
     expect(markup).toContain('>OBS</span>');
@@ -175,8 +197,8 @@ describe('obs fields', () => {
 
   it('offers the nine operations in the Operation select', () => {
     const markup = render({ type: 'obs_transition' });
-    for (const [type, label] of Object.entries(obsOperationLabels)) expect(markup).toMatch(new RegExp(`<option value="${type}"( selected="")?>${label}</option>`));
-    expect(markup).toMatch(/<option value="obs_transition" selected="">Studio transition<\/option>/);
+    for (const [type, label] of Object.entries(obsOperationLabels)) expect(hasOption(markup, type, label)).toBe(true);
+    expect(hasOption(markup, 'obs_transition', 'Studio transition', true)).toBe(true);
     // The transition has no parameters of its own, only the shared status.
     expect(ids(markup)).toEqual(expect.arrayContaining(['obs-operation']));
     expect(markup).toContain('studio-mode transition');
@@ -186,12 +208,12 @@ describe('obs fields', () => {
   it('keeps the historical parameter fields of every operation', () => {
     const camera = render({ type: 'obs_virtual_camera', op: 'start' });
     expect(camera).toContain('<label for="obs-virtual-camera-op">Action</label>');
-    expect(camera).toMatch(/<option value="start" selected="">Start<\/option>/);
+    expect(hasOption(camera, 'start', 'Start', true)).toBe(true);
     expect(camera).not.toContain('value="save"');
     const buffer = render({ type: 'obs_replay_buffer', op: 'save' });
     expect(buffer).toContain('<label for="obs-replay-buffer-op">Action</label>');
-    expect(buffer).toMatch(/<option value="save" selected="">Save the last seconds<\/option>/);
-    expect(render({ type: 'obs_studio_mode', op: 'on' })).toMatch(/<option value="on" selected="">Turn on<\/option>/);
+    expect(hasOption(buffer, 'save', 'Save the last seconds', true)).toBe(true);
+    expect(hasOption(render({ type: 'obs_studio_mode', op: 'on' }), 'on', 'Turn on', true)).toBe(true);
     expect(ids(render({ type: 'obs_filter', source: 'Webcam', filter: 'Blur', op: 'toggle' })))
       .toEqual(expect.arrayContaining(['obs-filter-source', 'obs-filter-name', 'obs-filter-op']));
     expect(ids(render({ type: 'obs_source_visibility', scene: 'Live', source: 'Cam', op: 'off' })))
@@ -291,6 +313,107 @@ describe('obs fields', () => {
   });
 });
 
+describe('streamlabs fields', () => {
+  it('edits every operation from one editor with an Operation select, plain name fields and one status', () => {
+    const markup = render({ type: 'streamlabs_scene', scene: 'Live' });
+    expect(markup).toContain('<label for="streamlabs-operation">Operation</label>');
+    expect(hasOption(markup, 'streamlabs_scene', 'Scene', true)).toBe(true);
+    expect(markup).toContain('<label for="streamlabs-scene">Streamlabs scene name</label>');
+    expect(markup).toContain('value="Live"');
+    expect(markup).toContain('>Streamlabs</span>');
+    // An empty collection means the active one: no error.
+    expect(markup).toContain('<label class="spaced-label" for="streamlabs-scene-collection">Scene collection (optional)</label>');
+    expect(markup).not.toContain('role="alert"');
+    // OBS's lists never feed the Streamlabs fields: plain inputs without Streamlabs' own.
+    expect(renderToStaticMarkup(ActionFields({ action: { type: 'streamlabs_scene', scene: 'Live' }, fader: false, selectorKey: 'k', onChange: () => {}, catalog: catalogView() })))
+      .not.toMatch(/<input[^>]*role="combobox"/);
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/Set up in Settings/g)).toHaveLength(1);
+    expect(markup).not.toContain('WebSocket server on');
+    expect(render({ type: 'streamlabs_scene', scene: 'Live' }, false, null)).not.toContain('Set up in Settings');
+    expectAccessible(markup);
+    const blank = render({ type: 'streamlabs_scene', scene: 'Live', collection: ' ' });
+    expect(blank).toContain('Enter the Streamlabs scene collection name');
+    expect(blank).toContain('aria-invalid="true"');
+    expectAccessible(blank);
+  });
+
+  it('offers the seven operations and their own fields', () => {
+    const markup = render({ type: 'streamlabs_transition' });
+    for (const [type, label] of Object.entries(streamlabsOperationLabels)) expect(hasOption(markup, type, label)).toBe(true);
+    expect(markup).toContain('studio-mode transition');
+    expect(render({ type: 'streamlabs_record' })).toContain('stops it when it runs');
+    expect(render({ type: 'streamlabs_studio_mode' })).toContain('studio mode on when it is off');
+    const stream = render({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(stream).toMatch(/<input type="checkbox" checked=""\/>Press twice to confirm/);
+    expect(stream).toContain('press it again within 3 seconds');
+    expect(render({ type: 'streamlabs_stream' })).toContain('one press does this at once');
+    const visibility = render({ type: 'streamlabs_source_visibility', scene: 'Live', source: '', op: 'hide' });
+    expect(ids(visibility)).toEqual(expect.arrayContaining(['streamlabs-visibility-scene', 'streamlabs-visibility-source', 'streamlabs-visibility-op']));
+    expect(hasOption(visibility, 'hide', 'Hide', true)).toBe(true);
+    expect(visibility).toContain('Enter the Streamlabs source name');
+    expectAccessible(visibility);
+    const set = render({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } });
+    expect(hasOption(set, 'set', 'Set the level', true)).toBe(true);
+    expect(set).toMatch(/id="streamlabs-audio-set"[^>]*min="0"[^>]*max="100"/);
+    expect(set).toContain('not decibels');
+    expectAccessible(set);
+    const adjust = render({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: -5 } });
+    expect(adjust).toMatch(/id="streamlabs-audio-adjust"[^>]*min="-100"[^>]*max="100"/);
+    expect(ids(adjust)).not.toContain('streamlabs-audio-set');
+    const mute = render({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } });
+    expect(hasOption(mute, 'unmute', 'Unmute', true)).toBe(true);
+    expectAccessible(mute);
+  });
+
+  it('shows one status per editor next to the OBS one in a multi-action or if / else', () => {
+    const markup = render({ type: 'multi_action', actions: [
+      { type: 'streamlabs_scene', scene: 'Live' }, { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } }, { type: 'obs_transition' },
+    ] });
+    expect(ids(markup)).toEqual(expect.arrayContaining(['step-1-streamlabs-operation', 'step-1-streamlabs-scene', 'step-2-streamlabs-audio-source', 'step-2-streamlabs-audio-mute', 'step-3-obs-operation']));
+    expect(markup.match(/Remote Control on/g)).toHaveLength(1);
+    expect(markup.match(/WebSocket server on/g)).toHaveLength(1);
+    expectAccessible(markup);
+    const flow = render({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'streamlabs_record' }] });
+    expect(flow.match(/Remote Control on/g)).toHaveLength(1);
+    expect(flow).not.toContain('WebSocket server on');
+    expect(render({ type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'toggle_mute' }] })).not.toContain('Remote Control on');
+  });
+
+  it('switches operation and writes each field in the service shape', () => {
+    const run = (action: StreamlabsStepAction, id: string, value: string | boolean) => {
+      const result: { changed?: StepAction; field?: string } = {};
+      const tree = StreamlabsFields({ action, prefix: '', onChange: (changed, field) => { result.changed = changed; result.field = field; } }) as AnyElement;
+      const element = elementsOf(tree).find(item => item.props.id === id)
+        ?? elementsOf(tree).find(item => item.type === 'input' && item.props.type === 'checkbox');
+      expect(element, id).toBeTruthy();
+      const handler = (element!.props.onChange ?? element!.props.onCommit) as (value: unknown) => void;
+      handler(typeof value === 'boolean' ? { target: { checked: value } } : { target: { value } });
+      return result;
+    };
+    expect(run({ type: 'streamlabs_scene', scene: 'Live' }, 'streamlabs-operation', 'streamlabs_source_visibility'))
+      .toEqual({ changed: { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Source', op: 'toggle' }, field: 'streamlabs-operation' });
+    expect(run({ type: 'streamlabs_stream' }, 'checkbox', true).changed).toEqual({ type: 'streamlabs_stream', confirm: 'press_twice' });
+    expect(run({ type: 'streamlabs_stream', confirm: 'press_twice' }, 'checkbox', false).changed).toEqual({ type: 'streamlabs_stream' });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mode', 'adjust').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { adjust: 5 } });
+    expect(run({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } }, 'streamlabs-audio-mute', 'mute').changed)
+      .toEqual({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } });
+    expect(run({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'toggle' }, 'streamlabs-visibility-op', 'show').changed)
+      .toEqual({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'show' });
+    // The collection row takes the typed name; an empty one omits the key (never "" or null).
+    const collectionOf = (action: StreamlabsStepAction, typed: string) => {
+      let changed: StepAction | undefined;
+      const tree = StreamlabsFields({ action, prefix: '', onChange: next => { changed = next; } }) as AnyElement;
+      const row = elementsOf(tree).find(item => item.props.id === 'streamlabs-scene-collection');
+      (row!.props as { onChange(name: string): void }).onChange(typed);
+      return changed;
+    };
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live' }, 'Podcast')).toEqual({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' });
+    expect(collectionOf({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }, '')).toEqual({ type: 'streamlabs_scene', scene: 'Live' });
+  });
+});
+
 // The catalog view ObsNameField-based tests use: scenes plus one per-name list, and spies for
 // refresh and on-demand fetches (the real view comes from useObsCatalog with the store).
 function catalogView(overrides?: Partial<ObsCatalogView>): ObsCatalogView {
@@ -319,7 +442,7 @@ describe('obs name listings', () => {
 
   it('turns the OBS name fields into comboboxes only while the list is there', () => {
     const plain = renderAction({ type: 'obs_scene', scene: 'Live' });
-    expect(plain).not.toContain('role="combobox"');
+    expect(plain).not.toMatch(/<input[^>]*role="combobox"/);
     expect(plain).not.toContain('Refresh from OBS');
     expectAccessible(plain);
     const withCatalog = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView());
@@ -329,9 +452,9 @@ describe('obs name listings', () => {
     expectAccessible(withCatalog);
     // While listing, the fields stay comboboxes (their popups say so) and the press is off;
     // a failed listing leaves plain inputs, says why, and keeps the Refresh press.
-    expect(renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'loading', names: null }))).toContain('role="combobox"');
+    expect(renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'loading', names: null }))).toMatch(/<input[^>]*role="combobox"/);
     const failed = renderAction({ type: 'obs_scene', scene: 'Live' }, catalogView({ status: 'failed', names: null, error: 'OBS at 127.0.0.1:4455: could not connect' }));
-    expect(failed).not.toContain('role="combobox"');
+    expect(failed).not.toMatch(/<input[^>]*role="combobox"/);
     expect(failed).toContain('could not connect');
     expect(failed).not.toMatch(/disabled=""[^>]*>.*Refresh from OBS/);
     expectAccessible(failed);
@@ -408,6 +531,105 @@ describe('obs name listings', () => {
     }));
     expect((inStep.match(/Refresh from OBS/g) ?? []).length).toBe(1);
     expectAccessible(inStep);
+  });
+});
+
+// The Streamlabs listings a view holds in tests (the real one comes from useStreamlabsCatalog).
+function streamlabsView(overrides?: Partial<StreamlabsCatalogView>): StreamlabsCatalogView {
+  return {
+    desktop: true, status: 'ready', error: null, lists: {}, connection: null,
+    names: { scenes: ['Be right back', 'Live'], scene_collections: ['Main', 'Podcast'], active_collection: 'Main', audio_sources: ['Desktop Audio', 'Mic'] },
+    refresh: () => {}, list: () => null, requestNames: () => {},
+    ...overrides,
+  };
+}
+
+describe('streamlabs name listings', () => {
+  const renderAction = (action: BindingAction, streamlabs?: StreamlabsCatalogView) =>
+    renderToStaticMarkup(ActionFields({ action, fader: false, selectorKey: 'k', onChange: () => {}, onSetUpObs: () => {}, streamlabs }));
+
+  it('turns every Streamlabs name field into a combobox while its list is there, and says what Streamlabs does not list', () => {
+    const scene = renderAction({ type: 'streamlabs_scene', scene: 'Live' }, streamlabsView());
+    expect(scene).toMatch(/id="streamlabs-scene"[^>]*role="combobox"/);
+    expect(scene).toMatch(/id="streamlabs-scene-collection"[^>]*role="combobox"/);
+    expect(scene).not.toContain('field-warning');
+    expectAccessible(scene);
+    const missing = renderAction({ type: 'streamlabs_scene', scene: 'Liev', collection: 'Ghost' }, streamlabsView());
+    expect(missing).toContain('Streamlabs does not list this scene collection right now. Refresh the Streamlabs lists, or check the exact spelling.');
+    // A collection other than the active one: its scenes are not listed, so no scene warning.
+    expect(missing).not.toContain('Streamlabs does not list this scene right now');
+    expect(missing).not.toMatch(/id="streamlabs-scene"[^>]*role="combobox"/);
+    expect(renderAction({ type: 'streamlabs_scene', scene: 'Liev', collection: 'Main' }, streamlabsView()))
+      .toContain('Streamlabs does not list this scene right now.');
+    const audio = renderAction({ type: 'streamlabs_audio', source: 'Mice', op: { mute: 'toggle' } }, streamlabsView());
+    expect(audio).toMatch(/id="streamlabs-audio-source"[^>]*role="combobox"/);
+    expect(audio).toContain('Streamlabs does not list this audio source right now.');
+    expect(audio).not.toContain('OBS does not list');
+    // Without a list (none yet, or it failed) the fields are exactly the plain inputs; typing always works.
+    for (const view of [undefined, streamlabsView({ status: 'failed', names: null, error: 'Streamlabs is off in OpenStreamHub Settings' })]) {
+      const plain = renderAction({ type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } }, view);
+      expect(plain).not.toMatch(/<input[^>]*role="combobox"/);
+      expect(plain).toContain('value="Mic"');
+    }
+  });
+
+  it('checks a visibility source against the items of its scene, fetched when the choices open', () => {
+    const requested: string[] = [];
+    const view = streamlabsView({
+      list: (kind, name) => kind === 'sceneSources' && name === 'Live' ? { status: 'ready', names: ['Camera', 'Overlays'] } : null,
+      requestNames: (kind, name) => requested.push(`${kind}:${name}`),
+    });
+    const ghost = renderAction({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Ghost', op: 'toggle' }, view);
+    expect(ghost).toMatch(/id="streamlabs-visibility-scene"[^>]*role="combobox"/);
+    expect(ghost).toMatch(/id="streamlabs-visibility-source"[^>]*role="combobox"/);
+    expect(ghost).toContain('Streamlabs does not list this source right now.');
+    expectAccessible(ghost);
+    expect(renderAction({ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Overlays', op: 'toggle' }, view)).not.toContain('field-warning');
+    // Another scene's items were never fetched: a plain field until its choices open.
+    expect(renderAction({ type: 'streamlabs_source_visibility', scene: 'Be right back', source: 'Ghost', op: 'toggle' }, view))
+      .not.toMatch(/id="streamlabs-visibility-source"[^>]*role="combobox"/);
+    const tree = StreamlabsFields({ action: { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'show' }, prefix: '', onChange: () => {}, catalog: view }) as AnyElement;
+    const row = elementsOf(tree).find(item => item.props.id === 'streamlabs-visibility-source');
+    (row!.props as { onOpenList(): void }).onOpenList();
+    expect(requested).toEqual(['sceneSources:Live']);
+  });
+
+  it('shows one Refresh row per editor with the Streamlabs state and a quiet note when the names could not be loaded', () => {
+    let refreshed = false;
+    const tree = StreamlabsConnection({ onSetUp: () => {}, catalog: streamlabsView({ refresh: () => { refreshed = true; } }) }) as AnyElement;
+    const refresh = elementsOf(tree).find(element => element.type === 'button' && String(element.props.className).includes('button compact'));
+    (refresh!.props as { onClick(): void }).onClick();
+    expect(refreshed).toBe(true);
+    expect(renderToStaticMarkup(tree)).toContain('Refresh from Streamlabs');
+    const failed = renderToStaticMarkup(StreamlabsConnection({ catalog: streamlabsView({
+      status: 'failed', names: null, error: 'Streamlabs has no API token in OpenStreamHub Settings', connection: { state: 'token_needed', message: 'Streamlabs asks for an API token.' },
+    }) }) as AnyElement);
+    expect(failed).toContain('obs-chip-token_needed" title="Streamlabs asks for an API token.">Token needed</span>');
+    expect(failed).toContain('Could not load the Streamlabs names; typed names still work. Streamlabs has no API token in OpenStreamHub Settings');
+    expect(failed).not.toContain('role="alert"');
+    expect(failed).not.toContain('obs-catalog-error');
+    expect(renderToStaticMarkup(StreamlabsConnection({ catalog: streamlabsView({ status: 'loading', names: null }) }) as AnyElement))
+      .toMatch(/<button[^>]*disabled=""[^>]*>.*Listing…<\/button>/);
+    // The browser preview and the bare note show no Refresh row.
+    expect(renderToStaticMarkup(StreamlabsConnection({ catalog: { ...streamlabsView(), desktop: false, status: 'idle', names: null } }) as AnyElement)).not.toContain('Refresh from Streamlabs');
+    expect(renderToStaticMarkup(StreamlabsConnection({}) as AnyElement)).not.toContain('Refresh from Streamlabs');
+    const steps = renderAction({ type: 'multi_action', actions: [{ type: 'streamlabs_scene', scene: 'Live' }, { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'mute' } }] }, streamlabsView());
+    expect(steps.match(/Refresh from Streamlabs/g)).toHaveLength(1);
+    expect(steps).toMatch(/id="step-1-streamlabs-scene"[^>]*role="combobox"/);
+    expect(steps).toMatch(/id="step-2-streamlabs-audio-source"[^>]*role="combobox"/);
+    expectAccessible(steps);
+    const flow = renderAction({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'streamlabs_scene', scene: 'Live' }] }, streamlabsView());
+    expect(flow.match(/Refresh from Streamlabs/g)).toHaveLength(1);
+    expect(flow).toMatch(/streamlabs-scene"[^>]*role="combobox"/);
+  });
+
+  it('names Streamlabs in the open choices', () => {
+    const markup = renderToStaticMarkup(ObsCombo({
+      id: 'x', value: '', entry: { status: 'loading' }, open: true, onOpenChange: () => {}, active: 0, onActiveChange: () => {},
+      onType: () => {}, onPick: () => {}, service: 'Streamlabs',
+    }));
+    expect(markup).toContain('aria-label="Names Streamlabs currently lists"');
+    expect(markup).toContain('Looking up Streamlabs…');
   });
 });
 
@@ -566,7 +788,7 @@ describe('obs combo', () => {
     expectAccessible(markup);
     const yesNo = render({ type: 'conditional', when: { obs_recording: false }, then: [{ type: 'obs_record', op: 'start' }] });
     expect(yesNo).toContain('for="conditional-value"');
-    expect(yesNo).toContain('<option value="false" selected="">False</option>');
+    expect(hasOption(yesNo, 'false', 'False', true)).toBe(true);
     expect(yesNo).toContain('OBS');
     expect(yesNo).not.toContain('else-step-1-action');
     expectAccessible(yesNo);
@@ -588,7 +810,7 @@ describe('obs combo', () => {
     expect(two).toContain('for="conditional-value-2"');
     expect(two.match(/aria-label="Remove this test"/g)).toHaveLength(2);
     expect(two.match(/aria-label="Move this test up"/g)).toHaveLength(2);
-    expect(two).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(hasOption(two, 'any', 'any one of these is true (OR)', true)).toBe(true);
     expect(two).toContain('Add AND group');
     expect(two).toContain('OBS must be running');
     // Each test has a grip to drag it by; the group itself is the root, so it has none.
@@ -601,11 +823,11 @@ describe('obs combo', () => {
     expect(and).not.toContain('OBS must be running');
     expectAccessible(and);
     const timer = render({ type: 'conditional', when: { timer_running: false }, then: [{ type: 'toggle_mute' }] });
-    expect(timer).toContain('<option value="timer_running" selected="">A timer is running</option>');
+    expect(hasOption(timer, 'timer_running', 'A timer is running', true)).toBe(true);
     expect(timer).toContain('no timer is running');
     expect(timer).not.toContain('OBS must be running');
     const app = render({ type: 'conditional', when: { focused_app: 'com.apple.Safari' }, then: [{ type: 'toggle_mute' }] });
-    expect(app).toContain('<option value="focused_app" selected="">The front app is</option>');
+    expect(hasOption(app, 'focused_app', 'The front app is', true)).toBe(true);
     expect(app).toContain('id="conditional-app"');
     expect(app).toContain('value="com.apple.Safari"');
     expect(app).not.toContain('for="conditional-value"');
@@ -622,7 +844,7 @@ describe('obs combo', () => {
     expect(markup).toContain('for="conditional-mode-2">If</label>');
     expect(markup).toContain('for="conditional-when-2-1">Test</label>');
     expect(markup).toContain('for="conditional-volume-2-2"');
-    expect(markup).toContain('<option value="any" selected="">Any one holds (OR)</option>');
+    expect(hasOption(markup, 'any', 'any one of these is true (OR)', true)).toBe(true);
     expect(markup).toContain('aria-label="Drag this group to move it"');
     expect(markup).toContain('aria-label="Move this group up"');
     expect(markup).toContain('aria-label="Remove this group"');
@@ -653,9 +875,9 @@ describe('obs combo', () => {
     const withVariables = (action: BindingAction) => renderToStaticMarkup(<VariablesContext.Provider value={variables}>
       <ActionFields action={action} fader={false} selectorKey="k" onChange={() => {}} /></VariablesContext.Provider>);
     const test = withVariables({ type: 'conditional', when: { variable_at_least: { name: 'takes', value: 3 } }, then: [{ type: 'toggle_variable', name: 'live' }] });
-    expect(test).toContain('<option value="variable_at_least" selected="">A number variable is at least</option>');
+    expect(hasOption(test, 'variable_at_least', 'A number variable is at least', true)).toBe(true);
     expect(test).toContain('for="conditional-variable-name">Number variable</label>');
-    expect(test).toContain('<option value="takes" selected="">takes</option>');
+    expect(hasOption(test, 'takes', 'takes', true)).toBe(true);
     expect(test).not.toContain('>scene</option>');
     expect(test).toContain('for="conditional-variable-value">At least</label>');
     expect(test).toContain('for="then-step-1-variable-name">On / off variable</label>');
@@ -668,13 +890,134 @@ describe('obs combo', () => {
     expectAccessible(equal);
     const set = withVariables({ type: 'set_variable', name: 'live', value: true });
     expect(set).toContain('for="variable-name">Variable</label>');
-    expect(set).toContain('<option value="on" selected="">On</option>');
+    expect(hasOption(set, 'on', 'On', true)).toBe(true);
     // An undeclared name is kept and marked, never swapped silently.
     const missing = withVariables({ type: 'toggle_variable', name: 'gone' });
     expect(missing).toContain('gone (not declared)');
     // Nothing declared: the choices say where to add one.
     const none = render({ type: 'toggle_variable', name: '' });
-    expect(none).toContain('Add one under Variables in the inspector');
+    expect(none).toContain('<button type="button" class="link-button">Add one under Variables</button>');
     expectAccessible(none);
+    // With nothing to compare against yet, no value field appears (and no bool default is implied).
+    const noneTest = render({ type: 'conditional', when: { variable_is: { name: '', value: false } }, then: [{ type: 'toggle_mute' }] });
+    expect(noneTest).toContain('Choose a variable');
+    expect(noneTest).not.toContain('Is equal to');
+    expect(noneTest).not.toContain('is compared with');
+    const noneSet = render({ type: 'set_variable', name: '', value: false });
+    expect(noneSet).not.toContain('Set it to');
+  });
+});
+
+describe('app picker', () => {
+  const invoke: Invoke = <T,>() => Promise.resolve(null as T);
+  const withDesktop = (action: BindingAction) => renderToStaticMarkup(<ActionFields action={action} fader={false} selectorKey="k" onChange={() => {}} invoke={invoke} />);
+  const finder = { bundle_id: 'com.apple.finder', name: 'Finder' };
+  const music = { bundle_id: 'com.apple.Music', name: 'Music' };
+  const state = (over: Partial<AppPickerState> = {}): AppPickerState => ({ apps: [music, finder], installedName: undefined, typing: false, choosing: false, error: null, ...over });
+  const picker = (bundleId: string, over: Partial<AppPickerState> | null = {}, inline = false) => renderToStaticMarkup(<AppPicker inputId="conditional-app" bundleId={bundleId} label="Front app" inline={inline}
+    hint="Hint." state={over === null ? null : state(over)} onChange={() => {}} />);
+
+  it('reaches the front-app test of an if / else, at the top level, in a multi-action and in a nested block', () => {
+    const top = withDesktop({ type: 'conditional', when: { focused_app: 'com.apple.finder' }, then: [{ type: 'toggle_mute' }] });
+    expect(top).toMatch(/<button type="button" id="conditional-app" class="action-picker-trigger app-picker-trigger" aria-haspopup="listbox" aria-expanded="false"/);
+    expect(top).toContain('aria-labelledby="conditional-app-label conditional-app"');
+    expect(top).toContain('Enter a bundle ID instead');
+    expect(top).toContain('<label id="conditional-app-label" class="sr-only" for="conditional-app">Front app</label>');
+    expect(top).toContain('flow-test-line');
+    expect(top).toContain('&quot;Otherwise do&quot; runs in every other app.');
+    expect(top).not.toContain('swap the two lists');
+    // Closed, the list and its rows are not rendered.
+    expect(top).not.toContain('class="app-picker-list"');
+    expectAccessible(top);
+    const nested = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'conditional', when: { focused_app: 'com.apple.Music' }, then: [{ type: 'toggle_mute' }] }] });
+    expect(nested).toMatch(/<button type="button" id="then-1-conditional-app"[^>]*aria-haspopup="listbox"/);
+    const steps = withDesktop({ type: 'multi_action', actions: [{ type: 'launch_app', bundle_id: 'com.apple.finder' }, { type: 'toggle_mute' }] });
+    expect(steps).toMatch(/<button type="button" id="step-1-app-bundle-id"[^>]*aria-haspopup="listbox"/);
+    expect(steps).toContain('Other app… for any other installed app');
+    const open = withDesktop({ type: 'launch_app', bundle_id: 'com.apple.finder' });
+    expect(open).toContain('<label id="app-bundle-id-label" for="app-bundle-id">App</label>');
+    expectAccessible(open);
+  });
+
+  it('stays the plain bundle ID field without a desktop backend', () => {
+    const plain = picker('com.apple.Safari', null);
+    expect(plain).toContain('<label for="conditional-app">Application bundle ID</label>');
+    expect(plain).toContain('value="com.apple.Safari"');
+    expect(plain).not.toContain('Choose app…');
+    expect(plain).not.toContain('aria-haspopup');
+  });
+
+  it('shows the stored running app by name with its icon, matched case-insensitively', () => {
+    const markup = picker('COM.APPLE.FINDER', { icons: new Map([['com.apple.finder', 'iVBORw0K']]) });
+    expect(markup).toContain('<img class="app-icon" src="data:image/png;base64,iVBORw0K" alt="" width="20" height="20"/><span class="action-picker-trigger-label">Finder</span>');
+    expect(markup).not.toContain('Bundle ID:');
+    expect(markup).not.toContain('role="status"');
+    // Until its icon arrives the trigger shows the neutral placeholder.
+    expect(picker('com.apple.finder')).toMatch(/<span class="app-icon app-icon-placeholder" aria-hidden="true"><svg[^>]*lucide-app-window/);
+    expect(picker('')).toContain('<span class="action-picker-trigger-label">Choose an app…</span>');
+  });
+
+  it('names a stored app that is not running, or says when none is installed', () => {
+    const installed = picker('com.apple.Safari', { installedName: 'Safari', icons: new Map([['com.apple.Safari', 'U2FmYXJp']]) });
+    expect(installed).toContain('src="data:image/png;base64,U2FmYXJp" alt="" width="20" height="20"/><span class="action-picker-trigger-label">Safari</span>');
+    expect(installed).toContain('Bundle ID: com.apple.Safari');
+    expect(installed).toContain('aria-describedby="conditional-app-note"');
+    const pending = picker('com.apple.Safari');
+    expect(pending).toContain('<span class="action-picker-trigger-label">com.apple.Safari</span>');
+    expect(pending).not.toContain('role="status"');
+    const missing = picker('com.example.gone', { installedName: null });
+    expect(missing).toContain('<span class="action-picker-trigger-label">com.example.gone</span>');
+    expect(missing).toMatch(/<p id="conditional-app-note" class="fine-print" role="status">No installed app has the bundle ID com.example.gone.<\/p>/);
+  });
+
+  it('opens a searchable list of apps with icons, the stored one checked, then Other app…', () => {
+    const icons = new Map<string, string | null>([['com.apple.Music', 'TXVzaWM='], ['com.apple.finder', null]]);
+    const recent = [{ bundle_id: 'com.apple.Safari', name: 'Safari' }, finder];
+    const markup = picker('com.apple.finder', { icons, recent, list: { open: true, query: '', active: 0 } });
+    expect(markup).toContain('aria-expanded="true" aria-controls="conditional-app-list"');
+    expect(markup).toMatch(/<input id="conditional-app-search" type="search" role="combobox" aria-expanded="true" aria-controls="conditional-app-list" aria-autocomplete="list" aria-activedescendant="conditional-app-option-0"/);
+    expect(markup).toContain('<label class="sr-only" for="conditional-app-search">Search apps</label>');
+    expect(markup).toContain('<div id="conditional-app-list" role="listbox" aria-label="Apps" class="app-picker-list">');
+    // Running now by name, Finder first and checked; its icon failed, so it keeps the placeholder.
+    expect(markup).toMatch(/<div role="group" aria-labelledby="conditional-app-group-running"><div id="conditional-app-group-running" role="presentation" class="picker-group-label">Running now<\/div><div id="conditional-app-option-0" role="option" aria-selected="true" title="com.apple.finder" class="app-option active"><span class="app-icon app-icon-placeholder"[^]*?Finder<\/span><svg[^>]*lucide-check/);
+    expect(markup).toContain('<div id="conditional-app-option-1" role="option" aria-selected="false" title="com.apple.Music" class="app-option"><img class="app-icon" src="data:image/png;base64,TXVzaWM=" alt="" width="20" height="20"/><span class="app-option-name">Music</span></div>');
+    // Recent keeps only the apps not running now.
+    expect(markup).toContain('<div id="conditional-app-option-2" role="option" aria-selected="false" title="com.apple.Safari" class="app-option">');
+    expect(markup.match(/title="com.apple.finder"/g)).toHaveLength(2);
+    expect(markup).toMatch(/<div id="conditional-app-other" role="option" aria-selected="false" class="app-option app-option-other">[^]*Other app…<\/span><\/div><\/div><\/div><\/div>/);
+    expectAccessible(markup);
+  });
+
+  it('filters the list by the search text and says when nothing matches', () => {
+    const music = picker('', { list: { open: true, query: 'mus', active: 0 } });
+    expect(music).toContain('Music</span>');
+    expect(music).not.toContain('Finder</span>');
+    const none = picker('', { list: { open: true, query: 'zzz', active: 0 } });
+    expect(none).toContain('<p class="picker-empty" role="status">No app matches “zzz”.</p>');
+    // With no app rows, the first option is Other app….
+    expect(none).toContain('aria-activedescendant="conditional-app-other"');
+    expect(none).not.toContain('role="group"');
+    expect(picker('', { apps: [], list: { open: true, query: '', active: 0 } })).toContain('No running apps found.');
+  });
+
+  it('offers typing the bundle ID with a visible label and the found name, and shows picker errors', () => {
+    const typing = picker('com.apple.finder', { typing: true, installedName: 'Finder' }, true);
+    expect(typing).toContain('<label id="conditional-app-label" for="conditional-app">App bundle ID</label>');
+    expect(typing).toMatch(/<input id="conditional-app"[^>]*value="com.apple.finder"/);
+    expect(typing).toContain('App: <strong>Finder</strong>');
+    expect(typing).toContain('Pick the app by name instead');
+    expect(typing).toContain('Choose app…</button>');
+    const failed = picker('com.apple.finder', { error: 'No picker.', choosing: true });
+    expect(failed).toContain('<p class="field-error" role="alert">No picker.</p>');
+    expect(failed).toMatch(/<button type="button" id="conditional-app"[^>]*aria-busy="true"[^>]*>.*Choosing…<\/span>/);
+  });
+
+  it('says what happens when the Otherwise list is empty', () => {
+    const markup = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }] });
+    expect(markup).toContain('<h4 class="spaced-label">Then do</h4>');
+    expect(markup).toContain('<h4 class="spaced-label">Otherwise do (optional)</h4>');
+    expect(markup.match(/Nothing happens\./g)).toHaveLength(1);
+    const both = withDesktop({ type: 'conditional', when: { output_muted: true }, then: [{ type: 'toggle_mute' }], else: [{ type: 'toggle_mute' }] });
+    expect(both).not.toContain('Nothing happens.');
   });
 });

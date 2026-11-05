@@ -452,7 +452,7 @@ fn every_mapped_action_type_is_converted_and_every_unbound_type_is_reported() {
     );
     assert!(matches!(
         slot(&profile, "root_key14", 2),
-        Some(KeypadTile::Action { label, bindings }) if label == "Timer" && bindings.is_empty()
+        Some(KeypadTile::Action { label, bindings, .. }) if label == "Timer" && bindings.is_empty()
     ));
     assert_eq!(
         slot(&profile, "root", 14),

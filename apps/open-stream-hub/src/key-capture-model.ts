@@ -3,6 +3,7 @@
 // hook-free; the components in key-capture.tsx own the state.
 import type { MacroStep, MediaKey, Modifier } from './contracts';
 import { isMediaKey, keyLabel, macroDurationMs, macroLimits, namedKeys } from './action-model';
+import { english } from './i18n-react';
 
 export interface Chord { key: string; modifiers: Modifier[] }
 
@@ -10,7 +11,9 @@ export interface Chord { key: string; modifiers: Modifier[] }
 export const maxChordModifiers = 4;
 
 const modifierOrder: Modifier[] = ['command', 'control', 'option', 'shift'];
-const modifierLabels: Record<Modifier, string> = { command: 'Command', control: 'Control', option: 'Option', shift: 'Shift' };
+const modifierLabels: Record<Modifier, string> = {
+  command: english('actions.shortcut.command'), control: english('actions.shortcut.control'), option: english('actions.shortcut.option'), shift: english('actions.shortcut.shift'),
+};
 
 // The chord's modifiers, in the display order the editor's checkboxes use.
 export function orderedModifiers(modifiers: Modifier[]): Modifier[] {

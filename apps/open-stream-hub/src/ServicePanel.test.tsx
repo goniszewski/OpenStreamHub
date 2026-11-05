@@ -8,6 +8,8 @@ import { DisplaySettingsStore } from './display-settings';
 import { stableStringify } from './draft-model';
 import { emptyCounters, ServiceRunner, serviceIdFor, type ServiceRun } from './service-runner';
 import { DeviceFeed } from './device-feed';
+import { deviceOptionLabel } from './ServicePanel';
+import { hasOption } from './select-markup';
 
 const flat: Profile = { schema_version: 1, name: 'Flat', bindings: [] };
 const root = emptyKeypadPage();
@@ -348,6 +350,17 @@ describe('header Run control', () => {
     expect(executing).toContain('<span>Live</span>');
     expect(executing).toContain('<span>Test</span>');
   });
+  it('shows one Test | Live | Paused control: Pause while active, a pressed Paused state when idle', () => {
+    const idle = render();
+    expect(idle).toMatch(/<span class="mode-choice pause" aria-current="true"[^>]*><svg[^>]*>.*<span>Paused<\/span>/);
+    expect(idle).not.toContain('aria-label="Pause"');
+    // Idle: the remembered mode is a tooltip hint, not a second highlighted segment.
+    expect(idle).toContain('data-tip="Will start in Test mode"');
+    const { feed, runner } = fixtures(false);
+    const active = render({ feed, runner });
+    expect(active).toMatch(/<button type="button" class="mode-choice pause" aria-pressed="false" aria-label="Pause"/);
+    expect(active).not.toContain('class="mode-choice live" aria-pressed="true" disabled="" style');
+  });
   it('dims the mode switch while the module is paused and draws a chip only for states that need attention', () => {
     expect(render()).toContain('class="mode-control idle"');
     const { feed, runner } = fixtures(false);
@@ -404,7 +417,7 @@ describe('header Run control', () => {
     expect(imported).toContain('aria-label="Activate encoder"');
     // The saved mode stays Live and its switch stays on: only this profile
     // is held back, which the badge says.
-    expect(imported).toMatch(/<button type="button" class="mode-choice live" aria-pressed="true"[^>]*aria-label="Live mode" data-tip="Live mode[^>]*>/);
+    expect(imported).toMatch(/<button type="button" class="mode-choice live" aria-pressed="true"[^>]*aria-label="Live mode" data-tip="Will start in Live mode"[^>]*>/);
   });
   it('shows a blocked Run its reason as a strip in the header, not only as a tooltip', () => {
     // A connected module with a blocked profile (Built-in animation) names the setting in the strip.
@@ -1014,8 +1027,8 @@ describe('Run-panel selection across replug', () => {
     (feed as unknown as { state: unknown }).state = { ...feed.getState(), devices: [replacement] };
     (runner as unknown as { state: unknown }).state = { ...runner.getState(), runs: { [run.serviceId]: run } };
     const markup = render({ feed, runner });
-    expect(markup).toContain(`<option value="${disconnectedServiceValue}" selected="">`);
-    expect(markup).toContain(`<option value="${dial.path_hex}">`);
+    expect(hasOption(markup, disconnectedServiceValue, null, true)).toBe(true);
+    expect(hasOption(markup, dial.path_hex, null, false)).toBe(true);
     expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).device).toBe(replacement);
     expect(resolveServiceSelection([replacement], { [run.serviceId]: run }, { device: replacement }).run).toBeUndefined();
   });
@@ -1057,5 +1070,13 @@ describe('ServicePanel variants', () => {
     const full = renderToStaticMarkup(<ServicePanel />);
     expect(full).toContain('Active profile');
     expect(full).toContain('service-controls');
+  });
+});
+
+describe('the module picker label', () => {
+  it('shows the short serial and keeps the full one as a tooltip', () => {
+    const knob: LiveDevice = { path_hex: 'k1', module: 'm003k', serial_number: 'MHKB03AA221252301179' };
+    expect(deviceOptionLabel(knob)).toBe('3-knob module · …1179');
+    expect(deviceOptionLabel({ ...knob, serial_number: null, path_hex: 'abcdef123456' })).toBe('3-knob module 123456');
   });
 });

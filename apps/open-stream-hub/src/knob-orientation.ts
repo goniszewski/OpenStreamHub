@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { english } from './i18n-react';
 
 // How the 3-knob module (M003K) is mounted, named by where its single knob sits.
 // Listed in clockwise order: each step is a 90 degree clockwise turn of the module.
@@ -9,10 +10,10 @@ export const defaultKnobOrientation: KnobOrientation = 'single-top';
 export const knobOrientationStorageKey = 'open-stream-hub.knob-orientation';
 
 export const knobOrientationLabels: Record<KnobOrientation, string> = {
-  'single-top': 'Single knob on top',
-  'single-right': 'Single knob on the right',
-  'single-bottom': 'Single knob at the bottom',
-  'single-left': 'Single knob on the left',
+  'single-top': english('labels.knobOrientation.top'),
+  'single-right': english('labels.knobOrientation.right'),
+  'single-bottom': english('labels.knobOrientation.bottom'),
+  'single-left': english('labels.knobOrientation.left'),
 };
 
 export const knobRotation = (orientation: KnobOrientation) => knobOrientations.indexOf(orientation) * 90;

@@ -1,5 +1,7 @@
 import type { Action, Binding, BindingAction, DialFunctionSwitch, Gesture, Profile, ReplayKind, ServiceModule } from './contracts';
-import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, systemLabels, timerDuration } from './action-model';
+import { appDisplayName } from './app-names';
+import { english } from './i18n-react';
+import { conditionLabel, keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioOpLabel, streamlabsVisibilityOpLabels, systemLabels, terminalAppLabels, timerDuration } from './action-model';
 
 export type ModuleId = ServiceModule;
 export type Appearance = 'system' | 'light' | 'dark';
@@ -118,9 +120,10 @@ export const modules: { id: ModuleId; name: string; shortName: string; art: stri
 ];
 
 export const gestureLabels: Record<Gesture, string> = {
-  clockwise: 'Clockwise', counter_clockwise: 'Counter-clockwise', pressed: 'Press', released: 'Release',
-  right: 'Right', left: 'Left', short_press: 'Short press', long_press: 'Long press',
-  position_changed: 'Position', up: 'Up', down: 'Down',
+  clockwise: english('labels.gesture.clockwise'), counter_clockwise: english('labels.gesture.counterClockwise'),
+  pressed: english('labels.gesture.pressed'), released: english('labels.gesture.released'), right: english('labels.gesture.right'), left: english('labels.gesture.left'),
+  short_press: english('labels.gesture.shortPress'), long_press: english('labels.gesture.longPress'),
+  position_changed: english('labels.gesture.positionChanged'), up: english('labels.gesture.up'), down: english('labels.gesture.down'),
 };
 
 export const gestures: Record<ServiceModule, Gesture[]> = {
@@ -134,8 +137,8 @@ export const gestures: Record<ServiceModule, Gesture[]> = {
 export const controlCounts: Record<ServiceModule, number> = { m003k: 3, m131e: 1, m4315: 15, m005s: 5, m032le: 2 };
 export const faderMaximum = 100;
 export const replayLabels: Record<ReplayKind, string> = {
-  knobs: '3-knob module sample', dial: 'Encoder module sample', keys: '15-key module sample',
-  faders: '5-fader module sample', rollers: '2-roller module sample',
+  knobs: english('labels.replay.knobs'), dial: english('labels.replay.dial'), keys: english('labels.replay.keys'),
+  faders: english('labels.replay.faders'), rollers: english('labels.replay.rollers'),
 };
 
 export function moduleNote(module: ServiceModule) {
@@ -144,7 +147,7 @@ export function moduleNote(module: ServiceModule) {
     case 'm4315': return 'Key order verified on hardware: 5 columns by 3 rows, numbered row by row from the top left.';
     case 'm005s': return 'Fader input verified on hardware: all five faders report 0 at the bottom to 100 at the top, in order from fader 1.';
     case 'm131e': return 'Rotation verified on hardware: Right is clockwise and Left is counter-clockwise.';
-    case 'm032le': return 'Roller input is not verified on macOS yet: the module sends no input there, so order and Up/Down direction are unconfirmed.';
+    case 'm032le': return 'Roller input verified on hardware (the app sends the one request the module needs to report on macOS): Roller 1 is the right roller and Roller 2 the left one, and Up is away from you.';
   }
 }
 
@@ -172,7 +175,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'volume': return `Output volume ${action.delta > 0 ? '+' : ''}${action.delta} points`;
     case 'toggle_mute': return 'Toggle output mute';
     case 'shortcut': return `${action.modifiers.map(m => m[0].toUpperCase() + m.slice(1)).join(' + ')}${action.modifiers.length ? ' + ' : ''}${keyLabel(action.key)}`;
-    case 'launch_app': return `Open ${action.bundle_id}`;
+    case 'launch_app': return `Open ${appDisplayName(action.bundle_id)}`;
     case 'volume_from_position': return 'Follow fader position for output volume';
     case 'mic_input_volume_from_position': return 'Follow fader position for microphone volume';
     case 'obs_input_volume_from_position': return `Follow fader position for OBS input “${clipLabel(action.input)}”`;
@@ -198,6 +201,7 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'macro': return `Macro: ${action.steps.length} keystroke${action.steps.length === 1 ? '' : 's'}, ${macroDurationLabel(macroDurationMs(action.steps))} planned`;
     case 'profile': return profileDirectionLabels[action.direction] ?? 'Switch profile';
     case 'timer': return `Timer ${timerDuration(action.seconds)}${action.label ? ` “${action.label}”` : ''}`;
+    case 'terminal_command': return `Run “${clipLabel(action.command)}” in ${terminalAppLabels[action.app] ?? action.app}`;
     case 'obs_virtual_camera': return `OBS virtual camera: ${obsOutputOpLabels[action.op] ?? action.op}`;
     case 'obs_stream': return `OBS stream: ${obsOutputOpLabels[action.op] ?? action.op}${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
     case 'obs_record': return `OBS recording: ${obsRecordOpLabels[action.op] ?? action.op}`;
@@ -210,6 +214,13 @@ export function actionLabel(action: Action | BindingAction | null): string {
     case 'obs_scene_collection': return `OBS scene collection “${clipLabel(action.name)}”`;
     case 'obs_profile': return `OBS profile “${clipLabel(action.name)}”`;
     case 'obs_scene': return `OBS scene “${clipLabel(action.scene)}”`;
+    case 'streamlabs_record': return 'Streamlabs recording: Toggle';
+    case 'streamlabs_stream': return `Streamlabs stream: Toggle${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'streamlabs_studio_mode': return 'Streamlabs studio mode: Toggle';
+    case 'streamlabs_transition': return 'Streamlabs studio transition';
+    case 'streamlabs_scene': return `Streamlabs scene “${clipLabel(action.scene)}”${action.collection ? ` in “${clipLabel(action.collection)}”` : ''}`;
+    case 'streamlabs_source_visibility': return `Streamlabs source “${clipLabel(action.source)}”: ${streamlabsVisibilityOpLabels[action.op] ?? action.op}`;
+    case 'streamlabs_audio': return `Streamlabs audio “${clipLabel(action.source)}”: ${streamlabsAudioOpLabel(action.op)}`;
   }
 }
 

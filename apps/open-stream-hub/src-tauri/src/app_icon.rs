@@ -2,7 +2,10 @@
 //! key opens that application. `app_icon` resolves a bundle id to the
 //! installed .app through LaunchServices and encodes the icon as PNG. The
 //! bytes only ever reach the editor's canvas: nothing is uploaded and nothing
-//! is sent to a device.
+//! is sent to a device. `app_icons` does the same for a batch, for the app
+//! picker's list rows, whose icons only reach `<img>` elements.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +14,11 @@ use serde::{Deserialize, Serialize};
 pub const MAX_ICON_BYTES: usize = 1024 * 1024;
 /// Longest accepted bundle id; real ones are far shorter.
 pub const MAX_BUNDLE_ID_BYTES: usize = 256;
+/// Most bundle ids one `app_icons` call resolves; the picker asks in chunks.
+pub const MAX_ICON_BATCH: usize = 64;
+/// Cap for all the PNG bytes of one batch. A 64 px icon is a few KiB, so a
+/// full batch stays far below it; icons past it are reported as missing.
+pub const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,18 +31,84 @@ pub struct AppIconResult {
     pub png_base64: String,
 }
 
-pub fn app_icon(request: &AppIconRequest) -> Result<AppIconResult, String> {
-    let bundle_id = request.bundle_id.trim();
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppIconsRequest {
+    pub bundle_ids: Vec<String>,
+}
+
+/// Each requested (trimmed) bundle id to its icon, or null when no installed
+/// app has it or its icon could not be encoded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct AppIconsResult {
+    pub icons: BTreeMap<String, Option<String>>,
+}
+
+fn valid_bundle_id(bundle_id: &str) -> Result<&str, String> {
+    let bundle_id = bundle_id.trim();
     if bundle_id.is_empty() {
         return Err("Choose the application in the action first".into());
     }
     if bundle_id.len() > MAX_BUNDLE_ID_BYTES {
         return Err("The bundle id is too long".into());
     }
+    Ok(bundle_id)
+}
+
+pub fn app_icon(request: &AppIconRequest) -> Result<AppIconResult, String> {
+    let bundle_id = valid_bundle_id(&request.bundle_id)?;
     #[cfg(target_os = "macos")]
     return macos::icon_png(bundle_id).map(|png_base64| AppIconResult { png_base64 });
     #[cfg(not(target_os = "macos"))]
     Err("Application icons are only offered on a Mac".into())
+}
+
+/// The icons of up to MAX_ICON_BATCH apps. Every id is validated before any
+/// lookup, so one bad id rejects the batch; a lookup that fails only leaves
+/// that id without an icon (off a Mac, every id).
+pub fn app_icons(request: &AppIconsRequest) -> Result<AppIconsResult, String> {
+    if request.bundle_ids.len() > MAX_ICON_BATCH {
+        return Err(format!(
+            "Ask for at most {MAX_ICON_BATCH} app icons at a time"
+        ));
+    }
+    let ids = request
+        .bundle_ids
+        .iter()
+        .map(|id| valid_bundle_id(id))
+        .collect::<Result<Vec<_>, _>>()?;
+    #[cfg(target_os = "macos")]
+    let lookup = |bundle_id: &str| macos::icon_png(bundle_id).ok();
+    #[cfg(not(target_os = "macos"))]
+    let lookup = |_: &str| None;
+    Ok(AppIconsResult {
+        icons: batch_icons(&ids, lookup),
+    })
+}
+
+// Looks each distinct id up once and adds no more icons once the batch's
+// bytes would pass MAX_BATCH_BYTES.
+fn batch_icons(
+    ids: &[&str],
+    mut lookup: impl FnMut(&str) -> Option<String>,
+) -> BTreeMap<String, Option<String>> {
+    let mut icons = BTreeMap::new();
+    let mut total = 0;
+    for id in ids {
+        if icons.contains_key(*id) {
+            continue;
+        }
+        let icon = if total < MAX_BATCH_BYTES {
+            lookup(id).filter(|png| {
+                total += png.len();
+                total <= MAX_BATCH_BYTES
+            })
+        } else {
+            None
+        };
+        icons.insert((*id).to_string(), icon);
+    }
+    icons
 }
 
 fn is_png(bytes: &[u8]) -> bool {
@@ -126,6 +200,21 @@ mod macos {
             .unwrap_err();
             assert!(error.contains("installed on this Mac"), "{error}");
         }
+
+        #[test]
+        fn a_batch_resolves_installed_apps_and_reports_missing_ones_as_null() {
+            use crate::app_icon::{AppIconsRequest, app_icons};
+            let result = app_icons(&AppIconsRequest {
+                bundle_ids: vec![
+                    " com.apple.TextEdit ".into(),
+                    "dev.cooltek.missing-app".into(),
+                ],
+            })
+            .unwrap();
+            let png = result.icons["com.apple.TextEdit"].as_ref().unwrap();
+            assert!(is_png(&STANDARD.decode(png).unwrap()));
+            assert_eq!(result.icons["dev.cooltek.missing-app"], None);
+        }
     }
 }
 
@@ -149,5 +238,40 @@ mod tests {
             .unwrap_err()
             .contains("too long")
         );
+    }
+
+    #[test]
+    fn batches_are_capped_and_validated_before_any_lookup() {
+        let many = AppIconsRequest {
+            bundle_ids: vec!["com.apple.TextEdit".into(); MAX_ICON_BATCH + 1],
+        };
+        assert!(app_icons(&many).unwrap_err().contains("at most"));
+        let blank = AppIconsRequest {
+            bundle_ids: vec!["com.apple.TextEdit".into(), " ".into()],
+        };
+        assert!(app_icons(&blank).unwrap_err().contains("application"));
+        let long = AppIconsRequest {
+            bundle_ids: vec!["x".repeat(MAX_BUNDLE_ID_BYTES + 1)],
+        };
+        assert!(app_icons(&long).unwrap_err().contains("too long"));
+        let empty = AppIconsRequest { bundle_ids: vec![] };
+        assert!(app_icons(&empty).unwrap().icons.is_empty());
+    }
+
+    #[test]
+    fn a_batch_looks_each_id_up_once_and_stops_at_the_byte_cap() {
+        let mut looked_up = Vec::new();
+        let icons = batch_icons(&["a", "b", "a", "missing"], |id| {
+            looked_up.push(id.to_string());
+            (id != "missing").then(|| format!("png-{id}"))
+        });
+        assert_eq!(looked_up, ["a", "b", "missing"]);
+        assert_eq!(icons.get("a"), Some(&Some("png-a".into())));
+        assert_eq!(icons.get("missing"), Some(&None));
+        let half = MAX_BATCH_BYTES / 2 + 1;
+        let capped = batch_icons(&["a", "b", "c"], |_| Some("x".repeat(half)));
+        assert!(capped["a"].is_some());
+        assert_eq!(capped["b"], None);
+        assert_eq!(capped["c"], None);
     }
 }

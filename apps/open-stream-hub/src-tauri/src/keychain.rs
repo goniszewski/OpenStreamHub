@@ -1,8 +1,9 @@
-//! Where the OBS WebSocket password is kept between launches: the macOS
-//! Keychain, as a generic password item for this app. Never a file, a profile,
-//! a log or an argument.
+//! Where the OBS WebSocket password and the Streamlabs API token are kept
+//! between launches: the macOS Keychain, as one generic password item each for
+//! this app ([`OBS_PASSWORD`], [`STREAMLABS_TOKEN`]: the same service name,
+//! separate accounts). Never a file, a profile, a log or an argument.
 //!
-//! Errors say what failed, never the password. A Keychain that is locked,
+//! Errors say what failed, never the secret. A Keychain that is locked,
 //! denied or missing makes the vault report an error; the app then falls back
 //! to holding the password in memory for the session, as 0.2.0 did.
 //!
@@ -10,6 +11,29 @@
 //! list to the exact build that created it. After an update macOS may ask once
 //! whether OpenStreamHub may use the item; **Always Allow** keeps it quiet
 //! until the next update.
+
+/// One Keychain item: its account under this app's service name, and what
+/// errors call it.
+#[cfg(all(target_os = "macos", not(test)))]
+#[derive(Clone, Copy)]
+pub struct Item {
+    account: &'static str,
+    what: &'static str,
+}
+
+/// The OBS WebSocket password (the account 0.2.0 already used).
+#[cfg(all(target_os = "macos", not(test)))]
+pub const OBS_PASSWORD: Item = Item {
+    account: "obs-websocket-password",
+    what: "OBS password",
+};
+
+/// The Streamlabs Remote Control API token.
+#[cfg(all(target_os = "macos", not(test)))]
+pub const STREAMLABS_TOKEN: Item = Item {
+    account: "streamlabs-api-token",
+    what: "Streamlabs token",
+};
 
 /// A place to keep one password between launches.
 pub trait PasswordVault: Send + Sync {
@@ -45,47 +69,49 @@ pub use macos::Keychain;
 
 #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
 mod macos {
-    use super::PasswordVault;
+    use super::{Item, PasswordVault};
     use security_framework::passwords::{
         delete_generic_password, get_generic_password, set_generic_password,
     };
 
     const SERVICE: &str = "dev.cooltek.openstreamhub";
-    const ACCOUNT: &str = "obs-websocket-password";
     /// `errSecItemNotFound`.
     const NOT_FOUND: i32 = -25300;
 
-    /// The macOS Keychain item for the OBS password.
-    pub struct Keychain;
+    /// One macOS Keychain item of this app.
+    pub struct Keychain(pub Item);
 
-    fn describe(action: &str, error: &security_framework::base::Error) -> String {
-        format!(
-            "could not {action} the OBS password in the Keychain (error {})",
-            error.code()
-        )
+    impl Keychain {
+        fn describe(&self, action: &str, error: &security_framework::base::Error) -> String {
+            format!(
+                "could not {action} the {} in the Keychain (error {})",
+                self.0.what,
+                error.code()
+            )
+        }
     }
 
     impl PasswordVault for Keychain {
         fn load(&self) -> Result<Option<String>, String> {
-            match get_generic_password(SERVICE, ACCOUNT) {
+            match get_generic_password(SERVICE, self.0.account) {
                 Ok(bytes) => String::from_utf8(bytes)
                     .map(Some)
-                    .map_err(|_| "the OBS password in the Keychain is not valid text".to_string()),
+                    .map_err(|_| format!("the {} in the Keychain is not valid text", self.0.what)),
                 Err(error) if error.code() == NOT_FOUND => Ok(None),
-                Err(error) => Err(describe("read", &error)),
+                Err(error) => Err(self.describe("read", &error)),
             }
         }
 
         fn save(&self, password: &str) -> Result<(), String> {
-            set_generic_password(SERVICE, ACCOUNT, password.as_bytes())
-                .map_err(|error| describe("save", &error))
+            set_generic_password(SERVICE, self.0.account, password.as_bytes())
+                .map_err(|error| self.describe("save", &error))
         }
 
         fn forget(&self) -> Result<(), String> {
-            match delete_generic_password(SERVICE, ACCOUNT) {
+            match delete_generic_password(SERVICE, self.0.account) {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == NOT_FOUND => Ok(()),
-                Err(error) => Err(describe("remove", &error)),
+                Err(error) => Err(self.describe("remove", &error)),
             }
         }
     }
@@ -102,7 +128,7 @@ mod macos {
 /// directly and the item trusts the signed app.
 #[cfg(all(target_os = "macos", not(test), debug_assertions))]
 mod dev {
-    use super::PasswordVault;
+    use super::{Item, PasswordVault};
     use std::{
         io::Write,
         process::{Command, Stdio},
@@ -110,11 +136,10 @@ mod dev {
 
     const SECURITY: &str = "/usr/bin/security";
     const SERVICE: &str = "dev.cooltek.openstreamhub.dev";
-    const ACCOUNT: &str = "obs-websocket-password";
     /// `security` exits with 44 when the item is not found.
     const NOT_FOUND: i32 = 44;
 
-    pub struct DevKeychain;
+    pub struct DevKeychain(pub Item);
 
     fn hex(text: &str) -> String {
         text.bytes().map(|byte| format!("{byte:02x}")).collect()
@@ -135,7 +160,14 @@ mod dev {
     impl PasswordVault for DevKeychain {
         fn load(&self) -> Result<Option<String>, String> {
             let output = Command::new(SECURITY)
-                .args(["find-generic-password", "-s", SERVICE, "-a", ACCOUNT, "-w"])
+                .args([
+                    "find-generic-password",
+                    "-s",
+                    SERVICE,
+                    "-a",
+                    self.0.account,
+                    "-w",
+                ])
                 .stdin(Stdio::null())
                 .stderr(Stdio::null())
                 .output()
@@ -143,10 +175,11 @@ mod dev {
             match output.status.code() {
                 Some(0) => unhex(String::from_utf8_lossy(&output.stdout).trim())
                     .map(Some)
-                    .ok_or_else(|| "the stored OBS password is not valid".to_string()),
+                    .ok_or_else(|| format!("the stored {} is not valid", self.0.what)),
                 Some(NOT_FOUND) => Ok(None),
                 other => Err(format!(
-                    "could not read the OBS password with the security tool (exit {other:?})"
+                    "could not read the {} with the security tool (exit {other:?})",
+                    self.0.what
                 )),
             }
         }
@@ -162,7 +195,8 @@ mod dev {
                 .spawn()
                 .map_err(|error| format!("could not run the security tool: {}", error.kind()))?;
             let command = format!(
-                "add-generic-password -U -s {SERVICE} -a {ACCOUNT} -w {}\n",
+                "add-generic-password -U -s {SERVICE} -a {} -w {}\n",
+                self.0.account,
                 hex(password)
             );
             child
@@ -176,19 +210,26 @@ mod dev {
             let status = child
                 .wait()
                 .map_err(|error| format!("the security tool did not finish: {}", error.kind()))?;
+            let failed = || format!("could not save the {} with the security tool", self.0.what);
             if !status.success() {
-                return Err("could not save the OBS password with the security tool".into());
+                return Err(failed());
             }
             // `security -i` exits 0 even when a command failed: read it back.
             match self.load()? {
                 Some(stored) if stored == password => Ok(()),
-                _ => Err("could not save the OBS password with the security tool".into()),
+                _ => Err(failed()),
             }
         }
 
         fn forget(&self) -> Result<(), String> {
             let status = Command::new(SECURITY)
-                .args(["delete-generic-password", "-s", SERVICE, "-a", ACCOUNT])
+                .args([
+                    "delete-generic-password",
+                    "-s",
+                    SERVICE,
+                    "-a",
+                    self.0.account,
+                ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -197,7 +238,8 @@ mod dev {
             match status.code() {
                 Some(0) | Some(NOT_FOUND) => Ok(()),
                 other => Err(format!(
-                    "could not remove the OBS password with the security tool (exit {other:?})"
+                    "could not remove the {} with the security tool (exit {other:?})",
+                    self.0.what
                 )),
             }
         }

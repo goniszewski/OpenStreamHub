@@ -37,30 +37,36 @@ export function planAutoArtwork(action?: BindingAction | null): AutoPlan | null 
 /** Same plan, same drawing: used to tell that nothing changed. */
 export const planKey = (plan: AutoPlan | null): string | null => plan && (plan.kind === 'app' ? `app:${plan.bundleId}` : `url:${plan.host}`);
 
-export function autoDesign(plan: AutoPlan): KeyArtworkDesign {
+export function autoDesign(plan: AutoPlan, label = ''): KeyArtworkDesign {
   return plan.kind === 'app'
-    ? { ...defaultKeyArtworkDesign, iconId: appIconId(plan.bundleId) }
+    ? { ...defaultKeyArtworkDesign, iconId: appIconId(plan.bundleId), text: label }
     : { ...defaultKeyArtworkDesign, iconId: 'globe', text: plan.host, textSize: 0 };
 }
 
-/** Whether artwork is exactly what an automatic drawing makes: its stored
-    design is the plan's design for the application or host it names. This
-    survives a reload and a restart, so the artwork keeps following the
-    action; a design changed in any field no longer matches and stays. */
-export function isAutoDrawn(artwork: KeyArtwork | undefined): boolean {
+/** Whether artwork is still an automatic drawing: its stored design carries the
+    `auto` mark that only this module sets (the studio's save writes it false, so
+    anything the user saved there, text they cleared included, stays). Drawings
+    from before the mark (no `auto` at all) are recognised by being exactly the plan's design for the
+    application or host they name. Both survive a reload and a restart. */
+export function isAutoDrawn(artwork: KeyArtwork | undefined, texts: readonly string[] = ['']): boolean {
   const design = artwork?.design;
   if (!design) return false;
   const icon = design.icon_id ?? '';
   const plan: AutoPlan | null = icon.startsWith('app:') && icon.length > 4 ? { kind: 'app', bundleId: icon.slice(4) }
     : icon === 'globe' && design.text ? { kind: 'url', host: design.text } : null;
-  return plan !== null && stableStringify({ icon_size: defaultKeyArtworkDesign.iconSize, ...design }) === stableStringify(storedKeyArtworkDesign(autoDesign(plan)));
+  if (design.auto !== undefined) return plan !== null && design.auto; // the mark: set by this module's drawing, cleared when the studio saves
+  // Drawings made before the mark existed: an application's drawing carries the key label as its text: one of `texts` (the label, now or before); other text is the user's.
+  const label = plan?.kind === 'app' ? (texts.includes(design.text) ? design.text : null) : '';
+  if (plan === null || label === null) return false;
+  const { auto: _unmarked, ...expected } = storedKeyArtworkDesign(autoDesign(plan, label));
+  return stableStringify({ icon_size: defaultKeyArtworkDesign.iconSize, ...design }) === stableStringify(expected);
 }
 
 /** Whether a key's artwork may be replaced by an automatic one: it has none,
     or it is exactly what an earlier automatic drawing made (the application
     changed since). Anything the user designed or uploaded stays. */
-export function mayReplaceArtwork(artwork: KeyArtwork | undefined): boolean {
-  return !artwork || isAutoDrawn(artwork);
+export function mayReplaceArtwork(artwork: KeyArtwork | undefined, texts?: readonly string[]): boolean {
+  return !artwork || isAutoDrawn(artwork, texts);
 }
 
 export interface AutoDeps {
@@ -72,13 +78,13 @@ export interface AutoDeps {
 }
 
 /** The prepared artwork for a plan, carrying its design so it reopens in the studio. */
-export async function buildAutoArtwork(plan: AutoPlan, deps: AutoDeps): Promise<KeyArtwork> {
-  const design = autoDesign(plan);
+export async function buildAutoArtwork(plan: AutoPlan, deps: AutoDeps, label = ''): Promise<KeyArtwork> {
+  const design = autoDesign(plan, label);
   const png = await deps.render(design, plan.kind === 'app' ? await deps.appIcon(plan.bundleId) : undefined);
   const built = buildKeyArtworkDesignRequest(design, png);
   if (!built.ok) throw new Error(built.error);
   const prepared = await deps.invoke<KeyArtwork>('prepare_key_artwork', { request: built.request });
-  return { ...prepared, design: storedKeyArtworkDesign(design) };
+  return { ...prepared, design: { ...storedKeyArtworkDesign(design), auto: true } };
 }
 
 /** What the editor knows at the moment the drawing finishes. */
@@ -89,6 +95,8 @@ export interface AutoContext {
   artwork(): KeyArtwork | undefined;
   /** False once a newer request, or leaving the editor, superseded this one. */
   current(): boolean;
+  /** The texts an application drawing may carry and still be this module's (the label now and before). */
+  texts?(): readonly string[];
 }
 
 export interface AutoSession {
@@ -100,13 +108,13 @@ export interface AutoSession {
     the artwork was set. A key whose artwork or action changed meanwhile, or a
     draft that was replaced, is left alone; a failure leaves the key as it is
     (the studio is still there for the user). */
-export async function applyAutoArtwork(plan: AutoPlan, deps: AutoDeps, session: AutoSession, path: readonly string[], control: number, context: AutoContext): Promise<boolean> {
-  if (!mayReplaceArtwork(context.artwork())) return false;
+export async function applyAutoArtwork(plan: AutoPlan, deps: AutoDeps, session: AutoSession, path: readonly string[], control: number, context: AutoContext, label = ''): Promise<boolean> {
+  if (!mayReplaceArtwork(context.artwork(), context.texts?.())) return false;
   const generation = session.getState().draftGeneration;
   try {
-    const artwork = await buildAutoArtwork(plan, deps);
+    const artwork = await buildAutoArtwork(plan, deps, label);
     if (!context.current() || context.planKey() !== planKey(plan)) return false;
-    if (!mayReplaceArtwork(context.artwork())) return false;
+    if (!mayReplaceArtwork(context.artwork(), context.texts?.())) return false;
     const state = session.getState();
     if (state.draftGeneration !== generation) return false;
     session.edit(setKeyArtwork(state.draft.profile, path, control, artwork), 'key-artwork-auto');

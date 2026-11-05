@@ -2,6 +2,7 @@ import type { ServiceModule } from './contracts';
 import { formatHexColour, parseHexColour } from './artwork-model';
 import { modules } from './ui-model';
 import { moduleImage } from './module-controls';
+import { english } from './i18n-react';
 import type { Invoke } from './profile-session';
 
 // The modules the Lighting page can pick: everything the input feed lists,
@@ -44,7 +45,7 @@ export const defaultEffect = 1;
 
 // Where a lighting change lands: the picked module, or every connected dial.
 export type LightingScope = 'module' | 'kit';
-export const lightingScopeLabels: Record<LightingScope, string> = { module: 'This module', kit: 'Whole kit' };
+export const lightingScopeLabels: Record<LightingScope, string> = { module: english('labels.lightingScope.module'), kit: english('labels.lightingScope.kit') };
 
 export const defaultBacklight = 100;
 export const defaultColour = '#ffffff';

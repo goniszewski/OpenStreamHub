@@ -1,14 +1,17 @@
-import type { BindingAction, BranchStep, Condition, Profile, Variable, VariableKind } from './contracts';
+import type { BindingAction, BranchStep, Condition, KeypadSlot, Profile, Variable, VariableKind } from './contracts';
+import type { BindingEntry } from './binding-model';
+import { listBindings } from './binding-model';
 import { groupItems, groupMode, isGroup, variableKind } from './flow-model';
 
 // Which variables the actions of a profile use, and the edits that keep every use in step with the declarations.
 
 type AnyAction = BindingAction | BranchStep;
 
-const conditionNames = (when: Condition, into: string[]): void => {
-  if (isGroup(when)) { groupItems(when).forEach(item => conditionNames(item, into)); return; }
+const conditionNames = (when: Condition, into: string[]): string[] => {
+  if (isGroup(when)) { groupItems(when).forEach(item => conditionNames(item, into)); return into; }
   if ('variable_is' in when) into.push(when.variable_is.name);
   else if ('variable_at_least' in when) into.push(when.variable_at_least.name);
+  return into;
 };
 
 // Every variable name an action (and everything inside it) refers to, once per use.
@@ -42,7 +45,22 @@ export function variableUseCounts(profile: Profile): Map<string, number> {
   for (const action of profileBindingActions(profile)) {
     for (const name of actionVariableNames(action)) counts.set(name, (counts.get(name) ?? 0) + 1);
   }
+  // Key faces test variables too.
+  for (const page of profile.keypad?.pages ?? []) {
+    for (const slot of page.slots) {
+      if (slot?.type !== 'action') continue;
+      for (const face of slot.faces ?? []) for (const name of conditionNames(face.when, [])) counts.set(name, (counts.get(name) ?? 0) + 1);
+    }
+  }
   return counts;
+}
+
+// The bindings whose action (or a test inside it) uses a variable, so the editor can show and open each one.
+export function variableUsers(profile: Profile, name: string): BindingEntry[] {
+  return listBindings(profile).filter(entry => {
+    const action = entry.flat?.action ?? entry.dialBinding?.action ?? entry.keypadBinding?.action;
+    return actionVariableNames(action).includes(name);
+  });
 }
 
 const renameCondition = (when: Condition, from: string, to: string): Condition => {
@@ -71,12 +89,18 @@ function renameAction<A extends AnyAction>(action: A, from: string, to: string):
 // Renames a declaration and every use of it, so a rename never breaks a binding.
 export function renameVariable(profile: Profile, from: string, to: string): Profile {
   const rename = <T extends { action: BindingAction }>(binding: T): T => ({ ...binding, action: renameAction(binding.action, from, to) });
+  // Key faces keep their tests in step too; a slot without faces is left without the field.
+  const renameSlot = (slot: Extract<KeypadSlot, { type: 'action' }>) => ({
+    ...slot,
+    bindings: slot.bindings.map(rename),
+    ...(slot.faces ? { faces: slot.faces.map(face => ({ ...face, when: renameCondition(face.when, from, to) })) } : {}),
+  });
   return {
     ...profile,
     variables: (profile.variables ?? []).map(variable => (variable.name === from ? { ...variable, name: to } : variable)),
     bindings: profile.bindings.map(rename),
     ...(profile.keypad ? {
-      keypad: { pages: profile.keypad.pages.map(page => ({ ...page, slots: page.slots.map(slot => (slot?.type === 'action' ? { ...slot, bindings: slot.bindings.map(rename) } : slot)) })) },
+      keypad: { pages: profile.keypad.pages.map(page => ({ ...page, slots: page.slots.map(slot => (slot?.type === 'action' ? renameSlot(slot) : slot)) })) },
     } : {}),
     ...(profile.dial_functions ? { dial_functions: profile.dial_functions.map(fn => ({ ...fn, bindings: fn.bindings.map(rename) })) } : {}),
   };

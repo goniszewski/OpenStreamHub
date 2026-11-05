@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { ProfileSummary } from './contracts';
 import { RunningProfile, applyRunningProfile, runningProfileValue } from './RunningProfile';
 import type { ServiceRun } from './service-runner';
+import { hasOption } from './select-markup';
 
 const run = (id: string, profileId: string | null, phase: 'running' | 'stopped' = 'running'): ServiceRun => ({
   serviceId: id, state: 'running', execute: false, entries: [], counters: { actions: 0, failures: 0, ignored: 0 } as never, startedAt: 0, profileName: 'x', profileId, snapshot: '', draftUnsaved: false,
@@ -30,7 +31,7 @@ describe('the sidebar running-profile choice', () => {
 
   it('lists the saved profiles with the running one selected, and stays out of the browser preview', () => {
     const html = renderToStaticMarkup(<RunningProfile profiles={profiles} runs={runs(run('k', 'b'))} defaultId="a" enabled busy={false} onChoose={() => {}} />);
-    expect(html).toMatch(/<option value="b" selected="">Studio<\/option>/);
+    expect(hasOption(html, 'b', 'Studio', true)).toBe(true);
     expect(html).toContain('Everyday');
     expect(renderToStaticMarkup(<RunningProfile profiles={profiles} runs={runs()} defaultId={null} enabled={false} busy={false} onChoose={() => {}} />)).toBe('');
     expect(renderToStaticMarkup(<RunningProfile profiles={profiles} runs={runs()} defaultId="a" enabled busy onChoose={() => {}} />)).toContain('disabled=""');

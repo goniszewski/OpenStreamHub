@@ -2,8 +2,9 @@
 
 use crate::{
     Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
-    TimerAlert, TimerAlerter, VariableValue,
+    TerminalApp, TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
+    streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
 };
 use std::{
     sync::{
@@ -169,6 +170,78 @@ const UTF8_ENV: &[(&str, &str)] = &[("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.U
 const MULTI_ACTION_DEADLINE: Duration = Duration::from_secs(15);
 /// Clipboard type names that `clipboard info` reports for plain text only.
 const PLAIN_TEXT_TYPES: &[&str] = &["«class utf8»", "«class ut16»", "string", "Unicode text"];
+
+/// Bound for a `terminal_command`: a terminal that is not running yet has to
+/// start before it can open the window, which can take longer than the usual
+/// bound on a cold start.
+const TERMINAL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Fixed AppleScript that opens a new Terminal window running one command
+/// line. The line arrives as the only `argv` item after `--`, so no profile
+/// text is ever part of the script; `do script` without a target opens a new
+/// window. Needs the Automation permission for Terminal.
+const TERMINAL_SCRIPT: &[&str] = &[
+    "on run argv",
+    "if (count of argv) is not 1 then error \"terminal-command: expected one command line\"",
+    "tell application id \"com.apple.Terminal\"",
+    "activate",
+    "do script (item 1 of argv)",
+    "end tell",
+    "end run",
+];
+/// Fixed AppleScript that opens a new iTerm2 window with the default profile
+/// and types one command line (with Return) into its session, the line again
+/// arriving only as the `argv` item. Needs the Automation permission for iTerm2.
+const ITERM2_SCRIPT: &[&str] = &[
+    "on run argv",
+    "if (count of argv) is not 1 then error \"terminal-command: expected one command line\"",
+    "tell application id \"com.googlecode.iterm2\"",
+    "activate",
+    "set newWindow to (create window with default profile)",
+    "tell current session of newWindow to write text (item 1 of argv)",
+    "end tell",
+    "end run",
+];
+
+/// Quotes `value` as one POSIX shell word: inside single quotes nothing is
+/// special, and a single quote is written as `'\''` (close, escaped quote, reopen).
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// The line a `terminal_command` hands the terminal: the user's command as
+/// written, after `cd <directory> && ` when a directory is set. The directory
+/// is one quoted shell word, so nothing in it can end the `cd` or start
+/// another command; a leading `~` becomes `"$HOME"` outside the quotes, so the
+/// shell still expands it. The command is the user's own line for their own
+/// shell, which is the point of the action; validation keeps it to one line.
+pub(crate) fn terminal_shell_line(command: &str, directory: Option<&str>) -> String {
+    let Some(directory) = directory else {
+        return command.to_owned();
+    };
+    let target = if directory == "~" {
+        "\"$HOME\"".to_owned()
+    } else if let Some(rest) = directory.strip_prefix("~/") {
+        format!("\"$HOME\"/{}", shell_quote(rest))
+    } else {
+        shell_quote(directory)
+    };
+    format!("cd {target} && {command}")
+}
+
+/// The `osascript` arguments of a `terminal_command`: the app's fixed script
+/// lines as `-e` items, then `--` and the shell line as the one `argv` item.
+pub(crate) fn terminal_script_args(app: TerminalApp, shell_line: String) -> Vec<String> {
+    let script = match app {
+        TerminalApp::Terminal => TERMINAL_SCRIPT,
+        TerminalApp::Iterm2 => ITERM2_SCRIPT,
+    };
+    let mut args = Vec::with_capacity(script.len() * 2 + 2);
+    for line in script {
+        args.extend(["-e".to_string(), (*line).to_string()]);
+    }
+    args.extend(["--".to_string(), shell_line]);
+    args
+}
 
 /// Fixed JavaScript for Automation script that replays a `macro`: it reads the
 /// step list from stdin as a JSON array, validates every field against the
@@ -340,13 +413,15 @@ pub struct MacOsDispatcher {
     sleeper: Box<dyn Sleeper>,
     /// The loopback OBS client for `obs_scene`, when this run has an endpoint.
     obs: Option<ObsClient>,
+    /// The loopback Streamlabs client for `streamlabs_*`, when this run has one.
+    streamlabs: Option<StreamlabsClient>,
     /// Set once a media key has asked macOS for the Accessibility prompt;
     /// later media keys only check the permission (see [`MEDIA_KEY_SCRIPT`]).
     media_access_requested: bool,
     /// The service state handed over before the current action.
     service_state: ServiceState,
-    /// Current values of the declared variables, by name.
-    variables: std::collections::HashMap<String, crate::profile::VariableValue>,
+    /// Current values of the declared variables, shared with the control channel.
+    variables: crate::SharedVariables,
 }
 
 impl MacOsDispatcher {
@@ -356,6 +431,7 @@ impl MacOsDispatcher {
             runner: Box::new(SystemProcessRunner { cancellation: None }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -373,6 +449,7 @@ impl MacOsDispatcher {
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -385,6 +462,21 @@ impl MacOsDispatcher {
     /// a direct dispatch fails without any I/O.
     pub fn with_obs(mut self, obs: Option<ObsClient>) -> Self {
         self.obs = obs;
+        self
+    }
+
+    /// Runs `streamlabs_*` actions through `streamlabs`, like
+    /// [`MacOsDispatcher::with_obs`]. Without a client they are unavailable
+    /// ([`STREAMLABS_UNAVAILABLE`]) and a direct dispatch does no I/O.
+    pub fn with_streamlabs(mut self, streamlabs: Option<StreamlabsClient>) -> Self {
+        self.streamlabs = streamlabs;
+        self
+    }
+
+    /// Keeps variable values in `variables`, so the control channel can read
+    /// and set them while the run goes on.
+    pub fn with_variables(mut self, variables: crate::SharedVariables) -> Self {
+        self.variables = variables;
         self
     }
 
@@ -484,7 +576,8 @@ impl MacOsDispatcher {
         {
             return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
         }
-        // Only the fixed timer constants of this module set their own bound.
+        // Only the fixed timer and terminal constants of this module set their
+        // own bound.
         let timeout = if request.timeout.is_zero() {
             PROCESS_TIMEOUT
         } else {
@@ -631,9 +724,9 @@ impl MacOsDispatcher {
     fn execute(&mut self, action: &Action) -> Result<(), String> {
         match action {
             Action::Volume { delta } => {
-                let current = self.output_volume()?;
-                let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
-                self.apple_script(format!("set volume output volume {target}"))?;
+                // One process, not a query and a set: each osascript start costs
+                // about 0.12 s, and a spun knob or roller queues many steps.
+                self.apple_script(volume_step_script(*delta))?;
             }
             Action::SetVolume { percent } => {
                 self.apple_script(format!("set volume output volume {percent}"))?;
@@ -671,6 +764,11 @@ impl MacOsDispatcher {
                 // read as an option; -u forces URL handling even if it matches a path.
                 self.run(OPEN, vec!["-u".into(), url.clone()])?;
             }
+            Action::TerminalCommand {
+                app,
+                command,
+                directory,
+            } => self.terminal_command(*app, command, directory.as_deref())?,
             Action::Media { command } => self.media(*command)?,
             Action::System { command } => match command {
                 SystemCommand::Undo => {
@@ -720,43 +818,20 @@ impl MacOsDispatcher {
             | Action::ObsAdjustInputVolume { .. }
             | Action::ObsMediaSource { .. }
             | Action::ObsSetInputVolume { .. } => self.obs_action(action, None)?,
+            Action::StreamlabsRecord
+            | Action::StreamlabsStream { .. }
+            | Action::StreamlabsStudioMode
+            | Action::StreamlabsTransition
+            | Action::StreamlabsScene { .. }
+            | Action::StreamlabsSourceVisibility { .. }
+            | Action::StreamlabsAudio { .. } => self.streamlabs_action(action, None)?,
             Action::MultiAction { actions } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_steps(actions, "multi_action", deadline)?;
             }
-            Action::SetVariable { name, value } => {
-                let slot = self.variable_mut(name)?;
-                if slot.kind() != value.kind() {
-                    return Err(format!(
-                        "variable {name} is {}, not {}; no action was taken",
-                        slot.kind().name(),
-                        value.kind().name()
-                    ));
-                }
-                *slot = value.clone();
-            }
-            Action::ToggleVariable { name } => match self.variable_mut(name)? {
-                VariableValue::Bool(flag) => *flag = !*flag,
-                other => {
-                    return Err(format!(
-                        "variable {name} is {}, not bool; no action was taken",
-                        other.kind().name()
-                    ));
-                }
-            },
-            Action::AddToVariable { name, amount } => match self.variable_mut(name)? {
-                VariableValue::Number(number) => {
-                    *number = number
-                        .saturating_add(*amount)
-                        .clamp(VariableValue::MIN_NUMBER, VariableValue::MAX_NUMBER);
-                }
-                other => {
-                    return Err(format!(
-                        "variable {name} is {}, not number; no action was taken",
-                        other.kind().name()
-                    ));
-                }
-            },
+            Action::SetVariable { name, value } => self.variables.set(name, value.clone())?,
+            Action::ToggleVariable { name } => self.variables.toggle(name)?,
+            Action::AddToVariable { name, amount } => self.variables.add(name, *amount)?,
             Action::Conditional { .. } => {
                 let deadline = self.sleeper.now() + MULTI_ACTION_DEADLINE;
                 self.run_conditional(action, deadline)?;
@@ -821,6 +896,8 @@ impl MacOsDispatcher {
                 self.run_conditional(step, deadline)
             } else if step.uses_obs() {
                 self.obs_action(step, Some(deadline))
+            } else if step.uses_streamlabs() {
+                self.streamlabs_action(step, Some(deadline))
             } else {
                 self.execute(step)
             };
@@ -871,13 +948,6 @@ impl MacOsDispatcher {
         }
     }
 
-    /// The current value of a declared variable.
-    fn variable_mut(&mut self, name: &str) -> Result<&mut VariableValue, String> {
-        self.variables
-            .get_mut(name)
-            .ok_or_else(|| format!("variable {name} is not declared; no action was taken"))
-    }
-
     /// Reads a condition about the default output from macOS.
     fn system_condition_holds(
         &mut self,
@@ -889,7 +959,7 @@ impl MacOsDispatcher {
             Condition::OutputVolumeAtLeast(percent) => Ok(self.output_volume()? >= *percent),
             Condition::TimerRunning(expected) => Ok(self.service_state.timer_running == *expected),
             Condition::VariableIs { name, value } => match self.variables.get(name) {
-                Some(current) if current.kind() == value.kind() => Ok(current == value),
+                Some(current) if current.kind() == value.kind() => Ok(current == *value),
                 Some(current) => Err(format!(
                     "variable {name} is {}, not {}",
                     current.kind().name(),
@@ -898,7 +968,7 @@ impl MacOsDispatcher {
                 None => Err(format!("variable {name} is not declared")),
             },
             Condition::VariableAtLeast { name, value } => match self.variables.get(name) {
-                Some(VariableValue::Number(current)) => Ok(current >= value),
+                Some(VariableValue::Number(current)) => Ok(current >= *value),
                 Some(other) => Err(format!(
                     "variable {name} is {}, not number",
                     other.kind().name()
@@ -948,6 +1018,55 @@ impl MacOsDispatcher {
             ));
         }
         obs.clone().with_timeout(remaining).run(action)
+    }
+
+    /// Runs a Streamlabs action like [`MacOsDispatcher::obs_action`] runs an
+    /// OBS one: within `deadline` when given, never beyond the client's 3 s.
+    fn streamlabs_action(
+        &self,
+        action: &Action,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        let streamlabs = self.streamlabs.as_ref().ok_or(STREAMLABS_UNAVAILABLE)?;
+        let Some(deadline) = deadline else {
+            return streamlabs.run(action);
+        };
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "the multi_action's {} s overall deadline has passed; Streamlabs was not contacted",
+                MULTI_ACTION_DEADLINE.as_secs()
+            ));
+        }
+        streamlabs.clone().with_timeout(remaining).run(action)
+    }
+
+    /// Opens a new window of `app` running the command line (see
+    /// [`TERMINAL_SCRIPT`] and [`ITERM2_SCRIPT`]). The failure never carries
+    /// stderr, which could echo the command.
+    fn terminal_command(
+        &mut self,
+        app: TerminalApp,
+        command: &str,
+        directory: Option<&str>,
+    ) -> Result<(), String> {
+        let name = match app {
+            TerminalApp::Terminal => "Terminal",
+            TerminalApp::Iterm2 => "iTerm2",
+        };
+        self.run_quiet(ProcessRequest {
+            program: OSASCRIPT,
+            args: terminal_script_args(app, terminal_shell_line(command, directory)),
+            env: UTF8_ENV,
+            timeout: TERMINAL_TIMEOUT,
+            ..ProcessRequest::default()
+        })
+        .map(drop)
+        .map_err(|error| {
+            format!(
+                "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
+            )
+        })
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed
@@ -1064,15 +1183,7 @@ impl ActionDispatcher for MacOsDispatcher {
     fn set_service_state(&mut self, state: ServiceState) {
         // A variable keeps its value while its name and kind stay; anything
         // else starts at the declared value, and an undeclared one is dropped.
-        let mut kept = std::collections::HashMap::new();
-        for variable in &state.variables {
-            let value = match self.variables.remove(&variable.name) {
-                Some(current) if current.kind() == variable.value.kind() => current,
-                _ => variable.value.clone(),
-            };
-            kept.insert(variable.name.clone(), value);
-        }
-        self.variables = kept;
+        self.variables.declare(&state.variables);
         self.service_state = state;
     }
 
@@ -1084,7 +1195,12 @@ impl ActionDispatcher for MacOsDispatcher {
     }
 
     fn unavailable(&self, action: &Action) -> Option<&'static str> {
-        (self.obs.is_none() && action.uses_obs()).then_some(OBS_UNAVAILABLE)
+        (self.obs.is_none() && action.uses_obs())
+            .then_some(OBS_UNAVAILABLE)
+            .or_else(|| {
+                (self.streamlabs.is_none() && action.uses_streamlabs())
+                    .then_some(STREAMLABS_UNAVAILABLE)
+            })
     }
 
     /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
@@ -1140,6 +1256,7 @@ impl ActionDispatcher for MacOsDispatcher {
             runner: self.runner.fork(cancel)?,
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -1217,6 +1334,17 @@ fn media_failure(output: &ProcessOutput) -> String {
         format!("stderr: {} bytes, not shown", output.stderr.len())
     };
     format!("{OSASCRIPT}: {} ({cause})", output.status)
+}
+
+/// The script that moves the output volume by `delta` points in one `osascript`
+/// run, clamped to 0 to 100 like the macOS volume itself.
+fn volume_step_script(delta: i16) -> String {
+    format!(
+        "set v to (output volume of (get volume settings)) + ({delta})\n\
+         if v < 0 then set v to 0\n\
+         if v > 100 then set v to 100\n\
+         set volume output volume v"
+    )
 }
 
 /// Builds a System Events keystroke from a validated key. A literal key is one
@@ -1678,6 +1806,7 @@ mod tests {
             runner: Box::new(FakeRunner(state.clone())),
             sleeper: Box::new(FakeSleeper(state.clone(), std::time::Instant::now())),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -1686,32 +1815,24 @@ mod tests {
     }
 
     #[test]
-    fn volume_queries_before_setting_and_clamps_both_edges() {
-        for (initial, delta, target) in [("98\n", 5, 100), ("2\n", -5, 0), ("40\n", 4, 44)] {
-            let (mut dispatcher, state) = fake(vec![success(initial), success("")]);
+    fn volume_changes_in_one_process_and_clamps_in_the_script() {
+        for delta in [5, -5, 100, -100, 1] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
             dispatcher.dispatch(&Action::Volume { delta }).unwrap();
             let state = state.lock().unwrap();
-            assert_eq!(state.requests.len(), 2);
+            assert_eq!(state.requests.len(), 1, "no separate query");
             assert_eq!(state.requests[0].program, OSASCRIPT);
             assert_eq!(
                 state.requests[0].args,
-                ["-e", "output volume of (get volume settings)"]
+                ["-e".to_string(), volume_step_script(delta)]
             );
-            assert_eq!(
-                state.requests[1].args,
-                [
-                    "-e".to_string(),
-                    format!("set volume output volume {target}")
-                ]
-            );
-            assert!(
-                state
-                    .requests
-                    .iter()
-                    .all(|request| request.timeout == PROCESS_TIMEOUT
-                        && request.output_limit == OUTPUT_LIMIT)
-            );
+            assert_eq!(state.requests[0].timeout, PROCESS_TIMEOUT);
+            assert_eq!(state.requests[0].output_limit, OUTPUT_LIMIT);
         }
+        let script = volume_step_script(-5);
+        assert!(script.contains("+ (-5)"));
+        assert!(script.contains("if v < 0 then set v to 0"));
+        assert!(script.contains("if v > 100 then set v to 100"));
     }
 
     #[test]
@@ -1764,20 +1885,6 @@ mod tests {
             assert!(dispatcher.dispatch(&action).is_err());
         }
         assert!(state.lock().unwrap().requests.is_empty());
-    }
-
-    #[test]
-    fn invalid_volume_response_stops_before_setting() {
-        for response in ["missing value", "101", "-1", "50.1", "0\n100"] {
-            let (mut dispatcher, state) = fake(vec![success(response)]);
-            assert!(
-                dispatcher
-                    .dispatch(&Action::Volume { delta: 1 })
-                    .unwrap_err()
-                    .contains("invalid output volume")
-            );
-            assert_eq!(state.lock().unwrap().requests.len(), 1);
-        }
     }
 
     #[test]
@@ -1842,6 +1949,143 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.requests[0].program, OPEN);
         assert_eq!(state.requests[0].args, ["-b", "com.apple.TextEdit"]);
+    }
+
+    #[test]
+    fn terminal_command_passes_the_line_only_as_an_argv_item() {
+        for (app, script, target) in [
+            (TerminalApp::Terminal, TERMINAL_SCRIPT, "com.apple.Terminal"),
+            (TerminalApp::Iterm2, ITERM2_SCRIPT, "com.googlecode.iterm2"),
+        ] {
+            let command = r#"claude "say \"hi\"" 'x' \ $(id) `id` ; end tell"#;
+            let (mut dispatcher, state) = fake(vec![success("")]);
+            dispatcher
+                .dispatch(&Action::TerminalCommand {
+                    app,
+                    command: command.into(),
+                    directory: Some("~/my dir/it's".into()),
+                })
+                .unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1);
+            let request = &state.requests[0];
+            assert_eq!(request.program, OSASCRIPT);
+            assert_eq!(request.timeout, TERMINAL_TIMEOUT);
+            assert!(request.stdin.is_none());
+            // Only the fixed lines are script text; the line is the one item after `--`.
+            let expected_script: Vec<String> = script
+                .iter()
+                .flat_map(|line| ["-e".to_string(), (*line).to_string()])
+                .collect();
+            assert_eq!(request.args[..expected_script.len()], expected_script[..]);
+            assert_eq!(request.args.len(), expected_script.len() + 2);
+            assert_eq!(request.args[expected_script.len()], "--");
+            assert_eq!(
+                *request.args.last().unwrap(),
+                format!(r#"cd "$HOME"/'my dir/it'\''s' && {command}"#)
+            );
+            assert!(script.iter().any(|line| line.contains(target)));
+            assert!(script.iter().all(|line| !line.contains("claude")));
+        }
+        // An invalid action starts nothing.
+        let (mut dispatcher, state) = fake(vec![]);
+        assert!(
+            dispatcher
+                .dispatch(&Action::TerminalCommand {
+                    app: TerminalApp::Terminal,
+                    command: "claude\nid".into(),
+                    directory: None,
+                })
+                .is_err()
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn terminal_command_failure_never_shows_stderr() {
+        let (mut dispatcher, _) = fake(vec![failure("secret-token in the command line")]);
+        let error = dispatcher
+            .dispatch(&Action::TerminalCommand {
+                app: TerminalApp::Iterm2,
+                command: "codex secret-token".into(),
+                directory: None,
+            })
+            .unwrap_err();
+        assert!(
+            error.starts_with("iTerm2 could not open a window"),
+            "{error}"
+        );
+        assert!(!error.contains("secret-token"), "{error}");
+    }
+
+    #[test]
+    fn terminal_shell_line_quotes_only_the_directory() {
+        assert_eq!(terminal_shell_line("claude", None), "claude");
+        assert_eq!(
+            terminal_shell_line("claude", Some("~")),
+            r#"cd "$HOME" && claude"#
+        );
+        assert_eq!(
+            terminal_shell_line("claude", Some("~/")),
+            r#"cd "$HOME"/'' && claude"#
+        );
+        assert_eq!(
+            terminal_shell_line("codex", Some("/Users/me/My Code")),
+            "cd '/Users/me/My Code' && codex"
+        );
+        assert_eq!(
+            terminal_shell_line("codex", Some("/tmp/a'b; rm -rf ~ $(id) `x` \"q\" \\")),
+            r#"cd '/tmp/a'\''b; rm -rf ~ $(id) `x` "q" \' && codex"#
+        );
+        // `~` inside the path is literal; only the leading one stands for home.
+        assert_eq!(
+            terminal_shell_line("ls", Some("/tmp/~/x")),
+            "cd '/tmp/~/x' && ls"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn terminal_shell_line_changes_into_exactly_the_quoted_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "osh-terminal-line-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let odd = "dir with 'quote' $(touch pwned) `x` \"q\" \\ ~";
+        let directory = base.join(odd);
+        std::fs::create_dir_all(&directory).unwrap();
+        let run = |line: String, home: &std::path::Path| {
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(line)
+                .env("HOME", home)
+                .current_dir(&base)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let canonical = std::fs::canonicalize(&directory).unwrap();
+        let printed = run(
+            terminal_shell_line("pwd -P", Some(directory.to_str().unwrap())),
+            &base,
+        );
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        let printed = run(
+            terminal_shell_line("pwd -P", Some(&format!("~/{odd}"))),
+            &base,
+        );
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        let printed = run(terminal_shell_line("pwd -P", Some("~")), &directory);
+        assert_eq!(printed.trim_end(), canonical.to_str().unwrap());
+        // Nothing in the directory ran as a command.
+        assert!(!base.join("pwned").exists());
+        assert!(!directory.join("pwned").exists());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]
@@ -2239,56 +2483,6 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_between_query_and_setter_prevents_the_setter() {
-        struct CancellingRunner {
-            cancellation: Arc<AtomicBool>,
-            requests: Arc<Mutex<Vec<ProcessRequest>>>,
-        }
-        impl ProcessRunner for CancellingRunner {
-            fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
-                self.requests.lock().unwrap().push(ProcessRequest {
-                    program: request.program,
-                    args: request.args.clone(),
-                    stdin: request.stdin.clone(),
-                    env: request.env,
-                    timeout: request.timeout,
-                    output_limit: request.output_limit,
-                });
-                self.cancellation.store(true, Ordering::Release);
-                success("40")
-            }
-
-            fn cancellation(&self) -> Option<&AtomicBool> {
-                Some(&self.cancellation)
-            }
-        }
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let mut dispatcher = MacOsDispatcher {
-            runner: Box::new(CancellingRunner {
-                cancellation: Arc::new(AtomicBool::new(false)),
-                requests: requests.clone(),
-            }),
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        };
-        assert!(
-            dispatcher
-                .dispatch(&Action::Volume { delta: 5 })
-                .unwrap_err()
-                .contains("action execution cancelled")
-        );
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].args[1],
-            "output volume of (get volume settings)"
-        );
-    }
-
-    #[test]
     fn audio_snapshot_queries_both_fields_without_setters() {
         let (mut dispatcher, requests) = fake(vec![success("40\n"), success("true\n")]);
         assert_eq!(
@@ -2362,6 +2556,7 @@ mod tests {
             runner: Box::new(CancelledRunner(AtomicBool::new(true))),
             sleeper: Box::new(SystemSleeper),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
@@ -3193,7 +3388,7 @@ mod tests {
             .dispatch(&add(VariableValue::MAX_NUMBER))
             .unwrap();
         assert_eq!(
-            dispatcher.variables["takes"],
+            dispatcher.variables.get("takes").unwrap(),
             VariableValue::Number(VariableValue::MAX_NUMBER)
         );
         dispatcher
@@ -3202,7 +3397,10 @@ mod tests {
                 value: VariableValue::Number(1),
             })
             .unwrap();
-        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
+            VariableValue::Number(1)
+        );
 
         // A wrong kind or an undeclared name fails and changes nothing.
         let error = dispatcher
@@ -3218,7 +3416,10 @@ mod tests {
             })
             .unwrap_err();
         assert!(error.contains("not declared"), "{error}");
-        assert_eq!(dispatcher.variables["takes"], VariableValue::Number(1));
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
+            VariableValue::Number(1)
+        );
 
         // A swap keeps a variable of the same name and kind, starts a new one
         // at its declared value, and drops what is no longer declared.
@@ -3239,13 +3440,19 @@ mod tests {
             ],
             ..Default::default()
         });
-        assert_eq!(dispatcher.variables["live"], VariableValue::Bool(true));
         assert_eq!(
-            dispatcher.variables["takes"],
+            dispatcher.variables.get("live").unwrap(),
+            VariableValue::Bool(true)
+        );
+        assert_eq!(
+            dispatcher.variables.get("takes").unwrap(),
             VariableValue::Text("changed kind".into())
         );
-        assert_eq!(dispatcher.variables["fresh"], VariableValue::Number(9));
-        assert_eq!(dispatcher.variables.len(), 3);
+        assert_eq!(
+            dispatcher.variables.get("fresh").unwrap(),
+            VariableValue::Number(9)
+        );
+        assert_eq!(dispatcher.variables.values().len(), 3);
     }
 
     #[test]
@@ -3596,6 +3803,75 @@ mod tests {
             }
         }
         assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn streamlabs_actions_without_a_client_are_unavailable_and_start_nothing() {
+        let (mut dispatcher, state) = fake(vec![]);
+        for action in [
+            Action::StreamlabsRecord,
+            Action::StreamlabsAudio {
+                source: "Mic".into(),
+                op: crate::profile::StreamlabsAudioOp::Set(50),
+            },
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, Action::StreamlabsTransition],
+            },
+        ] {
+            assert_eq!(
+                dispatcher.unavailable(&action),
+                Some(STREAMLABS_UNAVAILABLE)
+            );
+            if !matches!(action, Action::MultiAction { .. }) {
+                assert_eq!(
+                    dispatcher.dispatch(&action).unwrap_err(),
+                    STREAMLABS_UNAVAILABLE
+                );
+            }
+        }
+        // OBS is reported first when a sequence needs both.
+        let both = Action::MultiAction {
+            actions: vec![Action::ObsTransition, Action::StreamlabsTransition],
+        };
+        assert_eq!(dispatcher.unavailable(&both), Some(OBS_UNAVAILABLE));
+        assert!(state.lock().unwrap().requests.is_empty());
+    }
+
+    #[test]
+    fn streamlabs_actions_and_steps_run_through_the_client() {
+        use crate::streamlabs::{
+            StreamlabsToken,
+            tests_support::{Reply, serve},
+        };
+        let token = || StreamlabsToken::new("token".into()).unwrap();
+        let (endpoint, server) = serve(vec![Reply::Result(serde_json::Value::Null)]);
+        let (dispatcher, state) = fake(vec![success("")]);
+        let mut dispatcher =
+            dispatcher.with_streamlabs(Some(StreamlabsClient::new(endpoint, token())));
+        assert_eq!(dispatcher.unavailable(&Action::StreamlabsRecord), None);
+        dispatcher.dispatch(&Action::StreamlabsRecord).unwrap();
+        assert_eq!(server.join().unwrap().calls()[0].1, "toggleRecording");
+
+        let (endpoint, server) = serve(vec![Reply::Result(serde_json::Value::Null)]);
+        let mut dispatcher =
+            dispatcher.with_streamlabs(Some(StreamlabsClient::new(endpoint, token())));
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![
+                    Action::Shortcut {
+                        key: "a".into(),
+                        modifiers: vec![Modifier::Command],
+                    },
+                    Action::StreamlabsTransition,
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            server.join().unwrap().calls()[0].1,
+            "executeStudioModeTransition"
+        );
+        // Only the shortcut step used a subprocess.
+        assert_eq!(state.lock().unwrap().requests.len(), 1);
     }
 
     #[test]
@@ -4002,6 +4278,7 @@ mod tests {
                 runner: Box::new(CancelledRunner(AtomicBool::new(true), 0)),
                 sleeper: Box::new(SystemSleeper),
                 obs: None,
+                streamlabs: None,
                 media_access_requested: false,
                 service_state: ServiceState::default(),
                 variables: Default::default(),
@@ -4573,6 +4850,7 @@ mod tests {
             }),
             sleeper: Box::new(CancellingSleeper(cancellation)),
             obs: None,
+            streamlabs: None,
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),

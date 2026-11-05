@@ -522,8 +522,46 @@ pub fn open_permission_settings(target: PermissionTarget) -> Result<(), String> 
     }
 }
 
+/// The `.app` bundle that contains `exe`, if it runs from one.
+pub fn bundle_of(exe: &std::path::Path) -> Option<std::path::PathBuf> {
+    exe.ancestors()
+        .find(|path| path.extension().is_some_and(|ext| ext == "app"))
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Starts a native drag of this app's bundle, so it can be dropped on the
+/// list of a System Settings privacy pane. Must run on the main thread.
+#[cfg(target_os = "macos")]
+pub fn start_permission_drag(window: &tauri::WebviewWindow) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+    let bundle = bundle_of(&exe)
+        .ok_or_else(|| "OpenStreamHub is not running from an .app bundle".to_string())?;
+    drag::start_drag(
+        window,
+        drag::DragItem::Files(vec![bundle]),
+        drag::Image::Raw(include_bytes!("../icons/icon.png").to_vec()),
+        |_, _| {},
+        drag::Options::default(),
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bundle_is_found_above_the_executable() {
+        let exe =
+            std::path::Path::new("/Applications/OpenStreamHub.app/Contents/MacOS/open-stream-hub");
+        assert_eq!(
+            super::bundle_of(exe),
+            Some(std::path::PathBuf::from("/Applications/OpenStreamHub.app"))
+        );
+        assert_eq!(
+            super::bundle_of(std::path::Path::new("/tmp/target/debug/app")),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]

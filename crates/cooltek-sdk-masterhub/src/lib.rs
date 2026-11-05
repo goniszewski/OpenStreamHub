@@ -17,6 +17,7 @@ pub mod lighting;
 mod macros;
 mod module;
 pub mod modules;
+pub mod set_idle;
 #[doc(hidden)]
 mod private {
     /// A marker trait that can only be implemented in this crate.

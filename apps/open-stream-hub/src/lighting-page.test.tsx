@@ -7,6 +7,7 @@ import { favouritesStorageKey } from './lighting-model';
 import { lightingStateStorageKey, LightingStateStore } from './lighting-state';
 import { FakeStorage } from './fake-storage';
 import type { ServiceRunner } from './service-runner';
+import { hasOption } from './select-markup';
 
 const dial = (path: string, serial: string | null = 'MHDD01FAKE0843'): LightingDevice =>
   ({ path_hex: path, module: 'm131e', serial_number: serial });
@@ -60,7 +61,7 @@ describe('LightingPage', () => {
     const markup = render({ devices: [knobs()] });
     expect(markup).not.toContain('<fieldset class="lighting-controls" disabled');
     expect(markup).toContain('id="lighting-effect"');
-    expect(markup).toContain('<option value="4">Strobe, fast</option>');
+    expect(hasOption(markup, '4', 'Strobe, fast', false)).toBe(true);
     expect(markup).toContain('id="lighting-led"');
     expect(markup).toContain('LED 3');
     expect(markup).not.toContain('LED 4');
@@ -153,7 +154,7 @@ describe('LightingPage', () => {
     const knobsMarkup = render({ devices: [knobs()], lighting });
     expect(knobsMarkup).toContain('value="#ff0000"');
     expect(knobsMarkup).toContain('value="60"');
-    expect(knobsMarkup).toContain('<option value="2" selected="">Breathing</option>');
+    expect(hasOption(knobsMarkup, '2', 'Breathing', true)).toBe(true);
     const dialMarkup = render({ devices: [dial('aa'), knobs()], lighting });
     expect(dialMarkup).toContain('value="40"');
     expect(dialMarkup).toContain('value="#00ffcc"');

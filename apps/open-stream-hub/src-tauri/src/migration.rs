@@ -12,6 +12,115 @@ use uuid::Uuid;
 // data directory. Neither this path nor the destination is provided through IPC.
 const LEGACY_APP_ID: &str = "dev.cooltek.masterhub";
 
+// The identifier lost its ".cooltek" segment, which moved the application data
+// directory. Everything the previous identifier kept there (profiles, settings,
+// focus rules) is adopted once. The previous directory is only ever read.
+const PREVIOUS_APP_ID: &str = "dev.cooltek.openstreamhub";
+const MAX_ADOPTED_ENTRIES: usize = 20_000;
+const MAX_ADOPTED_DEPTH: usize = 8;
+const MAX_ADOPTED_FILE: u64 = 64 * 1024 * 1024;
+
+/// Copies the previous identifier's data directory into `app_data` when
+/// `app_data` does not exist yet. Returns whether anything was adopted. An
+/// existing `app_data` is authoritative and is never merged into.
+pub fn adopt_previous_identifier(app_data: &Path) -> Result<bool, String> {
+    let parent = app_data
+        .parent()
+        .ok_or_else(|| "application data has no parent directory".to_string())?;
+    check_directory(parent, "application data parent")?;
+    if app_data
+        .file_name()
+        .is_some_and(|name| name == PREVIOUS_APP_ID)
+        || check_directory(app_data, "OpenStreamHub application data")?
+    {
+        return Ok(false);
+    }
+    let previous = parent.join(PREVIOUS_APP_ID);
+    if !check_directory(&previous, "previous application data")? {
+        return Ok(false);
+    }
+    let staging_path = parent.join(format!(".openstreamhub-adopt-{}.tmp", Uuid::new_v4()));
+    fs::create_dir(&staging_path)
+        .map_err(|error| format!("could not stage the previous application data: {error}"))?;
+    let mut staging = StagingDirectory {
+        path: staging_path,
+        published: false,
+    };
+    protect_directory(&staging.path)?;
+    copy_tree(&previous, &staging.path, 0, &mut 0)?;
+    File::open(&staging.path)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("could not flush the adopted application data: {error}"))?;
+    publish_exclusive(&staging.path, app_data)?;
+    staging.published = true;
+    Ok(true)
+}
+
+/// Copies regular files and directories, keeping modification times. Symbolic
+/// links, other file types, files over 64 MiB, .DS_Store and staging folders are skipped.
+fn copy_tree(from: &Path, to: &Path, depth: usize, copied: &mut usize) -> Result<(), String> {
+    if depth > MAX_ADOPTED_DEPTH {
+        return Err("previous application data is nested too deeply".into());
+    }
+    let entries = fs::read_dir(from)
+        .map_err(|error| format!("could not read the previous application data: {error}"))?;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("could not read the previous application data: {error}"))?;
+        // .history holds profile history and is kept; Finder litter and
+        // interrupted staging folders are not.
+        let name = entry.file_name();
+        if name == ".DS_Store"
+            || (is_hidden_entry(&name) && name.as_encoded_bytes().ends_with(b".tmp"))
+        {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("could not inspect the previous application data: {error}"))?;
+        let target = to.join(entry.file_name());
+        let kind = metadata.file_type();
+        if !(kind.is_dir() || kind.is_file()) {
+            continue;
+        }
+        *copied += 1;
+        if *copied > MAX_ADOPTED_ENTRIES {
+            return Err("previous application data holds too many files".into());
+        }
+        if kind.is_dir() {
+            fs::create_dir(&target).map_err(|error| {
+                format!("could not copy the previous application data: {error}")
+            })?;
+            protect_directory(&target)?;
+            copy_tree(&entry.path(), &target, depth + 1, copied)?;
+            continue;
+        }
+        // An oversized file is left behind rather than blocking the launch on every start.
+        if metadata.len() > MAX_ADOPTED_FILE {
+            continue;
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let bytes = fs::read(entry.path())
+            .map_err(|error| format!("could not read the previous application data: {error}"))?;
+        let mut file = options
+            .open(&target)
+            .map_err(|error| format!("could not copy the previous application data: {error}"))?;
+        file.write_all(&bytes)
+            .map_err(|error| format!("could not copy the previous application data: {error}"))?;
+        if let Ok(modified) = metadata.modified() {
+            let _ = file.set_times(FileTimes::new().set_modified(modified));
+        }
+        file.sync_all()
+            .map_err(|error| format!("could not flush the adopted application data: {error}"))?;
+    }
+    Ok(())
+}
+
 struct Snapshot {
     filename: String,
     bytes: Vec<u8>,
@@ -305,8 +414,73 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let legacy = temporary.path().join(LEGACY_APP_ID).join("profiles");
         fs::create_dir_all(&legacy).unwrap();
-        let new_app = temporary.path().join("dev.cooltek.openstreamhub");
+        let new_app = temporary.path().join("dev.openstreamhub");
         (temporary, legacy, new_app)
+    }
+
+    #[test]
+    fn adoption_copies_the_previous_directory_once_and_leaves_it_alone() {
+        let temporary = tempfile::tempdir().unwrap();
+        let previous = temporary.path().join(PREVIOUS_APP_ID);
+        fs::create_dir_all(previous.join("profiles/.history")).unwrap();
+        fs::write(previous.join("obs-settings.json"), b"{\"port\":4455}").unwrap();
+        fs::write(previous.join("profiles/a.json"), b"{}").unwrap();
+        fs::write(previous.join("profiles/.history/b.json"), b"[]").unwrap();
+        fs::write(previous.join(".DS_Store"), b"x").unwrap();
+        File::create(previous.join("huge.bin"))
+            .unwrap()
+            .set_len(MAX_ADOPTED_FILE + 1)
+            .unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", previous.join("link")).unwrap();
+        let old_time = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        File::options()
+            .write(true)
+            .open(previous.join("profiles/a.json"))
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(old_time))
+            .unwrap();
+        let new_app = temporary.path().join("dev.openstreamhub");
+
+        assert!(adopt_previous_identifier(&new_app).unwrap());
+        assert_eq!(
+            fs::read(new_app.join("obs-settings.json")).unwrap(),
+            b"{\"port\":4455}"
+        );
+        assert_eq!(
+            fs::read(new_app.join("profiles/.history/b.json")).unwrap(),
+            b"[]"
+        );
+        assert_eq!(
+            fs::metadata(new_app.join("profiles/a.json"))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            old_time
+        );
+        assert!(!new_app.join(".DS_Store").exists());
+        assert!(!new_app.join("huge.bin").exists());
+        assert!(!new_app.join("link").exists());
+        assert!(previous.join("obs-settings.json").exists());
+
+        // The second launch finds the new directory and changes nothing.
+        fs::write(new_app.join("obs-settings.json"), b"{}").unwrap();
+        assert!(!adopt_previous_identifier(&new_app).unwrap());
+        assert_eq!(fs::read(new_app.join("obs-settings.json")).unwrap(), b"{}");
+        let leftovers = fs::read_dir(temporary.path())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().contains("adopt"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn adoption_does_nothing_without_a_previous_directory_or_when_it_is_the_same_one() {
+        let temporary = tempfile::tempdir().unwrap();
+        assert!(!adopt_previous_identifier(&temporary.path().join("dev.openstreamhub")).unwrap());
+        assert!(!temporary.path().join("dev.openstreamhub").exists());
+        fs::create_dir(temporary.path().join(PREVIOUS_APP_ID)).unwrap();
+        assert!(!adopt_previous_identifier(&temporary.path().join(PREVIOUS_APP_ID)).unwrap());
     }
 
     fn profile_bytes(name: &str) -> Vec<u8> {

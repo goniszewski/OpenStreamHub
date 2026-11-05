@@ -441,7 +441,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
 }
 
 /// Redacts an action for a log record: snippet text and URL paths, queries and
-/// user information (often passwords or tokens), timer labels and OBS scene
+/// user information (often passwords or tokens), terminal command lines, timer labels and OBS scene
 /// names are never written. Every other action serializes unchanged.
 pub fn loggable(action: &Action) -> Value {
     match action {
@@ -449,6 +449,19 @@ pub fn loggable(action: &Action) -> Value {
             json!({"type":"text", "chars":text.chars().count(), "press_enter":press_enter})
         }
         Action::OpenUrl { url } => json!({"type":"open_url", "origin":url_origin(url)}),
+        // A command line can carry tokens and a directory a user name: only
+        // the app and the lengths are logged.
+        Action::TerminalCommand {
+            app,
+            command,
+            directory,
+        } => {
+            let mut value = json!({"type":"terminal_command", "app":app, "command_chars":command.chars().count()});
+            if let Some(directory) = directory {
+                value["directory_chars"] = json!(directory.chars().count());
+            }
+            value
+        }
         Action::MultiAction { actions } => {
             json!({"type":"multi_action", "actions":actions.iter().map(loggable).collect::<Vec<_>>()})
         }
@@ -533,6 +546,25 @@ pub fn loggable(action: &Action) -> Value {
         Action::ObsInputVolumeFromPosition { input } => json!({
             "type":"obs_input_volume_from_position",
             "input_chars":input.chars().count(),
+        }),
+        // Streamlabs names are user text too: only lengths are logged.
+        Action::StreamlabsScene { scene, collection } => {
+            let mut value = json!({"type":"streamlabs_scene", "scene_chars":scene.chars().count()});
+            if let Some(collection) = collection {
+                value["collection_chars"] = json!(collection.chars().count());
+            }
+            value
+        }
+        Action::StreamlabsSourceVisibility { scene, source, op } => json!({
+            "type":"streamlabs_source_visibility",
+            "scene_chars":scene.chars().count(),
+            "source_chars":source.chars().count(),
+            "op":op,
+        }),
+        Action::StreamlabsAudio { source, op } => json!({
+            "type":"streamlabs_audio",
+            "source_chars":source.chars().count(),
+            "op":op,
         }),
         other => json!(other),
     }
@@ -1372,6 +1404,83 @@ mod tests {
         }
     }
 
+    /// A dispatcher without Streamlabs: every Streamlabs action is unavailable.
+    struct NoStreamlabs;
+
+    impl ActionDispatcher for NoStreamlabs {
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            panic!("{} reached the dispatcher", action.type_name())
+        }
+
+        fn unavailable(&self, action: &Action) -> Option<&'static str> {
+            action
+                .uses_streamlabs()
+                .then_some(cooltek_sdk_service::streamlabs::STREAMLABS_UNAVAILABLE)
+        }
+    }
+
+    #[test]
+    fn streamlabs_actions_without_a_client_are_unavailable_and_log_only_name_lengths() {
+        use cooltek_sdk_service::{ObsMuteOp, StreamlabsAudioOp, StreamlabsVisibilityOp};
+        for (action, logged) in [
+            (
+                Action::StreamlabsRecord,
+                json!({"type":"streamlabs_record"}),
+            ),
+            (
+                Action::StreamlabsStream { confirm: None },
+                json!({"type":"streamlabs_stream"}),
+            ),
+            (
+                Action::StreamlabsScene {
+                    scene: "Live".into(),
+                    collection: Some("Private show".into()),
+                },
+                json!({"type":"streamlabs_scene","scene_chars":4,"collection_chars":12}),
+            ),
+            (
+                Action::StreamlabsSourceVisibility {
+                    scene: "Live".into(),
+                    source: "Private cam".into(),
+                    op: StreamlabsVisibilityOp::Hide,
+                },
+                json!({"type":"streamlabs_source_visibility","scene_chars":4,"source_chars":11,"op":"hide"}),
+            ),
+            (
+                Action::StreamlabsAudio {
+                    source: "Mic".into(),
+                    op: StreamlabsAudioOp::Mute(ObsMuteOp::Toggle),
+                },
+                json!({"type":"streamlabs_audio","source_chars":3,"op":{"mute":"toggle"}}),
+            ),
+        ] {
+            assert_eq!(loggable(&action), logged);
+            let mut output = Vec::new();
+            let mut summary = LiveSummary::default();
+            process_work(
+                action_work(action),
+                &mut NoStreamlabs,
+                &mut output,
+                &AtomicBool::new(false),
+                true,
+                true,
+                true,
+                &mut TimerTable::default(),
+                0,
+                &mut summary,
+            )
+            .unwrap();
+            let records = records(&output);
+            assert_eq!(records[2]["type"], "action_unavailable", "{records:?}");
+            assert_eq!(records[2]["action"], logged);
+            assert_eq!(
+                records[2]["reason"],
+                cooltek_sdk_service::streamlabs::STREAMLABS_UNAVAILABLE
+            );
+            assert_eq!(summary.unavailable_action_count, 1);
+        }
+    }
+
     #[test]
     fn loggable_redacts_text_and_url_but_keeps_other_actions_unchanged() {
         let text = Action::Text {
@@ -1388,6 +1497,24 @@ mod tests {
         assert_eq!(
             loggable(&url),
             json!({"type":"open_url", "origin":"https://Example.com:8443"})
+        );
+        let terminal = Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Terminal,
+            command: "claude --token s3cr3t".into(),
+            directory: Some("~/clients/acme".into()),
+        };
+        assert_eq!(
+            loggable(&terminal),
+            json!({"type":"terminal_command", "app":"terminal", "command_chars":21, "directory_chars":14})
+        );
+        let bare = Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Iterm2,
+            command: "codex".into(),
+            directory: None,
+        };
+        assert_eq!(
+            loggable(&bare),
+            json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

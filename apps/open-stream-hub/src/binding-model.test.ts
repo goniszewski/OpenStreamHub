@@ -145,7 +145,7 @@ describe('dial functions in listBindings and bindingWarnings', () => {
     const warnings = bindingWarnings(withFunctions([{ name: 'A', bindings: [{ gesture: 'right', action: mute }] }], dial('short_press'), dial('released')));
     const conflict = warnings.find(warning => warning.kind === 'dial-flat-conflict')!;
     expect(conflict.entryIds).toEqual(['flat:0', 'flat:1']);
-    expect(conflict.message).toContain('rejects flat encoder bindings');
+    expect(conflict.message).toBe("2 encoder bindings aren't in a dial function, so the profile can't be saved. Move them into a function in the encoder's Dial functions editor, or remove them.");
     // Flat Release + Short press overlap is still reported, but never for function bindings.
     expect(warnings.filter(warning => warning.kind === 'release-overlap')).toHaveLength(1);
   });

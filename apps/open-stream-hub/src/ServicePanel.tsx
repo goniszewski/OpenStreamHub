@@ -56,13 +56,18 @@ export const runPreviewNote = 'The live preview shows the input this run reads f
 // The label of a run the session manager started on its own, so it is never taken for a Start by the user. It runs actions
 // only while the header mode is Live; in Test mode, running another profile needs Stop and then the user's own Run. A dry
 // run that should have executed says why.
+// The picker's option text: the module name and the last four characters of its serial, like the module cards; the full serial stays in the option's title.
+export const deviceOptionLabel = (device: LiveDevice) => `${modules.find(entry => entry.id === device.module)?.shortName ?? device.module} ${device.serial_number ? `· …${device.serial_number.slice(-4)}` : device.path_hex.slice(-6)}`;
 export function autoStartNote(autoStart: NonNullable<ServiceRun['session']>['autoStart'], execute = false, dryRunReason?: string) {
   if (!autoStart) return null;
-  const label = `${autoStartLabel(autoStart, execute)}.`;
-  if (execute) return `${label} Actions run without asking. Stop it, or switch the header mode to Test, to end them.`;
-  const why = dryRunReason ? ` Actions are off for this run: ${dryRunReason}` : '';
-  return `${label}${why} Stop it to run another profile on this module.`;
+  return `${autoStartLabel(autoStart, execute)}. ${autoStartDetail(execute, dryRunReason)}`;
 }
+// What follows the label in the automatic-start note: the part kept behind the "Why?" disclosure.
+const autoStartDetail = (execute: boolean, dryRunReason?: string) => {
+  if (execute) return 'Actions run without asking. Stop it, or switch the header mode to Test, to end them.';
+  const why = dryRunReason ? `Actions are off for this run: ${dryRunReason} ` : '';
+  return `${why}Stop it to run another profile on this module.`;
+};
 // Why the software mode box is ticked and locked for the 15-key module and the dial.
 export const appControlNote = '“Let OpenStreamHub drive the display” is set to App in Settings, so OpenStreamHub always runs this module in software mode and keeps its display in sync.';
 
@@ -528,7 +533,8 @@ const runTargetKey: Record<ServiceModule, MessageKey> = { m131e: 'run.target.m13
 // why.
 export function ModeControl({ run }: { run: RunSession }) {
   const t = useT();
-  const { runMode, setRunMode, display, enabled, mac, dryRunOnly, editingHeld } = run;
+  const { runMode, setRunMode, display, enabled, mac, dryRunOnly, editingHeld, active, stop } = run;
+  const stopping = run.run?.state === 'stopping';
   const live = runMode === 'live' && !editingHeld;
   const confirmed = display.settings.live_offered;
   const busy = display.busy || !display.loaded;
@@ -537,10 +543,13 @@ export function ModeControl({ run }: { run: RunSession }) {
   return <div className={`mode-control${run.active ? '' : ' idle'}`} role="group" aria-label={t('run.mode')}>
     <span className={`mode-pill run-mode-pill sr-only ${live && !dryRunOnly && confirmed ? 'live' : 'test'}`} role="status">{(badge => badgeKeys[badge] ? t(badgeKeys[badge]) : badge)(runModeBadge(runMode, dryRunOnly, confirmed, editingHeld))}</span>
     <button type="button" className="mode-choice" aria-pressed={!live} disabled={!enabled || busy} aria-label={t('run.testMode')}
-      data-tip={editingHeld ? t('run.editingNote') : t('run.testTip')} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /><span>{t('run.badge.test')}</span></button>
+      data-tip={editingHeld ? t('run.editingNote') : !live && !active ? t('run.willStartTest') : t('run.testTip')} onClick={() => setRunMode('test')}><FlaskConical size={16} aria-hidden="true" /><span>{t('run.badge.test')}</span></button>
     <button type="button" className="mode-choice live" aria-pressed={live} disabled={!enabled || busy || !mac} aria-label={t('run.liveMode')}
-      data-tip={mac ? t('run.liveTip') : t('run.macOnly')}
+      data-tip={!mac ? t('run.macOnly') : live && !active ? t('run.willStartLive') : t('run.liveTip')}
       onClick={() => setRunMode('live')}><Zap size={16} aria-hidden="true" /><span>{t('run.badge.live')}</span></button>
+    {active
+      ? <button type="button" className="mode-choice pause" aria-pressed={false} aria-label={stopping ? t('run.stoppingLabel') : t('run.stop')} data-tip={stopping ? t('run.stoppingTip') : t('run.stopTip')} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}<span>{stopping ? t('run.stoppingLabel') : t('run.stop')}</span></button>
+      : <span className="mode-choice pause" aria-current="true" data-tip={t('run.pill.paused')}><Pause size={16} aria-hidden="true" /><span>{t('run.pill.paused')}</span></span>}
   </div>;
 }
 
@@ -550,10 +559,9 @@ export function ModeControl({ run }: { run: RunSession }) {
 // The confirmations live here too, so Run and the mode switch work from every page.
 export function RunHeaderControl({ run }: { run: RunSession }) {
   const t = useT();
-  const { run: activeRun, active, phase, blocker, begin, resume, stop, executeSelected, device } = run;
+  const { run: activeRun, active, phase, blocker, begin, resume, executeSelected, device } = run;
   const pill = runStatePill(activeRun);
   const needsConfirmation = phase === 'needs_confirmation';
-  const stopping = activeRun?.state === 'stopping';
   const starting = activeRun?.state === 'starting';
   const target = device ? t(runTargetKey[device.module]) : null;
   const what = executeSelected ? t('run.runWithActions') : t('run.dryRun');
@@ -566,12 +574,9 @@ export function RunHeaderControl({ run }: { run: RunSession }) {
   return <div className="run-control" role="group" aria-label={t('run.control')}>
     <span className={`mode-pill run-state-pill ${pill.className}${quiet ? ' sr-only' : ''}`} role="status">{pillText(t, pill.label)}</span>
     <ModeControl run={run} />
-    {needsConfirmation ? <>
-      <button type="button" className="button compact danger" data-tip={t('run.resumeTip')} onClick={resume}>{t('run.resume')}</button>
-      <button type="button" className="button icon-run" aria-label={t('run.stop')} data-tip={t('run.stopWithout')} disabled={stopping} onClick={stop}><Pause size={16} aria-hidden="true" /><span>{t('run.stop')}</span></button>
-    </> : active
-      ? <button type="button" className="button icon-run" aria-label={stopping ? t('run.stoppingLabel') : t('run.stop')} data-tip={stopping ? t('run.stoppingTip') : t('run.stopTip')} disabled={stopping} onClick={stop}>{stopping ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Pause size={16} aria-hidden="true" />}<span>{stopping ? t('run.stoppingLabel') : t('run.stop')}</span></button>
-      : <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}<span>{starting ? t('run.pill.starting') : t('run.run')}</span></button>}
+    {needsConfirmation
+      ? <button type="button" className="button compact danger" data-tip={t('run.resumeTip')} onClick={resume}>{t('run.resume')}</button>
+      : !active && <button type="button" className={`button icon-run ${executeSelected ? 'danger' : 'primary'}`} disabled={blocker !== null} aria-label={runLabel} data-tip={runTitle} onClick={begin}>{starting ? <LoaderCircle size={16} className="spinning" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}<span>{starting ? t('run.pill.starting') : t('run.run')}</span></button>}
     <ExecuteDialog run={run} />
   </div>;
 }
@@ -639,6 +644,8 @@ export function ServicePanel({ run = idleRunSession, variant = 'full' }: { run?:
   const testActivity = !!activeRun && !activeRun.execute && active;
   if (!full && !attention && !testActivity && !service.error && !(dryRunOnly && !active)) return null;
 
+  const modeNote = <p className="fine-print service-mode-note">{t('service.modeNote', { mode: t(executeSelected ? 'run.badge.live' : 'run.badge.test') })}</p>;
+
   return <section className="service-panel" aria-label={t('service.heading')}>
     <div className="section-heading"><h2>{t(full ? 'service.heading' : 'service.activityHeading')}</h2><span className={`service-badge ${pill.className}`} role="status">{pillText(t, pill.label)}</span></div>
     {full && activeRun && active && phase === 'running' && activeRun.execute && <div className="service-banner execute" role="status"><Zap size={18} aria-hidden="true" /><div><strong>{t('service.executing')}</strong><span>{t('service.executingBody')}</span></div></div>}
@@ -649,18 +656,18 @@ export function ServicePanel({ run = idleRunSession, variant = 'full' }: { run?:
     {activeRun && session && phase === 'reconnecting' && <div className="service-banner paused" role="status"><LoaderCircle size={18} className="spinning" /><div><strong>{t('service.reconTitle', { device: sessionDeviceName(session), attempt: session.attempt, max: maxReconnectAttempts })}</strong><span>{seconds === null ? t('service.tryingNow') : t('service.nextIn', { seconds })}{activeRun.execute ? session.autoStart ? t('service.reconAuto') : t('service.reconAsk') : ''}</span></div></div>}
     {activeRun && session && phase === 'needs_confirmation' && <div className="service-banner paused attention" role="alert"><TriangleAlert size={20} /><div><strong>{t('service.pausedTitle')}</strong><span>{session.reason ? `${t('service.pausedBecause', { reason: reason(session.reason) })} ` : ''}{session.detail ?? ''} {activeRun.profileSwitched ? t('service.resumeSwitched', { name: activeRun.profileName, by: by(activeRun.profileSwitchedBy) }) : session.reason === 'profile_saved' ? t('service.resumeSaved', { name: activeRun.profileName }) : t('service.resumeSame', { name: activeRun.profileName })}</span><button type="button" id={serviceResumeId} className="button danger" onClick={resume}>{t('service.resumeButton')}</button></div></div>}
     {activeRun && session && phase === 'stopped' && <div className="service-banner stopped" role="status"><CircleHelp size={18} /><div><strong>{session.reason ? t('service.stoppedBecause', { reason: reason(session.reason) }) : t('service.stoppedTitle')}</strong>{session.detail && <span>{session.detail}</span>}</div></div>}
-    {full && session?.autoStart && session.phase !== 'stopped' && <p className="fine-print service-auto-start" role="status">{autoStartNote(session.autoStart, activeRun?.execute ?? false, session.autoDryRunReason)}</p>}
+    {full && session?.autoStart && session.phase !== 'stopped' && <div className="fine-print service-auto-start" role="status"><span>{autoStartLabel(session.autoStart, activeRun?.execute ?? false)}.</span> <details className="service-why"><summary>{t('service.why')}</summary><p>{autoStartDetail(activeRun?.execute ?? false, session.autoDryRunReason)}</p>{modeNote}</details></div>}
     {full && active && phase === 'running' && activeRun?.state !== 'stopping' && <p className="fine-print" role="status">{runPreviewNote}</p>}
     {full && <><div className="service-controls">
       <label className="sr-only" htmlFor="service-device">{t('service.deviceLabel')}</label>
-      <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || active || devices.length === 0} onChange={event => {
+      <SelectField id="service-device" value={selection && !device ? disconnectedServiceValue : device?.path_hex ?? ''} disabled={!enabled || devices.length === 0} onChange={event => {
         const next = devices.find(item => item.path_hex === event.target.value);
         if (next) chooseDevice(next);
       }}>
         {selection && !device && <option value={disconnectedServiceValue}>{t('service.disconnected', { device: deviceName(selection.device) })}</option>}
-        {devices.length === 0 && !selection ? <option value="">{t('service.noModule')}</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex}>{deviceName(item)}</option>)}
+        {devices.length === 0 && !selection ? <option value="">{t('service.noModule')}</option> : devices.map(item => <option key={item.path_hex} value={item.path_hex} title={deviceName(item)}>{deviceOptionLabel(item)}</option>)}
       </SelectField>
-      <p className="fine-print service-mode-note">{t('service.modeNote', { mode: t(executeSelected ? 'run.badge.live' : 'run.badge.test') })}</p>
+      {!(session?.autoStart && session.phase !== 'stopped') && modeNote}
     </div>
     <label className="service-option"><input type="checkbox" checked={box.checked} disabled={!enabled || active || box.locked} aria-describedby={box.appDriven ? 'service-app-control' : undefined} onChange={event => setSoftwareMode(event.target.checked)} />{t('service.softwareMode')}</label>
     {box.appDriven && <p id="service-app-control" className="fine-print">{appControlNote}</p>}</>}

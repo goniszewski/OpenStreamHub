@@ -32,7 +32,7 @@ describe('components draw their messages', () => {
 // The files already moved to message keys must not grow new hard-coded text: English words in JSX text or in the
 // attributes a person reads or hears (labels, tooltips, titles, placeholders) fail here. Files are added as they are
 // converted; the rest of the app is still inline text.
-const converted = ['SidebarNav.tsx', 'ModuleDrawer.tsx', 'HistoryMenu.tsx', 'ProfileManager.tsx', 'AutoSwitchRow.tsx', 'FocusRulesPanel.tsx', 'StarterDialog.tsx', 'ProfileTransfer.tsx', 'ServicePanel.tsx', 'Inspector.tsx'];
+const converted = ['SidebarNav.tsx', 'ModuleDrawer.tsx', 'HistoryMenu.tsx', 'ProfileManager.tsx', 'AutoSwitchRow.tsx', 'FocusRulesPanel.tsx', 'StarterDialog.tsx', 'ProfileTransfer.tsx', 'ServicePanel.tsx', 'Inspector.tsx', 'ModuleAssignments.tsx', 'VariableFields.tsx', 'ActionFields.tsx', 'KeyFacesSection.tsx', 'AgentToolsPanel.tsx'];
 const jsxText = /(?<![=-])>\s*([A-Za-z][^<>{}`]*[A-Za-z.…])\s*</g;
 const readableAttribute = /\b(?:aria-label|title|data-tip|placeholder|alt)="([^"{]*[A-Za-z]{2,}[^"]*)"/g;
 

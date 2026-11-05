@@ -34,7 +34,7 @@ The release builds one app per architecture on native runners. A universal build
 ## Prerequisites
 
 - Apple Developer Program membership and a **Developer ID Application** certificate (not "Apple Development").
-- Rust >= 1.97 (`rust-toolchain.toml` tracks `stable`), Node >= 22.12.
+- Rust >= 1.97 (`rust-toolchain.toml` tracks `stable`), Node >= 22.22.
 - Export the certificate with its private key as a `.p12` from Keychain Access, then base64 it: `base64 -i cert.p12 | pbcopy`.
 - An app-specific password for the Apple ID (appleid.apple.com), used for notarization.
 
@@ -57,7 +57,7 @@ The workflow exports these to the job environment only if **all six** are non-em
 
 ## Running a release
 
-1. Bump the version in `apps/open-stream-hub/package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they are kept in sync by hand; the app is currently `0.3.0`). Commit.
+1. Bump the version in `apps/open-stream-hub/package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (they are kept in sync by hand; the app is currently `0.4.0`). Commit.
 2. Write `docs/release-notes-X.Y.Z.md` and update the "currently" version above in this file. The README needs no edit: its release badge and Install link follow the latest published release. Run `scripts/check-release.sh vX.Y.Z` to see what the workflow's `preflight` job will check (versions agree with the tag, notes exist, this file names the version).
 3. Merge to `master` (it only takes pull requests), then tag `vX.Y.Z` on that commit and push the tag.
 4. When the workflow finishes, open the draft release, check the files (the local verification commands below work on the downloaded zip), and publish it.

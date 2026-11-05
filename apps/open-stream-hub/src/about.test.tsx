@@ -21,4 +21,11 @@ describe('AboutPage', () => {
     expect(html).toContain('Generative AI disclosure');
     expect(html).toContain('reverse engineering, development and testing');
   });
+
+  it('links the repository, the upstream SDK and the build commit', () => {
+    expect(html).toContain('href="https://github.com/goniszewski/OpenStreamHub"');
+    expect(html).toContain('href="https://github.com/projectzero7/cooltek-sdk"');
+    expect(html).toContain('href="https://github.com/projectzero7/cooltek-sdk/commit/d996ede"');
+    if (__BUILD_INFO__.commit) expect(html).toContain(`href="https://github.com/goniszewski/OpenStreamHub/commit/${__BUILD_INFO__.commit}"`);
+  });
 });

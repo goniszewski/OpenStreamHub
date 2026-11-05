@@ -1,23 +1,28 @@
 import type { BindingAction, ServiceModule } from './contracts';
-import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, stepActionTypes } from './action-model';
+import { defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTerminalCommand, defaultTimerAction, stepActionTypes } from './action-model';
 import type { StepActionType } from './action-model';
+import { english } from './i18n-react';
 
-// One file per picker entry: the step actions plus the binding-only ones, and the one
-// OBS entry ('obs'), which stands in for the ten obs_* step action types.
-export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs';
+// One file per picker entry: the step actions plus the binding-only ones, the one
+// OBS entry ('obs'), which stands in for the ten obs_* step action types, and the one
+// Streamlabs entry ('streamlabs') for the seven streamlabs_* types.
+export type PickerActionType = StepActionType | 'multi_action' | 'conditional' | 'profile' | 'timer' | 'macro' | 'terminal_command' | 'volume_from_position' | 'mic_input_volume_from_position' | 'obs_input_volume_from_position' | 'obs' | 'streamlabs';
 
-export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'sequences' | 'variables' | 'navigation';
+export type PickerCategory = 'audio' | 'keyboard' | 'apps' | 'media' | 'system' | 'obs' | 'streamlabs' | 'sequences' | 'variables' | 'navigation';
 
 // Category order is the picker's display order.
 export const pickerCategories: ReadonlyArray<readonly [PickerCategory, string]> = [
   ['audio', 'Audio'], ['keyboard', 'Keyboard'], ['apps', 'Apps & web'], ['media', 'Media'], ['system', 'System'],
-  ['obs', 'OBS'], ['sequences', 'Timers & sequences'], ['variables', 'Variables'], ['navigation', 'Navigation'],
+  ['obs', 'OBS'], ['streamlabs', 'Streamlabs'], ['sequences', 'Timers & sequences'], ['variables', 'Variables'], ['navigation', 'Navigation'],
 ];
 
 // Labels stay identical to the flat list they replace, so existing profiles and tests keep their wording.
-const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', 'Multi-action'], ['conditional', 'If / else'], ['profile', 'Switch profile'],
-  ['timer', 'Timer'], ['macro', 'Recorded macro'], ['volume_from_position', 'Output volume follows position'], ['mic_input_volume_from_position', 'Microphone volume follows position'],
-  ['obs_input_volume_from_position', 'OBS input volume follows position'], ['obs', 'OBS']]);
+const pickerLabels = new Map<string, string>([...stepActionTypes, ['multi_action', english('labels.picker.multiAction')],
+  ['conditional', english('labels.picker.conditional')], ['profile', english('labels.picker.profile')], ['timer', english('labels.picker.timer')],
+  ['macro', english('labels.picker.macro')], ['terminal_command', english('labels.picker.terminalCommand')], ['volume_from_position', english('labels.picker.volumeFromPosition')],
+  ['mic_input_volume_from_position', english('labels.picker.micVolumeFromPosition')],
+  ['obs_input_volume_from_position', english('labels.picker.obsVolumeFromPosition')], ['obs', english('labels.picker.obs')],
+  ['streamlabs', english('labels.picker.streamlabs')]]);
 
 export interface PickerEntry { type: PickerActionType; label: string; category: PickerCategory; keywords: string }
 
@@ -33,11 +38,14 @@ const pickerEntrySpecs: ReadonlyArray<readonly [PickerActionType, PickerCategory
   ['text', 'keyboard', 'type snippet clipboard string enter'],
   ['launch_app', 'apps', 'launch app program start bundle'],
   ['open_url', 'apps', 'website link address browser http web page'],
+  ['terminal_command', 'apps', 'terminal iterm shell command session console claude codex agent cli run'],
   ['media', 'media', 'play pause next previous track stop music spotify itunes'],
   ['system', 'system', 'undo redo screenshot clipboard'],
   // One OBS entry: the operation is chosen in the editor afterwards. The keywords keep the nine
   // operations findable ("camera", "filter", "replay" all land here).
   ['obs', 'obs', 'scene switch program virtual camera webcam replay buffer save output studio mode preview transition cut filter source enable disable visibility show hide collection profile settings stream'],
+  // The same for Streamlabs Desktop's seven operations.
+  ['streamlabs', 'streamlabs', 'streamlabs desktop scene switch collection record recording stream live studio mode preview transition source visibility show hide audio mixer fader mute'],
   ['timer', 'sequences', 'countdown alarm reminder notification wait'],
   ['multi_action', 'sequences', 'sequence steps batch several queue'],
   ['conditional', 'sequences', 'if else condition branch when depends state recording streaming muted volume flow'],
@@ -59,15 +67,18 @@ export function pickerEntry(type: PickerActionType): PickerEntry | undefined {
   return entryFor(type);
 }
 
-// The trigger's text for a bound action: the one OBS entry stands in for every bound obs_* type,
-// so the trigger and the editor's Operation dropdown never say the same thing twice.
+// The trigger's text for a bound action: the one OBS entry stands in for every bound obs_* type
+// (and the Streamlabs entry for every streamlabs_* type), so the trigger and the editor's
+// Operation dropdown never say the same thing twice.
 export function pickerEntryLabel(type: PickerActionType): string {
-  return entryFor(type)?.label ?? (type.startsWith('obs_') ? 'OBS' : type);
+  return entryFor(type)?.label ?? (type.startsWith('obs_') ? 'OBS' : type.startsWith('streamlabs_') ? 'Streamlabs' : type);
 }
 
-// Whether the catalogue entry is the one bound: the OBS entry matches every obs_* action.
+// Whether the catalogue entry is the one bound: the OBS entry matches every obs_* action, the
+// Streamlabs entry every streamlabs_* action.
 export function pickerEntryIsCurrent(entry: PickerActionType, action: PickerActionType | undefined): boolean {
-  return entry === action || (entry === 'obs' && !!action?.startsWith('obs_') && action !== 'obs_input_volume_from_position');
+  return entry === action || (entry === 'obs' && !!action?.startsWith('obs_') && action !== 'obs_input_volume_from_position')
+    || (entry === 'streamlabs' && !!action?.startsWith('streamlabs_'));
 }
 
 // Which catalogue the picker offers: faders take only the position-driven actions, multi-action
@@ -77,7 +88,8 @@ export type PickerScope = 'binding' | 'binding-fader' | 'step' | 'branch';
 
 const faderTypes: ReadonlyArray<PickerActionType> = ['volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position'];
 // A macro is a binding-level sequence like a multi-action: never a step.
-const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditional', 'macro', 'profile', 'timer', ...faderTypes];
+// A terminal session is a key's own action too: never a step, so no sequence can type into the window it opens.
+const stepExcluded: ReadonlyArray<PickerActionType> = ['multi_action', 'conditional', 'macro', 'profile', 'timer', 'terminal_command', ...faderTypes];
 
 export function entriesForScope(scope: PickerScope): ReadonlyArray<PickerEntry> {
   if (scope === 'binding-fader') return pickerEntries.filter(entry => faderTypes.includes(entry.type));
@@ -113,13 +125,13 @@ export function pickerGroups(query: string, scope: PickerScope): PickerGroup[] {
 }
 
 // The action a picker choice starts from: the type's default parameters, as the flat
-// select's onChange built them. The OBS entry starts from the scene operation; the editor's
-// Operation dropdown changes it from there.
+// select's onChange built them. The OBS and Streamlabs entries start from the scene operation;
+// the editor's Operation dropdown changes it from there.
 export function defaultBindingAction(type: PickerActionType): BindingAction {
   return type === 'volume_from_position' || type === 'mic_input_volume_from_position' ? { type } : type === 'obs_input_volume_from_position' ? { type, input: 'Mic/Aux' } : type === 'multi_action' ? defaultMultiAction() : type === 'conditional' ? defaultConditional()
     : type === 'profile' ? defaultProfileAction() : type === 'timer' ? defaultTimerAction()
-    : type === 'macro' ? defaultMacro()
-    : type === 'obs' ? defaultStepAction('obs_scene') : defaultStepAction(type);
+    : type === 'macro' ? defaultMacro() : type === 'terminal_command' ? defaultTerminalCommand()
+    : type === 'obs' ? defaultStepAction('obs_scene') : type === 'streamlabs' ? defaultStepAction('streamlabs_scene') : defaultStepAction(type);
 }
 
 // Recently assigned types, newest first, shown at the top of the picker. The list is a

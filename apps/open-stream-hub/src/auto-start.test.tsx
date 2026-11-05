@@ -10,6 +10,7 @@ import { autoActionsNoticeText, markModuleControlNoticeShown, ModuleControlNotic
 import { autoStartNote, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import type { RunSessionOptions } from './ServicePanel';
 import { autoStartLabel, deviceTakenError, isStale, reasonLabels, ServiceRunner } from './service-runner';
+import { hasOption } from './select-markup';
 
 const [dialState, keypadState] = autoStart.events as SessionStatePayload[];
 const draft: Profile = { schema_version: 1, name: 'Everyday', bindings: [] };
@@ -80,7 +81,10 @@ describe('automatically started sessions', () => {
     const t = setup(); t.runner.connect(); await tick();
     t.state(dialState);
     const markup = renderToStaticMarkup(<RunViews runner={t.runner} feed={feed} />);
-    expect(markup).toContain(autoStartNote('app_opened', true));
+    expect(markup).toContain('Started automatically (Live mode) when the app opened.');
+    expect(markup).toContain('<summary>Why?</summary>');
+    expect(markup).toContain('Actions run without asking. Stop it, or switch the header mode to Test, to end them.');
+    expect(markup.match(/shown and switched by the badge/g)).toHaveLength(1);
     expect(markup).toContain('Live: actions run on this Mac');
     expect(markup).not.toContain('Profile changed since start');
     expect(markup).toContain('aria-label="Pause"');
@@ -209,8 +213,8 @@ describe('automatic actions', () => {
     await store.loadDefaultProfile();
     expect(store.getState().defaultProfile).toMatchObject({ loaded: true, profileId: 'p-1' });
     const markup = renderToStaticMarkup(<DisplaySettingsPanel store={store} profiles={[{ id: 'p-1', name: 'Everyday' }, { id: 'p-2', name: 'Streaming' }]} />);
-    expect(markup).toContain('<option value="">No default</option>');
-    expect(markup).toContain('<option value="p-1" selected="">Everyday</option>');
+    expect(hasOption(markup, '', 'No default', false)).toBe(true);
+    expect(hasOption(markup, 'p-1', 'Everyday', true)).toBe(true);
     expect(markup).toContain(defaultProfileNote);
     expect(markup).toContain('is the run mode in the header');
     expect(await store.setDefaultProfile(null)).toBe(true);

@@ -120,6 +120,25 @@ describe('FocusRulesStore', () => {
     expect(calls.map(call => call.command)).toEqual(['list_focus_rules', 'save_focus_rule', 'set_focus_rules_enabled', 'delete_focus_rule']);
   });
 
+  it('adds a rule for each installed app, leaves an app that has a rule, and turns the rules on', async () => {
+    const { store, calls } = setup(true, { app_name: 'Found' });
+    await store.load();
+    await store.save({ id: null, app_bundle_id: 'COM.APPLE.TERMINAL', profile_id: profileA });
+    const result = await store.addForApps(profileB, [{ bundle_id: 'com.apple.Terminal', name: 'Terminal' }, { bundle_id: 'com.mitchellh.ghostty', name: 'Ghostty' }]);
+    expect(result).toEqual({ added: ['Ghostty'], kept: ['Terminal'] });
+    expect(calls.filter(call => call.command === 'save_focus_rule').map(call => (call.args!.rule as FocusRuleInput).app_bundle_id)).toEqual(['COM.APPLE.TERMINAL', 'com.mitchellh.ghostty']);
+    expect(calls.filter(call => call.command === 'app_name').map(call => call.args)).toEqual([{ bundleId: 'com.mitchellh.ghostty' }]);
+    expect(store.getState().enabled).toBe(true);
+  });
+
+  it('adds nothing, and leaves the rules off, when none of the apps is installed', async () => {
+    const { store, calls } = setup(true, { app_name: null });
+    await store.load();
+    expect(await store.addForApps(profileB, [{ bundle_id: 'com.mitchellh.ghostty', name: 'Ghostty' }])).toEqual({ added: [], kept: [] });
+    expect(calls.map(call => call.command)).toEqual(['list_focus_rules', 'app_name']);
+    expect(store.getState().enabled).toBe(false);
+  });
+
   it('keeps the rules and reports errors', async () => {
     const { store, failures } = setup();
     await store.load();

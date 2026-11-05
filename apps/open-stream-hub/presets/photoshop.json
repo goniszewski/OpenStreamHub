@@ -1,0 +1,323 @@
+{
+  "pack_version": 1,
+  "id": "photoshop",
+  "name": "Adobe Photoshop",
+  "description": "Tools, transform and save for Photoshop: the 15-key module holds the common tools, free transform and undo, and the encoder steps history backward and forward.",
+  "app": {
+    "name": "Adobe Photoshop",
+    "bundle_id": "com.adobe.Photoshop"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Photoshop's default macOS keyboard shortcuts, as the vendor documents them. Not yet checked against the application on a Mac: shortcuts differ between versions and workspaces, and a changed one can be edited in the profile.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.adobe.Photoshop"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Adobe Photoshop",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "shortcut",
+          "key": "z",
+          "modifiers": [
+            "command",
+            "shift"
+          ]
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "shortcut",
+          "key": "z",
+          "modifiers": [
+            "command",
+            "option"
+          ]
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "0",
+          "modifiers": [
+            "command"
+          ]
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 2,
+        "gesture": "pressed",
+        "action": {
+          "type": "toggle_mute"
+        }
+      },
+      {
+        "module": "m005s",
+        "control": 0,
+        "gesture": "position_changed",
+        "action": {
+          "type": "volume_from_position"
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Move",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "v",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Marquee",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Lasso",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "l",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Brush",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "b",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Eraser",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "e",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Crop",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "c",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Type",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Eyedropper",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "i",
+                    "modifiers": []
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Free transform",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "t",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Deselect",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "d",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Duplicate layer",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "j",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Save as",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "s",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Undo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "undo"
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Redo",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "system",
+                    "command": "redo"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,334 @@
+{
+  "pack_version": 1,
+  "id": "discord",
+  "name": "Discord",
+  "description": "Voice and navigation for Discord: mute, deafen, quick switcher, channel and server switching and unread jumps on the 15-key module; the encoder mutes your microphone.",
+  "app": {
+    "name": "Discord",
+    "bundle_id": "com.hnc.Discord"
+  },
+  "license": "CC0-1.0",
+  "source": "Written for OpenStreamHub from Discord's default macOS shortcuts, as the vendor documents them. Not checked on a Mac yet; edit any that changed. They work while Discord is in front, which is when the focus rule activates this profile; for mute from other apps, set a global keybind in Discord.",
+  "verified": false,
+  "focus_rule": {
+    "bundle_id": "com.hnc.Discord"
+  },
+  "profile": {
+    "schema_version": 2,
+    "name": "Discord",
+    "bindings": [
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "m",
+          "modifiers": [
+            "command",
+            "shift"
+          ]
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "right",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m131e",
+        "control": 0,
+        "gesture": "left",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "clockwise",
+        "action": {
+          "type": "volume",
+          "delta": 5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "counter_clockwise",
+        "action": {
+          "type": "volume",
+          "delta": -5
+        }
+      },
+      {
+        "module": "m003k",
+        "control": 0,
+        "gesture": "pressed",
+        "action": {
+          "type": "shortcut",
+          "key": "d",
+          "modifiers": [
+            "command",
+            "shift"
+          ]
+        }
+      }
+    ],
+    "keypad": {
+      "pages": [
+        {
+          "id": "root",
+          "name": "Root",
+          "slots": [
+            {
+              "type": "action",
+              "label": "Mute / unmute",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "m",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Deafen",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "d",
+                    "modifiers": [
+                      "command",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Quick switcher",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "k",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Answer call",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "return",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Search",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "f",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Channel up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_up",
+                    "modifiers": [
+                      "option"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Channel down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_down",
+                    "modifiers": [
+                      "option"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Server up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_up",
+                    "modifiers": [
+                      "command",
+                      "option"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Server down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_down",
+                    "modifiers": [
+                      "command",
+                      "option"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Members",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "u",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Unread up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_up",
+                    "modifiers": [
+                      "option",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Unread down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "arrow_down",
+                    "modifiers": [
+                      "option",
+                      "shift"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Emoji",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "shortcut",
+                    "key": "e",
+                    "modifiers": [
+                      "command"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume down",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": -10
+                  }
+                }
+              ]
+            },
+            {
+              "type": "action",
+              "label": "Volume up",
+              "bindings": [
+                {
+                  "gesture": "pressed",
+                  "action": {
+                    "type": "volume",
+                    "delta": 10
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

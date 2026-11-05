@@ -6,7 +6,10 @@ const slug = (text: string, index: number) => `settings-${index}-${text.toLowerC
 
 // A table of contents for the Settings page, built from the headings of its panels (several panels come from
 // other components, so the list is read from the page itself). It follows the scroll and jumps to a section.
-export function SettingsToc({ label }: { label: string }) {
+export interface TocGroup { label: string; headings: string[] }
+
+// `groups` name the headings that belong to each labelled group; every other heading goes under `defaultGroup`.
+export function SettingsToc({ label, groups = [], defaultGroup }: { label: string; groups?: TocGroup[]; defaultGroup?: string }) {
   const nav = useRef<HTMLElement>(null);
   const [items, setItems] = useState<TocItem[]>([]);
   const [active, setActive] = useState<string | null>(null);
@@ -54,10 +57,17 @@ export function SettingsToc({ label }: { label: string }) {
     pane.scrollTo({ top: Math.max(0, top), behavior });
   };
 
+  const link = (item: TocItem) => <li key={item.id}>
+    <a href={`#${item.id}`} className={active === item.id ? 'active' : ''} aria-current={active === item.id ? 'location' : undefined}
+      onClick={event => { event.preventDefault(); go(item.id); }}>{item.text}</a>
+  </li>;
+  const labelled = defaultGroup ? [{ label: defaultGroup, headings: [] as string[] }, ...groups] : [];
+  const groupOf = (item: TocItem) => Math.max(0, labelled.findIndex((group, index) => index > 0 && group.headings.includes(item.text)));
+
   return <nav ref={nav} className="settings-toc" aria-label={label} hidden={items.length === 0}>
-    <ul>{items.map(item => <li key={item.id}>
-      <a href={`#${item.id}`} className={active === item.id ? 'active' : ''} aria-current={active === item.id ? 'location' : undefined}
-        onClick={event => { event.preventDefault(); go(item.id); }}>{item.text}</a>
-    </li>)}</ul>
+    {labelled.length === 0 ? <ul>{items.map(link)}</ul> : labelled.map((group, index) => {
+      const members = items.filter(item => groupOf(item) === index);
+      return members.length === 0 ? null : <div key={group.label} className="settings-toc-group"><p className="settings-toc-label">{group.label}</p><ul>{members.map(link)}</ul></div>;
+    })}
   </nav>;
 }

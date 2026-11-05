@@ -1,5 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { AppWindow, Pencil, Trash2, TriangleAlert, X } from 'lucide-react';
+import { AppWindow, FolderOpen, Pencil, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { FocusRule, ProfileSummary } from './contracts';
 import { SelectField } from './controls';
 import { bundleIdIssue, idleFocusRulesState, maxFocusRules } from './focus-rules';
@@ -8,7 +8,6 @@ import { useT } from './i18n-react';
 
 const noopSubscribe = () => () => {};
 const idle = () => idleFocusRulesState;
-const bundleExample = 'com.apple.Safari';
 export const focusBundleInputId = 'focus-rule-bundle-id';
 
 // The profile the rule form submits. A new rule defaults to the first profile; an edited rule whose profile is missing
@@ -41,6 +40,10 @@ export function FocusRulesPanel({ store, profiles, disabled = false }: { store?:
     if (!store || issue || !chosenProfile || full) return;
     if (await store.save({ id: editing, app_bundle_id: bundleId, profile_id: chosenProfile })) reset();
   };
+  const browse = async () => {
+    const app = await store?.chooseApp();
+    if (app) { setBundleId(app.bundle_id); setTouched(true); }
+  };
   const useCurrent = async () => {
     const current = await store?.currentApp();
     if (current) { setBundleId(current); setTouched(true); }
@@ -72,9 +75,9 @@ export function FocusRulesPanel({ store, profiles, disabled = false }: { store?:
       <h3 id="focus-rule-form-title">{t(editing ? 'focus.edit' : 'focus.add')}</h3>
       <label htmlFor={focusBundleInputId}>{t('focus.bundleId')}</label>
       <div className="focus-bundle-row">
-        <input id={focusBundleInputId} value={bundleId} disabled={off} placeholder={bundleExample} autoComplete="off" spellCheck={false} maxLength={300}
-          aria-invalid={showIssue} aria-describedby={`${focusBundleInputId}-hint${showIssue ? ` ${focusBundleInputId}-error` : ''}`}
-          onChange={event => setBundleId(event.target.value)} onBlur={() => { if (bundleId) setTouched(true); }} />
+        <input id={focusBundleInputId} value={bundleId} readOnly disabled={off} placeholder={t('focus.noApp')} autoComplete="off" spellCheck={false}
+          aria-invalid={showIssue} aria-describedby={`${focusBundleInputId}-hint${showIssue ? ` ${focusBundleInputId}-error` : ''}`} />
+        <button type="button" className="button" disabled={off} onClick={() => { void browse(); }}><FolderOpen size={16} />{t('focus.choose')}</button>
         <button type="button" className="button" disabled={off} onClick={() => { void useCurrent(); }}><AppWindow size={16} />{t('focus.useCurrent')}</button>
       </div>
       <p id={`${focusBundleInputId}-hint`} className="fine-print">{t('focus.useCurrentHint')}</p>

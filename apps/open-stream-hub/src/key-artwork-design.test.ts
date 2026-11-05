@@ -43,6 +43,9 @@ describe('suggested icons from the assigned action', () => {
     expect(suggestedIconIds({ type: 'system', command: 'screenshot' })).toEqual(['camera']);
     expect(suggestedIconIds({ type: 'obs_scene', scene: 'Scene' })).toEqual(['clapperboard']);
     expect(suggestedIconIds({ type: 'obs_source_visibility', scene: 'S', source: 'So', op: 'toggle' })).toEqual(['eye', 'eye-off']);
+    expect(suggestedIconIds({ type: 'streamlabs_scene', scene: 'S' })).toEqual(['clapperboard']);
+    expect(suggestedIconIds({ type: 'streamlabs_record' })).toEqual(['circle']);
+    expect(suggestedIconIds({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } })).toEqual(['volume-2', 'mic-off']);
     expect(suggestedIconIds({ type: 'shortcut', key: 'c', modifiers: ['command'] })).toEqual(['keyboard']);
   });
 
@@ -137,7 +140,7 @@ describe('stored designs', () => {
   };
 
   it('stores a design as the wire shape and reopens it unchanged', () => {
-    expect(storedKeyArtworkDesign(designed)).toEqual(spec);
+    expect(storedKeyArtworkDesign(designed)).toEqual({ ...spec, auto: false }); // a studio save is marked as the user's
     expect(keyDesignFromSpec(spec)).toEqual(designed);
     // A design that reopens losslessly prepares the same request again.
     const first = buildKeyArtworkDesignRequest(designed, 'QUJD');

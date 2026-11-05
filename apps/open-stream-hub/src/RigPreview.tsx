@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { Info } from 'lucide-react';
+import { Info, Maximize2, Minimize2, RotateCw } from 'lucide-react';
 import type { CSSProperties, FocusEvent, MouseEvent, PointerEvent } from 'react';
 import { idleFeedState, isRunning, writeAutoDetect } from './device-feed';
 import type { DeviceFeed } from './device-feed';
@@ -28,6 +28,10 @@ import { faderMaximum, gestures, modules, replayLabels } from './ui-model';
 import type { LiveDevice, Profile, ReplayKind, ServiceModule } from './contracts';
 import type { ModuleId } from './ui-model';
 import type { DeviceEditor } from './useDeviceEditor';
+
+export const fitStorageKey = 'open-stream-hub.base-fit';
+const readFit = () => { try { return globalThis.localStorage?.getItem(fitStorageKey) === '1'; } catch { return false; } };
+const writeFit = (fit: boolean) => { try { globalThis.localStorage?.setItem(fitStorageKey, fit ? '1' : '0'); } catch { /* a convenience; keep working without it */ } };
 
 const noopSubscribe = () => () => {};
 const idleState = () => idleFeedState;
@@ -104,6 +108,8 @@ function ConnectedBaseLayout({ devices, runs, editor, profile, feedState, lighti
   dropHandlers?(module: ModuleId, control: number): DropHandlers;
 }) {
   const [faders, setFaders] = useState<Record<string, number>>({});
+  const [fit, setFit] = useState(readFit);
+  const toggleFit = () => setFit(current => { writeFit(!current); return !current; });
   // The last positions the faders reported, remembered across launches; shown until a fader moves again.
   const storage = typeof localStorage === 'undefined' ? null : localStorage;
   const [lastSeen, setLastSeen] = useState<number[] | null>(() => readFaderMemory(storage));
@@ -195,9 +201,11 @@ function ConnectedBaseLayout({ devices, runs, editor, profile, feedState, lighti
     </div>;
   };
 
-  return <section className="base-layout" aria-label="Connected modules on the MasterHUB base">
+  return <section className={`base-layout${fit ? ' fit' : ''}`} aria-label="Connected modules on the MasterHUB base">
     <div className="base-layout-heading"><div><h3>Connected base layout</h3><p>USB-C ports at the {usbEdges[baseOrientation]} · click a module or one of its controls to edit it</p></div><span>{baseColumns} × {baseRows} cells</span>
-      <div className="mode-control base-orientation" role="group" aria-label="Base rotation">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div></div>
+      <div className="base-orientation-row"><span className="base-orientation-label"><RotateCw size={13} aria-hidden="true" />Rotate base</span>
+        <div className="mode-control base-orientation" role="group" aria-label="Rotate base">{baseOrientations.map(value => <button key={value} type="button" className="mode-choice" title={`Rotate base to ${value} degrees`} aria-label={`Rotate base to ${value} degrees`} aria-pressed={value === baseOrientation} onClick={() => baseOrientationStore.set(value)}>{baseOrientationLabels[value]}</button>)}</div>
+        <button type="button" className="button compact base-fit" aria-pressed={fit} title={fit ? 'Show the base at full size' : 'Fit the whole base in the window'} onClick={toggleFit}>{fit ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}Fit to window</button></div></div>
     <div className="base-layout-frame">
       <div className="base-layout-grid" style={gridStyle} role="group" aria-label={`MasterHUB base layout: ${positioned.map(device => `${modules.find(module => module.id === device.module)?.shortName ?? device.module} at ${deviceLocation(device)}`).join(', ')}`}>
         <div className={`base-layout-base${glow?.motion ? ` fx-${glow.motion}` : ''}`} aria-hidden="true" style={{ ...glowStyle, gridColumn: `${1 - extent.col} / span ${size.cols}`, gridRow: `${1 - extent.row} / span ${size.rows}` }}>
@@ -272,7 +280,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
   const status = running ? 'Receiving live input (read-only).' : feedState.error ?? (feedState.sessionModules.length ? 'Showing input from the running profile (read-only).' : enabled ? 'Live input is off.' : 'Live input needs the desktop app. Launch it to read hardware.');
   return <div className="live-controls">
     <label className="sr-only" htmlFor="rig-live-source">Live input source</label>
-    <select id="rig-live-source" value={running && source === 'off' ? 'running' : source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
+    <SelectField id="rig-live-source" value={running && source === 'off' ? 'running' : source} disabled={!enabled || running} onChange={event => setSource(event.target.value)}>
       <option value="off">Live: Off</option>
       {running && source === 'off' && <option value="running">Live: Auto-detected</option>}
       {demoKinds.map(kind => <option key={kind} value={`demo:${kind}`}>Demo: {replayLabels[kind]}</option>)}
@@ -281,7 +289,7 @@ export function LiveControls({ feed, feedState, source, setSource }: { feed: Dev
         const position = device.base_cell ? ` · ${deviceLocation(device)} on base` : '';
         return <option key={device.path_hex} value={`live:${device.path_hex}`}>{short}{position} {device.serial_number ?? device.path_hex.slice(-6)}</option>;
       })}
-    </select>
+    </SelectField>
     {running ? <button type="button" className="button" onClick={stop}>Stop</button> : <button type="button" className="button" disabled={!enabled || source === 'off'} onClick={start}>Start</button>}
     {running && <span className="live-badge">Live</span>}
     {enabled && <label className="auto-detect"><input type="checkbox" checked={feedState.autoDetect} onChange={event => { writeAutoDetect(webStorage, event.target.checked); feed.setAutoDetect(event.target.checked); }} />Auto-detect modules</label>}

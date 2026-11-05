@@ -1,6 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import type { Profile } from './contracts';
-import { clampUtf8, labelIssue, maximumLabelBytes, parseIntegerInput, profileIssue, stableStringify } from './draft-model';
+import type { KeyFace, Profile, Variable } from './contracts';
+import { clampUtf8, keyFaceIssue, labelIssue, maximumLabelBytes, parseIntegerInput, profileIssue, stableStringify } from './draft-model';
 import { actionLabel } from './ui-model';
 
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -75,5 +76,34 @@ describe('integer inputs', () => {
     const zero = parseIntegerInput('0', -100, 100, { nonZero: true });
     expect(zero.ok).toBe(false);
     expect(zero.ok ? '' : zero.error).toContain('Zero');
+  });
+});
+
+// Shared with key_faces_follow_the_shared_fixture in crates/cooltek-sdk-service/src/keypad.rs.
+const keyFaceFixture = JSON.parse(readFileSync(new URL('../../../crates/cooltek-sdk-service/tests/fixtures/key-faces.json', import.meta.url), 'utf8')) as {
+  variables: Variable[];
+  valid: KeyFace[];
+  invalid: { face: KeyFace; error: string; rust_only?: boolean }[];
+};
+
+describe('key faces', () => {
+  it('accepts and refuses the faces Rust accepts and refuses', () => {
+    const { variables, valid, invalid } = keyFaceFixture;
+    for (const face of valid) expect(keyFaceIssue(face, variables)).toBeNull();
+    for (const { face, error, rust_only: rustOnly } of invalid) {
+      if (rustOnly) continue;
+      expect(keyFaceIssue(face, variables)?.toLowerCase(), error).toContain(error);
+    }
+  });
+
+  it('holds a key to at most eight faces and reports a face problem as a profile problem', () => {
+    const face: KeyFace = { when: { variable_is: { name: 'live', value: true } }, label: 'On' };
+    const profile = (faces: KeyFace[]): Profile => ({
+      schema_version: 5, name: 'Faces', bindings: [], variables: keyFaceFixture.variables,
+      keypad: { pages: [{ id: 'root', name: 'Root', slots: [{ type: 'action', label: 'Key', bindings: [], faces }, ...Array<null>(14).fill(null)] }] },
+    });
+    expect(profileIssue(profile(Array(8).fill(face)))).toBeNull();
+    expect(profileIssue(profile(Array(9).fill(face)))).toContain('at most 8 faces');
+    expect(profileIssue(profile([{ ...face, label: '' }]))).toContain('Key face label');
   });
 });

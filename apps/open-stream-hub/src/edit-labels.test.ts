@@ -34,6 +34,18 @@ describe('describeEdit', () => {
     expect(describeEdit(before, profile({ keypad: { pages: [page({ artwork: { '2': { frames: [art] } as never } })] } }))).toBe('Changed the artwork of Key 3');
   });
 
+  it('names a change to a key\'s faces alone', () => {
+    const mute = { type: 'toggle_mute' } as const;
+    const tile = key('Mute', mute) as Extract<KeypadPage['slots'][number], { type: 'action' }>;
+    const face = { when: { variable_is: { name: 'live', value: true } }, label: 'Live' };
+    const before = profile({ keypad: { pages: [page({ slots: [tile, null, null] })] } });
+    const after = profile({ keypad: { pages: [page({ slots: [{ ...tile, faces: [face] }, null, null] })] } });
+    expect(describeEdit(before, after)).toBe('Changed the faces of Key 1');
+    expect(describeEdit(after, before)).toBe('Changed the faces of Key 1');
+    // A label change with the faces is a change of the key.
+    expect(describeEdit(before, profile({ keypad: { pages: [page({ slots: [{ ...tile, label: 'B', faces: [face] }, null, null] })] } }))).toBe('Key 1: Toggle output mute');
+  });
+
   it('names key pages added and removed', () => {
     const one = profile({ keypad: { pages: [page()] } });
     const two = profile({ keypad: { pages: [page(), page({ id: 'f', name: 'Folder' })] } });

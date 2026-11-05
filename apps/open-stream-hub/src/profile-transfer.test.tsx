@@ -35,6 +35,14 @@ function backend(initial: Record<string, StoredProfile>, options: { rejectValida
         files.set(id, saved);
         return saved as T;
       }
+      // A JSON import: the backend creates it (dry run only when it opens a terminal; see import_flags::needs_review).
+      case 'import_profile': {
+        const created = args!.profile as Profile;
+        const id = `new-${++counter}`;
+        const saved = { id, profile: created, modified_at_ms: 2000 + counter };
+        files.set(id, saved);
+        return saved as T;
+      }
       case 'delete_profile': files.delete(args!.id as string); return null as T;
       case 'export_profile': return { path: options.exportPath ?? '/s/exports/x-20261005-120000.json', bytes: 1234 } as T;
       default: throw new Error(`unexpected ${command}`);
@@ -68,14 +76,14 @@ describe('import', () => {
     const { session, calls } = await open([stored('a', 'Alpha')]);
     await importFile(session, file('{broken'));
     expect(session.getState().importError).toMatch(/not valid JSON/);
-    expect(calls.some(call => call.command === 'save_profile')).toBe(false);
+    expect(calls.some(call => call.command === 'import_profile')).toBe(false);
   });
 
   it('shows a backend rejection and does not create a profile', async () => {
     const { session, calls, files } = await open([stored('a', 'Alpha')], { rejectValidation: 'Strict' });
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Strict', bindings: [], extra: 1 })));
     expect(session.getState().importError).toContain('unknown field `extra`');
-    expect(calls.some(call => call.command === 'save_profile')).toBe(false);
+    expect(calls.some(call => call.command === 'import_profile')).toBe(false);
     expect(files.size).toBe(1);
   });
 
@@ -85,8 +93,9 @@ describe('import', () => {
     await flush();
     const validated = calls.find(call => call.command === 'validate_profile')!.args!.profile as Profile;
     expect(validated.schema_version).toBe(5);
-    const save = calls.find(call => call.command === 'save_profile')!;
-    expect(save.args!.request).toMatchObject({ id: null, expectedModifiedAtMs: null });
+    const save = calls.find(call => call.command === 'import_profile')!;
+    expect(save.args).toEqual({ profile: expect.objectContaining({ name: 'Desk', schema_version: 5 }) });
+    expect(calls.some(call => call.command === 'save_profile')).toBe(false);
     const state = session.getState();
     expect(state.draft.profileId).toBe('new-1');
     expect(state.draft.profile.name).toBe('Desk');
@@ -96,11 +105,34 @@ describe('import', () => {
     expect(session.unsaved).toBe(false);
   });
 
+  it('creates a profile that opens a terminal through the backend and says it needs the review', async () => {
+    const { session, calls } = await open([stored('a', 'Alpha')]);
+    const agents = upgradeKeypadProfile({ schema_version: 1, name: 'Agents', bindings: [
+      { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'terminal_command', app: 'terminal', command: 'claude' } },
+    ] });
+    await importFile(session, file(JSON.stringify(agents)));
+    await flush();
+    expect(names(calls, 'import_profile')).toEqual(['Agents']);
+    expect(calls.some(call => call.command === 'save_profile')).toBe(false);
+    expect(session.getState().notice).toBe('Imported Agents. It opens a terminal and runs a command, so it runs as a dry run until you review it and allow it to execute actions in the profile manager.');
+  });
+
+  it('says a profile that answers AI agent prompts needs the review', async () => {
+    const { session, calls } = await open([stored('a', 'Alpha')]);
+    const answering = upgradeKeypadProfile({ schema_version: 1, name: 'Answers', variables: [{ name: 'agent_decision', value: 'none' }], bindings: [
+      { module: 'm003k', control: 0, gesture: 'pressed', action: { type: 'set_variable', name: 'agent_decision', value: 'allow' } },
+    ] });
+    await importFile(session, file(JSON.stringify(answering)));
+    await flush();
+    expect(names(calls, 'import_profile')).toEqual(['Answers']);
+    expect(session.getState().notice).toBe('Imported Answers. It answers AI agent permission prompts, so it runs as a dry run until you review it and allow it to execute actions in the profile manager.');
+  });
+
   it('suffixes a conflicting name instead of overwriting', async () => {
     const { session, calls } = await open([stored('a', 'Alpha'), stored('b', 'Alpha (imported)')]);
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Alpha', bindings: [] })));
     await flush();
-    expect(names(calls, 'save_profile')).toEqual(['Alpha (imported 2)']);
+    expect(names(calls, 'import_profile')).toEqual(['Alpha (imported 2)']);
   });
 
   it('asks before replacing an unsaved draft and imports nothing if the user cancels', async () => {
@@ -111,13 +143,13 @@ describe('import', () => {
     expect(session.getState().pendingIntent?.label).toBe('import this profile');
     session.resolveIntent(false);
     await flush();
-    expect(calls.some(call => call.command === 'save_profile')).toBe(false);
+    expect(calls.some(call => call.command === 'import_profile')).toBe(false);
     expect(session.getState().draft.profile.name).toBe('Edited');
   });
 
   it('reports a save failure inline', async () => {
     const test = await open([stored('a', 'Alpha')]);
-    const failing: Invoke = async (command, args) => { if (command === 'save_profile') throw 'disk full'; return test.invoke(command, args); };
+    const failing: Invoke = async (command, args) => { if (command === 'import_profile') throw 'disk full'; return test.invoke(command, args); };
     const session = new ProfileSession(failing, browserProfile, true);
     await session.bootstrap();
     await importFile(session, file(JSON.stringify({ schema_version: 1, name: 'Desk', bindings: [] })));

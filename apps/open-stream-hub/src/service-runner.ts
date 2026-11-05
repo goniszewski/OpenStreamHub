@@ -6,6 +6,7 @@ import { sessionInput } from './live-state';
 import type { Invoke } from './profile-session';
 import { errorMessage } from './ui-model';
 import type { ModuleId } from './ui-model';
+import { english } from './i18n-react';
 
 export type ActivityKind = 'event' | 'action' | 'action_failed' | 'info' | 'error' | 'raw';
 // `seq` is assigned when the runner appends the entry: it increases by one per entry
@@ -75,7 +76,13 @@ export const isActiveRun = (run: ServiceRun | undefined): boolean => run !== und
 export const maxReconnectAttempts = 5;
 // resume_session refuses with this (session::PROFILE_CHANGED) when the profile changed after the dialog opened.
 export const profileChangedError = "the session's profile changed after the confirmation was shown; review the new profile and confirm again";
-export const reasonLabels: Record<SessionReason, string> = { sleep: 'the Mac went to sleep', device_removed: 'the module was unplugged', service_exited: 'the background helper exited', start_refused: 'the profile could not start', user: 'stopped by you', profile_switch: 'a focused-app rule switched the profile', profile_action: 'a profile key switched the profile', profile_saved: 'the profile was saved', module_control: 'OpenStreamHub no longer drives the display', run_mode: 'the run mode was switched', demo: 'a demo is using the module' };
+export const reasonLabels: Record<SessionReason, string> = {
+  sleep: english('labels.sessionReason.sleep'), device_removed: english('labels.sessionReason.deviceRemoved'),
+  service_exited: english('labels.sessionReason.serviceExited'), start_refused: english('labels.sessionReason.startRefused'),
+  user: english('labels.sessionReason.user'), profile_switch: english('labels.sessionReason.profileSwitch'),
+  profile_action: english('labels.sessionReason.profileAction'), profile_saved: english('labels.sessionReason.profileSaved'),
+  module_control: english('labels.sessionReason.moduleControl'), run_mode: english('labels.sessionReason.runMode'), demo: english('labels.sessionReason.demo'),
+};
 const isProfileReason = (reason: SessionReason | null) => reason === 'profile_switch' || reason === 'profile_action' || reason === 'profile_saved';
 // How the Run panel and the run's log name a session the session manager started on its own, so it is never mistaken
 // for a Start by the user.
@@ -177,6 +184,8 @@ function describeAction(action: unknown): string {
       return `shortcut ${[...modifiers, String(action.key)].join('+')}`;
     }
     case 'launch_app': return `open ${String(action.bundle_id)}`;
+    // The service logs only the command line's length, never its text.
+    case 'terminal_command': return `run a command in ${action.app === 'iterm2' ? 'iTerm2' : 'Terminal'} (${typeof action.command_chars === 'number' ? action.command_chars : (typeof action.command === 'string' ? [...action.command].length : 0)} characters)`;
     // Only the origin: paths and queries can carry tokens.
     case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;
     case 'media': return `media ${String(action.command)}`;
@@ -205,6 +214,18 @@ function describeAction(action: unknown): string {
     case 'obs_source_visibility': return `OBS source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
     case 'obs_scene_collection': return `OBS scene collection (${nameChars(action, 'name')} characters)`;
     case 'obs_profile': return `OBS profile (${nameChars(action, 'name')} characters)`;
+    // Streamlabs: the same rule, only name lengths (the service logs *_chars).
+    case 'streamlabs_record': return 'Streamlabs recording toggle';
+    case 'streamlabs_stream': return `Streamlabs stream toggle${action.confirm === 'press_twice' ? ' (press twice)' : ''}`;
+    case 'streamlabs_studio_mode': return 'Streamlabs studio mode toggle';
+    case 'streamlabs_transition': return 'Streamlabs studio transition';
+    case 'streamlabs_scene': return `Streamlabs scene (${nameChars(action, 'scene')}${'collection_chars' in action || typeof action.collection === 'string' ? ` + ${nameChars(action, 'collection')}` : ''} characters)`;
+    case 'streamlabs_source_visibility': return `Streamlabs source ${str(action.op) ?? '?'} (${nameChars(action, 'scene')} + ${nameChars(action, 'source')} characters)`;
+    case 'streamlabs_audio': {
+      const op = isObject(action.op) ? action.op : {};
+      const what = typeof op.set === 'number' ? `level ${op.set}%` : typeof op.adjust === 'number' ? `level ${op.adjust > 0 ? '+' : ''}${op.adjust}%` : str(op.mute) ?? '?';
+      return `Streamlabs audio ${what} (${nameChars(action, 'source')} characters)`;
+    }
     case 'conditional': return isObject(action.when) ? `conditional (${Object.keys(action.when)[0] ?? '?'})` : 'conditional';
     case 'multi_action': return Array.isArray(action.actions) ? `multi-action [${action.actions.slice(0, 8).map(step => isObject(step) && step.type === 'multi_action' ? 'multi-action' : describeAction(step)).join(', ')}]` : 'multi-action';
     // The recorded keys read like typed text, so like a text snippet only the

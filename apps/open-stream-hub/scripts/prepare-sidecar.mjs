@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Builds `masterhub-service` and copies it to src-tauri/binaries/ under the
-// name Tauri's `bundle.externalBin` expects: masterhub-service-<target-triple>.
+// Builds the sidecars (`masterhub-service`, and `osh`, the command-line tool for
+// scripts and agent hooks) and copies each to src-tauri/binaries/ under the name
+// Tauri's `bundle.externalBin` expects: <name>-<target-triple>.
 // Usage: node scripts/prepare-sidecar.mjs [--release] [--target <triple>]
 // Env: TAURI_ENV_TARGET_TRIPLE (set by the Tauri CLI), CARGO_TARGET_DIR.
 import { spawnSync } from 'node:child_process';
@@ -9,6 +10,8 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const BIN = 'masterhub-service';
+/** Every sidecar: the binary, and the cargo package that builds it. */
+export const SIDECARS = [{ bin: BIN, pkg: 'cooltek-sdk-cli' }, { bin: 'osh', pkg: 'osh' }];
 
 export function parseHostTriple(rustcVersionOutput) {
   const line = rustcVersionOutput.split('\n').find((entry) => entry.startsWith('host:'));
@@ -21,16 +24,16 @@ export function exeSuffix(triple) {
   return triple.includes('windows') ? '.exe' : '';
 }
 
-export function sidecarFileName(triple) {
-  return `${BIN}-${triple}${exeSuffix(triple)}`;
+export function sidecarFileName(triple, bin = BIN) {
+  return `${bin}-${triple}${exeSuffix(triple)}`;
 }
 
 /** Where cargo writes the binary. `targetOverride` is only set for explicit --target builds. */
-export function builtBinaryPath({ workspaceRoot, targetDir, triple, targetOverride, release }) {
+export function builtBinaryPath({ workspaceRoot, targetDir, triple, targetOverride, release, bin = BIN }) {
   const base = targetDir
     ? isAbsolute(targetDir) ? targetDir : resolve(workspaceRoot, targetDir)
     : join(workspaceRoot, 'target');
-  return join(base, ...(targetOverride ? [triple] : []), release ? 'release' : 'debug', `${BIN}${exeSuffix(triple)}`);
+  return join(base, ...(targetOverride ? [triple] : []), release ? 'release' : 'debug', `${bin}${exeSuffix(triple)}`);
 }
 
 export function parseArgs(argv, env = {}) {
@@ -50,7 +53,7 @@ export function parseArgs(argv, env = {}) {
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', ...options });
   if (result.error?.code === 'ENOENT') {
-    throw new Error(`\`${command}\` was not found on PATH. Install Rust (https://rustup.rs) to build the ${BIN} sidecar.`);
+    throw new Error(`\`${command}\` was not found on PATH. Install Rust (https://rustup.rs) to build the sidecars.`);
   }
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`\`${command} ${args.join(' ')}\` failed with status ${result.status}`);
@@ -68,26 +71,29 @@ function main() {
   const { release, target } = parseArgs(process.argv.slice(2), process.env);
   const triple = target ?? parseHostTriple(run('rustc', ['-vV']).stdout);
 
-  const cargoArgs = ['build', '-p', 'cooltek-sdk-cli', '--bin', BIN, '--locked'];
-  if (release) cargoArgs.push('--release');
-  if (target) cargoArgs.push('--target', target);
-  run('cargo', cargoArgs, { cwd: workspaceRoot, stdio: 'inherit' });
+  for (const { bin, pkg } of SIDECARS) {
+    const cargoArgs = ['build', '-p', pkg, '--bin', bin, '--locked'];
+    if (release) cargoArgs.push('--release');
+    if (target) cargoArgs.push('--target', target);
+    run('cargo', cargoArgs, { cwd: workspaceRoot, stdio: 'inherit' });
 
-  const built = builtBinaryPath({
-    workspaceRoot,
-    targetDir: process.env.CARGO_TARGET_DIR,
-    triple,
-    targetOverride: Boolean(target),
-    release,
-  });
-  if (!existsSync(built)) throw new Error(`cargo succeeded but ${built} does not exist`);
+    const built = builtBinaryPath({
+      workspaceRoot,
+      targetDir: process.env.CARGO_TARGET_DIR,
+      triple,
+      targetOverride: Boolean(target),
+      release,
+      bin,
+    });
+    if (!existsSync(built)) throw new Error(`cargo succeeded but ${built} does not exist`);
 
-  const destination = join(appDir, 'src-tauri', 'binaries', sidecarFileName(triple));
-  mkdirSync(dirname(destination), { recursive: true });
-  const unchanged = sameContent(built, destination);
-  if (!unchanged) copyFileSync(built, destination);
-  chmodSync(destination, 0o755);
-  console.log(`sidecar: ${unchanged ? 'up to date' : 'copied'} ${destination} (${release ? 'release' : 'debug'}, ${triple})`);
+    const destination = join(appDir, 'src-tauri', 'binaries', sidecarFileName(triple, bin));
+    mkdirSync(dirname(destination), { recursive: true });
+    const unchanged = sameContent(built, destination);
+    if (!unchanged) copyFileSync(built, destination);
+    chmodSync(destination, 0o755);
+    console.log(`sidecar: ${unchanged ? 'up to date' : 'copied'} ${destination} (${release ? 'release' : 'debug'}, ${triple})`);
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

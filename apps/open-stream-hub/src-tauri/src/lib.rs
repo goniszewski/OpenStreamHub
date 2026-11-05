@@ -1,3 +1,4 @@
+mod agent_tools;
 mod app_icon;
 mod app_lookup;
 mod artwork;
@@ -13,6 +14,8 @@ mod export;
 mod feed;
 mod focus;
 mod import_flags;
+#[cfg(unix)]
+mod ingress;
 mod keychain;
 mod lighting;
 mod menubar;
@@ -29,14 +32,17 @@ mod session;
 mod speed;
 mod startup;
 mod store;
+mod streamlabs;
 #[cfg(test)]
 mod test_profiles;
 mod turns;
 mod updates;
+mod variable_carry;
 
 use cooltek_sdk_service::{
     Gesture, InputValue, Profile, ServiceModule,
     obs::{MAX_LISTED_NAME_BYTES, ObsCatalog, ObsClient},
+    streamlabs::StreamlabsCatalog,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -60,6 +66,8 @@ struct AppState {
     last_profiles: startup::LastProfiles,
     /// The OBS endpoint setting and the in-memory OBS password.
     obs: obs::ObsState,
+    /// The Streamlabs endpoint setting and the held API token.
+    streamlabs: streamlabs::StreamlabsState,
     /// Import records and the dry-run-only flag of imported profiles.
     imports: import_flags::ImportFlags,
     /// Serializes artwork jobs (a single-permit async lock), so concurrent
@@ -91,6 +99,8 @@ impl AppState {
         let display = display::DisplayState::open(app_data.as_deref().map_err(Clone::clone));
         let last_profiles = startup::LastProfiles::open(app_data.as_deref().map_err(Clone::clone));
         let obs = obs::ObsState::open(app_data.as_deref().map_err(Clone::clone));
+        let streamlabs =
+            streamlabs::StreamlabsState::open(app_data.as_deref().map_err(Clone::clone));
         let imports = import_flags::ImportFlags::open(app_data.as_deref().map_err(Clone::clone));
         Self {
             store: Mutex::new(store),
@@ -103,6 +113,7 @@ impl AppState {
             display,
             last_profiles,
             obs,
+            streamlabs,
             imports,
             artwork: tauri::async_runtime::Mutex::new(()),
         }
@@ -407,6 +418,42 @@ impl AppState {
         profile: Profile,
         now_ms: u64,
     ) -> Result<store::StoredProfile, String> {
+        self.create_flagged_profile(profile, "pack", now_ms)
+    }
+
+    /// Imports a profile read from a JSON file as a new saved profile. One
+    /// that opens a terminal or answers AI agent prompts (`import_flags::needs_review`) is created dry run
+    /// only, like a pack's profile, until the user reviews it and allows it to
+    /// execute actions; any other is saved like a new profile (and still stays
+    /// dry run only when its content hash is flagged, as for a re-imported
+    /// export of a flagged profile).
+    fn import_profile(
+        &self,
+        profile: Profile,
+        now_ms: u64,
+    ) -> Result<store::StoredProfile, String> {
+        replay::validate_profile(&profile)?;
+        if import_flags::needs_review(&profile) {
+            self.create_flagged_profile(profile, "import", now_ms)
+        } else {
+            self.save_profile(SaveProfileRequest {
+                id: None,
+                profile,
+                expected_modified_at_ms: None,
+                source_profile_id: None,
+                keep_version: false,
+            })
+        }
+    }
+
+    /// Creates `profile` as a new saved profile flagged dry run only, its
+    /// record naming `source`.
+    fn create_flagged_profile(
+        &self,
+        profile: Profile,
+        source: &str,
+        now_ms: u64,
+    ) -> Result<store::StoredProfile, String> {
         replay::validate_profile(&profile)?;
         self.with_store(|store| {
             let listing = store.list()?;
@@ -419,7 +466,7 @@ impl AppState {
             let id = uuid::Uuid::new_v4().to_string();
             let hash = tracked_hash(&profile, &import_flags::content_hash(&profile));
             self.imports.update(&saved_hashes(store)?, |records| {
-                let _ = records.flag(&id, &hash, "pack", now_ms);
+                let _ = records.flag(&id, &hash, source, now_ms);
                 Ok(())
             })?;
             match store.create(&id, profile) {
@@ -760,6 +807,16 @@ fn create_pack_profile(
     state.create_pack_profile(profile, now_ms())
 }
 
+// A profile read from a JSON file in the app (the webview parses and checks the file first). One that opens a terminal
+// is created dry run only until the user allows it, like a pack's profile; any other is saved as a new profile.
+#[tauri::command(async)]
+fn import_profile(
+    state: State<'_, AppState>,
+    profile: Profile,
+) -> Result<store::StoredProfile, String> {
+    state.import_profile(profile, now_ms())
+}
+
 // The explicit "Allow this imported profile to execute actions" action. The
 // UI calls it only after a confirmation that names the profile and lists its
 // capabilities, naming the content hash of the saved version it showed.
@@ -970,6 +1027,7 @@ fn demo_start(
         source_profile_id: None,
         display: None,
         obs: None,
+        streamlabs: None,
     };
     run_service(&app, &request, None, ServiceEvents::Demo).inspect_err(|_| {
         let _ = state.sessions.release(&path_hex);
@@ -1226,6 +1284,8 @@ fn run_service(
 struct AppRunner {
     app: tauri::AppHandle,
     sessions: mpsc::Sender<session::Input>,
+    /// Variable values of a run that is about to restart, handed to the next run of the module.
+    carry: variable_carry::VariableCarry,
 }
 
 impl AppRunner {
@@ -1259,16 +1319,21 @@ impl session::Runner for AppRunner {
         if let Ok(id) = service::service_id(&request.path_hex) {
             self.still_running(&id);
         }
-        run_service(
+        let started = run_service(
             &self.app,
             request,
             Some(self.sessions.clone()),
             ServiceEvents::Run,
-        )
+        );
+        if let Ok(id) = &started {
+            self.carry.restore(self.app.clone(), id);
+        }
+        started
     }
 
     fn stop(&mut self, service_id: &str) {
         let state = self.app.state::<AppState>();
+        self.carry.snapshot(&state.services, service_id);
         if let Err(error) = state.services.stop(service_id, service::STOP_GRACE) {
             eprintln!("could not stop {service_id}: {error}");
         }
@@ -1276,6 +1341,9 @@ impl session::Runner for AppRunner {
 
     fn stop_many(&mut self, service_ids: &[String]) {
         let state = self.app.state::<AppState>();
+        for id in service_ids {
+            self.carry.snapshot(&state.services, id);
+        }
         state.services.stop_many(service_ids, service::STOP_GRACE);
     }
 
@@ -1351,6 +1419,10 @@ impl session::Runner for AppRunner {
 
     fn obs_launch(&mut self) -> Option<obs::ObsLaunch> {
         self.app.state::<AppState>().obs.for_new_session()
+    }
+
+    fn streamlabs_launch(&mut self) -> Option<streamlabs::StreamlabsLaunch> {
+        self.app.state::<AppState>().streamlabs.for_new_session()
     }
 
     fn execution_guard(&mut self) -> import_flags::ExecutionGuard {
@@ -1511,6 +1583,25 @@ fn open_release_page() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn open_about_link(target: String, hash: Option<String>) -> Result<(), String> {
+    updates::open_about_link(&target, hash.as_deref())
+}
+
+#[tauri::command]
+fn start_permission_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    // Synchronous commands already run on the main thread, which AppKit dragging needs.
+    #[cfg(target_os = "macos")]
+    {
+        recorder::start_permission_drag(&window)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window;
+        Err("Dragging the app is available on macOS only".to_string())
+    }
+}
+
+#[tauri::command]
 fn open_permission_settings(target: recorder::PermissionTarget) -> Result<(), String> {
     recorder::open_permission_settings(target)
 }
@@ -1561,6 +1652,19 @@ async fn app_icon(
 ) -> Result<app_icon::AppIconResult, String> {
     let _permit = state.artwork.lock().await;
     tauri::async_runtime::spawn_blocking(move || app_icon::app_icon(&request))
+        .await
+        .map_err(|error| format!("the artwork worker failed: {error}"))?
+}
+
+// The icons of the apps in an app picker's list, in one call instead of one
+// per row; the same worker queue as app_icon.
+#[tauri::command]
+async fn app_icons(
+    state: State<'_, AppState>,
+    request: app_icon::AppIconsRequest,
+) -> Result<app_icon::AppIconsResult, String> {
+    let _permit = state.artwork.lock().await;
+    tauri::async_runtime::spawn_blocking(move || app_icon::app_icons(&request))
         .await
         .map_err(|error| format!("the artwork worker failed: {error}"))?
 }
@@ -1772,6 +1876,60 @@ fn obs_scene_sources(state: State<'_, AppState>, scene: String) -> Result<Vec<St
     ObsClient::new(launch.endpoint, launch.password).scene_sources(&scene)
 }
 
+// The Streamlabs Desktop setting (`streamlabs.rs`), like the OBS one: off by
+// default, loopback endpoints only, applied at the next Start. The API token
+// goes to the Keychain and is never returned: replies say only whether one is
+// set.
+#[tauri::command]
+fn streamlabs_settings(
+    state: State<'_, AppState>,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.get()
+}
+
+#[tauri::command]
+fn set_streamlabs_settings(
+    state: State<'_, AppState>,
+    settings: streamlabs::StreamlabsSettings,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.set(settings)
+}
+
+#[tauri::command]
+fn set_streamlabs_token(
+    state: State<'_, AppState>,
+    token: Option<String>,
+) -> Result<streamlabs::StreamlabsSettingsView, String> {
+    state.streamlabs.set_token(token)
+}
+
+// "Test connection": authenticates with the held token and reads
+// StreamingService.getModel, which changes nothing, then names the result.
+#[tauri::command(async)]
+fn streamlabs_status(
+    state: State<'_, AppState>,
+) -> Result<streamlabs::StreamlabsConnection, String> {
+    state.streamlabs.probe()
+}
+
+// The Streamlabs listings for the editor name fields, like the OBS ones: one
+// short loopback connection per reply with the saved endpoint and the held
+// token, which never reaches the webview. Refused without connecting while
+// Streamlabs is off or no token is held. The scene name is data, bounded by
+// the profile's own limit.
+#[tauri::command(async)]
+fn streamlabs_catalog(state: State<'_, AppState>) -> Result<StreamlabsCatalog, String> {
+    state.streamlabs.catalog()
+}
+
+#[tauri::command(async)]
+fn streamlabs_scene_sources(
+    state: State<'_, AppState>,
+    scene: String,
+) -> Result<Vec<String>, String> {
+    state.streamlabs.scene_sources(&scene)
+}
+
 // The last app other than OpenStreamHub that was frontmost.
 #[tauri::command]
 fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
@@ -1782,6 +1940,31 @@ fn focus_current_app(state: State<'_, AppState>) -> focus::CurrentApp {
 #[tauri::command(async)]
 fn choose_app() -> Result<Option<app_lookup::AppInfo>, String> {
     app_lookup::choose()
+}
+
+// The bundled `osh`, its `~/.local/bin/osh` link and the agent hook configurations for the AI agents panel.
+#[tauri::command(async)]
+fn agent_tool_status() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::status()
+}
+
+// Creates `~/.local/bin/osh` as a link to the bundled `osh`; refuses a regular file or a link to anything else.
+#[tauri::command(async)]
+fn link_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::link()
+}
+
+// What the AI agents checklist reads: whether Claude Code's and Codex's settings hold our hooks (read only), and how
+// many prompts the deck answered this session.
+#[tauri::command(async)]
+fn agent_signals() -> Result<agent_tools::AgentSignals, String> {
+    agent_tools::signals()
+}
+
+// Removes `~/.local/bin/osh` only when it links to an OpenStreamHub `osh`.
+#[tauri::command(async)]
+fn unlink_agent_tool() -> Result<agent_tools::AgentToolStatus, String> {
+    agent_tools::unlink()
 }
 
 // The everyday name of an installed app by bundle id, or none when it is not found.
@@ -1917,9 +2100,30 @@ pub fn run() {
             let app_data = app
                 .path()
                 .app_data_dir()
-                .map_err(|error| format!("could not resolve profile storage: {error}"));
+                .map_err(|error| format!("could not resolve profile storage: {error}"))
+                .and_then(|app_data| {
+                    migration::adopt_previous_identifier(&app_data)?;
+                    Ok(app_data)
+                });
             if let Ok(app_data) = &app_data {
                 service::clean_stale_profiles(&service::profile_dir(app_data));
+                // The socket outside processes (agent hooks, `osh`) use to set profile variables.
+                #[cfg(unix)]
+                {
+                    let handle = app.handle().clone();
+                    let forward: ingress::Forward = Arc::new(move |body| {
+                        handle
+                            .try_state::<AppState>()
+                            .map(|state| ingress::forward_to(&state.services, body))
+                            .unwrap_or_default()
+                    });
+                    match ingress::Ingress::start(&ingress::dir(app_data), forward) {
+                        Ok(ingress) => {
+                            app.manage(ingress);
+                        }
+                        Err(error) => eprintln!("{error}"),
+                    }
+                }
             }
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
@@ -1930,6 +2134,7 @@ pub fn run() {
             let runner = AppRunner {
                 app: app.handle().clone(),
                 sessions: sessions.clone(),
+                carry: variable_carry::VariableCarry::default(),
             };
             if let Err(error) = state.sessions.spawn(runner) {
                 eprintln!("{error}");
@@ -1988,6 +2193,7 @@ pub fn run() {
             delete_profile,
             import_mhz_profile,
             create_pack_profile,
+            import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,
             validate_profile,
@@ -2032,6 +2238,12 @@ pub fn run() {
             obs_catalog,
             obs_source_filters,
             obs_scene_sources,
+            streamlabs_settings,
+            set_streamlabs_settings,
+            set_streamlabs_token,
+            streamlabs_status,
+            streamlabs_catalog,
+            streamlabs_scene_sources,
             switch_session_profile,
             session_profile,
             apply_saved_profile,
@@ -2041,6 +2253,7 @@ pub fn run() {
             prepare_dial_animation,
             save_artwork,
             app_icon,
+            app_icons,
             macro_record_start,
             macro_record_state,
             macro_record_stop,
@@ -2048,11 +2261,17 @@ pub fn run() {
             autostart_status,
             check_for_updates,
             open_release_page,
+            open_about_link,
             set_autostart,
             menubar_status,
             set_menubar,
             set_module_turns,
-            open_permission_settings
+            open_permission_settings,
+            start_permission_drag,
+            agent_tool_status,
+            link_agent_tool,
+            unlink_agent_tool,
+            agent_signals
         ])
         .build(tauri::generate_context!())
         .expect("could not start the OpenStreamHub desktop app");
@@ -2068,6 +2287,10 @@ pub fn run() {
             state.services.stop_all(service::STOP_GRACE);
             state.feeds.stop_all();
             state.inventory.stop();
+            #[cfg(unix)]
+            if let Some(ingress) = app.try_state::<ingress::Ingress>() {
+                ingress.stop();
+            }
             return;
         }
         // Only user/system exit requests (code None) are routed through the
@@ -2117,6 +2340,7 @@ mod tests {
             display: display::DisplayState::open(Err("no app data".into())),
             last_profiles: startup::LastProfiles::open(Err("no app data".into())),
             obs: obs::ObsState::open(Err("no app data".into())),
+            streamlabs: streamlabs::StreamlabsState::open(Err("no app data".into())),
             imports: import_flags::ImportFlags::open(Err("no app data".into())),
             artwork: tauri::async_runtime::Mutex::new(()),
         }
@@ -2144,7 +2368,7 @@ mod tests {
     #[test]
     fn bootstrap_retry_reopens_storage_after_the_folder_is_fixed() {
         let directory = tempfile::tempdir().unwrap();
-        let app_data = directory.path().join("dev.cooltek.openstreamhub");
+        let app_data = directory.path().join("dev.openstreamhub");
         // A file where the app data folder belongs blocks opening storage.
         std::fs::write(&app_data, b"not a folder").unwrap();
         let state = AppState::open(Ok(app_data.clone()));
@@ -2334,6 +2558,69 @@ mod tests {
             .unwrap();
         assert_ne!(second.id, created.id);
         assert_eq!(state.list().unwrap().profiles.len(), 4);
+    }
+
+    #[test]
+    fn a_json_import_that_opens_a_terminal_is_dry_run_only_until_allowed() {
+        let (_directory, state) = open_state();
+        let mut terminal = pack_profile("Agents");
+        terminal.bindings[0].action = cooltek_sdk_service::Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Iterm2,
+            command: "codex".into(),
+            directory: Some("~/code".into()),
+        };
+        let imported = state.import_profile(terminal.clone(), 11).unwrap();
+        let flagged = |id: &str| flagged(&state, id);
+        assert!(flagged(&imported.id));
+        let record = &state.imports.load().unwrap().profiles[&imported.id];
+        assert_eq!(
+            (
+                record.source.as_str(),
+                record.dry_run_only,
+                record.imported_at_ms
+            ),
+            ("import", true, 11)
+        );
+        // An Execute run refuses it until it is allowed.
+        assert_eq!(
+            state
+                .execution_guard()
+                .blocks(Some(&imported.id), None, &imported.profile),
+            refused()
+        );
+        // A copy stays flagged by its content.
+        let copy = save(&state, None, &terminal, None).unwrap();
+        assert!(flagged(&copy.id));
+        // The usual review clears it.
+        state
+            .allow_execution(AllowRequest {
+                id: imported.id.clone(),
+                content_hash: imported.content_hash.clone(),
+            })
+            .unwrap();
+        assert!(!flagged(&imported.id));
+
+        // A JSON import without one stays an ordinary profile.
+        let plain = state.import_profile(pack_profile("Plain"), 12).unwrap();
+        assert!(!flagged(&plain.id));
+        assert!(
+            !state
+                .imports
+                .load()
+                .unwrap()
+                .profiles
+                .contains_key(&plain.id)
+        );
+        // An invalid profile creates nothing.
+        let before = state.list().unwrap().profiles.len();
+        let mut invalid = terminal;
+        invalid.bindings[0].action = cooltek_sdk_service::Action::TerminalCommand {
+            app: cooltek_sdk_service::TerminalApp::Terminal,
+            command: "claude\nid".into(),
+            directory: None,
+        };
+        assert!(state.import_profile(invalid, 13).is_err());
+        assert_eq!(state.list().unwrap().profiles.len(), before);
     }
 
     #[test]

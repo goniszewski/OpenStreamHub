@@ -21,8 +21,9 @@ function harness() {
     calls.push({ command, args });
     let result: unknown = { valid: true };
     if (command === 'list_profiles') result = { profiles: saved.map(item => ({ id: item.id, name: item.profile.name, binding_count: 0, modified_at_ms: 1, dry_run_only: false })), unreadable: [] } satisfies ProfileListing;
-    if (command === 'save_profile') {
-      const item = { id: `p${saved.length}`, modified_at_ms: 1, profile: structuredClone((args as { request: { profile: Profile } }).request.profile) };
+    if (command === 'save_profile' || command === 'import_profile') {
+      const request = command === 'import_profile' ? args as { profile: Profile } : (args as { request: { profile: Profile } }).request;
+      const item = { id: `p${saved.length}`, modified_at_ms: 1, profile: structuredClone(request.profile) };
       saved.push(item); result = item;
     }
     if (command === 'bootstrap') {
@@ -77,7 +78,7 @@ describe('dial_functions survive every frontend profile path', () => {
     await session.importProfile(JSON.stringify(copy));
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(lastArg(calls, 'validate_profile').dial_functions).toEqual(expected);
-    expect(lastArg(calls, 'save_profile').dial_functions).toEqual(expected);
+    expect(lastArg(calls, 'import_profile').dial_functions).toEqual(expected);
   });
 
   it('keeps dial_functions when a file with them is imported and parsed', () => {

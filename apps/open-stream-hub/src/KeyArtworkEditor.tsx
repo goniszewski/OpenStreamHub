@@ -11,7 +11,7 @@ import {
 import type { DesignStorage, KeyArtworkDesign, KeyTextMeasure } from './key-artwork-design';
 import { stableStringify } from './draft-model';
 import { keyIconById } from './key-icons';
-import { applyAutoArtwork, planAutoArtwork, planKey } from './auto-key-artwork';
+import { applyAutoArtwork, isAutoDrawn, planAutoArtwork, planKey } from './auto-key-artwork';
 import type { Invoke, ProfileSession } from './profile-session';
 import { artworkErrorNotice } from './artwork-error-model';
 import { ArtworkErrorNote } from './ArtworkErrorNote';
@@ -301,8 +301,19 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
   // assignment, and anything the user designed is never replaced.
   const plan = planAutoArtwork(action);
   const planId = planKey(plan);
-  const latest = useRef({ planId, artwork });
-  latest.current = { planId, artwork };
+  // Every label this key has had while the editor is open: a drawing whose text is one of them is still this module's
+  // (typing a label passes through several values before a redraw lands).
+  const labels = useRef(new Set(['', initialText ?? '']));
+  labels.current.add(initialText ?? '');
+  const latest = useRef({ planId, artwork, label: initialText ?? '', texts: [...labels.current] as readonly string[] });
+  latest.current = { planId, artwork, label: initialText ?? '', texts: [...labels.current] };
+  const redraw = (drawing: NonNullable<typeof plan>, label: string) => {
+    const id = ++requestId.current;
+    autoRequest.current = id;
+    void applyAutoArtwork(drawing, { invoke: invoke!, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke!, bundleId) }, session, path, control, {
+      planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current, texts: () => latest.current.texts,
+    }, label);
+  };
   const previousPlan = useRef(planId);
   const declined = useRef<string | null>(null);
   useEffect(() => {
@@ -310,16 +321,19 @@ export function KeyArtworkEditor({ session, path, control, artwork, action, init
     previousPlan.current = planId;
     if (!plan || !invoke || disabled || declined.current === planId) return;
     // The application field is typed into: settle before looking anything up.
-    const timer = setTimeout(() => {
-      const id = ++requestId.current;
-      autoRequest.current = id;
-      void applyAutoArtwork(plan, { invoke, render: renderKeyDesign, appIcon: bundleId => loadAppIcon(invoke, bundleId) }, session, path, control, {
-        planKey: () => latest.current.planId, artwork: () => latest.current.artwork, current: () => id === requestId.current,
-      });
-    }, autoArtworkDelayMs);
+    const timer = setTimeout(() => redraw(plan, latest.current.label), autoArtworkDelayMs);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planId]);
+  // An application's drawing shows the key label under the icon: renaming the key draws it again (never over artwork the
+  // user designed, which is not this module's plain drawing).
+  const label = initialText ?? '';
+  useEffect(() => {
+    if (plan?.kind !== 'app' || !invoke || disabled || !artwork?.design || !isAutoDrawn(artwork, latest.current.texts) || artwork.design.text === label) return;
+    const timer = setTimeout(() => redraw(plan, label), autoArtworkDelayMs);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [label, artwork]);
   async function choose(file: File) {
     const id = ++requestId.current;
     const busyToken = ++busyId.current;

@@ -1,6 +1,6 @@
 [package]
 name = "open-stream-hub-app"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97.0"
 license = "MIT OR Apache-2.0"
@@ -29,6 +29,8 @@ base64 = "0.22"
 cooltek-sdk-service = { path = "../../../crates/cooltek-sdk-service" }
 cooltek-sdk-masterhub = { path = "../../../crates/cooltek-sdk-masterhub" }
 cooltek-sdk-cli = { path = "../../../crates/cooltek-sdk-cli" }
+# The hook configuration `osh agent setup` prints, shown in Settings (src/agent_tools.rs); only serde_json.
+osh = { path = "../../../crates/osh" }
 hidapi = { version = "2", features = ["macos-shared-device"] }
 # Official `.mhz` profile import (src/mhz). Already locked (flate2 and
 # crc32fast through png/image, sha2 through tauri-codegen): raw deflate,
@@ -54,6 +56,8 @@ objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSNotification", "NSOperation", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSWorkspace", "NSImage", "NSImageRep", "NSBitmapImageRep"] }
 security-framework = "3"
+# Drag-out of the app bundle into System Settings (src/recorder.rs, start_permission_drag).
+drag = "2.1.1"
 
 [dev-dependencies]
 tempfile = "3"

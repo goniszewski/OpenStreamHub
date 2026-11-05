@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "OpenStreamHub",
-  "version": "0.3.0",
-  "identifier": "dev.cooltek.openstreamhub",
+  "version": "0.4.0",
+  "identifier": "dev.openstreamhub",
   "build": {
     "beforeDevCommand": "npm run sidecar && npm run dev",
     "beforeBuildCommand": "npm run sidecar:release && npm run build",
@@ -30,7 +30,7 @@
   "bundle": {
     "active": true,
     "targets": ["app", "dmg"],
-    "externalBin": ["binaries/masterhub-service"],
+    "externalBin": ["binaries/masterhub-service", "binaries/osh"],
     "category": "Productivity",
     "shortDescription": "Configure OpenStreamHub profiles and preview input actions.",
     "icon": ["icons/icon.png", "icons/icon.icns"],

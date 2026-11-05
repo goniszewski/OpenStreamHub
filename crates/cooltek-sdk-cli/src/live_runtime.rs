@@ -34,7 +34,7 @@ use crate::timer_face::{CountdownKey, TimerFaces};
 use cooltek_sdk_masterhub::{InputReader, ModuleKind, ReportTransport};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, DeviceContext, Gesture, InputSession, KeypadLayout,
-    ProfileResolution, ProfileSession, ServiceModule, TimerTable,
+    ProfileResolution, ProfileSession, ServiceModule, SharedVariables, TimerTable,
     display_sync::{
         ApplyReport, DialImageRequest, DisplayCapabilities, DisplaySink, DisplaySync,
         DisplayTarget, KeyImageProvider, SinkError,
@@ -223,6 +223,8 @@ pub struct LiveDisplay {
     press_feedback: bool,
     /// The countdowns of running timers, drawn on their keys (keys display).
     timer_faces: TimerFaces,
+    /// The run's variables; a change redraws the page so key faces follow it (keys display).
+    variables: Option<SharedVariables>,
 }
 
 /// What a [`LiveDisplay`] draws.
@@ -257,6 +259,7 @@ impl LiveDisplay {
             write_gate,
             press_feedback: false,
             timer_faces: TimerFaces::default(),
+            variables: None,
         }
     }
 
@@ -267,6 +270,14 @@ impl LiveDisplay {
     /// Keys displays only; a dial display ignores it.
     pub fn with_press_feedback(mut self, on: bool) -> Self {
         self.press_feedback = on;
+        self
+    }
+
+    /// Redraws the page whenever a value in `variables` changes, at most once per
+    /// [`ANIMATION_MIN_INTERVAL`]; only keys whose picture changed are written.
+    /// Pass the store the key artwork's `VariableFaces` reads. Keys displays only.
+    pub fn with_variables(mut self, variables: SharedVariables) -> Self {
+        self.variables = Some(variables);
         self
     }
 
@@ -288,6 +299,7 @@ impl LiveDisplay {
             write_gate,
             press_feedback: false,
             timer_faces: TimerFaces::default(),
+            variables: None,
         }
     }
 
@@ -404,6 +416,7 @@ impl DisplayThread {
                     write_gate: gate,
                     press_feedback,
                     timer_faces,
+                    variables,
                 } = display;
                 let mut press_feedback = press_feedback;
                 let gate_closed = Arc::clone(&gate);
@@ -436,6 +449,12 @@ impl DisplayThread {
                         let mut animate = true;
                         let mut last_sync: Option<Instant> = None;
                         let faces_seen = std::cell::Cell::new(timer_faces.version());
+                        // The variable version the keys last showed in full. It moves only after a
+                        // sync that did not fail, so a failed redraw is tried again: at once on the
+                        // next sync, and by itself after `VARIABLE_RETRY`.
+                        let variables_seen =
+                            std::cell::Cell::new(variables.as_ref().map(SharedVariables::version));
+                        let variables_retry_at = std::cell::Cell::new(None::<Instant>);
                         loop {
                             // Frames are chosen from the run clock as of now, so a slow
                             // write never pushes later frames back; the gap is measured
@@ -477,13 +496,33 @@ impl DisplayThread {
                             };
                             match next_display_request(&thread_slot, &abort, delay, &|| {
                                 let version = timer_faces.version();
-                                version != faces_seen.replace(version)
+                                if version != faces_seen.replace(version) {
+                                    return Some(ANIMATION_TRIGGER);
+                                }
+                                // A variable change is taken only once the minimum gap since the last
+                                // sync has passed; until then it stays unseen, so a burst of changes
+                                // becomes one redraw of the newest values.
+                                let version = variables.as_ref().map(SharedVariables::version);
+                                let rested = last_sync
+                                    .is_none_or(|last| last.elapsed() >= ANIMATION_MIN_INTERVAL)
+                                    && variables_retry_at
+                                        .get()
+                                        .is_none_or(|at| Instant::now() >= at);
+                                if rested && version != variables_seen.get() {
+                                    return Some(VARIABLE_TRIGGER);
+                                }
+                                None
                             }) {
                                 Wake::Stopped => return,
                                 Wake::Request(request) => current = Some(request),
                                 Wake::Tick => {
                                     if let Some(request) = current.as_mut() {
                                         request.trigger = ANIMATION_TRIGGER;
+                                    }
+                                }
+                                Wake::Changed(trigger) => {
+                                    if let Some(request) = current.as_mut() {
+                                        request.trigger = trigger;
                                     }
                                 }
                             }
@@ -498,6 +537,9 @@ impl DisplayThread {
                                 gate_closed.load(Ordering::SeqCst) || abort.load(Ordering::SeqCst)
                             };
                             let held = request.pressed.filter(|_| press_feedback);
+                            // Read before the sync, which reads the values: a change during it
+                            // stays unseen and is drawn next.
+                            let drawing = variables.as_ref().map(SharedVariables::version);
                             let began = Instant::now();
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -557,14 +599,33 @@ impl DisplayThread {
                                         .as_array()
                                         .is_some_and(|failed| !failed.is_empty())
                             });
-                            if failed_write || (timed && !clean) {
-                                animate = false;
-                            } else if !timed && clean {
-                                animate = true;
+                            // Any sync draws the current faces, so one without a failure makes the
+                            // variables seen; after a failure the change stays unseen and is retried.
+                            if record.is_ok() && !failed_write {
+                                variables_seen.set(drawing);
+                                variables_retry_at.set(None);
+                            } else if drawing != variables_seen.get() {
+                                variables_retry_at.set(Some(Instant::now() + VARIABLE_RETRY));
+                            }
+                            // A variable redraw leaves animation as it was either way.
+                            let variable = request.trigger == VARIABLE_TRIGGER;
+                            if !variable {
+                                if failed_write || (timed && !clean) {
+                                    animate = false;
+                                } else if !timed && clean {
+                                    animate = true;
+                                }
                             }
                             // Clean animation frames are counted in `syncs` but not logged:
-                            // at up to ten a second they would flood the run log.
-                            if timed && clean {
+                            // at up to ten a second they would flood the run log. A clean
+                            // variable redraw that wrote nothing (no face changed) is not logged
+                            // either.
+                            let wrote_nothing = record.as_ref().is_ok_and(|record| {
+                                record["written"]
+                                    .as_array()
+                                    .is_none_or(|written| written.is_empty())
+                            });
+                            if clean && (timed || variable && wrote_nothing) {
                                 continue;
                             }
                             let failed = display_record(request, None, &[], Some(DISPLAY_PANIC));
@@ -585,11 +646,11 @@ impl DisplayThread {
                                 &thread_slot,
                                 &abort,
                                 Some(dial.tick(&artwork, min_interval, closed())),
-                                &|| false,
+                                &|| None,
                             ) {
                                 Wake::Stopped => return,
                                 Wake::Request(request) => dial.requested(request),
-                                Wake::Tick => {}
+                                Wake::Tick | Wake::Changed(_) => {}
                             }
                             // Choosing the face (reading the clock or sampling the
                             // CPU) runs inside the same panic guard as the write.
@@ -748,6 +809,13 @@ const PRESS_FEEDBACK_MAX_WRITE: Duration = Duration::from_millis(150);
 /// Trigger of a key sync started by an animation frame deadline, not a request.
 const ANIMATION_TRIGGER: &str = "animation";
 
+/// Trigger of a key sync started by a change of a variable value (key faces).
+const VARIABLE_TRIGGER: &str = "variable";
+
+/// Least time from a failed key sync to the retry of a variable redraw, so a display that keeps failing is
+/// retried (and logged) about once a second, not at every animation interval.
+const VARIABLE_RETRY: Duration = Duration::from_secs(1);
+
 /// Least time from one key sync to the next animation-timed one, however many
 /// keys' frame deadlines fall in between. Frames are still chosen from the run
 /// clock, so a key whose deadline was deferred skips ahead rather than drifting.
@@ -781,6 +849,8 @@ enum Wake {
     Request(DisplayRequest),
     /// `tick` elapsed without a request.
     Tick,
+    /// Something outside the request slot needs a redraw, under this trigger.
+    Changed(&'static str),
     /// Stopped or aborted: no further sync may start.
     Stopped,
 }
@@ -790,7 +860,7 @@ fn next_display_request(
     slot: &(Mutex<DisplaySlot>, Condvar),
     abort: &AtomicBool,
     tick: Option<Duration>,
-    changed_elsewhere: &dyn Fn() -> bool,
+    changed_elsewhere: &dyn Fn() -> Option<&'static str>,
 ) -> Wake {
     let deadline = tick.map(|tick| Instant::now() + tick);
     let (lock, changed) = slot;
@@ -802,9 +872,9 @@ fn next_display_request(
         if let Some(request) = slot.pending.take() {
             return Wake::Request(request);
         }
-        // Something outside the request slot (a countdown) needs a redraw.
-        if changed_elsewhere() {
-            return Wake::Tick;
+        // Something outside the request slot (a countdown, a variable) needs a redraw.
+        if let Some(trigger) = changed_elsewhere() {
+            return Wake::Changed(trigger);
         }
         let mut wait = Duration::from_millis(50);
         if let Some(deadline) = deadline {
@@ -1788,10 +1858,10 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     }
 }
 
-/// Folds already-queued work into `work` while each next item is one absolute
-/// position (a fader) that merges into the last event (see [`merge_event`]). The first item
-/// that does not merge is parked in `carried` so the order of everything else
-/// is unchanged.
+/// Folds already-queued work into `work` while each next item is one continuous
+/// input (a fader position, or a knob, roller or dial step) that merges into the
+/// last event (see [`merge_event`]). The first item that does not merge is parked
+/// in `carried` so the order of everything else is unchanged.
 fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option<Work>) -> Work {
     while let Ok(next) = receiver.try_recv() {
         let mergeable = !work.merge_barrier
@@ -1799,10 +1869,6 @@ fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option
             && next.dropped_dial_function_count == 0
             && next.coalesced_parse_error_count == 0
             && next.status == "decoded"
-            && next
-                .events
-                .iter()
-                .all(|planned| planned.event.gesture == Gesture::PositionChanged)
             && matches!(next.events.as_slice(), [planned]
             if work.events.last().is_some_and(|last| {
                 last.event.control == planned.event.control && merge_event(last, planned).is_some()
@@ -3835,6 +3901,54 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_worker_sums_queued_rotation_steps_and_keeps_other_gestures_apart() {
+        let step =
+            |gesture, delta| work(vec![planned(0, gesture, action(Action::Volume { delta }))]);
+        let (sender, receiver) = mpsc::sync_channel(16);
+        for _ in 0..4 {
+            sender.send(step(Gesture::Clockwise, 5)).unwrap();
+        }
+        // A turn the other way is a different gesture: it must not cancel the earlier ones.
+        sender.send(step(Gesture::CounterClockwise, -5)).unwrap();
+        sender.send(step(Gesture::CounterClockwise, -5)).unwrap();
+        let mut carried = None;
+        let folded = absorb_queued(step(Gesture::Clockwise, 5), &receiver, &mut carried);
+        assert_eq!(folded.report_count, 5);
+        assert_eq!(
+            folded.events[0].resolution,
+            action(Action::Volume { delta: 25 })
+        );
+        let parked = carried.expect("the opposite turn starts a new run of steps");
+        assert_eq!(parked.events[0].event.gesture, Gesture::CounterClockwise);
+        let next = absorb_queued(parked, &receiver, &mut None);
+        assert_eq!(
+            next.events[0].resolution,
+            action(Action::Volume { delta: -10 })
+        );
+    }
+
+    #[test]
+    fn a_waiting_worker_never_folds_steps_that_run_other_actions() {
+        // A scroll roller sends one key per click: every click must still run.
+        let key = |gesture| {
+            work(vec![planned(
+                0,
+                gesture,
+                action(Action::Shortcut {
+                    key: "j".into(),
+                    modifiers: Vec::new(),
+                }),
+            )])
+        };
+        let (sender, receiver) = mpsc::sync_channel(8);
+        sender.send(key(Gesture::Down)).unwrap();
+        let mut carried = None;
+        let folded = absorb_queued(key(Gesture::Down), &receiver, &mut carried);
+        assert_eq!(folded.report_count, 1);
+        assert!(carried.is_some(), "the second click is parked, not merged");
+    }
+
+    #[test]
     fn coalescing_sums_steps_keeps_last_position_and_never_merges_buttons() {
         let volume = |delta| planned(0, Gesture::Clockwise, action(Action::Volume { delta }));
         let merged = merge_event(&volume(60), &volume(60)).unwrap();
@@ -4324,7 +4438,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(received.lock().unwrap().len(), 3);
+        // Rotation steps that queue up while an action runs are summed into one
+        // (see `absorb_queued`), so three steps run as one to three actions. Every
+        // step still counts as a failed event, and each action logs one failure.
+        let attempts = received.lock().unwrap().len();
+        assert!((1..=3).contains(&attempts));
         assert_eq!(summary.failed_action_count, 3);
         assert_eq!(summary.action_count, 0);
         assert_eq!(summary.processed_report_count, 3);
@@ -4334,7 +4452,7 @@ mod tests {
             .iter()
             .filter(|row| row["type"] == "action_failed")
             .collect();
-        assert_eq!(failed.len(), 3);
+        assert_eq!(failed.len(), attempts);
         assert!(failed.iter().all(|row| row["schema_version"] == 1));
         let footer = rows.last().unwrap();
         assert_eq!(footer["reason"], "max_reports");
@@ -5419,6 +5537,141 @@ mod tests {
         display.request_pressed(&session, PRESS_TRIGGER, Some(3));
         records.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(written(&fake), 15);
+        assert!(display.finish(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_variable_change_redraws_only_the_key_whose_face_changed() {
+        use crate::display_artwork::{VariableFaces, tests::profile_with_faces};
+        use cooltek_sdk_service::VariableValue;
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let abort = Arc::new(AtomicBool::new(false));
+        let profile = profile_with_faces(Vec::new());
+        let variables = SharedVariables::new();
+        variables.declare(&profile.variables);
+        let artwork = VariableFaces::prepare(
+            &profile,
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            variables.clone(),
+        )
+        .unwrap();
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            artwork,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_variables(variables.clone());
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut display =
+            DisplayThread::spawn(display, session.clone(), Arc::clone(&abort), records_tx).unwrap();
+        display.request(&session, "software_mode");
+        assert_eq!(
+            records.recv_timeout(Duration::from_secs(2)).unwrap()["trigger"],
+            "software_mode"
+        );
+        assert_eq!(written(&fake), 15);
+        let resting = fake.lock().unwrap().writes[0].jpeg.clone();
+
+        // A face now holds on key 0: that key alone is rewritten, under its own trigger.
+        variables
+            .set("state", VariableValue::Text("waiting".into()))
+            .unwrap();
+        let record = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(record["trigger"], "variable");
+        assert_eq!(record["written"], json!([0]));
+        assert_eq!(successful_after(&fake, 15), vec![DisplayTarget::Key(0)]);
+        assert_ne!(fake.lock().unwrap().writes[15].jpeg, resting);
+
+        // A burst of changes is one redraw of the newest values, back to the resting face.
+        for count in 0..20 {
+            variables
+                .set("count", VariableValue::Number(count))
+                .unwrap();
+        }
+        variables.set("count", VariableValue::Number(0)).unwrap();
+        variables
+            .set("state", VariableValue::Text("idle".into()))
+            .unwrap();
+        assert!(
+            wait_until(|| written(&fake) >= 17),
+            "redraw after the burst"
+        );
+        thread::sleep(ANIMATION_MIN_INTERVAL * 3);
+        assert!(display.finish(Duration::from_secs(2)));
+        let after = successful_after(&fake, 16);
+        assert!(
+            after.iter().all(|target| *target == DisplayTarget::Key(0)),
+            "{after:?}"
+        );
+        assert!(after.len() <= 2, "the burst is coalesced: {after:?}");
+        assert_eq!(fake.lock().unwrap().writes.last().unwrap().jpeg, resting);
+    }
+
+    #[test]
+    fn a_failed_variable_redraw_is_retried() {
+        use crate::display_artwork::{VariableFaces, tests::profile_with_faces};
+        use cooltek_sdk_service::VariableValue;
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        // The page draw succeeds; the first redraw of key 0 is short.
+        fake.lock().unwrap().fail_after(
+            DisplayTarget::Key(0),
+            1,
+            SinkError::ShortWrite {
+                written: 10,
+                expected: 65,
+            },
+        );
+        let abort = Arc::new(AtomicBool::new(false));
+        let profile = profile_with_faces(Vec::new());
+        let variables = SharedVariables::new();
+        variables.declare(&profile.variables);
+        let artwork = VariableFaces::prepare(
+            &profile,
+            PreparedKeyArtwork::prepare_profile(&profile).unwrap(),
+            variables.clone(),
+        )
+        .unwrap();
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            artwork,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_variables(variables.clone());
+        let session = ProfileSession::new(profile).unwrap();
+        let (records_tx, records) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut display =
+            DisplayThread::spawn(display, session.clone(), Arc::clone(&abort), records_tx).unwrap();
+        display.request(&session, "software_mode");
+        records.recv_timeout(Duration::from_secs(2)).unwrap();
+        let resting = fake.lock().unwrap().writes[0].jpeg.clone();
+
+        variables
+            .set("state", VariableValue::Text("waiting".into()))
+            .unwrap();
+        let failed = records.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(failed["trigger"], "variable");
+        assert_eq!(failed["failed"][0]["key_index"], 0);
+        let failed_at = Instant::now();
+        // With no further change or request, the redraw is tried again, after the retry delay, and succeeds.
+        let retried = records.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(failed_at.elapsed() >= VARIABLE_RETRY - Duration::from_millis(50));
+        assert_eq!(retried["trigger"], "variable");
+        assert_eq!(retried["written"], json!([0]));
+        assert_eq!(retried["complete"], true);
+        let last = fake.lock().unwrap().writes.last().unwrap().clone();
+        assert_eq!(last.target, DisplayTarget::Key(0));
+        assert!(last.fault.is_none());
+        assert_ne!(last.jpeg, resting);
+        // Seen now: nothing more is drawn.
+        thread::sleep(VARIABLE_RETRY + ANIMATION_MIN_INTERVAL);
+        assert!(records.try_recv().is_err());
         assert!(display.finish(Duration::from_secs(2)));
     }
 

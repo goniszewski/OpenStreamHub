@@ -53,6 +53,32 @@ describe('profileCapabilities', () => {
     // A screenshot and a URL in separate bindings are not one sequence.
     expect(profileCapabilities(flat({ type: 'system', command: 'screenshot' }, { type: 'open_url', url: 'https://x.test' })).risk).toBe('elevated');
   });
+  it('is high for a terminal command and names each command line, folder and app in full', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+      { type: 'terminal_command', app: 'iterm2', command: 'codex --token "s3"\u200b', directory: '~/code' },
+      { type: 'terminal_command', app: 'terminal', command: 'claude' },
+    ));
+    expect(capabilities.risk).toBe('high');
+    expect(capabilities.riskReasons).toContain('A key opens a terminal window and runs a command line in your shell.');
+    expect(capabilities.counts).toEqual({ terminal_command: 3 });
+    // Distinct lines only, with invisible characters made visible.
+    expect(capabilities.terminalCommands).toEqual(['Terminal: “claude”', 'iTerm2: “codex --token "s3"\\u{200B}” in “~/code”']);
+    expect(capabilityLines(capabilities)[0]).toBe('Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: Terminal: “claude”; iTerm2: “codex --token "s3"\\u{200B}” in “~/code”.');
+    expect(profileCapabilities(flat({ type: 'launch_app', bundle_id: 'com.apple.Terminal' })).terminalCommands).toEqual([]);
+  });
+  it('is high for a key that answers AI agent prompts, wherever it sets agent_decision', () => {
+    const answer = { type: 'set_variable', name: 'agent_decision', value: 'allow' } as Action;
+    const nested = { type: 'conditional', when: { variable_is: { name: 'agent_state', value: 'waiting' } }, then: [answer], else: [{ type: 'toggle_mute' }] } as Action;
+    for (const action of [answer, nested, { type: 'toggle_variable', name: 'agent_decision' } as Action]) {
+      const capabilities = profileCapabilities(flat(action));
+      expect(capabilities.answersAgentPrompts, action.type).toBe(true);
+      expect(capabilities.risk).toBe('high');
+      expect(capabilityLines(capabilities)).toContain('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
+    }
+    const other = profileCapabilities(flat({ type: 'set_variable', name: 'agent_state', value: 'idle' } as Action));
+    expect(other).toMatchObject({ answersAgentPrompts: false, risk: 'normal' });
+  });
   it('is high for text that presses Return or contains a line break', () => {
     const enter = profileCapabilities(flat({ type: 'text', text: 'rm -rf ~', press_enter: true }));
     expect(enter).toMatchObject({ risk: 'high', textPressesEnter: true, textHasNewline: false });
@@ -357,5 +383,51 @@ describe('macro capabilities', () => {
     expect(macroLabel(first)).toBe('1 keystroke over 0:00.1');
     expect(macroStepLabel(first[0])).toBe('Press Command + C, held 80 ms');
     expect(macroStepLabel(capabilities.macros[1][0])).toBe('Press Return, held 40 ms');
+  });
+});
+
+describe('streamlabs capabilities', () => {
+  it('discloses every Streamlabs action in plain words, with names clipped', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'streamlabs_studio_mode' },
+      { type: 'streamlabs_transition' },
+      { type: 'multi_action', actions: [{ type: 'streamlabs_source_visibility', scene: 'Live', source: 'Face cam', op: 'hide' }, { type: 'streamlabs_audio', source: 'Mic', op: { adjust: -5 } }] },
+      { type: 'streamlabs_audio', source: 'Mic', op: { set: 40 } },
+      { type: 'streamlabs_audio', source: 'Mic', op: { mute: 'toggle' } },
+      { type: 'streamlabs_scene', scene: 'Live' },
+    ));
+    expect(capabilities.streamlabs).toEqual([
+      'Streamlabs studio mode: toggle', 'Streamlabs studio transition', 'Streamlabs source “Face cam” in scene “Live”: hide',
+      'Streamlabs audio source “Mic”: change the level by -5%', 'Streamlabs audio source “Mic”: set the level to 40%',
+      'Streamlabs audio source “Mic”: toggle mute', 'Streamlabs scene “Live”',
+    ]);
+    expect(capabilities.counts.streamlabs_audio).toBe(3);
+    // Scenes, studio mode, items and audio are local effects: normal, like their OBS counterparts (the multi-action above raises it).
+    expect(profileCapabilities(flat({ type: 'streamlabs_studio_mode' }, { type: 'streamlabs_scene', scene: 'Live' },
+      { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'toggle' }, { type: 'streamlabs_audio', source: 'Mic', op: { set: 0 } })).risk).toBe('normal');
+    expect(capabilities.obsOutputs).toEqual([]);
+    expect(capabilityLines(capabilities).find(line => line.startsWith('Controls Streamlabs Desktop'))).toContain('(when Streamlabs is turned on in Settings): Streamlabs studio mode: toggle; ');
+    expect(stepLabel({ type: 'streamlabs_audio', source: 'Mic', op: { mute: 'unmute' } })).toBe('Streamlabs audio source “Mic”: unmute');
+    expect(capabilityLines(profileCapabilities(flat({ type: 'toggle_mute' }))).some(text => text.includes('Streamlabs'))).toBe(false);
+  });
+
+  it('rates going live, recording and loading another scene collection as elevated', () => {
+    for (const action of [{ type: 'streamlabs_stream', confirm: 'press_twice' }, { type: 'streamlabs_record' }, { type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' }] as Action[]) {
+      expect(profileCapabilities(flat(action)).risk, JSON.stringify(action)).toBe('elevated');
+    }
+    expect(profileCapabilities(flat({ type: 'streamlabs_scene', scene: 'Live', collection: 'Podcast' })).streamlabs)
+      .toEqual(['Streamlabs scene “Live” in scene collection “Podcast” (loaded first when not active)']);
+    expect(profileCapabilities(flat({ type: 'streamlabs_stream', confirm: 'press_twice' })).streamlabs).toEqual(['Streamlabs stream: toggle (press twice)']);
+  });
+
+  it('flags unknown ops and very long names', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'streamlabs_audio', source: 'Mic', op: { set: 40, adjust: 5 } } as unknown as Action,
+      { type: 'streamlabs_source_visibility', scene: 'Live', source: 'Cam', op: 'on' } as unknown as Action,
+      { type: 'streamlabs_scene', scene: 'x'.repeat(5000) },
+    ));
+    expect(capabilities.streamlabs[0]).toContain('(unrecognised)');
+    expect(capabilities.streamlabs[1]).toBe('Streamlabs source “Cam” in scene “Live”: on (unrecognised)');
+    expect(capabilities.riskReasons).toContain(tooLongReason);
   });
 });

@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentToolsPanel } from './AgentToolsPanel';
 import { render } from './dom-test';
 import type { Rendered } from './dom-test';
-import type { AgentToolStatus } from './agent-tools-model';
+import type { AgentSignalsReply, AgentToolStatus } from './agent-tools-model';
 import type { Invoke } from './profile-session';
 
 let view: Rendered | null = null;
@@ -15,8 +15,10 @@ const status = (patch: Partial<AgentToolStatus> = {}): AgentToolStatus => ({
   claude_config: '{\n  "hooks": {}\n}', codex_config: '[[hooks.Stop]]', ...patch,
 });
 
+const signals = (patch: Partial<AgentSignalsReply> = {}): AgentSignalsReply => ({ claude: 'not_configured', codex: 'not_configured', answered: 0, last_answer_ms: null, ...patch });
+
 // An invoke that answers each command from `answers` and records the calls.
-function fakeInvoke(answers: Partial<Record<string, () => AgentToolStatus>>) {
+function fakeInvoke(answers: Partial<Record<string, () => AgentToolStatus | AgentSignalsReply>>) {
   const calls: string[] = [];
   const invoke = (async (command: string) => {
     calls.push(command);
@@ -53,7 +55,7 @@ describe('the AI agents panel in the DOM', () => {
     });
     view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);
     await settle();
-    expect(calls).toEqual(['agent_tool_status']);
+    expect(calls).toEqual(['agent_tool_status', 'agent_signals']);
     expect(view.container.textContent).toContain('/Applications/OpenStreamHub.app/Contents/MacOS/osh');
     expect(view.container.textContent).toContain('Not linked.');
     expect(view.container.textContent).toContain('export PATH="$HOME/.local/bin:$PATH"');
@@ -129,5 +131,52 @@ describe('the AI agents panel in the DOM', () => {
     view.click(claude());
     await settle();
     expect(view.$('[role="alert"]').textContent).toBe('Could not copy. Select the text and copy it yourself.');
+  });
+
+  it('shows a first-run checklist with osh done and the rest not done, plus the caveat', async () => {
+    const { invoke } = fakeInvoke({ agent_tool_status: () => status() });
+    view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);
+    await settle();
+    const steps = view.$$('.agent-tools-step');
+    expect(steps.map(step => step.getAttribute('data-done'))).toEqual(['true', 'false', 'false', 'false']);
+    expect(steps[0].textContent).toContain('osh is available');
+    expect(steps[1].textContent).toContain('Hooks configured for Claude Code');
+    // Without the signals (the fake invoke refuses agent_signals) nothing is guessed.
+    expect(steps[1].textContent).toContain('Not checked yet.');
+    expect(steps[3].textContent).toContain('No answer yet this session');
+    expect(view.$('.agent-tools-checklist').textContent).toContain('unverified');
+    expect(view.$$('.agent-tools-ready')).toEqual([]);
+  });
+
+  it('offers no copy action in the checklist when osh is missing', async () => {
+    const { invoke } = fakeInvoke({ agent_tool_status: () => status({ osh_path: null, claude_config: '', codex_config: '' }) });
+    view = render(<AgentToolsPanel desktop invoke={invoke} />);
+    await settle();
+    expect(view.$('.agent-tools-step-osh').getAttribute('data-done')).toBe('false');
+    expect(view.$$('.agent-tools-step button')).toEqual([]);
+  });
+
+  it('reads the agents and the answer count, and refreshes them on Check again', async () => {
+    let reply = signals({ claude: 'configured', codex: 'unreadable' });
+    const { invoke, calls } = fakeInvoke({ agent_tool_status: () => status(), agent_signals: () => reply });
+    view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);
+    await settle();
+    expect(view.$$('.agent-tools-step').map(step => step.getAttribute('data-done'))).toEqual(['true', 'true', 'false', 'false']);
+    expect(view.$('.agent-tools-step-codex').textContent).toContain('Could not read ~/.codex/config.toml');
+    expect(view.$('.agent-tools-step-codex button')).toBeTruthy();
+
+    reply = signals({ claude: 'configured', codex: 'not_configured' });
+    view.click(buttonNamed(view, 'Check again'));
+    await settle();
+    expect(calls).toEqual(['agent_tool_status', 'agent_signals', 'agent_tool_status', 'agent_signals']);
+    expect(view.$('.agent-tools-step-codex').textContent).toContain('Not found in ~/.codex/config.toml');
+  });
+
+  it('collapses to the ready line once both agents are configured and a prompt was answered', async () => {
+    const { invoke } = fakeInvoke({ agent_tool_status: () => status(), agent_signals: () => signals({ claude: 'configured', codex: 'configured', answered: 2, last_answer_ms: 5 }) });
+    view = render(<AgentToolsPanel desktop invoke={invoke} copy={async () => true} />);
+    await settle();
+    expect(view.$('.agent-tools-ready').textContent).toContain('Ready: agents can use the deck');
+    expect(view.$$('.agent-tools-checklist')).toEqual([]);
   });
 });

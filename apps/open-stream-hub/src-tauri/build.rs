@@ -78,6 +78,7 @@ fn main() {
             "autostart_status",
             "check_for_updates",
             "open_release_page",
+            "open_about_link",
             "set_autostart",
             "menubar_status",
             "set_menubar",
@@ -87,6 +88,7 @@ fn main() {
             "agent_tool_status",
             "link_agent_tool",
             "unlink_agent_tool",
+            "agent_signals",
         ]),
     ))
     .expect("could not generate the OpenStreamHub app permissions");

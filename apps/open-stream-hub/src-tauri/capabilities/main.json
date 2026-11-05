@@ -85,6 +85,7 @@
     "allow-autostart-status",
     "allow-check-for-updates",
     "allow-open-release-page",
+    "allow-open-about-link",
     "allow-set-autostart",
     "allow-menubar-status",
     "allow-set-menubar",
@@ -93,6 +94,7 @@
     "allow-start-permission-drag",
     "allow-agent-tool-status",
     "allow-link-agent-tool",
-    "allow-unlink-agent-tool"
+    "allow-unlink-agent-tool",
+    "allow-agent-signals"
   ]
 }

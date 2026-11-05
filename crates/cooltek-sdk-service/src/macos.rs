@@ -724,9 +724,9 @@ impl MacOsDispatcher {
     fn execute(&mut self, action: &Action) -> Result<(), String> {
         match action {
             Action::Volume { delta } => {
-                let current = self.output_volume()?;
-                let target = (i32::from(current) + i32::from(*delta)).clamp(0, 100);
-                self.apple_script(format!("set volume output volume {target}"))?;
+                // One process, not a query and a set: each osascript start costs
+                // about 0.12 s, and a spun knob or roller queues many steps.
+                self.apple_script(volume_step_script(*delta))?;
             }
             Action::SetVolume { percent } => {
                 self.apple_script(format!("set volume output volume {percent}"))?;
@@ -1336,6 +1336,17 @@ fn media_failure(output: &ProcessOutput) -> String {
     format!("{OSASCRIPT}: {} ({cause})", output.status)
 }
 
+/// The script that moves the output volume by `delta` points in one `osascript`
+/// run, clamped to 0 to 100 like the macOS volume itself.
+fn volume_step_script(delta: i16) -> String {
+    format!(
+        "set v to (output volume of (get volume settings)) + ({delta})\n\
+         if v < 0 then set v to 0\n\
+         if v > 100 then set v to 100\n\
+         set volume output volume v"
+    )
+}
+
 /// Builds a System Events keystroke from a validated key. A literal key is one
 /// ASCII alphanumeric character or space and cannot introduce AppleScript
 /// syntax; a named key is sent as an integer from the closed key-code table.
@@ -1804,32 +1815,24 @@ mod tests {
     }
 
     #[test]
-    fn volume_queries_before_setting_and_clamps_both_edges() {
-        for (initial, delta, target) in [("98\n", 5, 100), ("2\n", -5, 0), ("40\n", 4, 44)] {
-            let (mut dispatcher, state) = fake(vec![success(initial), success("")]);
+    fn volume_changes_in_one_process_and_clamps_in_the_script() {
+        for delta in [5, -5, 100, -100, 1] {
+            let (mut dispatcher, state) = fake(vec![success("")]);
             dispatcher.dispatch(&Action::Volume { delta }).unwrap();
             let state = state.lock().unwrap();
-            assert_eq!(state.requests.len(), 2);
+            assert_eq!(state.requests.len(), 1, "no separate query");
             assert_eq!(state.requests[0].program, OSASCRIPT);
             assert_eq!(
                 state.requests[0].args,
-                ["-e", "output volume of (get volume settings)"]
+                ["-e".to_string(), volume_step_script(delta)]
             );
-            assert_eq!(
-                state.requests[1].args,
-                [
-                    "-e".to_string(),
-                    format!("set volume output volume {target}")
-                ]
-            );
-            assert!(
-                state
-                    .requests
-                    .iter()
-                    .all(|request| request.timeout == PROCESS_TIMEOUT
-                        && request.output_limit == OUTPUT_LIMIT)
-            );
+            assert_eq!(state.requests[0].timeout, PROCESS_TIMEOUT);
+            assert_eq!(state.requests[0].output_limit, OUTPUT_LIMIT);
         }
+        let script = volume_step_script(-5);
+        assert!(script.contains("+ (-5)"));
+        assert!(script.contains("if v < 0 then set v to 0"));
+        assert!(script.contains("if v > 100 then set v to 100"));
     }
 
     #[test]
@@ -1882,20 +1885,6 @@ mod tests {
             assert!(dispatcher.dispatch(&action).is_err());
         }
         assert!(state.lock().unwrap().requests.is_empty());
-    }
-
-    #[test]
-    fn invalid_volume_response_stops_before_setting() {
-        for response in ["missing value", "101", "-1", "50.1", "0\n100"] {
-            let (mut dispatcher, state) = fake(vec![success(response)]);
-            assert!(
-                dispatcher
-                    .dispatch(&Action::Volume { delta: 1 })
-                    .unwrap_err()
-                    .contains("invalid output volume")
-            );
-            assert_eq!(state.lock().unwrap().requests.len(), 1);
-        }
     }
 
     #[test]
@@ -2491,57 +2480,6 @@ mod tests {
             .err()
             .unwrap();
         assert!(error.contains("action execution cancelled"));
-    }
-
-    #[test]
-    fn cancellation_between_query_and_setter_prevents_the_setter() {
-        struct CancellingRunner {
-            cancellation: Arc<AtomicBool>,
-            requests: Arc<Mutex<Vec<ProcessRequest>>>,
-        }
-        impl ProcessRunner for CancellingRunner {
-            fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
-                self.requests.lock().unwrap().push(ProcessRequest {
-                    program: request.program,
-                    args: request.args.clone(),
-                    stdin: request.stdin.clone(),
-                    env: request.env,
-                    timeout: request.timeout,
-                    output_limit: request.output_limit,
-                });
-                self.cancellation.store(true, Ordering::Release);
-                success("40")
-            }
-
-            fn cancellation(&self) -> Option<&AtomicBool> {
-                Some(&self.cancellation)
-            }
-        }
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let mut dispatcher = MacOsDispatcher {
-            runner: Box::new(CancellingRunner {
-                cancellation: Arc::new(AtomicBool::new(false)),
-                requests: requests.clone(),
-            }),
-            sleeper: Box::new(SystemSleeper),
-            obs: None,
-            streamlabs: None,
-            media_access_requested: false,
-            service_state: ServiceState::default(),
-            variables: Default::default(),
-        };
-        assert!(
-            dispatcher
-                .dispatch(&Action::Volume { delta: 5 })
-                .unwrap_err()
-                .contains("action execution cancelled")
-        );
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(
-            requests[0].args[1],
-            "output volume of (get volume settings)"
-        );
     }
 
     #[test]

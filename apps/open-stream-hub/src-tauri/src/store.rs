@@ -741,7 +741,9 @@ pub(crate) fn read_private_file(
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
+        // O_NONBLOCK: a path swapped for a FIFO after the check above must not block open(); it has no effect on a
+        // regular file, and the opened file is checked again below.
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options
         .open(path)

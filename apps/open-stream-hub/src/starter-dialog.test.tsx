@@ -118,4 +118,24 @@ describe('app presets in the chooser', () => {
     expect(markup).toContain('id must be 2 to 40 lowercase letters.');
     expect(renderPacks({ rejected: [{ file: 'old.json', issues: ['pack_version must be 1.'] }] })).toContain('1 preset file was not loaded');
   });
+  it('lists packs from the folder beside the shipped ones, marked, with the folder\'s refused files and a way to open it', () => {
+    const mine = { ...structuredClone(packs.find(pack => pack.id === 'zoom')!), id: 'my-app', name: 'My App', verified: true };
+    const opened: number[] = [];
+    const folder = { path: '/Users/me/Library/Application Support/osh/packs', packs: [mine], rejected: [{ file: 'old.json', issues: ['pack_version must be 1.'] }], skipped: 3, truncated: false };
+    const markup = renderPacks({ folder, rejected: [{ file: 'old.json', issues: ['x'] }], onOpenFolder: () => opened.push(1) });
+    expect(markup).toContain('data-pack="my-app"');
+    expect(markup.match(/From your packs folder/g)).toHaveLength(1);
+    // The author's own "verified" is not shown as checked for a folder pack.
+    expect(markup).not.toContain('Checked on a Mac');
+    expect(markup).toContain('Preset files you put in /Users/me/Library/Application Support/osh/packs are listed here');
+    expect(markup).toContain('2 preset files were not loaded');
+    expect(markup).toContain('3 more files in the packs folder were not read');
+    expect(markup).not.toContain('holds too many files');
+    expect(renderPacks({ folder: { ...folder, truncated: true } })).toContain('The packs folder holds too many files');
+    const tree = StarterDialog({ ...props('manager', null), packs, folder, onOpenFolder: () => opened.push(1) });
+    elementsOf(tree).find(element => (element.props as { className?: string }).className?.includes('pack-folder'))!.props.onClick!();
+    expect(opened).toEqual([1]);
+    expect(renderPacks({ onOpenFolder: () => {}, folderError: 'permission denied' })).toContain('The packs folder could not be read: permission denied');
+    expect(renderPacks({ folder })).not.toContain('Open packs folder');
+  });
 });

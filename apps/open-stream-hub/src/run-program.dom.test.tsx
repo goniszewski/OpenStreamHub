@@ -5,6 +5,7 @@ import { ActionFields } from './ActionFields';
 import { render } from './dom-test';
 import type { Rendered } from './dom-test';
 import type { BindingAction } from './contracts';
+import { VariablesContext } from './variables-context';
 
 let view: Rendered | null = null;
 afterEach(() => { view?.unmount(); view = null; });
@@ -59,5 +60,41 @@ describe('run_program fields in the DOM', () => {
     // An emptied folder is omitted, never written as "".
     type(directory(), '');
     expect(seen.at(-1)).toEqual({ type: 'run_program', program: '~/bin/lights' });
+  });
+
+  it('turns filling in variables on and off, and checks each reference against the declared variables', () => {
+    const seen: BindingAction[] = [];
+    view = render(<VariablesContext.Provider value={[{ name: 'scene', value: 'intro' }]}>
+      <Harness initial={{ type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{gone}}'] }} seen={seen} />
+    </VariablesContext.Provider>);
+    const toggle = () => view!.$<HTMLInputElement>('#program-variables');
+    // Off: {{ is plain text, so nothing is flagged.
+    expect(toggle().checked).toBe(false);
+    expect(view.container.querySelector('.field-error')).toBeNull();
+    expect(view.container.textContent).toContain('While off, {{ is passed as plain text.');
+    view.click(toggle());
+    expect(seen.at(-1)).toEqual({ type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{gone}}'], variables: true });
+    expect(view.container.querySelector('#program-arg-1-error')).toBeNull();
+    expect(view.$('#program-arg-2-error').textContent).toBe('Variable gone is not declared.');
+    expect(view.container.textContent).toContain('Uses scene, gone.');
+    type(view.$<HTMLInputElement>('#program-arg-2'), '{{ scene }}');
+    expect(view.$('#program-arg-2-error').textContent).toContain('Each {{ must begin a variable');
+    // Off again omits the flag rather than writing false.
+    view.click(toggle());
+    expect(seen.at(-1)).toEqual({ type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{ scene }}'] });
+    expect(view.container.querySelector('.field-error')).toBeNull();
+  });
+
+  it('hints that an argument starting with a number or text variable fails when the value starts with -', () => {
+    view = render(<VariablesContext.Provider value={[{ name: 'takes', value: 0 }, { name: 'live', value: false }, { name: 'scene', value: 'intro' }]}>
+      <Harness initial={{ type: 'run_program', program: '/a', args: ['{{takes}}', '{{live}}', '--n={{takes}}', '{{scene}}'], variables: true }} seen={[]} />
+    </VariablesContext.Provider>);
+    expect(view.$('#program-arg-1-hint').textContent).toBe('When takes starts with - (a negative number), the press refuses to run the program. Write it as --option={{takes}} if the program takes one.');
+    expect(view.$('#program-arg-1').getAttribute('aria-describedby')).toBe('program-arg-1-hint');
+    // A bool never starts with -, and a written prefix keeps the value from leading.
+    expect(view.container.querySelector('#program-arg-2-hint')).toBeNull();
+    expect(view.container.querySelector('#program-arg-3-hint')).toBeNull();
+    expect(view.$('#program-arg-4-hint').textContent).toContain('text such as --all');
+    expect(view.container.querySelector('.field-error')).toBeNull();
   });
 });

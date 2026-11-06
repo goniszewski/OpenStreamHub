@@ -1042,3 +1042,35 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .about-link { color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
 .about-link:hover { text-decoration-thickness:2px; }
 .program-args { border:0; padding:0; margin-left:0; margin-right:0; display:grid; gap:8px; }.program-args legend { font-size:12px; font-weight:500; margin-bottom:8px; padding:0; }.program-arg { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; align-items:center; }.program-arg .field-error { grid-column:1 / -1; margin:0; }.program-args>.button { justify-self:start; }
+
+/* Gesture picker: icon tiles; a gesture with no action reads as unused (muted, dashed, no accent). */
+.field-label { display:block; font-weight:600; margin:0 0 9px; }
+.gesture-grid { display:grid; grid-template-columns:repeat(var(--gesture-columns,2),minmax(0,1fr)); gap:6px; }
+.gesture-tile { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; min-height:60px; padding:9px 6px 8px; border:1px solid var(--line); border-radius:9px; background:var(--control); font-size:12px; font-weight:550; line-height:1.2; text-align:center; overflow-wrap:anywhere; }
+.gesture-tile svg { flex:none; color:var(--accent); }
+.gesture-tile { padding-top:20px; }
+.gesture-status { position:absolute; top:5px; right:6px; font-size:9px; font-weight:650; line-height:1; letter-spacing:.3px; text-transform:uppercase; padding:2px 4px; border-radius:4px; }
+.gesture-tile.bound .gesture-status { color:var(--accent); background:color-mix(in srgb,var(--accent) 16%,transparent); }
+.gesture-tile.unbound .gesture-status { color:color-mix(in srgb,var(--text) 80%,var(--muted)); background:color-mix(in srgb,var(--text) 10%,transparent); }
+.gesture-tile.unbound { border-style:dashed; background:transparent; color:var(--muted); font-weight:500; }
+.gesture-tile.unbound svg { color:var(--muted); opacity:.7; }
+.gesture-tile:hover:enabled { border-color:var(--accent); }
+.gesture-tile.checked { border-color:var(--accent); background:var(--selected); color:var(--text); box-shadow:inset 0 0 0 1px var(--accent); }
+.gesture-tile.checked.unbound svg { opacity:1; }
+
+/* Controls and keys with nothing assigned: no accent, dimmed. */
+.module-image .image-control.bound:not(.selected):not(.key-display) { border-color:#a284ff80; }
+.module-image.knob-image .image-control.bound:not(.selected) { border-color:transparent; box-shadow:0 0 0 2px #a284ff80; }
+.image-control.key-display.unbound { opacity:.45; box-shadow:none; }
+.image-control.key-display.unbound:hover,.image-control.key-display.unbound:focus-visible { opacity:.8; }
+.image-control.key-display.unbound.selected { opacity:.85; }
+.keypad-tile.unbound:not(.selected) { border-style:dashed; background:transparent; color:var(--muted); }
+
+/* Two-column workspace: the canvas and the inspector scroll on their own, so scrolling one never moves the other.
+   Banners and the module drawer stay above both. The stacked layout below 1191px keeps one page scroll. */
+@media(min-width:1191px) {
+  .main-content.workspace-page { display:flex; flex-direction:column; overflow:hidden; }
+  .main-content.workspace-page>* { flex:none; }
+  .main-content.workspace-page>.device-layout { flex:1 1 auto; min-height:0; grid-template-rows:minmax(0,1fr); }
+  .workspace-page .workspace-column,.workspace-page .inspector { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+}

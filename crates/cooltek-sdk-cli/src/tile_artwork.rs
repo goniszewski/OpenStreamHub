@@ -9,7 +9,7 @@ use crate::dial_artwork::glyph;
 
 /// Key image side in pixels.
 const SIDE: u32 = 72;
-const BACKGROUND: [u8; 3] = [36, 52, 78];
+const BACKGROUND: [u8; 3] = [0, 0, 0];
 const WHITE: [u8; 3] = [255, 255, 255];
 /// Characters per line at the large and the small label size.
 const LARGE_CHARS: usize = 6;

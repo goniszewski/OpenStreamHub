@@ -2,6 +2,7 @@ import type { BindingAction, BranchStep, Condition, KeypadSlot, Profile, Variabl
 import type { BindingEntry } from './binding-model';
 import { listBindings } from './binding-model';
 import { groupItems, groupMode, isGroup, variableKind } from './flow-model';
+import { programReferences } from './action-model';
 
 // Which variables the actions of a profile use, and the edits that keep every use in step with the declarations.
 
@@ -24,6 +25,8 @@ export function actionVariableNames(action: AnyAction | null | undefined, into: 
       conditionNames(action.when, into);
       action.then.concat(action.else ?? []).forEach(step => actionVariableNames(step, into));
       break;
+    // With variables on, each {{name}} in an argument is a use; malformed text (refused by the service) names none.
+    case 'run_program': into.push(...programReferences(action).names); break;
     default: break;
   }
   return into;
@@ -82,6 +85,11 @@ function renameAction<A extends AnyAction>(action: A, from: string, to: string):
       const next = { ...step, when: renameCondition(step.when, from, to), then: step.then.map(item => renameAction(item, from, to)) };
       return (step.else ? { ...next, else: step.else.map(item => renameAction(item, from, to)) } : next) as A;
     }
+    // Names are whole tokens between {{ and }}, so replacing the reference renames exactly that variable. With variables
+    // off the references are renamed too, so turning variables back on still names declared variables. Changed
+    // arguments are a new program for the Execute confirmation either way.
+    case 'run_program':
+      return (step.args ? { ...step, args: step.args.map(arg => arg.split(`{{${from}}}`).join(`{{${to}}}`)) } : step) as A;
     default: return action;
   }
 }

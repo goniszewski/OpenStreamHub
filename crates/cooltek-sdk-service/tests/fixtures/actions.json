@@ -560,6 +560,23 @@
       "directory": "/tmp"
     },
     {
+      "type": "run_program",
+      "program": "/usr/local/bin/obs-tool",
+      "args": [
+        "--scene={{scene}}",
+        "{{takes}}/{{live}}",
+        "}} {"
+      ],
+      "variables": true
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        "{{ plain text while off"
+      ]
+    },
+    {
       "type": "multi_action",
       "actions": [
         {
@@ -1285,6 +1302,43 @@
           "press_enter": true
         }
       ]
+    },
+    {
+      "type": "run_program",
+      "program": "/a",
+      "args": [
+        "{{"
+      ],
+      "variables": true
+    },
+    {
+      "type": "run_program",
+      "program": "/a",
+      "args": [
+        "{{ scene }}"
+      ],
+      "variables": true
+    },
+    {
+      "type": "run_program",
+      "program": "/a",
+      "args": [
+        "{{Scene}}"
+      ],
+      "variables": true
+    },
+    {
+      "type": "run_program",
+      "program": "/a",
+      "args": [
+        "a {{b}} {{"
+      ],
+      "variables": true
+    },
+    {
+      "type": "run_program",
+      "program": "/a",
+      "variables": "yes"
     },
     {
       "type": "run_program",

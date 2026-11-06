@@ -117,6 +117,9 @@ pub struct Work {
     /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
     /// the rest across a profile swap.
     pub variables: Vec<Variable>,
+    /// The [`ProfileSession::id`] of the profile that planned this work, so an action that must not outlive its
+    /// profile can tell it was swapped out meanwhile (0 when unknown, or when coalescing mixed two profiles).
+    pub profile: u64,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -165,6 +168,7 @@ pub fn plan_report(
         dropped_dial_function_count: 0,
         merge_barrier: false,
         variables: session.profile().variables.clone(),
+        profile: session.id(),
     })
 }
 
@@ -412,6 +416,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         dispatcher.set_service_state(ServiceState {
             timer_running: !timers.is_empty(),
             variables: work.variables.clone(),
+            profile: work.profile,
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -468,10 +473,14 @@ pub fn loggable(action: &Action) -> Value {
             program,
             args,
             directory,
+            variables,
         } => {
             let mut value = json!({"type":"run_program", "program_chars":program.chars().count(), "args":args.len()});
             if let Some(directory) = directory {
                 value["directory_chars"] = json!(directory.chars().count());
+            }
+            if *variables {
+                value["variables"] = json!(true);
             }
             value
         }
@@ -785,6 +794,7 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
         }
     }
 
@@ -1533,10 +1543,21 @@ mod tests {
             program: "~/bin/deploy".into(),
             args: vec!["--token".into(), "s3cr3t".into()],
             directory: Some("/tmp".into()),
+            variables: false,
         };
         assert_eq!(
             loggable(&program),
             json!({"type":"run_program", "program_chars":12, "args":2, "directory_chars":4})
+        );
+        let filled = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["{{token}}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert_eq!(
+            loggable(&filled),
+            json!({"type":"run_program", "program_chars":2, "args":1, "variables":true})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

@@ -427,10 +427,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                                 .map_err(|error| error.to_string())?;
                             let declared = profile.variables.clone();
                             let engine = live_bindings(profile, module, false, DialContent::Off)?;
+                            let id = engine.id();
                             *slot.lock().map_err(|_| "the profile slot failed".to_string())? =
                                 Some(engine);
-                            // Declared now, so a new variable can be set before the next press.
-                            variables.declare(&declared);
+                            // Declared now, so a new variable can be set before the next press;
+                            // the id marks presses the previous profile planned as swapped out.
+                            variables.swap(&declared, id);
                             Ok(())
                         }) as cooltek_sdk_cli::control::ProfileSwap
                     }),
@@ -1793,6 +1795,7 @@ mod control_regressions {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
         };
         let mut output = Vec::new();
         process_work(

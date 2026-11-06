@@ -763,6 +763,7 @@ mod tests {
             program: "/usr/bin/true".into(),
             args: vec![],
             directory: None,
+            variables: false,
         };
         for action in [
             program.clone(),

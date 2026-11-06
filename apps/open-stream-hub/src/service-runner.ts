@@ -189,7 +189,7 @@ function describeAction(action: unknown): string {
     // The service logs only lengths and the argument count, never the path or the arguments.
     case 'run_program': {
       const args = typeof action.args === 'number' ? action.args : Array.isArray(action.args) ? action.args.length : 0;
-      return `run a program (${args} argument${args === 1 ? '' : 's'})`;
+      return `run a program (${args} argument${args === 1 ? '' : 's'}${action.variables === true ? ', variables filled in' : ''})`;
     }
     // Only the origin: paths and queries can carry tokens.
     case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;

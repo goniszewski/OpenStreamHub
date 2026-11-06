@@ -534,6 +534,44 @@
       "app": "terminal",
       "command": "ls -la",
       "directory": "/tmp"
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true"
+    },
+    {
+      "type": "run_program",
+      "program": "~/bin/lights",
+      "args": [
+        "--scene",
+        "on air",
+        "",
+        "$(id) 'x' ~"
+      ],
+      "directory": "~/Projects/my app"
+    },
+    {
+      "type": "run_program",
+      "program": "/opt/homebrew/bin/hass-cli",
+      "args": [
+        "state",
+        "toggle"
+      ],
+      "directory": "/tmp"
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "run_program",
+          "program": "/usr/bin/true"
+        },
+        {
+          "type": "text",
+          "text": "hi",
+          "press_enter": true
+        }
+      ]
     }
   ],
   "invalid": [
@@ -739,7 +777,7 @@
     },
     {
       "type": "obs_scene",
-      "scene": "zero​width"
+      "scene": "zero\u200bwidth"
     },
     {
       "type": "obs_scene",
@@ -824,7 +862,7 @@
     {
       "type": "obs_filter",
       "source": "Webcam",
-      "filter": "zero​width",
+      "filter": "zero\u200bwidth",
       "op": "on"
     },
     {
@@ -859,7 +897,7 @@
     },
     {
       "type": "obs_profile",
-      "name": "zero​width"
+      "name": "zero\u200bwidth"
     },
     {
       "type": "obs_profile",
@@ -1044,7 +1082,7 @@
     },
     {
       "type": "streamlabs_scene",
-      "scene": "zero​width"
+      "scene": "zero\u200bwidth"
     },
     {
       "type": "streamlabs_scene",
@@ -1246,6 +1284,132 @@
           "text": "hi",
           "press_enter": true
         }
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "true"
+    },
+    {
+      "type": "run_program",
+      "program": "bin/tool"
+    },
+    {
+      "type": "run_program",
+      "program": "~user/tool"
+    },
+    {
+      "type": "run_program",
+      "program": "~"
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/local/bin/"
+    },
+    {
+      "type": "run_program",
+      "program": ""
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/tool\nid"
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        "a\nb"
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        "tab\tx"
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        "zw\u200bsp"
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+        "24",
+        "25",
+        "26",
+        "27",
+        "28",
+        "29",
+        "30",
+        "31",
+        "32"
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": [
+        7
+      ]
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "args": "one"
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "directory": "relative"
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "directory": ""
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "directory": null
+    },
+    {
+      "type": "run_program",
+      "program": "/usr/bin/true",
+      "shell": "/bin/sh"
+    },
+    {
+      "type": "run_program",
+      "args": [
+        "x"
       ]
     }
   ]

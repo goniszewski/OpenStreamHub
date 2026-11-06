@@ -33,7 +33,7 @@ pub use keypad::{
     KeyFace, KeypadBinding, KeypadLayout, KeypadNavigation, KeypadPage, KeypadResolution,
     KeypadTile, ProfileResolution, ProfileSession,
 };
-pub use macos::MacOsDispatcher;
+pub use macos::{MacOsDispatcher, kill_running_programs};
 pub use profile::{
     Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,

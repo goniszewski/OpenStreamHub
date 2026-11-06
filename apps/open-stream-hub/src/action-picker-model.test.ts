@@ -17,7 +17,7 @@ describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
       'launch_app', 'open_url', 'media', 'system', 'obs', 'streamlabs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable',
-      'terminal_command'];
+      'terminal_command', 'run_program'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });
@@ -86,6 +86,9 @@ describe('scope filtering', () => {
     // A terminal session is never a step: no sequence can type into the window it opens.
     expect(offered).not.toContain('terminal_command');
     expect(types(entriesForScope('branch'))).not.toContain('terminal_command');
+    // A program runs without a window, under the sequence's deadline: it may be a step.
+    expect(offered).toContain('run_program');
+    expect(types(entriesForScope('branch'))).toContain('run_program');
     expect(offered).toContain('toggle_mute');
     expect(offered).toContain('obs');
     expect(offered).toContain('streamlabs');

@@ -677,11 +677,12 @@ export class ProfileSession {
       this.set({ importError: reason instanceof ImportError ? reason.message : `This file is not a valid profile: ${errorMessage(reason)}` });
       return;
     }
-    // The backend creates it: one that opens a terminal and runs a command, or answers AI agent prompts, is dry run
+    // The backend creates it: one that opens a terminal and runs a command, runs a program, or answers AI agent prompts, is dry run
     // only until the user reviews it and allows it to execute actions (import_flags::needs_review decides; this only
     // words the notice).
     const capabilities = profileCapabilities(profile);
     const reviewed = capabilities.terminalCommands.length > 0 ? 'It opens a terminal and runs a command'
+      : capabilities.programs.length > 0 ? 'It runs a program'
       : capabilities.answersAgentPrompts ? 'It answers AI agent permission prompts' : null;
     this.guard('import this profile', () => {
       void this.createProfile(() => profile, 'Importing profile', importName,

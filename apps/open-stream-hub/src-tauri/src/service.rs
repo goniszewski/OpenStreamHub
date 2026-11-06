@@ -458,7 +458,9 @@ fn interrupt(child: &mut Child) {
 }
 
 /// SIGKILLs the child's whole process group (it is the group leader), so
-/// in-flight system tools do not outlive it.
+/// in-flight system tools do not outlive it. A `run_program` child leads a
+/// group of its own and is out of reach here: one running at this moment
+/// keeps running (the service kills them itself on its other exits).
 fn force_kill(child: &mut Child) {
     #[cfg(unix)]
     if let Ok(pid) = libc::pid_t::try_from(child.id()) {

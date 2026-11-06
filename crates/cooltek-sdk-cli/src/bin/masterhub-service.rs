@@ -179,6 +179,13 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    // A panic can end the process without the normal stop of a running
+    // program, which leads a process group of its own: kill it first.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        cooltek_sdk_service::kill_running_programs();
+        report(info);
+    }));
     match run(Cli::parse()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

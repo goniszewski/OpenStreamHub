@@ -8,7 +8,7 @@ import { defaultBindingAction, pickerWebStorage } from './action-picker-model';
 import { appIcons, appListKey, appOptions, appSections, closedAppList, openAppList, queryAppList, readRecentApps, recordRecentApp, triggerKey } from './app-picker-model';
 import type { AppListState } from './app-picker-model';
 import { dataUrl } from './artwork-model';
-import type { ObsStepAction, ObsStepType, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType, TerminalCommandAction } from './action-model';
+import type { ObsStepAction, ObsStepType, RunProgramAction, StreamlabsAudioMode, StreamlabsStepAction, StreamlabsStepType, TerminalCommandAction } from './action-model';
 import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
 import { VariableActionFields } from './VariableFields';
@@ -28,7 +28,7 @@ import {
   conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioLimits, streamlabsAudioMode, streamlabsAudioModeLabels, streamlabsNameIssue, streamlabsOperationLabels,
-  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, textIssue, timerLabelIssue, timerSeconds,
+  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue, defaultStreamlabsAudioOp,
 } from './action-model';
 
@@ -274,6 +274,65 @@ function TerminalCommandFields({ action, onChange }: { action: TerminalCommandAc
       onChange={event => onChange(withDirectory(event.target.value), 'terminal-directory')} />
     {directoryIssue && <p id="terminal-directory-error" className="field-error" role="alert">{directoryIssue}</p>}
     <Hint hint={t('actions.terminal.hint')}>{t('actions.terminal.more', { max: maxTerminalCommandBytes })}</Hint>
+  </div>;
+}
+
+// A program run directly: its path, its arguments one field each (passed exactly as typed, never split or expanded) and an
+// optional folder. No arguments and an empty folder are omitted, never written as [] or "" (which the service rejects
+// for the folder).
+function RunProgramFields({ prefix, action, onChange }: { prefix: string; action: RunProgramAction; onChange(action: StepAction, field?: string): void }) {
+  const t = useT();
+  const id = (name: string) => `${prefix}${name}`;
+  const args = action.args ?? [];
+  // Stable row keys, so removing an argument keeps focus on the one being edited; kept as long as args.
+  const nextKey = useRef(0);
+  const keys = useRef<number[]>([]);
+  while (keys.current.length < args.length) keys.current.push(nextKey.current++);
+  keys.current.length = args.length;
+  const pathIssue = programPathIssue(action.program);
+  const listIssue = programArgsIssue(args);
+  const directoryIssue = terminalDirectoryIssue(action.directory ?? '');
+  const withArgs = (next: string[]): RunProgramAction => {
+    const { args: _previous, ...rest } = action;
+    return next.length ? { ...rest, args: next } : rest;
+  };
+  const withDirectory = (directory: string): RunProgramAction => {
+    const { directory: _previous, ...rest } = action;
+    return directory ? { ...rest, directory } : rest;
+  };
+  return <div className="action-fields">
+    <label htmlFor={id('program-path')}>{t('actions.program.path')}</label>
+    <input id={id('program-path')} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={action.program}
+      placeholder={t('actions.program.pathPlaceholder')}
+      aria-invalid={!!pathIssue} aria-describedby={pathIssue ? id('program-path-error') : undefined}
+      onChange={event => onChange({ ...action, program: event.target.value }, 'program-path')} />
+    {pathIssue && <p id={id('program-path-error')} className="field-error" role="alert">{pathIssue}</p>}
+    <fieldset className="spaced-label program-args">
+      <legend>{t('actions.program.args')}</legend>
+      {args.map((arg, index) => {
+        const argId = id(`program-arg-${index + 1}`);
+        const issue = programArgIssue(arg);
+        return <div key={keys.current[index]} className="program-arg">
+          <input id={argId} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={arg}
+            aria-label={t('actions.program.argNumbered', { number: index + 1 })}
+            aria-invalid={!!issue} aria-describedby={issue ? `${argId}-error` : undefined}
+            onChange={event => onChange(withArgs(args.map((item, at) => at === index ? event.target.value : item)), `program-arg-${index + 1}`)} />
+          <button type="button" className="button compact" aria-label={t('actions.program.removeArg', { number: index + 1 })}
+            onClick={() => { keys.current.splice(index, 1); onChange(withArgs(args.filter((_, at) => at !== index))); }}><Trash2 size={16} /></button>
+          {issue && <p id={`${argId}-error`} className="field-error" role="alert">{issue}</p>}
+        </div>;
+      })}
+      <button type="button" className="button compact" disabled={args.length >= maxRunProgramArgs}
+        onClick={() => onChange(withArgs([...args, '']), `program-arg-${args.length + 1}`)}><Plus size={16} />{t('actions.program.addArg')}</button>
+      {listIssue && <p className="field-error" role="alert">{listIssue}</p>}
+    </fieldset>
+    <label className="spaced-label" htmlFor={id('program-directory')}>{t('actions.program.directory')}</label>
+    <input id={id('program-directory')} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={action.directory ?? ''}
+      placeholder={t('actions.terminal.directoryPlaceholder')}
+      aria-invalid={!!directoryIssue} aria-describedby={directoryIssue ? id('program-directory-error') : undefined}
+      onChange={event => onChange(withDirectory(event.target.value), 'program-directory')} />
+    {directoryIssue && <p id={id('program-directory-error')} className="field-error" role="alert">{directoryIssue}</p>}
+    <Hint hint={t('actions.program.hint')}>{t('actions.program.more', { max: maxRunProgramArgs })}</Hint>
   </div>;
 }
 
@@ -536,6 +595,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, s
           : t('actions.shortcut.note')}</p>
       </div>;
     }
+    case 'run_program': return <RunProgramFields prefix={prefix} action={action} onChange={onChange} />;
     case 'launch_app': return <LaunchAppFields inputId={id('app-bundle-id')} bundleId={action.bundle_id} invoke={invoke} onChange={bundleId => onChange({ type: 'launch_app', bundle_id: bundleId }, 'bundle-id')} />;
     case 'open_url': {
       const issue = urlIssue(action.url);

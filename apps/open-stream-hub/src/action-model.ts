@@ -146,7 +146,7 @@ export const isFaderTemplate = (action: { type: string } | null | undefined): ac
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
-  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'],
+  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'], ['run_program', 'Run program'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
@@ -168,6 +168,7 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'shortcut': return { type, key: 'c', modifiers: ['command'] };
     case 'launch_app': return { type, bundle_id: 'com.apple.finder' };
     case 'open_url': return { type, url: 'https://example.com' };
+    case 'run_program': return { type, program: '/usr/bin/say', args: ['Hello'] };
     case 'text': return { type, text: 'Hello', press_enter: false };
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
@@ -429,6 +430,32 @@ function terminalLineIssue(value: string): string | null {
   if (invisibleTextCharacter.test(value)) return 'Remove invisible characters (zero-width spaces, direction marks, line or paragraph separators).';
   return null;
 }
+
+// A run_program's limits (Action::MAX_RUN_PROGRAM_* in profile.rs): the path, each argument and the folder are one line
+// of at most 512 bytes; at most 32 arguments, 4096 bytes in all.
+export const maxRunProgramBytes = maxTerminalCommandBytes;
+export const maxRunProgramArgs = 32;
+export const maxRunProgramArgsBytes = 4096;
+export type RunProgramAction = Extract<BindingAction, { type: 'run_program' }>;
+
+// Mirrors the run_program program check in profile.rs: a file path starting with / or ~/.
+export function programPathIssue(program: string): string | null {
+  if (!program) return 'Enter the full path of the program, such as /usr/bin/say.';
+  if (!(program.startsWith('/') || program.startsWith('~/')) || program.endsWith('/')) return 'Use the full path of a file, starting with / or ~/.';
+  return terminalLineIssue(program);
+}
+
+// Mirrors the run_program argument checks in profile.rs. An empty argument is allowed.
+export function programArgIssue(arg: string): string | null {
+  return arg ? terminalLineIssue(arg) : null;
+}
+
+export function programArgsIssue(args: ReadonlyArray<string>): string | null {
+  if (args.length > maxRunProgramArgs) return `Use at most ${maxRunProgramArgs} arguments.`;
+  if (args.reduce((total, arg) => total + utf8.encode(arg).length, 0) > maxRunProgramArgsBytes) return `The arguments may total at most ${maxRunProgramArgsBytes} bytes.`;
+  return null;
+}
+
 
 // Mirrors the terminal_command command check in profile.rs.
 export function terminalCommandIssue(command: string): string | null {

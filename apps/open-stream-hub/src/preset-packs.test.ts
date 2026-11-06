@@ -56,6 +56,7 @@ describe('packIssues', () => {
   it('refuses actions a pack may not hold, and bad shortcuts', () => {
     expect(packActionIssue({ type: 'text', text: 'hello', press_enter: false })).toContain('cannot hold a "text" action');
     expect(packActionIssue({ type: 'open_url', url: 'https://example.com' })).toContain('cannot hold a "open_url" action');
+    expect(packActionIssue({ type: 'run_program', program: '/usr/bin/true' })).toContain('cannot hold a "run_program" action');
     expect(packActionIssue({ type: 'shortcut', key: 'A', modifiers: [] })).toContain('is not a key');
     expect(packActionIssue({ type: 'shortcut', key: 'a', modifiers: ['command', 'command'] })).toContain('modifier twice');
     expect(packActionIssue({ type: 'shortcut', key: 'play_pause', modifiers: ['shift'] })).toContain('cannot combine');

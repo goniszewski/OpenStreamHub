@@ -179,8 +179,11 @@ impl TileIcon {
                 SystemCommand::Screenshot => Self::Screenshot,
             },
             Action::OpenUrl { .. } => Self::Web,
-            // A terminal session opens an app window, like a launch.
-            Action::LaunchApp { .. } | Action::TerminalCommand { .. } => Self::Application,
+            // A terminal session opens an app window, and a program is an app
+            // without one; both read as a launch.
+            Action::LaunchApp { .. }
+            | Action::TerminalCommand { .. }
+            | Action::RunProgram { .. } => Self::Application,
             Action::Text { .. } => Self::Text,
             Action::MultiAction { .. }
             | Action::Conditional { .. }

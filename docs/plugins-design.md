@@ -8,6 +8,7 @@ Status (6 November 2026): **proposal, decisions agreed, nothing built.** Plugins
 - **Only the module service processes execute actions.** Each module runs as its own `masterhub-service` child process (`apps/open-stream-hub/src-tauri/src/service.rs`). The app writes a profile snapshot, starts the process, relays its JSONL stdout and writes control messages to its stdin. It never runs an action itself. Live / Test mode is applied by restarting that process.
 - **A local socket exists** (`apps/open-stream-hub/src-tauri/src/ingress.rs`): JSON lines, a 0700 directory, one token that is new at every launch. `osh` is its client. It supports `ping`, `set_variable` and `get_variables`, and refuses outside writes to `agent_decision` other than `none`. It is built for short requests: each line must arrive within 2 s, lines are at most 8 KB, and at most 8 connections are served at once.
 - **Variables feed the UI.** Key faces can follow a variable and if / else conditions can read one. `set_variable` is sent to every running module and succeeds only when a module declares the variable, so a profile must declare the variables an outside tool sets.
+- **Data-only packs exist.** App preset packs (`apps/open-stream-hub/presets/*.json`, checked by `preset-packs.ts`) are ready-made profiles with a licence and a source, limited to shortcuts, media, system, volume and simple OBS actions, and they run only as a dry run until reviewed. They are bundled at build time; a pack cannot yet be added by dropping a file in a folder.
 - **Live sessions confirm capabilities.** The Execute confirmation lists what a profile can do, and `capabilities.rs` pauses a Live session for a new confirmation when a saved profile adds a capability the running one did not have.
 
 So data going **into** the deck works: an outside tool sets a variable and faces and conditions react. What is missing:
@@ -92,10 +93,10 @@ An invoke has a deadline like a `multi_action` step (15 s overall, `MULTI_ACTION
 
 ### Profile format
 
-One new variant, `Action::Plugin { plugin, min_version, action, params }`, with a profile schema bump (5 to 6). `plugin` is the manifest's reverse-DNS id. Params are validated against the manifest. Rules:
+One new variant, `Action::Plugin { plugin, min_version, action, params }`. `plugin` is the manifest's reverse-DNS id. Params are validated against the manifest. Rules:
 
 - A profile that uses a missing plugin, or one older than `min_version`, loads with a clear warning and does not run that key. The same applies to an imported profile.
-- A build older than the schema refuses the profile, as it does today for schema 5 features.
+- A build without plugin support refuses the profile, because it does not know the action type. This is how `terminal_command` shipped within schema 5, so a new action does not need a schema bump; one is needed only if a change would make an older build misread a profile (`Profile::CURRENT_SCHEMA`).
 - It works as a step of `multi_action` and of a conditional, under the step deadline. The reason `terminal_command` is barred (it opens a window) does not apply.
 
 ### Variables in parameters
@@ -118,12 +119,24 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 ## Suggested order
 
-1. **Data-only packs.** Starter profiles and icons.
-2. **A "run program" action.** Run an executable with arguments, no Terminal window, allowed as a step, with the step deadline. A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
+1. **Data-only packs.** Built: the app preset packs. Still open: loading packs dropped into a folder in the app data folder, checked by the same rules.
+2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
 3. **Plugin protocol and action providers.** Manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`.
 4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images.
 5. **Community readiness.** A stable, versioned manifest schema, author docs and the complete trust UI.
 6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand.
+
+## The "run program" action
+
+`run_program` runs one executable directly, without a shell or a Terminal window. Agreed rules:
+
+- **Shape.** `{"type": "run_program", "program": "/usr/local/bin/tool", "args": ["--flag", "value"], "directory": "~/code"}`. `program` is an absolute path or starts with `~/`. `args` is optional, at most 32 items. `directory` is optional, with the `terminal_command` rules (`~`, `/…` or `~/…`); without it the program starts in the home folder. Every field is one line without control or invisible characters, so what runs is what was reviewed.
+- **No shell.** The arguments are passed as they are. Nothing is expanded, quoted or split, and a leading `~/` is expanded only in `program` and `directory`.
+- **Fixed arguments first.** Variable references in arguments come later, with the syntax chosen for plugin parameters.
+- **Deadline.** 15 s as a key's own action. As a `multi_action` or `conditional` step it gets what is left of the sequence's 15 s deadline. At the deadline the program and every process in its process group are killed, and the press fails. Processes it leaves running after a normal exit are not touched, so a launcher still works.
+- **Result.** A nonzero exit, or a program that cannot start, fails the press. The program's output is discarded and never logged or shown, as for `terminal_command`, because it can echo tokens passed in the arguments. The log records only lengths and the argument count.
+- **Confirmation.** Each distinct program, arguments and directory is one capability item in the Execute confirmation, shown in full. Changing any of them in a running Live profile pauses the session for a new confirmation. An imported profile that holds one needs review, like `terminal_command`.
+- **Packs and starters.** Neither may contain `run_program`.
 
 ## Non-goals
 

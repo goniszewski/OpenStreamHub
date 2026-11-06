@@ -190,6 +190,13 @@ export const en = {
   'starter.loadFile': 'Load a preset file…',
   'starter.loadFileLabel': 'Load a preset pack file',
   'starter.rejected': { one: '{count} preset file was not loaded', other: '{count} preset files were not loaded' },
+  'starter.fromFolder': 'From your packs folder',
+  'starter.folderName': 'the packs folder',
+  'starter.folderNote': 'Preset files you put in {path} are listed here, checked by the same rules, each time this window opens.',
+  'starter.folderError': 'The packs folder could not be read: {error}',
+  'starter.folderSkipped': { one: '{count} more file in the packs folder was not read; a folder holds at most 64 packs.', other: '{count} more files in the packs folder were not read; a folder holds at most 64 packs.' },
+  'starter.folderTruncated': 'The packs folder holds too many files (over 10,000), so some packs may be missing here. Move files out that are not packs.',
+  'starter.openFolder': 'Open packs folder',
   'starter.safety': 'Starters hold nothing that types into apps, opens programs or web pages. A run starts as a dry run that only logs what would happen; executing actions always asks for confirmation first.',
 
   // Profile import and export.

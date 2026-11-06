@@ -8,6 +8,21 @@ A pack becomes a new saved profile that can run only as a **dry run** until the 
 execute actions in the profile manager. If the file names an app, the app offers a focused-app rule that switches to
 the profile when that app comes to the front.
 
+## Your own packs
+
+To use a pack without adding it to the app, put the file in the **packs folder** in the app data folder
+(`~/Library/Application Support/dev.openstreamhub/packs/`). **Open packs folder** in the chooser opens it in the Finder and creates it
+when missing. The chooser reads the folder each time it opens and checks every file by the rules below. Valid packs are
+listed beside the shipped ones, marked *From your packs folder*. Refused files are listed with the reasons.
+
+- Only `*.json` regular files are read: no symbolic links or subfolders, at most 256 KiB each and at most 64 files in
+  name order.
+- A pack whose `id` or name is used by a shipped pack is refused (names are compared ignoring case, outer spaces and
+  invisible characters), and so is one that repeats the id or name of a folder pack before it in file name order. The
+  chooser marks each folder pack as coming from the folder and never shows one as checked on a Mac, whatever its
+  `verified` says.
+- Like every pack, the profile it creates runs only as a dry run until you review it and allow it to execute actions.
+
 ## Format
 
 ```json

@@ -119,7 +119,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 ## Suggested order
 
-1. **Data-only packs.** Built: the app preset packs. Still open: loading packs dropped into a folder in the app data folder, checked by the same rules.
+1. **Data-only packs.** Built: the app preset packs, and packs dropped into `packs/` in the app data folder, checked by the same rules (see `apps/open-stream-hub/presets/README.md`).
 2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
 3. **Plugin protocol and action providers.** Manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`.
 4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images.

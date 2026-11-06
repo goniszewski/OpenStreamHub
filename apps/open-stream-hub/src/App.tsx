@@ -28,8 +28,8 @@ import { focusWhenRendered, NoticeRegion, noticeFallbackFocusId } from './Notice
 import { serviceResumeId, runBlockNotes, RunBlockerNotice, RunHeaderControl, ServicePanel, useRunSession } from './ServicePanel';
 import { OnboardingDialog } from './OnboardingDialog';
 import { StarterDialog } from './StarterDialog';
-import { bundledPacks, parsePack } from './preset-packs';
-import type { PresetPack, RejectedPack } from './preset-packs';
+import { bundledPacks, loadFolderPacks, parsePack } from './preset-packs';
+import type { FolderListing, FolderPacks, PresetPack, RejectedPack } from './preset-packs';
 import { LiveOfferDialog } from './LiveOfferDialog';
 import type { StarterEntry } from './StarterDialog';
 import { markStartersOffered, nextModulePrompt, profileModules, shouldOfferStarters, starters } from './starter-model';
@@ -427,6 +427,22 @@ export default function App() {
 
   const focusHeader = focusStatus(focusState, state.profiles);
   const [packReport, setPackReport] = useState<RejectedPack | null>(null);
+  // Packs from `<app data>/packs/`, read again each time the chooser opens so a file dropped in shows up without a restart.
+  const [folderPacks, setFolderPacks] = useState<{ packs: FolderPacks | null; error: string | null }>({ packs: null, error: null });
+  const starterOpen = starter !== null;
+  const starterOpenRef = useRef(starterOpen);
+  starterOpenRef.current = starterOpen;
+  useEffect(() => {
+    if (!desktop) return;
+    // Cleared on close, so a reopened chooser never offers a pack whose file has gone, nor an old error.
+    if (!starterOpen) { setFolderPacks({ packs: null, error: null }); return; }
+    let current = true;
+    setFolderPacks({ packs: null, error: null });
+    invoke<FolderListing>('list_folder_packs')
+      .then(listing => { if (current) setFolderPacks({ packs: loadFolderPacks(listing, bundledPacks.packs), error: null }); })
+      .catch((reason: unknown) => { if (current) setFolderPacks({ packs: null, error: String(reason) }); });
+    return () => { current = false; };
+  }, [desktop, starterOpen]);
   // A preset pack becomes a new saved profile (dry run only until allowed). When it names an app, the notice offers a
   // focused-app rule that switches to the profile whenever that app comes to the front.
   function pickPack(pack: PresetPack) {
@@ -726,7 +742,8 @@ export default function App() {
         setStarter(null);
       }}
       onGuide={() => { setStarter(null); setGuide({ open: true, step: 0 }); }}
-      packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }} />
+      packs={bundledPacks.packs} rejected={bundledPacks.rejected} packReport={packReport} onPickPack={pickPack} onLoadPack={file => { void loadPackFile(file); }}
+      folder={folderPacks.packs} folderError={folderPacks.error} onOpenFolder={desktop ? () => { void invoke('open_packs_folder').catch((reason: unknown) => { if (starterOpenRef.current) setFolderPacks(current => ({ ...current, error: String(reason) })); }); } : undefined} />
     {updatePrompt && <UpdatePrompt info={updatePrompt} onOpen={() => { void invoke('open_release_page').catch(() => {}); }} onClose={() => setUpdatePrompt(null)} />}
     {permissionPrompt && <PermissionsPrompt invoke={(command, args) => invoke(command, args)} onClose={() => setPermissionPrompt(false)} />}
     <ModalDialog open={confirmation !== null} labelledBy="delete-title" describedBy="delete-message" onCancel={() => setConfirmation(null)}>

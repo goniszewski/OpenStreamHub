@@ -68,7 +68,8 @@ fn walk<'a>(action: &'a Action, each: &mut impl FnMut(&'a Action)) {
     }
 }
 
-/// A variable a `run_program` fills into its arguments decides what runs, so
+/// A variable a `run_program` fills into its arguments, or a `plugin` into its
+/// text parameters, decides what runs, so
 /// what the profile itself can make it (its declared value and every write of
 /// it) is an item too: a changed starting value, or a key that sets it to a
 /// new value, needs a new confirmation. Other programs on this Mac can still
@@ -91,6 +92,21 @@ fn feeding_values(profile: &Profile, actions: &[&Action], set: &mut BTreeSet<Str
                             .into_iter()
                             .map(str::to_owned),
                     );
+                }
+            }
+            if let Action::Plugin {
+                params, variables, ..
+            } = step
+            {
+                for name in variables {
+                    if let Some(cooltek_sdk_service::PluginValue::Text(text)) = params.get(name) {
+                        filled_in.extend(
+                            cooltek_sdk_service::variable_references(text)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(str::to_owned),
+                        );
+                    }
                 }
             }
         });
@@ -169,6 +185,21 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
             let identity = serde_json::to_string(&(program, args, directory, variables))
                 .unwrap_or_else(|_| "unnameable".into());
             set.insert(format!("program\0{identity}"));
+        }
+        // The plugin, the action, every parameter and which ones take
+        // variables decide what the plugin is asked to do, so all of them are
+        // the item, as for `run_program`. The minimum version is not: it
+        // changes which plugin may answer, not what is asked.
+        Action::Plugin {
+            plugin,
+            action,
+            params,
+            variables,
+            ..
+        } => {
+            let identity = serde_json::to_string(&(plugin, action, params, variables))
+                .unwrap_or_else(|_| "unnameable".into());
+            set.insert(format!("plugin\0{identity}"));
         }
         // Only the origin is an item, as the confirmation shows it: a path
         // or query change of a known origin is not a new capability.
@@ -623,6 +654,34 @@ mod tests {
             },
         ] {
             assert!(adds_capabilities(&held, &profile(vec![next])));
+        }
+    }
+
+    #[test]
+    fn a_plugin_action_with_its_parameters_is_the_whole_item() {
+        let plugin =
+            |value: serde_json::Value| -> Action { serde_json::from_value(value).unwrap() };
+        let held = profile(vec![plugin(serde_json::json!({
+            "type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"set",
+            "params":{"entity":"light.desk","level":40}
+        }))]);
+        assert!(!adds_capabilities(&held, &held.clone()));
+        // A newer minimum version asks the same thing.
+        assert!(!adds_capabilities(
+            &held,
+            &profile(vec![plugin(serde_json::json!({
+                "type":"plugin","plugin":"com.example.lights","min_version":"1.4.0","action":"set",
+                "params":{"entity":"light.desk","level":40}
+            }))])
+        ));
+        for next in [
+            serde_json::json!({"type":"plugin","plugin":"com.example.other","min_version":"1.0.0","action":"set","params":{"entity":"light.desk","level":40}}),
+            serde_json::json!({"type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"off","params":{"entity":"light.desk","level":40}}),
+            serde_json::json!({"type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"set","params":{"entity":"light.hall","level":40}}),
+            serde_json::json!({"type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"set","params":{"entity":"light.desk","level":41}}),
+            serde_json::json!({"type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"set","params":{"entity":"light.desk","level":40},"variables":["entity"]}),
+        ] {
+            assert!(adds_capabilities(&held, &profile(vec![plugin(next)])));
         }
     }
 

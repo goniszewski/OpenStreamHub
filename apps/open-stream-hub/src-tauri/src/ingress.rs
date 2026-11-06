@@ -72,7 +72,7 @@ pub fn forward_to(services: &Services, body: &Value) -> Answers {
 }
 
 /// Compares in time that depends only on the lengths.
-fn token_matches(expected: &str, given: &str) -> bool {
+pub(crate) fn token_matches(expected: &str, given: &str) -> bool {
     let (expected, given) = (expected.as_bytes(), given.as_bytes());
     expected.len() == given.len()
         && expected
@@ -103,7 +103,10 @@ fn undeclared(error: &str) -> bool {
     error.contains("is not declared") || error == "this run has no variables"
 }
 
-fn set_variable(request: &Value, forward: &dyn Fn(&Value) -> Answers) -> Result<Value, String> {
+pub(crate) fn set_variable(
+    request: &Value,
+    forward: &dyn Fn(&Value) -> Answers,
+) -> Result<Value, String> {
     let name = request["name"]
         .as_str()
         .ok_or("set_variable needs a name")?;
@@ -259,9 +262,14 @@ fn serve(stream: UnixStream, token: &str, forward: &Forward) {
 /// Creates the ingress directory when it is missing, then accepts it only as a real directory (never a symbolic
 /// link) owned by this user, and makes it 0700. Anything else is refused, and ingress stays off.
 fn prepare_dir(dir: &Path) -> Result<(), String> {
+    prepare_private_dir(dir, "ingress", "agent hooks and osh cannot reach the app")
+}
+
+/// [`prepare_dir`] for any socket directory: `what` names it and `consequence` says what a refusal means.
+pub(crate) fn prepare_private_dir(dir: &Path, what: &str, consequence: &str) -> Result<(), String> {
     let refused = |why: &str| {
         format!(
-            "the ingress directory {} {why}, so agent hooks and osh cannot reach the app",
+            "the {what} directory {} {why}, so {consequence}",
             dir.display()
         )
     };
@@ -270,12 +278,12 @@ fn prepare_dir(dir: &Path) -> Result<(), String> {
             .recursive(true)
             .mode(0o700)
             .create(dir)
-            .map_err(|error| format!("could not create the ingress directory: {error}"))?,
-        Err(error) => return Err(format!("could not inspect the ingress directory: {error}")),
+            .map_err(|error| format!("could not create the {what} directory: {error}"))?,
+        Err(error) => return Err(format!("could not inspect the {what} directory: {error}")),
         Ok(_) => {}
     }
     let metadata = fs::symlink_metadata(dir)
-        .map_err(|error| format!("could not inspect the ingress directory: {error}"))?;
+        .map_err(|error| format!("could not inspect the {what} directory: {error}"))?;
     if !metadata.file_type().is_dir() {
         return Err(refused(
             "is not a plain directory (a symbolic link or a file)",
@@ -286,11 +294,11 @@ fn prepare_dir(dir: &Path) -> Result<(), String> {
         return Err(refused("belongs to another user"));
     }
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("could not protect the ingress directory: {error}"))
+        .map_err(|error| format!("could not protect the {what} directory: {error}"))
 }
 
 /// A fresh 256-bit token as hex.
-fn new_token() -> Result<String, String> {
+pub(crate) fn new_token() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     fs::File::open("/dev/urandom")
         .and_then(|mut random| random.read_exact(&mut bytes))

@@ -42,7 +42,7 @@ pub use profile::{
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,
     ScreenBrightness, ServiceModule, StreamlabsAudioOp, StreamlabsVisibilityOp, SystemCommand,
     TerminalApp, TimerSound, Variable, VariableKind, VariableValue, is_invisible_text_character,
-    key_for_virtual_code, variable_references, virtual_key_code,
+    key_for_virtual_code, validate_variable_name, variable_references, virtual_key_code,
 };
 pub use timer::{
     Confirmation, RunningTimer, TimerAlert, TimerKey, TimerTable, TimerToggle, format_duration,

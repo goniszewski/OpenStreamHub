@@ -23,4 +23,9 @@ describe('the settings contents list', () => {
     view.click(link);
     expect(link.getAttribute('aria-current')).toBe('location');
   });
+  it('lists the run diagnostics panel, whose heading sits beside a status badge', () => {
+    view = render(<section><section className="panel"><h2>Display</h2></section><section className="service-panel"><div className="section-heading"><h2>Run diagnostics</h2><span>Idle</span></div></section><section className="panel"><h2>Updates</h2></section><SettingsToc label="On this page" defaultGroup="Device" groups={[{ label: 'App', headings: ['Updates'] }]} /></section>);
+    const groups = view.$$('.settings-toc-group').map(group => [...group.querySelectorAll('a')].map(link => link.textContent));
+    expect(groups).toEqual([['Display', 'Run diagnostics'], ['Updates']]);
+  });
 });

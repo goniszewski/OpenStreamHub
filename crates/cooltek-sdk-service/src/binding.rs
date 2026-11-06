@@ -141,6 +141,10 @@ pub struct ServiceState {
     /// The variables the running profile declares. The dispatcher keeps the current value of each across presses
     /// (and across a profile swap, for a variable that keeps its name and kind) and starts a new one at its declared value.
     pub variables: Vec<crate::profile::Variable>,
+    /// The [`crate::ProfileSession::id`] of the profile that planned the action, or 0 when unknown. A `run_program`
+    /// that fills in variables refuses to start when another profile was swapped in after it
+    /// ([`crate::SharedVariables::swapped_away_from`]).
+    pub profile: u64,
 }
 
 /// The host boundary for explicitly dispatching a matched action.

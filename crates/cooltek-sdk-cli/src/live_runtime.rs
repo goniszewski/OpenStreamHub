@@ -1830,6 +1830,11 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
     pending.dropped_event_count += next.dropped_event_count;
     pending.dropped_dial_function_count += next.dropped_dial_function_count;
     pending.variables = next.variables;
+    // Work of two profiles merged into one belongs to neither, so it counts as
+    // swapped out (fails closed for what must not outlive its profile).
+    if pending.profile != next.profile {
+        pending.profile = 0;
+    }
     for planned in next.events {
         // Merge only into the immediately preceding event so the order of
         // events across controls is preserved. A dropped dial function switch
@@ -3864,6 +3869,7 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
         }
     }
 
@@ -4025,6 +4031,20 @@ mod tests {
         assert_eq!(counts.dropped_events, 3);
         assert_eq!(pending.report_count, 4);
         assert_eq!(counts.coalesced_reports, 3);
+    }
+
+    #[test]
+    fn coalesced_work_of_two_profiles_belongs_to_neither() {
+        let press = || planned(0, Gesture::Pressed, action(Action::ToggleMute));
+        let of = |profile| Work {
+            profile,
+            ..work(vec![press()])
+        };
+        let mut pending = of(4);
+        coalesce(&mut pending, of(4), &mut Finish::default());
+        assert_eq!(pending.profile, 4);
+        coalesce(&mut pending, of(5), &mut Finish::default());
+        assert_eq!(pending.profile, 0);
     }
 
     #[test]

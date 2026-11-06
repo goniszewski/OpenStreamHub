@@ -1142,14 +1142,16 @@ impl MacOsDispatcher {
         // press before anything else is looked at, from one snapshot of the
         // values so a write meanwhile cannot mix old and new ones.
         let args = if *variables {
-            let values = self.variables.values();
-            let lookup = |name: &str| {
-                values
-                    .iter()
-                    .find(|(declared, _)| declared == name)
-                    .map(|(_, value)| value.clone())
-            };
-            crate::profile::fill_in_run_program_args(args, lookup)
+            // Values are kept by name across a profile swap, so a press the
+            // previous profile planned would fill in what the new profile
+            // means by that name.
+            if self.variables.swapped_away_from(self.service_state.profile) {
+                return Err(format!(
+                    "{RUN_PROGRAM}: the profile changed after this key was pressed; the program was not started"
+                ));
+            }
+            self.variables
+                .read(|lookup| crate::profile::fill_in_run_program_args(args, lookup))
                 .map_err(|error| format!("{RUN_PROGRAM}: {error}; the program was not started"))?
         } else {
             args.clone()
@@ -2355,6 +2357,52 @@ mod tests {
             })
             .unwrap();
         assert_eq!(state.lock().unwrap().requests[2].args, ["{{scene}}"]);
+    }
+
+    #[test]
+    fn run_program_with_variables_from_a_swapped_out_profile_starts_nothing() {
+        use crate::profile::Variable;
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        let declared = vec![Variable {
+            name: "target".into(),
+            value: VariableValue::Text("a".into()),
+        }];
+        let pressed_by = |profile: u64| ServiceState {
+            variables: declared.clone(),
+            profile,
+            ..Default::default()
+        };
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec!["{{target}}".into()],
+            directory: None,
+            variables: true,
+        };
+        // Before any swap, every press fills in.
+        dispatcher.set_service_state(pressed_by(7));
+        dispatcher.dispatch(&program).unwrap();
+        // Profile 8 is swapped in while a press of profile 7 is still queued.
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(pressed_by(7));
+        let error = dispatcher.dispatch(&program).unwrap_err();
+        assert_eq!(
+            error,
+            "run_program: the profile changed after this key was pressed; the program was not started"
+        );
+        // Without variables nothing is filled in, so it still runs.
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        // Presses of the profile now running fill in again.
+        dispatcher.set_service_state(pressed_by(8));
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        dispatcher.dispatch(&program).unwrap();
+        assert_eq!(state.lock().unwrap().requests[2].args, ["a"]);
     }
 
     #[test]

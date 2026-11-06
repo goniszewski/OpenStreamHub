@@ -84,4 +84,17 @@ describe('run_program fields in the DOM', () => {
     expect(seen.at(-1)).toEqual({ type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{ scene }}'] });
     expect(view.container.querySelector('.field-error')).toBeNull();
   });
+
+  it('hints that an argument starting with a number or text variable fails when the value starts with -', () => {
+    view = render(<VariablesContext.Provider value={[{ name: 'takes', value: 0 }, { name: 'live', value: false }, { name: 'scene', value: 'intro' }]}>
+      <Harness initial={{ type: 'run_program', program: '/a', args: ['{{takes}}', '{{live}}', '--n={{takes}}', '{{scene}}'], variables: true }} seen={[]} />
+    </VariablesContext.Provider>);
+    expect(view.$('#program-arg-1-hint').textContent).toBe('When takes starts with - (a negative number), the press refuses to run the program. Write it as --option={{takes}} if the program takes one.');
+    expect(view.$('#program-arg-1').getAttribute('aria-describedby')).toBe('program-arg-1-hint');
+    // A bool never starts with -, and a written prefix keeps the value from leading.
+    expect(view.container.querySelector('#program-arg-2-hint')).toBeNull();
+    expect(view.container.querySelector('#program-arg-3-hint')).toBeNull();
+    expect(view.$('#program-arg-4-hint').textContent).toContain('text such as --all');
+    expect(view.container.querySelector('.field-error')).toBeNull();
+  });
 });

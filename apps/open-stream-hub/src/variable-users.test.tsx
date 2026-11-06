@@ -33,11 +33,13 @@ describe('run_program arguments with variables', () => {
     expect(Object.fromEntries(variableUseCounts(withPrograms))).toEqual({ scene: 2, scenes: 1 });
     expect(variableUsers({ ...withPrograms, bindings: [{ ...withPrograms.bindings[0], action: { ...program(true), args: ['{{scene}}'] } }] } as unknown as Profile, 'scene').map(entry => entry.control)).toEqual([1]);
   });
-  it('rename the references with the declaration, leave a longer name and text with variables off alone', () => {
+  it('rename the references with the declaration, with variables on or off, and leave a longer name alone', () => {
     const renamed = renameVariable(withPrograms, 'scene', 'shot');
     expect(renamed.variables?.map(variable => variable.name)).toEqual(['shot', 'scenes']);
-    expect(renamed.bindings[0].action).toEqual({ ...program(true), args: ['--scene={{shot}}', '{{shot}}{{scenes}}', '{{ scene }}'] });
-    expect(renamed.bindings[1].action).toEqual(withPrograms.bindings[1].action);
+    const args = ['--scene={{shot}}', '{{shot}}{{scenes}}', '{{ scene }}'];
+    expect(renamed.bindings[0].action).toEqual({ ...program(true), args });
+    // Renamed while off too, so turning variables back on still names a declared variable.
+    expect(renamed.bindings[1].action).toEqual({ type: 'multi_action', actions: [{ ...program(false), args }] });
   });
 });
 

@@ -1402,19 +1402,29 @@ fn is_home_or_absolute(path: &str) -> bool {
 /// name and no spaces; there is no escape for a literal `{{` (leave variables
 /// off instead).
 pub fn variable_references(text: &str) -> Result<Vec<&str>, String> {
-    let mut names = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("{{") {
-        let after = &rest[start + 2..];
-        let name = after
+    Ok(reference_spans(text)?
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect())
+}
+
+/// Each reference of `text` as the byte range of the whole `{{name}}` and the
+/// name, in order (see [`variable_references`]).
+fn reference_spans(text: &str) -> Result<Vec<(std::ops::Range<usize>, &str)>, String> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("{{") {
+        let start = from + found;
+        let name_start = start + 2;
+        let name = text[name_start..]
             .find("}}")
-            .map(|end| &after[..end])
+            .map(|end| &text[name_start..name_start + end])
             .filter(|name| validate_variable_name(name).is_ok())
             .ok_or("every {{ must begin a variable reference such as {{name}}, with a variable name and no spaces")?;
-        names.push(name);
-        rest = &after[name.len() + 2..];
+        from = name_start + name.len() + 2;
+        spans.push((start..from, name));
     }
-    Ok(names)
+    Ok(spans)
 }
 
 /// A variable value as it is filled into text: text as it is, a number in
@@ -1431,17 +1441,14 @@ fn filled_in(value: &VariableValue) -> String {
 /// value `lookup` gives for it.
 fn fill_in(text: &str, lookup: &impl Fn(&str) -> Option<VariableValue>) -> Result<String, String> {
     let mut filled = String::with_capacity(text.len());
-    let mut rest = text;
-    for name in variable_references(text)? {
-        let start = rest
-            .find("{{")
-            .expect("variable_references found this reference");
+    let mut copied = 0;
+    for (span, name) in reference_spans(text)? {
         let value = lookup(name).ok_or_else(|| format!("variable {name} is not declared"))?;
-        filled.push_str(&rest[..start]);
+        filled.push_str(&text[copied..span.start]);
         filled.push_str(&filled_in(&value));
-        rest = &rest[start + name.len() + 4..];
+        copied = span.end;
     }
-    filled.push_str(rest);
+    filled.push_str(&text[copied..]);
     Ok(filled)
 }
 
@@ -2341,9 +2348,12 @@ impl Action {
                 variables: true,
                 ..
             } => args.iter().enumerate().try_for_each(|(index, arg)| {
-                variable_references(arg)?
-                    .into_iter()
-                    .try_for_each(|name| kind_of(name).map(drop))
+                variable_references(arg)
+                    .and_then(|names| {
+                        names
+                            .into_iter()
+                            .try_for_each(|name| kind_of(name).map(drop))
+                    })
                     .map_err(|error| format!("run_program argument {}: {error}", index + 1))
             }),
             Self::MultiAction { actions } => actions
@@ -5523,6 +5533,19 @@ mod tests {
             actions: vec![missing.clone(), Action::ToggleMute],
         };
         assert!(step.check_variables(&declared).is_err());
+        // Called on its own, a malformed reference still names its argument.
+        let malformed = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["ok".into(), "{{ x }}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert!(
+            malformed
+                .check_variables(&declared)
+                .unwrap_err()
+                .starts_with("run_program argument 2: every {{")
+        );
         // With variables off nothing is a reference.
         let off = parse(r#"{"type":"run_program","program":"/a","args":["{{gone}}"]}"#).unwrap();
         off.check_variables(&declared).unwrap();

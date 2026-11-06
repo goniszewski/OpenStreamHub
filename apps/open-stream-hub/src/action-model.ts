@@ -475,6 +475,30 @@ export function programVariableIssue(arg: string, declared: ReadonlyArray<string
   return missing ? `Variable ${missing} is not declared.` : null;
 }
 
+// The {{name}} references of a run_program, in order with repeats (each is a use), from its well-formed arguments; none
+// with variables off. malformed is set when an argument holds a {{ that begins no reference (the service refuses it).
+// The one reading of the rule for the editor, the use counts and the Execute confirmation.
+export function programReferences(action: { args?: unknown; variables?: unknown }): { names: string[]; malformed: boolean } {
+  const result = { names: [] as string[], malformed: false };
+  if (action.variables !== true) return result;
+  for (const arg of Array.isArray(action.args) ? action.args : []) {
+    const names = variableReferences(String(arg));
+    if (names) result.names.push(...names); else result.malformed = true;
+  }
+  return result;
+}
+
+// A filled-in argument that starts with - fails the press unless the written argument does (fill_in_run_program_args in
+// profile.rs), so one that starts with a number or text variable can fail whenever its value is negative or begins
+// with -. A hint, not an issue: the value may never start with -.
+export function programDashHint(arg: string, declared: ReadonlyArray<{ name: string; value: unknown }>): string | null {
+  if (!arg.startsWith('{{')) return null;
+  const first = variableReferences(arg)?.[0];
+  const variable = declared.find(item => item.name === first);
+  if (!variable || typeof variable.value === 'boolean') return null;
+  return `When ${first} starts with - (${typeof variable.value === 'number' ? 'a negative number' : 'text such as --all'}), the press refuses to run the program. Write it as --option={{${first}}} if the program takes one.`;
+}
+
 export function programArgsIssue(args: ReadonlyArray<string>): string | null {
   if (args.length > maxRunProgramArgs) return `Use at most ${maxRunProgramArgs} arguments.`;
   if (args.reduce((total, arg) => total + utf8.encode(arg).length, 0) > maxRunProgramArgsBytes) return `The arguments may total at most ${maxRunProgramArgsBytes} bytes.`;

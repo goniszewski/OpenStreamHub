@@ -13,6 +13,7 @@ import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
 import { VariableActionFields } from './VariableFields';
 import { useVariables } from './variables-context';
+import { actionVariableNames } from './variable-model';
 import { MacroFields } from './MacroFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
@@ -29,7 +30,7 @@ import {
   conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioLimits, streamlabsAudioMode, streamlabsAudioModeLabels, streamlabsNameIssue, streamlabsOperationLabels,
-  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, programVariableIssue, variableReferences, textIssue, timerLabelIssue, timerSeconds,
+  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, maxRunProgramArgs, programArgIssue, programArgsIssue, programDashHint, programPathIssue, programVariableIssue, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue, defaultStreamlabsAudioOp,
 } from './action-model';
 
@@ -293,8 +294,9 @@ function RunProgramFields({ prefix, action, onChange }: { prefix: string; action
   const pathIssue = programPathIssue(action.program);
   const listIssue = programArgsIssue(args);
   const directoryIssue = terminalDirectoryIssue(action.directory ?? '');
-  const declared = useVariables().map(variable => variable.name);
-  const used = action.variables ? [...new Set(args.flatMap(arg => variableReferences(arg) ?? []))] : [];
+  const declaredVariables = useVariables();
+  const declared = declaredVariables.map(variable => variable.name);
+  const used = [...new Set(actionVariableNames(action))];
   const withVariables = (on: boolean): RunProgramAction => {
     const { variables: _previous, ...rest } = action;
     return on ? { ...rest, variables: true } : rest;
@@ -319,14 +321,16 @@ function RunProgramFields({ prefix, action, onChange }: { prefix: string; action
       {args.map((arg, index) => {
         const argId = id(`program-arg-${index + 1}`);
         const issue = programArgIssue(arg) ?? (action.variables ? programVariableIssue(arg, declared) : null);
+        const hint = !issue && action.variables ? programDashHint(arg, declaredVariables) : null;
         return <div key={keys.current[index]} className="program-arg">
           <input id={argId} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={arg}
             aria-label={t('actions.program.argNumbered', { number: index + 1 })}
-            aria-invalid={!!issue} aria-describedby={issue ? `${argId}-error` : undefined}
+            aria-invalid={!!issue} aria-describedby={issue ? `${argId}-error` : hint ? `${argId}-hint` : undefined}
             onChange={event => onChange(withArgs(args.map((item, at) => at === index ? event.target.value : item)), `program-arg-${index + 1}`)} />
           <button type="button" className="button compact" aria-label={t('actions.program.removeArg', { number: index + 1 })}
             onClick={() => { keys.current.splice(index, 1); onChange(withArgs(args.filter((_, at) => at !== index))); }}><Trash2 size={16} /></button>
           {issue && <p id={`${argId}-error`} className="field-error" role="alert">{issue}</p>}
+          {hint && <p id={`${argId}-hint`} className="fine-print">{hint}</p>}
         </div>;
       })}
       <button type="button" className="button compact" disabled={args.length >= maxRunProgramArgs}

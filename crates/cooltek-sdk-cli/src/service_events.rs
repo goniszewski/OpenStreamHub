@@ -117,6 +117,9 @@ pub struct Work {
     /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
     /// the rest across a profile swap.
     pub variables: Vec<Variable>,
+    /// The [`ProfileSession::id`] of the profile that planned this work, so an action that must not outlive its
+    /// profile can tell it was swapped out meanwhile (0 when unknown, or when coalescing mixed two profiles).
+    pub profile: u64,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -165,6 +168,7 @@ pub fn plan_report(
         dropped_dial_function_count: 0,
         merge_barrier: false,
         variables: session.profile().variables.clone(),
+        profile: session.id(),
     })
 }
 
@@ -412,6 +416,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         dispatcher.set_service_state(ServiceState {
             timer_running: !timers.is_empty(),
             variables: work.variables.clone(),
+            profile: work.profile,
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -789,6 +794,7 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
         }
     }
 

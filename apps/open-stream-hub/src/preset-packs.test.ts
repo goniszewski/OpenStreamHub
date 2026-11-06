@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Binding } from './contracts';
-import { bundledPacks, loadPacks, packActionIssue, packIssues, packModules, parsePack } from './preset-packs';
+import { bundledPacks, loadFolderPacks, loadPacks, packActionIssue, packIssues, packModules, parsePack } from './preset-packs';
 import type { PresetPack } from './preset-packs';
 
 // A small valid pack to break one field at a time.
@@ -96,5 +96,45 @@ describe('parsePack and loadPacks', () => {
     expect(packs.map(pack => pack.name)).toEqual(['Alpha', 'Beta']);
     expect(rejected.map(item => item.file)).toEqual(['broken.json', 'dup.json']);
     expect(rejected[1].issues).toEqual(['The id "beta" is already used by another pack.']);
+  });
+});
+
+describe('loadFolderPacks', () => {
+  const text = (pack: unknown) => JSON.stringify(pack);
+  it('checks each folder file by the shipped rules, keeps the valid ones by name and reports the rest', () => {
+    const mine = { ...base(), id: 'my-app', name: 'My App' };
+    const terminal = withProfile(pack => { pack.id = 'agents'; pack.profile.bindings[0].action = { type: 'run_program', program: '/bin/rm', args: ['-rf', '~'] } as never; });
+    const folder = loadFolderPacks({ path: '/data/packs', skipped: 2, files: [
+      { file: 'mine.json', text: text(mine) },
+      { file: 'agents.json', text: text(terminal) },
+      { file: 'broken.json', text: '{ nope' },
+      { file: 'link.json', error: 'pack file must be a regular file, not a symbolic link' },
+      { file: 'again.json', text: text({ ...mine, name: 'Again' }) },
+      { file: 'twin.json', text: text({ ...mine, id: 'my-twin', name: 'my app ' }) },
+    ], truncated: true }, bundledPacks.packs);
+    expect(folder.path).toBe('/data/packs');
+    expect(folder.skipped).toBe(2);
+    expect(folder.truncated).toBe(true);
+    expect(folder.packs.map(pack => pack.id)).toEqual(['my-app']);
+    expect(folder.rejected.map(item => item.file)).toEqual(['agents.json', 'broken.json', 'link.json', 'again.json', 'twin.json']);
+    expect(folder.rejected[0].issues.some(issue => issue.includes('"run_program"'))).toBe(true);
+    expect(folder.rejected[1].issues[0]).toContain('not valid JSON');
+    expect(folder.rejected[2].issues).toEqual(['The file could not be read: pack file must be a regular file, not a symbolic link.']);
+    expect(folder.rejected[3].issues).toEqual(['The id "my-app" is already used by another pack.']);
+    expect(folder.rejected[4].issues).toEqual(['The name "my app " is already used by another pack.']);
+  });
+  it('never lets a folder file stand in for a preset that comes with the app', () => {
+    const lookalike = { ...base(), name: 'Zoom (better)' };
+    const folder = loadFolderPacks({ path: '/p', skipped: 0, files: [{ file: 'zoom.json', text: text(lookalike) }] }, bundledPacks.packs);
+    expect(folder.packs).toEqual([]);
+    expect(folder.rejected[0].issues).toEqual(['The id "zoom" is already used by a preset that comes with the app.']);
+    const sameName = loadFolderPacks({ path: '/p', skipped: 0, files: [{ file: 'zoom-pro.json', text: text({ ...base(), id: 'zoom-pro', name: ' zoom ' }) }] }, bundledPacks.packs);
+    expect(sameName.packs).toEqual([]);
+    expect(sameName.rejected[0].issues).toEqual(['The name " zoom " is already used by a preset that comes with the app.']);
+    for (const name of ['Zoom\u200B', 'Ｚｏｏｍ', '\u2060zoom']) {
+      const hidden = loadFolderPacks({ path: '/p', skipped: 0, files: [{ file: 'z.json', text: text({ ...base(), id: 'zoom-2', name }) }] }, bundledPacks.packs);
+      expect(hidden.packs, JSON.stringify(name)).toEqual([]);
+    }
+    expect(loadFolderPacks({ path: '/p', skipped: 0, files: [] }, bundledPacks.packs).truncated).toBe(false);
   });
 });

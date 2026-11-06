@@ -10,6 +10,8 @@ fn main() {
             "delete_profile",
             "import_mhz_profile",
             "create_pack_profile",
+            "list_folder_packs",
+            "open_packs_folder",
             "import_profile",
             "allow_imported_profile_execution",
             "mark_all_profiles_for_review",

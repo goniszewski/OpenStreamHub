@@ -22,6 +22,7 @@ mod menubar;
 mod mhz;
 mod migration;
 mod obs;
+mod pack_folder;
 mod power;
 #[cfg(target_os = "macos")]
 mod quit;
@@ -805,6 +806,18 @@ fn create_pack_profile(
     profile: Profile,
 ) -> Result<store::StoredProfile, String> {
     state.create_pack_profile(profile, now_ms())
+}
+
+// The pack files in `<app data>/packs/`, read but not checked: the webview checks each with the shipped packs' rules.
+#[tauri::command(async)]
+fn list_folder_packs(state: State<'_, AppState>) -> Result<pack_folder::PackFolder, String> {
+    pack_folder::list(state.app_data.as_deref().map_err(Clone::clone)?)
+}
+
+// Opens `<app data>/packs/` in the Finder, creating it when missing.
+#[tauri::command(async)]
+fn open_packs_folder(state: State<'_, AppState>) -> Result<(), String> {
+    pack_folder::open(state.app_data.as_deref().map_err(Clone::clone)?)
 }
 
 // A profile read from a JSON file in the app (the webview parses and checks the file first). One that opens a terminal
@@ -2193,6 +2206,8 @@ pub fn run() {
             delete_profile,
             import_mhz_profile,
             create_pack_profile,
+            list_folder_packs,
+            open_packs_folder,
             import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,

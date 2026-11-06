@@ -84,6 +84,15 @@ describe('profileCapabilities', () => {
     )).programs;
     expect(lists).toEqual(['“/a” with arguments ["x\\", \\"y"]', '“/a” with arguments ["x","y"]']);
     expect(stepLabel({ type: 'run_program', program: '/usr/bin/true' })).toBe('Run the program “/usr/bin/true” with no arguments');
+    // The longest list the service accepts is shown whole, even when escaping doubles it past maxShownChars.
+    const longest = [...Array.from({ length: 7 }, () => '\\'.repeat(512)), '"'.repeat(490), '--delete'];
+    const full = profileCapabilities(flat({ type: 'run_program', program: '/a', args: longest }));
+    expect(full.programs[0]).toBe(`“/a” with arguments ${JSON.stringify(longest)}`);
+    expect(full.riskReasons).not.toContain(tooLongReason);
+    // A longer hand-edited list is cut with a visible mark and rated as too long to show.
+    const over = profileCapabilities(flat({ type: 'run_program', program: '/a', args: Array.from({ length: 40 }, () => '\\'.repeat(512)) }));
+    expect(over.programs[0]).toMatch(/… \(\d+ more characters not shown\)$/);
+    expect(over.riskReasons).toContain(tooLongReason);
   });
   it('is high for a key that answers AI agent prompts, wherever it sets agent_decision', () => {
     const answer = { type: 'set_variable', name: 'agent_decision', value: 'allow' } as Action;

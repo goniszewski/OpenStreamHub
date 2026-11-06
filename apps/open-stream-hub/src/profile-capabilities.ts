@@ -1,5 +1,5 @@
 import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -150,10 +150,17 @@ const terminalLine = (action: Record<string, unknown>) => {
 };
 // A run_program as the confirmation names it: the path, the arguments as a JSON list (each quote inside one is escaped,
 // so two different lists never read the same) and the folder it starts in.
+// The list is shown whole for every list the service accepts: at most maxRunProgramArgsBytes of argument text, each
+// character at most two once escaped (control characters are refused), plus quotes and a comma per argument and the
+// brackets. A longer list (a hand-edited profile) is cut with a visible mark and rated high (tooLongReason).
+export const maxShownArgsChars = 2 * maxRunProgramArgsBytes + 3 * maxRunProgramArgs + 2;
+const programArgsPreview = (action: Record<string, unknown>) => snippetPreview(JSON.stringify(list(action.args).map(arg => String(arg))), maxShownArgsChars);
 const programLine = (action: Record<string, unknown>) => {
-  const args = list(action.args).map(arg => String(arg));
+  const args = list(action.args);
   const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
-  return `${quoted(action.program)}${args.length ? ` with arguments ${snippetPreview(JSON.stringify(args)).text}` : ' with no arguments'}${folder}`;
+  const preview = programArgsPreview(action);
+  const shown = `${preview.text}${preview.more ? ` … (${preview.more} more characters not shown)` : ''}`;
+  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}`;
 };
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
@@ -255,6 +262,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null]), programLine(action));
         reasons.add('A key runs a program on this Mac as you.');
         for (const field of [action.program, action.directory, ...list(action.args)]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        if (programArgsPreview(action).more) reasons.add(tooLongReason);
         break;
       // A host effect (a request to OBS on this Mac) that only changes the visible scene: shown, but low risk.
       case 'obs_scene':

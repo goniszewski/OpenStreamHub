@@ -15,6 +15,7 @@ import { VariableActionFields } from './VariableFields';
 import { useVariables } from './variables-context';
 import { actionVariableNames } from './variable-model';
 import { MacroFields } from './MacroFields';
+import { PluginFields } from './PluginFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
 import { obsConnectionLabels } from './obs-settings';
@@ -611,6 +612,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, s
       </div>;
     }
     case 'run_program': return <RunProgramFields prefix={prefix} action={action} onChange={onChange} />;
+    case 'plugin': return <PluginFields prefix={prefix} action={action} onChange={onChange} invoke={invoke} hint={(summary, more) => <Hint hint={summary}>{more}</Hint>} />;
     case 'launch_app': return <LaunchAppFields inputId={id('app-bundle-id')} bundleId={action.bundle_id} invoke={invoke} onChange={bundleId => onChange({ type: 'launch_app', bundle_id: bundleId }, 'bundle-id')} />;
     case 'open_url': {
       const issue = urlIssue(action.url);

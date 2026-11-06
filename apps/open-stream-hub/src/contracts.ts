@@ -18,6 +18,12 @@ export type ProfileDirection = 'next' | 'previous';
 // End sound of a 'timer' action: a closed set of macOS system sounds (TimerSound in profile.rs). Absent means glass.
 export type TimerSound = 'basso' | 'blow' | 'bottle' | 'frog' | 'funk' | 'glass' | 'hero' | 'morse' | 'ping' | 'pop'
   | 'purr' | 'sosumi' | 'submarine' | 'tink' | 'none';
+// One plugin parameter value: text (also a choice's id), a number or a bool (PluginValue in plugin.rs).
+export type PluginValue = string | number | boolean;
+export interface PluginAction {
+  type: 'plugin'; plugin: string; min_version: string; action: string;
+  params?: Record<string, PluginValue>; variables?: string[];
+}
 // One step of a multi_action: any executable action except another multi_action.
 export type StepAction =
   | { type: 'volume'; delta: number }
@@ -32,6 +38,11 @@ export type StepAction =
   // omitted, never empty lists or null. Allowed as a multi_action or conditional step. With variables (omitted when off),
   // {{name}} references to declared variables in the arguments are filled in when the key is pressed.
   | { type: 'run_program'; program: string; args?: string[]; directory?: string; variables?: boolean }
+  // Asks a plugin (a separate program the app runs while a Live profile uses it) to perform one of its manifest's
+  // actions, and waits for the answer. plugin is the manifest's reverse-DNS id; params are checked against the manifest
+  // by the app; variables lists the text parameters whose {{name}} references are filled in when pressed (only ones the
+  // manifest allows). params and variables are omitted when empty. Allowed as a multi_action or conditional step.
+  | PluginAction
   | { type: 'media'; command: MediaCommand }
   | { type: 'system'; command: SystemCommand }
   // press_enter may be omitted in JSON (defaults to false); the service always writes it.

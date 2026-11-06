@@ -8,7 +8,7 @@ import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { keyFaceIssue, maximumKeyFaces } from './draft-model';
 import { flowIssue, groupItems, isGroup, variableKind, variableNameIssue, variableValueIssue, variablesIssue } from './flow-model';
-import { programVariableIssue, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
+import { pluginReferences, programVariableIssue, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -336,6 +336,10 @@ function variableUseIssue(action: BindingAction, variables: ReadonlyArray<Variab
       if (issue) return `Argument ${index + 1}: ${issue}`;
     }
     return null;
+  }
+  if (action.type === 'plugin') {
+    const missing = pluginReferences(action).names.find(name => !variables.some(variable => variable.name === name));
+    return missing ? `Variable ${missing} is not declared.` : null;
   }
   if (action.type !== 'conditional') return null;
   const leaves = (condition: Condition): Condition[] => (isGroup(condition) ? groupItems(condition).flatMap(leaves) : [condition]);

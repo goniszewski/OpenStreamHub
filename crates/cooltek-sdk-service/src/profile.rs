@@ -1395,12 +1395,7 @@ fn validate_terminal_line(field: &str, value: &str) -> Result<(), String> {
 /// The one-line rules shared by `terminal_command` and `run_program` fields:
 /// `min` to 512 bytes, no control (newline and tab included) or invisible
 /// characters.
-fn validate_one_line(
-    action: &str,
-    field: &str,
-    value: &str,
-    min: usize,
-) -> Result<(), String> {
+fn validate_one_line(action: &str, field: &str, value: &str, min: usize) -> Result<(), String> {
     const MAX: usize = Action::MAX_TERMINAL_COMMAND_BYTES;
     if value.len() < min || value.len() > MAX {
         return Err(format!("{action} {field} must be {min} to {MAX} bytes"));

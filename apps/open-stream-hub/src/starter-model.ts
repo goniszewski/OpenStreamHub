@@ -8,7 +8,7 @@ import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { keyFaceIssue, maximumKeyFaces } from './draft-model';
 import { flowIssue, groupItems, isGroup, variableKind, variableNameIssue, variableValueIssue, variablesIssue } from './flow-model';
-import { terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
+import { programVariableIssue, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -328,6 +328,15 @@ function variableUseIssue(action: BindingAction, variables: ReadonlyArray<Variab
     return variableKind(declared.value) === wanted ? null : `Variable ${name} is ${variableKind(declared.value)}, not ${wanted}.`;
   };
   if (action.type === 'set_variable') return use(action.name, action.value);
+  if (action.type === 'run_program') {
+    if (!action.variables) return null;
+    const names = variables.map(variable => variable.name);
+    for (const [index, arg] of (action.args ?? []).entries()) {
+      const issue = programVariableIssue(arg, names);
+      if (issue) return `Argument ${index + 1}: ${issue}`;
+    }
+    return null;
+  }
   if (action.type !== 'conditional') return null;
   const leaves = (condition: Condition): Condition[] => (isGroup(condition) ? groupItems(condition).flatMap(leaves) : [condition]);
   for (const leaf of leaves(action.when)) {

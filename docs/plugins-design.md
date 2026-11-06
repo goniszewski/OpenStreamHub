@@ -132,7 +132,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 - **Shape.** `{"type": "run_program", "program": "/usr/local/bin/tool", "args": ["--flag", "value"], "directory": "~/code"}`. `program` is an absolute path or starts with `~/`. `args` is optional, at most 32 items. `directory` is optional, with the `terminal_command` rules (`~`, `/…` or `~/…`); without it the program starts in the home folder. Every field is one line without control or invisible characters, so what runs is what was reviewed.
 - **No shell.** The arguments are passed as they are. Nothing is expanded, quoted or split, and a leading `~/` is expanded only in `program` and `directory`.
-- **Fixed arguments first.** Variable references in arguments come later, with the syntax chosen for plugin parameters.
+- **Variables.** With `"variables": true`, `{{name}}` references in the arguments are filled in when the key is pressed. Built as proposed in open question 1 below.
 - **Deadline.** 15 s as a key's own action. As a `multi_action` or `conditional` step it gets what is left of the sequence's 15 s deadline. At the deadline the program and every process in its process group are killed, and the press fails. Processes it leaves running after a normal exit are not touched, so a launcher still works. The group is also killed on cancellation, on the service's forced exit and on a panic. A service killed with SIGKILL cannot do that, so a program running at that moment keeps running.
 - **Environment.** The program gets the service's own environment, with no fixed variables added. Started from the Finder, `PATH` holds only the system folders, so a `#!/usr/bin/env` script may not find a Homebrew interpreter; exit 127 or 126 adds a hint saying so. A missing start folder fails before anything starts.
 - **Result.** A nonzero exit, or a program that cannot start, fails the press. The program's output is discarded and never logged or shown, as for `terminal_command`, because it can echo tokens passed in the arguments. The log records only lengths and the argument count.
@@ -148,9 +148,11 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 ## Open questions: proposals
 
-Three questions were left open. Each has a proposal below, not yet agreed. The variable syntax matters most, because profiles will store it and a stored format is hard to change.
+Three questions were left open, each with a proposal below. Proposal 1 is built for `run_program` arguments; plugin text parameters will reuse it. Proposals 2 and 3 are not yet agreed.
 
 ### 1. Variable references in text parameters and run_program arguments
+
+**Status:** built for `run_program` as described here (`variable_references` and `fill_in_run_program_args` in `profile.rs`, mirrored in `action-model.ts`). The Execute confirmation names the variables after the arguments, and the activity log adds `"variables": true`.
 
 **Syntax: `{{name}}`.** `name` follows the existing variable name rules (1 to 32 characters of `a-z`, `0-9` and `_`, starting with a letter), with no spaces inside the braces. Examples: `--scene={{scene}}`, `{{count}}`.
 

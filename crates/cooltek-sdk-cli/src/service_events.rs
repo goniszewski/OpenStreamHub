@@ -468,10 +468,14 @@ pub fn loggable(action: &Action) -> Value {
             program,
             args,
             directory,
+            variables,
         } => {
             let mut value = json!({"type":"run_program", "program_chars":program.chars().count(), "args":args.len()});
             if let Some(directory) = directory {
                 value["directory_chars"] = json!(directory.chars().count());
+            }
+            if *variables {
+                value["variables"] = json!(true);
             }
             value
         }
@@ -1533,10 +1537,21 @@ mod tests {
             program: "~/bin/deploy".into(),
             args: vec!["--token".into(), "s3cr3t".into()],
             directory: Some("/tmp".into()),
+            variables: false,
         };
         assert_eq!(
             loggable(&program),
             json!({"type":"run_program", "program_chars":12, "args":2, "directory_chars":4})
+        );
+        let filled = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["{{token}}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert_eq!(
+            loggable(&filled),
+            json!({"type":"run_program", "program_chars":2, "args":1, "variables":true})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

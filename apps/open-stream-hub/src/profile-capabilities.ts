@@ -1,5 +1,5 @@
 import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, systemLabels, urlOrigin, variableReferences } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -155,12 +155,22 @@ const terminalLine = (action: Record<string, unknown>) => {
 // brackets. A longer list (a hand-edited profile) is cut with a visible mark and rated high (tooLongReason).
 export const maxShownArgsChars = 2 * maxRunProgramArgsBytes + 3 * maxRunProgramArgs + 2;
 const programArgsPreview = (action: Record<string, unknown>) => snippetPreview(JSON.stringify(list(action.args).map(arg => String(arg))), maxShownArgsChars);
+// With variables on, the arguments are shown as written, {{name}} included, and the variables that feed them are named;
+// their values are never shown, since they can change after confirming.
+const programVariablesNote = (action: Record<string, unknown>) => {
+  if (action.variables !== true) return '';
+  if (list(action.args).some(arg => variableReferences(String(arg)) === null)) return ', with a malformed variable reference (the service refuses it)';
+  const names = [...new Set(list(action.args).flatMap(arg => variableReferences(String(arg)) ?? []))];
+  return names.length
+    ? `, filling in the current value${names.length === 1 ? '' : 's'} of ${names.map(name => clipped(name, 32)).join(', ')} when pressed (other programs on this Mac can change ${names.length === 1 ? 'it' : 'them'})`
+    : ', with variables on but none used';
+};
 const programLine = (action: Record<string, unknown>) => {
   const args = list(action.args);
   const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
   const preview = programArgsPreview(action);
   const shown = `${preview.text}${preview.more ? ` … (${preview.more} more characters not shown)` : ''}`;
-  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}`;
+  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}${programVariablesNote(action)}`;
 };
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
@@ -259,7 +269,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         for (const field of [action.command, action.directory]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'run_program':
-        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null]), programLine(action));
+        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null, action.variables === true]), programLine(action));
         reasons.add('A key runs a program on this Mac as you.');
         for (const field of [action.program, action.directory, ...list(action.args)]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         if (programArgsPreview(action).more) reasons.add(tooLongReason);

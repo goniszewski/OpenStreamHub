@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import type { Profile } from './contracts';
-import { variableUseCounts, variableUsers } from './variable-model';
+import { renameVariable, variableUseCounts, variableUsers } from './variable-model';
 import { VariablesPanel } from './VariableFields';
 
 const profile = {
@@ -16,6 +16,28 @@ describe('variableUsers', () => {
   it('lists the bindings that use a variable and none for an unused one', () => {
     expect(variableUsers(profile, 'live').map(entry => entry.control)).toEqual([1]);
     expect(variableUsers(profile, 'other')).toEqual([]);
+  });
+});
+
+describe('run_program arguments with variables', () => {
+  const program = (variables: boolean) => ({ type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{scene}}{{scenes}}', '{{ scene }}'], ...(variables ? { variables: true } : {}) });
+  const withPrograms = {
+    schema_version: 5, name: 'p', variables: [{ name: 'scene', value: 'intro' }, { name: 'scenes', value: 0 }],
+    bindings: [
+      { module: 'm003k', control: 1, gesture: 'pressed', action: program(true) },
+      { module: 'm003k', control: 2, gesture: 'pressed', action: { type: 'multi_action', actions: [program(false)] } },
+    ],
+  } as unknown as Profile;
+  it('count each {{name}} as a use only with variables on, and list the binding as a user', () => {
+    // The malformed third argument names nothing (the service refuses it); the off copy in the multi_action counts none.
+    expect(Object.fromEntries(variableUseCounts(withPrograms))).toEqual({ scene: 2, scenes: 1 });
+    expect(variableUsers({ ...withPrograms, bindings: [{ ...withPrograms.bindings[0], action: { ...program(true), args: ['{{scene}}'] } }] } as unknown as Profile, 'scene').map(entry => entry.control)).toEqual([1]);
+  });
+  it('rename the references with the declaration, leave a longer name and text with variables off alone', () => {
+    const renamed = renameVariable(withPrograms, 'scene', 'shot');
+    expect(renamed.variables?.map(variable => variable.name)).toEqual(['shot', 'scenes']);
+    expect(renamed.bindings[0].action).toEqual({ ...program(true), args: ['--scene={{shot}}', '{{shot}}{{scenes}}', '{{ scene }}'] });
+    expect(renamed.bindings[1].action).toEqual(withPrograms.bindings[1].action);
   });
 });
 

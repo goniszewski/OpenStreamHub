@@ -450,6 +450,31 @@ export function programArgIssue(arg: string): string | null {
   return arg ? terminalLineIssue(arg) : null;
 }
 
+// Mirrors variable_references in profile.rs: the variable names a text with variables on refers to, in order, or null
+// when a {{ does not begin a reference {{name}} (a variable name, no spaces). There is no escape for a literal {{.
+export function variableReferences(text: string): string[] | null {
+  const names: string[] = [];
+  let rest = text;
+  for (let start = rest.indexOf('{{'); start !== -1; start = rest.indexOf('{{')) {
+    const after = rest.slice(start + 2);
+    const end = after.indexOf('}}');
+    const name = end === -1 ? '' : after.slice(0, end);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(name)) return null;
+    names.push(name);
+    rest = after.slice(end + 2);
+  }
+  return names;
+}
+
+// With variables on, every reference in a run_program argument must be well formed and name a declared variable
+// (Action::validate and Action::check_variables in profile.rs).
+export function programVariableIssue(arg: string, declared: ReadonlyArray<string>): string | null {
+  const names = variableReferences(arg);
+  if (!names) return 'Each {{ must begin a variable such as {{name}}, with no spaces inside.';
+  const missing = names.find(name => !declared.includes(name));
+  return missing ? `Variable ${missing} is not declared.` : null;
+}
+
 export function programArgsIssue(args: ReadonlyArray<string>): string | null {
   if (args.length > maxRunProgramArgs) return `Use at most ${maxRunProgramArgs} arguments.`;
   if (args.reduce((total, arg) => total + utf8.encode(arg).length, 0) > maxRunProgramArgsBytes) return `The arguments may total at most ${maxRunProgramArgsBytes} bytes.`;

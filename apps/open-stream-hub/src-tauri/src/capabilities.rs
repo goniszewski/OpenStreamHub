@@ -79,14 +79,16 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         } => {
             set.insert(format!("terminal\0{app:?}\0{directory:?}\0{command}"));
         }
-        // The path, every argument and the directory decide what runs, so all
-        // of them are the item. JSON keeps the argument boundaries exact.
+        // The path, every argument, the directory and whether variables are
+        // filled in decide what runs, so all of them are the item. JSON keeps
+        // the argument boundaries exact.
         Action::RunProgram {
             program,
             args,
             directory,
+            variables,
         } => {
-            let identity = serde_json::to_string(&(program, args, directory))
+            let identity = serde_json::to_string(&(program, args, directory, variables))
                 .unwrap_or_else(|_| "unnameable".into());
             set.insert(format!("program\0{identity}"));
         }
@@ -524,6 +526,7 @@ mod tests {
             program: path.into(),
             args: args.iter().map(|arg| (*arg).into()).collect(),
             directory: directory.map(Into::into),
+            variables: false,
         };
         let held = profile(vec![program("/usr/bin/tool", &["a b"], None)]);
         assert!(!adds_capabilities(&held, &held.clone()));
@@ -533,6 +536,13 @@ mod tests {
             program("/usr/bin/tool", &["a b", "--force"], None),
             program("/usr/bin/tool", &[], None),
             program("/usr/bin/tool", &["a b"], Some("~")),
+            // Filling in variables changes what can run.
+            Action::RunProgram {
+                program: "/usr/bin/tool".into(),
+                args: vec!["a b".into()],
+                directory: None,
+                variables: true,
+            },
         ] {
             assert!(adds_capabilities(&held, &profile(vec![next])));
         }

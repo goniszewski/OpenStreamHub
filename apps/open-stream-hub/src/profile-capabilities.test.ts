@@ -84,6 +84,22 @@ describe('profileCapabilities', () => {
     )).programs;
     expect(lists).toEqual(['“/a” with arguments ["x\\", \\"y"]', '“/a” with arguments ["x","y"]']);
     expect(stepLabel({ type: 'run_program', program: '/usr/bin/true' })).toBe('Run the program “/usr/bin/true” with no arguments');
+    // With variables on, the arguments are shown as written and the variables feeding them are named, never their
+    // values; turning variables on is a different program line.
+    const filled = profileCapabilities(flat(
+      { type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{take}}{{scene}}'], variables: true },
+      { type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{take}}{{scene}}'] },
+      { type: 'run_program', program: '/a', args: ['{{one}}'], variables: true },
+      { type: 'run_program', program: '/a', args: ['x'], variables: true },
+    )).programs;
+    expect(filled).toEqual([
+      '“/a” with arguments ["--scene={{scene}}","{{take}}{{scene}}"], filling in the current values of scene, take when pressed (other programs on this Mac can change them)',
+      '“/a” with arguments ["--scene={{scene}}","{{take}}{{scene}}"]',
+      '“/a” with arguments ["{{one}}"], filling in the current value of one when pressed (other programs on this Mac can change it)',
+      '“/a” with arguments ["x"], with variables on but none used',
+    ]);
+    expect(profileCapabilities(flat({ type: 'run_program', program: '/a', args: ['{{ x }}'], variables: true })).programs)
+      .toEqual(['“/a” with arguments ["{{ x }}"], with a malformed variable reference (the service refuses it)']);
     // The longest list the service accepts is shown whole, even when escaping doubles it past maxShownChars.
     const longest = [...Array.from({ length: 7 }, () => '\\'.repeat(512)), '"'.repeat(490), '--delete'];
     const full = profileCapabilities(flat({ type: 'run_program', program: '/a', args: longest }));

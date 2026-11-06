@@ -1065,3 +1065,12 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .image-control.key-display.unbound:hover,.image-control.key-display.unbound:focus-visible { opacity:.8; }
 .image-control.key-display.unbound.selected { opacity:.85; }
 .keypad-tile.unbound:not(.selected) { border-style:dashed; background:transparent; color:var(--muted); }
+
+/* Two-column workspace: the canvas and the inspector scroll on their own, so scrolling one never moves the other.
+   Banners and the module drawer stay above both. The stacked layout below 1191px keeps one page scroll. */
+@media(min-width:1191px) {
+  .main-content.workspace-page { display:flex; flex-direction:column; overflow:hidden; }
+  .main-content.workspace-page>* { flex:none; }
+  .main-content.workspace-page>.device-layout { flex:1 1 auto; min-height:0; grid-template-rows:minmax(0,1fr); }
+  .workspace-page .workspace-column,.workspace-page .inspector { min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+}

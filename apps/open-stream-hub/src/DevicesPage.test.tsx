@@ -134,7 +134,7 @@ describe('hero live input', () => {
     // The knobs' needle keeps its full length; only the dial's is fitted inside its glass.
     expect(knob3).not.toContain('live-pointer screen');
     expect(knob3).not.toMatch(/class="[^"]*pressed/);
-    expect(heroButton(markup, 'Select Knob 1 on module image')).toMatch(/class="image-control round selected pressed"/);
+    expect(heroButton(markup, 'Select Knob 1 on module image')).toMatch(/class="image-control round selected pressed (un)?bound"/);
     // The needle sits inside an unrotated hit area, positioned by the computed percentages.
     expect(knob3).toContain('style="left:41%;top:28.5%');
   });
@@ -151,7 +151,7 @@ describe('hero live input', () => {
     const { feed, send } = await liveFeed();
     send('m4315', 4, 'pressed');
     const markup = hero(renderToStaticMarkup(<DeviceWorkspace editor={{ ...forModule('m4315'), isKeypad: true } as DeviceEditor} state={state} feed={feed} desktop disabled={false} setPage={() => {}} />), '15x Key IPS Display');
-    expect(heroButton(markup, 'Select Key 5 on module image')).toMatch(/class="image-control key-display pressed"/);
+    expect(heroButton(markup, 'Select Key 5 on module image')).toMatch(/class="image-control key-display pressed (un)?bound"/);
   });
 
   it('does not mark the 3-knob hero for live input from another module type', async () => {
@@ -178,7 +178,7 @@ describe('hero live input', () => {
     const markup = hero(renderToStaticMarkup(<DeviceWorkspace editor={forModule('m005s')} state={state} feed={feed} desktop disabled={false} setPage={() => {}} />), '5x Fader Precision');
     const faders = markup.match(/<button[^>]*aria-label="Select [^"]+ on module image"[^>]*>.*?<\/button>/g) ?? [];
     expect(faders).toHaveLength(5);
-    expect(faders[3]).toMatch(/class="image-control live"/);
+    expect(faders[3]).toMatch(/class="image-control live (un)?bound"/);
     expect(faders.filter(button => button.includes('live'))).toHaveLength(1);
     expect(markup).not.toContain('fader-thumb');
     // Cap centres run from y=675 (0) to y=305 (100): the live fader at 30 sits at 564, the rest rest at 50 (490).

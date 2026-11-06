@@ -357,6 +357,8 @@ export const en = {
   'inspector.clearKey': 'Clear key',
   'inspector.createFolder': 'Create folder',
   'inspector.gesture': 'Gesture',
+  'inspector.gestureInUse': 'In use',
+  'inspector.gestureUnused': 'Unused',
   'inspector.advanced': 'Advanced',
   'inspector.limit': 'Limit to one device',
   'inspector.anyDevice': 'Any device of this type',

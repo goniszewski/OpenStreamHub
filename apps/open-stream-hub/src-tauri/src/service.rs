@@ -21,14 +21,14 @@ use cooltek_sdk_service::{Action, Profile};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs,
     io::{self, BufRead, BufReader, Read},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, Command, ExitStatus, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -483,7 +483,37 @@ fn kill_group(pid: u32) {
     let _ = pid;
 }
 
+/// Tells the plugin host which plugins a run uses while it executes its actions; `None` once it does not.
+pub type PluginUsage = Arc<dyn Fn(&str, Option<BTreeSet<String>>) + Send + Sync>;
+/// Carries one `plugin_invoke` record to its plugin; the reply goes back to the run.
+pub type PluginInvoke = Arc<dyn Fn(&Value, crate::plugin_host::Reply) + Send + Sync>;
+
+/// How module runs reach the plugin host (`plugin_host.rs`), set once the host is up.
+#[derive(Clone)]
+pub struct PluginHooks {
+    pub usage: PluginUsage,
+    pub invoke: PluginInvoke,
+}
+
+impl PluginHooks {
+    pub fn for_host(host: &crate::plugin_host::PluginHost) -> Self {
+        let (usage, invoke) = (host.clone(), host.clone());
+        Self {
+            usage: Arc::new(move |service_id, plugins| usage.set_usage(service_id, plugins)),
+            invoke: Arc::new(move |record, reply| invoke.invoke(record, reply)),
+        }
+    }
+}
+
+/// The plugins a run uses and whether it was started able to run them.
+#[derive(Default)]
+struct RunPlugins {
+    used: BTreeSet<String>,
+    host: bool,
+}
+
 struct ServiceHandle {
+    plugins: Arc<Mutex<RunPlugins>>,
     child: Arc<Mutex<Child>>,
     /// Whether the run executes its actions now; a mode switch changes it in place.
     execute: Arc<AtomicBool>,
@@ -720,9 +750,42 @@ pub struct Services {
     /// open a path between a service's feed stop and its registration
     /// (`start_service`, `start_feed_checked`). Taken before any other lock.
     claims: Mutex<()>,
+    /// The plugin host's hooks, when it runs.
+    plugins: OnceLock<PluginHooks>,
 }
 
 impl Services {
+    /// Connects module runs to the plugin host; runs started before keep running without it.
+    pub fn set_plugin_hooks(&self, hooks: PluginHooks) {
+        let _ = self.plugins.set(hooks);
+    }
+
+    /// Records the plugins a just-started run uses, and whether it was started with `--plugin-host`, and tells the
+    /// host while the run executes.
+    fn attach_plugins(&self, service_id: &str, used: BTreeSet<String>, host: bool) {
+        let execute = {
+            let services = self.lock();
+            let Some(handle) = services.get(service_id) else {
+                return;
+            };
+            *handle
+                .plugins
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = RunPlugins {
+                used: used.clone(),
+                host,
+            };
+            handle.execute.load(Ordering::SeqCst)
+        };
+        self.report_usage(service_id, execute.then_some(used));
+    }
+
+    fn report_usage(&self, service_id: &str, used: Option<BTreeSet<String>>) {
+        if let Some(hooks) = self.plugins.get() {
+            (hooks.usage)(service_id, used);
+        }
+    }
+
     fn claim(&self) -> MutexGuard<'_, ()> {
         self.claims
             .lock()
@@ -758,7 +821,7 @@ impl Services {
     /// The run's recorded mode follows, and a fresh `running` status carries it to the frontend. An error leaves the
     /// mode as it was, and the caller falls back to restarting the run.
     pub fn set_mode(&self, service_id: &str, execute: bool) -> Result<(), String> {
-        let (pipe, flag, emit) = {
+        let (pipe, flag, emit, plugins) = {
             let services = self.lock();
             let handle = services
                 .get(service_id)
@@ -768,6 +831,7 @@ impl Services {
                 Arc::clone(&handle.control),
                 Arc::clone(&handle.execute),
                 Arc::clone(&handle.emit),
+                Arc::clone(&handle.plugins),
             )
         };
         pipe.request(
@@ -775,6 +839,13 @@ impl Services {
             CONTROL_TIMEOUT,
         )?;
         flag.store(execute, Ordering::SeqCst);
+        // Plugins run only for executing runs: Live starts them, Test stops them.
+        let used = plugins
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .used
+            .clone();
+        self.report_usage(service_id, execute.then_some(used));
         emit(ServiceMessage::Status(StatusPayload::new(
             service_id,
             ServiceState::Running,
@@ -791,14 +862,38 @@ impl Services {
         if value.to_string().len() > IN_PLACE_PROFILE_MAX {
             return Err("the profile is too large to hand over in place".into());
         }
-        let pipe = self
-            .control(service_id)
-            .ok_or_else(|| format!("service {service_id} is not running"))?;
+        let (pipe, plugins, execute) = {
+            let services = self.lock();
+            let handle = services
+                .get(service_id)
+                .filter(|handle| !handle.finished())
+                .ok_or_else(|| format!("service {service_id} is not running"))?;
+            (
+                Arc::clone(&handle.control),
+                Arc::clone(&handle.plugins),
+                handle.execute.load(Ordering::SeqCst),
+            )
+        };
+        let used = crate::plugins::plugins_used(profile);
+        // A run started without the plugin host cannot run plugin actions; it takes such a profile by restarting.
+        if !used.is_empty()
+            && !plugins
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .host
+        {
+            return Err("the profile now uses plugins, which this run was not started for".into());
+        }
         pipe.request(
             serde_json::json!({"type":"profile","profile":value}),
             CONTROL_TIMEOUT,
-        )
-        .map(drop)
+        )?;
+        plugins
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .used = used.clone();
+        self.report_usage(service_id, execute.then_some(used));
+        Ok(())
     }
 
     /// Ids of services whose child has not exited, sorted.
@@ -911,6 +1006,7 @@ impl Services {
         let control = Arc::new(ControlPipe::new(stdin_pipe));
         let execute_now = Arc::new(AtomicBool::new(execute));
         let supervisor = Supervisor {
+            plugins: self.plugins.get().cloned(),
             service_id: service_id.clone(),
             execute: Arc::clone(&execute_now),
             child: Arc::clone(&child),
@@ -942,6 +1038,7 @@ impl Services {
         services.insert(
             service_id.clone(),
             ServiceHandle {
+                plugins: Arc::default(),
                 child,
                 execute: execute_now,
                 stopping: Arc::new(AtomicBool::new(false)),
@@ -1032,6 +1129,8 @@ impl Services {
 }
 
 struct Supervisor {
+    /// The plugin host's hooks: `plugin_invoke` records go to it, and the run's end is reported.
+    plugins: Option<PluginHooks>,
     service_id: String,
     execute: Arc<AtomicBool>,
     child: Arc<Mutex<Child>>,
@@ -1056,17 +1155,18 @@ impl Supervisor {
         let (drained_tx, drained_rx) = mpsc::channel::<()>();
         let mut readers = 0;
         if let Some(stdout) = stdout {
-            let (id, emit, closed, drained, control) = (
+            let (id, emit, closed, drained, control, plugins) = (
                 self.service_id.clone(),
                 Arc::clone(&self.emit),
                 Arc::clone(&closed),
                 drained_tx.clone(),
                 Arc::clone(&self.control),
+                self.plugins.clone(),
             );
             let spawned = thread::Builder::new()
                 .name(format!("stdout {}", self.service_id))
                 .spawn(move || {
-                    relay_records(&id, stdout, &closed, &control, &*emit);
+                    relay_records(&id, stdout, &closed, &control, plugins.as_ref(), &*emit);
                     let _ = drained.send(());
                 });
             readers += usize::from(spawned.is_ok());
@@ -1085,6 +1185,9 @@ impl Supervisor {
 
         let pid = lock_child(&self.child).id();
         let status = self.reap();
+        if let Some(plugins) = &self.plugins {
+            (plugins.usage)(&self.service_id, None);
+        }
         self.control.close();
         kill_group(pid);
         let deadline = Instant::now() + DRAIN_GRACE;
@@ -1132,7 +1235,8 @@ fn relay_records(
     service_id: &str,
     stdout: impl Read,
     closed: &AtomicBool,
-    control: &ControlPipe,
+    control: &Arc<ControlPipe>,
+    plugins: Option<&PluginHooks>,
     emit: &(dyn Fn(ServiceMessage) + Send + Sync),
 ) {
     let mut reader = BufReader::new(stdout);
@@ -1145,6 +1249,29 @@ fn relay_records(
             // Answers to control requests go to whoever asked, not to the record log.
             if record.record.get("type").and_then(Value::as_str) == Some("control_result") {
                 control.deliver(record.record);
+                continue;
+            }
+            // A press asking a plugin: the host answers on the run's control channel. Not a log record.
+            if record.record.get("type").and_then(Value::as_str) == Some("plugin_invoke") {
+                if let (Some(plugins), Some(request)) = (
+                    plugins,
+                    record.record.get("request").and_then(Value::as_u64),
+                ) {
+                    let control = Arc::clone(control);
+                    (plugins.invoke)(
+                        &record.record,
+                        Box::new(move |result| {
+                            let (ok, error) = match result {
+                                Ok(()) => (true, Value::Null),
+                                Err(error) => (false, Value::String(error)),
+                            };
+                            let _ = control.request(
+                                serde_json::json!({"type":"plugin_result","request":request,"ok":ok,"error":error}),
+                                CONTROL_TIMEOUT,
+                            );
+                        }),
+                    );
+                }
                 continue;
             }
             emit(ServiceMessage::Record(record));
@@ -1237,12 +1364,17 @@ pub fn start_service(
         request.software_mode,
         profile_switch_requests,
     );
+    let used = crate::plugins::plugins_used(&request.profile);
+    let plugin_host = !used.is_empty() && services.plugins.get().is_some();
+    if plugin_host {
+        args.push("--plugin-host".into());
+    }
     args.extend(display_args);
     args.extend(crate::obs::obs_args(request.obs.as_ref()));
     args.extend(crate::streamlabs::streamlabs_args(
         request.streamlabs.as_ref(),
     ));
-    services.start_with_stdin(
+    let started = services.start_with_stdin(
         service_id,
         request.execute,
         &program,
@@ -1250,7 +1382,9 @@ pub fn start_service(
         Some(profile),
         secret_stdin(&request),
         emit,
-    )
+    )?;
+    services.attach_plugins(&started, used, plugin_host);
+    Ok(started)
 }
 
 /// The child's stdin lines, in the order `masterhub-service` reads them: the
@@ -1376,6 +1510,62 @@ mod tests {
         let raw = record_payload("service:41", b"{}", true).unwrap();
         assert_eq!(raw.record["type"], "raw");
         assert!(record_payload("service:41", b"  \r", false).is_none());
+    }
+
+    #[test]
+    fn plugin_invokes_go_to_the_host_and_not_to_the_record_log() {
+        let invoked = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&invoked);
+        let hooks = PluginHooks {
+            usage: Arc::new(|_, _| {}),
+            invoke: Arc::new(move |record, _reply| seen.lock().unwrap().push(record.clone())),
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&emitted);
+        let stdout = concat!(
+            r#"{"type":"plugin_invoke","request":3,"plugin":"com.x.y","action":"a","params":{}}"#,
+            "\n",
+            r#"{"type":"action_executed"}"#,
+            "\n",
+        );
+        relay_records(
+            "service:41",
+            stdout.as_bytes(),
+            &AtomicBool::new(false),
+            &Arc::new(ControlPipe::new(None)),
+            Some(&hooks),
+            &move |message| {
+                if let ServiceMessage::Record(record) = message {
+                    log.lock().unwrap().push(record.record);
+                }
+            },
+        );
+        assert_eq!(invoked.lock().unwrap().len(), 1);
+        assert_eq!(invoked.lock().unwrap()[0]["request"], 3);
+        assert_eq!(
+            *emitted.lock().unwrap(),
+            [serde_json::json!({"type":"action_executed"})]
+        );
+    }
+
+    #[test]
+    fn only_profiles_with_a_plugin_action_ask_for_the_plugin_host() {
+        let mut profile: Profile = serde_json::from_value(serde_json::json!({
+            "schema_version": 5, "name": "p",
+            "bindings": [{ "module":"m003k", "control":0, "gesture":"pressed", "action": {"type":"toggle_mute"} }],
+        }))
+        .unwrap();
+        assert!(crate::plugins::plugins_used(&profile).is_empty());
+        profile.bindings[0].action = serde_json::from_value(serde_json::json!({
+            "type":"plugin","plugin":"com.x.y","min_version":"1.0.0","action":"a"
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::plugins::plugins_used(&profile)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["com.x.y"]
+        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ describe('picker catalogue', () => {
   it('covers every assignable action type exactly once', () => {
     const expected: PickerActionType[] = ['volume', 'set_volume', 'toggle_mute', 'volume_from_position', 'mic_input_volume_from_position', 'obs_input_volume_from_position', 'shortcut', 'text',
       'launch_app', 'open_url', 'media', 'system', 'obs', 'streamlabs', 'timer', 'multi_action', 'conditional', 'macro', 'profile', 'set_variable', 'toggle_variable', 'add_to_variable',
-      'terminal_command', 'run_program'];
+      'terminal_command', 'run_program', 'plugin'];
     expect(types(pickerEntries).sort()).toEqual([...expected].sort());
     expect(new Set(types(pickerEntries)).size).toBe(pickerEntries.length);
   });

@@ -19,6 +19,8 @@
     "allow-create-pack-profile",
     "allow-list-folder-packs",
     "allow-open-packs-folder",
+    "allow-list-plugins",
+    "allow-open-plugins-folder",
     "allow-import-profile",
     "allow-allow-imported-profile-execution",
     "allow-mark-all-profiles-for-review",

@@ -12,7 +12,10 @@ import type { ObsStepAction, ObsStepType, RunProgramAction, StreamlabsAudioMode,
 import { FlowEditor } from './FlowEditor';
 import { HotkeyField } from './key-capture';
 import { VariableActionFields } from './VariableFields';
+import { useVariables } from './variables-context';
+import { actionVariableNames } from './variable-model';
 import { MacroFields } from './MacroFields';
+import { PluginFields } from './PluginFields';
 import { catalogNames, filterTargets } from './obs-catalog';
 import type { ObsCatalogView } from './obs-catalog';
 import { obsConnectionLabels } from './obs-settings';
@@ -28,7 +31,7 @@ import {
   conditionUsesObs, defaultStepAction, defaultTimerSound, isFaderTemplate, isMediaKey, maxObsSceneBytes, maxRunningTimers, maxTextBytes, mediaKeyLabels, mediaLabels, multiActionSteps,
   obsMissingWarning, obsNameFits, obsNameIssue, obsOperationLabels, obsMediaOpLabels, obsMuteOpLabels, obsOutputOpLabels, obsRecordOpLabels, obsReplayBufferOpLabels, obsSceneIssue,
   obsSwitchOpLabels, profileDirectionLabels, streamlabsAudioLimits, streamlabsAudioMode, streamlabsAudioModeLabels, streamlabsNameIssue, streamlabsOperationLabels,
-  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, textIssue, timerLabelIssue, timerSeconds,
+  streamlabsVisibilityOpLabels, switchObsOperation, switchStreamlabsOperation, systemLabels, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, maxTerminalCommandBytes, maxRunProgramArgs, programArgIssue, programArgsIssue, programDashHint, programPathIssue, programVariableIssue, textIssue, timerLabelIssue, timerSeconds,
   timerSoundLabels, urlIssue, defaultStreamlabsAudioOp,
 } from './action-model';
 
@@ -279,7 +282,7 @@ function TerminalCommandFields({ action, onChange }: { action: TerminalCommandAc
 
 // A program run directly: its path, its arguments one field each (passed exactly as typed, never split or expanded) and an
 // optional folder. No arguments and an empty folder are omitted, never written as [] or "" (which the service rejects
-// for the folder).
+// for the folder). With variables on, {{name}} in an argument is filled in when pressed; off is omitted.
 function RunProgramFields({ prefix, action, onChange }: { prefix: string; action: RunProgramAction; onChange(action: StepAction, field?: string): void }) {
   const t = useT();
   const id = (name: string) => `${prefix}${name}`;
@@ -292,6 +295,13 @@ function RunProgramFields({ prefix, action, onChange }: { prefix: string; action
   const pathIssue = programPathIssue(action.program);
   const listIssue = programArgsIssue(args);
   const directoryIssue = terminalDirectoryIssue(action.directory ?? '');
+  const declaredVariables = useVariables();
+  const declared = declaredVariables.map(variable => variable.name);
+  const used = [...new Set(actionVariableNames(action))];
+  const withVariables = (on: boolean): RunProgramAction => {
+    const { variables: _previous, ...rest } = action;
+    return on ? { ...rest, variables: true } : rest;
+  };
   const withArgs = (next: string[]): RunProgramAction => {
     const { args: _previous, ...rest } = action;
     return next.length ? { ...rest, args: next } : rest;
@@ -311,20 +321,26 @@ function RunProgramFields({ prefix, action, onChange }: { prefix: string; action
       <legend>{t('actions.program.args')}</legend>
       {args.map((arg, index) => {
         const argId = id(`program-arg-${index + 1}`);
-        const issue = programArgIssue(arg);
+        const issue = programArgIssue(arg) ?? (action.variables ? programVariableIssue(arg, declared) : null);
+        const hint = !issue && action.variables ? programDashHint(arg, declaredVariables) : null;
         return <div key={keys.current[index]} className="program-arg">
           <input id={argId} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={arg}
             aria-label={t('actions.program.argNumbered', { number: index + 1 })}
-            aria-invalid={!!issue} aria-describedby={issue ? `${argId}-error` : undefined}
+            aria-invalid={!!issue} aria-describedby={issue ? `${argId}-error` : hint ? `${argId}-hint` : undefined}
             onChange={event => onChange(withArgs(args.map((item, at) => at === index ? event.target.value : item)), `program-arg-${index + 1}`)} />
           <button type="button" className="button compact" aria-label={t('actions.program.removeArg', { number: index + 1 })}
             onClick={() => { keys.current.splice(index, 1); onChange(withArgs(args.filter((_, at) => at !== index))); }}><Trash2 size={16} /></button>
           {issue && <p id={`${argId}-error`} className="field-error" role="alert">{issue}</p>}
+          {hint && <p id={`${argId}-hint`} className="fine-print">{hint}</p>}
         </div>;
       })}
       <button type="button" className="button compact" disabled={args.length >= maxRunProgramArgs}
         onClick={() => onChange(withArgs([...args, '']), `program-arg-${args.length + 1}`)}><Plus size={16} />{t('actions.program.addArg')}</button>
       {listIssue && <p className="field-error" role="alert">{listIssue}</p>}
+      <label className="setting-toggle"><input id={id('program-variables')} type="checkbox" checked={!!action.variables}
+        onChange={event => onChange(withVariables(event.target.checked), 'program-variables')} />{t('actions.program.variables')}</label>
+      <p className="fine-print">{!action.variables ? t('actions.program.variablesOff')
+        : `${used.length ? t('actions.program.variablesUsed', { names: used.join(', ') }) : t('actions.program.variablesNone')} ${t('actions.program.variablesOn')}`}</p>
     </fieldset>
     <label className="spaced-label" htmlFor={id('program-directory')}>{t('actions.program.directory')}</label>
     <input id={id('program-directory')} spellCheck={false} autoCapitalize="off" autoCorrect="off" value={action.directory ?? ''}
@@ -596,6 +612,7 @@ function StepFields({ prefix, action, inputKey, onChange, onSetUpObs, catalog, s
       </div>;
     }
     case 'run_program': return <RunProgramFields prefix={prefix} action={action} onChange={onChange} />;
+    case 'plugin': return <PluginFields prefix={prefix} action={action} onChange={onChange} invoke={invoke} hint={(summary, more) => <Hint hint={summary}>{more}</Hint>} />;
     case 'launch_app': return <LaunchAppFields inputId={id('app-bundle-id')} bundleId={action.bundle_id} invoke={invoke} onChange={bundleId => onChange({ type: 'launch_app', bundle_id: bundleId }, 'bundle-id')} />;
     case 'open_url': {
       const issue = urlIssue(action.url);

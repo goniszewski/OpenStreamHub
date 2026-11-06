@@ -1,5 +1,6 @@
+use crate::plugin::PluginValue;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{DialDisplay, DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
 
@@ -1045,6 +1046,32 @@ pub enum Action {
         /// the home folder when absent.
         #[serde(skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
+        /// Fill in `{{name}}` references to declared variables in the arguments
+        /// when the key is pressed (see [`fill_in_run_program_args`]). Off by
+        /// default, so `{{` is plain text; `program` and `directory` are never
+        /// filled in.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        variables: bool,
+    },
+    /// Ask a plugin, a separate program the OpenStreamHub app runs, to perform
+    /// one of its actions, and wait for its answer. Allowed as a
+    /// `multi_action` or `conditional` step.
+    Plugin {
+        /// The plugin's reverse-DNS id, such as `com.example.homeassistant`.
+        plugin: String,
+        /// The oldest plugin version this action works with, `MAJOR.MINOR.PATCH`.
+        min_version: String,
+        /// The id of the action in the plugin's manifest.
+        action: String,
+        /// Parameter values by name; the app checks them against the manifest.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, PluginValue>,
+        /// The text parameters whose `{{name}}` references to declared
+        /// variables are filled in when the key is pressed (see
+        /// [`crate::plugin::fill_in_plugin_params`]). Only parameters the
+        /// manifest allows it for.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variables: Vec<String>,
     },
     /// Send a media transport command: a hardware media key on macOS for
     /// play/pause, next and previous; `stop` reaches only an already running
@@ -1391,6 +1418,104 @@ fn is_home_or_absolute(path: &str) -> bool {
     path == "~" || path.starts_with('/') || path.starts_with("~/")
 }
 
+/// The variable names a text with variables on refers to, in order, repeats
+/// included. Every `{{` must begin a reference `{{name}}` with a valid variable
+/// name and no spaces; there is no escape for a literal `{{` (leave variables
+/// off instead).
+pub fn variable_references(text: &str) -> Result<Vec<&str>, String> {
+    Ok(reference_spans(text)?
+        .into_iter()
+        .map(|(_, name)| name)
+        .collect())
+}
+
+/// Each reference of `text` as the byte range of the whole `{{name}}` and the
+/// name, in order (see [`variable_references`]).
+fn reference_spans(text: &str) -> Result<Vec<(std::ops::Range<usize>, &str)>, String> {
+    let mut spans = Vec::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("{{") {
+        let start = from + found;
+        let name_start = start + 2;
+        let name = text[name_start..]
+            .find("}}")
+            .map(|end| &text[name_start..name_start + end])
+            .filter(|name| validate_variable_name(name).is_ok())
+            .ok_or("every {{ must begin a variable reference such as {{name}}, with a variable name and no spaces")?;
+        from = name_start + name.len() + 2;
+        spans.push((start..from, name));
+    }
+    Ok(spans)
+}
+
+/// A variable value as it is filled into text: text as it is, a number in
+/// decimal, a bool as `true` or `false`.
+fn filled_in(value: &VariableValue) -> String {
+    match value {
+        VariableValue::Bool(on) => on.to_string(),
+        VariableValue::Number(number) => number.to_string(),
+        VariableValue::Text(text) => text.clone(),
+    }
+}
+
+/// Replaces each `{{name}}` in `text` (see [`variable_references`]) by the
+/// value `lookup` gives for it.
+pub(crate) fn fill_in(
+    text: &str,
+    lookup: &impl Fn(&str) -> Option<VariableValue>,
+) -> Result<String, String> {
+    let mut filled = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (span, name) in reference_spans(text)? {
+        let value = lookup(name).ok_or_else(|| format!("variable {name} is not declared"))?;
+        filled.push_str(&text[copied..span.start]);
+        filled.push_str(&filled_in(&value));
+        copied = span.end;
+    }
+    filled.push_str(&text[copied..]);
+    Ok(filled)
+}
+
+/// The arguments of a `run_program` with variables on, filled in from
+/// `lookup` when its key is pressed. Fails closed, so nothing runs, when a
+/// filled-in argument breaks the one-line rules or the argument limits, or
+/// starts with `-` although the written argument does not (so a value set from
+/// outside the deck cannot become an option such as `--delete`; write
+/// `--name={{name}}` for a value that may start with `-`). Errors name the
+/// argument's position only, never a value.
+pub fn fill_in_run_program_args(
+    args: &[String],
+    lookup: impl Fn(&str) -> Option<VariableValue>,
+) -> Result<Vec<String>, String> {
+    let filled = args
+        .iter()
+        .enumerate()
+        .map(|(index, arg)| {
+            let number = index + 1;
+            let filled = fill_in(arg, &lookup).map_err(|error| format!("argument {number}: {error}"))?;
+            if validate_one_line("run_program", "argument", &filled, 0).is_err() {
+                return Err(format!(
+                    "argument {number} with its variables filled in is not one line of at most {} bytes without control or invisible characters",
+                    Action::MAX_RUN_PROGRAM_BYTES
+                ));
+            }
+            if filled.starts_with('-') && !arg.starts_with('-') {
+                return Err(format!(
+                    "argument {number} would start with - from a variable's value; write it as --option={{{{name}}}} instead"
+                ));
+            }
+            Ok(filled)
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if filled.iter().map(String::len).sum::<usize>() > Action::MAX_RUN_PROGRAM_ARGS_BYTES {
+        return Err(format!(
+            "the arguments with their variables filled in total more than {} bytes",
+            Action::MAX_RUN_PROGRAM_ARGS_BYTES
+        ));
+    }
+    Ok(filled)
+}
+
 fn validate_url(url: &str) -> Result<(), String> {
     const ALLOWED: &[u8] = b"-._~:/?#[]@!$&'()*+,;=%";
     if url.len() > Action::MAX_URL_BYTES {
@@ -1533,6 +1658,17 @@ impl<'de> Deserialize<'de> for Action {
                 args: Vec<String>,
                 #[serde(default, deserialize_with = "present")]
                 directory: Option<String>,
+                #[serde(default)]
+                variables: bool,
+            },
+            Plugin {
+                plugin: String,
+                min_version: String,
+                action: String,
+                #[serde(default)]
+                params: BTreeMap<String, PluginValue>,
+                #[serde(default)]
+                variables: Vec<String>,
             },
             Media {
                 command: MediaCommand,
@@ -1680,10 +1816,25 @@ impl<'de> Deserialize<'de> for Action {
                 program,
                 args,
                 directory,
+                variables,
             } => Self::RunProgram {
                 program,
                 args,
                 directory,
+                variables,
+            },
+            Shape::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
             },
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
@@ -1807,6 +1958,7 @@ impl Action {
             Self::OpenUrl { .. } => "open_url",
             Self::TerminalCommand { .. } => "terminal_command",
             Self::RunProgram { .. } => "run_program",
+            Self::Plugin { .. } => "plugin",
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
@@ -1885,6 +2037,19 @@ impl Action {
                 otherwise,
             } => when.uses_obs() || then.iter().chain(otherwise).any(Self::uses_obs),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
+            _ => false,
+        }
+    }
+
+    /// True for a `plugin` action, or a `multi_action` or `conditional` with
+    /// a plugin step.
+    pub fn uses_plugins(&self) -> bool {
+        match self {
+            Self::Plugin { .. } => true,
+            Self::Conditional {
+                then, otherwise, ..
+            } => then.iter().chain(otherwise).any(Self::uses_plugins),
+            Self::MultiAction { actions } => actions.iter().any(Self::uses_plugins),
             _ => false,
         }
     }
@@ -2019,6 +2184,7 @@ impl Action {
                 program,
                 args,
                 directory,
+                variables,
             } => {
                 const NAME: &str = "run_program";
                 validate_one_line(NAME, "program", program, 1)?;
@@ -2037,6 +2203,10 @@ impl Action {
                 }
                 for (index, arg) in args.iter().enumerate() {
                     validate_one_line(NAME, &format!("argument {}", index + 1), arg, 0)?;
+                    if *variables {
+                        variable_references(arg)
+                            .map_err(|error| format!("{NAME} argument {}: {error}", index + 1))?;
+                    }
                 }
                 if args.iter().map(String::len).sum::<usize>() > Self::MAX_RUN_PROGRAM_ARGS_BYTES {
                     return Err(format!(
@@ -2052,6 +2222,19 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => crate::plugin::validate_plugin_action(
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            ),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
                 validate_obs_name("obs_scene_collection", "name", name)
@@ -2232,6 +2415,29 @@ impl Action {
             Self::SetVariable { name, value } => expect(name, value.kind()),
             Self::ToggleVariable { name } => expect(name, VariableKind::Bool),
             Self::AddToVariable { name, .. } => expect(name, VariableKind::Number),
+            // Any kind can be filled in; validate has checked the references.
+            Self::RunProgram {
+                args,
+                variables: true,
+                ..
+            } => args.iter().enumerate().try_for_each(|(index, arg)| {
+                variable_references(arg)
+                    .and_then(|names| {
+                        names
+                            .into_iter()
+                            .try_for_each(|name| kind_of(name).map(drop))
+                    })
+                    .map_err(|error| format!("run_program argument {}: {error}", index + 1))
+            }),
+            Self::Plugin {
+                params, variables, ..
+            } => crate::plugin::plugin_variable_references(params, variables)?
+                .into_iter()
+                .try_for_each(|(parameter, name)| {
+                    kind_of(name)
+                        .map(drop)
+                        .map_err(|error| format!("plugin parameter {parameter}: {error}"))
+                }),
             Self::MultiAction { actions } => actions
                 .iter()
                 .try_for_each(|step| step.check_variables(declared)),
@@ -5343,6 +5549,174 @@ mod tests {
     }
 
     #[test]
+    fn run_program_variables_are_opt_in_and_checked_when_the_profile_loads() {
+        let parse = |json: &str| -> Result<Action, String> {
+            serde_json::from_str::<Action>(json).map_err(|error| error.to_string())
+        };
+        // Off by default and not written when off, so {{ stays plain text.
+        let plain = parse(r#"{"type":"run_program","program":"/a","args":["{{ nope"]}"#).unwrap();
+        assert!(matches!(
+            plain,
+            Action::RunProgram {
+                variables: false,
+                ..
+            }
+        ));
+        plain.validate().unwrap();
+        assert!(!serde_json::to_string(&plain).unwrap().contains("variables"));
+        assert_eq!(
+            parse(r#"{"type":"run_program","program":"/a","args":["{{ nope"],"variables":false}"#)
+                .unwrap(),
+            plain
+        );
+        let on = parse(
+            r#"{"type":"run_program","program":"/a","args":["--scene={{scene}}","{{takes}}{{live}}"],"variables":true}"#,
+        )
+        .unwrap();
+        on.validate().unwrap();
+        assert_eq!(parse(&serde_json::to_string(&on).unwrap()).unwrap(), on);
+        assert!(parse(r#"{"type":"run_program","program":"/a","variables":"yes"}"#).is_err());
+        for broken in [
+            "{{",
+            "{{scene",
+            "{{ scene }}",
+            "{{Scene}}",
+            "{{}}",
+            "{{1x}}",
+            "a {{b}} {{",
+            "{{{scene}}}",
+        ] {
+            let action = Action::RunProgram {
+                program: "/a".into(),
+                args: vec!["ok".into(), broken.into()],
+                directory: None,
+                variables: true,
+            };
+            let error = action.validate().unwrap_err();
+            assert!(
+                error.starts_with("run_program argument 2: every {{"),
+                "{broken}: {error}"
+            );
+        }
+        // Every name must be declared; any kind can be filled in.
+        let declared: Vec<Variable> = serde_json::from_str(
+            r#"[{"name":"takes","value":0},{"name":"live","value":false},{"name":"scene","value":"intro"}]"#,
+        )
+        .unwrap();
+        on.check_variables(&declared).unwrap();
+        let missing =
+            parse(r#"{"type":"run_program","program":"/a","args":["{{gone}}"],"variables":true}"#)
+                .unwrap();
+        assert_eq!(
+            missing.check_variables(&declared).unwrap_err(),
+            "run_program argument 1: variable gone is not declared"
+        );
+        let step = Action::MultiAction {
+            actions: vec![missing.clone(), Action::ToggleMute],
+        };
+        assert!(step.check_variables(&declared).is_err());
+        // Called on its own, a malformed reference still names its argument.
+        let malformed = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["ok".into(), "{{ x }}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert!(
+            malformed
+                .check_variables(&declared)
+                .unwrap_err()
+                .starts_with("run_program argument 2: every {{")
+        );
+        // With variables off nothing is a reference.
+        let off = parse(r#"{"type":"run_program","program":"/a","args":["{{gone}}"]}"#).unwrap();
+        off.check_variables(&declared).unwrap();
+        assert_eq!(
+            variable_references("{{a}}-{{b_2}}{{a}}").unwrap(),
+            ["a", "b_2", "a"]
+        );
+        assert_eq!(
+            variable_references("}} plain {").unwrap(),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn run_program_arguments_are_filled_in_and_checked_again_when_pressed() {
+        let values = |name: &str| match name {
+            "scene" => Some(VariableValue::Text("on air".into())),
+            "takes" => Some(VariableValue::Number(-3)),
+            "live" => Some(VariableValue::Bool(true)),
+            "dash" => Some(VariableValue::Text("--delete".into())),
+            "hidden" => Some(VariableValue::Text("a\u{200B}b".into())),
+            "empty" => Some(VariableValue::Text(String::new())),
+            "long" => Some(VariableValue::Text("x".repeat(64))),
+            _ => None,
+        };
+        let fill = |args: &[&str]| {
+            fill_in_run_program_args(
+                &args
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect::<Vec<_>>(),
+                values,
+            )
+        };
+        // One value stays one argument, with spaces; numbers and bools as text.
+        assert_eq!(
+            fill(&[
+                "--scene={{scene}}",
+                "{{scene}}",
+                "n={{takes}}/{{live}}",
+                "{{empty}}",
+                "plain"
+            ])
+            .unwrap(),
+            ["--scene=on air", "on air", "n=-3/true", "", "plain"]
+        );
+        // A value cannot turn an argument into an option; a written - can.
+        assert!(
+            fill(&["{{dash}}"])
+                .unwrap_err()
+                .contains("argument 1 would start with -")
+        );
+        assert!(
+            fill(&["x", "{{takes}}"])
+                .unwrap_err()
+                .contains("argument 2 would start with -")
+        );
+        assert!(fill(&["{{empty}}{{dash}}"]).is_err());
+        assert_eq!(
+            fill(&["--name={{dash}}", "-{{dash}}"]).unwrap(),
+            ["--name=--delete", "---delete"]
+        );
+        // Invisible characters and over-long results fail closed, naming only the position.
+        let error = fill(&["{{hidden}}"]).unwrap_err();
+        assert!(
+            error.starts_with("argument 1 with its variables filled in is not one line"),
+            "{error}"
+        );
+        assert!(!error.contains('\u{200B}'), "{error}");
+        let nine = ["{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}"];
+        assert!(
+            fill(&nine)
+                .unwrap_err()
+                .contains("argument 1 with its variables filled in")
+        );
+        let many = vec!["{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}{{long}}"; 10];
+        assert!(
+            fill(&many)
+                .unwrap_err()
+                .contains("total more than 4096 bytes")
+        );
+        // A name the values do not hold (a stale declaration) fails too.
+        assert_eq!(
+            fill(&["{{gone}}"]).unwrap_err(),
+            "argument 1: variable gone is not declared"
+        );
+    }
+
+    #[test]
     fn run_program_has_a_strict_shape_and_one_line_rules() {
         let parse = |json: &str| {
             serde_json::from_str::<Action>(json)
@@ -5356,6 +5730,7 @@ mod tests {
                 program: "/usr/bin/true".into(),
                 args: vec![],
                 directory: None,
+                variables: false,
             }
         );
         assert_eq!(bare.type_name(), "run_program");
@@ -5368,12 +5743,14 @@ mod tests {
             program: "~/bin/my tool".into(),
             args: vec!["".into(), "$(id) 'x' \"q\" ~".into()],
             directory: Some("~".into()),
+            variables: false,
         };
         assert_eq!(parse(&serde_json::to_string(&full).unwrap()).unwrap(), full);
         let at = |program: &str, args: Vec<String>, directory: Option<&str>| Action::RunProgram {
             program: program.into(),
             args,
             directory: directory.map(Into::into),
+            variables: false,
         };
         let long = "x".repeat(Action::MAX_RUN_PROGRAM_BYTES);
         at(
@@ -5434,6 +5811,7 @@ mod tests {
             program: "/usr/bin/true".into(),
             args: vec![],
             directory: None,
+            variables: false,
         };
         let text = Action::Text {
             text: "hi".into(),

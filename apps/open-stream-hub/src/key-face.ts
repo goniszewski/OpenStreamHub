@@ -16,7 +16,7 @@ type Point = readonly [number, number];
 // Three bytes per pixel, as the service's RGB image.
 export type KeyFace = Uint8Array;
 
-const BACKGROUND: Colour = [36, 52, 78];
+const BACKGROUND: Colour = [0, 0, 0];
 const WHITE: Colour = [255, 255, 255];
 const BLACK: Colour = [0, 0, 0];
 const FOLDER_BACKGROUND: Colour = [24, 24, 24];
@@ -36,7 +36,7 @@ export function tileIconOf(action?: BindingAction): TileIcon {
     case 'system': return ({ undo: 'undo', redo: 'redo', screenshot: 'screenshot' } as const)[action.command];
     case 'open_url': return 'web';
     // A terminal session opens an app window, and a program is an app without one: both read as a launch (TileIcon::of).
-    case 'launch_app': case 'terminal_command': case 'run_program': return 'application';
+    case 'launch_app': case 'terminal_command': case 'run_program': case 'plugin': return 'application';
     case 'text': return 'text';
     case 'multi_action': case 'conditional': case 'macro': return 'sequence';
     case 'profile': return 'profile';

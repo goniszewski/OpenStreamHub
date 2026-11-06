@@ -146,7 +146,7 @@ export const isFaderTemplate = (action: { type: string } | null | undefined): ac
 
 export const stepActionTypes: ReadonlyArray<readonly [StepActionType, string]> = [
   ['volume', 'Change output volume'], ['set_volume', 'Set output volume'], ['toggle_mute', 'Toggle output mute'],
-  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'], ['run_program', 'Run program'],
+  ['shortcut', 'Keyboard shortcut'], ['launch_app', 'Open application'], ['open_url', 'Open URL'], ['run_program', 'Run program'], ['plugin', 'Plugin action'],
   ['text', 'Paste text'], ['media', 'Media control'], ['system', 'System action'], ['obs_scene', 'Switch OBS scene'],
   ['obs_virtual_camera', 'OBS virtual camera'], ['obs_replay_buffer', 'OBS replay buffer'],
   ['obs_stream', 'OBS stream'], ['obs_record', 'OBS recording'],
@@ -169,6 +169,8 @@ export function defaultStepAction(type: StepActionType): StepAction {
     case 'launch_app': return { type, bundle_id: 'com.apple.finder' };
     case 'open_url': return { type, url: 'https://example.com' };
     case 'run_program': return { type, program: '/usr/bin/say', args: ['Hello'] };
+    // No plugin yet: the editor picks the first installed one (PluginFields), and the service refuses an empty id.
+    case 'plugin': return { type, plugin: '', min_version: '1.0.0', action: '' };
     case 'text': return { type, text: 'Hello', press_enter: false };
     case 'media': return { type, command: 'play_pause' };
     case 'system': return { type, command: 'undo' };
@@ -448,6 +450,102 @@ export function programPathIssue(program: string): string | null {
 // Mirrors the run_program argument checks in profile.rs. An empty argument is allowed.
 export function programArgIssue(arg: string): string | null {
   return arg ? terminalLineIssue(arg) : null;
+}
+
+// Mirrors variable_references in profile.rs: the variable names a text with variables on refers to, in order, or null
+// when a {{ does not begin a reference {{name}} (a variable name, no spaces). There is no escape for a literal {{.
+export function variableReferences(text: string): string[] | null {
+  const names: string[] = [];
+  let rest = text;
+  for (let start = rest.indexOf('{{'); start !== -1; start = rest.indexOf('{{')) {
+    const after = rest.slice(start + 2);
+    const end = after.indexOf('}}');
+    const name = end === -1 ? '' : after.slice(0, end);
+    if (!/^[a-z][a-z0-9_]{0,31}$/.test(name)) return null;
+    names.push(name);
+    rest = after.slice(end + 2);
+  }
+  return names;
+}
+
+// With variables on, every reference in a run_program argument must be well formed and name a declared variable
+// (Action::validate and Action::check_variables in profile.rs).
+export function programVariableIssue(arg: string, declared: ReadonlyArray<string>): string | null {
+  const names = variableReferences(arg);
+  if (!names) return 'Each {{ must begin a variable such as {{name}}, with no spaces inside.';
+  const missing = names.find(name => !declared.includes(name));
+  return missing ? `Variable ${missing} is not declared.` : null;
+}
+
+// The {{name}} references of a run_program, in order with repeats (each is a use), from its well-formed arguments; none
+// with variables off. malformed is set when an argument holds a {{ that begins no reference (the service refuses it).
+// The one reading of the rule for the editor, the use counts and the Execute confirmation.
+export function programReferences(action: { args?: unknown; variables?: unknown }): { names: string[]; malformed: boolean } {
+  const result = { names: [] as string[], malformed: false };
+  if (action.variables !== true) return result;
+  for (const arg of Array.isArray(action.args) ? action.args : []) {
+    const names = variableReferences(String(arg));
+    if (names) result.names.push(...names); else result.malformed = true;
+  }
+  return result;
+}
+
+// Mirrors validate_plugin_action in plugin.rs: the checks that do not need the plugin's manifest.
+const pluginIdPattern = /^(?=.{1,128}$)[a-z0-9][a-z0-9-]{0,62}(\.[a-z0-9][a-z0-9-]{0,62})+$/;
+const pluginActionPattern = /^[a-z][a-z0-9_.-]{0,63}$/;
+const pluginParamPattern = /^[a-z][a-z0-9_]{0,31}$/;
+const utf8Length = (text: string) => new TextEncoder().encode(text).length;
+export function pluginIssue(action: { plugin?: unknown; min_version?: unknown; action?: unknown; params?: unknown; variables?: unknown }): string | null {
+  if (typeof action.plugin !== 'string' || !pluginIdPattern.test(action.plugin)) return 'Choose a plugin.';
+  if (typeof action.min_version !== 'string' || !/^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(action.min_version)) return 'The minimum plugin version must be MAJOR.MINOR.PATCH.';
+  if (typeof action.action !== 'string' || !pluginActionPattern.test(action.action)) return 'Choose one of the plugin\'s actions.';
+  const params = action.params ?? {};
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) return 'Plugin parameters must be an object.';
+  const entries = Object.entries(params as Record<string, unknown>);
+  if (entries.length > 32) return 'A plugin action takes at most 32 parameters.';
+  let total = 0;
+  for (const [name, value] of entries) {
+    if (!pluginParamPattern.test(name)) return `Parameter name ${name} is not valid.`;
+    if (typeof value === 'string') {
+      if (utf8Length(value) > 2048 || /\p{Cc}/u.test(value) || invisibleTextCharacter.test(value)) return `Parameter ${name} must be one line of at most 2048 bytes without control or invisible characters.`;
+      total += utf8Length(value);
+    } else if (typeof value !== 'boolean' && (typeof value !== 'number' || !Number.isFinite(value))) return `Parameter ${name} must be text, a number or on / off.`;
+  }
+  if (total > 8192) return 'Plugin text parameters must total at most 8192 bytes.';
+  const variables = action.variables ?? [];
+  if (!Array.isArray(variables)) return 'Plugin variables must be a list of parameter names.';
+  for (const [index, name] of variables.entries()) {
+    if (variables.indexOf(name) !== index) return `Parameter ${String(name)} is listed twice for variables.`;
+    const value = (params as Record<string, unknown>)[String(name)];
+    if (typeof value !== 'string') return `Parameter ${String(name)} takes variables but is not text.`;
+    if (!variableReferences(value)) return `Parameter ${String(name)}: every {{ must begin a variable reference such as {{name}}.`;
+  }
+  return null;
+}
+
+// The {{name}} references of a plugin action, from the text parameters it lists in variables, in order with repeats;
+// none when it lists none. malformed when a listed parameter is not text or holds a broken reference (the service
+// refuses the profile).
+export function pluginReferences(action: { params?: unknown; variables?: unknown }): { names: string[]; malformed: boolean } {
+  const result = { names: [] as string[], malformed: false };
+  const params = action.params && typeof action.params === 'object' ? action.params as Record<string, unknown> : {};
+  for (const name of Array.isArray(action.variables) ? action.variables : []) {
+    const value = params[String(name)];
+    const names = typeof value === 'string' ? variableReferences(value) : null;
+    if (names) result.names.push(...names); else result.malformed = true;
+  }
+  return result;
+}
+
+// A filled-in argument that starts with - fails the press unless the written argument does (fill_in_run_program_args in
+// profile.rs), so one that starts with a number or text variable can fail whenever its value is negative or begins
+// with -. A hint, not an issue: the value may never start with -.
+export function programDashHint(arg: string, declared: ReadonlyArray<{ name: string; value: unknown }>): string | null {
+  if (!arg.startsWith('{{')) return null;
+  const first = variableReferences(arg)?.[0];
+  const variable = declared.find(item => item.name === first);
+  if (!variable || typeof variable.value === 'boolean') return null;
+  return `When ${first} starts with - (${typeof variable.value === 'number' ? 'a negative number' : 'text such as --all'}), the press refuses to run the program. Write it as --option={{${first}}} if the program takes one.`;
 }
 
 export function programArgsIssue(args: ReadonlyArray<string>): string | null {

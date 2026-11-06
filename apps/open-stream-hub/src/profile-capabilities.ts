@@ -1,5 +1,5 @@
 import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, pluginReferences, programReferences, systemLabels, urlOrigin } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -25,6 +25,9 @@ export interface ProfileCapabilities {
   // Every distinct run_program, one entry each with the path, every argument and the folder made visible, in profile
   // order. Each runs a program as you, so any raises the risk to high.
   programs: string[];
+  // Every distinct plugin action, one entry each with the plugin, the action and every parameter made visible, in
+  // profile order. A plugin is a program that runs as you, so any raises the risk to high.
+  plugins: string[];
   screenshot: boolean;
   // Undo or redo is sent to the focused app.
   undoRedo: boolean;
@@ -155,13 +158,73 @@ const terminalLine = (action: Record<string, unknown>) => {
 // brackets. A longer list (a hand-edited profile) is cut with a visible mark and rated high (tooLongReason).
 export const maxShownArgsChars = 2 * maxRunProgramArgsBytes + 3 * maxRunProgramArgs + 2;
 const programArgsPreview = (action: Record<string, unknown>) => snippetPreview(JSON.stringify(list(action.args).map(arg => String(arg))), maxShownArgsChars);
-const programLine = (action: Record<string, unknown>) => {
+// With variables on, the arguments are shown as written, {{name}} included, and the variables that feed them are named
+// with what this profile itself makes them: the declared starting value and every key that writes one (capabilities.rs
+// counts each as part of the program, so a new one needs a new confirmation). The current value is never shown, since
+// it can change after confirming.
+type Feeds = Map<string, { starts?: unknown; sets: Set<string>; adds: Set<string>; flips: boolean }>;
+const shownValue = (value: unknown) => typeof value === 'string' ? quoted(value) : String(value);
+const feedLine = (name: string, feeds: Feeds) => {
+  const feed = feeds.get(name);
+  const parts: string[] = [];
+  if (feed && 'starts' in feed) parts.push(`starts at ${shownValue(feed.starts)}`);
+  if (feed?.sets.size) parts.push(`keys set it to ${[...feed.sets].join(' or ')}`);
+  if (feed?.adds.size) parts.push(`keys add ${[...feed.adds].join(' or ')} to it`);
+  if (feed?.flips) parts.push('keys flip it');
+  return parts.length ? `${clipped(name, 32)} ${parts.join(', ')}` : '';
+};
+const programVariablesNote = (action: Record<string, unknown>, feeds: Feeds) =>
+  action.variables === true ? variablesNote(programReferences(action), feeds) : '';
+const variablesNote = (references: { names: string[]; malformed: boolean }, feeds: Feeds) => {
+  if (references.malformed) return ', with a malformed variable reference (the service refuses it)';
+  const names = [...new Set(references.names)];
+  if (!names.length) return ', with variables on but none used';
+  const written = names.map(name => feedLine(name, feeds)).filter(Boolean);
+  const one = names.length === 1;
+  return `, filling in the current value${one ? '' : 's'} of ${names.map(name => clipped(name, 32)).join(', ')} when pressed (${written.map(line => `${line}; `).join('')}other programs on this Mac can change ${one ? 'it' : 'them'})`;
+};
+const programLine = (action: Record<string, unknown>, feeds: Feeds = new Map()) => {
   const args = list(action.args);
   const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
   const preview = programArgsPreview(action);
   const shown = `${preview.text}${preview.more ? ` … (${preview.more} more characters not shown)` : ''}`;
-  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}`;
+  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}${programVariablesNote(action, feeds)}`;
 };
+// A plugin action as the confirmation names it: the plugin's id, the action and every parameter as JSON (so two
+// different sets never read the same), and the variables that feed its text parameters.
+const pluginLine = (action: Record<string, unknown>, feeds: Feeds = new Map()) => {
+  const params = isRecord(action.params) ? action.params : {};
+  const shown = Object.keys(params).length ? ` with ${snippetPreview(JSON.stringify(params), maxShownArgsChars).text}` : '';
+  const variables = list(action.variables).length ? variablesNote(pluginReferences(action), feeds) : '';
+  return `${clipped(String(action.plugin), 128)}: ${clipped(String(action.action), 64)}${shown}${variables}`;
+};
+// What the profile makes each variable a run_program fills in, read from every action and step (see programVariablesNote).
+function programFeeds(profile: Profile): Feeds {
+  const steps: Record<string, unknown>[] = [];
+  const walk = (action: unknown, depth: number) => {
+    if (!isRecord(action) || depth > 4) return;
+    steps.push(action);
+    for (const step of [...list(action.actions), ...list(action.then), ...list(action.else)]) walk(step, depth + 1);
+  };
+  for (const action of profileActions(profile)) walk(action, 0);
+  const feeds: Feeds = new Map();
+  for (const step of steps) {
+    const names = step.type === 'run_program' ? programReferences(step).names : step.type === 'plugin' ? pluginReferences(step).names : [];
+    for (const name of names) feeds.set(name, { sets: new Set(), adds: new Set(), flips: false });
+  }
+  for (const variable of list(profile.variables)) {
+    const feed = isRecord(variable) ? feeds.get(String(variable.name)) : undefined;
+    if (feed && isRecord(variable)) feed.starts = variable.value;
+  }
+  for (const step of steps) {
+    const feed = feeds.get(String(step.name));
+    if (!feed) continue;
+    if (step.type === 'set_variable') feed.sets.add(shownValue(step.value));
+    else if (step.type === 'add_to_variable') feed.adds.add(String(step.amount));
+    else if (step.type === 'toggle_variable') feed.flips = true;
+  }
+  return feeds;
+}
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
@@ -203,6 +266,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const terminalCommands = new Set<string>();
   // Keyed by the exact action, as capabilities.rs identifies it, so two programs never merge into one entry.
   const programs = new Map<string, string>();
+  const plugins = new Map<string, string>();
+  const feeds = programFeeds(profile);
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
@@ -259,10 +324,16 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         for (const field of [action.command, action.directory]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'run_program':
-        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null]), programLine(action));
+        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null, action.variables === true]), programLine(action, feeds));
         reasons.add('A key runs a program on this Mac as you.');
         for (const field of [action.program, action.directory, ...list(action.args)]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         if (programArgsPreview(action).more) reasons.add(tooLongReason);
+        break;
+      // Keyed like capabilities.rs (the minimum version changes which plugin answers, not what is asked).
+      case 'plugin':
+        plugins.set(JSON.stringify([action.plugin, action.action, action.params ?? {}, list(action.variables)]), pluginLine(action, feeds));
+        reasons.add('A key asks a plugin to act. A plugin is a program on this Mac that runs as you.');
+        if (JSON.stringify(action.params ?? {}).length > maxShownArgsChars) reasons.add(tooLongReason);
         break;
       // A host effect (a request to OBS on this Mac) that only changes the visible scene: shown, but low risk.
       case 'obs_scene':
@@ -354,7 +425,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
-    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], programs: [...programs.values()], screenshot, undoRedo, submitKey: submits,
+    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], programs: [...programs.values()], plugins: [...plugins.values()], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
     answersAgentPrompts,
@@ -419,6 +490,7 @@ export function stepLabel(step: StepAction): string {
     case 'shortcut': return `Press ${[...list(step.modifiers).map(String).map(modifierLabel), keyLabel(String(step.key))].join(' + ')}`;
     case 'launch_app': return `Open application ${String(step.bundle_id)}`;
     case 'run_program': return `Run the program ${programLine(step)}`;
+    case 'plugin': return `Ask the plugin ${pluginLine(step as unknown as Record<string, unknown>)}`;
     case 'open_url': {
       const preview = snippetPreview(String(step.url));
       return `Open web page ${preview.text}${preview.more ? `… (${preview.more} more characters not shown)` : ''}`;
@@ -479,6 +551,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.macros.length) lines.push(`Replays ${plural(capabilities.macros.length, 'recorded macro')} of keystrokes with pauses between them (shown below).`);
   if (capabilities.terminalCommands.length) lines.push(`Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: ${capabilities.terminalCommands.join('; ')}.`);
   if (capabilities.programs.length) lines.push(`Runs programs on this Mac as you, which can do anything you could do: ${capabilities.programs.join('; ')}.`);
+  if (capabilities.plugins.length) lines.push(`Asks plugins to act. A plugin is a program on this Mac that runs as you and can do anything you could do; it starts while this profile is executed: ${capabilities.plugins.join('; ')}.`);
   if (capabilities.answersAgentPrompts) lines.push('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
   if (capabilities.apps.length) lines.push(`Opens applications: ${capabilities.apps.join(', ')}.`);
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);

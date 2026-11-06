@@ -1,6 +1,6 @@
 # Plugins: research and proposed design
 
-Status (6 November 2026): **proposal, decisions agreed, nothing built.** Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
+Status (6 November 2026): **steps 1 to 3 built**: preset packs, the `run_program` action, and the plugin protocol with action providers (author guide: [writing a plugin](plugins.md)). Steps 4 to 6 are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
 
 ## What exists today
 
@@ -121,7 +121,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 1. **Data-only packs.** Built: the app preset packs, and packs dropped into `packs/` in the app data folder, checked by the same rules (see `apps/open-stream-hub/presets/README.md`).
 2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
-3. **Plugin protocol and action providers.** Manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`.
+3. **Plugin protocol and action providers.** Built: manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`, the editor form and Settings > Plugins ([writing a plugin](plugins.md)). How it differs from this proposal is listed under [as built](#plugin-protocol-as-built).
 4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images.
 5. **Community readiness.** A stable, versioned manifest schema, author docs and the complete trust UI.
 6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand.
@@ -132,7 +132,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 - **Shape.** `{"type": "run_program", "program": "/usr/local/bin/tool", "args": ["--flag", "value"], "directory": "~/code"}`. `program` is an absolute path or starts with `~/`. `args` is optional, at most 32 items. `directory` is optional, with the `terminal_command` rules (`~`, `/…` or `~/…`); without it the program starts in the home folder. Every field is one line without control or invisible characters, so what runs is what was reviewed.
 - **No shell.** The arguments are passed as they are. Nothing is expanded, quoted or split, and a leading `~/` is expanded only in `program` and `directory`.
-- **Fixed arguments first.** Variable references in arguments come later, with the syntax chosen for plugin parameters.
+- **Variables.** With `"variables": true`, `{{name}}` references in the arguments are filled in when the key is pressed. Built as proposed in open question 1 below.
 - **Deadline.** 15 s as a key's own action. As a `multi_action` or `conditional` step it gets what is left of the sequence's 15 s deadline. At the deadline the program and every process in its process group are killed, and the press fails. Processes it leaves running after a normal exit are not touched, so a launcher still works. The group is also killed on cancellation, on the service's forced exit and on a panic. A service killed with SIGKILL cannot do that, so a program running at that moment keeps running.
 - **Environment.** The program gets the service's own environment, with no fixed variables added. Started from the Finder, `PATH` holds only the system folders, so a `#!/usr/bin/env` script may not find a Homebrew interpreter; exit 127 or 126 adds a hint saying so. A missing start folder fails before anything starts.
 - **Result.** A nonzero exit, or a program that cannot start, fails the press. The program's output is discarded and never logged or shown, as for `terminal_command`, because it can echo tokens passed in the arguments. The log records only lengths and the argument count.
@@ -148,9 +148,11 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 
 ## Open questions: proposals
 
-Three questions were left open. Each has a proposal below, not yet agreed. The variable syntax matters most, because profiles will store it and a stored format is hard to change.
+Three questions were left open, each with a proposal below. All three are built as proposed, with the changes listed under [as built](#plugin-protocol-as-built).
 
 ### 1. Variable references in text parameters and run_program arguments
+
+**Status:** built for `run_program` as described here (`variable_references` and `fill_in_run_program_args` in `profile.rs`, mirrored in `action-model.ts`). The Execute confirmation names the variables after the arguments, and the activity log adds `"variables": true`.
 
 **Syntax: `{{name}}`.** `name` follows the existing variable name rules (1 to 32 characters of `a-z`, `0-9` and `_`, starting with a letter), with no spaces inside the braces. Examples: `--scene={{scene}}`, `{{count}}`.
 
@@ -203,3 +205,16 @@ On close, the app kills the plugin's process group, as `run_program` does, so he
 - **The menu bar has nothing to show.** Today it offers only Show, Updates and Quit, and would need its own status design first.
 
 **Later.** Add an optional manifest field such as `"background": true` with its own toggle in Settings, off by default, and an enable dialog that says the plugin will run whenever the app is open. This belongs with community readiness (step 5) and the trust UI, not with the protocol.
+
+## Plugin protocol as built
+
+Built on 6 November 2026 as proposed above, with these differences:
+
+- **Plugins run only for Live runs.** A Test run never starts a plugin, so no plugin code runs before the Execute confirmation. Switching a run between Test and Live in place starts or stops its plugins.
+- **A 5 s linger.** A plugin stops 5 s after the last Live run that uses it, so a module run that restarts keeps the same plugin process ("a Test / Live restart of a module process does not restart its plugins").
+- **Variables in the profile.** The service does not read manifests, so a plugin action lists the text parameters it fills in (`"variables": ["entity"]`), and the app checks at each invoke that the manifest allows variables for each. The editor keeps the list in step with the text.
+- **Text parameters are logged by length.** The service cannot tell which parameters the manifest marks `secret`, so its activity records give every text parameter's length only, never its value. Numbers, bools and the ids are logged.
+- **`set_variable` is limited to `permissions.variables`.** The other permissions are shown only.
+- **Not built yet:** the first-enable dialog and Keychain storage for secrets (a `secret` parameter is masked and never logged, but saved in the profile). Both belong with the trust UI in step 5.
+- **The plugins folder is the socket's folder**, made 0700, and the folder and `plugin.json` must belong to the user and not be writable by others. A folder's name must equal its manifest's id.
+

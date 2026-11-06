@@ -301,7 +301,7 @@ const OBS_NAME_FIELDS: &[&str] = &["scene", "source", "filter", "name", "collect
 
 /// Replaces user-authored action payloads wherever an action object appears
 /// (bindings, `multi_action` steps, keypad tiles, dial functions, client
-/// activity): `text` snippets, `timer` labels, `terminal_command` command lines and directories, `run_program` paths, arguments and directories, OBS scene, source, filter,
+/// activity): `text` snippets, `timer` labels, `terminal_command` command lines and directories, `run_program` paths, arguments and directories, `plugin` text parameters, OBS scene, source, filter,
 /// scene collection, profile and input names and Streamlabs scene, collection and
 /// source names become `<N chars>`, and `open_url` URLs keep only their origin. Long
 /// enough raw values are also queued for the text scrub; shorter OBS names
@@ -359,6 +359,21 @@ fn redact_action_payloads(
                         replacements.push((prefix, "<name…>".into()));
                     }
                     *raw = redacted;
+                }
+            }
+            // Plugin text parameters can carry tokens, names or addresses: each
+            // becomes its length. Numbers, bools and the ids stay.
+            if map.get("type").and_then(Value::as_str) == Some("plugin")
+                && let Some(Value::Object(params)) = map.get_mut("params")
+            {
+                for param in params.values_mut() {
+                    if let Value::String(raw) = param {
+                        let redacted = format!("<{} chars>", raw.chars().count());
+                        if raw.chars().count() >= MIN_SCRUBBED_PAYLOAD_CHARS {
+                            replacements.push((raw.clone(), redacted.clone()));
+                        }
+                        *raw = redacted;
+                    }
                 }
             }
             // Program arguments can carry tokens: each becomes its length.
@@ -1508,6 +1523,7 @@ mod tests {
                 { "type": "action", "action": { "type": "timer", "seconds": 300, "label": "call the doctor", "sound": "glass" } },
                 { "type": "action", "action": { "type": "terminal_command", "app": "iterm2", "command": "codex --api-key sk-live-123", "directory": "~/clients/acme" } },
                 { "type": "action", "action": { "type": "run_program", "program": "~/bin/deploy-acme", "args": ["--token", "tok-live-98765"], "directory": "~/clients/globex" } },
+                { "type": "action", "action": { "type": "plugin", "plugin": "com.example.lights", "min_version": "1.0.0", "action": "set", "params": { "token": "ha-live-55555", "level": 40, "fade": true } } },
             ] }] },
             "dial_functions": [{ "name": "Links", "bindings": [
                 { "gesture": "right", "action": { "type": "open_url", "url": "https://dial.example.org/a/b" } },
@@ -1572,6 +1588,11 @@ mod tests {
         assert_eq!(
             program,
             &json!({ "type": "run_program", "program": "<17 chars>", "args": ["<7 chars>", "<14 chars>"], "directory": "<16 chars>" })
+        );
+        let plugin = &bundle.value["profile"]["keypad"]["pages"][0]["slots"][4]["action"];
+        assert_eq!(
+            plugin,
+            &json!({ "type": "plugin", "plugin": "com.example.lights", "min_version": "1.0.0", "action": "set", "params": { "token": "<13 chars>", "level": 40, "fade": true } })
         );
         let profile = &bundle.value["profile"];
         assert_eq!(profile["bindings"][0]["action"]["text"], "<19 chars>");

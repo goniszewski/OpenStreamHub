@@ -8,8 +8,8 @@
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
-    TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
+    InputUpdate, PluginValue, ProfileResolution, ProfileSession, RunningTimer, ServiceModule,
+    ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -117,6 +117,9 @@ pub struct Work {
     /// The variables the profile declared when this work was planned, so the dispatcher can start new ones and keep
     /// the rest across a profile swap.
     pub variables: Vec<Variable>,
+    /// The [`ProfileSession::id`] of the profile that planned this work, so an action that must not outlive its
+    /// profile can tell it was swapped out meanwhile (0 when unknown, or when coalescing mixed two profiles).
+    pub profile: u64,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -165,6 +168,7 @@ pub fn plan_report(
         dropped_dial_function_count: 0,
         merge_barrier: false,
         variables: session.profile().variables.clone(),
+        profile: session.id(),
     })
 }
 
@@ -412,6 +416,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         dispatcher.set_service_state(ServiceState {
             timer_running: !timers.is_empty(),
             variables: work.variables.clone(),
+            profile: work.profile,
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -468,10 +473,40 @@ pub fn loggable(action: &Action) -> Value {
             program,
             args,
             directory,
+            variables,
         } => {
             let mut value = json!({"type":"run_program", "program_chars":program.chars().count(), "args":args.len()});
             if let Some(directory) = directory {
                 value["directory_chars"] = json!(directory.chars().count());
+            }
+            if *variables {
+                value["variables"] = json!(true);
+            }
+            value
+        }
+        // Text parameters can carry tokens or names, and the service does not
+        // know which ones the manifest marks secret: only their lengths are
+        // logged. Numbers, bools and the ids are closed values.
+        Action::Plugin {
+            plugin,
+            min_version,
+            action,
+            params,
+            variables,
+        } => {
+            let params: serde_json::Map<String, Value> = params
+                .iter()
+                .map(|(name, value)| {
+                    let logged = match value {
+                        PluginValue::Text(text) => json!({"chars": text.chars().count()}),
+                        other => json!(other),
+                    };
+                    (name.clone(), logged)
+                })
+                .collect();
+            let mut value = json!({"type":"plugin", "plugin":plugin, "min_version":min_version, "action":action, "params":params});
+            if !variables.is_empty() {
+                value["variables"] = json!(variables);
             }
             value
         }
@@ -785,6 +820,7 @@ mod tests {
             dropped_dial_function_count: 0,
             merge_barrier: false,
             variables: Vec::new(),
+            profile: 0,
         }
     }
 
@@ -1529,14 +1565,35 @@ mod tests {
             loggable(&bare),
             json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
         );
+        let plugin: Action = serde_json::from_value(json!({
+            "type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+            "params":{"token":"s3cr3t", "level":40, "fade":true, "room":"{{room}}"}, "variables":["room"],
+        }))
+        .unwrap();
+        assert_eq!(
+            loggable(&plugin),
+            json!({"type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+                "params":{"token":{"chars":6}, "level":40, "fade":true, "room":{"chars":8}}, "variables":["room"]})
+        );
         let program = Action::RunProgram {
             program: "~/bin/deploy".into(),
             args: vec!["--token".into(), "s3cr3t".into()],
             directory: Some("/tmp".into()),
+            variables: false,
         };
         assert_eq!(
             loggable(&program),
             json!({"type":"run_program", "program_chars":12, "args":2, "directory_chars":4})
+        );
+        let filled = Action::RunProgram {
+            program: "/a".into(),
+            args: vec!["{{token}}".into()],
+            directory: None,
+            variables: true,
+        };
+        assert_eq!(
+            loggable(&filled),
+            json!({"type":"run_program", "program_chars":2, "args":1, "variables":true})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

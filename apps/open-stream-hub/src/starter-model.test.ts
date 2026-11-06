@@ -110,6 +110,14 @@ describe('shipped starters', () => {
     expect(starterIssue(withAccept({ type: 'conditional', when, then: [set('missing', 'x')] }), typingActionIssue)).toContain('missing is not declared');
     expect(starterIssue(withAccept({ type: 'conditional', when, then: [set('agent_decision', 3)] }), typingActionIssue)).toContain('is text, not number');
     expect(starterIssue(withAccept({ type: 'conditional', when: { variable_is: { name: 'nope', value: 'x' } }, then: [set('agent_decision', 'allow')] }), typingActionIssue)).toContain('nope is not declared');
+    // Program arguments with variables on name declared variables too (checked here with a check that lets run_program
+    // through, since no starter may hold one).
+    const anyAction = () => null;
+    const program = (args: string[], variables = true) => ({ type: 'run_program', program: '/a', args, ...(variables ? { variables } : {}) });
+    expect(starterIssue(withAccept(program(['x', '{{gone}}'])), anyAction)).toBe('Argument 2: Variable gone is not declared.');
+    expect(starterIssue(withAccept(program(['{{ agent_state }}'])), anyAction)).toContain('Argument 1: Each {{ must begin');
+    expect(starterIssue(withAccept(program(['{{agent_state}}'])), anyAction)).toBeNull();
+    expect(starterIssue(withAccept(program(['{{gone}}'], false)), anyAction)).toBeNull();
     // The flow limits Rust enforces.
     expect(starterIssue(withAccept({ type: 'conditional', when, then: [] }), typingActionIssue)).toContain('at least one Then step');
     expect(starterIssue(withAccept({ type: 'conditional', when, then: Array(9).fill(set('agent_decision', 'allow')) }), typingActionIssue)).toContain('at most 8 steps');
@@ -166,6 +174,7 @@ describe('shipped starters', () => {
     // The dry-run-safe check every other starter uses refuses it.
     expect(actionIssue(session as BindingAction)).toContain('terminal_command does not belong in a starter');
     expect(actionIssue({ type: 'run_program', program: '/usr/bin/true' })).toContain('run_program does not belong in a starter');
+    expect(actionIssue({ type: 'plugin', plugin: 'com.example.lights', min_version: '1.0.0', action: 'toggle' })).toContain('plugin does not belong in a starter');
     expect(starterIssue(withAccept({ ...session, command: 'codex\nrm -rf ~' }), typingActionIssue)).toContain('one line');
     expect(starterIssue(withAccept({ ...session, command: ' ' }), typingActionIssue)).toContain('Enter the command');
     expect(starterIssue(withAccept({ ...session, directory: 'code' }), typingActionIssue)).toContain('starting with / or ~/');

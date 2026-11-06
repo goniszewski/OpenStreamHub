@@ -188,6 +188,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   launch_app: [appIconId(''), 'app-window'],
   terminal_command: ['terminal', 'app-window'],
   run_program: ['terminal', 'app-window'],
+  plugin: ['puzzle', 'app-window'],
   open_url: ['globe', 'link'],
   text: ['type'],
   media: ['play', 'pause'],

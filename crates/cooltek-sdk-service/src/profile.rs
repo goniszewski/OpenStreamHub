@@ -1030,6 +1030,22 @@ pub enum Action {
         #[serde(skip_serializing_if = "Option::is_none")]
         directory: Option<String>,
     },
+    /// Run one executable directly, without a shell or a terminal window, and
+    /// wait for it to exit. Allowed as a `multi_action` or `conditional` step.
+    RunProgram {
+        /// The executable: an absolute path or one starting with `~/`, with the
+        /// [`Action::MAX_RUN_PROGRAM_BYTES`] one-line rules.
+        program: String,
+        /// Arguments passed as they are (nothing expands or splits them): at
+        /// most [`Action::MAX_RUN_PROGRAM_ARGS`], each one line without control
+        /// or invisible characters, empty allowed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        /// Directory to start in, with the `terminal_command` directory rules;
+        /// the home folder when absent.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        directory: Option<String>,
+    },
     /// Send a media transport command: a hardware media key on macOS for
     /// play/pause, next and previous; `stop` reaches only an already running
     /// Apple Music or Spotify.
@@ -1346,23 +1362,33 @@ pub fn is_invisible_text_character(c: char) -> bool {
 /// bytes on one line, without control (newline and tab included) or invisible
 /// characters, so what runs is exactly the line that was reviewed.
 fn validate_terminal_line(field: &str, value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > Action::MAX_TERMINAL_COMMAND_BYTES {
-        return Err(format!(
-            "terminal_command {field} must be 1 to {} bytes",
-            Action::MAX_TERMINAL_COMMAND_BYTES
-        ));
+    validate_one_line("terminal_command", field, value, 1)
+}
+
+/// The one-line rules shared by `terminal_command` and `run_program` fields:
+/// `min` to 512 bytes, no control (newline and tab included) or invisible
+/// characters.
+fn validate_one_line(action: &str, field: &str, value: &str, min: usize) -> Result<(), String> {
+    const MAX: usize = Action::MAX_TERMINAL_COMMAND_BYTES;
+    if value.len() < min || value.len() > MAX {
+        return Err(format!("{action} {field} must be {min} to {MAX} bytes"));
     }
     if value.chars().any(char::is_control) {
         return Err(format!(
-            "terminal_command {field} must be one line without control characters"
+            "{action} {field} must be one line without control characters"
         ));
     }
     if value.chars().any(is_invisible_text_character) {
         return Err(format!(
-            "terminal_command {field} must not contain invisible format or line/paragraph separator characters"
+            "{action} {field} must not contain invisible format or line/paragraph separator characters"
         ));
     }
     Ok(())
+}
+
+/// Whether `path` is `~`, absolute, or starts with `~/`.
+fn is_home_or_absolute(path: &str) -> bool {
+    path == "~" || path.starts_with('/') || path.starts_with("~/")
 }
 
 fn validate_url(url: &str) -> Result<(), String> {
@@ -1498,6 +1524,13 @@ impl<'de> Deserialize<'de> for Action {
             TerminalCommand {
                 app: TerminalApp,
                 command: String,
+                #[serde(default, deserialize_with = "present")]
+                directory: Option<String>,
+            },
+            RunProgram {
+                program: String,
+                #[serde(default)]
+                args: Vec<String>,
                 #[serde(default, deserialize_with = "present")]
                 directory: Option<String>,
             },
@@ -1643,6 +1676,15 @@ impl<'de> Deserialize<'de> for Action {
                 command,
                 directory,
             },
+            Shape::RunProgram {
+                program,
+                args,
+                directory,
+            } => Self::RunProgram {
+                program,
+                args,
+                directory,
+            },
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
@@ -1715,6 +1757,12 @@ impl Action {
     pub const MAX_URL_BYTES: usize = 2048;
     /// Maximum `terminal_command` command and directory length in UTF-8 bytes.
     pub const MAX_TERMINAL_COMMAND_BYTES: usize = 512;
+    /// Maximum `run_program` program, directory and single-argument length in UTF-8 bytes.
+    pub const MAX_RUN_PROGRAM_BYTES: usize = Self::MAX_TERMINAL_COMMAND_BYTES;
+    /// Maximum number of `run_program` arguments.
+    pub const MAX_RUN_PROGRAM_ARGS: usize = 32;
+    /// Maximum total UTF-8 bytes of all `run_program` arguments.
+    pub const MAX_RUN_PROGRAM_ARGS_BYTES: usize = 4096;
     /// Maximum `text` snippet length in UTF-8 bytes.
     pub const MAX_TEXT_BYTES: usize = 2048;
     /// Minimum number of `multi_action` steps.
@@ -1758,6 +1806,7 @@ impl Action {
             Self::LaunchApp { .. } => "launch_app",
             Self::OpenUrl { .. } => "open_url",
             Self::TerminalCommand { .. } => "terminal_command",
+            Self::RunProgram { .. } => "run_program",
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
@@ -1958,13 +2007,47 @@ impl Action {
                 }
                 if let Some(directory) = directory {
                     validate_terminal_line("directory", directory)?;
-                    if !(directory == "~"
-                        || directory.starts_with('/')
-                        || directory.starts_with("~/"))
-                    {
+                    if !is_home_or_absolute(directory) {
                         return Err(
                             "terminal_command directory must be ~ or start with / or ~/".into()
                         );
+                    }
+                }
+                Ok(())
+            }
+            Self::RunProgram {
+                program,
+                args,
+                directory,
+            } => {
+                const NAME: &str = "run_program";
+                validate_one_line(NAME, "program", program, 1)?;
+                if !(program.starts_with('/') || program.starts_with("~/"))
+                    || program.ends_with('/')
+                {
+                    return Err(
+                        "run_program program must be a file path starting with / or ~/".into(),
+                    );
+                }
+                if args.len() > Self::MAX_RUN_PROGRAM_ARGS {
+                    return Err(format!(
+                        "run_program takes at most {} arguments",
+                        Self::MAX_RUN_PROGRAM_ARGS
+                    ));
+                }
+                for (index, arg) in args.iter().enumerate() {
+                    validate_one_line(NAME, &format!("argument {}", index + 1), arg, 0)?;
+                }
+                if args.iter().map(String::len).sum::<usize>() > Self::MAX_RUN_PROGRAM_ARGS_BYTES {
+                    return Err(format!(
+                        "run_program arguments must total at most {} bytes",
+                        Self::MAX_RUN_PROGRAM_ARGS_BYTES
+                    ));
+                }
+                if let Some(directory) = directory {
+                    validate_one_line(NAME, "directory", directory, 1)?;
+                    if !is_home_or_absolute(directory) {
+                        return Err("run_program directory must be ~ or start with / or ~/".into());
                     }
                 }
                 Ok(())
@@ -5257,6 +5340,117 @@ mod tests {
         ] {
             assert!(parse(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn run_program_has_a_strict_shape_and_one_line_rules() {
+        let parse = |json: &str| {
+            serde_json::from_str::<Action>(json)
+                .map_err(|error| error.to_string())
+                .and_then(|action| action.validate_executable().map(|()| action))
+        };
+        let bare = parse(r#"{"type":"run_program","program":"/usr/bin/true"}"#).unwrap();
+        assert_eq!(
+            bare,
+            Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+            }
+        );
+        assert_eq!(bare.type_name(), "run_program");
+        // Absent arguments and directory stay absent, so the JSON round-trips.
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"type":"run_program","program":"/usr/bin/true"}"#
+        );
+        let full = Action::RunProgram {
+            program: "~/bin/my tool".into(),
+            args: vec!["".into(), "$(id) 'x' \"q\" ~".into()],
+            directory: Some("~".into()),
+        };
+        assert_eq!(parse(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        let at = |program: &str, args: Vec<String>, directory: Option<&str>| Action::RunProgram {
+            program: program.into(),
+            args,
+            directory: directory.map(Into::into),
+        };
+        let long = "x".repeat(Action::MAX_RUN_PROGRAM_BYTES);
+        at(
+            &format!("/{}", &long[1..]),
+            vec![long.clone(); 8],
+            Some("/"),
+        )
+        .validate()
+        .unwrap();
+        at("/a", vec!["a".into(); Action::MAX_RUN_PROGRAM_ARGS], None)
+            .validate()
+            .unwrap();
+        for (program, args, directory) in [
+            ("", vec![], None),
+            ("true", vec![], None),
+            ("./true", vec![], None),
+            ("~", vec![], None),
+            ("~user/x", vec![], None),
+            ("/usr/bin/", vec![], None),
+            ("/usr/bin/true\nid", vec![], None),
+            ("/usr/bin/tr\u{200b}ue", vec![], None),
+            (&*format!("/{long}"), vec![], None),
+            ("/a", vec!["a\nb".to_string()], None),
+            ("/a", vec!["a\tb".to_string()], None),
+            ("/a", vec!["a\u{2028}".to_string()], None),
+            ("/a", vec![format!("{long}x")], None),
+            (
+                "/a",
+                vec!["a".to_string(); Action::MAX_RUN_PROGRAM_ARGS + 1],
+                None,
+            ),
+            ("/a", vec![long.clone(); 9], None),
+            ("/a", vec![], Some("")),
+            ("/a", vec![], Some("relative")),
+            ("/a", vec![], Some("/tmp\nx")),
+        ] {
+            let action = at(program, args.clone(), directory);
+            assert!(
+                action.validate().is_err(),
+                "{program:?} {args:?} {directory:?}"
+            );
+        }
+        for json in [
+            r#"{"type":"run_program"}"#,
+            r#"{"type":"run_program","program":7}"#,
+            r#"{"type":"run_program","program":"/a","args":"x"}"#,
+            r#"{"type":"run_program","program":"/a","args":[1]}"#,
+            r#"{"type":"run_program","program":"/a","directory":null}"#,
+            r#"{"type":"run_program","program":"/a","shell":"sh"}"#,
+        ] {
+            assert!(parse(json).is_err(), "{json}");
+        }
+    }
+
+    #[test]
+    fn run_program_can_be_a_step() {
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec![],
+            directory: None,
+        };
+        let text = Action::Text {
+            text: "hi".into(),
+            press_enter: true,
+        };
+        Action::MultiAction {
+            actions: vec![program.clone(), text.clone()],
+        }
+        .validate()
+        .unwrap();
+        Action::Conditional {
+            when: Condition::OutputMuted(true),
+            then: vec![program],
+            otherwise: vec![text],
+        }
+        .validate()
+        .unwrap();
     }
 
     #[test]

@@ -1041,3 +1041,4 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .mode-control.idle .mode-choice[aria-pressed="true"]:not(.pause) > span::after { content:""; display:inline-block; width:5px; height:5px; margin-left:5px; border-radius:50%; background:var(--accent); vertical-align:middle; }
 .about-link { color:var(--accent); text-decoration:underline; text-underline-offset:2px; }
 .about-link:hover { text-decoration-thickness:2px; }
+.program-args { border:0; padding:0; margin-left:0; margin-right:0; display:grid; gap:8px; }.program-args legend { font-size:12px; font-weight:500; margin-bottom:8px; padding:0; }.program-arg { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; align-items:center; }.program-arg .field-error { grid-column:1 / -1; margin:0; }.program-args>.button { justify-self:start; }

@@ -35,8 +35,8 @@ export function tileIconOf(action?: BindingAction): TileIcon {
     case 'media': return ({ play_pause: 'play', next_track: 'next', previous_track: 'previous', stop: 'stop' } as const)[action.command];
     case 'system': return ({ undo: 'undo', redo: 'redo', screenshot: 'screenshot' } as const)[action.command];
     case 'open_url': return 'web';
-    // A terminal session opens an app window, like a launch (TileIcon::of).
-    case 'launch_app': case 'terminal_command': return 'application';
+    // A terminal session opens an app window, and a program is an app without one: both read as a launch (TileIcon::of).
+    case 'launch_app': case 'terminal_command': case 'run_program': return 'application';
     case 'text': return 'text';
     case 'multi_action': case 'conditional': case 'macro': return 'sequence';
     case 'profile': return 'profile';

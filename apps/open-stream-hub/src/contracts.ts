@@ -27,6 +27,10 @@ export type StepAction =
   | { type: 'launch_app'; bundle_id: string }
   | { type: 'set_volume'; percent: number }
   | { type: 'open_url'; url: string }
+  // Runs one executable directly (no shell, no terminal window) and waits for it to exit: an absolute or ~/ path, up to
+  // 32 arguments passed as they are, and a starting folder (the home folder when omitted). args and directory are
+  // omitted, never empty lists or null. Allowed as a multi_action or conditional step.
+  | { type: 'run_program'; program: string; args?: string[]; directory?: string }
   | { type: 'media'; command: MediaCommand }
   | { type: 'system'; command: SystemCommand }
   // press_enter may be omitted in JSON (defaults to false); the service always writes it.

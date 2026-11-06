@@ -67,6 +67,24 @@ describe('profileCapabilities', () => {
     expect(capabilityLines(capabilities)[0]).toBe('Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: Terminal: “claude”; iTerm2: “codex --token "s3"\\u{200B}” in “~/code”.');
     expect(profileCapabilities(flat({ type: 'launch_app', bundle_id: 'com.apple.Terminal' })).terminalCommands).toEqual([]);
   });
+  it('is high for a program and names its path, every argument and its folder', () => {
+    const capabilities = profileCapabilities(flat(
+      { type: 'run_program', program: '/usr/bin/say', args: ['on air', ''] },
+      { type: 'multi_action', actions: [{ type: 'toggle_mute' }, { type: 'run_program', program: '~/bin/lights', directory: '/tmp' }] },
+      { type: 'run_program', program: '/usr/bin/say', args: ['on air', ''] },
+    ));
+    expect(capabilities.risk).toBe('high');
+    expect(capabilities.riskReasons).toContain('A key runs a program on this Mac as you.');
+    expect(capabilities.programs).toEqual(['“/usr/bin/say” with arguments ["on air",""]', '“~/bin/lights” with no arguments in “/tmp”']);
+    expect(capabilityLines(capabilities)).toContain('Runs programs on this Mac as you, which can do anything you could do: “/usr/bin/say” with arguments ["on air",""]; “~/bin/lights” with no arguments in “/tmp”.');
+    // Argument boundaries stay visible: one argument with quotes and spaces never reads like two.
+    const lists = profileCapabilities(flat(
+      { type: 'run_program', program: '/a', args: ['x", "y'] },
+      { type: 'run_program', program: '/a', args: ['x', 'y'] },
+    )).programs;
+    expect(lists).toEqual(['“/a” with arguments ["x\\", \\"y"]', '“/a” with arguments ["x","y"]']);
+    expect(stepLabel({ type: 'run_program', program: '/usr/bin/true' })).toBe('Run the program “/usr/bin/true” with no arguments');
+  });
   it('is high for a key that answers AI agent prompts, wherever it sets agent_decision', () => {
     const answer = { type: 'set_variable', name: 'agent_decision', value: 'allow' } as Action;
     const nested = { type: 'conditional', when: { variable_is: { name: 'agent_state', value: 'waiting' } }, then: [answer], else: [{ type: 'toggle_mute' }] } as Action;

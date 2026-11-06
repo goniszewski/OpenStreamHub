@@ -187,6 +187,7 @@ const actionSuggestions: Partial<Record<BindingAction['type'], string[]>> = {
   shortcut: ['keyboard'],
   launch_app: [appIconId(''), 'app-window'],
   terminal_command: ['terminal', 'app-window'],
+  run_program: ['terminal', 'app-window'],
   open_url: ['globe', 'link'],
   text: ['type'],
   media: ['play', 'pause'],

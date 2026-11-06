@@ -22,6 +22,9 @@ export interface ProfileCapabilities {
   // Every distinct terminal_command, one plain-language entry each with the command line made visible, in profile order.
   // Each opens a terminal window and runs a line in the user's shell, so any raises the risk to high.
   terminalCommands: string[];
+  // Every distinct run_program, one entry each with the path, every argument and the folder made visible, in profile
+  // order. Each runs a program as you, so any raises the risk to high.
+  programs: string[];
   screenshot: boolean;
   // Undo or redo is sent to the focused app.
   undoRedo: boolean;
@@ -145,6 +148,13 @@ const terminalLine = (action: Record<string, unknown>) => {
   const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
   return `${app}: ${quoted(action.command)}${folder}`;
 };
+// A run_program as the confirmation names it: the path, the arguments as a JSON list (each quote inside one is escaped,
+// so two different lists never read the same) and the folder it starts in.
+const programLine = (action: Record<string, unknown>) => {
+  const args = list(action.args).map(arg => String(arg));
+  const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
+  return `${quoted(action.program)}${args.length ? ` with arguments ${snippetPreview(JSON.stringify(args)).text}` : ' with no arguments'}${folder}`;
+};
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
@@ -184,6 +194,8 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const origins = new Set<string>();
   const apps = new Set<string>();
   const terminalCommands = new Set<string>();
+  // Keyed by the exact action, as capabilities.rs identifies it, so two programs never merge into one entry.
+  const programs = new Map<string, string>();
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
@@ -238,6 +250,11 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         terminalCommands.add(terminalLine(action));
         reasons.add('A key opens a terminal window and runs a command line in your shell.');
         for (const field of [action.command, action.directory]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
+        break;
+      case 'run_program':
+        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null]), programLine(action));
+        reasons.add('A key runs a program on this Mac as you.');
+        for (const field of [action.program, action.directory, ...list(action.args)]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       // A host effect (a request to OBS on this Mac) that only changes the visible scene: shown, but low risk.
       case 'obs_scene':
@@ -329,7 +346,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
-    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], screenshot, undoRedo, submitKey: submits,
+    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], programs: [...programs.values()], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
     answersAgentPrompts,
@@ -393,6 +410,7 @@ export function stepLabel(step: StepAction): string {
     case 'toggle_mute': return 'Toggle output mute';
     case 'shortcut': return `Press ${[...list(step.modifiers).map(String).map(modifierLabel), keyLabel(String(step.key))].join(' + ')}`;
     case 'launch_app': return `Open application ${String(step.bundle_id)}`;
+    case 'run_program': return `Run the program ${programLine(step)}`;
     case 'open_url': {
       const preview = snippetPreview(String(step.url));
       return `Open web page ${preview.text}${preview.more ? `… (${preview.more} more characters not shown)` : ''}`;
@@ -452,6 +470,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.multiAction) lines.push(`Runs ${plural(capabilities.sequences.length, 'multi-step sequence')} (up to ${multiActionSteps.maximum} steps each, shown below).`);
   if (capabilities.macros.length) lines.push(`Replays ${plural(capabilities.macros.length, 'recorded macro')} of keystrokes with pauses between them (shown below).`);
   if (capabilities.terminalCommands.length) lines.push(`Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: ${capabilities.terminalCommands.join('; ')}.`);
+  if (capabilities.programs.length) lines.push(`Runs programs on this Mac as you, which can do anything you could do: ${capabilities.programs.join('; ')}.`);
   if (capabilities.answersAgentPrompts) lines.push('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
   if (capabilities.apps.length) lines.push(`Opens applications: ${capabilities.apps.join(', ')}.`);
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);

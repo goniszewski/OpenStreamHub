@@ -7,8 +7,9 @@ use crate::{
     streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
 };
 use std::{
+    collections::BTreeSet,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -201,6 +202,52 @@ const ITERM2_SCRIPT: &[&str] = &[
     "end tell",
     "end run",
 ];
+
+/// Bound for a `run_program` that is a key's own action; as a step it gets
+/// what is left of the sequence's [`MULTI_ACTION_DEADLINE`], never more than this.
+const RUN_PROGRAM_TIMEOUT: Duration = Duration::from_secs(15);
+/// The name a `run_program` request carries in errors and logs, in place of
+/// the profile's path (which can name the user).
+const RUN_PROGRAM: &str = "run_program";
+
+/// Process groups of the `run_program` children running now. Each leads a
+/// group of its own, out of reach of a kill aimed at the service's group, so
+/// an exit that skips the normal stop (a forced exit, a panic) kills these
+/// with [`kill_running_programs`].
+static PROGRAM_GROUPS: Mutex<BTreeSet<i32>> = Mutex::new(BTreeSet::new());
+
+fn program_groups() -> std::sync::MutexGuard<'static, BTreeSet<i32>> {
+    PROGRAM_GROUPS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// SIGKILLs the process group of every `run_program` still running, for exit
+/// paths that skip the normal stop. A service killed with SIGKILL cannot run
+/// this, so a program running at that moment keeps running.
+pub fn kill_running_programs() {
+    for &group in program_groups().iter() {
+        // SAFETY: killpg only sends a signal to a group this process started.
+        #[cfg(unix)]
+        unsafe {
+            libc::killpg(group, libc::SIGKILL);
+        }
+        #[cfg(not(unix))]
+        let _ = group;
+    }
+}
+
+/// Expands a leading `~` (alone or before `/`) of a validated `run_program`
+/// path to `home`; any other path is returned as it is.
+pub(crate) fn expand_home(path: &str, home: &str) -> String {
+    if path == "~" {
+        home.to_owned()
+    } else if let Some(rest) = path.strip_prefix("~/") {
+        format!("{}/{rest}", home.trim_end_matches('/'))
+    } else {
+        path.to_owned()
+    }
+}
 
 /// Quotes `value` as one POSIX shell word: inside single quotes nothing is
 /// special, and a single quote is written as `'\''` (close, escaped quote, reopen).
@@ -576,8 +623,8 @@ impl MacOsDispatcher {
         {
             return Err(format!("{program}: stdin exceeds {STDIN_LIMIT} bytes"));
         }
-        // Only the fixed timer and terminal constants of this module set their
-        // own bound.
+        // Only the fixed timer, terminal and run_program bounds of this module
+        // set their own.
         let timeout = if request.timeout.is_zero() {
             PROCESS_TIMEOUT
         } else {
@@ -769,6 +816,7 @@ impl MacOsDispatcher {
                 command,
                 directory,
             } => self.terminal_command(*app, command, directory.as_deref())?,
+            Action::RunProgram { .. } => self.run_program(action, None)?,
             Action::Media { command } => self.media(*command)?,
             Action::System { command } => match command {
                 SystemCommand::Undo => {
@@ -898,6 +946,8 @@ impl MacOsDispatcher {
                 self.obs_action(step, Some(deadline))
             } else if step.uses_streamlabs() {
                 self.streamlabs_action(step, Some(deadline))
+            } else if matches!(step, Action::RunProgram { .. }) {
+                self.run_program(step, Some(deadline))
             } else {
                 self.execute(step)
             };
@@ -1067,6 +1117,71 @@ impl MacOsDispatcher {
                 "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
             )
         })
+    }
+
+    /// Runs a `run_program` action: the executable directly, with its
+    /// arguments as they are, in its directory (the home folder when none),
+    /// within [`RUN_PROGRAM_TIMEOUT`] or what is left of `deadline`. The
+    /// program's output is discarded and a failure never names the path or the
+    /// arguments, which can carry tokens.
+    fn run_program(
+        &mut self,
+        action: &Action,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        let Action::RunProgram {
+            program,
+            args,
+            directory,
+        } = action
+        else {
+            unreachable!("run_program is called only for a run_program action");
+        };
+        let timeout = match deadline {
+            None => RUN_PROGRAM_TIMEOUT,
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(self.sleeper.now());
+                if remaining.is_zero() {
+                    return Err(format!(
+                        "the sequence's {} s overall deadline has passed; the program was not started",
+                        MULTI_ACTION_DEADLINE.as_secs()
+                    ));
+                }
+                remaining.min(RUN_PROGRAM_TIMEOUT)
+            }
+        };
+        let home = std::env::var("HOME")
+            .ok()
+            .filter(|home| home.starts_with('/'))
+            .ok_or("the program was not started: the home folder is unknown")?;
+        let current_dir = expand_home(directory.as_deref().unwrap_or("~"), &home);
+        // Checked here so a renamed folder is not reported as a missing program.
+        if self.runner.checks_paths() && !std::path::Path::new(&current_dir).is_dir() {
+            return Err("the program was not started: its start folder does not exist".into());
+        }
+        // No fixed environment: the program sees the service's own, locale
+        // included. The shell's exit codes for a missing or unrunnable file
+        // (an `env` interpreter not on the app's PATH, say) get a hint.
+        let output = self.run_bounded(ProcessRequest {
+            program: RUN_PROGRAM,
+            path: Some(expand_home(program, &home)),
+            args: args.clone(),
+            current_dir: Some(current_dir),
+            isolated: true,
+            timeout,
+            ..ProcessRequest::default()
+        })?;
+        if output.success {
+            return Ok(());
+        }
+        let hint = if output.status == "exit status: 127" {
+            " (the program or its interpreter was not found; the app's PATH is only the system folders, so use full paths)"
+        } else if output.status == "exit status: 126" {
+            " (the program or its interpreter could not be run; check that it is executable)"
+        } else {
+            ""
+        };
+        Err(format!("{RUN_PROGRAM}: {}{hint}", output.status))
     }
 
     /// Posts a media key, or stops Music and Spotify, through one fixed
@@ -1448,6 +1563,16 @@ struct ProcessRequest {
     env: &'static [(&'static str, &'static str)],
     timeout: Duration,
     output_limit: usize,
+    /// The file to execute when it is not the fixed `program` (a `run_program`
+    /// path); `program` then only names the request in errors.
+    path: Option<String>,
+    /// Directory the process starts in; inherited when `None`.
+    current_dir: Option<String>,
+    /// Run in a process group of its own with stdout and stderr on /dev/null,
+    /// waiting only for the process to exit: stopping it (timeout or
+    /// cancellation) kills the whole group, and anything it leaves running
+    /// after a normal exit keeps running.
+    isolated: bool,
 }
 
 struct ProcessOutput {
@@ -1462,6 +1587,12 @@ trait ProcessRunner: Send {
 
     fn cancellation(&self) -> Option<&AtomicBool> {
         None
+    }
+
+    /// Whether the dispatcher checks paths on this Mac's file system before a
+    /// request; false for the test runner, which starts nothing.
+    fn checks_paths(&self) -> bool {
+        true
     }
 
     /// An independent system runner cancelled by `cancellation`, if supported.
@@ -1510,9 +1641,18 @@ impl ProcessRunner for SystemProcessRunner {
 #[cfg(target_os = "macos")]
 impl ProcessRunner for SystemProcessRunner {
     fn run(&mut self, request: &ProcessRequest) -> Result<ProcessOutput, String> {
+        use std::os::unix::process::CommandExt;
         use std::process::{Command, Stdio};
         check_cancellation(self.cancellation(), request.program)?;
-        let mut child = Command::new(request.program)
+        let output = || {
+            if request.isolated {
+                Stdio::null()
+            } else {
+                Stdio::piped()
+            }
+        };
+        let mut command = Command::new(request.path.as_deref().unwrap_or(request.program));
+        command
             .args(&request.args)
             .envs(request.env.iter().copied())
             .stdin(if request.stdin.is_some() {
@@ -1520,21 +1660,40 @@ impl ProcessRunner for SystemProcessRunner {
             } else {
                 Stdio::null()
             })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stdout(output())
+            .stderr(output());
+        if let Some(directory) = &request.current_dir {
+            command.current_dir(directory);
+        }
+        if request.isolated {
+            command.process_group(0);
+        }
+        let mut child = command
             .spawn()
             .map_err(|error| format!("{}: could not start process: {error}", request.program))?;
+        let group = request
+            .isolated
+            .then(|| i32::try_from(child.id()).ok())
+            .flatten();
+        if let Some(group) = group {
+            program_groups().insert(group);
+        }
         let result = write_child_stdin(&mut child, request)
             .and_then(|()| collect_child_output(&mut child, request, self.cancellation()));
-        if let Err(error) = result {
-            // Stop the direct system-tool process on all monitoring failures. No retry
-            // is safe: a partially completed action could otherwise execute twice.
-            return match stop_child(&mut child) {
+        // Stop the process (its whole group when isolated) on all monitoring
+        // failures. No retry is safe: a partially completed action could
+        // otherwise execute twice.
+        let result = match result {
+            Err(error) => match stop_child(&mut child, request.isolated) {
                 Ok(()) => Err(error),
                 Err(cleanup_error) => Err(format!(
                     "{error}; subprocess cleanup failed: {cleanup_error}"
                 )),
-            };
+            },
+            ok => ok,
+        };
+        if let Some(group) = group {
+            program_groups().remove(&group);
         }
         result
     }
@@ -1568,7 +1727,34 @@ fn write_child_stdin(
 }
 
 #[cfg(target_os = "macos")]
-fn stop_child(child: &mut std::process::Child) -> Result<(), String> {
+fn stop_child(child: &mut std::process::Child, group: bool) -> Result<(), String> {
+    // The child leads its group (process_group(0)), so its pid is the group
+    // id; this reaches what it started even after it exits. A failure is
+    // reported after the leader itself is killed and reaped.
+    let group_error = if group {
+        match libc::pid_t::try_from(child.id()) {
+            // SAFETY: killpg only sends a signal; ESRCH (group already gone) is fine.
+            Ok(pgid) if unsafe { libc::killpg(pgid, libc::SIGKILL) } == -1 => {
+                let error = std::io::Error::last_os_error();
+                (error.raw_os_error() != Some(libc::ESRCH))
+                    .then(|| format!("could not kill process group: {error}"))
+            }
+            Ok(_) => None,
+            Err(error) => Some(format!("could not name process group: {error}")),
+        }
+    } else {
+        None
+    };
+    let stopped = stop_leader(child);
+    match (group_error, stopped) {
+        (None, result) => result,
+        (Some(group), Ok(())) => Err(group),
+        (Some(group), Err(leader)) => Err(format!("{group}; {leader}")),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn stop_leader(child: &mut std::process::Child) -> Result<(), String> {
     use std::time::Instant;
     if child
         .try_wait()
@@ -1610,30 +1796,42 @@ fn collect_child_output(
     cancellation: Option<&AtomicBool>,
 ) -> Result<ProcessOutput, String> {
     use std::time::Instant;
-    let mut stdout_pipe = child
-        .stdout
-        .take()
-        .ok_or("missing subprocess stdout pipe")?;
-    let mut stderr_pipe = child
-        .stderr
-        .take()
-        .ok_or("missing subprocess stderr pipe")?;
+    let pipes = (child.stdout.take(), child.stderr.take());
+    let start = Instant::now();
+    let poll_status = || {
+        child
+            .try_wait()
+            .map(|status| status.map(|status| (status.success(), status.to_string())))
+            .map_err(|error| error.to_string())
+    };
+    let elapsed = || start.elapsed();
+    let pause = || std::thread::sleep(Duration::from_millis(10));
+    let cancelled = || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire));
+    if request.isolated {
+        // Output goes to /dev/null: there are no pipes, only the exit to wait for.
+        return collect_output(
+            &mut std::io::empty(),
+            &mut std::io::empty(),
+            request,
+            poll_status,
+            elapsed,
+            pause,
+            cancelled,
+        );
+    }
+    let (Some(mut stdout_pipe), Some(mut stderr_pipe)) = pipes else {
+        return Err("missing subprocess stdout or stderr pipe".into());
+    };
     make_nonblocking(&stdout_pipe)?;
     make_nonblocking(&stderr_pipe)?;
-    let start = Instant::now();
     collect_output(
         &mut stdout_pipe,
         &mut stderr_pipe,
         request,
-        || {
-            child
-                .try_wait()
-                .map(|status| status.map(|status| (status.success(), status.to_string())))
-                .map_err(|error| error.to_string())
-        },
-        || start.elapsed(),
-        || std::thread::sleep(Duration::from_millis(10)),
-        || cancellation.is_some_and(|flag| flag.load(Ordering::Acquire)),
+        poll_status,
+        elapsed,
+        pause,
+        cancelled,
     )
 }
 
@@ -1685,6 +1883,20 @@ fn collect_output(
             });
         }
         if elapsed() >= request.timeout {
+            // One last look, so a process that exited right at the deadline is
+            // not reported (or, isolated, its group killed) as timed out.
+            if let Some((success, status)) = poll_status().map_err(|error| {
+                format!("{}: could not inspect process: {error}", request.program)
+            })? && stdout_closed
+                && stderr_closed
+            {
+                return Ok(ProcessOutput {
+                    success,
+                    status,
+                    stdout,
+                    stderr,
+                });
+            }
             return Err(format!(
                 "{}: subprocess timed out after {} ms; action may already have taken effect",
                 request.program,
@@ -1779,10 +1991,17 @@ mod tests {
                 env: request.env,
                 timeout: request.timeout,
                 output_limit: request.output_limit,
+                path: request.path.clone(),
+                current_dir: request.current_dir.clone(),
+                isolated: request.isolated,
             });
             let cost = state.request_cost;
             state.elapsed += cost;
             state.results.pop_front().expect("unexpected subprocess")
+        }
+
+        fn checks_paths(&self) -> bool {
+            false
         }
     }
 
@@ -2016,6 +2235,254 @@ mod tests {
             "{error}"
         );
         assert!(!error.contains("secret-token"), "{error}");
+    }
+
+    #[test]
+    fn run_program_passes_path_and_arguments_as_they_are() {
+        let home = std::env::var("HOME").unwrap();
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        let args = vec![
+            "--scene".to_string(),
+            "on air".into(),
+            "".into(),
+            "$(id) ~".into(),
+        ];
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "~/bin/lights".into(),
+                args: args.clone(),
+                directory: Some("/tmp".into()),
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        let request = &state.requests[0];
+        assert_eq!(request.program, RUN_PROGRAM);
+        assert_eq!(
+            request.path.as_deref(),
+            Some(&*format!("{home}/bin/lights"))
+        );
+        assert_eq!(request.args, args);
+        assert_eq!(request.current_dir.as_deref(), Some("/tmp"));
+        assert!(request.isolated);
+        assert!(request.stdin.is_none());
+        assert_eq!(request.timeout, RUN_PROGRAM_TIMEOUT);
+        drop(state);
+        // Without a directory it starts in the home folder.
+        let (mut dispatcher, state) = fake(vec![success("")]);
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests[0].path.as_deref(), Some("/usr/bin/true"));
+        assert_eq!(state.requests[0].current_dir.as_deref(), Some(&*home));
+    }
+
+    #[test]
+    fn run_program_failure_names_neither_path_nor_arguments() {
+        let (mut dispatcher, _) = fake(vec![Ok(ProcessOutput {
+            success: false,
+            status: "exit status: 3".into(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        })]);
+        let error = dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/Users/secret-name/bin/tool".into(),
+                args: vec!["secret-token".into()],
+                directory: None,
+            })
+            .unwrap_err();
+        assert_eq!(error, "run_program: exit status: 3");
+    }
+
+    #[test]
+    fn run_program_explains_a_missing_program_or_interpreter() {
+        for (status, hint) in [
+            ("exit status: 127", "was not found"),
+            ("exit status: 126", "could not be run"),
+        ] {
+            let (mut dispatcher, _) = fake(vec![Ok(ProcessOutput {
+                success: false,
+                status: status.into(),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })]);
+            let error = dispatcher
+                .dispatch(&Action::RunProgram {
+                    program: "/Users/someone/bin/tool".into(),
+                    args: vec![],
+                    directory: None,
+                })
+                .unwrap_err();
+            assert!(
+                error.starts_with(&format!("run_program: {status} (")),
+                "{error}"
+            );
+            assert!(error.contains(hint), "{error}");
+            assert!(!error.contains("someone"), "{error}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn run_program_reports_a_missing_start_folder_before_starting_anything() {
+        let mut dispatcher = MacOsDispatcher::with_cancellation(Arc::new(AtomicBool::new(false)));
+        let error = dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: Some("/no/such/folder-for-osh".into()),
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "the program was not started: its start folder does not exist"
+        );
+    }
+
+    /// Serializes the tests that start real isolated programs: the forced-exit
+    /// test kills every registered group.
+    #[cfg(target_os = "macos")]
+    static REAL_PROGRAMS: Mutex<()> = Mutex::new(());
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn running_program_groups_are_killed_on_a_forced_exit() {
+        let _serial = REAL_PROGRAMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let before = program_groups().clone();
+        let worker = std::thread::spawn(|| {
+            let mut runner = SystemProcessRunner { cancellation: None };
+            let started = std::time::Instant::now();
+            let result = runner.run(&ProcessRequest {
+                program: RUN_PROGRAM,
+                path: Some("/bin/sleep".into()),
+                args: vec!["30".into()],
+                isolated: true,
+                timeout: Duration::from_secs(20),
+                output_limit: OUTPUT_LIMIT,
+                ..ProcessRequest::default()
+            });
+            (result.map(|output| output.success), started.elapsed())
+        });
+        // Wait until the program is registered, then take the forced-exit path.
+        let registered = std::time::Instant::now();
+        let group = loop {
+            if let Some(&group) = program_groups().difference(&before).next() {
+                break group;
+            }
+            assert!(registered.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        kill_running_programs();
+        let (result, elapsed) = worker.join().unwrap();
+        // Killed by the signal: the exit is a failure, long before the deadline.
+        assert_eq!(result, Ok(false));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert!(!program_groups().contains(&group));
+    }
+
+    #[test]
+    fn run_program_as_a_step_gets_what_is_left_of_the_deadline() {
+        let (mut dispatcher, state) = fake(vec![success(""), success("")]);
+        state.lock().unwrap().request_cost = Duration::from_secs(10);
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec![],
+            directory: None,
+        };
+        dispatcher
+            .dispatch(&Action::MultiAction {
+                actions: vec![program.clone(), program],
+            })
+            .unwrap();
+        let state = state.lock().unwrap();
+        assert_eq!(state.requests[0].timeout, RUN_PROGRAM_TIMEOUT);
+        let second = state.requests[1].timeout;
+        assert!(
+            second < Duration::from_secs(5) && !second.is_zero(),
+            "{second:?}"
+        );
+    }
+
+    #[test]
+    fn expand_home_touches_only_a_leading_tilde() {
+        assert_eq!(expand_home("~", "/Users/me"), "/Users/me");
+        assert_eq!(expand_home("~/bin/x", "/Users/me/"), "/Users/me/bin/x");
+        assert_eq!(expand_home("/opt/~/x", "/Users/me"), "/opt/~/x");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_process_runs_in_its_directory_and_its_group_dies_at_the_deadline() {
+        let _serial = REAL_PROGRAMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut runner = SystemProcessRunner { cancellation: None };
+        let request = |args: Vec<String>, timeout| ProcessRequest {
+            program: RUN_PROGRAM,
+            path: Some("/bin/sh".into()),
+            args,
+            current_dir: Some("/tmp".into()),
+            isolated: true,
+            timeout,
+            output_limit: OUTPUT_LIMIT,
+            ..ProcessRequest::default()
+        };
+        let marker = std::env::temp_dir().join(format!("osh-run-program-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // It starts in its directory and its exit status is reported.
+        let output = runner
+            .run(&request(
+                vec![
+                    "-c".into(),
+                    "[ \"$(pwd -P)\" = /private/tmp ] && exit 3".into(),
+                ],
+                Duration::from_secs(5),
+            ))
+            .unwrap();
+        assert!(!output.success);
+        assert!(output.status.contains('3'), "{}", output.status);
+        // A child that outlives the deadline is killed with the program.
+        let started = std::time::Instant::now();
+        let error = runner
+            .run(&request(
+                vec![
+                    "-c".into(),
+                    format!("(sleep 1; touch '{}') & sleep 30", marker.display()),
+                ],
+                Duration::from_millis(300),
+            ))
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with("run_program: subprocess timed out"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(1500));
+        assert!(
+            !marker.exists(),
+            "the background child survived the deadline"
+        );
+        // A missing program fails to start without naming the path.
+        let error = runner
+            .run(&ProcessRequest {
+                path: Some("/no/such/program".into()),
+                ..request(vec![], Duration::from_secs(1))
+            })
+            .err()
+            .unwrap();
+        assert!(
+            error.starts_with("run_program: could not start process"),
+            "{error}"
+        );
+        assert!(!error.contains("/no/such"), "{error}");
     }
 
     #[test]

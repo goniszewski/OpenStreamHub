@@ -50,14 +50,14 @@ pub const MAX_RECORDS: usize = 1024;
 pub const MAX_HASHES: usize = 4096;
 
 /// Refusal of an Execute run of a flagged profile.
-pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file, an app preset pack, or a JSON file that opens a terminal or answers AI agent prompts) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
+pub const DRY_RUN_ONLY: &str = "this profile was imported (from a MasterHUB .mhz file, an app preset pack, or a JSON file that opens a terminal, runs a program or answers AI agent prompts) or derived from an import, and can run only as a dry run until you allow it to execute actions in the Profiles page";
 const RECOVERY: &str = "actions stay off until you choose \"Mark all profiles as needing review\" in the Profiles page";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImportRecord {
     /// `mhz` (imported), `pack` (created from an app preset pack), `import` (a JSON profile file that holds a
-    /// `terminal_command` or writes `agent_decision`, see [`needs_review`]), `derived` (saved from a flagged profile) or `review` (marked by
+    /// `terminal_command` or `run_program`, or writes `agent_decision`, see [`needs_review`]), `derived` (saved from a flagged profile) or `review` (marked by
     /// the recovery action).
     pub source: String,
     pub dry_run_only: bool,
@@ -256,17 +256,17 @@ impl ImportedProfiles {
 /// action anywhere in it (flat bindings, every keypad page, dial functions,
 /// and the steps of a sequence or an if / else, although validation keeps a
 /// terminal command out of steps) opens a terminal and runs a command line,
-/// or writes `agent_decision` (sets, toggles or adds to it), which answers an
+/// runs a program (`run_program`), or writes `agent_decision` (sets, toggles or adds to it), which answers an
 /// AI agent's permission prompt through `osh agent ask`. Other JSON imports
 /// stay ordinary profiles that the Execute confirmation discloses in full.
 ///
-/// The review is about those two actions only: a profile that opens a
+/// The review is about those actions only: a profile that opens a
 /// terminal app (`launch_app`) and types text into it is not flagged here;
 /// the Execute confirmation discloses both.
 pub fn needs_review(profile: &Profile) -> bool {
     fn reviewed_action(action: &Action) -> bool {
         match action {
-            Action::TerminalCommand { .. } => true,
+            Action::TerminalCommand { .. } | Action::RunProgram { .. } => true,
             Action::SetVariable { name, .. }
             | Action::ToggleVariable { name }
             | Action::AddToVariable { name, .. } => name == osh::AGENT_DECISION,
@@ -757,6 +757,28 @@ mod tests {
                 action: nested,
             });
             assert!(needs_review(&stepped));
+        }
+        // A program counts too, on its own and as a step.
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec![],
+            directory: None,
+        };
+        for action in [
+            program.clone(),
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, program],
+            },
+        ] {
+            let mut flagged = plain.clone();
+            flagged.bindings.push(Binding {
+                module: ServiceModule::M003K,
+                control: 0,
+                gesture: Gesture::Pressed,
+                serial_number: None,
+                action,
+            });
+            assert!(needs_review(&flagged));
         }
     }
 

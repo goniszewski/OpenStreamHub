@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  conditionLabel, conditionUsesObs, defaultCondition, defaultTerminalCommand, maxTerminalCommandBytes, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  conditionLabel, conditionUsesObs, defaultCondition, defaultTerminalCommand, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, maxTerminalCommandBytes, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, streamlabsAudioMode, streamlabsNameIssue, streamlabsOperationLabels, streamlabsVisibilityOpLabels,
@@ -98,6 +98,49 @@ describe('terminal_command contract', () => {
     expect(terminalAccepted(defaultTerminalCommand())).toBe(true);
     expect(actionLabel(defaultTerminalCommand())).toBe('Run “claude” in Terminal');
     expect(actionLabel({ type: 'terminal_command', app: 'iterm2', command: 'codex --full-auto --model o3-pro-max', directory: '~/x' })).toBe("Run “codex --full-auto --mode…” in iTerm2");
+  });
+});
+
+describe('run_program contract', () => {
+  type LooseProgram = { type?: string; program?: unknown; args?: unknown; directory?: unknown; actions?: { type?: string }[] };
+  // Mirrors the Rust checks for one run_program, so the fixture's invalid entries are explained on this side too.
+  const programAccepted = (action: LooseProgram) =>
+    Object.keys(action).every(key => ['type', 'program', 'args', 'directory'].includes(key))
+    && typeof action.program === 'string'
+    && (action.args === undefined || (Array.isArray(action.args) && action.args.every(arg => typeof arg === 'string')))
+    && (action.directory === undefined || (typeof action.directory === 'string' && action.directory !== ''))
+    && programPathIssue(action.program) === null
+    && ((action.args ?? []) as string[]).every(arg => programArgIssue(arg) === null) && programArgsIssue((action.args ?? []) as string[]) === null
+    && terminalDirectoryIssue(typeof action.directory === 'string' ? action.directory : '') === null;
+
+  it('agrees with the shared fixture on valid and invalid programs', () => {
+    const valid = fixture.valid.filter(action => action.type === 'run_program');
+    expect(valid.length).toBeGreaterThan(2);
+    for (const action of valid) expect(programAccepted(action as LooseProgram), JSON.stringify(action)).toBe(true);
+    const invalid = (fixture.invalid as LooseProgram[]).filter(action => action.type === 'run_program');
+    expect(invalid.length).toBeGreaterThan(10);
+    for (const action of invalid) expect(programAccepted(action), JSON.stringify(action)).toBe(false);
+    // A step, on both sides.
+    expect(stepActionTypes.map(([type]) => type)).toContain('run_program');
+    expect(fixture.valid.some(action => action.type === 'multi_action' && action.actions.some(step => step.type === 'run_program'))).toBe(true);
+  });
+
+  it('flags paths and arguments the service rejects', () => {
+    for (const path of ['/usr/bin/say', '~/bin/my tool', '/a']) expect(programPathIssue(path), path).toBeNull();
+    for (const path of ['', 'say', './say', '~', '~user/x', '/usr/bin/', '/a\nb', 'zw\u200b']) expect(programPathIssue(path), JSON.stringify(path)).not.toBeNull();
+    for (const arg of ['', 'on air', '$(id) ~ "q"']) expect(programArgIssue(arg), arg).toBeNull();
+    for (const arg of ['a\nb', 'tab\tx', 'x\u2028']) expect(programArgIssue(arg), JSON.stringify(arg)).not.toBeNull();
+    expect(programArgsIssue(Array(maxRunProgramArgs).fill('a'))).toBeNull();
+    expect(programArgsIssue(Array(maxRunProgramArgs + 1).fill('a'))).not.toBeNull();
+    expect(programArgsIssue(Array(9).fill('x'.repeat(512)))).not.toBeNull();
+  });
+
+  it('labels it and starts from a harmless say', () => {
+    const initial = defaultStepAction('run_program');
+    expect(initial).toEqual({ type: 'run_program', program: '/usr/bin/say', args: ['Hello'] });
+    expect(programAccepted(initial)).toBe(true);
+    expect(actionLabel(initial)).toBe('Run say with 1 argument');
+    expect(actionLabel({ type: 'run_program', program: '~/bin/lights' })).toBe('Run lights');
   });
 });
 

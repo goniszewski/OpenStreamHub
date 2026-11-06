@@ -12,7 +12,7 @@ import { KeyArtworkPreview } from './KeyArtworkEditor';
 import { actionLabel } from './ui-model';
 
 export function ActionIcon({ action }: { action?: BindingAction }) {
-  const Icon = action?.type === 'toggle_mute' ? VolumeX : action?.type === 'launch_app' ? Monitor : action?.type === 'terminal_command' ? SquareTerminal :
+  const Icon = action?.type === 'toggle_mute' ? VolumeX : action?.type === 'launch_app' ? Monitor : action?.type === 'terminal_command' || action?.type === 'run_program' ? SquareTerminal :
     action?.type === 'volume' || action?.type === 'set_volume' || action?.type === 'volume_from_position' || action?.type === 'mic_input_volume_from_position' ? Volume2 :
     action?.type === 'open_url' ? Globe : action?.type === 'media' ? Play : action?.type === 'text' ? Type :
     action?.type === 'multi_action' || action?.type === 'conditional' ? ListOrdered : action?.type === 'profile' ? ArrowLeftRight : action?.type === 'timer' ? Timer : action?.type?.startsWith('obs_') || action?.type?.startsWith('streamlabs_') ? Clapperboard : action?.type === 'system' ? (action.command === 'screenshot' ? Camera : Undo2) : Keyboard;

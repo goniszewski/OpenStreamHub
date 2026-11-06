@@ -441,7 +441,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
 }
 
 /// Redacts an action for a log record: snippet text and URL paths, queries and
-/// user information (often passwords or tokens), terminal command lines, timer labels and OBS scene
+/// user information (often passwords or tokens), terminal command lines, program paths and arguments, timer labels and OBS scene
 /// names are never written. Every other action serializes unchanged.
 pub fn loggable(action: &Action) -> Value {
     match action {
@@ -457,6 +457,19 @@ pub fn loggable(action: &Action) -> Value {
             directory,
         } => {
             let mut value = json!({"type":"terminal_command", "app":app, "command_chars":command.chars().count()});
+            if let Some(directory) = directory {
+                value["directory_chars"] = json!(directory.chars().count());
+            }
+            value
+        }
+        // The path can name the user and arguments can carry tokens: only the
+        // lengths and the argument count are logged.
+        Action::RunProgram {
+            program,
+            args,
+            directory,
+        } => {
+            let mut value = json!({"type":"run_program", "program_chars":program.chars().count(), "args":args.len()});
             if let Some(directory) = directory {
                 value["directory_chars"] = json!(directory.chars().count());
             }
@@ -1515,6 +1528,15 @@ mod tests {
         assert_eq!(
             loggable(&bare),
             json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
+        );
+        let program = Action::RunProgram {
+            program: "~/bin/deploy".into(),
+            args: vec!["--token".into(), "s3cr3t".into()],
+            directory: Some("/tmp".into()),
+        };
+        assert_eq!(
+            loggable(&program),
+            json!({"type":"run_program", "program_chars":12, "args":2, "directory_chars":4})
         );
         let nested = Action::MultiAction {
             actions: vec![text.clone(), Action::ToggleMute, url],

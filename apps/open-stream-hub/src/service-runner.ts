@@ -186,6 +186,11 @@ function describeAction(action: unknown): string {
     case 'launch_app': return `open ${String(action.bundle_id)}`;
     // The service logs only the command line's length, never its text.
     case 'terminal_command': return `run a command in ${action.app === 'iterm2' ? 'iTerm2' : 'Terminal'} (${typeof action.command_chars === 'number' ? action.command_chars : (typeof action.command === 'string' ? [...action.command].length : 0)} characters)`;
+    // The service logs only lengths and the argument count, never the path or the arguments.
+    case 'run_program': {
+      const args = typeof action.args === 'number' ? action.args : Array.isArray(action.args) ? action.args.length : 0;
+      return `run a program (${args} argument${args === 1 ? '' : 's'})`;
+    }
     // Only the origin: paths and queries can carry tokens.
     case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;
     case 'media': return `media ${String(action.command)}`;

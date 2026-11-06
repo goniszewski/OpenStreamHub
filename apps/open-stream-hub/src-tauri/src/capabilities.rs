@@ -79,6 +79,17 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         } => {
             set.insert(format!("terminal\0{app:?}\0{directory:?}\0{command}"));
         }
+        // The path, every argument and the directory decide what runs, so all
+        // of them are the item. JSON keeps the argument boundaries exact.
+        Action::RunProgram {
+            program,
+            args,
+            directory,
+        } => {
+            let identity = serde_json::to_string(&(program, args, directory))
+                .unwrap_or_else(|_| "unnameable".into());
+            set.insert(format!("program\0{identity}"));
+        }
         // Only the origin is an item, as the confirmation shows it: a path
         // or query change of a known origin is not a new capability.
         Action::OpenUrl { url } => {
@@ -507,6 +518,26 @@ mod tests {
             }])
         ));
     }
+    #[test]
+    fn a_program_with_its_arguments_and_directory_is_the_whole_item() {
+        let program = |path: &str, args: &[&str], directory: Option<&str>| Action::RunProgram {
+            program: path.into(),
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            directory: directory.map(Into::into),
+        };
+        let held = profile(vec![program("/usr/bin/tool", &["a b"], None)]);
+        assert!(!adds_capabilities(&held, &held.clone()));
+        for next in [
+            program("/usr/bin/other", &["a b"], None),
+            program("/usr/bin/tool", &["a", "b"], None),
+            program("/usr/bin/tool", &["a b", "--force"], None),
+            program("/usr/bin/tool", &[], None),
+            program("/usr/bin/tool", &["a b"], Some("~")),
+        ] {
+            assert!(adds_capabilities(&held, &profile(vec![next])));
+        }
+    }
+
     #[test]
     fn a_terminal_command_line_is_the_whole_item() {
         use cooltek_sdk_service::TerminalApp;

@@ -146,8 +146,60 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 - Windows or Linux plugin hosts.
 - Plugins receiving all deck input.
 
-## Open questions
+## Open questions: proposals
 
-- The variable reference syntax for text parameters and "run program" arguments, and how a reference to an undeclared variable behaves.
-- The exact plugin socket limits and heartbeat interval.
-- Whether a plugin may also be started without a profile using it (a state provider for the menu bar, for example).
+Three questions were left open. Each has a proposal below, not yet agreed. The variable syntax matters most, because profiles will store it and a stored format is hard to change.
+
+### 1. Variable references in text parameters and run_program arguments
+
+**Syntax: `{{name}}`.** `name` follows the existing variable name rules (1 to 32 characters of `a-z`, `0-9` and `_`, starting with a letter), with no spaces inside the braces. Examples: `--scene={{scene}}`, `{{count}}`.
+
+- `$name` and `${name}` are rejected because they look like shell expansion. Since `run_program` runs no shell, people would expect `$HOME` or `${PATH}` to work, and they would silently do nothing.
+- `{{…}}` has no meaning in a shell, in JSON or on a command line, and it is the most widely recognised template form.
+
+**Substitution is opt-in per field, so existing text is never reinterpreted.**
+
+- A plugin's text parameter is substituted only when its manifest entry sets `variables: true`.
+- `run_program` gains an optional `"variables": true`, which defaults to off. With it on, the arguments are substituted. `program` and `directory` never are, so the confirmed program is always the one that runs.
+- With substitution off, `{{` is plain text, as it is today.
+
+**Rules when substitution is on:**
+
+- **Checked when the profile loads.** Every `{{` must begin a well-formed reference. Each name must be a variable the profile declares. Otherwise the profile is refused with the field and the name in the error. This is how `set_variable` and `variable_is` already treat undeclared variables. A reference to an undeclared variable therefore never reaches a press.
+- **Escaping.** There is none in the first version. A field that needs a literal `{{` leaves substitution off. One can be added later without breaking profiles.
+- **Values.** A text value is inserted as it is. A number is written in decimal (`-3`, `42`), and a bool as `true` or `false`.
+- **One argument stays one argument.** A value is never split, quoted or expanded, so a value with a space stays inside its argument.
+- **The press-time check fails closed.** After substitution, each `run_program` argument must still pass the load-time rules: one line, no control or invisible characters, at most 512 bytes each and 4096 in total. If it doesn't, the press fails and nothing runs. Today variable text may hold invisible characters, so this check is what keeps "what runs is what was reviewed".
+- **No leading `-` from a variable.** When a reference starts a `run_program` argument and its value begins with `-`, the press fails. Variables can be set from outside the deck (`osh`, plugins), and this stops such a writer from turning a value into an option for the program, such as `--delete`. Write `--name={{name}}` to pass a value that may start with `-`.
+- **Confirmation.** The Execute confirmation shows each field as written, with its `{{name}}` references, and names the variables that feed it. It adds a line saying those values can be changed by processes outside the app. Values never appear there, because they change after confirming.
+- **Logs.** `run_program` keeps logging only lengths and the argument count. For plugin parameters, the log records the substituted value, as already decided, except for parameters the manifest marks `secret`, which are logged by length.
+
+### 2. Plugin socket limits and heartbeat
+
+The numbers below start from the ingress socket's limits: 8 KiB lines, 8 connections, a 2 s line timeout and a 1 s forward timeout. They change where a long-lived connection needs something different.
+
+| Limit | Proposal | Why |
+| --- | --- | --- |
+| Line size | 64 KiB each way; a longer line closes the connection | Results and logs can be longer than ingress requests, but are still bounded |
+| Connections before `hello` | At most 8, and `hello` must arrive within 2 s | Same as ingress: a stray client cannot hold slots |
+| Connections per plugin | One. A second `hello` with the same token is refused while the first is connected | The token is new at each start and given only to the process the app started |
+| Wrong token | The answer is an error and the connection is closed, as for ingress | |
+| Invokes in flight | At most 8 per plugin; more fail at once with "plugin busy" | Each holds a module's worker, which runs one action at a time |
+| Invoke deadline | 15 s for a key's own action; as a step, what is left of the sequence's deadline (as for `run_program`) | Already decided |
+| `set_variable` | At most 10 per second per plugin; more are answered with an error | Each write goes to every running module with a 1 s forward timeout |
+| `log` | At most 1 KiB per line and 20 lines per second; the rest are dropped and counted in one "dropped N lines" record | Keeps the service log readable |
+| Heartbeat | After 10 s without a line from the plugin, the app sends `ping` and expects `pong` within 5 s | An idle but healthy plugin costs almost nothing |
+| A missed heartbeat | The app closes the socket, kills the plugin's process group, and restarts it with backoff | Same as a crash |
+| Restart backoff | 1, 2, 4, 8, 16, then 30 s. After 5 failures within 5 minutes the plugin stays stopped until the user starts it again or the profile is executed again | Stops a crash loop |
+
+On close, the app kills the plugin's process group, as `run_program` does, so helper processes a plugin started do not outlive it.
+
+### 3. Starting a plugin without a profile that uses it
+
+**Proposal: no, not in the first versions.** A plugin runs only while a running profile uses it.
+
+- **Its writes would go nowhere.** Variables live in the running module processes and are declared by their profile, so with nothing running there is nothing to write to.
+- **Consent.** The Execute confirmation is where a user agrees to what a profile does. A plugin that starts on its own would run as the user in the background, with no confirmation tied to it.
+- **The menu bar has nothing to show.** Today it offers only Show, Updates and Quit, and would need its own status design first.
+
+**Later.** Add an optional manifest field such as `"background": true` with its own toggle in Settings, off by default, and an enable dialog that says the plugin will run whenever the app is open. This belongs with community readiness (step 5) and the trust UI, not with the protocol.

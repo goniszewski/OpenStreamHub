@@ -589,6 +589,49 @@
           "press_enter": true
         }
       ]
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.2.0",
+      "action": "set_level",
+      "params": {
+        "entity": "light.desk",
+        "level": 40,
+        "fade": true
+      }
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.2.0",
+      "action": "set_scene",
+      "params": {
+        "scene": "{{scene}}"
+      },
+      "variables": [
+        "scene"
+      ]
+    },
+    {
+      "type": "multi_action",
+      "actions": [
+        {
+          "type": "plugin",
+          "plugin": "com.example.lights",
+          "min_version": "1.0.0",
+          "action": "toggle"
+        },
+        {
+          "type": "toggle_mute"
+        }
+      ]
     }
   ],
   "invalid": [
@@ -1465,6 +1508,104 @@
       "args": [
         "x"
       ]
+    },
+    {
+      "type": "plugin",
+      "plugin": "lights",
+      "min_version": "1.0.0",
+      "action": "toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.Example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0",
+      "action": "toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "action": "toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "Toggle"
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "entity": null
+      }
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "entity": [
+          "a"
+        ]
+      }
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "Entity": "a"
+      }
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "entity": "a\nb"
+      }
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "level": 3
+      },
+      "variables": [
+        "level"
+      ]
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "params": {
+        "scene": "{{ scene }}"
+      },
+      "variables": [
+        "scene"
+      ]
+    },
+    {
+      "type": "plugin",
+      "plugin": "com.example.lights",
+      "min_version": "1.0.0",
+      "action": "toggle",
+      "command": "/bin/sh"
     }
   ]
 }

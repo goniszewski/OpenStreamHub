@@ -4,6 +4,7 @@ use crate::{
     Action, ActionDispatcher, MacroStep, MediaCommand, Modifier, ServiceState, SystemCommand,
     TerminalApp, TimerAlert, TimerAlerter, VariableValue,
     obs::{OBS_UNAVAILABLE, ObsClient},
+    plugin::{PLUGIN_UNAVAILABLE, PluginBridge},
     streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient},
 };
 use std::{
@@ -206,6 +207,9 @@ const ITERM2_SCRIPT: &[&str] = &[
 /// Bound for a `run_program` that is a key's own action; as a step it gets
 /// what is left of the sequence's [`MULTI_ACTION_DEADLINE`], never more than this.
 const RUN_PROGRAM_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a `plugin` action waits for the plugin's answer as a key's own
+/// action; as a step it gets what is left of the sequence's deadline.
+const PLUGIN_TIMEOUT: Duration = Duration::from_secs(15);
 /// The name a `run_program` request carries in errors and logs, in place of
 /// the profile's path (which can name the user).
 const RUN_PROGRAM: &str = "run_program";
@@ -469,6 +473,10 @@ pub struct MacOsDispatcher {
     service_state: ServiceState,
     /// Current values of the declared variables, shared with the control channel.
     variables: crate::SharedVariables,
+    /// The way to the app's plugin host, when the app started this run for plugins.
+    plugins: Option<PluginBridge>,
+    /// The run's cancellation flag, which also ends a wait for a plugin.
+    cancellation: Option<Arc<AtomicBool>>,
 }
 
 impl MacOsDispatcher {
@@ -482,6 +490,8 @@ impl MacOsDispatcher {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: None,
         }
     }
 
@@ -492,7 +502,7 @@ impl MacOsDispatcher {
     pub fn with_cancellation(cancellation: Arc<AtomicBool>) -> Self {
         Self {
             runner: Box::new(SystemProcessRunner {
-                cancellation: Some(cancellation),
+                cancellation: Some(Arc::clone(&cancellation)),
             }),
             sleeper: Box::new(SystemSleeper),
             obs: None,
@@ -500,6 +510,8 @@ impl MacOsDispatcher {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: Some(cancellation),
         }
     }
 
@@ -517,6 +529,14 @@ impl MacOsDispatcher {
     /// ([`STREAMLABS_UNAVAILABLE`]) and a direct dispatch does no I/O.
     pub fn with_streamlabs(mut self, streamlabs: Option<StreamlabsClient>) -> Self {
         self.streamlabs = streamlabs;
+        self
+    }
+
+    /// Runs `plugin` actions through `plugins`, which asks the app that
+    /// started this run. Without a bridge they are unavailable
+    /// ([`PLUGIN_UNAVAILABLE`]) and a direct dispatch does no I/O.
+    pub fn with_plugins(mut self, plugins: Option<PluginBridge>) -> Self {
+        self.plugins = plugins;
         self
     }
 
@@ -817,6 +837,7 @@ impl MacOsDispatcher {
                 directory,
             } => self.terminal_command(*app, command, directory.as_deref())?,
             Action::RunProgram { .. } => self.run_program(action, None)?,
+            Action::Plugin { .. } => self.plugin_action(action, None)?,
             Action::Media { command } => self.media(*command)?,
             Action::System { command } => match command {
                 SystemCommand::Undo => {
@@ -948,6 +969,8 @@ impl MacOsDispatcher {
                 self.streamlabs_action(step, Some(deadline))
             } else if matches!(step, Action::RunProgram { .. }) {
                 self.run_program(step, Some(deadline))
+            } else if matches!(step, Action::Plugin { .. }) {
+                self.plugin_action(step, Some(deadline))
             } else {
                 self.execute(step)
             };
@@ -1117,6 +1140,56 @@ impl MacOsDispatcher {
                 "{name} could not open a window running the command; check that it is installed and that this app may control it (System Settings > Privacy & Security > Automation): {error}"
             )
         })
+    }
+
+    /// Asks the app's plugin host to run a `plugin` action, with the
+    /// variables of its listed text parameters filled in, and waits for the
+    /// plugin's answer within [`PLUGIN_TIMEOUT`] or what is left of
+    /// `deadline`.
+    fn plugin_action(
+        &mut self,
+        action: &Action,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<(), String> {
+        let Action::Plugin {
+            plugin,
+            min_version,
+            action: name,
+            params,
+            variables,
+        } = action
+        else {
+            return Err("not a plugin action".into());
+        };
+        let bridge = self.plugins.as_ref().ok_or(PLUGIN_UNAVAILABLE)?;
+        let params = if variables.is_empty() {
+            params.clone()
+        } else {
+            self.variables
+                .read(|lookup| crate::plugin::fill_in_plugin_params(params, variables, lookup))
+                .map_err(|error| format!("{plugin}: {error}; the plugin was not asked"))?
+        };
+        let timeout = match deadline {
+            None => PLUGIN_TIMEOUT,
+            Some(deadline) => {
+                let remaining = deadline.saturating_duration_since(self.sleeper.now());
+                if remaining.is_zero() {
+                    return Err(format!(
+                        "the sequence's {} s overall deadline has passed; the plugin was not asked",
+                        MULTI_ACTION_DEADLINE.as_secs()
+                    ));
+                }
+                remaining.min(PLUGIN_TIMEOUT)
+            }
+        };
+        bridge.invoke(
+            plugin,
+            min_version,
+            name,
+            &params,
+            timeout,
+            self.cancellation.as_deref(),
+        )
     }
 
     /// Runs a `run_program` action: the executable directly, with its
@@ -1335,6 +1408,9 @@ impl ActionDispatcher for MacOsDispatcher {
                 (self.streamlabs.is_none() && action.uses_streamlabs())
                     .then_some(STREAMLABS_UNAVAILABLE)
             })
+            .or_else(|| {
+                (self.plugins.is_none() && action.uses_plugins()).then_some(PLUGIN_UNAVAILABLE)
+            })
     }
 
     /// Posts a notification (3 s bound), then plays the sound (6 s bound), each
@@ -1394,6 +1470,8 @@ impl ActionDispatcher for MacOsDispatcher {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: None,
         }))
     }
 }
@@ -2048,6 +2126,8 @@ mod tests {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: None,
         };
         (dispatcher, state)
     }
@@ -3155,6 +3235,8 @@ mod tests {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: None,
         };
         let error = dispatcher
             .restore_audio_snapshot(&AudioSnapshot {
@@ -4877,6 +4959,8 @@ mod tests {
                 media_access_requested: false,
                 service_state: ServiceState::default(),
                 variables: Default::default(),
+                plugins: None,
+                cancellation: None,
             };
             let error = dispatcher.dispatch(&Action::Media { command }).unwrap_err();
             assert!(error.contains("action execution cancelled"), "{error}");
@@ -5449,6 +5533,8 @@ mod tests {
             media_access_requested: false,
             service_state: ServiceState::default(),
             variables: Default::default(),
+            plugins: None,
+            cancellation: None,
         };
         let error = dispatcher
             .dispatch(&Action::MultiAction {

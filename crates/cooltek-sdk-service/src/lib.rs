@@ -11,6 +11,7 @@ mod dial;
 mod input;
 mod key_artwork;
 mod keypad;
+
 mod profile;
 mod timer;
 mod variables;
@@ -18,6 +19,7 @@ mod variables;
 pub mod display_sync;
 pub mod macos;
 pub mod obs;
+pub mod plugin;
 pub mod streamlabs;
 
 pub use binding::{
@@ -34,6 +36,7 @@ pub use keypad::{
     KeypadTile, ProfileResolution, ProfileSession,
 };
 pub use macos::{MacOsDispatcher, kill_running_programs};
+pub use plugin::{PluginBridge, PluginValue};
 pub use profile::{
     Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,

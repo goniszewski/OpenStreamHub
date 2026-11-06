@@ -36,6 +36,7 @@ use cooltek_sdk_service::{
     display_sync::KeyImageProvider,
     macos::MacOsDispatcher,
     obs::{OBS_UNAVAILABLE, ObsClient, ObsEndpoint, ObsPassword},
+    plugin::{PLUGIN_UNAVAILABLE, PluginBridge},
     streamlabs::{STREAMLABS_UNAVAILABLE, StreamlabsClient, StreamlabsEndpoint, StreamlabsToken},
 };
 use serde_json::json;
@@ -175,6 +176,13 @@ enum Command {
         /// --exit-on-stdin-eof, whose end-of-file stop is unchanged.
         #[arg(long, requires = "exit_on_stdin_eof")]
         control: bool,
+        /// Run `plugin` actions through the supervising OpenStreamHub app:
+        /// each press writes a `plugin_invoke` record with a request number,
+        /// and the app answers with a `plugin_result` control request (see
+        /// `cooltek_sdk_service::plugin`). Without it a `plugin` action is
+        /// logged as `action_unavailable` and does nothing. Requires --control.
+        #[arg(long, requires = "control")]
+        plugin_host: bool,
     },
 }
 
@@ -231,6 +239,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             streamlabs_token_stdin,
             exit_on_stdin_eof,
             control,
+            plugin_host,
         } => {
             let profile = load_profile(profile)?;
             // Before the password read: a terminal, file or /dev/null stdin is
@@ -354,6 +363,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 "display_sync_requested":display_sync,
                 "profile_switch_requests":profile_switch_requests,
             });
+            // Only when set, so runs without plugins log exactly what they did before.
+            if plugin_host {
+                details["plugin_host"] = json!(true);
+            }
             // Roller only: whether the SET_IDLE it needs to report on macOS was accepted.
             if let Some(outcome) = &set_idle {
                 details["roller_set_idle"] =
@@ -370,6 +383,17 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 details["streamlabs"] = streamlabs_details(streamlabs);
             }
             let control_out = stdout.clone();
+            let plugins = plugin_host.then(|| {
+                let records = Mutex::new(stdout.clone());
+                PluginBridge::new(Box::new(move |record: &serde_json::Value| {
+                    let mut records = records
+                        .lock()
+                        .map_err(|_| io::Error::other("the record writer failed"))?;
+                    io::Write::write_all(&mut *records, format!("{record}\n").as_bytes())?;
+                    io::Write::flush(&mut *records)
+                }))
+            });
+            let dispatcher_plugins = plugins.clone();
             // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
             // in place; without `--control` the dispatcher is fixed at start, as before.
             let mode = control.then(|| Arc::new(AtomicBool::new(execute)));
@@ -384,6 +408,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         obs,
                         streamlabs,
                         dispatcher_variables,
+                        dispatcher_plugins,
                     ),
                     stdout,
                 ))
@@ -412,6 +437,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         can_execute: cfg!(target_os = "macos"),
                     }),
                     variables: Some(variables.clone()),
+                    plugins: plugins.clone(),
                     profile: profile_slot.map(|slot| {
                         let variables = variables.clone();
                         Box::new(move |value: &serde_json::Value| {
@@ -703,6 +729,7 @@ enum Dispatcher {
         obs: bool,
         /// The same for a Streamlabs endpoint and token.
         streamlabs: bool,
+        plugins: bool,
         macos: MacOsDispatcher,
     },
     /// Dry run and replay: validates only. `obs` and `streamlabs` record
@@ -712,6 +739,7 @@ enum Dispatcher {
     Preview {
         obs: bool,
         streamlabs: bool,
+        plugins: bool,
     },
     MacOs(MacOsDispatcher),
 }
@@ -724,8 +752,10 @@ impl Dispatcher {
         obs: Option<ObsClient>,
         streamlabs: Option<StreamlabsClient>,
         variables: cooltek_sdk_service::SharedVariables,
+        plugins: Option<PluginBridge>,
     ) -> Self {
         let (has_obs, has_streamlabs) = (obs.is_some(), streamlabs.is_some());
+        let has_plugins = plugins.is_some();
         let macos = |abort: Arc<AtomicBool>| {
             let obs = obs.map(|obs| obs.with_cancellation(Arc::clone(&abort)));
             let streamlabs =
@@ -734,12 +764,14 @@ impl Dispatcher {
                 .with_obs(obs)
                 .with_streamlabs(streamlabs)
                 .with_variables(variables)
+                .with_plugins(plugins)
         };
         if let Some(flag) = switchable.filter(|_| cfg!(target_os = "macos")) {
             return Self::Switchable {
                 execute: flag,
                 obs: has_obs,
                 streamlabs: has_streamlabs,
+                plugins: has_plugins,
                 macos: macos(abort),
             };
         }
@@ -749,6 +781,7 @@ impl Dispatcher {
             Self::Preview {
                 obs: has_obs,
                 streamlabs: has_streamlabs,
+                plugins: has_plugins,
             }
         }
     }
@@ -760,11 +793,13 @@ impl Dispatcher {
 fn preview_unavailable(
     obs: bool,
     streamlabs: bool,
+    plugins: bool,
     action: &cooltek_sdk_service::Action,
 ) -> Option<&'static str> {
     (!obs && action.uses_obs())
         .then_some(OBS_UNAVAILABLE)
         .or_else(|| (!streamlabs && action.uses_streamlabs()).then_some(STREAMLABS_UNAVAILABLE))
+        .or_else(|| (!plugins && action.uses_plugins()).then_some(PLUGIN_UNAVAILABLE))
 }
 
 impl ActionDispatcher for Dispatcher {
@@ -814,15 +849,20 @@ impl ActionDispatcher for Dispatcher {
                 execute,
                 obs,
                 streamlabs,
+                plugins,
                 macos,
             } => {
                 if execute.load(Ordering::SeqCst) {
                     macos.unavailable(action)
                 } else {
-                    preview_unavailable(*obs, *streamlabs, action)
+                    preview_unavailable(*obs, *streamlabs, *plugins, action)
                 }
             }
-            Self::Preview { obs, streamlabs } => preview_unavailable(*obs, *streamlabs, action),
+            Self::Preview {
+                obs,
+                streamlabs,
+                plugins,
+            } => preview_unavailable(*obs, *streamlabs, *plugins, action),
             Self::MacOs(dispatcher) => dispatcher.unavailable(action),
         }
     }
@@ -889,11 +929,12 @@ fn replay(
         session.identity.serial_number.clone(),
     )?;
     let mut input = InputSession::new(device.module);
-    // Replay never has an OBS or Streamlabs endpoint: their actions are
-    // reported as unavailable.
+    // Replay never has an OBS or Streamlabs endpoint or a plugin host: their
+    // actions are reported as unavailable.
     let mut dispatcher = Dispatcher::Preview {
         obs: false,
         streamlabs: false,
+        plugins: false,
     };
     let never = AtomicBool::new(false);
     let mut summary = LiveSummary::default();
@@ -1654,6 +1695,7 @@ mod tests {
             Some(ObsClient::new(endpoint, None)),
             None,
             Default::default(),
+            None,
         );
         assert_eq!(run.unavailable(&scene), None);
         run.dispatch(&scene).unwrap();
@@ -1669,6 +1711,7 @@ mod tests {
             None,
             None,
             Default::default(),
+            None,
         );
         assert_eq!(bare.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert!(
@@ -1691,6 +1734,7 @@ mod tests {
             None,
             None,
             Default::default(),
+            None,
         );
         assert_eq!(without.unavailable(&scene), Some(OBS_UNAVAILABLE));
         assert_eq!(without.unavailable(&Action::ToggleMute), None);
@@ -1715,6 +1759,7 @@ mod tests {
             Some(ObsClient::new(endpoint, None)),
             Some(streamlabs),
             Default::default(),
+            None,
         );
         assert_eq!(with.unavailable(&scene), None);
         assert_eq!(with.unavailable(&Action::StreamlabsRecord), None);
@@ -1764,6 +1809,7 @@ mod control_regressions {
             Some(ObsClient::new(endpoint, None)),
             None,
             Default::default(),
+            None,
         );
         mode.store(false, Ordering::SeqCst);
         let work = Work {

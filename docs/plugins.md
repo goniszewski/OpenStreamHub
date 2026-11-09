@@ -20,14 +20,14 @@ A text parameter with `"secret": true`, such as an access token, is never saved 
 
 An export leaves out every value of a parameter that the installed manifest marks secret, and says which it left out. A plugin that is not installed when you export cannot be checked, so a value saved for one of its parameters stays in the file.
 
-When a key is pressed, the app reads the value (the first time only; a read that fails is reported for a minute before the Keychain is asked again) and adds it to the parameters sent to the plugin. A required secret that is not set fails the press at once. Where the plugin's log, stderr or error texts contain a secret value the app has read, it is kept as `[secret]`, so a plugin that echoes one does not leak it into Settings or the activity log. This is a safety net, not a guarantee; the plugin chooses what it prints:
+When a key is pressed, the app reads the value (the first time only; a read that fails is reported for a minute before the Keychain is asked again) and adds it to the parameters sent to the plugin. A required secret that is not set fails the press at once. Where the plugin's log, stderr or error texts contain a secret value the app has sent it this session (also one changed or forgotten since, up to 16 per plugin) or holds for it now, it is kept as `[secret]`, so a plugin that echoes one does not leak it into Settings or the activity log. This is a safety net, not a guarantee; the plugin chooses what it prints:
 
-- Only values the app has already read in this session are known, so a secret no press has used yet is not taken out.
+- Only values the app has sent the plugin or read in this session are known, so a secret no press has used yet is not taken out.
 - Values shorter than 4 bytes are not taken out, since they would match ordinary text.
 - A stderr line longer than 64 KiB is cut before it is checked, so a value split by the cut can remain.
 - Values a plugin writes with `set_variable` are not checked.
 
-A press whose secret has not been read yet waits for that read on the app's own thread, without holding up other presses. If its time (15 seconds, or what is left of a sequence's) runs out while it waits, for example while macOS asks whether the app may use the Keychain item, it fails and is never sent, so allowing access later does not run presses that already failed. A profile saved before this change may still hold a secret's value: its presses are refused until you open the key, choose **Move to the Keychain** (or remove the value) and save. When the Keychain already holds a value, removing it from the profile is offered first, and replacing the stored value needs a second confirmation.
+A press whose secret has not been read yet waits for that read on a thread the app keeps for that plugin, without holding up presses that need no read or other plugins' presses; that plugin's presses stay in order. If its time (15 seconds, or what is left of a sequence's) runs out while it waits, for example while macOS asks whether the app may use the Keychain item, it fails and is never sent, so allowing access later does not run presses that already failed. A profile saved before this change may still hold a secret's value: its presses are refused until you open the key, choose **Move to the Keychain** (or remove the value) and save. When the Keychain already holds a value, removing it from the profile is offered first, and replacing the stored value needs a second confirmation.
 
 ## Installing
 

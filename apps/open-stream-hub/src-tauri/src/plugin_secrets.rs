@@ -6,6 +6,10 @@
 //! once per launch for each. A failed read is held too, for [`RETRY_AFTER`], so a Keychain that is locked or denied
 //! does not ask again at every press. Setting or forgetting one replaces what is held. Settings asks only whether an
 //! item exists, which reads no value. Errors never contain a value.
+//!
+//! Every value sent to a plugin is also remembered for that plugin for the rest of the session (at most
+//! [`MAX_DISCLOSED`] each), apart from the held values, so text the plugin sends back has it taken out even after the
+//! secret was changed or forgotten: the plugin may still hold the old one. That list is used only by [`PluginSecrets::redact`].
 
 use crate::keychain::{self, PasswordVault};
 use std::{
@@ -13,6 +17,9 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
+
+/// Most values remembered per plugin for redaction; the oldest is dropped first.
+pub const MAX_DISCLOSED: usize = 16;
 
 /// How long a failed read is reported again before the vault is asked once more.
 pub const RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -30,6 +37,8 @@ enum Held {
 struct Inner {
     vault_for: VaultFor,
     held: Mutex<HashMap<(String, String), Held>>,
+    /// The values sent to each plugin this session, oldest first.
+    disclosed: Mutex<HashMap<String, std::collections::VecDeque<String>>>,
 }
 
 /// The plugin secrets; clones share them.
@@ -48,6 +57,7 @@ impl PluginSecrets {
         Self(Arc::new(Inner {
             vault_for,
             held: Mutex::new(HashMap::new()),
+            disclosed: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -113,17 +123,45 @@ impl PluginSecrets {
         self.vault(plugin, param).exists()
     }
 
-    /// The values held in memory for `plugin`, so text the plugin sends back can have them taken out.
-    pub fn held_values(&self, plugin: &str) -> Vec<String> {
-        self.held()
+    /// Remembers that `value` was sent to `plugin`, for [`Self::redact`].
+    pub fn disclosed(&self, plugin: &str, value: &str) {
+        if value.is_empty() {
+            return;
+        }
+        let mut disclosed = self
+            .0
+            .disclosed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let values = disclosed.entry(plugin.to_string()).or_default();
+        values.retain(|known| known != value);
+        if values.len() == MAX_DISCLOSED {
+            values.pop_front();
+        }
+        values.push_back(value.to_string());
+    }
+
+    /// `text` from `plugin` with every value it was sent this session, and every value held for it now, replaced by
+    /// `[secret]` (see [`redact`]).
+    pub fn redact(&self, plugin: &str, text: &str) -> String {
+        let mut values: Vec<String> = self
+            .held()
             .iter()
             .filter_map(|((owner, _), held)| match held {
-                Held::Value(Some(value)) if owner == plugin && !value.is_empty() => {
-                    Some(value.clone())
-                }
+                Held::Value(Some(value)) if owner == plugin => Some(value.clone()),
                 _ => None,
             })
-            .collect()
+            .collect();
+        if let Some(sent) = self
+            .0
+            .disclosed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(plugin)
+        {
+            values.extend(sent.iter().cloned());
+        }
+        redact(text, &values)
     }
 
     /// Stores `value`, replacing any earlier one.
@@ -193,6 +231,8 @@ pub mod memory {
         pub failing: Arc<AtomicBool>,
         /// When set, a read waits (at most 5 s) for a message on it, like a Keychain asking the user.
         pub hold: Arc<Mutex<Option<std::sync::mpsc::Receiver<()>>>>,
+        /// When set, only reads of this plugin's secrets are held.
+        pub held_plugin: Arc<Mutex<Option<String>>>,
     }
 
     struct Vault {
@@ -212,7 +252,14 @@ pub mod memory {
     impl PasswordVault for Vault {
         fn load(&self) -> Result<Option<String>, String> {
             *self.store.reads.lock().unwrap() += 1;
-            if let Some(hold) = self.store.hold.lock().unwrap().as_ref() {
+            let held = self
+                .store
+                .held_plugin
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|plugin| self.account.starts_with(&format!("{plugin}:")));
+            if held && let Some(hold) = self.store.hold.lock().unwrap().as_ref() {
                 let _ = hold.recv_timeout(std::time::Duration::from_secs(5));
             }
             self.fail()?;
@@ -282,8 +329,8 @@ pub mod memory {
             Ok(Some("s3cret".into()))
         );
         assert_eq!(*store.reads.lock().unwrap(), 1);
-        assert_eq!(secrets.held_values("com.example.a"), ["s3cret"]);
-        assert!(secrets.held_values("com.example.b").is_empty());
+        assert_eq!(secrets.redact("com.example.a", "x s3cret"), "x [secret]");
+        assert_eq!(secrets.redact("com.example.b", "x s3cret"), "x s3cret");
         secrets.set("com.example.a", "token", "new").unwrap();
         assert_eq!(
             secrets.get("com.example.a", "token"),
@@ -314,6 +361,37 @@ pub mod memory {
         store.failing.store(false, Ordering::SeqCst);
         secrets.set("com.example.a", "token", "v").unwrap();
         assert_eq!(secrets.get("com.example.a", "token"), Ok(Some("v".into())));
+    }
+
+    #[test]
+    fn a_value_sent_to_a_plugin_is_taken_out_after_it_is_changed_or_forgotten() {
+        let store = Store::default();
+        let secrets = secrets(&store);
+        secrets
+            .set("com.example.a", "token", "first-token")
+            .unwrap();
+        secrets.disclosed("com.example.a", "first-token");
+        secrets
+            .set("com.example.a", "token", "second-token")
+            .unwrap();
+        assert_eq!(
+            secrets.redact("com.example.a", "first-token second-token"),
+            "[secret] [secret]"
+        );
+        secrets.forget("com.example.a", "token").unwrap();
+        assert_eq!(
+            secrets.redact("com.example.a", "first-token second-token"),
+            "[secret] second-token"
+        );
+        // Bounded: the oldest is dropped first.
+        for index in 0..MAX_DISCLOSED {
+            secrets.disclosed("com.example.a", &format!("value-{index:02}"));
+        }
+        assert_eq!(
+            secrets.redact("com.example.a", "first-token"),
+            "first-token"
+        );
+        assert_eq!(secrets.redact("com.example.a", "value-00"), "[secret]");
     }
 
     #[test]

@@ -29,13 +29,13 @@
 //!
 //! Secret parameters are filled in here, from the Keychain ([`PluginSecrets`]), just before an invoke is checked and
 //! sent; a profile never holds them. A press whose secrets are all held in memory (or that has none) is sent at once;
-//! one that needs a Keychain read is handed to the host's invoke thread, so a read that waits for the user holds up
+//! one that needs a Keychain read is handed to that plugin's own invoke thread, so a read that waits for the user holds up
 //! neither the module run that relays it nor other plugins' presses. A press still waiting when its deadline passes is
 //! answered with an error and never sent. Known secret values are replaced with `[secret]` in what
 //! the plugin sends back (its log, stderr and error texts) before it is kept or passed on.
 
 use crate::{
-    plugin_secrets::{self, PluginSecrets},
+    plugin_secrets::PluginSecrets,
     plugins::{self, Approval, Approved, Manifest},
 };
 use cooltek_sdk_service::PluginValue;
@@ -261,8 +261,9 @@ struct Inner {
     state: Mutex<State>,
     stopped: AtomicBool,
     answers: Mutex<mpsc::Sender<(Reply, Result<(), String>)>>,
-    /// Invokes waiting for a Keychain read on the invoke thread, with when each arrived.
-    invokes: Mutex<mpsc::Sender<Queued>>,
+    /// One invoke thread per plugin that needed a Keychain read, fed the presses waiting for one, in order. Bounded by
+    /// the plugins that run with a manifest, since only their presses can need a read.
+    workers: Mutex<HashMap<String, mpsc::Sender<Queued>>>,
     unnamed: AtomicUsize,
 }
 
@@ -373,7 +374,6 @@ impl PluginHost {
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not protect the plugin socket: {error}"))?;
         let (answers, answered) = mpsc::channel::<(Reply, Result<(), String>)>();
-        let (invokes, queued) = mpsc::channel::<Queued>();
         let host = Self(Arc::new(Inner {
             dir: plugins_dir.to_path_buf(),
             socket,
@@ -385,7 +385,7 @@ impl PluginHost {
             }),
             stopped: AtomicBool::new(false),
             answers: Mutex::new(answers),
-            invokes: Mutex::new(invokes),
+            workers: Mutex::new(HashMap::new()),
             unnamed: AtomicUsize::new(0),
         }));
         let spawn = |name: &str, run: Box<dyn FnOnce() + Send>| {
@@ -402,11 +402,6 @@ impl PluginHost {
                     reply(result);
                 }
             }),
-        )?;
-        let invoking = host.clone();
-        spawn(
-            "plugin-invokes",
-            Box::new(move || invoking.handle_invokes(queued)),
         )?;
         let accepting = host.clone();
         spawn(
@@ -632,7 +627,7 @@ impl PluginHost {
                 Ok(Some(())) => {}
                 Ok(None) | Err(_) => return,
             }
-            let secrets = self.0.secrets.held_values(id);
+            let text = self.0.secrets.redact(id, &String::from_utf8_lossy(&line));
             let mut state = self.lock();
             let Some(instance) = state.instances.get_mut(id) else {
                 return;
@@ -641,7 +636,6 @@ impl PluginHost {
                 return;
             }
             if instance.log_rate.allow(MAX_LOGS_PER_SECOND) {
-                let text = plugin_secrets::redact(&String::from_utf8_lossy(&line), &secrets);
                 let text = truncate(&text, MAX_LOG_BYTES);
                 instance.keep_log(format!("stderr: {text}"));
             } else {
@@ -955,7 +949,7 @@ impl PluginHost {
                     let error = message["error"]
                         .as_str()
                         .unwrap_or("the plugin reported a failure");
-                    let error = plugin_secrets::redact(error, &self.0.secrets.held_values(id));
+                    let error = self.0.secrets.redact(id, error);
                     Err(truncate(&error, MAX_ERROR_BYTES))
                 };
                 let pending = self
@@ -1000,12 +994,13 @@ impl PluginHost {
                 );
             }
             Some("log") => {
-                let secrets = self.0.secrets.held_values(id);
+                let text = self
+                    .0
+                    .secrets
+                    .redact(id, message["message"].as_str().unwrap_or(""));
                 let mut state = self.lock();
                 if let Some(instance) = state.instances.get_mut(id) {
                     if instance.log_rate.allow(MAX_LOGS_PER_SECOND) {
-                        let text = message["message"].as_str().unwrap_or("");
-                        let text = plugin_secrets::redact(text, &secrets);
                         instance.keep_log(truncate(&text, MAX_LOG_BYTES));
                     } else {
                         instance.dropped_logs += 1;
@@ -1033,18 +1028,47 @@ impl PluginHost {
             Err(error) => return self.answer(reply, Err(error)),
             Ok(None) => {}
         }
-        let queued = self
-            .0
-            .invokes
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .send((record.clone(), reply, arrived));
-        if let Err(mpsc::SendError((_, reply, _))) = queued {
-            self.answer(reply, Err(crate::service::SHUTTING_DOWN.into()));
+        // Only a press naming a plugin with a manifest needs a read, so the id is there.
+        let id = record["plugin"].as_str().unwrap_or_default().to_string();
+        let queued = {
+            let mut workers = self
+                .0
+                .workers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let worker = match workers.get(&id) {
+                Some(worker) => Ok(worker.clone()),
+                None => {
+                    let (worker, queued) = mpsc::channel::<Queued>();
+                    let host = self.clone();
+                    thread::Builder::new()
+                        .name(format!("plugin-invokes {id}"))
+                        .spawn(move || host.handle_invokes(queued))
+                        .map(|_| {
+                            workers.insert(id.clone(), worker.clone());
+                            worker
+                        })
+                }
+            };
+            match worker {
+                Ok(worker) => worker.send((record.clone(), reply, arrived)).map_err(
+                    |mpsc::SendError((_, reply, _))| {
+                        (reply, crate::service::SHUTTING_DOWN.to_string())
+                    },
+                ),
+                Err(error) => Err((
+                    reply,
+                    format!("could not start reading the secret: {error}"),
+                )),
+            }
+        };
+        if let Err((reply, error)) = queued {
+            self.answer(reply, Err(error));
         }
     }
 
-    /// The invoke thread: reads secrets for queued invokes in order until the host stops, then fails the ones left.
+    /// One plugin's invoke thread: reads secrets for its queued invokes in order until the host stops, then fails the
+    /// ones left.
     fn handle_invokes(&self, queued: mpsc::Receiver<Queued>) {
         let stopped = || self.0.stopped.load(Ordering::SeqCst);
         loop {
@@ -1093,6 +1117,16 @@ impl PluginHost {
             Ok(registered) => registered,
             Err((error, reply)) => return self.answer(reply, Err(error)),
         };
+        // What was filled in beyond the profile's own parameters is a secret this plugin now knows.
+        if let Some(sent) = message["params"].as_object() {
+            for (name, value) in sent {
+                if !given.contains_key(name)
+                    && let Some(value) = value.as_str()
+                {
+                    self.0.secrets.disclosed(&id, value);
+                }
+            }
+        }
         if conn.send(&message).is_err() {
             let request = message["request"].as_u64().unwrap_or(0);
             let pending = self
@@ -1313,6 +1347,30 @@ mod tests {
         }
     }
 
+    /// Writes the test manifest for `id`, running `command`, into the plugins folder `dir`; hands back its
+    /// fingerprint.
+    fn install(dir: &Path, id: &str, command: &[&str]) -> String {
+        let folder = dir.join(id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
+        let manifest = json!({
+            "schema": 1, "id": id, "name": "Lights", "version": "1.2.0", "command": command,
+            "actions": [
+                { "id": "set", "label": "Set", "params": [
+                    { "id": "entity", "label": "Light", "type": "text", "required": true }
+                ] },
+                { "id": "login", "label": "Log in", "params": [
+                    { "id": "token", "label": "Token", "type": "text", "secret": true, "required": true },
+                    { "id": "user", "label": "User", "type": "text" }
+                ] }
+            ],
+            "permissions": { "variables": ["room"] }
+        })
+        .to_string();
+        fs::write(folder.join(plugins::MANIFEST_FILE), &manifest).unwrap();
+        plugins::fingerprint(manifest.as_bytes())
+    }
+
     /// A host whose one plugin runs `command`, enabled, and a forward that records variable writes.
     fn rig(command: &[&str]) -> Rig {
         rig_with(command, |fingerprint| {
@@ -1327,25 +1385,7 @@ mod tests {
             .tempdir_in("/tmp")
             .unwrap();
         let dir = root.path().join("plugins");
-        let folder = dir.join(ID);
-        fs::create_dir_all(&folder).unwrap();
-        fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).unwrap();
-        let manifest = json!({
-            "schema": 1, "id": ID, "name": "Lights", "version": "1.2.0", "command": command,
-            "actions": [
-                { "id": "set", "label": "Set", "params": [
-                    { "id": "entity", "label": "Light", "type": "text", "required": true }
-                ] },
-                { "id": "login", "label": "Log in", "params": [
-                    { "id": "token", "label": "Token", "type": "text", "secret": true, "required": true },
-                    { "id": "user", "label": "User", "type": "text" }
-                ] }
-            ],
-            "permissions": { "variables": ["room"] }
-        })
-        .to_string();
-        fs::write(folder.join(plugins::MANIFEST_FILE), &manifest).unwrap();
-        let fingerprint = plugins::fingerprint(manifest.as_bytes());
+        let fingerprint = install(&dir, ID, command);
         let vault = crate::plugin_secrets::memory::Store::default();
         let forwarded = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&forwarded);
@@ -1422,8 +1462,12 @@ mod tests {
         }
 
         fn hello(host: &PluginHost, token: &str) -> (Self, Value) {
+            Self::hello_as(host, ID, token)
+        }
+
+        fn hello_as(host: &PluginHost, id: &str, token: &str) -> (Self, Value) {
             let mut plugin = Self::connect(host);
-            plugin.send(json!({"type":"hello","id":ID,"token":token}));
+            plugin.send(json!({"type":"hello","id":id,"token":token}));
             let answer = plugin.receive();
             (plugin, answer)
         }
@@ -1954,6 +1998,77 @@ mod tests {
         plugin.send(json!({"type":"result","request":asked["request"],"ok":true}));
         assert_eq!(answer(&pressed), Ok(()));
         assert_eq!(*rig.vault.reads.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn one_plugins_keychain_read_does_not_hold_up_anothers() {
+        const OTHER: &str = "com.example.other";
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let other = install(
+            &rig._root.path().join("plugins"),
+            OTHER,
+            &["/bin/sleep", "30"],
+        );
+        host.set_approval(OTHER, Some(other));
+        for id in [ID, OTHER] {
+            rig.vault
+                .values
+                .lock()
+                .unwrap()
+                .insert(format!("{id}:token"), format!("{id}-token"));
+        }
+        let (release, hold) = mpsc::channel();
+        *rig.vault.hold.lock().unwrap() = Some(hold);
+        *rig.vault.held_plugin.lock().unwrap() = Some(ID.into());
+        host.set_usage("m1", Some([ID.to_string(), OTHER.to_string()].into()));
+        let (_first, _) = Plugin::hello(host, &host.token(ID));
+        let (mut second, _) = Plugin::hello_as(host, OTHER, &host.token(OTHER));
+        let waiting = invoke_action(host, "login", json!({}));
+        wait_for("the held read", || *rig.vault.reads.lock().unwrap() == 1);
+        let started = Instant::now();
+        let (sender, pressed) = mpsc::channel();
+        host.invoke(
+            &json!({"plugin":OTHER,"min_version":"1.0.0","action":"login","params":{},"timeout_ms":5000}),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        let asked = second.receive_message();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the other plugin's read waited for this one's"
+        );
+        assert_eq!(asked["params"], json!({"token":"com.example.other-token"}));
+        second.send(json!({"type":"result","request":asked["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
+        release.send(()).unwrap();
+        drop(waiting);
+    }
+
+    #[test]
+    fn a_value_sent_to_the_plugin_is_taken_out_after_it_is_changed_or_forgotten() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.0.secrets.set(ID, "token", "first-token").unwrap();
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let pressed = invoke_action(host, "login", json!({}));
+        let asked = plugin.receive_message();
+        assert_eq!(asked["params"]["token"], "first-token");
+        plugin.send(json!({"type":"result","request":asked["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
+        host.0.secrets.set(ID, "token", "second-token").unwrap();
+        plugin.send(json!({"type":"log","message":"still using first-token"}));
+        host.0.secrets.forget(ID, "token").unwrap();
+        plugin.send(json!({"type":"log","message":"after forget: first-token"}));
+        // An error that echoes it: a press on an action without secrets.
+        let pressed = invoke(host, json!({"entity":"a"}));
+        let asked = plugin.receive_message();
+        plugin.send(json!({"type":"result","request":asked["request"],"ok":false,"error":"bad token first-token"}));
+        assert_eq!(answer(&pressed), Err("bad token [secret]".into()));
+        let logs = host.statuses()[0].logs.join("\n");
+        assert_eq!(logs, "still using [secret]\nafter forget: [secret]");
     }
 
     #[test]

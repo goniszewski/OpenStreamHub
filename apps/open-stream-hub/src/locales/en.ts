@@ -289,7 +289,7 @@ export const en = {
   'execute.macro': 'Macro {n}',
   'execute.cancel': 'Cancel',
   'service.activityHeading': 'Test run activity',
-  'service.heading': 'Active profile',
+  'service.heading': 'Run diagnostics',
   'service.executing': 'Live: actions run on this Mac',
   'service.executingBody': 'Key presses do what they are set to do. Pause to stop them.',
   'service.dryBanner': 'Dry run: actions are logged only. Nothing changes on this Mac.',

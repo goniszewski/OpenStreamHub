@@ -5,7 +5,8 @@ interface TocItem { id: string; text: string }
 const slug = (text: string, index: number) => `settings-${index}-${text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
 
 // A table of contents for the Settings page, built from the headings of its panels (several panels come from
-// other components, so the list is read from the page itself). It follows the scroll and jumps to a section.
+// other components, so the list is read from the page itself). The run panel keeps its heading beside a status
+// badge, so its heading sits one level deeper. It follows the scroll and jumps to a section.
 export interface TocGroup { label: string; headings: string[] }
 
 // `groups` name the headings that belong to each labelled group; every other heading goes under `defaultGroup`.
@@ -18,7 +19,7 @@ export function SettingsToc({ label, groups = [], defaultGroup }: { label: strin
     const page = nav.current?.parentElement;
     if (!page) return;
     const read = () => {
-      const headings = [...page.querySelectorAll<HTMLElement>(':scope > .panel > h2')];
+      const headings = [...page.querySelectorAll<HTMLElement>(':scope > .panel > h2, :scope > .service-panel > .section-heading > h2')];
       const next = headings.map((heading, index) => {
         if (!heading.id) heading.id = slug(heading.textContent ?? '', index);
         heading.style.scrollMarginTop = '24px';

@@ -82,6 +82,42 @@ describe('plugin action fields in the DOM', () => {
     expect(view.container.textContent).not.toContain('This profile still holds');
   });
 
+  it('takes a moved secret out of the draft at the click, so edits made while the Keychain answers are kept', async () => {
+    const calls: [string, unknown][] = [];
+    let store: { resolve(): void; reject(reason: unknown): void } | null = null;
+    const invoke = ((command: string, args?: unknown) => {
+      calls.push([command, args]);
+      return new Promise<void>((resolve, reject) => { store = { resolve, reject }; });
+    }) as Invoke;
+    const seen: BindingAction[] = [];
+    const required: PluginListing = { ...listing, plugins: listing.plugins.map(plugin => plugin.manifest ? { ...plugin, secrets: [{ id: 'token', label: 'Token', set: false }] } : plugin) };
+    view = render(<Harness initial={{ type: 'plugin', plugin: 'com.example.lights', min_version: '1.2.0', action: 'set', params: { entity: 'a', token: 'old' } }}
+      seen={seen} plugins={required} invoke={invoke} />);
+    view.click(view.$$<HTMLButtonElement>('button').find(button => button.textContent === 'Move to the Keychain')!);
+    expect(seen.at(-1)).toEqual({ type: 'plugin', plugin: 'com.example.lights', min_version: '1.2.0', action: 'set', params: { entity: 'a' } });
+    expect(view.container.textContent).toContain('storing it in the Keychain');
+    // Edited while the Keychain has not answered yet (a prompt is open).
+    type(view.$<HTMLInputElement>('#plugin-param-entity'), 'light.hall');
+    const edited = seen.length;
+    await act(async () => { store!.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(seen.length).toBe(edited);
+    expect(seen.at(-1)).toMatchObject({ params: { entity: 'light.hall' } });
+    expect(view.container.textContent).toContain('Moved to the Keychain');
+    expect(calls).toEqual([['set_plugin_secret', { plugin: 'com.example.lights', param: 'token', value: 'old' }]]);
+  });
+
+  it('says Undo brings a secret back when the Keychain refuses it', async () => {
+    const invoke = (async () => { throw 'the Keychain is locked'; }) as Invoke;
+    const seen: BindingAction[] = [];
+    const required: PluginListing = { ...listing, plugins: listing.plugins.map(plugin => plugin.manifest ? { ...plugin, secrets: [{ id: 'token', label: 'Token', set: false }] } : plugin) };
+    view = render(<Harness initial={{ type: 'plugin', plugin: 'com.example.lights', min_version: '1.2.0', action: 'set', params: { entity: 'a', token: 'old' } }}
+      seen={seen} plugins={required} invoke={invoke} />);
+    view.click(view.$$<HTMLButtonElement>('button').find(button => button.textContent === 'Move to the Keychain')!);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(view.container.textContent).toContain('Could not store it in the Keychain: the Keychain is locked. It is no longer in this draft; Undo puts it back.');
+    expect(view.container.textContent).not.toContain('Moved to the Keychain');
+  });
+
   it('asks before replacing a value the Keychain already holds', async () => {
     const calls: [string, unknown][] = [];
     const invoke = (async (command: string, args?: unknown) => { calls.push([command, args]); }) as Invoke;

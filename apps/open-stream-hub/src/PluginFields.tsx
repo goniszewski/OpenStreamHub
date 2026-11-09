@@ -67,7 +67,7 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
     {resolved.declared?.params?.map(param => isSecretParam(param)
       ? <SecretParamNote key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
         plugin={action.plugin} set={pluginSecretSet(listing, action.plugin, param.id)} value={action.params?.[param.id]} invoke={invoke}
-        onMoved={() => { onChange(withPluginParam(action, param, undefined), `plugin-param-${param.id}`); refresh(); }} />
+        onDrop={() => onChange(withPluginParam(action, param, undefined), `plugin-param-${param.id}`)} onStored={refresh} />
       : <PluginParamField key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
         value={action.params?.[param.id]} issue={pluginParamIssue(param, action.params?.[param.id], declared)}
         onChange={value => onChange(withPluginParam(action, param, value), `plugin-param-${param.id}`)} />)}
@@ -78,13 +78,16 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
 }
 
 // A secret: whether the Keychain holds it and where to set it. A value the profile still carries (saved before secrets
-// moved to the Keychain) is offered a move: stored in the Keychain, then dropped from the draft, which the user saves.
-function SecretParamNote({ id, param, plugin, set, value, invoke, onMoved }: {
-  id: string; param: PluginParam; plugin: string; set: boolean | null | undefined; value: PluginValue | undefined; invoke?: Invoke; onMoved(): void;
+// moved to the Keychain) is offered a move: dropped from the draft, which the user saves, and stored in the Keychain.
+// The draft is changed at the click, never when the Keychain answers: by then `onDrop` would apply an older draft and
+// undo whatever was edited meanwhile. A failed store says so, and Undo brings the value back into the draft.
+function SecretParamNote({ id, param, plugin, set, value, invoke, onDrop, onStored }: {
+  id: string; param: PluginParam; plugin: string; set: boolean | null | undefined; value: PluginValue | undefined; invoke?: Invoke;
+  onDrop(): void; onStored(): void;
 }) {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<'moved' | 'dropped' | null>(null);
+  const [done, setDone] = useState<'moving' | 'moved' | 'dropped' | null>(null);
   // The Keychain already holds a value: moving would replace it, so that takes a second, explicit step.
   const [confirming, setConfirming] = useState(false);
   const status = set === undefined ? '' : ` ${t(set === null ? 'actions.plugin.secretUnknown' : set ? 'actions.plugin.secretSet' : 'actions.plugin.secretNotSet')}`;
@@ -92,27 +95,30 @@ function SecretParamNote({ id, param, plugin, set, value, invoke, onMoved }: {
   const move = () => {
     if (typeof value !== 'string' || !invoke) return;
     setError(null);
+    setDone('moving');
+    onDrop();
     invoke('set_plugin_secret', { plugin, param: param.id, value })
-      .then(() => { setDone('moved'); onMoved(); })
-      .catch((reason: unknown) => setError(String(reason)));
+      .then(() => { setDone('moved'); onStored(); })
+      .catch((reason: unknown) => { setDone(null); setError(String(reason)); });
   };
+  const drop = () => { setError(null); setDone('dropped'); onDrop(); };
   return <>
     <label className="spaced-label" htmlFor={id}>{param.label}</label>
     <p id={id} className="fine-print" role="note">{t('actions.plugin.secret')}{status}</p>
     {value !== undefined && <div className="field-error" role="alert">
       <p>{t('actions.plugin.secretInProfile', { label: param.label })}</p>
       {set === true ? <>
-        <button type="button" className="button compact primary" onClick={() => { setDone('dropped'); onMoved(); }}>{t('actions.plugin.secretDrop')}</button>
+        <button type="button" className="button compact primary" onClick={drop}>{t('actions.plugin.secretDrop')}</button>
         {movable && !confirming && <button type="button" className="button compact" onClick={() => setConfirming(true)}>{t('actions.plugin.secretReplace')}</button>}
         {movable && confirming && <p>{t('actions.plugin.secretReplaceConfirm', { label: param.label })}{' '}
           <button type="button" className="button compact danger" onClick={move}>{t('actions.plugin.secretReplaceYes')}</button>{' '}
           <button type="button" className="button compact" onClick={() => setConfirming(false)}>{t('actions.plugin.secretReplaceNo')}</button></p>}
       </> : <>
         {movable && <button type="button" className="button compact" onClick={move}>{t('actions.plugin.secretMove')}</button>}
-        <button type="button" className="button compact" onClick={() => { setDone('dropped'); onMoved(); }}>{t('actions.plugin.secretDrop')}</button>
+        <button type="button" className="button compact" onClick={drop}>{t('actions.plugin.secretDrop')}</button>
       </>}
     </div>}
-    {done && value === undefined && <p className="fine-print" role="status">{t(done === 'moved' ? 'actions.plugin.secretMoved' : 'actions.plugin.secretDropped')}</p>}
+    {done && value === undefined && <p className="fine-print" role="status">{t(done === 'moving' ? 'actions.plugin.secretMoving' : done === 'moved' ? 'actions.plugin.secretMoved' : 'actions.plugin.secretDropped')}</p>}
     {error && <p className="field-error" role="alert">{t('actions.plugin.secretMoveFailed', { error })}</p>}
   </>;
 }

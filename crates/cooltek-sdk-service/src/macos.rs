@@ -1133,9 +1133,28 @@ impl MacOsDispatcher {
             program,
             args,
             directory,
+            variables,
         } = action
         else {
             unreachable!("run_program is called only for a run_program action");
+        };
+        // Filled in first, so a value that breaks the argument rules stops the
+        // press before anything else is looked at, from one snapshot of the
+        // values so a write meanwhile cannot mix old and new ones.
+        let args = if *variables {
+            // Values are kept by name across a profile swap, so a press the
+            // previous profile planned would fill in what the new profile
+            // means by that name.
+            if self.variables.swapped_away_from(self.service_state.profile) {
+                return Err(format!(
+                    "{RUN_PROGRAM}: the profile changed after this key was pressed; the program was not started"
+                ));
+            }
+            self.variables
+                .read(|lookup| crate::profile::fill_in_run_program_args(args, lookup))
+                .map_err(|error| format!("{RUN_PROGRAM}: {error}; the program was not started"))?
+        } else {
+            args.clone()
         };
         let timeout = match deadline {
             None => RUN_PROGRAM_TIMEOUT,
@@ -1165,7 +1184,7 @@ impl MacOsDispatcher {
         let output = self.run_bounded(ProcessRequest {
             program: RUN_PROGRAM,
             path: Some(expand_home(program, &home)),
-            args: args.clone(),
+            args,
             current_dir: Some(current_dir),
             isolated: true,
             timeout,
@@ -2252,6 +2271,7 @@ mod tests {
                 program: "~/bin/lights".into(),
                 args: args.clone(),
                 directory: Some("/tmp".into()),
+                variables: false,
             })
             .unwrap();
         let state = state.lock().unwrap();
@@ -2274,11 +2294,115 @@ mod tests {
                 program: "/usr/bin/true".into(),
                 args: vec![],
                 directory: None,
+                variables: false,
             })
             .unwrap();
         let state = state.lock().unwrap();
         assert_eq!(state.requests[0].path.as_deref(), Some("/usr/bin/true"));
         assert_eq!(state.requests[0].current_dir.as_deref(), Some(&*home));
+    }
+
+    #[test]
+    fn run_program_fills_in_the_current_variable_values_or_starts_nothing() {
+        use crate::profile::Variable;
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![Variable {
+                name: "scene".into(),
+                value: VariableValue::Text("intro".into()),
+            }],
+            ..Default::default()
+        });
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec!["--scene={{scene}}".into(), "{{scene}}".into()],
+            directory: None,
+            variables: true,
+        };
+        dispatcher.dispatch(&program).unwrap();
+        let set = |value: &str| Action::SetVariable {
+            name: "scene".into(),
+            value: VariableValue::Text(value.into()),
+        };
+        dispatcher.dispatch(&set("on air")).unwrap();
+        dispatcher.dispatch(&program).unwrap();
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .requests
+                .iter()
+                .map(|request| request.args.clone())
+                .collect::<Vec<_>>(),
+            [["--scene=intro", "intro"], ["--scene=on air", "on air"]]
+        );
+        // A value that would start an argument with - stops the press before
+        // anything starts, and the error does not show the value.
+        dispatcher.dispatch(&set("--rm-all")).unwrap();
+        let error = dispatcher.dispatch(&program).unwrap_err();
+        assert!(
+            error.starts_with("run_program: argument 2 would start with -"),
+            "{error}"
+        );
+        assert!(error.ends_with("the program was not started"), "{error}");
+        assert!(!error.contains("rm-all"), "{error}");
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        // With variables off the same text is passed as it is.
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec!["{{scene}}".into()],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        assert_eq!(state.lock().unwrap().requests[2].args, ["{{scene}}"]);
+    }
+
+    #[test]
+    fn run_program_with_variables_from_a_swapped_out_profile_starts_nothing() {
+        use crate::profile::Variable;
+        let (mut dispatcher, state) = fake(vec![success(""), success(""), success("")]);
+        let declared = vec![Variable {
+            name: "target".into(),
+            value: VariableValue::Text("a".into()),
+        }];
+        let pressed_by = |profile: u64| ServiceState {
+            variables: declared.clone(),
+            profile,
+            ..Default::default()
+        };
+        let program = Action::RunProgram {
+            program: "/usr/bin/true".into(),
+            args: vec!["{{target}}".into()],
+            directory: None,
+            variables: true,
+        };
+        // Before any swap, every press fills in.
+        dispatcher.set_service_state(pressed_by(7));
+        dispatcher.dispatch(&program).unwrap();
+        // Profile 8 is swapped in while a press of profile 7 is still queued.
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(pressed_by(7));
+        let error = dispatcher.dispatch(&program).unwrap_err();
+        assert_eq!(
+            error,
+            "run_program: the profile changed after this key was pressed; the program was not started"
+        );
+        // Without variables nothing is filled in, so it still runs.
+        dispatcher
+            .dispatch(&Action::RunProgram {
+                program: "/usr/bin/true".into(),
+                args: vec![],
+                directory: None,
+                variables: false,
+            })
+            .unwrap();
+        // Presses of the profile now running fill in again.
+        dispatcher.set_service_state(pressed_by(8));
+        assert_eq!(state.lock().unwrap().requests.len(), 2);
+        dispatcher.dispatch(&program).unwrap();
+        assert_eq!(state.lock().unwrap().requests[2].args, ["a"]);
     }
 
     #[test]
@@ -2294,6 +2418,7 @@ mod tests {
                 program: "/Users/secret-name/bin/tool".into(),
                 args: vec!["secret-token".into()],
                 directory: None,
+                variables: false,
             })
             .unwrap_err();
         assert_eq!(error, "run_program: exit status: 3");
@@ -2316,6 +2441,7 @@ mod tests {
                     program: "/Users/someone/bin/tool".into(),
                     args: vec![],
                     directory: None,
+                    variables: false,
                 })
                 .unwrap_err();
             assert!(
@@ -2336,6 +2462,7 @@ mod tests {
                 program: "/usr/bin/true".into(),
                 args: vec![],
                 directory: Some("/no/such/folder-for-osh".into()),
+                variables: false,
             })
             .unwrap_err();
         assert_eq!(
@@ -2395,6 +2522,7 @@ mod tests {
             program: "/usr/bin/true".into(),
             args: vec![],
             directory: None,
+            variables: false,
         };
         dispatcher
             .dispatch(&Action::MultiAction {

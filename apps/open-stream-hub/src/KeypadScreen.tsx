@@ -5,7 +5,7 @@ import { isValidForControl, offersActionDrag, readActionDrag } from './action-pi
 import type { PickerActionType } from './action-picker-model';
 import type { KeypadPage } from './contracts';
 import { offersKeyDrag, readKeyDrag, writeKeyDrag } from './key-drag';
-import { keypadDepth, keypadIsBack } from './keypad-model';
+import { keySlotUsed, keypadDepth, keypadIsBack } from './keypad-model';
 
 interface Props {
   pages: KeypadPage[]; allPages: KeypadPage[]; path: string[]; selected: number;
@@ -54,7 +54,7 @@ export function KeypadScreen({ pages, allPages, path, selected, onSelect, onNavi
         const folderName = slot?.type === 'folder' ? target?.name ?? slot.page_id : '';
         const draggable = !back && !!onMoveKey && slot !== null;
         const dropProps = !back && (onDropAction || onMoveKey) ? { onDragOver: acceptsDrop(control), onDrop: acceptDrop(control) } : {};
-        return <button key={control} className={`keypad-tile${selected === control ? ' selected' : ''}${back ? ' back' : ''}${slot?.type === 'folder' ? ' folder' : ''}`}
+        return <button key={control} className={`keypad-tile${selected === control ? ' selected' : ''}${back ? ' back' : ''}${slot?.type === 'folder' ? ' folder' : ''}${keySlotUsed(slot, back) ? '' : ' unbound'}`}
           aria-label={back ? `Back one level, L${depth}` : slot?.type === 'folder' ? `Open folder ${folderName}, Key ${control + 1}` : `Select Key ${control + 1}${slot?.type === 'action' ? `, ${slot.label}` : ', empty'}`}
           aria-pressed={!back && slot?.type !== 'folder' ? selected === control : undefined}
           onClick={() => back ? onNavigate(path.slice(0, -1)) : slot?.type === 'folder' ? onNavigate([...path, slot.page_id]) : onSelect(control)}

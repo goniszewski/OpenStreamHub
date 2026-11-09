@@ -1,5 +1,5 @@
 import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, systemLabels, urlOrigin } from './action-model';
+import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, programReferences, systemLabels, urlOrigin } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -155,13 +155,62 @@ const terminalLine = (action: Record<string, unknown>) => {
 // brackets. A longer list (a hand-edited profile) is cut with a visible mark and rated high (tooLongReason).
 export const maxShownArgsChars = 2 * maxRunProgramArgsBytes + 3 * maxRunProgramArgs + 2;
 const programArgsPreview = (action: Record<string, unknown>) => snippetPreview(JSON.stringify(list(action.args).map(arg => String(arg))), maxShownArgsChars);
-const programLine = (action: Record<string, unknown>) => {
+// With variables on, the arguments are shown as written, {{name}} included, and the variables that feed them are named
+// with what this profile itself makes them: the declared starting value and every key that writes one (capabilities.rs
+// counts each as part of the program, so a new one needs a new confirmation). The current value is never shown, since
+// it can change after confirming.
+type Feeds = Map<string, { starts?: unknown; sets: Set<string>; adds: Set<string>; flips: boolean }>;
+const shownValue = (value: unknown) => typeof value === 'string' ? quoted(value) : String(value);
+const feedLine = (name: string, feeds: Feeds) => {
+  const feed = feeds.get(name);
+  const parts: string[] = [];
+  if (feed && 'starts' in feed) parts.push(`starts at ${shownValue(feed.starts)}`);
+  if (feed?.sets.size) parts.push(`keys set it to ${[...feed.sets].join(' or ')}`);
+  if (feed?.adds.size) parts.push(`keys add ${[...feed.adds].join(' or ')} to it`);
+  if (feed?.flips) parts.push('keys flip it');
+  return parts.length ? `${clipped(name, 32)} ${parts.join(', ')}` : '';
+};
+const programVariablesNote = (action: Record<string, unknown>, feeds: Feeds) => {
+  if (action.variables !== true) return '';
+  const references = programReferences(action);
+  if (references.malformed) return ', with a malformed variable reference (the service refuses it)';
+  const names = [...new Set(references.names)];
+  if (!names.length) return ', with variables on but none used';
+  const written = names.map(name => feedLine(name, feeds)).filter(Boolean);
+  const one = names.length === 1;
+  return `, filling in the current value${one ? '' : 's'} of ${names.map(name => clipped(name, 32)).join(', ')} when pressed (${written.map(line => `${line}; `).join('')}other programs on this Mac can change ${one ? 'it' : 'them'})`;
+};
+const programLine = (action: Record<string, unknown>, feeds: Feeds = new Map()) => {
   const args = list(action.args);
   const folder = typeof action.directory === 'string' ? ` in ${quoted(action.directory)}` : '';
   const preview = programArgsPreview(action);
   const shown = `${preview.text}${preview.more ? ` … (${preview.more} more characters not shown)` : ''}`;
-  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}`;
+  return `${quoted(action.program)}${args.length ? ` with arguments ${shown}` : ' with no arguments'}${folder}${programVariablesNote(action, feeds)}`;
 };
+// What the profile makes each variable a run_program fills in, read from every action and step (see programVariablesNote).
+function programFeeds(profile: Profile): Feeds {
+  const steps: Record<string, unknown>[] = [];
+  const walk = (action: unknown, depth: number) => {
+    if (!isRecord(action) || depth > 4) return;
+    steps.push(action);
+    for (const step of [...list(action.actions), ...list(action.then), ...list(action.else)]) walk(step, depth + 1);
+  };
+  for (const action of profileActions(profile)) walk(action, 0);
+  const feeds: Feeds = new Map();
+  for (const step of steps) if (step.type === 'run_program') for (const name of programReferences(step).names) feeds.set(name, { sets: new Set(), adds: new Set(), flips: false });
+  for (const variable of list(profile.variables)) {
+    const feed = isRecord(variable) ? feeds.get(String(variable.name)) : undefined;
+    if (feed && isRecord(variable)) feed.starts = variable.value;
+  }
+  for (const step of steps) {
+    const feed = feeds.get(String(step.name));
+    if (!feed) continue;
+    if (step.type === 'set_variable') feed.sets.add(shownValue(step.value));
+    else if (step.type === 'add_to_variable') feed.adds.add(String(step.amount));
+    else if (step.type === 'toggle_variable') feed.flips = true;
+  }
+  return feeds;
+}
 const obsReloadLine = (action: Record<string, unknown>) =>
   `OBS ${action.type === 'obs_profile' ? 'profile' : 'scene collection'} ${quoted(action.name)}`;
 const outputOps = ['toggle', 'start', 'stop'];
@@ -203,6 +252,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   const terminalCommands = new Set<string>();
   // Keyed by the exact action, as capabilities.rs identifies it, so two programs never merge into one entry.
   const programs = new Map<string, string>();
+  const feeds = programFeeds(profile);
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
   const obsItems = new Set<string>();
@@ -259,7 +309,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         for (const field of [action.command, action.directory]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         break;
       case 'run_program':
-        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null]), programLine(action));
+        programs.set(JSON.stringify([action.program, list(action.args), action.directory ?? null, action.variables === true]), programLine(action, feeds));
         reasons.add('A key runs a program on this Mac as you.');
         for (const field of [action.program, action.directory, ...list(action.args)]) if (codePoints(String(field ?? '')) > maxShownChars) reasons.add(tooLongReason);
         if (programArgsPreview(action).more) reasons.add(tooLongReason);

@@ -20,28 +20,106 @@ const AGENT_ANSWER: &str = "answers AI agent permission prompts";
 /// Every distinct capability of `profile`, as comparable items.
 fn items(profile: &Profile) -> BTreeSet<String> {
     let mut set = BTreeSet::new();
-    for binding in &profile.bindings {
-        visit(&binding.action, &mut set);
+    let actions = top_level_actions(profile);
+    for action in &actions {
+        visit(action, &mut set);
     }
+    feeding_values(profile, &actions, &mut set);
+    set
+}
+
+/// The action of every binding: flat bindings, every keypad tile and every
+/// dial function (steps inside them are walked by the callers).
+fn top_level_actions(profile: &Profile) -> Vec<&Action> {
+    let mut actions: Vec<&Action> = profile
+        .bindings
+        .iter()
+        .map(|binding| &binding.action)
+        .collect();
     if let Some(keypad) = &profile.keypad {
         for page in &keypad.pages {
             for slot in &page.slots {
                 if let Some(KeypadTile::Action { bindings, .. }) = slot {
-                    for binding in bindings {
-                        visit(&binding.action, &mut set);
-                    }
+                    actions.extend(bindings.iter().map(|binding| &binding.action));
                 }
             }
         }
     }
     if let Some(functions) = &profile.dial_functions {
         for function in functions {
-            for binding in &function.bindings {
-                visit(&binding.action, &mut set);
-            }
+            actions.extend(function.bindings.iter().map(|binding| &binding.action));
         }
     }
-    set
+    actions
+}
+
+/// Calls `each` on `action` and every step that can run inside it.
+fn walk<'a>(action: &'a Action, each: &mut impl FnMut(&'a Action)) {
+    each(action);
+    match action {
+        Action::Conditional {
+            then, otherwise, ..
+        } => then
+            .iter()
+            .chain(otherwise)
+            .for_each(|step| walk(step, each)),
+        Action::MultiAction { actions } => actions.iter().for_each(|step| walk(step, each)),
+        _ => {}
+    }
+}
+
+/// A variable a `run_program` fills into its arguments decides what runs, so
+/// what the profile itself can make it (its declared value and every write of
+/// it) is an item too: a changed starting value, or a key that sets it to a
+/// new value, needs a new confirmation. Other programs on this Mac can still
+/// set it, which the confirmation says.
+fn feeding_values(profile: &Profile, actions: &[&Action], set: &mut BTreeSet<String>) {
+    let mut filled_in = BTreeSet::new();
+    for action in actions {
+        walk(action, &mut |step| {
+            if let Action::RunProgram {
+                args,
+                variables: true,
+                ..
+            } = step
+            {
+                for arg in args {
+                    // Malformed text is refused by the service and fills in nothing.
+                    filled_in.extend(
+                        cooltek_sdk_service::variable_references(arg)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .map(str::to_owned),
+                    );
+                }
+            }
+        });
+    }
+    if filled_in.is_empty() {
+        return;
+    }
+    let item = |name: &str, write: String| format!("feeds\0{name}\0{write}");
+    for variable in &profile.variables {
+        if filled_in.contains(&variable.name) {
+            let value =
+                serde_json::to_string(&variable.value).unwrap_or_else(|_| "unnameable".into());
+            set.insert(item(&variable.name, format!("declared\0{value}")));
+        }
+    }
+    for action in actions {
+        walk(action, &mut |step| {
+            let name = match step {
+                Action::SetVariable { name, .. }
+                | Action::ToggleVariable { name }
+                | Action::AddToVariable { name, .. } => name,
+                _ => return,
+            };
+            if filled_in.contains(name) {
+                let write = serde_json::to_string(step).unwrap_or_else(|_| "unnameable".into());
+                set.insert(item(name, write));
+            }
+        });
+    }
 }
 
 fn visit(action: &Action, set: &mut BTreeSet<String>) {
@@ -79,14 +157,16 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
         } => {
             set.insert(format!("terminal\0{app:?}\0{directory:?}\0{command}"));
         }
-        // The path, every argument and the directory decide what runs, so all
-        // of them are the item. JSON keeps the argument boundaries exact.
+        // The path, every argument, the directory and whether variables are
+        // filled in decide what runs, so all of them are the item. JSON keeps
+        // the argument boundaries exact.
         Action::RunProgram {
             program,
             args,
             directory,
+            variables,
         } => {
-            let identity = serde_json::to_string(&(program, args, directory))
+            let identity = serde_json::to_string(&(program, args, directory, variables))
                 .unwrap_or_else(|_| "unnameable".into());
             set.insert(format!("program\0{identity}"));
         }
@@ -524,6 +604,7 @@ mod tests {
             program: path.into(),
             args: args.iter().map(|arg| (*arg).into()).collect(),
             directory: directory.map(Into::into),
+            variables: false,
         };
         let held = profile(vec![program("/usr/bin/tool", &["a b"], None)]);
         assert!(!adds_capabilities(&held, &held.clone()));
@@ -533,9 +614,89 @@ mod tests {
             program("/usr/bin/tool", &["a b", "--force"], None),
             program("/usr/bin/tool", &[], None),
             program("/usr/bin/tool", &["a b"], Some("~")),
+            // Filling in variables changes what can run.
+            Action::RunProgram {
+                program: "/usr/bin/tool".into(),
+                args: vec!["a b".into()],
+                directory: None,
+                variables: true,
+            },
         ] {
             assert!(adds_capabilities(&held, &profile(vec![next])));
         }
+    }
+
+    #[test]
+    fn what_the_profile_writes_into_a_filled_in_variable_is_part_of_the_item() {
+        use cooltek_sdk_service::{Variable, VariableValue};
+        let text = |value: &str| VariableValue::Text(value.into());
+        let rm = Action::RunProgram {
+            program: "/bin/rm".into(),
+            args: vec!["{{target}}".into()],
+            directory: None,
+            variables: true,
+        };
+        let set = |value: &str| Action::SetVariable {
+            name: "target".into(),
+            value: text(value),
+        };
+        let with = |initial: &str, actions: Vec<Action>| {
+            let mut profile = profile(actions);
+            profile.variables = vec![
+                Variable {
+                    name: "target".into(),
+                    value: text(initial),
+                },
+                Variable {
+                    name: "other".into(),
+                    value: text("x"),
+                },
+            ];
+            profile
+        };
+        let held = with(
+            "tmp/a",
+            vec![
+                rm.clone(),
+                Action::MultiAction {
+                    actions: vec![set("tmp/scratch")],
+                },
+            ],
+        );
+        assert!(!adds_capabilities(&held, &held.clone()));
+        // Dropping a write adds nothing.
+        assert!(!adds_capabilities(&held, &with("tmp/a", vec![rm.clone()])));
+        // A new starting value, or a key that writes a new value, is new.
+        for next in [
+            with("/Users/me/Documents", vec![rm.clone()]),
+            with("tmp/a", vec![rm.clone(), set("/Users/me/Documents")]),
+            with(
+                "tmp/a",
+                vec![
+                    rm.clone(),
+                    Action::Conditional {
+                        when: cooltek_sdk_service::Condition::Recording(true),
+                        then: vec![set("/Users/me/Documents")],
+                        otherwise: vec![],
+                    },
+                ],
+            ),
+        ] {
+            assert!(adds_capabilities(&held, &next));
+        }
+        // A variable no program fills in stays the profile's own memory.
+        let mut other = with(
+            "tmp/a",
+            vec![
+                rm.clone(),
+                Action::SetVariable {
+                    name: "other".into(),
+                    value: text("y"),
+                },
+            ],
+        );
+        other.variables[1].value = text("changed");
+        assert!(!adds_capabilities(&held, &other));
     }
 
     #[test]

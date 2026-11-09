@@ -692,7 +692,7 @@ export default function App() {
         onToggle={() => setNavCollapsed(value => { writeNavCollapsed(webStorage(), !value); return !value; })}
         runningProfile={<RunningProfile profiles={choices.map(item => ({ id: item.value, name: item.builtIn ? `${item.name} (built-in)` : item.name }))} runs={runSession.service.runs} defaultId={display.defaultProfile.profileId} enabled={desktop}
           busy={runningBusy} onChoose={chooseProfile} />} />
-      <main className="main-content" id={noticeFallbackFocusId} tabIndex={-1}>
+      <main className={`main-content${page === 'workspace' ? ' workspace-page' : ''}`} id={noticeFallbackFocusId} tabIndex={-1}>
         {!desktop && <div className="browser-banner" role="status"><Monitor size={19} /><div><strong>Desktop app required</strong><span>This browser preview is read-only. Profile storage, validation and hardware access need the native app.</span></div></div>}
         {busy && <div className="operation-status" role="status"><LoaderCircle size={16} className="spinning" />{busy}…</div>}
         {bootstrapError && <div className="alert error" role="alert"><CircleHelp size={19} /><span><strong>Could not open profile storage.</strong> {bootstrapError.message}

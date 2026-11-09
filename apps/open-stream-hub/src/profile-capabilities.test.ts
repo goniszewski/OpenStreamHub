@@ -84,6 +84,32 @@ describe('profileCapabilities', () => {
     )).programs;
     expect(lists).toEqual(['“/a” with arguments ["x\\", \\"y"]', '“/a” with arguments ["x","y"]']);
     expect(stepLabel({ type: 'run_program', program: '/usr/bin/true' })).toBe('Run the program “/usr/bin/true” with no arguments');
+    // With variables on, the arguments are shown as written and the variables feeding them are named, never their
+    // values; turning variables on is a different program line.
+    const filled = profileCapabilities(flat(
+      { type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{take}}{{scene}}'], variables: true },
+      { type: 'run_program', program: '/a', args: ['--scene={{scene}}', '{{take}}{{scene}}'] },
+      { type: 'run_program', program: '/a', args: ['{{one}}'], variables: true },
+      { type: 'run_program', program: '/a', args: ['x'], variables: true },
+    )).programs;
+    expect(filled).toEqual([
+      '“/a” with arguments ["--scene={{scene}}","{{take}}{{scene}}"], filling in the current values of scene, take when pressed (other programs on this Mac can change them)',
+      '“/a” with arguments ["--scene={{scene}}","{{take}}{{scene}}"]',
+      '“/a” with arguments ["{{one}}"], filling in the current value of one when pressed (other programs on this Mac can change it)',
+      '“/a” with arguments ["x"], with variables on but none used',
+    ]);
+    // What the profile itself makes a filled-in variable is named: its starting value and every key that writes it.
+    const fed = profileCapabilities({
+      ...flat(
+        { type: 'run_program', program: '/bin/rm', args: ['{{target}}', '{{take}}'], variables: true },
+        { type: 'multi_action', actions: [{ type: 'set_variable', name: 'target', value: 'tmp/scratch' }, { type: 'add_to_variable', name: 'take', amount: 1 }] },
+        { type: 'set_variable', name: 'other', value: 'not shown' },
+      ),
+      variables: [{ name: 'target', value: 'tmp/a' }, { name: 'take', value: 0 }, { name: 'other', value: '' }],
+    }).programs;
+    expect(fed).toEqual(['“/bin/rm” with arguments ["{{target}}","{{take}}"], filling in the current values of target, take when pressed (target starts at “tmp/a”, keys set it to “tmp/scratch”; take starts at 0, keys add 1 to it; other programs on this Mac can change them)']);
+    expect(profileCapabilities(flat({ type: 'run_program', program: '/a', args: ['{{ x }}'], variables: true })).programs)
+      .toEqual(['“/a” with arguments ["{{ x }}"], with a malformed variable reference (the service refuses it)']);
     // The longest list the service accepts is shown whole, even when escaping doubles it past maxShownChars.
     const longest = [...Array.from({ length: 7 }, () => '\\'.repeat(512)), '"'.repeat(490), '--delete'];
     const full = profileCapabilities(flat({ type: 'run_program', program: '/a', args: longest }));

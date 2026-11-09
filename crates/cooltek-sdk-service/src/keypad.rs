@@ -392,6 +392,9 @@ struct HeldKey {
 /// after disconnect, suspension, or replacing the selected profile.
 #[derive(Clone, Debug)]
 pub struct ProfileSession {
+    /// Unique per [`ProfileSession::new`] in this process (clones share it), so
+    /// work planned by one profile can be told from work planned by the next.
+    id: u64,
     engine: BindingEngine,
     path: Vec<String>,
     held: HashMap<(Option<String>, usize), HeldKey>,
@@ -402,12 +405,20 @@ impl ProfileSession {
     /// Validates and owns an immutable profile, starting at root with no held keys.
     pub fn new(profile: Profile) -> Result<Self, String> {
         profile.validate()?;
+        static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Ok(Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             engine: BindingEngine::from_validated(profile),
             path: vec![KeypadLayout::ROOT_PAGE_ID.into()],
             held: HashMap::new(),
             dial_function: 0,
         })
+    }
+
+    /// This session's id, never 0 and never shared with another session made
+    /// by [`ProfileSession::new`] in this process.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 
     /// Returns the immutable validated profile.

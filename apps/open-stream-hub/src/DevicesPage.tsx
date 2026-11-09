@@ -10,7 +10,7 @@ import { bindingWarnings, moduleAssignments } from './binding-model';
 import { ModuleAssignmentsChip } from './ModuleAssignments';
 import { BindingsPanel } from './BindingsPanel';
 import { profileBindingCount } from './keypad-model';
-import { keypadDepth, keypadIsBack } from './keypad-model';
+import { keySlotUsed, keypadDepth, keypadIsBack } from './keypad-model';
 import { KeypadScreen } from './KeypadScreen';
 import { knobOrientationLabels, knobOrientationStore, useKnobOrientation } from './knob-orientation';
 import type { KnobOrientation } from './knob-orientation';
@@ -27,7 +27,7 @@ import type { LightingStateStore } from './lighting-state';
 import type { ProfileSession, SessionState } from './profile-session';
 import { controlCounts, controlLabel, moduleNote, modules } from './ui-model';
 import type { Page } from './ui-model';
-import { defaultFaderPosition } from './rig-model';
+import { controlAction, defaultFaderPosition } from './rig-model';
 import { keyMenuItems } from './useDeviceEditor';
 import type { DeviceEditor } from './useDeviceEditor';
 
@@ -146,7 +146,7 @@ export function HeroImage({ editor, profile, feed, knobOrientation, disabled = f
         {selected.id === 'm131e' && controls.map(area => <span key={area.control} className={`image-control round live-overlay${livePressed(live, area.control)}`} aria-hidden="true"
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}>{livePointer(live, area.control, true)}</span>)}
         {selected.supported && controlCounts[selected.id] > 1 && controls.map(area => <button key={area.control} type="button"
-          className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}${selected.id === 'm005s' ? (live?.faders[area.control] !== undefined ? ' live' : '') : livePressed(live, area.control)}`}
+          className={`image-control${area.round ? ' round' : ''}${isKeypad ? ' key-display' : ''}${selection.control === area.control ? ' selected' : ''}${selected.id === 'm005s' ? (live?.faders[area.control] !== undefined ? ' live' : '') : livePressed(live, area.control)}${(isKeypad ? keySlotUsed(currentKeypadPage.slots[area.control], keypadIsBack(keypadPath, area.control)) : !!controlAction(profile, selected.id, area.control)) ? ' bound' : ' unbound'}`}
           style={{ left: `${area.left}%`, top: `${area.top}%`, width: `${area.width}%`, height: `${area.height}%` }}
           aria-label={`Select ${controlLabel(selected.id, area.control)} on module image`}
           aria-pressed={selection.control === area.control} title={controlLabel(selected.id, area.control)}

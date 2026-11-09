@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { Action } from './contracts';
 import {
-  conditionLabel, conditionUsesObs, defaultCondition, defaultTerminalCommand, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, maxTerminalCommandBytes, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
+  conditionLabel, conditionUsesObs, defaultCondition, defaultTerminalCommand, maxRunProgramArgs, programArgIssue, programArgsIssue, programPathIssue, programVariableIssue, variableReferences, maxTerminalCommandBytes, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue, defaultConditional, defaultMacro, defaultMultiAction, defaultProfileAction, defaultStepAction, defaultTimerAction, isFaderTemplate, keyLabel, macroDurationLabel, macroDurationMs, macroIssue,
   macroLimits, maxObsSceneBytes, maxTimerLabelBytes,
   namedKeys, obsNameIssue, obsOperationLabels, obsOutputOpLabels, obsReplayBufferOpLabels, obsRecordOpLabels, obsSceneIssue, obsSwitchOpLabels,
   profileDirectionLabels, stepActionTypes, streamlabsAudioMode, streamlabsNameIssue, streamlabsOperationLabels, streamlabsVisibilityOpLabels,
@@ -102,15 +102,17 @@ describe('terminal_command contract', () => {
 });
 
 describe('run_program contract', () => {
-  type LooseProgram = { type?: string; program?: unknown; args?: unknown; directory?: unknown; actions?: { type?: string }[] };
+  type LooseProgram = { type?: string; program?: unknown; args?: unknown; directory?: unknown; variables?: unknown; actions?: { type?: string }[] };
   // Mirrors the Rust checks for one run_program, so the fixture's invalid entries are explained on this side too.
   const programAccepted = (action: LooseProgram) =>
-    Object.keys(action).every(key => ['type', 'program', 'args', 'directory'].includes(key))
+    Object.keys(action).every(key => ['type', 'program', 'args', 'directory', 'variables'].includes(key))
+    && (action.variables === undefined || typeof action.variables === 'boolean')
     && typeof action.program === 'string'
     && (action.args === undefined || (Array.isArray(action.args) && action.args.every(arg => typeof arg === 'string')))
     && (action.directory === undefined || (typeof action.directory === 'string' && action.directory !== ''))
     && programPathIssue(action.program) === null
-    && ((action.args ?? []) as string[]).every(arg => programArgIssue(arg) === null) && programArgsIssue((action.args ?? []) as string[]) === null
+    && ((action.args ?? []) as string[]).every(arg => programArgIssue(arg) === null && (action.variables !== true || variableReferences(arg) !== null))
+    && programArgsIssue((action.args ?? []) as string[]) === null
     && terminalDirectoryIssue(typeof action.directory === 'string' ? action.directory : '') === null;
 
   it('agrees with the shared fixture on valid and invalid programs', () => {
@@ -133,6 +135,17 @@ describe('run_program contract', () => {
     expect(programArgsIssue(Array(maxRunProgramArgs).fill('a'))).toBeNull();
     expect(programArgsIssue(Array(maxRunProgramArgs + 1).fill('a'))).not.toBeNull();
     expect(programArgsIssue(Array(9).fill('x'.repeat(512)))).not.toBeNull();
+  });
+
+  it('reads {{name}} references the way the service does, and checks them against the declared variables', () => {
+    expect(variableReferences('--scene={{scene}}-{{take_2}}{{scene}}')).toEqual(['scene', 'take_2', 'scene']);
+    expect(variableReferences('}} plain { text')).toEqual([]);
+    for (const broken of ['{{', '{{scene', '{{ scene }}', '{{Scene}}', '{{}}', '{{1x}}', 'a {{b}} {{', '{{{scene}}}']) {
+      expect(variableReferences(broken), broken).toBeNull();
+      expect(programVariableIssue(broken, ['scene', 'b']), broken).toContain('Each {{ must begin a variable');
+    }
+    expect(programVariableIssue('--scene={{scene}}', ['scene'])).toBeNull();
+    expect(programVariableIssue('{{gone}}', ['scene'])).toBe('Variable gone is not declared.');
   });
 
   it('labels it and starts from a harmless say', () => {

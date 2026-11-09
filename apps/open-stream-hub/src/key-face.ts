@@ -16,7 +16,7 @@ type Point = readonly [number, number];
 // Three bytes per pixel, as the service's RGB image.
 export type KeyFace = Uint8Array;
 
-const BACKGROUND: Colour = [36, 52, 78];
+const BACKGROUND: Colour = [0, 0, 0];
 const WHITE: Colour = [255, 255, 255];
 const BLACK: Colour = [0, 0, 0];
 const FOLDER_BACKGROUND: Colour = [24, 24, 24];

@@ -250,13 +250,16 @@ impl PluginBridge {
     }
 
     /// Asks the app to run `action` of `plugin` and waits up to `timeout` for the answer. A late answer, an
-    /// unreachable app or a cancellation fails the press; the plugin may already have acted.
+    /// unreachable app or a cancellation fails the press; the plugin may already have acted. `variables` names the
+    /// text parameters whose variables were filled in, so the app can check them against the manifest.
+    #[allow(clippy::too_many_arguments)]
     pub fn invoke(
         &self,
         plugin: &str,
         min_version: &str,
         action: &str,
         params: &BTreeMap<String, PluginValue>,
+        variables: &[String],
         timeout: Duration,
         cancellation: Option<&AtomicBool>,
     ) -> Result<(), String> {
@@ -270,6 +273,7 @@ impl PluginBridge {
             "min_version": min_version,
             "action": action,
             "params": params,
+            "variables": variables,
             "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         });
         if let Err(error) = (self.0.send)(&record) {
@@ -465,6 +469,7 @@ mod tests {
             assert_eq!(record["type"], "plugin_invoke");
             assert_eq!(record["plugin"], "com.x.y");
             assert_eq!(record["params"], json!({"on": true}));
+            assert_eq!(record["variables"], json!(["on"]));
             let request = record["request"].as_u64().unwrap();
             assert!(app.complete(request + 100, Ok(())).is_err());
             app.complete(request, Err("light is offline".into()))
@@ -477,6 +482,7 @@ mod tests {
             "1.0.0",
             "toggle",
             &params(&[("on", PluginValue::Bool(true))]),
+            &["on".into()],
             Duration::from_secs(5),
             None,
         );
@@ -494,6 +500,7 @@ mod tests {
                 "1.0.0",
                 "a",
                 &BTreeMap::new(),
+                &[],
                 Duration::from_millis(120),
                 None,
             )
@@ -508,6 +515,7 @@ mod tests {
                 "1.0.0",
                 "a",
                 &BTreeMap::new(),
+                &[],
                 Duration::from_secs(5),
                 Some(&cancelled),
             )
@@ -520,6 +528,7 @@ mod tests {
                 "1.0.0",
                 "a",
                 &BTreeMap::new(),
+                &[],
                 Duration::from_secs(5),
                 None,
             )

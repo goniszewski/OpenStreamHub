@@ -1165,6 +1165,14 @@ impl MacOsDispatcher {
         let params = if variables.is_empty() {
             params.clone()
         } else {
+            // As for run_program: values are kept by name across a profile
+            // swap, so a press the previous profile planned would fill in what
+            // the new profile means by that name.
+            if self.variables.swapped_away_from(self.service_state.profile) {
+                return Err(format!(
+                    "{plugin}: the profile changed after this key was pressed; the plugin was not asked"
+                ));
+            }
             self.variables
                 .read(|lookup| crate::plugin::fill_in_plugin_params(params, variables, lookup))
                 .map_err(|error| format!("{plugin}: {error}; the plugin was not asked"))?
@@ -1187,6 +1195,7 @@ impl MacOsDispatcher {
             min_version,
             name,
             &params,
+            variables,
             timeout,
             self.cancellation.as_deref(),
         )
@@ -2483,6 +2492,65 @@ mod tests {
         assert_eq!(state.lock().unwrap().requests.len(), 2);
         dispatcher.dispatch(&program).unwrap();
         assert_eq!(state.lock().unwrap().requests[2].args, ["a"]);
+    }
+
+    #[test]
+    fn a_plugin_action_with_variables_from_a_swapped_out_profile_asks_nothing() {
+        use crate::{PluginValue, profile::Variable};
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<serde_json::Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            sent_tx.lock().unwrap().send(record.clone()).unwrap();
+            Ok(())
+        }));
+        let (mut dispatcher, _) = fake(vec![]);
+        dispatcher.plugins = Some(bridge.clone());
+        let declared = vec![Variable {
+            name: "room".into(),
+            value: VariableValue::Text("desk".into()),
+        }];
+        let pressed_by = |profile: u64| ServiceState {
+            variables: declared.clone(),
+            profile,
+            ..Default::default()
+        };
+        let toggle = Action::Plugin {
+            plugin: "com.x.y".into(),
+            min_version: "1.0.0".into(),
+            action: "toggle".into(),
+            params: [(
+                "entity".to_string(),
+                PluginValue::Text("light.{{room}}".into()),
+            )]
+            .into(),
+            variables: vec!["entity".into()],
+        };
+        dispatcher.variables.swap(&declared, 7);
+        // Profile 8 is swapped in while a press of profile 7 is still queued.
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(pressed_by(7));
+        let error = dispatcher.dispatch(&toggle).unwrap_err();
+        assert_eq!(
+            error,
+            "com.x.y: the profile changed after this key was pressed; the plugin was not asked"
+        );
+        assert!(sent_rx.try_recv().is_err(), "the app was asked");
+        // A press of the profile now running fills in and names its variable parameters to the app.
+        dispatcher.set_service_state(pressed_by(8));
+        let app = std::thread::spawn(move || {
+            let record = sent_rx.recv().unwrap();
+            bridge
+                .complete(record["request"].as_u64().unwrap(), Ok(()))
+                .unwrap();
+            record
+        });
+        dispatcher.dispatch(&toggle).unwrap();
+        let record = app.join().unwrap();
+        assert_eq!(
+            record["params"],
+            serde_json::json!({"entity": "light.desk"})
+        );
+        assert_eq!(record["variables"], serde_json::json!(["entity"]));
     }
 
     #[test]

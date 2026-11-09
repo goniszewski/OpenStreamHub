@@ -588,7 +588,8 @@ impl PluginHost {
                     .as_mut()
                     .and_then(|child| child.try_wait().ok().flatten());
                 if let Some(status) = exited {
-                    instance.child = None;
+                    // `failed` takes the child and signals its process group, so helpers the plugin started do not
+                    // outlive it and pile up with each restart.
                     self.failed(&id, instance, format!("the plugin exited ({status})"));
                     continue;
                 }
@@ -930,8 +931,14 @@ impl PluginHost {
             let params: BTreeMap<String, PluginValue> =
                 serde_json::from_value(record["params"].clone())
                     .map_err(|_| "the invoke's parameters are not plugin values".to_string())?;
-            let variables: Vec<String> =
-                serde_json::from_value(record["variables"].clone()).unwrap_or_default();
+            // Absent means no variables were filled in; anything else must be a list of names, so a
+            // malformed record cannot skip the manifest's check.
+            let variables: Vec<String> = match &record["variables"] {
+                Value::Null => Vec::new(),
+                names => serde_json::from_value(names.clone()).map_err(|_| {
+                    "the invoke's variable parameters are not a list of names".to_string()
+                })?,
+            };
             let timeout = record["timeout_ms"]
                 .as_u64()
                 .map(Duration::from_millis)
@@ -1268,6 +1275,51 @@ mod tests {
             host.state_of(ID) == Some("restarting")
         });
         assert!(host.statuses()[0].error.as_ref().unwrap().contains("pings"));
+    }
+
+    #[test]
+    fn a_plugin_that_exits_takes_the_helpers_it_started_with_it() {
+        let rig = rig(&["/bin/sh", "-c", "sleep 30 & echo $! > helper.pid; exit 3"]);
+        let host = &rig.host;
+        let pid_file = rig._root.path().join("plugins").join(ID).join("helper.pid");
+        host.set_usage("m1", used());
+        let mut helper = 0;
+        wait_for("the helper's pid", || {
+            helper = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+                .unwrap_or(0);
+            helper > 0
+        });
+        wait_for("the helper to be stopped", || {
+            // SAFETY: signal 0 only asks whether the process exists.
+            unsafe { libc::kill(helper, 0) != 0 }
+        });
+    }
+
+    #[test]
+    fn an_invoke_is_refused_variables_its_manifest_does_not_allow() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let _plugin = Plugin::hello(host, &host.token(ID));
+        let ask = |variables: Value| {
+            let (sender, receiver) = mpsc::channel();
+            host.invoke(
+                &json!({"type":"plugin_invoke","request":1,"plugin":ID,"min_version":"1.0.0",
+                    "action":"set","params":{"entity":"light.desk"},"variables":variables,
+                    "timeout_ms":5000}),
+                Box::new(move |result| {
+                    let _ = sender.send(result);
+                }),
+            );
+            answer(&receiver).unwrap_err()
+        };
+        // The rig's `entity` does not take variables.
+        let error = ask(json!(["entity"]));
+        assert!(error.contains("does not take variables"), "{error}");
+        let error = ask(json!("entity"));
+        assert!(error.contains("not a list of names"), "{error}");
     }
 
     #[test]

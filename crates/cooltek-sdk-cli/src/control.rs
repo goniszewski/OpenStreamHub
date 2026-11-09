@@ -700,6 +700,7 @@ mod tests {
                 "1.0.0",
                 "toggle",
                 &Default::default(),
+                &[],
                 std::time::Duration::from_secs(5),
                 None,
             )

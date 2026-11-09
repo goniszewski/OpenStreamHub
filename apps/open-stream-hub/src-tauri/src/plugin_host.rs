@@ -100,8 +100,8 @@ pub const LINGER: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 
 /// Answers one invoke; called once, on the host's answer thread.
 pub type Reply = Box<dyn FnOnce(Result<(), String>) + Send>;
 
-/// An invoke handed to the invoke thread: the record, its answer and when it arrived.
-type Queued = (Value, Reply, Instant);
+/// An invoke handed to an invoke thread: the run it came from, the record, its answer and when it arrived.
+type Queued = (String, Value, Reply, Instant);
 
 /// The parameters the profile gave and those with the secrets filled in.
 type Filled = (BTreeMap<String, PluginValue>, BTreeMap<String, PluginValue>);
@@ -1018,13 +1018,18 @@ impl PluginHost {
     /// Carries one `plugin_invoke` record from a module run to its plugin; `reply` gets the plugin's answer, or the
     /// reason it was not asked. Never waits: a press whose secrets are not held in memory yet is handed to the invoke
     /// thread, since reading one may wait for the Keychain.
-    pub fn invoke(&self, record: &Value, reply: Reply) {
+    ///
+    /// `service_id` is the module run the press came from: it is sent only while that run still executes with this
+    /// plugin, so a press that waited for the Keychain never runs after its run stopped or switched to Test.
+    pub fn invoke(&self, service_id: &str, record: &Value, reply: Reply) {
         if self.0.stopped.load(Ordering::SeqCst) {
             return self.answer(reply, Err(crate::service::SHUTTING_DOWN.into()));
         }
         let arrived = Instant::now();
         match self.with_secrets(record, false) {
-            Ok(Some(filled)) => return self.send_invoke(record, filled, reply, arrived),
+            Ok(Some(filled)) => {
+                return self.send_invoke(service_id, record, filled, reply, arrived);
+            }
             Err(error) => return self.answer(reply, Err(error)),
             Ok(None) => {}
         }
@@ -1051,11 +1056,11 @@ impl PluginHost {
                 }
             };
             match worker {
-                Ok(worker) => worker.send((record.clone(), reply, arrived)).map_err(
-                    |mpsc::SendError((_, reply, _))| {
+                Ok(worker) => worker
+                    .send((service_id.to_string(), record.clone(), reply, arrived))
+                    .map_err(|mpsc::SendError((_, _, reply, _))| {
                         (reply, crate::service::SHUTTING_DOWN.to_string())
-                    },
-                ),
+                    }),
                 Err(error) => Err((
                     reply,
                     format!("could not start reading the secret: {error}"),
@@ -1073,18 +1078,22 @@ impl PluginHost {
         let stopped = || self.0.stopped.load(Ordering::SeqCst);
         loop {
             match queued.recv_timeout(TICK) {
-                Ok((record, reply, arrived)) if !stopped() => {
+                Ok((service_id, record, reply, arrived)) if !stopped() => {
                     // The read happens first: it is what may have kept this press waiting.
                     match self.with_secrets(&record, true) {
-                        Ok(Some(filled)) => self.send_invoke(&record, filled, reply, arrived),
+                        Ok(Some(filled)) => {
+                            self.send_invoke(&service_id, &record, filled, reply, arrived)
+                        }
                         Ok(None) => self.answer(reply, Err("the secret could not be read".into())),
                         Err(error) => self.answer(reply, Err(error)),
                     }
                 }
-                Ok((_, reply, _)) => self.answer(reply, Err(crate::service::SHUTTING_DOWN.into())),
+                Ok((_, _, reply, _)) => {
+                    self.answer(reply, Err(crate::service::SHUTTING_DOWN.into()))
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) if !stopped() => {}
                 Err(_) => {
-                    while let Ok((_, reply, _)) = queued.try_recv() {
+                    while let Ok((_, _, reply, _)) = queued.try_recv() {
                         self.answer(reply, Err(crate::service::SHUTTING_DOWN.into()));
                     }
                     return;
@@ -1104,7 +1113,14 @@ impl PluginHost {
 
     /// Registers and sends one invoke whose secrets are filled in. A press whose deadline (from when it arrived)
     /// passed while it waited is answered with an error and not sent: the module has given up on it already.
-    fn send_invoke(&self, record: &Value, filled: Filled, reply: Reply, arrived: Instant) {
+    fn send_invoke(
+        &self,
+        service_id: &str,
+        record: &Value,
+        filled: Filled,
+        reply: Reply,
+        arrived: Instant,
+    ) {
         let deadline = arrived + Self::timeout_of(record);
         if Instant::now() >= deadline {
             return self.answer(
@@ -1113,7 +1129,8 @@ impl PluginHost {
             );
         }
         let (given, params) = filled;
-        let (conn, message, id) = match self.register(record, &given, params, reply, deadline) {
+        let registered = self.register(service_id, record, &given, params, reply, deadline);
+        let (conn, message, id) = match registered {
             Ok(registered) => registered,
             Err((error, reply)) => return self.answer(reply, Err(error)),
         };
@@ -1183,6 +1200,7 @@ impl PluginHost {
     #[allow(clippy::type_complexity)]
     fn register(
         &self,
+        service_id: &str,
         record: &Value,
         given: &BTreeMap<String, PluginValue>,
         params: BTreeMap<String, PluginValue>,
@@ -1231,6 +1249,10 @@ impl PluginHost {
             // the current one.
             plugins::refuse_profile_secrets(manifest, action, given)?;
             plugins::check_invoke(manifest, action, &params, &variables)?;
+            // The service checked the profile's own text; with the secrets filled in, the whole map must still fit the
+            // same limits. The SDK's errors name parameters, never values.
+            cooltek_sdk_service::plugin::validate_plugin_action(&id, "0.0.0", action, &params, &[])
+                .map_err(|error| format!("{id}: with its secrets filled in, {error}"))?;
             let conn = match (&instance.child, &instance.conn) {
                 (Some(_), Some(conn)) => Arc::clone(conn),
                 (Some(_), None) => {
@@ -1243,6 +1265,15 @@ impl PluginHost {
                     });
                 }
             };
+            // Only the run the press came from counts: another Live run using this plugin does not make a press from
+            // a run that stopped executing (or switched to Test) one to send.
+            if !state
+                .usage
+                .get(service_id)
+                .is_some_and(|plugins| plugins.contains(&id))
+            {
+                return Err("the run stopped executing before the press could be sent".into());
+            }
             if instance.pending.len() >= MAX_IN_FLIGHT {
                 return Err(format!(
                     "{id} is busy: {MAX_IN_FLIGHT} presses are still waiting for it"
@@ -1255,6 +1286,12 @@ impl PluginHost {
                 "params": params,
                 "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             });
+            if message.to_string().len() > MAX_LINE {
+                return Err(format!(
+                    "{id}: the press would be longer than the {} KiB a plugin line may hold",
+                    MAX_LINE / 1024
+                ));
+            }
             Ok((conn, message, id))
         })();
         match checked {
@@ -1362,6 +1399,13 @@ mod tests {
                 { "id": "login", "label": "Log in", "params": [
                     { "id": "token", "label": "Token", "type": "text", "secret": true, "required": true },
                     { "id": "user", "label": "User", "type": "text" }
+                ] },
+                { "id": "bulk", "label": "Bulk", "params": [
+                    { "id": "s1", "label": "S1", "type": "text", "secret": true },
+                    { "id": "s2", "label": "S2", "type": "text", "secret": true },
+                    { "id": "s3", "label": "S3", "type": "text", "secret": true },
+                    { "id": "s4", "label": "S4", "type": "text", "secret": true },
+                    { "id": "s5", "label": "S5", "type": "text", "secret": true }
                 ] }
             ],
             "permissions": { "variables": ["room"] }
@@ -1493,6 +1537,7 @@ mod tests {
     ) -> mpsc::Receiver<Result<(), String>> {
         let (sender, receiver) = mpsc::channel();
         host.invoke(
+            "m1",
             &json!({"type":"plugin_invoke","request":1,"plugin":ID,"min_version":"1.0.0",
                 "action":action,"params":params,"timeout_ms":timeout_ms}),
             Box::new(move |result| {
@@ -1558,6 +1603,7 @@ mod tests {
         );
         let (sender, newer) = mpsc::channel();
         host.invoke(
+            "m1",
             &json!({"plugin":ID,"min_version":"2.0.0","action":"set","params":{"entity":"a"}}),
             Box::new(move |result| {
                 let _ = sender.send(result);
@@ -1678,6 +1724,7 @@ mod tests {
         let ask = |variables: Value| {
             let (sender, receiver) = mpsc::channel();
             host.invoke(
+                "m1",
                 &json!({"type":"plugin_invoke","request":1,"plugin":ID,"min_version":"1.0.0",
                     "action":"set","params":{"entity":"light.desk"},"variables":variables,
                     "timeout_ms":5000}),
@@ -1776,6 +1823,7 @@ mod tests {
         });
         let (sender, pressed) = mpsc::channel();
         host.invoke(
+            "m1",
             &json!({"plugin":"com.example.notify","min_version":"1.0.0","action":"count","params":{}}),
             Box::new(move |result| {
                 let _ = sender.send(result);
@@ -2029,6 +2077,7 @@ mod tests {
         let started = Instant::now();
         let (sender, pressed) = mpsc::channel();
         host.invoke(
+            "m1",
             &json!({"plugin":OTHER,"min_version":"1.0.0","action":"login","params":{},"timeout_ms":5000}),
             Box::new(move |result| {
                 let _ = sender.send(result);
@@ -2069,6 +2118,74 @@ mod tests {
         assert_eq!(answer(&pressed), Err("bad token [secret]".into()));
         let logs = host.statuses()[0].logs.join("\n");
         assert_eq!(logs, "still using [secret]\nafter forget: [secret]");
+    }
+
+    #[test]
+    fn a_press_whose_run_stopped_executing_while_it_waited_is_never_sent() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        rig.vault
+            .values
+            .lock()
+            .unwrap()
+            .insert(format!("{ID}:token"), "s3cret".into());
+        let (release, hold) = mpsc::channel();
+        *rig.vault.hold.lock().unwrap() = Some(hold);
+        host.set_usage("m1", used());
+        host.set_usage("m2", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let waiting = invoke_action(host, "login", json!({}));
+        wait_for("the held read", || *rig.vault.reads.lock().unwrap() == 1);
+        // m1 stops executing; m2 still uses the plugin, which does not rescue m1's press.
+        host.set_usage("m1", None);
+        release.send(()).unwrap();
+        assert_eq!(
+            answer(&waiting),
+            Err("the run stopped executing before the press could be sent".into())
+        );
+        // The plugin's next message is m2's press, so m1's never reached it.
+        let (sender, pressed) = mpsc::channel();
+        host.invoke(
+            "m2",
+            &json!({"plugin":ID,"min_version":"1.0.0","action":"set","params":{"entity":"a"},"timeout_ms":5000}),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        let asked = plugin.receive_message();
+        assert_eq!(asked["action"], "set");
+        plugin.send(json!({"type":"result","request":asked["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
+        // The fast path checks it too.
+        let error = answer(&invoke(host, json!({"entity":"a"}))).unwrap_err();
+        assert_eq!(
+            error,
+            "the run stopped executing before the press could be sent"
+        );
+    }
+
+    #[test]
+    fn secrets_that_together_break_the_text_limit_fail_the_press() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        // Each fits on its own (at most 2048 bytes); five of them pass the 8192 bytes all text may take.
+        for (index, param) in ["s1", "s2", "s3", "s4", "s5"].iter().enumerate() {
+            let value = format!("{index}{}", "x".repeat(1999));
+            host.0.secrets.set(ID, param, &value).unwrap();
+        }
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let error = answer(&invoke_action(host, "bulk", json!({}))).unwrap_err();
+        assert_eq!(
+            error,
+            "com.example.lights: with its secrets filled in, plugin text parameters must total at most 8192 bytes"
+        );
+        assert!(!error.contains("xxxx"));
+        let pressed = invoke(host, json!({"entity":"a"}));
+        let asked = plugin.receive_message();
+        assert_eq!(asked["action"], "set");
+        plugin.send(json!({"type":"result","request":asked["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
     }
 
     #[test]

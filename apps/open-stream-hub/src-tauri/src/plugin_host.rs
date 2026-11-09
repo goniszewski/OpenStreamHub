@@ -393,28 +393,32 @@ impl PluginHost {
     }
 
     /// Records which plugins the module run `service_id` uses while it executes its actions (`None` once it stops
-    /// executing or ends), then starts the plugins now needed and stops the ones no longer needed. A plugin that
-    /// becomes needed again starts fresh, even after it gave up.
+    /// executing or ends), then starts the plugins now needed and stops the ones no longer needed. A plugin this run
+    /// starts using starts fresh, even after it gave up and even while another run still uses it.
     pub fn set_usage(&self, service_id: &str, plugins: Option<BTreeSet<String>>) {
         if self.0.stopped.load(Ordering::SeqCst) {
             return;
         }
         let mut state = self.lock();
         let before = state.needed();
+        let previous = state.usage.get(service_id).cloned().unwrap_or_default();
         match plugins.filter(|plugins| !plugins.is_empty()) {
             Some(plugins) => state.usage.insert(service_id.to_string(), plugins),
             None => state.usage.remove(service_id),
         };
         let after = state.needed();
+        let current = state.usage.get(service_id).cloned().unwrap_or_default();
         let now = Instant::now();
         for gone in before.difference(&after) {
             if let Some(instance) = state.instances.get_mut(gone) {
                 instance.unused_since = Some(now);
             }
         }
-        for new in after.difference(&before) {
+        // Every plugin new to the whole set is new to this run, but a plugin new to this run may already be needed by
+        // another one: it is still reset when it gave up, as its error promises.
+        for new in current.difference(&previous) {
             match state.instances.get_mut(new) {
-                // Still lingering: keep it, unless it gave up, which a new execution resets.
+                // Running or lingering: keep it, unless it is stopped for good, which a new execution resets.
                 Some(instance) => {
                     instance.unused_since = None;
                     if instance.gave_up
@@ -1290,6 +1294,27 @@ mod tests {
             host.state_of(ID) == Some("restarting")
         });
         assert!(host.statuses()[0].error.as_ref().unwrap().contains("pings"));
+    }
+
+    #[test]
+    fn a_plugin_that_gave_up_starts_again_when_another_run_starts_using_it() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        host.set_usage("m2", used());
+        {
+            let mut state = host.lock();
+            let instance = state.instances.get_mut(ID).unwrap();
+            for _ in 0..MAX_FAILURES {
+                host.failed(ID, instance, "test failure".into());
+            }
+        }
+        assert_eq!(host.state_of(ID), Some("stopped"));
+        // m2 still uses it; m1 executing its profile again resets it all the same.
+        host.set_usage("m1", None);
+        host.set_usage("m1", used());
+        assert_eq!(host.state_of(ID), Some("starting"));
+        assert!(host.statuses()[0].error.is_none());
     }
 
     #[test]

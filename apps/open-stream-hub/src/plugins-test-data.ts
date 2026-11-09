@@ -2,7 +2,7 @@
 import type { PluginListing, PluginManifest } from './plugins-model';
 
 export const lights: PluginManifest = {
-  id: 'com.example.lights', name: 'Lights', version: '1.2.0', command: ['bin/lights'],
+  schema: 1, id: 'com.example.lights', name: 'Lights', version: '1.2.0', command: ['bin/lights'],
   actions: [
     { id: 'toggle', label: 'Toggle' },
     { id: 'set', label: 'Set a light', params: [
@@ -20,6 +20,6 @@ export const listing: PluginListing = {
   folder: '/Users/me/Library/Application Support/app/plugins',
   plugins: [
     { folder: 'com.example.broken', error: 'plugin.json is not a valid manifest' },
-    { folder: 'com.example.lights', manifest: lights },
+    { folder: 'com.example.lights', manifest: lights, fingerprint: 'f1', approval: 'enabled', secrets: [{ id: 'token', label: 'Token', set: true }] },
   ],
 };

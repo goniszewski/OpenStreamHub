@@ -6,7 +6,7 @@
 //!
 //! ```json
 //! {
-//!   "id": "com.example.lights", "name": "Lights", "version": "1.2.0",
+//!   "schema": 1, "id": "com.example.lights", "name": "Lights", "version": "1.2.0",
 //!   "command": ["bin/lights"],
 //!   "actions": [{ "id": "set", "label": "Set a light", "params": [
 //!     { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true },
@@ -21,6 +21,13 @@
 //! `command[0]` is a path inside the folder (no `..`) or an absolute path such as `/usr/local/bin/node`; the rest are
 //! its arguments, passed as they are. Permissions are what the plugin says it needs, shown to the user: a plugin runs
 //! as the user, so they are consent information, not enforcement.
+//!
+//! `schema` is the manifest format's version. This app reads [`SCHEMA`] only; a change that would make an older app
+//! misread a manifest gets a new number, so an older app refuses it with a clear reason instead of guessing.
+//!
+//! A plugin runs only once the user has enabled it, after a dialog that lists what its manifest declares. The
+//! approval is the [`fingerprint`] of the exact `plugin.json` bytes they saw, kept in `<app data>/`[`APPROVALS_FILE`]
+//! (outside the plugins folder, so a plugin cannot approve itself), and any change to the file needs a new approval.
 
 use cooltek_sdk_service::{
     Action, PluginValue,
@@ -28,14 +35,22 @@ use cooltek_sdk_service::{
     validate_variable_name,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
+    sync::Mutex,
 };
 
 /// The manifest's file name inside a plugin folder.
 pub const MANIFEST_FILE: &str = "plugin.json";
+/// The manifest schema this app reads.
+pub const SCHEMA: u64 = 1;
+/// The approvals file in the app data folder: `{ "<plugin id>": "<fingerprint>" }`.
+pub const APPROVALS_FILE: &str = "plugin-approvals.json";
+/// The largest approvals file read.
+const MAX_APPROVALS_BYTES: usize = 256 * 1024;
 /// The largest manifest read.
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 /// Most actions one plugin offers.
@@ -61,6 +76,8 @@ pub fn dir(app_data: &Path) -> PathBuf {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
+    /// The manifest format's version; always [`SCHEMA`] once parsed.
+    pub schema: u64,
     pub id: String,
     pub name: String,
     pub version: String,
@@ -94,7 +111,7 @@ pub struct Param {
     /// Text only: `{{name}}` references may be filled in when the key is pressed.
     #[serde(default)]
     pub variables: bool,
-    /// Text only: shown masked in the editor and never logged.
+    /// Text only: kept in the Keychain, never in the profile, and never logged.
     #[serde(default)]
     pub secret: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +190,11 @@ impl Param {
         if (self.variables || self.secret) && !text {
             return Err(at("can take variables or be secret only as text"));
         }
+        if self.secret && self.default.is_some() {
+            return Err(at(
+                "is secret, so it has no default: its value is set in Settings > Plugins",
+            ));
+        }
         let number = self.kind == ParamType::Number;
         if (self.min.is_some() || self.max.is_some()) && !number {
             return Err(at("can have min and max only as a number"));
@@ -205,16 +227,8 @@ impl Param {
             if let PluginValue::Text(value) = default
                 && text
             {
-                let mut probe = BTreeMap::new();
-                probe.insert(self.id.clone(), PluginValue::Text(value.clone()));
-                cooltek_sdk_service::plugin::validate_plugin_action(
-                    "com.example.probe",
-                    "0.0.0",
-                    "probe",
-                    &probe,
-                    &[],
-                )
-                .map_err(|_| at("default must be one line of at most 2048 bytes"))?;
+                self.check_text(value)
+                    .map_err(|()| at("default must be one line of at most 2048 bytes"))?;
             } else if !self.accepts(default) {
                 return Err(at("default is not a value of its type, range or choices"));
             }
@@ -241,6 +255,27 @@ impl Param {
     fn takes_variables(&self) -> bool {
         self.kind == ParamType::Text && self.variables
     }
+
+    /// A text parameter whose value lives in the Keychain.
+    pub fn is_secret(&self) -> bool {
+        self.kind == ParamType::Text && self.secret
+    }
+
+    /// Whether `value` passes the rules every text parameter value follows (one line without control or invisible
+    /// characters, at most 2048 bytes), by the service's own check.
+    fn check_text(&self, value: &str) -> Result<(), ()> {
+        let mut probe = BTreeMap::new();
+        probe.insert(self.id.clone(), PluginValue::Text(value.to_string()));
+        cooltek_sdk_service::plugin::validate_plugin_action(
+            "com.example.probe",
+            "0.0.0",
+            "probe",
+            &probe,
+            &[],
+        )
+        .map(drop)
+        .map_err(drop)
+    }
 }
 
 fn in_range(number: f64, min: Option<f64>, max: Option<f64>) -> bool {
@@ -258,6 +293,7 @@ fn inside_folder(path: &str) -> bool {
 
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
+        check_schema(Some(self.schema))?;
         validate_plugin_id(&self.id)?;
         check_label("name", &self.name)?;
         parse_version(&self.version).ok_or("version must be MAJOR.MINOR.PATCH, such as 1.0.0")?;
@@ -339,6 +375,39 @@ impl Manifest {
         self.actions.iter().find(|action| action.id == id)
     }
 
+    /// Each secret parameter once by id, as the first action that declares it names it. Every action with a secret
+    /// of that id shares one stored value.
+    pub fn secret_params(&self) -> Vec<&Param> {
+        let mut seen = BTreeSet::new();
+        self.actions
+            .iter()
+            .flat_map(|action| &action.params)
+            .filter(|param| param.is_secret() && seen.insert(param.id.as_str()))
+            .collect()
+    }
+
+    /// Checks a value to store for the secret parameter `param`: it must be one some action declares, and the value
+    /// must follow the rules of every text parameter. The error never contains the value.
+    pub fn check_secret(&self, param: &str, value: &str) -> Result<(), String> {
+        let declared = self
+            .secret_params()
+            .into_iter()
+            .find(|declared| declared.id == param)
+            .ok_or_else(|| format!("{} has no secret parameter {param}", self.name))?;
+        if value.is_empty() {
+            return Err(format!(
+                "enter a value for {}, or forget it instead",
+                declared.label
+            ));
+        }
+        declared.check_text(value).map_err(|()| {
+            format!(
+                "{} must be one line of at most 2048 bytes without control or invisible characters",
+                declared.label
+            )
+        })
+    }
+
     /// The program and arguments to start, with a folder-relative program made absolute.
     pub fn command_in(&self, folder: &Path) -> (PathBuf, Vec<String>) {
         let program = &self.command[0];
@@ -357,6 +426,104 @@ impl Manifest {
             (Some(installed), Some(wanted)) if installed >= wanted
         )
     }
+}
+
+/// Refuses parameters from a profile that hold a value for one of `action`'s secrets: those come only from the
+/// Keychain.
+pub fn refuse_profile_secrets(
+    manifest: &Manifest,
+    action: &str,
+    params: &BTreeMap<String, PluginValue>,
+) -> Result<(), String> {
+    let Some(declared) = manifest.action(action) else {
+        return Ok(());
+    };
+    match declared
+        .params
+        .iter()
+        .find(|param| param.is_secret() && params.contains_key(&param.id))
+    {
+        Some(param) => Err(format!(
+            "{} is a secret and is kept in the Keychain, not the profile; open the key and save it again",
+            param.label
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Removes from `profile` every value of a parameter the installed manifest marks secret (a profile saved before
+/// secrets moved to the Keychain may hold one), so an export never carries one, and names what was removed. A plugin
+/// that is not installed cannot be checked, so its parameters stay as they are.
+pub fn strip_secrets(profile: &mut cooltek_sdk_service::Profile, app_data: &Path) -> Vec<String> {
+    let mut manifests: BTreeMap<String, Option<Manifest>> = BTreeMap::new();
+    let mut dropped = BTreeSet::new();
+    each_action_mut(profile, &mut |action| {
+        let Action::Plugin {
+            plugin,
+            action,
+            params,
+            variables,
+            ..
+        } = action
+        else {
+            return;
+        };
+        let manifest = manifests.entry(plugin.clone()).or_insert_with(|| {
+            installed(app_data, plugin)
+                .ok()
+                .map(|(manifest, _)| manifest)
+        });
+        let Some(declared) = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.action(action))
+        else {
+            return;
+        };
+        for param in declared.params.iter().filter(|param| param.is_secret()) {
+            if params.remove(&param.id).is_some() {
+                variables.retain(|name| name != &param.id);
+                dropped.insert(format!("{} ({plugin})", param.label));
+            }
+        }
+    });
+    dropped.into_iter().collect()
+}
+
+/// Fills the stored secrets into an invoke's parameters, before [`check_invoke`]: for each secret parameter of
+/// `action`, `stored` gives its value from the Keychain. A profile that carries a value for a secret is refused, so a
+/// secret saved before secrets moved to the Keychain is not sent from the profile. An unknown action is left to
+/// [`check_invoke`] to report.
+pub fn fill_secrets(
+    manifest: &Manifest,
+    action: &str,
+    params: &mut BTreeMap<String, PluginValue>,
+    mut stored: impl FnMut(&Param) -> Result<Option<String>, String>,
+) -> Result<(), String> {
+    refuse_profile_secrets(manifest, action, params)?;
+    let Some(declared) = manifest.action(action) else {
+        return Ok(());
+    };
+    for param in declared.params.iter().filter(|param| param.is_secret()) {
+        let value = stored(param).map_err(|error| {
+            format!(
+                "{} for {} could not be read: {error}",
+                param.label, manifest.name
+            )
+        })?;
+        match value {
+            Some(value) => {
+                params.insert(param.id.clone(), PluginValue::Text(value));
+            }
+            None if param.required => {
+                return Err(format!(
+                    "{} for {} is not set; set it in Settings > Plugins",
+                    param.label, manifest.name
+                ));
+            }
+            None => {}
+        }
+    }
+    Ok(())
 }
 
 /// Checks an invoke against the manifest: the action exists, every parameter is one it declares and of its type
@@ -414,6 +581,9 @@ pub struct Installed {
     /// The folder name.
     pub folder: String,
     pub manifest: Option<Manifest>,
+    /// The [`fingerprint`] of the manifest's bytes, with the manifest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -441,8 +611,58 @@ fn check_owner(_: &Path, _: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads and checks the manifest of the plugin folder `folder`, whose name must be the manifest's id.
-pub fn load(folder: &Path) -> Result<Manifest, String> {
+/// Refuses a schema this app does not read, with what to do about it.
+fn check_schema(schema: Option<u64>) -> Result<(), String> {
+    match schema {
+        Some(SCHEMA) => Ok(()),
+        None => Err(format!(
+            "{MANIFEST_FILE} has no \"schema\"; add \"schema\": {SCHEMA}"
+        )),
+        Some(schema) if schema > SCHEMA => Err(format!(
+            "{MANIFEST_FILE} is schema {schema}; this OpenStreamHub reads schema {SCHEMA}, update the app"
+        )),
+        Some(schema) => Err(format!(
+            "{MANIFEST_FILE} has \"schema\" {schema}; it must be {SCHEMA}"
+        )),
+    }
+}
+
+/// Parses manifest bytes. The schema is read first, from the untyped JSON, so a newer schema with fields this app
+/// does not know is reported as newer, not as an unknown field.
+pub fn parse(bytes: &[u8]) -> Result<Manifest, String> {
+    let value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| format!("{MANIFEST_FILE} is not valid JSON: {error}"))?;
+    if !value.is_object() {
+        return Err(format!("{MANIFEST_FILE} must hold one JSON object"));
+    }
+    match value.get("schema") {
+        None => check_schema(None)?,
+        Some(schema) => match schema.as_u64() {
+            Some(number) if number > 0 => check_schema(Some(number))?,
+            _ => {
+                return Err(format!(
+                    "{MANIFEST_FILE} has \"schema\" {schema}; it must be the whole number {SCHEMA}"
+                ));
+            }
+        },
+    }
+    let manifest: Manifest = serde_json::from_value(value)
+        .map_err(|error| format!("{MANIFEST_FILE} is not a valid manifest: {error}"))?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+/// What an approval is of: the SHA-256 of the exact manifest bytes, in hex. Any change to the file changes it.
+pub fn fingerprint(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Reads and checks the manifest of the plugin folder `folder`, whose name must be the manifest's id, with the
+/// [`fingerprint`] of the bytes it was parsed from.
+pub fn load(folder: &Path) -> Result<(Manifest, String), String> {
     check_owner(folder, "plugin folder")?;
     let file = folder.join(MANIFEST_FILE);
     check_owner(&file, MANIFEST_FILE)?;
@@ -454,9 +674,7 @@ pub fn load(folder: &Path) -> Result<Manifest, String> {
     }
     let bytes =
         fs::read(&file).map_err(|error| format!("could not read {MANIFEST_FILE}: {error}"))?;
-    let manifest: Manifest = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("{MANIFEST_FILE} is not a valid manifest: {error}"))?;
-    manifest.validate()?;
+    let manifest = parse(&bytes)?;
     let name = folder
         .file_name()
         .and_then(|name| name.to_str())
@@ -467,7 +685,14 @@ pub fn load(folder: &Path) -> Result<Manifest, String> {
             manifest.id
         ));
     }
-    Ok(manifest)
+    Ok((manifest, fingerprint(&bytes)))
+}
+
+/// The installed plugin `id` in `<app data>/plugins`, with its fingerprint, or why it cannot be used. The id is
+/// checked first, so it can never name a path outside the plugins folder.
+pub fn installed(app_data: &Path, id: &str) -> Result<(Manifest, String), String> {
+    validate_plugin_id(id)?;
+    load(&dir(app_data).join(id)).map_err(|error| format!("{id} cannot be used: {error}"))
 }
 
 /// Every folder in the plugins folder, sorted by name, each with its manifest or the reason it is unusable. A missing
@@ -485,19 +710,157 @@ pub fn catalog(plugins: &Path) -> Vec<Installed> {
                 return None;
             }
             let path = entry.path();
-            let (manifest, error) = match load(&path) {
-                Ok(manifest) => (Some(manifest), None),
-                Err(error) => (None, Some(error)),
+            let (manifest, fingerprint, error) = match load(&path) {
+                Ok((manifest, fingerprint)) => (Some(manifest), Some(fingerprint), None),
+                Err(error) => (None, None, Some(error)),
             };
             Some(Installed {
                 folder,
                 manifest,
+                fingerprint,
                 error,
             })
         })
         .collect();
     found.sort_by(|a, b| a.folder.cmp(&b.folder));
     found
+}
+
+/// Whether the user has enabled a plugin: `enabled` when the approved fingerprint is the manifest's current one,
+/// `changed` when `plugin.json` changed since, `not_enabled` when it was never enabled (or was disabled).
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Approval {
+    Enabled,
+    Changed,
+    NotEnabled,
+}
+
+impl Approval {
+    pub fn of(approved: &Approved, id: &str, fingerprint: &str) -> Self {
+        match approved.get(id) {
+            Some(approved) if approved == fingerprint => Self::Enabled,
+            Some(_) => Self::Changed,
+            None => Self::NotEnabled,
+        }
+    }
+
+    /// Why a plugin in this state does not run, or `None` when it may.
+    pub fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Enabled => None,
+            Self::Changed => {
+                Some("plugin.json changed since it was enabled: review it in Settings > Plugins")
+            }
+            Self::NotEnabled => Some("not enabled: enable it in Settings > Plugins"),
+        }
+    }
+}
+
+/// The approved fingerprint of each enabled plugin, by id.
+pub type Approved = BTreeMap<String, String>;
+
+/// The approvals file, `<app data>/`[`APPROVALS_FILE`], written atomically and 0600. The lock serializes
+/// read-modify-write.
+pub struct Approvals {
+    directory: PathBuf,
+    lock: Mutex<()>,
+}
+
+impl Approvals {
+    pub fn new(app_data: &Path) -> Self {
+        Self {
+            directory: app_data.to_path_buf(),
+            lock: Mutex::new(()),
+        }
+    }
+
+    fn path(&self) -> PathBuf {
+        self.directory.join(APPROVALS_FILE)
+    }
+
+    fn load(&self) -> Result<Approved, String> {
+        crate::store::read_private_file(&self.path(), MAX_APPROVALS_BYTES, "plugin approvals file")
+            .and_then(|found| match found {
+                None => Ok(Approved::new()),
+                Some((bytes, _)) => serde_json::from_slice::<Approved>(&bytes)
+                    .map_err(|error| format!("the plugin approvals file is damaged: {error}")),
+            })
+    }
+
+    /// What is approved. A missing file approves nothing; so does a damaged one, which is logged and set aside at the
+    /// next change, so a broken file can never enable a plugin.
+    pub fn read(&self) -> Approved {
+        self.load().unwrap_or_else(|error| {
+            eprintln!("{error}; no plugin is enabled until one is enabled again");
+            Approved::new()
+        })
+    }
+
+    /// Approves `fingerprint` for `id`, or with `None` removes its approval, then calls `then` with what is approved
+    /// now, still under the lock, so whoever acts on approvals (the plugin host) sees changes in the order the file
+    /// does. A damaged file is renamed to `plugin-approvals.json.damaged` first and a new one is written.
+    pub fn set(
+        &self,
+        id: &str,
+        fingerprint: Option<&str>,
+        then: impl FnOnce(&Approved),
+    ) -> Result<Approved, String> {
+        let _guard = self
+            .lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut approved = match self.load() {
+            Ok(approved) => approved,
+            Err(error) => {
+                let aside = self.directory.join(format!("{APPROVALS_FILE}.damaged"));
+                match fs::rename(self.path(), &aside) {
+                    Ok(()) => eprintln!("{error}; kept it as {}", aside.display()),
+                    Err(rename) => eprintln!("{error}; could not set it aside: {rename}"),
+                }
+                Approved::new()
+            }
+        };
+        match fingerprint {
+            Some(fingerprint) => approved.insert(id.to_string(), fingerprint.to_string()),
+            None => approved.remove(id),
+        };
+        let bytes = serde_json::to_vec_pretty(&approved)
+            .map_err(|error| format!("could not encode the plugin approvals: {error}"))?;
+        crate::store::write_private_file(
+            &self.directory,
+            &self.path(),
+            &bytes,
+            "plugin approvals file",
+        )?;
+        then(&approved);
+        Ok(approved)
+    }
+}
+
+/// Enables the installed plugin `id` for `fingerprint`, the one the first-enable dialog showed. When `plugin.json`
+/// changed since, nothing is enabled, so the user approves exactly what they saw. `notify` gets the approved
+/// fingerprint under the approvals lock.
+pub fn enable(
+    app_data: &Path,
+    approvals: &Approvals,
+    id: &str,
+    fingerprint: &str,
+    notify: impl FnOnce(String),
+) -> Result<(), String> {
+    let (_, current) = installed(app_data, id)?;
+    if current != fingerprint {
+        return Err("plugin.json changed since you reviewed it; review it again".into());
+    }
+    approvals.set(id, Some(&current), |_| notify(current.clone()))?;
+    Ok(())
+}
+
+/// Removes the approval of `id`; `notify` runs under the approvals lock.
+pub fn disable(approvals: &Approvals, id: &str, notify: impl FnOnce()) -> Result<(), String> {
+    validate_plugin_id(id)?;
+    approvals.set(id, None, |_| notify())?;
+    Ok(())
 }
 
 /// What Settings lists: the plugins folder and every plugin in it, with the host's view of the ones that run.
@@ -511,13 +874,33 @@ pub struct Listing {
 pub struct Listed {
     #[serde(flatten)]
     pub installed: Installed,
+    /// With a usable manifest: whether it is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub approval: Option<Approval>,
+    /// Its secret parameters and whether each holds a value; never the value.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secrets: Vec<SecretStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<crate::plugin_host::Status>,
 }
 
-/// The catalog of `<app data>/plugins`, each entry with its running state when the host has one. A plugin a running
-/// profile wants but whose folder is missing is listed too, with the host's error.
-pub fn listing(app_data: &Path, statuses: Vec<crate::plugin_host::Status>) -> Listing {
+#[derive(Debug, Serialize, PartialEq)]
+pub struct SecretStatus {
+    pub id: String,
+    pub label: String,
+    /// `None` when the Keychain could not tell.
+    pub set: Option<bool>,
+}
+
+/// The catalog of `<app data>/plugins`, each entry with its approval, its secrets (`is_set` tells whether one holds a
+/// value, `None` when that cannot be told) and its running state when the host has one. A plugin a running profile wants but whose folder is missing
+/// is listed too, with the host's error.
+pub fn listing(
+    app_data: &Path,
+    statuses: Vec<crate::plugin_host::Status>,
+    approved: &Approved,
+    is_set: &dyn Fn(&str, &str) -> Option<bool>,
+) -> Listing {
     let folder = dir(app_data);
     let mut statuses: BTreeMap<String, crate::plugin_host::Status> = statuses
         .into_iter()
@@ -527,15 +910,38 @@ pub fn listing(app_data: &Path, statuses: Vec<crate::plugin_host::Status>) -> Li
         .into_iter()
         .map(|installed| {
             let status = statuses.remove(&installed.folder);
-            Listed { installed, status }
+            let (approval, secrets) = match (&installed.manifest, &installed.fingerprint) {
+                (Some(manifest), Some(fingerprint)) => (
+                    Some(Approval::of(approved, &manifest.id, fingerprint)),
+                    manifest
+                        .secret_params()
+                        .into_iter()
+                        .map(|param| SecretStatus {
+                            id: param.id.clone(),
+                            label: param.label.clone(),
+                            set: is_set(&manifest.id, &param.id),
+                        })
+                        .collect(),
+                ),
+                _ => (None, Vec::new()),
+            };
+            Listed {
+                installed,
+                approval,
+                secrets,
+                status,
+            }
         })
         .collect();
     plugins.extend(statuses.into_values().map(|status| Listed {
         installed: Installed {
             folder: status.id.clone(),
             manifest: None,
+            fingerprint: None,
             error: status.error.clone(),
         },
+        approval: None,
+        secrets: Vec::new(),
         status: Some(status),
     }));
     Listing {
@@ -604,6 +1010,45 @@ pub fn each_action<'a>(
     }
 }
 
+/// Calls `each` on every action of `profile` and every step inside one, able to change it.
+pub fn each_action_mut(
+    profile: &mut cooltek_sdk_service::Profile,
+    each: &mut impl FnMut(&mut Action),
+) {
+    fn walk(action: &mut Action, each: &mut impl FnMut(&mut Action)) {
+        each(action);
+        match action {
+            Action::Conditional {
+                then, otherwise, ..
+            } => then
+                .iter_mut()
+                .chain(otherwise.iter_mut())
+                .for_each(|step| walk(step, each)),
+            Action::MultiAction { actions } => actions.iter_mut().for_each(|step| walk(step, each)),
+            _ => {}
+        }
+    }
+    for binding in &mut profile.bindings {
+        walk(&mut binding.action, each);
+    }
+    if let Some(keypad) = &mut profile.keypad {
+        for page in &mut keypad.pages {
+            for tile in page.slots.iter_mut().flatten() {
+                if let cooltek_sdk_service::KeypadTile::Action { bindings, .. } = tile {
+                    for binding in bindings {
+                        walk(&mut binding.action, each);
+                    }
+                }
+            }
+        }
+    }
+    for function in profile.dial_functions.iter_mut().flatten() {
+        for binding in &mut function.bindings {
+            walk(&mut binding.action, each);
+        }
+    }
+}
+
 /// The ids of the plugins `profile` uses anywhere.
 pub fn plugins_used(profile: &cooltek_sdk_service::Profile) -> BTreeSet<String> {
     let mut used = BTreeSet::new();
@@ -622,7 +1067,7 @@ mod tests {
 
     pub fn manifest_json() -> serde_json::Value {
         json!({
-            "id": "com.example.lights", "name": "Lights", "version": "1.2.0",
+            "schema": 1, "id": "com.example.lights", "name": "Lights", "version": "1.2.0",
             "command": ["bin/lights", "--quiet"],
             "actions": [
                 { "id": "toggle", "label": "Toggle" },
@@ -669,6 +1114,7 @@ mod tests {
         assert!(with(|m| m["actions"][1]["params"][4]["default"] = json!("hot")).is_err());
         assert!(with(|m| m["actions"][1]["params"][4]["choices"] = json!([])).is_err());
         assert!(with(|m| m["actions"][1]["params"][3]["variables"] = json!(true)).is_err());
+        assert!(with(|m| m["actions"][1]["params"][1]["default"] = json!("x")).is_err());
         assert!(with(|m| m["actions"][1]["params"][0]["min"] = json!(1)).is_err());
         assert!(
             with(|m| m["actions"][1]["params"][3]["choices"] = json!([{"id":"a","label":"A"}]))
@@ -711,6 +1157,175 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_is_checked_before_the_fields() {
+        let parsed = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut value = manifest_json();
+            change(&mut value);
+            parse(value.to_string().as_bytes())
+        };
+        assert_eq!(parsed(&|_| {}).unwrap().schema, 1);
+        assert_eq!(
+            parsed(&|m| {
+                m.as_object_mut().unwrap().remove("schema");
+            })
+            .unwrap_err(),
+            "plugin.json has no \"schema\"; add \"schema\": 1"
+        );
+        // A newer schema with a field this app does not know is reported as newer, not as an unknown field.
+        assert_eq!(
+            parsed(&|m| {
+                m["schema"] = json!(2);
+                m["background"] = json!(true);
+            })
+            .unwrap_err(),
+            "plugin.json is schema 2; this OpenStreamHub reads schema 1, update the app"
+        );
+        for bad in [json!(0), json!("1"), json!(1.5), json!(-1)] {
+            let error = parsed(&|m| m["schema"] = bad.clone()).unwrap_err();
+            assert!(error.contains("must be the whole number 1"), "{error}");
+        }
+        assert!(
+            parse(b"[1]")
+                .unwrap_err()
+                .contains("must hold one JSON object")
+        );
+        assert!(with(|m| m["schema"] = json!(3)).is_err());
+    }
+
+    #[test]
+    fn any_change_to_the_manifest_bytes_changes_its_fingerprint() {
+        let bytes = manifest_json().to_string().into_bytes();
+        let fingerprint = fingerprint(&bytes);
+        assert_eq!(fingerprint.len(), 64);
+        assert!(fingerprint.chars().all(|c| c.is_ascii_hexdigit()));
+        let mut spaced = bytes.clone();
+        spaced.push(b' ');
+        assert_ne!(super::fingerprint(&spaced), fingerprint);
+        let mut flipped = bytes.clone();
+        flipped[10] ^= 1;
+        assert_ne!(super::fingerprint(&flipped), fingerprint);
+        assert_eq!(super::fingerprint(&bytes), fingerprint);
+        let approved: Approved = [("com.example.lights".to_string(), fingerprint.clone())].into();
+        assert_eq!(
+            Approval::of(&approved, "com.example.lights", &fingerprint),
+            Approval::Enabled
+        );
+        assert_eq!(
+            Approval::of(
+                &approved,
+                "com.example.lights",
+                &super::fingerprint(&spaced)
+            ),
+            Approval::Changed
+        );
+        assert_eq!(
+            Approval::of(&approved, "com.example.other", &fingerprint),
+            Approval::NotEnabled
+        );
+    }
+
+    #[test]
+    fn secrets_are_filled_in_and_never_taken_from_the_profile() {
+        let mut value = manifest_json();
+        value["actions"][1]["params"][1]["required"] = json!(true);
+        value["actions"][0]["params"] =
+            json!([{ "id": "token", "label": "Other label", "type": "text", "secret": true }]);
+        let manifest: Manifest = serde_json::from_value(value).unwrap();
+        manifest.validate().unwrap();
+        let ids: Vec<(&str, &str)> = manifest
+            .secret_params()
+            .iter()
+            .map(|param| (param.id.as_str(), param.label.as_str()))
+            .collect();
+        assert_eq!(ids, [("token", "Other label")]);
+
+        let mut params: BTreeMap<String, PluginValue> =
+            serde_json::from_value(json!({"entity":"a"})).unwrap();
+        fill_secrets(&manifest, "set", &mut params, |_| Ok(Some("s3cret".into()))).unwrap();
+        assert_eq!(params["token"], PluginValue::Text("s3cret".into()));
+        // The required secret is in once filled in, so check_invoke does not call it missing.
+        check_invoke(&manifest, "set", &params, &[]).unwrap();
+
+        let mut params: BTreeMap<String, PluginValue> =
+            serde_json::from_value(json!({"entity":"a"})).unwrap();
+        assert_eq!(
+            fill_secrets(&manifest, "set", &mut params, |_| Ok(None)).unwrap_err(),
+            "Token for Lights is not set; set it in Settings > Plugins"
+        );
+        let mut params: BTreeMap<String, PluginValue> =
+            serde_json::from_value(json!({"entity":"a","token":"old"})).unwrap();
+        let error =
+            fill_secrets(&manifest, "set", &mut params, |_| Ok(Some("s3cret".into()))).unwrap_err();
+        assert!(
+            error.contains("kept in the Keychain, not the profile"),
+            "{error}"
+        );
+        assert!(!error.contains("old") && !error.contains("s3cret"));
+        let error = fill_secrets(&manifest, "set", &mut BTreeMap::new(), |_| {
+            Err("could not read it".into())
+        })
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Token for Lights could not be read: could not read it"
+        );
+
+        manifest.check_secret("token", "abc").unwrap();
+        assert!(
+            manifest
+                .check_secret("entity", "abc")
+                .unwrap_err()
+                .contains("no secret parameter entity")
+        );
+        assert!(
+            manifest
+                .check_secret("token", "")
+                .unwrap_err()
+                .contains("enter a value")
+        );
+        let error = manifest.check_secret("token", "a\nhidden").unwrap_err();
+        assert!(
+            error.contains("one line") && !error.contains("hidden"),
+            "{error}"
+        );
+        assert!(manifest.check_secret("token", &"x".repeat(2049)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn approvals_are_kept_privately_and_a_damaged_file_approves_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let approvals = Approvals::new(root.path());
+        assert!(approvals.read().is_empty());
+        approvals.set("com.example.a", Some("aa"), |_| {}).unwrap();
+        let mut seen = None;
+        approvals
+            .set("com.example.b", Some("bb"), |now| seen = Some(now.len()))
+            .unwrap();
+        assert_eq!(seen, Some(2));
+        let path = root.path().join(APPROVALS_FILE);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            approvals.set("com.example.a", None, |_| {}).unwrap(),
+            [("com.example.b".to_string(), "bb".to_string())].into()
+        );
+        assert_eq!(approvals.read().len(), 1);
+        fs::write(&path, "{ not json").unwrap();
+        assert!(approvals.read().is_empty());
+        approvals.set("com.example.c", Some("cc"), |_| {}).unwrap();
+        assert_eq!(approvals.read().len(), 1);
+        // The damaged file is set aside, not lost.
+        assert_eq!(
+            fs::read_to_string(root.path().join(format!("{APPROVALS_FILE}.damaged"))).unwrap(),
+            "{ not json"
+        );
+    }
+
+    #[test]
     fn versions_compare_numerically() {
         let manifest = manifest();
         assert!(manifest.satisfies("1.2.0"));
@@ -746,6 +1361,11 @@ mod tests {
             ["com.example.lights", "com.example.open", "lights"]
         );
         assert_eq!(found[0].manifest.as_ref().unwrap().id, "com.example.lights");
+        assert_eq!(
+            found[0].fingerprint.as_deref(),
+            Some(fingerprint(manifest_json().to_string().as_bytes()).as_str())
+        );
+        assert!(found[1].fingerprint.is_none());
         assert!(found[1].error.as_ref().unwrap().contains("other users"));
         assert!(
             found[2]
@@ -755,6 +1375,131 @@ mod tests {
                 .contains("rename the folder")
         );
         assert!(catalog(&plugins.join("missing")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enabling_needs_the_fingerprint_the_user_reviewed() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = dir(root.path()).join("com.example.lights");
+        fs::create_dir_all(&folder).unwrap();
+        let reviewed = manifest_json().to_string();
+        fs::write(folder.join(MANIFEST_FILE), &reviewed).unwrap();
+        let approvals = Approvals::new(root.path());
+        let id = "com.example.lights";
+        // plugin.json changes after the dialog opened.
+        fs::write(folder.join(MANIFEST_FILE), format!("{reviewed} ")).unwrap();
+        let mut told = None;
+        let error = enable(
+            root.path(),
+            &approvals,
+            id,
+            &fingerprint(reviewed.as_bytes()),
+            |fingerprint| told = Some(fingerprint),
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "plugin.json changed since you reviewed it; review it again"
+        );
+        assert!(told.is_none());
+        assert!(approvals.read().is_empty());
+        let current = fingerprint(format!("{reviewed} ").as_bytes());
+        enable(root.path(), &approvals, id, &current, |fingerprint| {
+            told = Some(fingerprint)
+        })
+        .unwrap();
+        assert_eq!(told.as_deref(), Some(current.as_str()));
+        assert_eq!(approvals.read()[id], current);
+        let mut disabled = false;
+        disable(&approvals, id, || disabled = true).unwrap();
+        assert!(disabled && approvals.read().is_empty());
+        assert!(enable(root.path(), &approvals, "../x", &current, |_| {}).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_export_drops_the_secrets_an_installed_manifest_declares() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = dir(root.path()).join("com.example.lights");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(MANIFEST_FILE), manifest_json().to_string()).unwrap();
+        let mut profile: cooltek_sdk_service::Profile = serde_json::from_value(json!({
+            "schema_version": 5,
+            "name": "p",
+            "bindings": [
+                { "module":"m003k", "control":0, "gesture":"pressed", "action": {
+                    "type":"multi_action", "actions":[
+                        {"type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"set",
+                         "params":{"entity":"a","token":"old"}}
+                    ]
+                }},
+                { "module":"m003k", "control":1, "gesture":"pressed", "action":
+                    {"type":"plugin","plugin":"com.example.gone","min_version":"1.0.0","action":"set",
+                     "params":{"token":"kept"}}
+                }
+            ],
+        }))
+        .unwrap();
+        assert_eq!(
+            strip_secrets(&mut profile, root.path()),
+            ["Token (com.example.lights)"]
+        );
+        let text = serde_json::to_string(&profile).unwrap();
+        assert!(!text.contains("\"old\""), "{text}");
+        assert!(text.contains("\"entity\":\"a\""));
+        // A plugin that is not installed cannot be checked.
+        assert!(text.contains("\"kept\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_listing_says_whether_each_plugin_is_enabled_and_which_secrets_are_set() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = dir(root.path()).join("com.example.lights");
+        fs::create_dir_all(&folder).unwrap();
+        let bytes = manifest_json().to_string();
+        fs::write(folder.join(MANIFEST_FILE), &bytes).unwrap();
+        let listed = |approved: Approved| {
+            let listing = listing(root.path(), Vec::new(), &approved, &|plugin, param| {
+                (plugin == "com.example.lights" && param == "token").then_some(true)
+            });
+            let plugin = listing.plugins.into_iter().next().unwrap();
+            (plugin.approval, plugin.secrets)
+        };
+        let (approval, secrets) = listed(Approved::new());
+        assert_eq!(approval, Some(Approval::NotEnabled));
+        assert_eq!(
+            secrets,
+            [SecretStatus {
+                id: "token".into(),
+                label: "Token".into(),
+                set: Some(true)
+            }]
+        );
+        // A Keychain that cannot tell is reported as unknown, not as not set.
+        let unknown = listing(root.path(), Vec::new(), &Approved::new(), &|_, _| None);
+        assert_eq!(unknown.plugins[0].secrets[0].set, None);
+        assert!(
+            serde_json::to_string(&unknown)
+                .unwrap()
+                .contains("\"set\":null")
+        );
+        let id = "com.example.lights".to_string();
+        assert_eq!(
+            listed([(id.clone(), fingerprint(bytes.as_bytes()))].into()).0,
+            Some(Approval::Enabled)
+        );
+        assert_eq!(
+            listed([(id, "old".into())].into()).0,
+            Some(Approval::Changed)
+        );
+        let (manifest, current) = installed(root.path(), "com.example.lights").unwrap();
+        assert_eq!(
+            (manifest.id.as_str(), current),
+            ("com.example.lights", fingerprint(bytes.as_bytes()))
+        );
+        assert!(installed(root.path(), "../escape").is_err());
     }
 
     #[test]

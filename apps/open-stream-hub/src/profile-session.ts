@@ -24,7 +24,8 @@ export type Preview = { status: 'idle' } | { status: 'running' } | { status: 'fa
 export type KeypadPreview = { status: 'idle' } | { status: 'running' } | { status: 'failed'; error: string } | { status: 'completed'; result: KeypadPreviewResult };
 export type Validation = 'idle' | 'running' | 'valid' | 'failed';
 export interface PendingIntent { label: string; run: () => void }
-export interface ExportResult { path: string; bytes: number }
+// dropped_secrets: plugin secrets the profile still held, left out of the file.
+export interface ExportResult { path: string; bytes: number; dropped_secrets?: string[] }
 export interface RestorePrompt { key: string; name: string; changedOnDisk: boolean; draft: StoredDraft }
 
 export interface Draft {

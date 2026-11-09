@@ -485,8 +485,8 @@ fn kill_group(pid: u32) {
 
 /// Tells the plugin host which plugins a run uses while it executes its actions; `None` once it does not.
 pub type PluginUsage = Arc<dyn Fn(&str, Option<BTreeSet<String>>) + Send + Sync>;
-/// Carries one `plugin_invoke` record to its plugin; the reply goes back to the run.
-pub type PluginInvoke = Arc<dyn Fn(&Value, crate::plugin_host::Reply) + Send + Sync>;
+/// Carries one `plugin_invoke` record of the run `service_id` to its plugin; the reply goes back to the run.
+pub type PluginInvoke = Arc<dyn Fn(&str, &Value, crate::plugin_host::Reply) + Send + Sync>;
 
 /// How module runs reach the plugin host (`plugin_host.rs`), set once the host is up.
 #[derive(Clone)]
@@ -500,7 +500,9 @@ impl PluginHooks {
         let (usage, invoke) = (host.clone(), host.clone());
         Self {
             usage: Arc::new(move |service_id, plugins| usage.set_usage(service_id, plugins)),
-            invoke: Arc::new(move |record, reply| invoke.invoke(record, reply)),
+            invoke: Arc::new(move |service_id, record, reply| {
+                invoke.invoke(service_id, record, reply)
+            }),
         }
     }
 }
@@ -1273,6 +1275,7 @@ fn relay_records(
                 ) {
                     let control = Arc::clone(control);
                     (plugins.invoke)(
+                        service_id,
                         &record.record,
                         Box::new(move |result| {
                             let (ok, error) = match result {
@@ -1532,7 +1535,9 @@ mod tests {
         let seen = Arc::clone(&invoked);
         let hooks = PluginHooks {
             usage: Arc::new(|_, _| {}),
-            invoke: Arc::new(move |record, _reply| seen.lock().unwrap().push(record.clone())),
+            invoke: Arc::new(move |_service, record, _reply| {
+                seen.lock().unwrap().push(record.clone())
+            }),
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&emitted);
@@ -1930,7 +1935,7 @@ mod tests {
             usage: Arc::new(move |id: &str, used| {
                 seen.lock().unwrap().push((id.to_string(), used))
             }),
-            invoke: Arc::new(|_, _| {}),
+            invoke: Arc::new(|_, _, _| {}),
         });
         let (emit, _messages) = collector();
         let id = services

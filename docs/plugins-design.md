@@ -1,6 +1,6 @@
 # Plugins: research and proposed design
 
-Status (6 November 2026): **steps 1 to 3 built**: preset packs, the `run_program` action, and the plugin protocol with action providers (author guide: [writing a plugin](plugins.md)). Steps 4 to 6 are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
+Status (9 November 2026): **steps 1 to 3 and 5 built**: preset packs, the `run_program` action, the plugin protocol with action providers, and community readiness (manifest schema 1, the first-enable dialog, Keychain secrets; author guide: [writing a plugin](plugins.md)). Steps 4 and 6 are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
 
 ## What exists today
 
@@ -42,7 +42,7 @@ So data going **into** the deck works: an outside tool sets a variable and faces
 
 Why: plugins can be a shell script, Node, Python or Rust, no runtime is added to the app, and a crashing plugin takes down neither the app nor a module process. The protocol reuses the ingress style (JSON lines, a 0700 directory, tokens), so a plugin is conceptually "`osh` that stays connected and can also receive invokes". It keeps the existing rules: only a module service process decides to run an action, and only the deck answers `agent_decision`.
 
-**Audience.** The maintainer writes the first plugins; community plugins come later. The first versions therefore keep the manifest minimal and may change it. A stable, versioned manifest schema, author docs and the full trust UI come before any community distribution (see the suggested order).
+**Audience.** The maintainer writes the first plugins; community plugins come later. A stable, versioned manifest schema, author docs and the full trust UI come before any community distribution (see the suggested order); they are built ([as built](#trust-ui-as-built)).
 
 ### Decisions
 
@@ -123,7 +123,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
 3. **Plugin protocol and action providers.** Built: manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`, the editor form and Settings > Plugins ([writing a plugin](plugins.md)). How it differs from this proposal is listed under [as built](#plugin-protocol-as-built).
 4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images.
-5. **Community readiness.** A stable, versioned manifest schema, author docs and the complete trust UI.
+5. **Community readiness.** Built: a versioned manifest schema, author docs and the trust UI ([as built](#trust-ui-as-built)).
 6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand.
 
 ## The "run program" action
@@ -204,7 +204,7 @@ On close, the app kills the plugin's process group, as `run_program` does, so he
 - **Consent.** The Execute confirmation is where a user agrees to what a profile does. A plugin that starts on its own would run as the user in the background, with no confirmation tied to it.
 - **The menu bar has nothing to show.** Today it offers only Show, Updates and Quit, and would need its own status design first.
 
-**Later.** Add an optional manifest field such as `"background": true` with its own toggle in Settings, off by default, and an enable dialog that says the plugin will run whenever the app is open. This belongs with community readiness (step 5) and the trust UI, not with the protocol.
+**Later.** Add an optional manifest field such as `"background": true` with its own toggle in Settings, off by default, and an enable dialog that says the plugin will run whenever the app is open. Not built: step 5 shipped without it.
 
 ## Plugin protocol as built
 
@@ -215,6 +215,18 @@ Built on 6 November 2026 as proposed above, with these differences:
 - **Variables in the profile.** The service does not read manifests, so a plugin action lists the text parameters it fills in (`"variables": ["entity"]`), and the app checks at each invoke that the manifest allows variables for each. The editor keeps the list in step with the text.
 - **Text parameters are logged by length.** The service cannot tell which parameters the manifest marks `secret`, so its activity records give every text parameter's length only, never its value. Numbers, bools and the ids are logged.
 - **`set_variable` is limited to `permissions.variables`.** The other permissions are shown only.
-- **Not built yet:** the first-enable dialog and Keychain storage for secrets (a `secret` parameter is masked and never logged, but saved in the profile). Both belong with the trust UI in step 5.
+- **Built later, in step 5:** the first-enable dialog and Keychain storage for secrets ([trust UI as built](#trust-ui-as-built)).
 - **The plugins folder is the socket's folder**, made 0700, and the folder and `plugin.json` must belong to the user and not be writable by others. A folder's name must equal its manifest's id.
 
+## Trust UI as built
+
+Built on 9 November 2026 (step 5):
+
+- **Manifest schema.** `plugin.json` has a required `"schema": 1`, and this app reads schema 1 only. The schema is read from the untyped JSON before the strict parse, so `"schema": 2` with new fields says "plugin.json is schema 2; this OpenStreamHub reads schema 1, update the app", not "unknown field". A missing, zero or non-integer schema is refused with a fix-it message. Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number.
+- **Approval by fingerprint.** A plugin is enabled for the SHA-256 (hex) of the exact `plugin.json` bytes read. Any change to the file needs a new approval. Approvals live in `<app data>/plugin-approvals.json` (`{ "<id>": "<fingerprint>" }`, written atomically, 0600), outside the plugins folder so a plugin cannot approve itself. A missing or damaged file approves nothing; a damaged one is logged and replaced at the next change.
+- **The host refuses to start an unapproved manifest.** At each start it compares the fingerprint of the bytes it just read with the approved one. A plugin that is not enabled, or whose manifest changed, is `not_enabled`: not a failure, so no backoff, no failure count and no restart; its presses fail at once with the reason. Enabling it while a Live run uses it starts it at once; disabling it stops it (pending presses fail, its process group is killed) and it is `not_enabled` again.
+- **Commands.** `enable_plugin(id, fingerprint)` reads the manifest again and refuses when its fingerprint is not the one the dialog showed ("plugin.json changed since you reviewed it; review it again"), so the user approves exactly what they saw. `disable_plugin(id)` removes the approval. Both tell the host while they hold the approvals lock, so a quick enable and disable reach it in the order the file records them. A refused enable closes the dialog with the reason. A damaged approvals file is renamed to `plugin-approvals.json.damaged` at the next change. `list_plugins` gives each plugin its `fingerprint` and `approval`: `enabled`, `changed` or `not_enabled`.
+- **The first-enable dialog** (Settings > Plugins, **Enable…** or **Review…**) lists name, id, version, folder, program and arguments, each action with its parameters (type, secret, variables, required), each permission, the secrets it uses and which of them are already stored (and will be sent), and says first that a plugin runs as you and can do anything you can, and that the permissions are what it declares, not limits, except the variables it may set.
+- **Secrets in the Keychain.** A `secret` text parameter is not stored in profiles. Its value is one Keychain item per plugin and parameter id (account `plugin-secret:<plugin id>:<param id>`), shared by every key and action of that plugin with a secret of that id. The host, not the module service, fills it into the invoke before the manifest check, on an invoke thread of that plugin's own when a Keychain read is needed (one per plugin, made on first need, so plugins' reads run side by side and one plugin's presses stay in order; presses whose secrets are held in memory, or that have none, are sent at once), so a Keychain prompt holds up neither a module's record relay nor other presses. A press's deadline counts from when it arrived, and one still waiting when it passes fails and is never sent; so does one whose own run no longer executes with the plugin. The completed parameters are checked again with the SDK's text limits, and a line longer than 64 KiB is refused, before anything is sent. It reads the Keychain once and then holds the value in memory (replaced on set or forget); a failed read is held for a minute, so a denied Keychain is not asked at every press. A required secret that is not set fails the press at once; an invoke whose profile carries a value for a secret is refused, checked again against the manifest current when the invoke is sent. Known secret values (those sent to the plugin this session, kept per plugin up to 16 even after a change or forget, and those held now; at least 4 bytes) are replaced with `[secret]` in the plugin's log, stderr and error texts, in one pass; `set_variable` values are not checked. `set_plugin_secret(plugin, param, value)` (the plugin installed, the parameter a secret of some action, the value within the text limits) and `forget_plugin_secret(plugin, param)` change them; `list_plugins` says per secret only whether it is set, asking the Keychain whether the item exists without reading it (`set: null` when it cannot tell). An export drops secret values a profile still holds, for plugins installed at export time, and names them.
+- **Editor.** A secret parameter has no input, only whether it is set and a pointer to Settings > Plugins, and a required one is never reported missing. A profile that still holds a secret's value is offered **Move to the Keychain** (or removal), after which the user saves.
+- **Test mode is unchanged:** a Test run never starts a plugin.

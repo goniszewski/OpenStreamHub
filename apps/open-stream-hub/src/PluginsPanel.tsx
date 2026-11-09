@@ -1,21 +1,51 @@
+import { useState } from 'react';
 import { FolderOpen, RotateCcw } from 'lucide-react';
 import { useT } from './i18n-react';
 import type { MessageKey } from './locales/en';
+import { PluginEnableDialog } from './PluginEnableDialog';
 import { usePluginListing } from './plugins-context';
-import type { ListedPlugin } from './plugins-model';
+import type { ListedPlugin, PluginManifest, PluginSecretStatus } from './plugins-model';
 import type { Invoke } from './profile-session';
 
 const stateKeys: Record<string, MessageKey> = {
   running: 'plugins.state.running', starting: 'plugins.state.starting', restarting: 'plugins.state.restarting',
-  stopped: 'plugins.state.stopped', unusable: 'plugins.state.unusable',
+  stopped: 'plugins.state.stopped', unusable: 'plugins.state.unusable', not_enabled: 'plugins.state.notEnabled',
 };
 
-// Settings > Plugins: every folder in the plugins folder, with what its manifest says it does and needs, and, while a
-// Live profile uses it, its state, last error and recent log. A plugin runs as you; the permissions it lists are what
-// it says it needs, which nothing enforces, so the panel says so.
+// The plugin under review in the first-enable dialog, with the fingerprint of the plugin.json the dialog shows.
+interface Review { manifest: PluginManifest; fingerprint: string; folder: string; secrets: PluginSecretStatus[] }
+
+// Settings > Plugins: every folder in the plugins folder, with what its manifest says it does and needs, whether it
+// is enabled, its secrets and, while a Live profile uses it, its state, last error and recent log. A plugin runs only
+// after the user enabled the exact plugin.json the first-enable dialog showed. A plugin runs as you; the permissions
+// it lists are what it says it needs, which nothing enforces, so the panel and the dialog say so.
 export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: Invoke }) {
   const t = useT();
   const { listing, error, refresh } = usePluginListing(desktop ? invoke : undefined);
+  const [review, setReview] = useState<Review | null>(null);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  // A refused enable closes the dialog, since what it shows may be stale; the reason stays here.
+  const [enableError, setEnableError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const open = (plugin: ListedPlugin) => {
+    if (!plugin.manifest || !plugin.fingerprint || !listing) return;
+    setReviewError(null);
+    setEnableError(null);
+    setReview({ manifest: plugin.manifest, fingerprint: plugin.fingerprint, folder: `${listing.folder}/${plugin.folder}`, secrets: plugin.secrets ?? [] });
+  };
+  const enable = () => {
+    if (!review) return;
+    setBusy(true);
+    setReviewError(null);
+    invoke('enable_plugin', { id: review.manifest.id, fingerprint: review.fingerprint })
+      .then(() => { setReview(null); refresh(); })
+      .catch((reason: unknown) => {
+        setEnableError(t('plugins.enableFailed', { name: review.manifest.name, error: String(reason) }));
+        setReview(null);
+        refresh();
+      })
+      .finally(() => setBusy(false));
+  };
   return <section className="panel plugins-panel">
     <h2>{t('plugins.title')}</h2>
     <p className="fine-print">{t('plugins.intro')}</p>
@@ -26,24 +56,44 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
         <button type="button" className="button" onClick={refresh}><RotateCcw size={16} />{t('plugins.refresh')}</button>
       </div>
       {error && <p className="field-error" role="alert">{t('plugins.listFailed', { error })}</p>}
+      {enableError && <p className="field-error plugin-enable-error" role="alert">{enableError}</p>}
       {listing && listing.plugins.length === 0 && <p className="fine-print" role="status">{t('plugins.none')}</p>}
-      {listing && listing.plugins.length > 0 && <ul className="plugin-list">{listing.plugins.map(plugin => <PluginItem key={plugin.folder} plugin={plugin} />)}</ul>}
+      {listing && listing.plugins.length > 0 && <ul className="plugin-list">{listing.plugins.map(plugin =>
+        <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} />)}</ul>}
     </>}
+    {review && <PluginEnableDialog open manifest={review.manifest} folder={review.folder} stored={review.secrets} busy={busy} error={reviewError}
+      onCancel={() => setReview(null)} onEnable={enable} t={t} />}
   </section>;
 }
 
-function PluginItem({ plugin }: { plugin: ListedPlugin }) {
+function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugin; invoke: Invoke; refresh(): void; onReview(): void }) {
   const t = useT();
-  const { manifest, status } = plugin;
+  const [error, setError] = useState<string | null>(null);
+  const { manifest, status, approval } = plugin;
   const permissions = manifest?.permissions;
+  const run = (command: string, args: Record<string, unknown>) => {
+    setError(null);
+    return invoke(command, args).then(refresh).catch((reason: unknown) => { setError(String(reason)); throw reason; });
+  };
+  const stateText = status ? t(stateKeys[status.state] ?? 'plugins.state.unusable')
+    : !manifest ? t('plugins.state.unusable') : approval === 'enabled' ? t('plugins.state.idle') : t('plugins.state.notEnabled');
   return <li className="plugin-item">
     <div className="plugin-heading">
       <strong>{manifest ? `${manifest.name} ${manifest.version}` : plugin.folder}</strong>
       {manifest && <code>{manifest.id}</code>}
-      <span className="fine-print">{status ? t(stateKeys[status.state] ?? 'plugins.state.unusable') : manifest ? t('plugins.state.idle') : t('plugins.state.unusable')}</span>
+      <span className="fine-print">{stateText}</span>
     </div>
     {plugin.error && <p className="field-error" role="alert">{plugin.error}</p>}
-    {!plugin.error && status?.error && <p className="field-error" role="alert">{status.error}</p>}
+    {!plugin.error && status?.error && status.state !== 'not_enabled' && <p className="field-error" role="alert">{status.error}</p>}
+    {manifest && approval && <div className="settings-actions plugin-approval">
+      {approval === 'enabled' && <><span className="fine-print">{t('plugins.enabled')}</span>
+        <button type="button" className="button compact" onClick={() => { void run('disable_plugin', { id: manifest.id }).catch(() => {}); }}>{t('plugins.disable')}</button></>}
+      {approval === 'not_enabled' && <><span className="fine-print">{t('plugins.notEnabled')}</span>
+        <button type="button" className="button compact" onClick={onReview}>{t('plugins.enable')}</button></>}
+      {approval === 'changed' && <><span className="field-error" role="alert">{t('plugins.changed')}</span>
+        <button type="button" className="button compact" onClick={onReview}>{t('plugins.review')}</button></>}
+    </div>}
+    {error && <p className="field-error" role="alert">{t('plugins.actionFailed', { error })}</p>}
     {manifest && <>
       <p className="fine-print">{t('plugins.actions', { actions: manifest.actions.map(action => action.label).join(', ') })}</p>
       <p className="fine-print">{t('plugins.command', { command: manifest.command.join(' ') })}</p>
@@ -53,9 +103,39 @@ function PluginItem({ plugin }: { plugin: ListedPlugin }) {
         permissions?.programs ? t('plugins.permissions.programs') : t('plugins.permissions.noPrograms'),
       ].join(' ')} {t('plugins.permissions.note')}</p>
     </>}
+    {manifest && (plugin.secrets?.length ?? 0) > 0 && <div className="plugin-secrets">
+      <label>{t('plugins.secrets')}</label>
+      <p className="fine-print">{t('plugins.secretsNote')}</p>
+      <ul>{plugin.secrets!.map(secret => <SecretRow key={secret.id} plugin={manifest.id} secret={secret} run={run} />)}</ul>
+    </div>}
     {status && status.logs.length > 0 && <details className="advanced"><summary>{t('plugins.log', { count: status.logs.length })}</summary>
       <pre className="plugin-log">{status.logs.join('\n')}</pre>
       {status.dropped_logs > 0 && <p className="fine-print">{t('plugins.dropped', { count: status.dropped_logs })}</p>}
     </details>}
+  </li>;
+}
+
+// One secret: whether it is set, and Set… / Change… with a password field, and Forget. The value goes to the Keychain
+// and never comes back from the backend.
+function SecretRow({ plugin, secret, run }: { plugin: string; secret: PluginSecretStatus; run(command: string, args: Record<string, unknown>): Promise<unknown> }) {
+  const t = useT();
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState('');
+  const id = `plugin-secret-${plugin}-${secret.id}`.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const save = () => {
+    void run('set_plugin_secret', { plugin, param: secret.id, value })
+      .then(() => { setValue(''); setEditing(false); })
+      .catch(() => {});
+  };
+  return <li className="plugin-secret" data-secret={secret.id}>
+    <strong>{secret.label}</strong>{' '}<span className="fine-print">{t(secret.set === null ? 'plugins.secretUnknown' : secret.set ? 'plugins.secretSet' : 'plugins.secretNotSet')}</span>{' '}
+    {!editing && <button type="button" className="button compact" onClick={() => setEditing(true)}>{t(secret.set ? 'plugins.secretChange' : 'plugins.secretSetButton')}</button>}
+    {secret.set !== false && <button type="button" className="button compact" onClick={() => { void run('forget_plugin_secret', { plugin, param: secret.id }).catch(() => {}); }}>{t('plugins.secretForget')}</button>}
+    {editing && <form className="obs-password-form" onSubmit={event => { event.preventDefault(); save(); }}>
+      <label htmlFor={id} className="sr-only">{t('plugins.secretValue', { label: secret.label })}</label>
+      <input id={id} type="password" autoComplete="off" spellCheck={false} value={value} onChange={event => setValue(event.target.value)} />
+      <button type="submit" className="button compact" disabled={value === ''}>{t('plugins.secretSave')}</button>
+      <button type="button" className="button compact" onClick={() => { setValue(''); setEditing(false); }}>{t('plugins.secretCancel')}</button>
+    </form>}
   </li>;
 }

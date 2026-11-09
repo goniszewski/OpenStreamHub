@@ -2,23 +2,32 @@ import type { PluginAction, PluginValue } from './contracts';
 import { invisibleTextCharacter, variableReferences } from './action-model';
 
 // What `list_plugins` returns (plugins.rs): the plugins folder and each folder in it, with its manifest or why it
-// cannot be used, and the host's state for the ones that run.
+// cannot be used, whether the user enabled it, its secrets (set or not, never the value) and the host's state for the
+// ones that run.
 export type PluginParamType = 'text' | 'number' | 'bool' | 'choice';
 export interface PluginChoice { id: string; label: string }
 export interface PluginParam {
   id: string; label: string; type: PluginParamType; required?: boolean;
-  // Text only: {{name}} references may be filled in when pressed; secret text is masked and never logged.
+  // Text only: {{name}} references may be filled in when pressed; a secret's value lives in the Keychain, one per
+  // plugin and parameter id, never in the profile.
   variables?: boolean; secret?: boolean;
   min?: number; max?: number; choices?: PluginChoice[]; default?: PluginValue;
 }
 export interface PluginManifestAction { id: string; label: string; params?: PluginParam[] }
 export interface PluginManifest {
-  id: string; name: string; version: string; command: string[]; actions: PluginManifestAction[];
+  schema: number; id: string; name: string; version: string; command: string[]; actions: PluginManifestAction[];
   permissions?: { network?: string[]; variables?: string[]; programs?: boolean };
 }
-export type PluginState = 'running' | 'starting' | 'restarting' | 'stopped' | 'unusable';
+export type PluginState = 'running' | 'starting' | 'restarting' | 'stopped' | 'unusable' | 'not_enabled';
 export interface PluginStatus { id: string; state: PluginState; error?: string; logs: string[]; dropped_logs: number }
-export interface ListedPlugin { folder: string; manifest?: PluginManifest; error?: string; status?: PluginStatus }
+// enabled: the approved fingerprint is the manifest's; changed: plugin.json changed since it was enabled.
+export type PluginApproval = 'enabled' | 'changed' | 'not_enabled';
+// set is null when the Keychain could not tell.
+export interface PluginSecretStatus { id: string; label: string; set: boolean | null }
+export interface ListedPlugin {
+  folder: string; manifest?: PluginManifest; fingerprint?: string; error?: string;
+  approval?: PluginApproval; secrets?: PluginSecretStatus[]; status?: PluginStatus;
+}
 export interface PluginListing { folder: string; plugins: ListedPlugin[] }
 
 // The plugins with a usable manifest, by name.
@@ -60,8 +69,18 @@ export function resolvePluginAction(listing: PluginListing | null, action: Plugi
 const inRange = (value: number, param: PluginParam) =>
   (param.min === undefined || value >= param.min) && (param.max === undefined || value <= param.max);
 
-// Whether `value` fits the parameter (check_invoke in plugins.rs), and why not.
+export const isSecretParam = (param: PluginParam): boolean => param.type === 'text' && param.secret === true;
+
+// Whether a secret of the plugin holds a value in the Keychain: null when the Keychain could not tell, undefined when
+// the listing does not say.
+export function pluginSecretSet(listing: PluginListing | null, plugin: string, param: string): boolean | null | undefined {
+  return listing?.plugins.find(item => item.folder === plugin)?.secrets?.find(secret => secret.id === param)?.set;
+}
+
+// Whether `value` fits the parameter (check_invoke in plugins.rs), and why not. A secret is never in the profile: the
+// app fills it in from the Keychain, so a missing one is not an issue here and one the profile carries is.
 export function pluginParamIssue(param: PluginParam, value: PluginValue | undefined, declared: ReadonlyArray<string> = []): string | null {
+  if (isSecretParam(param)) return value === undefined ? null : `${param.label} is a secret and is kept in the Keychain, not the profile. Move it to the Keychain, then save.`;
   if (value === undefined) return param.required ? `${param.label} is required.` : null;
   switch (param.type) {
     case 'text': {
@@ -89,7 +108,7 @@ export function pluginParamIssue(param: PluginParam, value: PluginValue | undefi
 export function pluginActionWith(manifest: PluginManifest, actionId: string, previous?: PluginAction): PluginAction {
   const declared = manifest.actions.find(item => item.id === actionId) ?? manifest.actions[0];
   let next: PluginAction = { type: 'plugin', plugin: manifest.id, min_version: manifest.version, action: declared.id };
-  for (const param of declared.params ?? []) {
+  for (const param of (declared.params ?? []).filter(param => !isSecretParam(param))) {
     const kept = previous?.plugin === manifest.id ? previous.params?.[param.id] : undefined;
     // Kept when it fits the parameter; whether its variables are declared is the form's to say, not a reason to drop it.
     const value = kept !== undefined && pluginParamIssue({ ...param, variables: false }, kept) === null ? kept : param.default;

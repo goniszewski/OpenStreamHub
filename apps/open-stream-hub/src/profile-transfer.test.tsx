@@ -183,6 +183,17 @@ describe('export', () => {
     expect(call.args).toEqual({ request: { profile: expect.objectContaining({ name: 'Edited' }), sourceProfileId: 'a' } });
   });
 
+  it('says which plugin secrets were left out of the file', async () => {
+    const test = await open([stored('a', 'Alpha')]);
+    const session = new ProfileSession(async (command, args) => command === 'export_profile'
+      ? { path: '/s/exports/a.json', bytes: 10, dropped_secrets: ['Token (com.example.lights)'] } as never
+      : test.invoke(command, args), browserProfile, true);
+    await session.bootstrap();
+    await session.exportProfile();
+    const html = renderToStaticMarkup(<ProfileTransfer session={session} state={session.getState()} disabled={false} mac />);
+    expect(html).toContain('plugin secrets are kept in the Keychain and never exported: Token (com.example.lights).');
+  });
+
   it('reports backend errors', async () => {
     const test = await open([stored('a', 'Alpha')]);
     const session = new ProfileSession(async (command, args) => { if (command === 'export_profile') throw 'invalid profile'; return test.invoke(command, args); }, browserProfile, true);

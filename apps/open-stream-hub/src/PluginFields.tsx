@@ -1,10 +1,10 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { FolderOpen, RotateCcw } from 'lucide-react';
 import type { PluginAction, PluginValue, StepAction } from './contracts';
 import { SelectField } from './controls';
 import { useT } from './i18n-react';
 import { pluginIssue } from './action-model';
-import { pluginActionIssues, pluginActionWith, pluginParamIssue, resolvePluginAction, usablePlugins, withPluginParam } from './plugins-model';
+import { isSecretParam, pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, withPluginParam } from './plugins-model';
 import type { PluginParam } from './plugins-model';
 import { usePlugins } from './plugins-context';
 import { useVariables } from './variables-context';
@@ -12,7 +12,8 @@ import type { Invoke } from './profile-session';
 
 // A plugin action: the plugin and one of its actions, chosen from the installed manifests, and a form the manifest's
 // parameter types generate. No plugin-supplied HTML. A plugin that is missing, unusable or too old is said inline and
-// the key keeps its settings, so installing or updating the plugin makes it work again.
+// the key keeps its settings, so installing or updating the plugin makes it work again. A secret parameter has no
+// input: its value is in the Keychain, set in Settings > Plugins.
 export function PluginFields({ prefix, action, onChange, invoke, hint }: {
   prefix: string; action: PluginAction; onChange(action: StepAction, field?: string): void; invoke?: Invoke;
   hint: (summary: string, more: string) => React.ReactNode;
@@ -63,14 +64,57 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
     </>}
     {resolved.problem && <p id={id('plugin-problem')} className="field-error" role="alert">{resolved.problem}</p>}
     {!resolved.problem && shapeIssue && <p className="field-error" role="alert">{shapeIssue}</p>}
-    {resolved.declared?.params?.map(param =>
-      <PluginParamField key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
+    {resolved.declared?.params?.map(param => isSecretParam(param)
+      ? <SecretParamNote key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
+        plugin={action.plugin} set={pluginSecretSet(listing, action.plugin, param.id)} value={action.params?.[param.id]} invoke={invoke}
+        onMoved={() => { onChange(withPluginParam(action, param, undefined), `plugin-param-${param.id}`); refresh(); }} />
+      : <PluginParamField key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
         value={action.params?.[param.id]} issue={pluginParamIssue(param, action.params?.[param.id], declared)}
         onChange={value => onChange(withPluginParam(action, param, value), `plugin-param-${param.id}`)} />)}
     {extra.map(issue => <p key={issue} className="field-error" role="alert">{issue}</p>)}
     {folderNote}
     {hint(t('actions.plugin.hint'), t('actions.plugin.more'))}
   </div>;
+}
+
+// A secret: whether the Keychain holds it and where to set it. A value the profile still carries (saved before secrets
+// moved to the Keychain) is offered a move: stored in the Keychain, then dropped from the draft, which the user saves.
+function SecretParamNote({ id, param, plugin, set, value, invoke, onMoved }: {
+  id: string; param: PluginParam; plugin: string; set: boolean | null | undefined; value: PluginValue | undefined; invoke?: Invoke; onMoved(): void;
+}) {
+  const t = useT();
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<'moved' | 'dropped' | null>(null);
+  // The Keychain already holds a value: moving would replace it, so that takes a second, explicit step.
+  const [confirming, setConfirming] = useState(false);
+  const status = set === undefined ? '' : ` ${t(set === null ? 'actions.plugin.secretUnknown' : set ? 'actions.plugin.secretSet' : 'actions.plugin.secretNotSet')}`;
+  const movable = !!invoke && typeof value === 'string';
+  const move = () => {
+    if (typeof value !== 'string' || !invoke) return;
+    setError(null);
+    invoke('set_plugin_secret', { plugin, param: param.id, value })
+      .then(() => { setDone('moved'); onMoved(); })
+      .catch((reason: unknown) => setError(String(reason)));
+  };
+  return <>
+    <label className="spaced-label" htmlFor={id}>{param.label}</label>
+    <p id={id} className="fine-print" role="note">{t('actions.plugin.secret')}{status}</p>
+    {value !== undefined && <div className="field-error" role="alert">
+      <p>{t('actions.plugin.secretInProfile', { label: param.label })}</p>
+      {set === true ? <>
+        <button type="button" className="button compact primary" onClick={() => { setDone('dropped'); onMoved(); }}>{t('actions.plugin.secretDrop')}</button>
+        {movable && !confirming && <button type="button" className="button compact" onClick={() => setConfirming(true)}>{t('actions.plugin.secretReplace')}</button>}
+        {movable && confirming && <p>{t('actions.plugin.secretReplaceConfirm', { label: param.label })}{' '}
+          <button type="button" className="button compact danger" onClick={move}>{t('actions.plugin.secretReplaceYes')}</button>{' '}
+          <button type="button" className="button compact" onClick={() => setConfirming(false)}>{t('actions.plugin.secretReplaceNo')}</button></p>}
+      </> : <>
+        {movable && <button type="button" className="button compact" onClick={move}>{t('actions.plugin.secretMove')}</button>}
+        <button type="button" className="button compact" onClick={() => { setDone('dropped'); onMoved(); }}>{t('actions.plugin.secretDrop')}</button>
+      </>}
+    </div>}
+    {done && value === undefined && <p className="fine-print" role="status">{t(done === 'moved' ? 'actions.plugin.secretMoved' : 'actions.plugin.secretDropped')}</p>}
+    {error && <p className="field-error" role="alert">{t('actions.plugin.secretMoveFailed', { error })}</p>}
+  </>;
 }
 
 function PluginParamField({ id, param, value, issue, onChange }: {
@@ -110,12 +154,11 @@ function PluginParamField({ id, param, value, issue, onChange }: {
     case 'text':
       return <>
         <label className="spaced-label" htmlFor={id}>{label}</label>
-        <input id={id} type={param.secret ? 'password' : 'text'} spellCheck={false} autoCapitalize="off" autoCorrect="off"
+        <input id={id} type="text" spellCheck={false} autoCapitalize="off" autoCorrect="off"
           value={typeof value === 'string' ? value : ''} aria-invalid={!!issue} aria-describedby={described}
           onChange={event => onChange(event.target.value === '' && !param.required ? undefined : event.target.value)} />
         {error}
         {param.variables && <p id={`${id}-note`} className="fine-print">{t('actions.plugin.variables')}</p>}
-        {param.secret && <p className="fine-print">{t('actions.plugin.secret')}</p>}
       </>;
   }
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { PluginAction } from './contracts';
 import { pluginIssue, pluginReferences } from './action-model';
-import { pluginActionIssues, pluginActionWith, pluginParamIssue, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
+import { pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
 import { lights, listing } from './plugins-test-data';
 import { capabilityLines, profileCapabilities, stepLabel } from './profile-capabilities';
 import { actionVariableNames, renameVariable } from './variable-model';
@@ -73,6 +73,16 @@ describe('plugins model', () => {
     expect(action.variables).toBeUndefined();
     action = withPluginParam(action, token, undefined);
     expect(action.params).not.toHaveProperty('token');
+  });
+
+  it('never calls a secret missing, refuses one the profile carries and does not carry one across actions', () => {
+    const token = { ...lights.actions[1].params![4], required: true };
+    expect(pluginParamIssue(token, undefined)).toBeNull();
+    expect(pluginParamIssue(token, 'old')).toContain('kept in the Keychain, not the profile');
+    expect(pluginSecretSet(listing, 'com.example.lights', 'token')).toBe(true);
+    expect(pluginSecretSet(listing, 'com.example.lights', 'other')).toBeUndefined();
+    expect(pluginActionWith(lights, 'set', { type: 'plugin', plugin: lights.id, min_version: '1.2.0', action: 'set', params: { entity: 'a', token: 'old' } }).params)
+      .not.toHaveProperty('token');
   });
 
   it('checks each value against its parameter', () => {

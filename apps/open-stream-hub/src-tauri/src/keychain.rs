@@ -1,7 +1,8 @@
-//! Where the OBS WebSocket password and the Streamlabs API token are kept
-//! between launches: the macOS Keychain, as one generic password item each for
-//! this app ([`OBS_PASSWORD`], [`STREAMLABS_TOKEN`]: the same service name,
-//! separate accounts). Never a file, a profile, a log or an argument.
+//! Where the OBS WebSocket password, the Streamlabs API token and plugin
+//! secrets are kept between launches: the macOS Keychain, as one generic
+//! password item each for this app ([`OBS_PASSWORD`], [`STREAMLABS_TOKEN`],
+//! [`Item::plugin_secret`]: the same service name, separate accounts). Never a
+//! file, a profile, a log or an argument.
 //!
 //! Errors say what failed, never the secret. A Keychain that is locked,
 //! denied or missing makes the vault report an error; the app then falls back
@@ -12,27 +13,58 @@
 //! whether OpenStreamHub may use the item; **Always Allow** keeps it quiet
 //! until the next update.
 
+use std::borrow::Cow;
+
 /// One Keychain item: its account under this app's service name, and what
-/// errors call it.
-#[cfg(all(target_os = "macos", not(test)))]
-#[derive(Clone, Copy)]
+/// errors call it. Fixed items are constants; a plugin secret's account is
+/// made at run time.
+#[derive(Clone)]
+#[cfg_attr(not(all(target_os = "macos", not(test))), allow(dead_code))]
 pub struct Item {
-    account: &'static str,
-    what: &'static str,
+    account: Cow<'static, str>,
+    what: Cow<'static, str>,
+}
+
+impl Item {
+    /// The item for one secret parameter of one plugin, shared by every key
+    /// and action of that plugin with a secret parameter of that id. Plugin
+    /// and parameter ids hold no spaces or colons (`plugins.rs` checks them),
+    /// so the account names one pair only.
+    pub fn plugin_secret(plugin: &str, param: &str, what: String) -> Self {
+        Self {
+            account: Cow::Owned(format!("plugin-secret:{plugin}:{param}")),
+            what: Cow::Owned(what),
+        }
+    }
+}
+
+/// A vault for `item`: the Keychain in release builds, the `security` tool in
+/// development builds, memory only in tests and on other platforms (the same
+/// choice `obs.rs` makes).
+pub fn vault(item: Item) -> Box<dyn PasswordVault> {
+    #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
+    return Box::new(Keychain(item));
+    #[cfg(all(target_os = "macos", not(test), debug_assertions))]
+    return Box::new(DevKeychain(item));
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    {
+        let _ = item;
+        Box::new(MemoryOnly)
+    }
 }
 
 /// The OBS WebSocket password (the account 0.2.0 already used).
 #[cfg(all(target_os = "macos", not(test)))]
 pub const OBS_PASSWORD: Item = Item {
-    account: "obs-websocket-password",
-    what: "OBS password",
+    account: Cow::Borrowed("obs-websocket-password"),
+    what: Cow::Borrowed("OBS password"),
 };
 
 /// The Streamlabs Remote Control API token.
 #[cfg(all(target_os = "macos", not(test)))]
 pub const STREAMLABS_TOKEN: Item = Item {
-    account: "streamlabs-api-token",
-    what: "Streamlabs token",
+    account: Cow::Borrowed("streamlabs-api-token"),
+    what: Cow::Borrowed("Streamlabs token"),
 };
 
 /// A place to keep one password between launches.
@@ -43,6 +75,11 @@ pub trait PasswordVault: Send + Sync {
     fn save(&self, password: &str) -> Result<(), String>;
     /// Removes the stored password. Nothing stored is not an error.
     fn forget(&self) -> Result<(), String>;
+    /// Whether a password is stored, without reading it where the vault can tell (the Keychain asks the user before
+    /// handing out a value, not before saying an item exists). The default reads it.
+    fn exists(&self) -> Result<bool, String> {
+        self.load().map(|stored| stored.is_some())
+    }
 }
 
 /// Keeps nothing: the password lives in memory only (other platforms, tests).
@@ -60,6 +97,9 @@ impl PasswordVault for MemoryOnly {
     fn forget(&self) -> Result<(), String> {
         Ok(())
     }
+    fn exists(&self) -> Result<bool, String> {
+        Ok(false)
+    }
 }
 
 #[cfg(all(target_os = "macos", not(test), debug_assertions))]
@@ -70,8 +110,9 @@ pub use macos::Keychain;
 #[cfg(all(target_os = "macos", not(test), not(debug_assertions)))]
 mod macos {
     use super::{Item, PasswordVault};
-    use security_framework::passwords::{
-        delete_generic_password, get_generic_password, set_generic_password,
+    use security_framework::{
+        item::{ItemClass, ItemSearchOptions},
+        passwords::{delete_generic_password, get_generic_password, set_generic_password},
     };
 
     const SERVICE: &str = "dev.cooltek.openstreamhub";
@@ -93,7 +134,7 @@ mod macos {
 
     impl PasswordVault for Keychain {
         fn load(&self) -> Result<Option<String>, String> {
-            match get_generic_password(SERVICE, self.0.account) {
+            match get_generic_password(SERVICE, &self.0.account) {
                 Ok(bytes) => String::from_utf8(bytes)
                     .map(Some)
                     .map_err(|_| format!("the {} in the Keychain is not valid text", self.0.what)),
@@ -103,15 +144,29 @@ mod macos {
         }
 
         fn save(&self, password: &str) -> Result<(), String> {
-            set_generic_password(SERVICE, self.0.account, password.as_bytes())
+            set_generic_password(SERVICE, &self.0.account, password.as_bytes())
                 .map_err(|error| self.describe("save", &error))
         }
 
         fn forget(&self) -> Result<(), String> {
-            match delete_generic_password(SERVICE, self.0.account) {
+            match delete_generic_password(SERVICE, &self.0.account) {
                 Ok(()) => Ok(()),
                 Err(error) if error.code() == NOT_FOUND => Ok(()),
                 Err(error) => Err(self.describe("remove", &error)),
+            }
+        }
+
+        /// A search that loads neither data nor attributes, so no value leaves the Keychain.
+        fn exists(&self) -> Result<bool, String> {
+            match ItemSearchOptions::new()
+                .class(ItemClass::generic_password())
+                .service(SERVICE)
+                .account(&self.0.account)
+                .search()
+            {
+                Ok(_) => Ok(true),
+                Err(error) if error.code() == NOT_FOUND => Ok(false),
+                Err(error) => Err(self.describe("look for", &error)),
             }
         }
     }
@@ -165,7 +220,7 @@ mod dev {
                     "-s",
                     SERVICE,
                     "-a",
-                    self.0.account,
+                    &*self.0.account,
                     "-w",
                 ])
                 .stdin(Stdio::null())
@@ -221,6 +276,31 @@ mod dev {
             }
         }
 
+        /// `find-generic-password` without `-w` prints only the item's attributes, which are discarded.
+        fn exists(&self) -> Result<bool, String> {
+            let status = Command::new(SECURITY)
+                .args([
+                    "find-generic-password",
+                    "-s",
+                    SERVICE,
+                    "-a",
+                    &*self.0.account,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|error| format!("could not run the security tool: {}", error.kind()))?;
+            match status.code() {
+                Some(0) => Ok(true),
+                Some(NOT_FOUND) => Ok(false),
+                other => Err(format!(
+                    "could not look for the {} with the security tool (exit {other:?})",
+                    self.0.what
+                )),
+            }
+        }
+
         fn forget(&self) -> Result<(), String> {
             let status = Command::new(SECURITY)
                 .args([
@@ -228,7 +308,7 @@ mod dev {
                     "-s",
                     SERVICE,
                     "-a",
-                    self.0.account,
+                    &*self.0.account,
                 ])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

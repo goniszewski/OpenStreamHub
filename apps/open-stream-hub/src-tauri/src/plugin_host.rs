@@ -18,7 +18,8 @@
 //! An invoke is answered with the plugin's `result`, or fails when the plugin is not running, has 8 invokes in
 //! flight, stops before answering, or (on the module's side) answers too late. After [`IDLE_PING`] without a line the
 //! app sends `ping`, and a plugin silent for [`PONG_TIMEOUT`] more is killed and restarted, as is one that exits or
-//! closes its connection: after 1, 2, 4, 8, 16, then 30 s. After [`MAX_FAILURES`] failures within
+//! closes its connection, or one that has not said hello [`START_TIMEOUT`] after it started: after 1, 2, 4, 8, 16,
+//! then 30 s. After [`MAX_FAILURES`] failures within
 //! [`FAILURE_WINDOW`] it stays stopped until a profile that uses it is executed again.
 
 use crate::plugins::{self, Manifest};
@@ -56,6 +57,8 @@ const MAX_INVOKE: Duration = Duration::from_secs(15);
 pub const IDLE_PING: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 10_000 });
 /// How long a pinged plugin has to send any line.
 pub const PONG_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 5_000 });
+/// How long a started plugin has to connect and say hello before it is killed and restarted.
+pub const START_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 1_000 } else { 10_000 });
 /// Waits before each restart, the last one repeating.
 const BACKOFF: [u64; 6] = [1, 2, 4, 8, 16, 30];
 /// Failures within [`FAILURE_WINDOW`] after which a plugin stays stopped.
@@ -146,6 +149,8 @@ struct Instance {
     /// Grows at every start, so a connection or a reader of an older process can tell it is stale.
     generation: u64,
     child: Option<Child>,
+    /// When the running process was started; it must say hello within [`START_TIMEOUT`].
+    started_at: Instant,
     conn: Option<Arc<Conn>>,
     pending: HashMap<u64, Pending>,
     failures: VecDeque<Instant>,
@@ -168,6 +173,7 @@ impl Instance {
             token: String::new(),
             generation: 0,
             child: None,
+            started_at: Instant::now(),
             conn: None,
             pending: HashMap::new(),
             failures: VecDeque::new(),
@@ -492,6 +498,7 @@ impl PluginHost {
                         .spawn(move || host.keep_stderr(&id, generation, stderr));
                 }
                 instance.child = Some(child);
+                instance.started_at = Instant::now();
                 instance.last_error = None;
             }
             Err(error) => {
@@ -613,6 +620,14 @@ impl PluginHost {
                         }
                         _ => {}
                     }
+                } else if now.duration_since(instance.started_at) >= START_TIMEOUT {
+                    // A plugin that hangs before connecting, or connects but never says a valid hello, would
+                    // otherwise stay "starting" for good.
+                    let error = format!(
+                        "the plugin did not connect and say hello within {} s of starting",
+                        START_TIMEOUT.as_secs()
+                    );
+                    self.failed(&id, instance, error);
                 }
             }
         }
@@ -1275,6 +1290,25 @@ mod tests {
             host.state_of(ID) == Some("restarting")
         });
         assert!(host.statuses()[0].error.as_ref().unwrap().contains("pings"));
+    }
+
+    #[test]
+    fn a_plugin_that_never_says_hello_is_restarted() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        assert_eq!(host.state_of(ID), Some("starting"));
+        wait_for("the startup timeout", || {
+            host.state_of(ID) == Some("restarting")
+        });
+        assert!(
+            host.statuses()[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("say hello")
+        );
+        wait_for("the restart", || host.state_of(ID) == Some("starting"));
     }
 
     #[test]

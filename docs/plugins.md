@@ -14,7 +14,7 @@ Put the plugin's folder in the plugins folder, `~/Library/Application Support/<a
 
 - The app starts a plugin only while an **executing (Live)** module run uses it, and keeps one instance for all modules. A Test run never starts a plugin; a press there only logs what would run.
 - It stops the plugin 5 seconds after the last Live run that uses it stops, so a module that restarts (a large profile change, a replug) keeps the same plugin process. On quit, every plugin stops.
-- A plugin that exits, closes its connection or misses a ping is restarted after 1, 2, 4, 8, 16, then 30 seconds. After 5 failures within 5 minutes it stays stopped until a profile that uses it is executed again.
+- A plugin that exits, closes its connection, misses a ping or has not said hello 10 seconds after it started is restarted after 1, 2, 4, 8, 16, then 30 seconds. After 5 failures within 5 minutes it stays stopped until a profile that uses it is executed again.
 - Stopping sends SIGTERM to the plugin's process group, then SIGKILL after 1 second, so helpers it started stop with it.
 - The plugin starts in its folder with the app's environment plus `OSH_PLUGIN_SOCKET`, `OSH_PLUGIN_ID` and `OSH_PLUGIN_TOKEN`. Started from the Finder, `PATH` holds only the system folders, so name interpreters by their full path in `command`. Its stdout is discarded and its stderr is kept, with its log, in Settings > Plugins.
 

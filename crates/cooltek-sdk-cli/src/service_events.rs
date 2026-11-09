@@ -8,8 +8,8 @@
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, ProfileResolution, ProfileSession, RunningTimer, ServiceModule, ServiceState,
-    TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
+    InputUpdate, PluginValue, ProfileResolution, ProfileSession, RunningTimer, ServiceModule,
+    ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -481,6 +481,32 @@ pub fn loggable(action: &Action) -> Value {
             }
             if *variables {
                 value["variables"] = json!(true);
+            }
+            value
+        }
+        // Text parameters can carry tokens or names, and the service does not
+        // know which ones the manifest marks secret: only their lengths are
+        // logged. Numbers, bools and the ids are closed values.
+        Action::Plugin {
+            plugin,
+            min_version,
+            action,
+            params,
+            variables,
+        } => {
+            let params: serde_json::Map<String, Value> = params
+                .iter()
+                .map(|(name, value)| {
+                    let logged = match value {
+                        PluginValue::Text(text) => json!({"chars": text.chars().count()}),
+                        other => json!(other),
+                    };
+                    (name.clone(), logged)
+                })
+                .collect();
+            let mut value = json!({"type":"plugin", "plugin":plugin, "min_version":min_version, "action":action, "params":params});
+            if !variables.is_empty() {
+                value["variables"] = json!(variables);
             }
             value
         }
@@ -1538,6 +1564,16 @@ mod tests {
         assert_eq!(
             loggable(&bare),
             json!({"type":"terminal_command", "app":"iterm2", "command_chars":5})
+        );
+        let plugin: Action = serde_json::from_value(json!({
+            "type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+            "params":{"token":"s3cr3t", "level":40, "fade":true, "room":"{{room}}"}, "variables":["room"],
+        }))
+        .unwrap();
+        assert_eq!(
+            loggable(&plugin),
+            json!({"type":"plugin", "plugin":"com.example.lights", "min_version":"1.0.0", "action":"set",
+                "params":{"token":{"chars":6}, "level":40, "fade":true, "room":{"chars":8}}, "variables":["room"]})
         );
         let program = Action::RunProgram {
             program: "~/bin/deploy".into(),

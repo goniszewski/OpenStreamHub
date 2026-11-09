@@ -1,0 +1,18 @@
+{
+  "id": "com.example.notify",
+  "name": "Notify example",
+  "version": "1.0.0",
+  "command": ["/usr/bin/python3", "plugin.py"],
+  "actions": [
+    {
+      "id": "notify",
+      "label": "Show a notification",
+      "params": [
+        { "id": "title", "label": "Title", "type": "text", "default": "OpenStreamHub" },
+        { "id": "message", "label": "Message", "type": "text", "variables": true, "required": true }
+      ]
+    },
+    { "id": "count", "label": "Count presses" }
+  ],
+  "permissions": { "variables": ["plugin_presses"], "programs": true }
+}

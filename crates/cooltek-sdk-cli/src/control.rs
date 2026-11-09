@@ -39,6 +39,12 @@
 //! - `{"id":8,"type":"get_variables"}` answers `variables` (`[{"name":..,"value":..}]`, in declaration order) and
 //!   `version`, a counter that grows with every change.
 //!
+//! Plugins, for a run started with `--plugin-host`:
+//!
+//! - `{"id":9,"type":"plugin_result","request":12,"ok":false,"error":"the light is offline"}` answers the
+//!   `plugin_invoke` record the run wrote with `"request":12`; the press waiting for it fails with `error` unless `ok`.
+//!   A request nobody waits for any more (it timed out) is refused.
+//!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
 use cooltek_sdk_masterhub::{
@@ -71,6 +77,8 @@ pub struct Hooks {
     pub dial_lighting: bool,
     /// The run's variables, read and set by `get_variables` and `set_variable`.
     pub variables: Option<cooltek_sdk_service::SharedVariables>,
+    /// The run's plugin bridge, which `plugin_result` answers.
+    pub plugins: Option<cooltek_sdk_service::PluginBridge>,
     /// The key report length, read from the module's descriptor with the first key image only.
     #[doc(hidden)]
     pub key_report_length: OnceLock<usize>,
@@ -121,6 +129,12 @@ enum Request {
         value: Value,
     },
     GetVariables,
+    PluginResult {
+        request: u64,
+        ok: bool,
+        #[serde(default)]
+        error: Option<String>,
+    },
 }
 
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
@@ -225,6 +239,17 @@ pub fn answer<T: ReportTransport + ?Sized>(
                 "version": variables.version(),
             })),
             None => Err("this run has no variables".to_string()),
+        },
+        (Request::PluginResult { request, ok, error }, _) => match &hooks.plugins {
+            Some(plugins) => {
+                let answer = if ok {
+                    Ok(())
+                } else {
+                    Err(error.unwrap_or_else(|| "the plugin reported a failure".into()))
+                };
+                plugins.complete(request, answer).map(|()| json!({}))
+            }
+            None => Err("this run has no plugin host".to_string()),
         },
         (_, None) => Err("this module has no per-LED lighting".to_string()),
         (
@@ -645,6 +670,50 @@ mod tests {
             r#"{"id":6,"type":"get_variables"}"#,
         );
         assert_eq!(without["ok"], false);
+    }
+
+    #[test]
+    fn a_plugin_result_reaches_the_press_waiting_for_it() {
+        let fake = fake();
+        let none = Hooks::default();
+        let refused = answer(
+            &fake,
+            None,
+            &none,
+            r#"{"id":1,"type":"plugin_result","request":1,"ok":true}"#,
+        );
+        assert_eq!(refused["error"], "this run has no plugin host");
+
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = cooltek_sdk_service::PluginBridge::new(Box::new(move |record| {
+            sent_tx.lock().unwrap().send(record.clone()).unwrap();
+            Ok(())
+        }));
+        let hooks = Hooks {
+            plugins: Some(bridge.clone()),
+            ..Default::default()
+        };
+        let press = std::thread::spawn(move || {
+            bridge.invoke(
+                "com.x.y",
+                "1.0.0",
+                "toggle",
+                &Default::default(),
+                &[],
+                std::time::Duration::from_secs(5),
+                None,
+            )
+        });
+        let request = sent_rx.recv().unwrap()["request"].as_u64().unwrap();
+        let line = format!(
+            r#"{{"id":2,"type":"plugin_result","request":{request},"ok":false,"error":"offline"}}"#
+        );
+        assert_eq!(answer(&fake, None, &hooks, &line)["ok"], true);
+        assert_eq!(press.join().unwrap(), Err("offline".into()));
+        let late = answer(&fake, None, &hooks, &line);
+        assert_eq!(late["ok"], false);
+        assert_eq!(late["id"], 2);
     }
 
     #[test]

@@ -1,5 +1,6 @@
+use crate::plugin::PluginValue;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::{DialDisplay, DialFunction, KeypadBinding, KeypadLayout, KeypadPage, KeypadTile};
 
@@ -1052,6 +1053,26 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         variables: bool,
     },
+    /// Ask a plugin, a separate program the OpenStreamHub app runs, to perform
+    /// one of its actions, and wait for its answer. Allowed as a
+    /// `multi_action` or `conditional` step.
+    Plugin {
+        /// The plugin's reverse-DNS id, such as `com.example.homeassistant`.
+        plugin: String,
+        /// The oldest plugin version this action works with, `MAJOR.MINOR.PATCH`.
+        min_version: String,
+        /// The id of the action in the plugin's manifest.
+        action: String,
+        /// Parameter values by name; the app checks them against the manifest.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, PluginValue>,
+        /// The text parameters whose `{{name}}` references to declared
+        /// variables are filled in when the key is pressed (see
+        /// [`crate::plugin::fill_in_plugin_params`]). Only parameters the
+        /// manifest allows it for.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variables: Vec<String>,
+    },
     /// Send a media transport command: a hardware media key on macOS for
     /// play/pause, next and previous; `stop` reaches only an already running
     /// Apple Music or Spotify.
@@ -1439,7 +1460,10 @@ fn filled_in(value: &VariableValue) -> String {
 
 /// Replaces each `{{name}}` in `text` (see [`variable_references`]) by the
 /// value `lookup` gives for it.
-fn fill_in(text: &str, lookup: &impl Fn(&str) -> Option<VariableValue>) -> Result<String, String> {
+pub(crate) fn fill_in(
+    text: &str,
+    lookup: &impl Fn(&str) -> Option<VariableValue>,
+) -> Result<String, String> {
     let mut filled = String::with_capacity(text.len());
     let mut copied = 0;
     for (span, name) in reference_spans(text)? {
@@ -1637,6 +1661,15 @@ impl<'de> Deserialize<'de> for Action {
                 #[serde(default)]
                 variables: bool,
             },
+            Plugin {
+                plugin: String,
+                min_version: String,
+                action: String,
+                #[serde(default)]
+                params: BTreeMap<String, PluginValue>,
+                #[serde(default)]
+                variables: Vec<String>,
+            },
             Media {
                 command: MediaCommand,
             },
@@ -1790,6 +1823,19 @@ impl<'de> Deserialize<'de> for Action {
                 directory,
                 variables,
             },
+            Shape::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            },
             Shape::Media { command } => Self::Media { command },
             Shape::System { command } => Self::System { command },
             Shape::Text { text, press_enter } => Self::Text { text, press_enter },
@@ -1912,6 +1958,7 @@ impl Action {
             Self::OpenUrl { .. } => "open_url",
             Self::TerminalCommand { .. } => "terminal_command",
             Self::RunProgram { .. } => "run_program",
+            Self::Plugin { .. } => "plugin",
             Self::Media { .. } => "media",
             Self::System { .. } => "system",
             Self::Text { .. } => "text",
@@ -1990,6 +2037,19 @@ impl Action {
                 otherwise,
             } => when.uses_obs() || then.iter().chain(otherwise).any(Self::uses_obs),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_obs),
+            _ => false,
+        }
+    }
+
+    /// True for a `plugin` action, or a `multi_action` or `conditional` with
+    /// a plugin step.
+    pub fn uses_plugins(&self) -> bool {
+        match self {
+            Self::Plugin { .. } => true,
+            Self::Conditional {
+                then, otherwise, ..
+            } => then.iter().chain(otherwise).any(Self::uses_plugins),
+            Self::MultiAction { actions } => actions.iter().any(Self::uses_plugins),
             _ => false,
         }
     }
@@ -2162,6 +2222,19 @@ impl Action {
                 }
                 Ok(())
             }
+            Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => crate::plugin::validate_plugin_action(
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            ),
             Self::ObsScene { scene } => validate_obs_name("obs_scene", "scene", scene),
             Self::ObsSceneCollection { name } => {
                 validate_obs_name("obs_scene_collection", "name", name)
@@ -2356,6 +2429,15 @@ impl Action {
                     })
                     .map_err(|error| format!("run_program argument {}: {error}", index + 1))
             }),
+            Self::Plugin {
+                params, variables, ..
+            } => crate::plugin::plugin_variable_references(params, variables)?
+                .into_iter()
+                .try_for_each(|(parameter, name)| {
+                    kind_of(name)
+                        .map(drop)
+                        .map_err(|error| format!("plugin parameter {parameter}: {error}"))
+                }),
             Self::MultiAction { actions } => actions
                 .iter()
                 .try_for_each(|step| step.check_variables(declared)),

@@ -23,6 +23,8 @@ mod mhz;
 mod migration;
 mod obs;
 mod pack_folder;
+mod plugin_host;
+mod plugins;
 mod power;
 #[cfg(target_os = "macos")]
 mod quit;
@@ -812,6 +814,28 @@ fn create_pack_profile(
 #[tauri::command(async)]
 fn list_folder_packs(state: State<'_, AppState>) -> Result<pack_folder::PackFolder, String> {
     pack_folder::list(state.app_data.as_deref().map_err(Clone::clone)?)
+}
+
+// The plugins in `<app data>/plugins/`, each with its manifest or why it cannot be used, and its state while it runs.
+#[tauri::command(async)]
+fn list_plugins(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<plugins::Listing, String> {
+    let statuses = app
+        .try_state::<plugin_host::PluginHost>()
+        .map(|host| host.statuses())
+        .unwrap_or_default();
+    Ok(plugins::listing(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        statuses,
+    ))
+}
+
+// Opens `<app data>/plugins/` in the Finder, creating it when missing.
+#[tauri::command(async)]
+fn open_plugins_folder(state: State<'_, AppState>) -> Result<(), String> {
+    plugins::open(state.app_data.as_deref().map_err(Clone::clone)?)
 }
 
 // Opens `<app data>/packs/` in the Finder, creating it when missing.
@@ -2140,9 +2164,30 @@ pub fn run() {
             }
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
+            let plugins_dir = app_data.as_deref().ok().map(plugins::dir);
             app.manage(AppState::open(app_data));
             menubar::init(app.handle());
             let state = app.state::<AppState>();
+            // Plugin processes, started for the module runs that execute a profile using them.
+            #[cfg(unix)]
+            if let Some(plugins_dir) = plugins_dir {
+                let handle = app.handle().clone();
+                let forward: ingress::Forward = Arc::new(move |body| {
+                    handle
+                        .try_state::<AppState>()
+                        .map(|state| ingress::forward_to(&state.services, body))
+                        .unwrap_or_default()
+                });
+                match plugin_host::PluginHost::start(&plugins_dir, forward) {
+                    Ok(host) => {
+                        state
+                            .services
+                            .set_plugin_hooks(service::PluginHooks::for_host(&host));
+                        app.manage(host);
+                    }
+                    Err(error) => eprintln!("{error}"),
+                }
+            }
             let sessions = state.sessions.sender();
             let runner = AppRunner {
                 app: app.handle().clone(),
@@ -2208,6 +2253,8 @@ pub fn run() {
             create_pack_profile,
             list_folder_packs,
             open_packs_folder,
+            list_plugins,
+            open_plugins_folder,
             import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,
@@ -2300,6 +2347,10 @@ pub fn run() {
             state.sessions.shutdown(Duration::from_millis(500));
             // Bounded: SIGINT, up to STOP_GRACE, then SIGKILL; never joins.
             state.services.stop_all(service::STOP_GRACE);
+            #[cfg(unix)]
+            if let Some(host) = app.try_state::<plugin_host::PluginHost>() {
+                host.stop_all();
+            }
             state.feeds.stop_all();
             state.inventory.stop();
             #[cfg(unix)]

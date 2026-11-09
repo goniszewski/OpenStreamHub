@@ -256,7 +256,8 @@ impl ImportedProfiles {
 /// action anywhere in it (flat bindings, every keypad page, dial functions,
 /// and the steps of a sequence or an if / else, although validation keeps a
 /// terminal command out of steps) opens a terminal and runs a command line,
-/// runs a program (`run_program`), or writes `agent_decision` (sets, toggles or adds to it), which answers an
+/// runs a program (`run_program`), asks a plugin to act (`plugin`, a program
+/// the app starts that runs as the user), or writes `agent_decision` (sets, toggles or adds to it), which answers an
 /// AI agent's permission prompt through `osh agent ask`. Other JSON imports
 /// stay ordinary profiles that the Execute confirmation discloses in full.
 ///
@@ -266,7 +267,9 @@ impl ImportedProfiles {
 pub fn needs_review(profile: &Profile) -> bool {
     fn reviewed_action(action: &Action) -> bool {
         match action {
-            Action::TerminalCommand { .. } | Action::RunProgram { .. } => true,
+            Action::TerminalCommand { .. } | Action::RunProgram { .. } | Action::Plugin { .. } => {
+                true
+            }
             Action::SetVariable { name, .. }
             | Action::ToggleVariable { name }
             | Action::AddToVariable { name, .. } => name == osh::AGENT_DECISION,
@@ -765,8 +768,16 @@ mod tests {
             directory: None,
             variables: false,
         };
+        let plugin: Action = serde_json::from_value(serde_json::json!({
+            "type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"toggle"
+        }))
+        .unwrap();
         for action in [
             program.clone(),
+            plugin.clone(),
+            Action::MultiAction {
+                actions: vec![Action::ToggleMute, plugin],
+            },
             Action::MultiAction {
                 actions: vec![Action::ToggleMute, program],
             },

@@ -191,6 +191,8 @@ function describeAction(action: unknown): string {
       const args = typeof action.args === 'number' ? action.args : Array.isArray(action.args) ? action.args.length : 0;
       return `run a program (${args} argument${args === 1 ? '' : 's'}${action.variables === true ? ', variables filled in' : ''})`;
     }
+    // The plugin and action ids are closed values; text parameters are logged by length only.
+    case 'plugin': return `plugin ${clip(String(action.plugin), 128)}: ${clip(String(action.action), 64)}${Array.isArray(action.variables) && action.variables.length ? ', variables filled in' : ''}`;
     // Only the origin: paths and queries can carry tokens.
     case 'open_url': return `open URL ${clip(typeof action.origin === 'string' ? action.origin : urlOrigin(String(action.url)), 120)}`;
     case 'media': return `media ${String(action.command)}`;

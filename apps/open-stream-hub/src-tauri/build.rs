@@ -12,6 +12,8 @@ fn main() {
             "create_pack_profile",
             "list_folder_packs",
             "open_packs_folder",
+            "list_plugins",
+            "open_plugins_folder",
             "import_profile",
             "allow_imported_profile_execution",
             "mark_all_profiles_for_review",

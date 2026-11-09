@@ -183,7 +183,8 @@ impl TileIcon {
             // without one; both read as a launch.
             Action::LaunchApp { .. }
             | Action::TerminalCommand { .. }
-            | Action::RunProgram { .. } => Self::Application,
+            | Action::RunProgram { .. }
+            | Action::Plugin { .. } => Self::Application,
             Action::Text { .. } => Self::Text,
             Action::MultiAction { .. }
             | Action::Conditional { .. }

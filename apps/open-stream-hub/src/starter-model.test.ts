@@ -174,6 +174,7 @@ describe('shipped starters', () => {
     // The dry-run-safe check every other starter uses refuses it.
     expect(actionIssue(session as BindingAction)).toContain('terminal_command does not belong in a starter');
     expect(actionIssue({ type: 'run_program', program: '/usr/bin/true' })).toContain('run_program does not belong in a starter');
+    expect(actionIssue({ type: 'plugin', plugin: 'com.example.lights', min_version: '1.0.0', action: 'toggle' })).toContain('plugin does not belong in a starter');
     expect(starterIssue(withAccept({ ...session, command: 'codex\nrm -rf ~' }), typingActionIssue)).toContain('one line');
     expect(starterIssue(withAccept({ ...session, command: ' ' }), typingActionIssue)).toContain('Enter the command');
     expect(starterIssue(withAccept({ ...session, directory: 'code' }), typingActionIssue)).toContain('starting with / or ~/');

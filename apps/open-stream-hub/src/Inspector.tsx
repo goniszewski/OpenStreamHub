@@ -9,6 +9,7 @@ import { ScreenBrightnessControl } from './ScreenBrightnessControl';
 import { ActionFields } from './ActionFields';
 import { VariablesPanel } from './VariableFields';
 import { VariablesContext } from './variables-context';
+import { PluginsContext, usePluginListing } from './plugins-context';
 import { renameVariable, variableUseCounts, variableUsers } from './variable-model';
 import { IntegerField, LabelError, SelectField } from './controls';
 import { keypadBindingAt, keypadDepth, keypadMaximumDepth, keypadMaximumPages, renameKeypadAction, renameKeypadPage } from './keypad-model';
@@ -55,7 +56,9 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
   useEffect(() => { if (liveFader !== undefined) setFaderStats(stats => recordFader(stats, liveFader)); }, [liveFader]);
   useEffect(() => { setFaderStats(emptyFaderStats); }, [selection.module, selection.control]);
   const declared = profile.variables ?? [];
-  return <aside className="inspector" aria-label={t('inspector.aria')}><VariablesContext.Provider value={declared}>
+  // The installed plugins, for plugin actions' forms; read once per editor and on refresh.
+  const plugins = usePluginListing(invoke);
+  return <aside className="inspector" aria-label={t('inspector.aria')}><VariablesContext.Provider value={declared}><PluginsContext.Provider value={plugins}>
     {selected.supported ? <>
       {isKeypad && <><label htmlFor="keypad-page-name">{keypadDepth(keypadPath) ? t('inspector.folder', { depth: keypadDepth(keypadPath) }) : t('inspector.rootPage')}</label><input id="keypad-page-name" disabled={disabled} value={currentKeypadPage.name} aria-describedby="keypad-page-name-error" onChange={event => session.edit(renameKeypadPage(profile, keypadPath, event.target.value), `page-name:${keypadPath.join('/')}`)} /><LabelError id="keypad-page-name-error" value={currentKeypadPage.name} field="Page name" />{keypadPath.length > 1 && <button className="button compact" disabled={disabled} onClick={editor.deleteCurrentFolder}><Trash2 size={16} />{t('inspector.deleteFolder')}</button>}<div className="inspector-divider" /></>}
       {isKeypad && <><ScreenBrightnessControl screen="keys" label={t('inspector.keyBrightness')} profile={profile} session={session} disabled={disabled} /><div className="inspector-divider" /></>}
@@ -103,7 +106,7 @@ export function Inspector({ editor, session, state, disabled, desktop = false, i
           onRename={(from, to) => session.edit(renameVariable(profile, from, to), `variable-rename:${from}`)} />
       </details>
     </> : <><h2>{selected.name}</h2><div className="status offline"><span className="status-dot" />{t('inspector.notAvailable')}</div><p className="inspector-note">{t('inspector.unsupported')}</p></>}
-  </VariablesContext.Provider></aside>;
+  </PluginsContext.Provider></VariablesContext.Provider></aside>;
 }
 
 // The dial editor's two tabs. Functions is the dial functions editor (or its

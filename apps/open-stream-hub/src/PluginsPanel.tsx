@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { FolderOpen, RotateCcw } from 'lucide-react';
 import { useT } from './i18n-react';
 import type { MessageKey } from './locales/en';
@@ -6,6 +7,7 @@ import { PluginEnableDialog } from './PluginEnableDialog';
 import { usePluginListing } from './plugins-context';
 import type { ListedPlugin, PluginManifest, PluginSecretStatus } from './plugins-model';
 import type { Invoke } from './profile-session';
+import { codeList, richText } from './rich-text';
 
 const stateKeys: Record<string, MessageKey> = {
   running: 'plugins.state.running', starting: 'plugins.state.starting', restarting: 'plugins.state.restarting',
@@ -46,9 +48,14 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
       })
       .finally(() => setBusy(false));
   };
+  const enabled = listing?.plugins.filter(plugin => plugin.approval === 'enabled') ?? [];
+  const disabled = listing?.plugins.filter(plugin => plugin.approval !== 'enabled') ?? [];
+  const toReview = disabled.filter(plugin => plugin.approval === 'changed').length;
+  const items = (plugins: ListedPlugin[]) => <ul className="plugin-list">{plugins.map(plugin =>
+    <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} />)}</ul>;
   return <section className="panel plugins-panel">
     <h2>{t('plugins.title')}</h2>
-    <p className="fine-print">{t('plugins.intro')}</p>
+    <p className="fine-print">{richText(t('plugins.intro'))}</p>
     {!desktop ? <p className="fine-print">{t('plugins.notDesktop')}</p> : <>
       {listing && <><label>{t('plugins.folder')}</label><code className="storage-path">{listing.folder}</code></>}
       <div className="settings-actions">
@@ -58,12 +65,28 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
       {error && <p className="field-error" role="alert">{t('plugins.listFailed', { error })}</p>}
       {enableError && <p className="field-error plugin-enable-error" role="alert">{enableError}</p>}
       {listing && listing.plugins.length === 0 && <p className="fine-print" role="status">{t('plugins.none')}</p>}
-      {listing && listing.plugins.length > 0 && <ul className="plugin-list">{listing.plugins.map(plugin =>
-        <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} />)}</ul>}
+      {listing && listing.plugins.length > 0 && <>
+        <PluginGroup id="enabled" initiallyOpen title={t('plugins.group.enabled', { count: enabled.length })}>
+          {enabled.length ? items(enabled) : <p className="fine-print">{t('plugins.group.noneEnabled')}</p>}
+        </PluginGroup>
+        <PluginGroup id="disabled" initiallyOpen={false} title={t('plugins.group.disabled', { count: disabled.length })}
+          note={toReview > 0 ? t('plugins.group.toReview', { count: toReview }) : undefined}>
+          {disabled.length ? items(disabled) : <p className="fine-print">{t('plugins.group.noneDisabled')}</p>}
+        </PluginGroup>
+      </>}
     </>}
     {review && <PluginEnableDialog open manifest={review.manifest} folder={review.folder} stored={review.secrets} busy={busy} error={reviewError}
       onCancel={() => setReview(null)} onEnable={enable} t={t} />}
   </section>;
+}
+
+// A collapsible group of plugins. Its contents stay in the page while closed, so a plugin's state is still found.
+function PluginGroup({ id, title, note, initiallyOpen, children }: { id: string; title: string; note?: string; initiallyOpen: boolean; children: ReactNode }) {
+  const [open, setOpen] = useState(initiallyOpen);
+  return <details className="plugin-group" data-group={id} open={open} onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary><span>{title}</span>{note && <span className="plugin-group-note">{note}</span>}</summary>
+    {children}
+  </details>;
 }
 
 function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugin; invoke: Invoke; refresh(): void; onReview(): void }) {
@@ -77,31 +100,38 @@ function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugi
   };
   const stateText = status ? t(stateKeys[status.state] ?? 'plugins.state.unusable')
     : !manifest ? t('plugins.state.unusable') : approval === 'enabled' ? t('plugins.state.idle') : t('plugins.state.notEnabled');
-  return <li className="plugin-item">
+  const state = status?.state ?? (!manifest ? 'unusable' : approval === 'enabled' ? 'idle' : 'not_enabled');
+  return <li className="plugin-item" data-state={state}>
     <div className="plugin-heading">
-      <strong>{manifest ? `${manifest.name} ${manifest.version}` : plugin.folder}</strong>
-      {manifest && <code>{manifest.id}</code>}
-      <span className="fine-print">{stateText}</span>
+      <div className="plugin-title">
+        <strong>{manifest ? manifest.name : plugin.folder}</strong>
+        {manifest && <span className="plugin-version">{manifest.version}</span>}
+        {manifest && <code className="plugin-id">{manifest.id}</code>}
+      </div>
+      <span className="plugin-state">{stateText}</span>
     </div>
     {plugin.error && <p className="field-error" role="alert">{plugin.error}</p>}
     {!plugin.error && status?.error && status.state !== 'not_enabled' && <p className="field-error" role="alert">{status.error}</p>}
-    {manifest && approval && <div className="settings-actions plugin-approval">
+    {manifest && approval && <div className="plugin-approval">
       {approval === 'enabled' && <><span className="fine-print">{t('plugins.enabled')}</span>
         <button type="button" className="button compact" onClick={() => { void run('disable_plugin', { id: manifest.id }).catch(() => {}); }}>{t('plugins.disable')}</button></>}
       {approval === 'not_enabled' && <><span className="fine-print">{t('plugins.notEnabled')}</span>
         <button type="button" className="button compact" onClick={onReview}>{t('plugins.enable')}</button></>}
-      {approval === 'changed' && <><span className="field-error" role="alert">{t('plugins.changed')}</span>
+      {approval === 'changed' && <><span className="field-error" role="alert">{richText(t('plugins.changed'))}</span>
         <button type="button" className="button compact" onClick={onReview}>{t('plugins.review')}</button></>}
     </div>}
     {error && <p className="field-error" role="alert">{t('plugins.actionFailed', { error })}</p>}
     {manifest && <>
-      <p className="fine-print">{t('plugins.actions', { actions: manifest.actions.map(action => action.label).join(', ') })}</p>
-      <p className="fine-print">{t('plugins.command', { command: manifest.command.join(' ') })}</p>
-      <p className="fine-print">{[
-        permissions?.network?.length ? t('plugins.permissions.network', { hosts: permissions.network.join(', ') }) : t('plugins.permissions.noNetwork'),
-        permissions?.variables?.length ? t('plugins.permissions.variables', { names: permissions.variables.join(', ') }) : t('plugins.permissions.noVariables'),
-        permissions?.programs ? t('plugins.permissions.programs') : t('plugins.permissions.noPrograms'),
-      ].join(' ')} {t('plugins.permissions.note')}</p>
+      <dl className="plugin-facts">
+        <dt>{t('plugins.actions')}</dt><dd>{manifest.actions.map(action => action.label).join(', ')}</dd>
+        <dt>{t('plugins.command')}</dt><dd><code>{manifest.command.join(' ')}</code></dd>
+        <dt>{t('plugins.declares')}</dt><dd>
+          {permissions?.network?.length ? richText(t('plugins.permissions.network'), { hosts: codeList(permissions.network) }) : t('plugins.permissions.noNetwork')}{' '}
+          {permissions?.variables?.length ? richText(t('plugins.permissions.variables'), { names: codeList(permissions.variables) }) : t('plugins.permissions.noVariables')}{' '}
+          {permissions?.programs ? t('plugins.permissions.programs') : t('plugins.permissions.noPrograms')}
+        </dd>
+      </dl>
+      <p className="fine-print">{t('plugins.permissions.note')}</p>
     </>}
     {manifest && (plugin.secrets?.length ?? 0) > 0 && <div className="plugin-secrets">
       <label>{t('plugins.secrets')}</label>

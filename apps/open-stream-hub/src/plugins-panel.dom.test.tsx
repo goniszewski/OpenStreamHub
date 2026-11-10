@@ -53,6 +53,24 @@ const button = (root: Element, text: string) => {
 const commands = (calls: [string, unknown][]) => calls.map(([command]) => command);
 
 describe('Settings > Plugins in the DOM', () => {
+  it('groups plugins into Enabled (open) and Disabled (closed), and shows ids, paths and commands as code', async () => {
+    const { invoke } = fakeInvoke();
+    view = render(<PluginsPanel desktop invoke={invoke} />);
+    await settle();
+    const enabled = view.$<HTMLDetailsElement>('[data-group="enabled"]');
+    const disabled = view.$<HTMLDetailsElement>('[data-group="disabled"]');
+    expect(enabled.open).toBe(true);
+    expect(disabled.open).toBe(false);
+    expect(enabled.querySelector('summary')!.textContent).toBe('Enabled (1)');
+    expect(disabled.querySelector('summary')!.textContent).toBe('Disabled (2)1 to review');
+    expect([...enabled.querySelectorAll('.plugin-title strong')].map(name => name.textContent)).toEqual(['Lights']);
+    expect([...disabled.querySelectorAll('.plugin-title strong')].map(name => name.textContent)).toEqual(['Desk', 'Hall']);
+    const hall = item(view, 'Hall');
+    const codes = [...hall.querySelectorAll('code')].map(code => code.textContent);
+    expect(codes).toEqual(['com.example.hall', '/usr/bin/python3 plugin.py --quiet', 'homeassistant.local:8123', 'room']);
+    expect(view.$('.plugins-panel > .fine-print code').textContent).toBe('plugin.json');
+  });
+
   it('offers Enable…, Review… or Disable by approval', async () => {
     const { invoke, calls } = fakeInvoke();
     view = render(<PluginsPanel desktop invoke={invoke} />);

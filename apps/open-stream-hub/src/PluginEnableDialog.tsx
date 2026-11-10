@@ -3,6 +3,7 @@ import { ModalDialog } from './controls';
 import { english } from './i18n-react';
 import type { Translate } from './i18n-react';
 import { isSecretParam } from './plugins-model';
+import { codeList, richText } from './rich-text';
 import type { PluginManifest, PluginParam, PluginSecretStatus } from './plugins-model';
 
 // The first-enable dialog: everything the plugin's manifest declares, with a plain warning that it runs as the user
@@ -37,14 +38,14 @@ export function PluginEnableDialog({ open, manifest, folder, stored = [], busy =
   return <ModalDialog open={open} role="alertdialog" labelledBy="plugin-enable-title" describedBy="plugin-enable-warning plugin-enable-intro" onCancel={onCancel} className="execute-dialog plugin-enable-dialog">
     <h2 id="plugin-enable-title">{t('plugins.dialog.title', { name: manifest.name })}</h2>
     <p id="plugin-enable-warning" className="execute-warning"><TriangleAlert size={18} aria-hidden="true" /><span>{t('plugins.dialog.warning')}</span></p>
-    <p id="plugin-enable-intro">{t('plugins.dialog.intro')}</p>
+    <p id="plugin-enable-intro">{richText(t('plugins.dialog.intro'))}</p>
     <div className="execute-details" tabIndex={0} role="region" aria-label={t('plugins.dialog.details')}>
       <ul className="execute-capabilities">
-        <li>{t('plugins.dialog.id', { id: manifest.id })}</li>
+        <li>{richText(t('plugins.dialog.id'), { id: <code>{manifest.id}</code> })}</li>
         <li>{t('plugins.dialog.version', { version: manifest.version })}</li>
-        <li>{t('plugins.dialog.folder', { folder })}</li>
-        <li className="plugin-enable-command">{t('plugins.dialog.program', { program })}{' '}
-          {args.length ? t('plugins.dialog.arguments', { arguments: args.map(arg => JSON.stringify(arg)).join(' ') }) : t('plugins.dialog.noArguments')}</li>
+        <li>{richText(t('plugins.dialog.folder'), { folder: <code>{folder}</code> })}</li>
+        <li className="plugin-enable-command">{richText(t('plugins.dialog.program'), { program: <code>{program}</code> })}{' '}
+          {args.length ? richText(t('plugins.dialog.arguments'), { arguments: <code>{args.map(arg => JSON.stringify(arg)).join(' ')}</code> }) : t('plugins.dialog.noArguments')}</li>
       </ul>
       <h3>{t('plugins.dialog.actions')}</h3>
       <ul className="plugin-enable-actions">{manifest.actions.map(action => <li key={action.id}>{action.label}
@@ -54,8 +55,8 @@ export function PluginEnableDialog({ open, manifest, folder, stored = [], busy =
       </li>)}</ul>
       <h3>{t('plugins.dialog.permissions')}</h3>
       <ul className="plugin-enable-permissions">
-        <li>{permissions?.network?.length ? t('plugins.permissions.network', { hosts: permissions.network.join(', ') }) : t('plugins.permissions.noNetwork')}</li>
-        <li>{permissions?.variables?.length ? t('plugins.permissions.variables', { names: permissions.variables.join(', ') }) : t('plugins.permissions.noVariables')}</li>
+        <li>{permissions?.network?.length ? richText(t('plugins.permissions.network'), { hosts: codeList(permissions.network) }) : t('plugins.permissions.noNetwork')}</li>
+        <li>{permissions?.variables?.length ? richText(t('plugins.permissions.variables'), { names: codeList(permissions.variables) }) : t('plugins.permissions.noVariables')}</li>
         <li>{permissions?.programs ? t('plugins.permissions.programs') : t('plugins.permissions.noPrograms')}</li>
       </ul>
       <p className="plugin-enable-secrets">{secrets.length ? t('plugins.dialog.secrets', { labels: secrets.join(', ') }) : t('plugins.dialog.noSecrets')}</p>

@@ -6,9 +6,12 @@
 //! stdout with a request number, and waits for the app to write the plugin's answer back on its control channel as
 //! `plugin_result` with the same number. Only the service decides that a press runs, as for every other action.
 
-use crate::profile::{
-    VariableValue, fill_in, is_invisible_text_character, validate_variable_name,
-    variable_references,
+use crate::{
+    InputEvent, InputValue,
+    profile::{
+        Gesture, ServiceModule, VariableValue, fill_in, is_invisible_text_character,
+        validate_variable_name, variable_references,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -212,6 +215,44 @@ pub fn fill_in_plugin_params(
     Ok(filled)
 }
 
+/// The input that made a plugin action run, or that a plugin hears as an event: the control, its gesture and, for a
+/// fader, its position.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PluginInput {
+    /// The module the control belongs to.
+    pub module: ServiceModule,
+    /// Zero-based wire control index.
+    pub control: u8,
+    /// The gesture, with the profile's names.
+    pub gesture: Gesture,
+    /// A fader's position; `None` for other inputs.
+    pub value: Option<InputValue>,
+}
+
+impl PluginInput {
+    /// The input of `event` on a control of `module`.
+    pub fn new(module: ServiceModule, event: &InputEvent) -> Self {
+        Self {
+            module,
+            control: event.control,
+            gesture: event.gesture,
+            value: event.value,
+        }
+    }
+
+    /// `{"gesture":…,"control":{"module":…,"index":…}}`, with `"position":{"raw":…,"maximum":…}` for a fader.
+    pub fn to_json(&self) -> Value {
+        let mut input = json!({
+            "gesture": self.gesture,
+            "control": {"module": self.module, "index": self.control},
+        });
+        if let Some(InputValue::Position { raw, maximum }) = self.value {
+            input["position"] = json!({"raw": raw, "maximum": maximum});
+        }
+        input
+    }
+}
+
 /// Writes one JSON record to the service's stdout, in the same stream as its other records.
 pub type RecordSink = Box<dyn Fn(&Value) -> io::Result<()> + Send + Sync>;
 
@@ -251,7 +292,8 @@ impl PluginBridge {
 
     /// Asks the app to run `action` of `plugin` and waits up to `timeout` for the answer. A late answer, an
     /// unreachable app or a cancellation fails the press; the plugin may already have acted. `variables` names the
-    /// text parameters whose variables were filled in, so the app can check them against the manifest.
+    /// text parameters whose variables were filled in, so the app can check them against the manifest. `input` is
+    /// the press that ran the action, when one did.
     #[allow(clippy::too_many_arguments)]
     pub fn invoke(
         &self,
@@ -260,13 +302,14 @@ impl PluginBridge {
         action: &str,
         params: &BTreeMap<String, PluginValue>,
         variables: &[String],
+        input: Option<&PluginInput>,
         timeout: Duration,
         cancellation: Option<&AtomicBool>,
     ) -> Result<(), String> {
         let request = self.0.next.fetch_add(1, Ordering::SeqCst);
         let (sender, receiver) = mpsc::channel();
         self.pending().insert(request, sender);
-        let record = json!({
+        let mut record = json!({
             "type": "plugin_invoke",
             "request": request,
             "plugin": plugin,
@@ -276,6 +319,9 @@ impl PluginBridge {
             "variables": variables,
             "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         });
+        if let Some(input) = input {
+            record["input"] = input.to_json();
+        }
         if let Err(error) = (self.0.send)(&record) {
             self.pending().remove(&request);
             return Err(format!(
@@ -304,6 +350,29 @@ impl PluginBridge {
         };
         self.pending().remove(&request);
         answer
+    }
+
+    /// Tells the app that `input` happened on a control that `action` of `plugin` owns, with no binding of its own
+    /// (see [`crate::ProfileSession::plugin_event_targets`]). Nothing waits and nothing comes back: the app forwards
+    /// it to the plugin or drops it. `params` have their variables filled in.
+    pub fn event(
+        &self,
+        plugin: &str,
+        min_version: &str,
+        action: &str,
+        params: &BTreeMap<String, PluginValue>,
+        variables: &[String],
+        input: &PluginInput,
+    ) -> io::Result<()> {
+        (self.0.send)(&json!({
+            "type": "plugin_event",
+            "plugin": plugin,
+            "min_version": min_version,
+            "action": action,
+            "params": params,
+            "variables": variables,
+            "input": input.to_json(),
+        }))
     }
 
     /// Hands the app's answer to the invoke waiting for `request`. An unknown or late request is an error, so the
@@ -470,6 +539,11 @@ mod tests {
             assert_eq!(record["plugin"], "com.x.y");
             assert_eq!(record["params"], json!({"on": true}));
             assert_eq!(record["variables"], json!(["on"]));
+            assert_eq!(
+                record["input"],
+                json!({"gesture": "position_changed", "control": {"module": "m005s", "index": 2},
+                    "position": {"raw": 512, "maximum": 1023}})
+            );
             let request = record["request"].as_u64().unwrap();
             assert!(app.complete(request + 100, Ok(())).is_err());
             app.complete(request, Err("light is offline".into()))
@@ -483,11 +557,64 @@ mod tests {
             "toggle",
             &params(&[("on", PluginValue::Bool(true))]),
             &["on".into()],
+            Some(&PluginInput {
+                module: ServiceModule::M005S,
+                control: 2,
+                gesture: Gesture::PositionChanged,
+                value: Some(InputValue::Position {
+                    raw: 512,
+                    maximum: 1023,
+                }),
+            }),
             Duration::from_secs(5),
             None,
         );
         answering.join().unwrap();
         assert_eq!(result, Err("light is offline".into()));
+    }
+
+    #[test]
+    fn an_event_is_written_without_waiting_and_an_invoke_without_input_has_none() {
+        let sent = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let log = Arc::clone(&sent);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            log.lock().unwrap().push(record.clone());
+            Ok(())
+        }));
+        let input = PluginInput {
+            module: ServiceModule::M4315,
+            control: 3,
+            gesture: Gesture::Released,
+            value: None,
+        };
+        bridge
+            .event(
+                "com.x.y",
+                "1.0.0",
+                "talk",
+                &params(&[("channel", PluginValue::Text("team".into()))]),
+                &[],
+                &input,
+            )
+            .unwrap();
+        assert_eq!(
+            sent.lock().unwrap()[0],
+            json!({"type": "plugin_event", "plugin": "com.x.y", "min_version": "1.0.0", "action": "talk",
+                "params": {"channel": "team"}, "variables": [],
+                "input": {"gesture": "released", "control": {"module": "m4315", "index": 3}}})
+        );
+        assert!(bridge.pending().is_empty());
+        let _ = bridge.invoke(
+            "com.x.y",
+            "1.0.0",
+            "talk",
+            &BTreeMap::new(),
+            &[],
+            None,
+            Duration::from_millis(1),
+            None,
+        );
+        assert!(sent.lock().unwrap()[1].get("input").is_none());
     }
 
     #[test]
@@ -501,6 +628,7 @@ mod tests {
                 "a",
                 &BTreeMap::new(),
                 &[],
+                None,
                 Duration::from_millis(120),
                 None,
             )
@@ -516,6 +644,7 @@ mod tests {
                 "a",
                 &BTreeMap::new(),
                 &[],
+                None,
                 Duration::from_secs(5),
                 Some(&cancelled),
             )
@@ -529,6 +658,7 @@ mod tests {
                 "a",
                 &BTreeMap::new(),
                 &[],
+                None,
                 Duration::from_secs(5),
                 None,
             )

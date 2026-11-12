@@ -49,7 +49,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc, Mutex, MutexGuard,
+        Arc, Condvar, Mutex, MutexGuard, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
@@ -83,12 +83,20 @@ const FAILURE_WINDOW: Duration = Duration::from_secs(300);
 const MAX_SETS_PER_SECOND: usize = 10;
 /// Log lines a plugin may send per second, and the longest kept.
 const MAX_LOGS_PER_SECOND: usize = 20;
+/// Input events one plugin is sent a second; more are dropped and counted in its log.
+const MAX_EVENTS_PER_SECOND: usize = 50;
+/// Input events waiting for a plugin that is not reading its socket; more are dropped and counted.
+const MAX_QUEUED_EVENTS: usize = 64;
+/// Bytes waiting to be written to one plugin. Past this an input event is dropped, and any other line ends the
+/// connection: a plugin that reads nothing while it is sent this much is not working.
+const MAX_OUTBOX_BYTES: usize = 1024 * 1024;
 const MAX_LOG_BYTES: usize = 1024;
 /// Log lines kept per plugin for Settings.
 const KEPT_LOGS: usize = 50;
 /// The longest error text from a plugin passed on to a module.
 const MAX_ERROR_BYTES: usize = 512;
-/// How long a write to a plugin may block.
+/// How long a write to a plugin may block: a refused hello's error, or one wait of a connection's writer, which
+/// then checks the connection still stands and goes on.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a stopping plugin has after SIGTERM before SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(1);
@@ -111,22 +119,142 @@ struct Pending {
     reply: Reply,
 }
 
-/// A connected plugin's socket: the write half and when it last said anything.
+/// One line waiting for a connection's writer.
+struct Line {
+    message: Value,
+    /// Its length as queued, counted in [`Outbox::bytes`].
+    len: usize,
+    event: bool,
+    /// For an invoke, when the module gives up on it: it is not written after that, and its `timeout_ms` is what is
+    /// left when it is.
+    deadline: Option<Instant>,
+}
+
+/// Lines waiting for a connection's writer, in the order they were sent.
+#[derive(Default)]
+struct Outbox {
+    lines: VecDeque<Line>,
+    bytes: usize,
+    events: usize,
+}
+
+/// A connected plugin's socket and when it last said anything. Every line to the plugin goes through its outbox and
+/// is written, in order, by the connection's writer ([`PluginHost::write_lines`]): no sender waits for the plugin to
+/// read, and an event is never written between the halves of another line.
 struct Conn {
-    writer: Mutex<UnixStream>,
+    /// Only shut down from here, which ends the writer and the reader.
+    stream: UnixStream,
+    /// Why this side shut the connection down, if it did, for the reader to report.
+    closed: Mutex<Option<&'static str>>,
+    outbox: Mutex<Outbox>,
+    queued: Condvar,
     last_seen: Mutex<Instant>,
     pinged: Mutex<Option<Instant>>,
 }
 
 impl Conn {
+    fn new(stream: UnixStream) -> Self {
+        Self {
+            stream,
+            closed: Mutex::new(None),
+            outbox: Mutex::new(Outbox::default()),
+            queued: Condvar::new(),
+            last_seen: Mutex::new(Instant::now()),
+            pinged: Mutex::new(None),
+        }
+    }
+
+    /// Queues one line. Fails, and ends the connection, when the plugin has left too much unread.
     fn send(&self, message: &Value) -> io::Result<()> {
-        let mut line = message.to_string();
-        line.push('\n');
-        let mut writer = self
-            .writer
+        self.queue_or_close(message, None)
+    }
+
+    /// Queues one invoke, which is dropped instead of written once `deadline` passes.
+    fn send_invoke(&self, message: &Value, deadline: Instant) -> io::Result<()> {
+        self.queue_or_close(message, Some(deadline))
+    }
+
+    fn queue_or_close(&self, message: &Value, deadline: Option<Instant>) -> io::Result<()> {
+        if self.queue(message, false, deadline) {
+            return Ok(());
+        }
+        const WHY: &str = "the plugin was sent more than it read";
+        self.close(WHY);
+        Err(io::Error::other(WHY))
+    }
+
+    /// Queues one input event, or says it was dropped: [`MAX_QUEUED_EVENTS`] are waiting already, or the outbox is
+    /// full.
+    fn queue_event(&self, message: &Value) -> bool {
+        self.queue(message, true, None)
+    }
+
+    fn queue(&self, message: &Value, event: bool, deadline: Option<Instant>) -> bool {
+        let len = message.to_string().len() + 1;
+        let mut outbox = self
+            .outbox
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        writer.write_all(line.as_bytes())
+        if outbox.bytes + len > MAX_OUTBOX_BYTES || (event && outbox.events >= MAX_QUEUED_EVENTS) {
+            return false;
+        }
+        outbox.bytes += len;
+        outbox.events += usize::from(event);
+        outbox.lines.push_back(Line {
+            message: message.clone(),
+            len,
+            event,
+            deadline,
+        });
+        self.queued.notify_one();
+        true
+    }
+
+    /// The next line to write, waiting at most `wait` for one. An invoke whose deadline passed while it waited is
+    /// left out: the module has given up on it, and its pending entry has expired.
+    fn next_line(&self, wait: Duration) -> Option<Vec<u8>> {
+        let mut outbox = self
+            .outbox
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if outbox.lines.is_empty() {
+            outbox = self
+                .queued
+                .wait_timeout(outbox, wait)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        while let Some(mut line) = outbox.lines.pop_front() {
+            outbox.bytes -= line.len;
+            outbox.events -= usize::from(line.event);
+            if let Some(deadline) = line.deadline {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    continue;
+                }
+                line.message["timeout_ms"] = json!(left.as_millis().max(1) as u64);
+            }
+            let mut bytes = line.message.to_string().into_bytes();
+            bytes.push(b'\n');
+            return Some(bytes);
+        }
+        None
+    }
+
+    fn close(&self, why: &'static str) {
+        self.closed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_or_insert(why);
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
+    /// Why this side closed the connection, if it did.
+    fn closed_why(&self) -> Option<&'static str> {
+        *self
+            .closed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn seen(&self) {
@@ -188,6 +316,9 @@ struct Instance {
     dropped_logs: u64,
     sets: Window,
     log_rate: Window,
+    event_rate: Window,
+    /// Events dropped by the rate limit since the last one sent, told in the log with the next one sent.
+    dropped_events: u64,
 }
 
 impl Instance {
@@ -212,6 +343,8 @@ impl Instance {
             dropped_logs: 0,
             sets: Window::default(),
             log_rate: Window::default(),
+            event_rate: Window::default(),
+            dropped_events: 0,
         }
     }
 
@@ -281,6 +414,41 @@ pub struct Status {
 /// The plugin host; clones share it.
 #[derive(Clone)]
 pub struct PluginHost(Arc<Inner>);
+
+/// The `input` of a module's `plugin_invoke` or `plugin_event` record, rebuilt from its known fields so nothing else
+/// passes to the plugin: `{"gesture":…,"control":{"module":…,"index":…}}`, with `"position":{"raw":…,"maximum":…}`
+/// for a fader. `None` when it is missing or malformed.
+fn input_of(record: &Value) -> Option<Value> {
+    let input = &record["input"];
+    let name = |value: &Value| {
+        value
+            .as_str()
+            .filter(|text| {
+                !text.is_empty()
+                    && text.len() <= 32
+                    && text
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            })
+            .map(str::to_string)
+    };
+    let gesture = name(&input["gesture"])?;
+    let module = name(&input["control"]["module"])?;
+    let index = input["control"]["index"]
+        .as_u64()
+        .filter(|index| *index <= 255)?;
+    let mut rebuilt = json!({"gesture": gesture, "control": {"module": module, "index": index}});
+    if !input["position"].is_null() {
+        let raw = input["position"]["raw"]
+            .as_u64()
+            .filter(|raw| *raw <= 65_535)?;
+        let maximum = input["position"]["maximum"]
+            .as_u64()
+            .filter(|max| *max <= 65_535)?;
+        rebuilt["position"] = json!({"raw": raw, "maximum": maximum});
+    }
+    Some(rebuilt)
+}
 
 fn truncate(text: &str, bytes: usize) -> String {
     if text.len() <= bytes {
@@ -533,10 +701,7 @@ impl PluginHost {
             stop_child(child);
         }
         if let Some(conn) = instance.conn.take() {
-            let _ = conn
-                .writer
-                .lock()
-                .map(|stream| stream.shutdown(std::net::Shutdown::Both));
+            conn.close("the plugin was stopped");
         }
         for (_, pending) in instance.pending.drain() {
             self.answer(pending.reply, Err(format!("the plugin was stopped: {why}")));
@@ -750,7 +915,9 @@ impl PluginHost {
     }
 
     /// Ends an instance's current connection as a failure, unless a newer one replaced it already.
+    /// `why` gives way to the reason this side closed the connection, if it did.
     fn connection_lost(&self, id: &str, conn: &Arc<Conn>, why: &str) {
+        let why = conn.closed_why().unwrap_or(why);
         let mut state = self.lock();
         if let Some(instance) = state.instances.get_mut(id)
             && instance
@@ -892,13 +1059,13 @@ impl PluginHost {
             refuse("the first line must be {\"type\":\"hello\",\"id\":…,\"token\":…}");
             return None;
         };
-        let writer = stream.try_clone().ok()?;
+        let (Ok(writer), Ok(handle)) = (stream.try_clone(), stream.try_clone()) else {
+            return None;
+        };
         let _ = writer.set_write_timeout(Some(WRITE_TIMEOUT));
-        let conn = Arc::new(Conn {
-            writer: Mutex::new(writer),
-            last_seen: Mutex::new(Instant::now()),
-            pinged: Mutex::new(None),
-        });
+        let conn = Arc::new(Conn::new(handle));
+        // Queued before anything else can be: the connection is reachable once it is the instance's below.
+        let _ = conn.send(&json!({"type":"welcome"}));
         {
             let mut state = self.lock();
             let Some(instance) = state
@@ -921,9 +1088,17 @@ impl PluginHost {
                 return None;
             }
             instance.conn = Some(Arc::clone(&conn));
+            // A new process starts with a fresh limit and no count from the last one.
+            instance.event_rate = Window::default();
+            instance.dropped_events = 0;
         }
-        if conn.send(&json!({"type":"welcome"})).is_err() {
-            self.connection_lost(id, &conn, "the plugin's connection broke");
+        let (host, writer_id, weak) = (self.clone(), id.to_string(), Arc::downgrade(&conn));
+        if thread::Builder::new()
+            .name(format!("plugin-writer {id}"))
+            .spawn(move || host.write_lines(&writer_id, &weak, writer))
+            .is_err()
+        {
+            self.connection_lost(id, &conn, "could not start the plugin's writer");
             return None;
         }
         Some((id.to_string(), conn, reader))
@@ -1072,6 +1247,119 @@ impl PluginHost {
         }
     }
 
+    /// Carries one `plugin_event` record from a module run to its plugin, or drops it without a word: when the host
+    /// stops, the run no longer executes with the plugin, the plugin is not running and connected, its manifest does
+    /// not let the action take events or does not accept the record, or more than [`MAX_EVENTS_PER_SECOND`] came this
+    /// second (those are counted in its log). Never waits for the plugin, and nothing is answered.
+    pub fn event(&self, service_id: &str, record: &Value) {
+        if self.0.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        let sending = (|| {
+            let id = record["plugin"].as_str()?;
+            let action = record["action"].as_str()?;
+            let input = input_of(record)?;
+            let params: BTreeMap<String, PluginValue> =
+                serde_json::from_value(record["params"].clone()).ok()?;
+            let variables: Vec<String> = match &record["variables"] {
+                Value::Null => Vec::new(),
+                names => serde_json::from_value(names.clone()).ok()?,
+            };
+            let mut state = self.lock();
+            if !state
+                .usage
+                .get(service_id)
+                .is_some_and(|plugins| plugins.contains(id))
+            {
+                return None;
+            }
+            let instance = state.instances.get_mut(id)?;
+            let manifest = instance.manifest.as_ref()?;
+            if !manifest.satisfies(record["min_version"].as_str().unwrap_or("0.0.0"))
+                || plugins::check_event(manifest, action, &params, &variables).is_err()
+            {
+                return None;
+            }
+            // The same text limits as an invoke's, checked again here as there.
+            cooltek_sdk_service::plugin::validate_plugin_action(id, "0.0.0", action, &params, &[])
+                .ok()?;
+            let (Some(_), Some(conn)) = (&instance.child, &instance.conn) else {
+                return None;
+            };
+            let mut message = json!({"type": "event", "action": action, "params": params});
+            if let (Some(message), Value::Object(input)) = (message.as_object_mut(), input) {
+                message.extend(input);
+            }
+            if message.to_string().len() > MAX_LINE {
+                return None;
+            }
+            // Over the rate limit, or queued behind a plugin that is not reading: dropped and counted.
+            if !instance.event_rate.allow(MAX_EVENTS_PER_SECOND) {
+                instance.dropped_events += 1;
+                return None;
+            }
+            if !conn.queue_event(&message) {
+                // Not sent, so it does not count against the rate.
+                instance.event_rate.0.pop_back();
+                instance.dropped_events += 1;
+                return None;
+            }
+            if instance.dropped_events > 0 {
+                let dropped = std::mem::take(&mut instance.dropped_events);
+                instance.keep_log(format!(
+                    "{dropped} input events were not sent: more than {MAX_EVENTS_PER_SECOND} a second, or the plugin was not reading them"
+                ));
+            }
+            Some(())
+        })();
+        let _ = sending;
+    }
+
+    /// A connection's writer: writes each queued line whole and in order, however long the plugin takes to read it,
+    /// until the connection is retired (no longer held), shut down or broken. A plugin that reads nothing for long is
+    /// found by its pings, which wait in the same line; its input events are dropped meanwhile.
+    fn write_lines(&self, id: &str, conn: &Weak<Conn>, mut stream: UnixStream) {
+        let gone = || conn.upgrade().is_none() || self.0.stopped.load(Ordering::SeqCst);
+        loop {
+            // The connection is held only while it is asked for a line, so a retired one is dropped and this ends.
+            let Some(line) = (match conn.upgrade() {
+                Some(conn) => conn.next_line(TICK),
+                None => return,
+            }) else {
+                if gone() {
+                    return;
+                }
+                continue;
+            };
+            let mut written = 0;
+            while written < line.len() {
+                match stream.write(&line[written..]) {
+                    Ok(0) => return self.writer_lost(id, conn),
+                    Ok(n) => written += n,
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock
+                                | io::ErrorKind::TimedOut
+                                | io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        if gone() {
+                            return;
+                        }
+                    }
+                    Err(_) => return self.writer_lost(id, conn),
+                }
+            }
+        }
+    }
+
+    fn writer_lost(&self, id: &str, conn: &Weak<Conn>) {
+        if let Some(conn) = conn.upgrade() {
+            self.connection_lost(id, &conn, "the plugin's connection broke");
+        }
+    }
+
     /// One plugin's invoke thread: reads secrets for its queued invokes in order until the host stops, then fails the
     /// ones left.
     fn handle_invokes(&self, queued: mpsc::Receiver<Queued>) {
@@ -1144,7 +1432,7 @@ impl PluginHost {
                 }
             }
         }
-        if conn.send(&message).is_err() {
+        if conn.send_invoke(&message, deadline).is_err() {
             let request = message["request"].as_u64().unwrap_or(0);
             let pending = self
                 .lock()
@@ -1279,13 +1567,16 @@ impl PluginHost {
                     "{id} is busy: {MAX_IN_FLIGHT} presses are still waiting for it"
                 ));
             }
-            let message = json!({
+            let mut message = json!({
                 "type": "invoke",
                 "request": request,
                 "action": action,
                 "params": params,
                 "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             });
+            if let Some(input) = input_of(record) {
+                message["input"] = input;
+            }
             if message.to_string().len() > MAX_LINE {
                 return Err(format!(
                     "{id}: the press would be longer than the {} KiB a plugin line may hold",
@@ -1399,6 +1690,10 @@ mod tests {
                 { "id": "login", "label": "Log in", "params": [
                     { "id": "token", "label": "Token", "type": "text", "secret": true, "required": true },
                     { "id": "user", "label": "User", "type": "text" }
+                ] },
+                { "id": "talk", "label": "Talk", "events": true, "params": [
+                    { "id": "channel", "label": "Channel", "type": "text", "variables": true },
+                    { "id": "key", "label": "Key", "type": "text", "secret": true, "required": true }
                 ] },
                 { "id": "bulk", "label": "Bulk", "params": [
                     { "id": "s1", "label": "S1", "type": "text", "secret": true },
@@ -1610,6 +1905,228 @@ mod tests {
             }),
         );
         assert!(answer(&newer).unwrap_err().contains("older than 2.0.0"));
+    }
+
+    fn event(host: &PluginHost, service: &str, action: &str, input: Value) {
+        host.event(
+            service,
+            &json!({"type":"plugin_event","plugin":ID,"min_version":"1.0.0","action":action,
+                "params":{"channel":"team"},"variables":["channel"],"input":input}),
+        );
+    }
+
+    #[test]
+    fn a_plugin_hears_events_only_for_actions_that_take_them_from_runs_that_use_it() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        let released =
+            json!({"gesture":"released","control":{"module":"m4315","index":3},"extra":1});
+        // Not running yet: dropped, and nothing is waiting for it.
+        event(host, "m1", "talk", released.clone());
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        // An action without "events", a run that does not use the plugin, a malformed input, a newer min_version:
+        // all dropped without a word.
+        event(host, "m1", "set", released.clone());
+        event(host, "m2", "talk", released.clone());
+        event(
+            host,
+            "m1",
+            "talk",
+            json!({"gesture":"Released","control":{"module":"m4315","index":3}}),
+        );
+        host.event(
+            "m1",
+            &json!({"plugin":ID,"min_version":"9.0.0","action":"talk","params":{},"input":released}),
+        );
+        event(
+            host,
+            "m1",
+            "talk",
+            json!({"gesture":"position_changed","control":{"module":"m005s","index":1},
+                "position":{"raw":512,"maximum":1023}}),
+        );
+        // The first line the plugin hears is the one event that passed; unknown input fields are not passed on, and
+        // the required secret is not needed.
+        assert_eq!(
+            plugin.receive_message(),
+            json!({"type":"event","action":"talk","params":{"channel":"team"},"gesture":"position_changed",
+                "control":{"module":"m005s","index":1},"position":{"raw":512,"maximum":1023}})
+        );
+        // An invoke passes its input on.
+        let (sender, pressed) = mpsc::channel();
+        host.invoke(
+            "m1",
+            &json!({"type":"plugin_invoke","request":1,"plugin":ID,"min_version":"1.0.0","action":"set",
+                "params":{"entity":"a"},"timeout_ms":5000,"input":released}),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        let asked = plugin.receive_message();
+        assert_eq!(asked["type"], "invoke");
+        assert_eq!(
+            asked["input"],
+            json!({"gesture":"released","control":{"module":"m4315","index":3}})
+        );
+        plugin.send(json!({"type":"result","request":asked["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
+    }
+
+    #[test]
+    fn a_plugin_that_does_not_read_its_events_loses_some_but_not_its_connection() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let long = "x".repeat(1500);
+        let turn = json!({"gesture":"clockwise","control":{"module":"m003k","index":0}});
+        let started = Instant::now();
+        // Far more than the socket and the queue hold, in bursts within the rate limit, while the plugin reads
+        // nothing but keeps answering pings.
+        for _ in 0..8 {
+            for _ in 0..MAX_EVENTS_PER_SECOND {
+                host.event(
+                    "m1",
+                    &json!({"type":"plugin_event","plugin":ID,"min_version":"1.0.0","action":"talk",
+                        "params":{"channel":long},"input":turn}),
+                );
+            }
+            for _ in 0..11 {
+                thread::sleep(Duration::from_millis(100));
+                plugin.send(json!({"type":"pong"}));
+            }
+        }
+        // Sending never waited for the plugin.
+        assert!(started.elapsed() < Duration::from_secs(12));
+        assert_eq!(host.state_of(ID), Some("running"));
+        // It reads what was queued, then a new event is sent and the loss is logged.
+        let mut heard = 0;
+        plugin
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        loop {
+            let mut line = String::new();
+            match plugin.reader.read_line(&mut line) {
+                Ok(n) if n > 0 => {
+                    if serde_json::from_str::<Value>(&line).unwrap()["type"] == "event" {
+                        heard += 1;
+                    }
+                }
+                _ => break,
+            }
+        }
+        assert!(heard > 0 && heard < 8 * MAX_EVENTS_PER_SECOND, "{heard}");
+        plugin
+            .reader
+            .get_ref()
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        event(host, "m1", "talk", turn);
+        assert_eq!(plugin.receive_message()["type"], "event");
+        assert_eq!(host.state_of(ID), Some("running"));
+        let logs = host.statuses()[0].logs.clone();
+        assert!(
+            logs.iter()
+                .any(|line| line.contains("input events were not sent")),
+            "{logs:?}"
+        );
+    }
+
+    #[test]
+    fn large_events_and_a_large_press_after_them_wait_for_a_busy_plugin_and_arrive_in_order() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let long = "x".repeat(2000);
+        let turn = json!({"gesture":"clockwise","control":{"module":"m003k","index":0}});
+        // More than the socket holds (macOS gives local sockets 8 KB each way), while the plugin reads nothing for
+        // longer than a write may block.
+        for _ in 0..20 {
+            host.event(
+                "m1",
+                &json!({"type":"plugin_event","plugin":ID,"min_version":"1.0.0","action":"talk",
+                    "params":{"channel":long},"input":turn}),
+            );
+        }
+        let pressed = invoke(host, json!({"entity": "y".repeat(2000)}));
+        // It keeps answering pings, as a plugin busy on another thread would.
+        for _ in 0..25 {
+            thread::sleep(Duration::from_millis(100));
+            plugin.send(json!({"type":"pong"}));
+        }
+        assert_eq!(host.state_of(ID), Some("running"));
+        for _ in 0..20 {
+            assert_eq!(plugin.receive_message()["type"], "event");
+        }
+        let press = plugin.receive_message();
+        assert_eq!(press["type"], "invoke");
+        plugin.send(json!({"type":"result","request":press["request"],"ok":true}));
+        assert_eq!(answer(&pressed), Ok(()));
+        assert_eq!(host.state_of(ID), Some("running"));
+    }
+
+    #[test]
+    fn a_press_that_waits_behind_a_busy_plugin_past_its_deadline_is_never_written() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let long = "x".repeat(2000);
+        let turn = json!({"gesture":"clockwise","control":{"module":"m003k","index":0}});
+        for _ in 0..20 {
+            host.event(
+                "m1",
+                &json!({"type":"plugin_event","plugin":ID,"min_version":"1.0.0","action":"talk",
+                    "params":{"channel":long},"input":turn}),
+            );
+        }
+        let late = invoke_within(host, "set", json!({"entity":"late"}), 300);
+        let kept = invoke(host, json!({"entity":"kept"}));
+        for _ in 0..10 {
+            thread::sleep(Duration::from_millis(100));
+            plugin.send(json!({"type":"pong"}));
+        }
+        drop(late);
+        for _ in 0..20 {
+            assert_eq!(plugin.receive_message()["type"], "event");
+        }
+        let press = plugin.receive_message();
+        assert_eq!(press["params"]["entity"], "kept");
+        assert!(press["timeout_ms"].as_u64().unwrap() < 4500);
+        plugin.send(json!({"type":"result","request":press["request"],"ok":true}));
+        assert_eq!(answer(&kept), Ok(()));
+    }
+
+    #[test]
+    fn events_beyond_the_rate_limit_are_dropped_and_counted_in_the_log() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let turn = json!({"gesture":"clockwise","control":{"module":"m003k","index":0}});
+        for _ in 0..MAX_EVENTS_PER_SECOND + 7 {
+            event(host, "m1", "talk", turn.clone());
+        }
+        for _ in 0..MAX_EVENTS_PER_SECOND {
+            assert_eq!(plugin.receive_message()["type"], "event");
+        }
+        // A second later, still answering pings meanwhile.
+        for _ in 0..11 {
+            thread::sleep(Duration::from_millis(100));
+            plugin.send(json!({"type":"pong"}));
+        }
+        event(host, "m1", "talk", turn.clone());
+        assert_eq!(plugin.receive_message()["type"], "event");
+        assert_eq!(
+            host.statuses()[0].logs,
+            [
+                "7 input events were not sent: more than 50 a second, or the plugin was not reading them"
+            ]
+        );
     }
 
     #[test]
@@ -1838,6 +2355,28 @@ mod tests {
             json!({"type":"set_variable","name":"plugin_presses","value":1})
         );
         assert_eq!(host.statuses()[0].logs[0], "connected");
+        // Hold: the press is an invoke, the release an event, and the plugin logs how long the key was held.
+        let key = json!({"gesture":"pressed","control":{"module":"m4315","index":3}});
+        let (sender, pressed) = mpsc::channel();
+        host.invoke(
+            "m1",
+            &json!({"plugin":"com.example.notify","min_version":"1.0.0","action":"hold","params":{},"input":key}),
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        assert_eq!(answer(&pressed), Ok(()));
+        host.event(
+            "m1",
+            &json!({"plugin":"com.example.notify","min_version":"1.0.0","action":"hold","params":{},
+                "input":{"gesture":"released","control":{"module":"m4315","index":3}}}),
+        );
+        wait_for("the hold to be logged", || {
+            host.statuses()[0]
+                .logs
+                .iter()
+                .any(|line| line.starts_with("held for ") && line.ends_with(" s"))
+        });
         host.stop_all();
     }
 

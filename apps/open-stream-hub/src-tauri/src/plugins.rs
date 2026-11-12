@@ -94,6 +94,9 @@ pub struct ManifestAction {
     pub label: String,
     #[serde(default)]
     pub params: Vec<Param>,
+    /// The plugin hears the other input on controls bound to this action, as `event` messages.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub events: bool,
 }
 
 /// One parameter of a plugin action. `type` decides which of the other fields apply: `variables` and `secret` only to
@@ -535,6 +538,34 @@ pub fn check_invoke(
     params: &BTreeMap<String, PluginValue>,
     variables: &[String],
 ) -> Result<(), String> {
+    check_params(manifest, action, params, variables, true)
+}
+
+/// Checks a `plugin_event` record against the manifest, as [`check_invoke`] does a press, except that required
+/// parameters may be missing (an event carries no secrets), and the action must take events.
+pub fn check_event(
+    manifest: &Manifest,
+    action: &str,
+    params: &BTreeMap<String, PluginValue>,
+    variables: &[String],
+) -> Result<(), String> {
+    if !manifest
+        .action(action)
+        .is_some_and(|declared| declared.events)
+    {
+        return Err(format!("{action} does not take events"));
+    }
+    refuse_profile_secrets(manifest, action, params)?;
+    check_params(manifest, action, params, variables, false)
+}
+
+fn check_params(
+    manifest: &Manifest,
+    action: &str,
+    params: &BTreeMap<String, PluginValue>,
+    variables: &[String],
+    require: bool,
+) -> Result<(), String> {
     let declared = manifest.action(action).ok_or_else(|| {
         format!(
             "{} {} has no action {action}",
@@ -557,7 +588,7 @@ pub fn check_invoke(
     if let Some(missing) = declared
         .params
         .iter()
-        .find(|param| param.required && !params.contains_key(&param.id))
+        .find(|param| require && param.required && !params.contains_key(&param.id))
     {
         return Err(format!("{action} needs parameter {}", missing.id));
     }

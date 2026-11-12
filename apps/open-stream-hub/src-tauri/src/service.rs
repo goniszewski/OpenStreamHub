@@ -487,22 +487,26 @@ fn kill_group(pid: u32) {
 pub type PluginUsage = Arc<dyn Fn(&str, Option<BTreeSet<String>>) + Send + Sync>;
 /// Carries one `plugin_invoke` record of the run `service_id` to its plugin; the reply goes back to the run.
 pub type PluginInvoke = Arc<dyn Fn(&str, &Value, crate::plugin_host::Reply) + Send + Sync>;
+/// Carries one `plugin_event` record of the run `service_id` to its plugin; nothing comes back.
+pub type PluginEvent = Arc<dyn Fn(&str, &Value) + Send + Sync>;
 
 /// How module runs reach the plugin host (`plugin_host.rs`), set once the host is up.
 #[derive(Clone)]
 pub struct PluginHooks {
     pub usage: PluginUsage,
     pub invoke: PluginInvoke,
+    pub event: PluginEvent,
 }
 
 impl PluginHooks {
     pub fn for_host(host: &crate::plugin_host::PluginHost) -> Self {
-        let (usage, invoke) = (host.clone(), host.clone());
+        let (usage, invoke, event) = (host.clone(), host.clone(), host.clone());
         Self {
             usage: Arc::new(move |service_id, plugins| usage.set_usage(service_id, plugins)),
             invoke: Arc::new(move |service_id, record, reply| {
                 invoke.invoke(service_id, record, reply)
             }),
+            event: Arc::new(move |service_id, record| event.event(service_id, record)),
         }
     }
 }
@@ -1267,6 +1271,13 @@ fn relay_records(
                 control.deliver(record.record);
                 continue;
             }
+            // Input a plugin hears: not a log record, and nothing comes back.
+            if record.record.get("type").and_then(Value::as_str) == Some("plugin_event") {
+                if let Some(plugins) = plugins {
+                    (plugins.event)(service_id, &record.record);
+                }
+                continue;
+            }
             // A press asking a plugin: the host answers on the run's control channel. Not a log record.
             if record.record.get("type").and_then(Value::as_str) == Some("plugin_invoke") {
                 if let (Some(plugins), Some(request)) = (
@@ -1533,16 +1544,26 @@ mod tests {
     fn plugin_invokes_go_to_the_host_and_not_to_the_record_log() {
         let invoked = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&invoked);
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::clone(&heard);
         let hooks = PluginHooks {
             usage: Arc::new(|_, _| {}),
             invoke: Arc::new(move |_service, record, _reply| {
                 seen.lock().unwrap().push(record.clone())
+            }),
+            event: Arc::new(move |service, record| {
+                events
+                    .lock()
+                    .unwrap()
+                    .push((service.to_string(), record.clone()))
             }),
         };
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let log = Arc::clone(&emitted);
         let stdout = concat!(
             r#"{"type":"plugin_invoke","request":3,"plugin":"com.x.y","action":"a","params":{}}"#,
+            "\n",
+            r#"{"type":"plugin_event","plugin":"com.x.y","action":"a","params":{}}"#,
             "\n",
             r#"{"type":"action_executed"}"#,
             "\n",
@@ -1561,6 +1582,8 @@ mod tests {
         );
         assert_eq!(invoked.lock().unwrap().len(), 1);
         assert_eq!(invoked.lock().unwrap()[0]["request"], 3);
+        assert_eq!(heard.lock().unwrap().len(), 1);
+        assert_eq!(heard.lock().unwrap()[0].0, "service:41");
         assert_eq!(
             *emitted.lock().unwrap(),
             [serde_json::json!({"type":"action_executed"})]
@@ -1936,6 +1959,7 @@ mod tests {
                 seen.lock().unwrap().push((id.to_string(), used))
             }),
             invoke: Arc::new(|_, _, _| {}),
+            event: Arc::new(|_, _| {}),
         });
         let (emit, _messages) = collector();
         let id = services

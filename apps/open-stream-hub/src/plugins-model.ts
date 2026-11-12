@@ -13,7 +13,8 @@ export interface PluginParam {
   variables?: boolean; secret?: boolean;
   min?: number; max?: number; choices?: PluginChoice[]; default?: PluginValue;
 }
-export interface PluginManifestAction { id: string; label: string; params?: PluginParam[] }
+// events: the plugin hears the other input on controls bound to this action.
+export interface PluginManifestAction { id: string; label: string; params?: PluginParam[]; events?: boolean }
 export interface PluginManifest {
   schema: number; id: string; name: string; version: string; command: string[]; actions: PluginManifestAction[];
   permissions?: { network?: string[]; variables?: string[]; programs?: boolean };

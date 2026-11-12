@@ -1162,21 +1162,7 @@ impl MacOsDispatcher {
             return Err("not a plugin action".into());
         };
         let bridge = self.plugins.as_ref().ok_or(PLUGIN_UNAVAILABLE)?;
-        let params = if variables.is_empty() {
-            params.clone()
-        } else {
-            // As for run_program: values are kept by name across a profile
-            // swap, so a press the previous profile planned would fill in what
-            // the new profile means by that name.
-            if self.variables.swapped_away_from(self.service_state.profile) {
-                return Err(format!(
-                    "{plugin}: the profile changed after this key was pressed; the plugin was not asked"
-                ));
-            }
-            self.variables
-                .read(|lookup| crate::plugin::fill_in_plugin_params(params, variables, lookup))
-                .map_err(|error| format!("{plugin}: {error}; the plugin was not asked"))?
-        };
+        let params = self.plugin_params(plugin, params, variables)?;
         let timeout = match deadline {
             None => PLUGIN_TIMEOUT,
             Some(deadline) => {
@@ -1196,9 +1182,34 @@ impl MacOsDispatcher {
             name,
             &params,
             variables,
+            self.service_state.input.as_ref(),
             timeout,
             self.cancellation.as_deref(),
         )
+    }
+
+    /// The parameters of `plugin` with the variables listed in `variables` filled in, refused when the profile that
+    /// planned the press was swapped out meanwhile.
+    fn plugin_params(
+        &self,
+        plugin: &str,
+        params: &std::collections::BTreeMap<String, crate::PluginValue>,
+        variables: &[String],
+    ) -> Result<std::collections::BTreeMap<String, crate::PluginValue>, String> {
+        if variables.is_empty() {
+            return Ok(params.clone());
+        }
+        // As for run_program: values are kept by name across a profile
+        // swap, so a press the previous profile planned would fill in what
+        // the new profile means by that name.
+        if self.variables.swapped_away_from(self.service_state.profile) {
+            return Err(format!(
+                "{plugin}: the profile changed after this key was pressed; the plugin was not asked"
+            ));
+        }
+        self.variables
+            .read(|lookup| crate::plugin::fill_in_plugin_params(params, variables, lookup))
+            .map_err(|error| format!("{plugin}: {error}; the plugin was not asked"))
     }
 
     /// Runs a `run_program` action: the executable directly, with its
@@ -1420,6 +1431,27 @@ impl ActionDispatcher for MacOsDispatcher {
             .or_else(|| {
                 (self.plugins.is_none() && action.uses_plugins()).then_some(PLUGIN_UNAVAILABLE)
             })
+    }
+
+    /// Fills in the variables of the owning action's parameters and writes the event; an action whose variables
+    /// cannot be filled in, or a record that cannot be written, sends nothing.
+    fn plugin_event(&mut self, action: &Action, input: &crate::plugin::PluginInput) {
+        let Action::Plugin {
+            plugin,
+            min_version,
+            action: name,
+            params,
+            variables,
+        } = action
+        else {
+            return;
+        };
+        let Some(bridge) = self.plugins.as_ref() else {
+            return;
+        };
+        if let Ok(params) = self.plugin_params(plugin, params, variables) {
+            let _ = bridge.event(plugin, min_version, name, &params, variables, input);
+        }
     }
 
     /// Posts a notification (3 s bound), then plays the sound (6 s bound), each

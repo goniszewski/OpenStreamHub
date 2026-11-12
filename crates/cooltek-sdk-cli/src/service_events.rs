@@ -8,8 +8,8 @@
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
     Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, PluginValue, ProfileResolution, ProfileSession, RunningTimer, ServiceModule,
-    ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
+    InputUpdate, PluginInput, PluginValue, ProfileResolution, ProfileSession, RunningTimer,
+    ServiceModule, ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -72,6 +72,9 @@ pub struct PlannedEvent {
     pub dial_function: Option<ActiveDialFunction>,
     /// Input events represented, greater than one only after live coalescing.
     pub coalesced: u64,
+    /// The plugin actions that hear this unbound input as a plugin event
+    /// ([`ProfileSession::plugin_event_targets`]); empty for any other outcome.
+    pub plugin_events: Vec<Action>,
 }
 
 impl PlannedEvent {
@@ -120,6 +123,8 @@ pub struct Work {
     /// The [`ProfileSession::id`] of the profile that planned this work, so an action that must not outlive its
     /// profile can tell it was swapped out meanwhile (0 when unknown, or when coalescing mixed two profiles).
     pub profile: u64,
+    /// The module whose input this is, which a plugin hears with each input.
+    pub module: ServiceModule,
 }
 
 /// Decodes one report and resolves its events without hardware or host I/O.
@@ -142,7 +147,12 @@ pub fn plan_report(
         .map(|event| {
             let binding = session.binding_for(device, &event).cloned();
             let current = active_dial_function(session, device);
+            // Before routing, which moves held keys and the dial function on.
+            let mut plugin_events = session.plugin_event_targets(device, &event);
             let resolution = session.route(device, &event)?;
+            if !matches!(resolution, ProfileResolution::Unbound) {
+                plugin_events.clear();
+            }
             let dial_function = match resolution {
                 ProfileResolution::DialFunction { .. } => None,
                 _ => current,
@@ -153,6 +163,7 @@ pub fn plan_report(
                 resolution,
                 dial_function,
                 coalesced: 1,
+                plugin_events,
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -169,6 +180,7 @@ pub fn plan_report(
         merge_barrier: false,
         variables: session.profile().variables.clone(),
         profile: session.id(),
+        module: device.module,
     })
 }
 
@@ -349,6 +361,20 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
         if abort.load(Ordering::SeqCst) {
             break;
         }
+        let input = PluginInput::new(work.module, &planned.event);
+        if !planned.plugin_events.is_empty() {
+            // Written in input order with the invokes, never logged, and never waited for.
+            dispatcher.set_service_state(ServiceState {
+                timer_running: !timers.is_empty(),
+                variables: work.variables.clone(),
+                profile: work.profile,
+                input: Some(input),
+            });
+            for action in &planned.plugin_events {
+                dispatcher.plugin_event(action, &input);
+            }
+            continue;
+        }
         let ProfileResolution::Action { action, .. } = &planned.resolution else {
             continue;
         };
@@ -417,6 +443,7 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
             timer_running: !timers.is_empty(),
             variables: work.variables.clone(),
             profile: work.profile,
+            input: Some(input),
         });
         let executed = match dispatcher.dispatch_with_execution(action, execute) {
             Ok(executed) => executed,
@@ -813,6 +840,7 @@ mod tests {
                 },
                 dial_function: None,
                 coalesced: 1,
+                plugin_events: Vec::new(),
             }],
             report_count: 1,
             coalesced_parse_error_count: 0,
@@ -821,6 +849,7 @@ mod tests {
             merge_barrier: false,
             variables: Vec::new(),
             profile: 0,
+            module: ServiceModule::M4315,
         }
     }
 
@@ -1819,5 +1848,90 @@ mod tests {
         assert!(timers.is_empty());
         run(press(0, 5, Action::ToggleMute), &mut timers);
         assert_eq!(seen.0, [false, true, false]);
+    }
+
+    /// Records plugin invokes and events in the order they reach the host.
+    #[derive(Default)]
+    struct PluginHost {
+        input: Option<PluginInput>,
+        seen: Vec<String>,
+    }
+
+    impl ActionDispatcher for PluginHost {
+        fn set_service_state(&mut self, state: ServiceState) {
+            self.input = state.input;
+        }
+        fn dispatch(&mut self, action: &Action) -> Result<(), String> {
+            let input = self.input.expect("an action is handed its input");
+            self.seen.push(format!(
+                "{} {:?} {}",
+                action.type_name(),
+                input.gesture,
+                input.control
+            ));
+            Ok(())
+        }
+        fn plugin_event(&mut self, action: &Action, input: &PluginInput) {
+            assert_eq!(self.input.as_ref(), Some(input));
+            let Action::Plugin { action, .. } = action else {
+                panic!("only a plugin action hears events");
+            };
+            self.seen.push(format!(
+                "event {action} {:?} {} {:?}",
+                input.gesture, input.control, input.module
+            ));
+        }
+    }
+
+    #[test]
+    fn a_held_key_invokes_on_press_and_sends_its_release_as_an_event_in_order() {
+        let mut slots = vec![Value::Null; 15];
+        slots[2] = json!({"type": "action", "label": "Talk", "bindings": [{"gesture": "pressed",
+            "action": {"type": "plugin", "plugin": "com.x.talk", "min_version": "1.0.0", "action": "talk"}}]});
+        let profile = json!({"schema_version": 2, "name": "Talk", "bindings": [],
+            "keypad": {"pages": [{"id": "root", "name": "Keys", "slots": slots}]}});
+        let mut session = ProfileSession::new(
+            cooltek_sdk_service::Profile::from_json(profile.to_string().as_bytes()).unwrap(),
+        )
+        .unwrap();
+        let device = DeviceContext {
+            module: ServiceModule::M4315,
+            serial_number: None,
+        };
+        let mut input = InputSession::new(ServiceModule::M4315);
+        let keys = |held: bool| {
+            let mut raw = vec![1, 0x34, 17, 0, 2, 15];
+            raw.extend([0; 15]);
+            raw[6 + 2] = u8::from(held);
+            raw
+        };
+        let mut host = PluginHost::default();
+        let mut output = Vec::new();
+        let mut timers = TimerTable::default();
+        let mut summary = LiveSummary::default();
+        for (time, held) in [(1, true), (2, false)] {
+            let work = plan_report(&mut input, &mut session, &device, &keys(held), time).unwrap();
+            process_work(
+                work,
+                &mut host,
+                &mut output,
+                &AtomicBool::new(false),
+                true,
+                false,
+                false,
+                &mut timers,
+                time,
+                &mut summary,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            host.seen,
+            ["plugin Pressed 2", "event talk Released 2 M4315"]
+        );
+        // The event is not an action: nothing about it is logged.
+        let log = String::from_utf8(output).unwrap();
+        assert!(!log.contains("plugin_event"));
+        assert_eq!(summary.action_count, 1);
     }
 }

@@ -1836,6 +1836,7 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
         pending.profile = 0;
     }
     for planned in next.events {
+        let crowded = pending.events.len() >= MAX_PENDING_EVENTS / 2;
         // Merge only into the immediately preceding event so the order of
         // events across controls is preserved. A dropped dial function switch
         // after that event is a barrier: steps on both sides stay separate.
@@ -1844,7 +1845,7 @@ fn coalesce(pending: &mut Work, next: Work, counts: &mut Finish) {
                 .events
                 .last_mut()
                 .filter(|existing| existing.event.control == planned.event.control)
-            && let Some(merged) = merge_event(existing, &planned)
+            && let Some(merged) = merge_event(existing, &planned, crowded)
         {
             *existing = merged;
             counts.coalesced_events += 1;
@@ -1876,7 +1877,8 @@ fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option
             && next.status == "decoded"
             && matches!(next.events.as_slice(), [planned]
             if work.events.last().is_some_and(|last| {
-                last.event.control == planned.event.control && merge_event(last, planned).is_some()
+                last.event.control == planned.event.control
+                    && merge_event(last, planned, work.events.len() >= MAX_PENDING_EVENTS / 2).is_some()
             }));
         if !mergeable {
             *carried = Some(next);
@@ -1894,11 +1896,22 @@ fn absorb_queued(mut work: Work, receiver: &Receiver<Work>, carried: &mut Option
 /// latest event. Button transitions, navigation, dial function switches, and
 /// other actions never merge, and neither do inputs routed through different
 /// dial functions.
-fn merge_event(earlier: &PlannedEvent, later: &PlannedEvent) -> Option<PlannedEvent> {
+/// Steps a plugin hears merge too once the backlog is `crowded` (half of [`MAX_PENDING_EVENTS`]), so one turned knob
+/// does not push out the events after it, such as that plugin's own key release. Steps that alternate (two knobs, or
+/// both directions) still do not merge, as for any other knob.
+fn merge_event(
+    earlier: &PlannedEvent,
+    later: &PlannedEvent,
+    crowded: bool,
+) -> Option<PlannedEvent> {
     if earlier.event.gesture != later.event.gesture
         || earlier.dial_function != later.dial_function
         || earlier.is_dial_function_switch()
         || later.is_dial_function_switch()
+        // A plugin hears every step until the backlog is crowded, and only steps that go to the same plugin actions
+        // merge (a profile swap between them can change who hears the control).
+        || earlier.plugin_events != later.plugin_events
+        || (!crowded && !later.plugin_events.is_empty())
         || !matches!(
             later.event.gesture,
             Gesture::Clockwise
@@ -1983,6 +1996,7 @@ fn merge_event(earlier: &PlannedEvent, later: &PlannedEvent) -> Option<PlannedEv
         resolution,
         dial_function: later.dial_function.clone(),
         coalesced: earlier.coalesced + later.coalesced,
+        plugin_events: later.plugin_events.clone(),
     })
 }
 
@@ -3845,6 +3859,7 @@ mod tests {
             resolution,
             dial_function: None,
             coalesced: 1,
+            plugin_events: Vec::new(),
         }
     }
 
@@ -3870,6 +3885,7 @@ mod tests {
             merge_barrier: false,
             variables: Vec::new(),
             profile: 0,
+            module: cooltek_sdk_service::ServiceModule::M003K,
         }
     }
 
@@ -3957,7 +3973,7 @@ mod tests {
     #[test]
     fn coalescing_sums_steps_keeps_last_position_and_never_merges_buttons() {
         let volume = |delta| planned(0, Gesture::Clockwise, action(Action::Volume { delta }));
-        let merged = merge_event(&volume(60), &volume(60)).unwrap();
+        let merged = merge_event(&volume(60), &volume(60), false).unwrap();
         assert_eq!(merged.resolution, action(Action::Volume { delta: 100 }));
         assert_eq!(merged.coalesced, 2);
         let position = |percent| {
@@ -3968,7 +3984,7 @@ mod tests {
             )
         };
         assert_eq!(
-            merge_event(&position(10), &position(70))
+            merge_event(&position(10), &position(70), false)
                 .unwrap()
                 .resolution,
             action(Action::SetVolume { percent: 70 })
@@ -3984,7 +4000,7 @@ mod tests {
             )
         };
         assert_eq!(
-            merge_event(&obs("Mic", 10), &obs("Mic", 70))
+            merge_event(&obs("Mic", 10), &obs("Mic", 70), false)
                 .unwrap()
                 .resolution,
             action(Action::ObsSetInputVolume {
@@ -3992,15 +4008,15 @@ mod tests {
                 percent: 70
             })
         );
-        assert!(merge_event(&obs("Mic", 10), &obs("Desktop", 70)).is_none());
+        assert!(merge_event(&obs("Mic", 10), &obs("Desktop", 70), false).is_none());
         let press = planned(0, Gesture::Pressed, action(Action::ToggleMute));
-        assert!(merge_event(&press, &press).is_none());
+        assert!(merge_event(&press, &press, false).is_none());
         let counter = planned(
             0,
             Gesture::CounterClockwise,
             action(Action::Volume { delta: -5 }),
         );
-        assert!(merge_event(&volume(5), &counter).is_none());
+        assert!(merge_event(&volume(5), &counter, false).is_none());
         let shortcut = planned(
             0,
             Gesture::Clockwise,
@@ -4009,7 +4025,7 @@ mod tests {
                 modifiers: vec![],
             }),
         );
-        assert!(merge_event(&shortcut, &shortcut).is_none());
+        assert!(merge_event(&shortcut, &shortcut, false).is_none());
     }
 
     #[test]
@@ -4031,6 +4047,52 @@ mod tests {
         assert_eq!(counts.dropped_events, 3);
         assert_eq!(pending.report_count, 4);
         assert_eq!(counts.coalesced_reports, 3);
+    }
+
+    #[test]
+    fn a_plugins_steps_merge_only_once_the_backlog_is_crowded() {
+        let talk = Action::Plugin {
+            plugin: "com.x.y".into(),
+            min_version: "1.0.0".into(),
+            action: "turn".into(),
+            params: Default::default(),
+            variables: Vec::new(),
+        };
+        let heard = |gesture| PlannedEvent {
+            plugin_events: vec![talk.clone()],
+            ..planned(0, gesture, ProfileResolution::Unbound)
+        };
+        let mut pending = work(vec![heard(Gesture::Clockwise)]);
+        coalesce(
+            &mut pending,
+            work(vec![heard(Gesture::Clockwise)]),
+            &mut Finish::default(),
+        );
+        assert_eq!(pending.events.len(), 2);
+        assert_eq!(pending.events[1].plugin_events, std::slice::from_ref(&talk));
+        // A long backlog of a plugin's steps merges once it is half full, so a release after it is kept.
+        let mut pending = work(vec![heard(Gesture::Clockwise)]);
+        for _ in 0..MAX_PENDING_EVENTS * 2 {
+            coalesce(
+                &mut pending,
+                work(vec![heard(Gesture::Clockwise)]),
+                &mut Finish::default(),
+            );
+        }
+        assert!(pending.events.len() <= MAX_PENDING_EVENTS / 2 + 1);
+        coalesce(
+            &mut pending,
+            work(vec![PlannedEvent {
+                plugin_events: vec![talk],
+                ..planned(1, Gesture::Released, ProfileResolution::Unbound)
+            }]),
+            &mut Finish::default(),
+        );
+        assert_eq!(
+            pending.events.last().unwrap().event.gesture,
+            Gesture::Released
+        );
+        assert_eq!(pending.dropped_event_count, 0);
     }
 
     #[test]
@@ -4165,8 +4227,8 @@ mod tests {
             },
             ..planned(0, Gesture::Right, action(Action::Volume { delta: 5 }))
         };
-        assert!(merge_event(&step("A"), &step("B")).is_none());
-        let merged = merge_event(&step("A"), &step("A")).unwrap();
+        assert!(merge_event(&step("A"), &step("B"), false).is_none());
+        let merged = merge_event(&step("A"), &step("A"), false).unwrap();
         assert_eq!(merged.dial_function.unwrap().name, "A");
     }
 

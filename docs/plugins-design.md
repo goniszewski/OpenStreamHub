@@ -206,6 +206,76 @@ On close, the app kills the plugin's process group, as `run_program` does, so he
 
 **Later.** Add an optional manifest field such as `"background": true` with its own toggle in Settings, off by default, and an enable dialog that says the plugin will run whenever the app is open. Not built: step 5 shipped without it.
 
+## Step 4a: input events
+
+Status: proposed 10 November 2026, built 12 November 2026 ([as built](#input-events-as-built)).
+
+Today a plugin hears only the gesture its action is bound to, as an `invoke`. It cannot hold a key (push to talk), tell a knob's turn direction or read a fader's position. Step 4a lets it hear the rest of the input on the controls it owns, and only those.
+
+### What a plugin hears
+
+- **A control is the plugin's** while a binding on it runs one of the plugin's actions directly, as the key's own action, and the manifest marks that action `"events": true`. A plugin action inside a `multi_action` or an if / else does not count: that key does several things and belongs to no plugin.
+- **Gestures with no binding of their own** on that control are sent to the plugin as `event`. A gesture bound to the plugin's action stays an `invoke`, as today. A gesture bound to anything else runs that action, and the plugin is not told. So a key with **Press** bound to "Talk" sends the release as an event, but a release bound to an OBS action stays the OBS action's.
+- **Keypad pages and dial functions.** A key is the plugin's only while its page is shown, and a release goes to the tile that took the press even if the page changed meanwhile, as releases already resolve (`ProfileSession`'s held keys). The dial is the plugin's only while the function holding the binding is selected.
+- **Live only.** A Test run never starts a plugin, so it sends no events and logs none.
+
+### Messages
+
+App to plugin, with no answer expected:
+
+```json
+{"type":"event","action":"talk","gesture":"released","control":{"module":"m4315","index":3},"params":{"channel":"team"}}
+{"type":"event","action":"volume","gesture":"clockwise","control":{"module":"m003k","index":1},"params":{}}
+```
+
+- `gesture` uses the profile's names (`released`, `clockwise`, `counter_clockwise`, `right`, `left`, `long_press`, `up`, `down`...). A fader position adds `"position":{"raw":512,"maximum":1023}`.
+- `params` are the bound action's parameters with variables filled in, as an invoke would have them, **without secrets**. They tell two keys bound to the same action apart, such as two lights.
+- **`invoke` gains the same `input`**: `{"gesture":"pressed"}`, and the position for a fader. An action bound to both turn directions, or to a fader, can then tell what happened. Plugins must ignore fields they do not know. The author guide will say so; the Python example already does.
+
+### Delivery
+
+- The module service writes a `plugin_event` record when it handles the input, in input order. A release that comes while the press's invoke is waiting is handled after it, as today, so the plugin never hears a release before its press.
+- The service does not wait. Nothing comes back, and the module's next input is not held up.
+- The app forwards an event only when the plugin is enabled, running and has said hello, and the manifest action has `events`. Otherwise it drops it without logging.
+- **At most 50 events a second per plugin.** More are dropped and counted, and the count goes in the plugin's log, as for its own log lines. Fast knob turns can exceed this, so the guide will tell authors to treat each event as one step and not rely on counting every one.
+- Events do not go in the activity log, which would fill up on every turn.
+
+### Manifest and consent
+
+- An action may set `"events": true`. Schema stays 1: an older app refuses the unknown field, it does not misread it.
+- The first-enable dialog says, for each such action, that the plugin hears the other input on keys and controls bound to it. A changed `plugin.json` needs a new approval anyway.
+- The Execute confirmation does not change: it already names each plugin action, and the plugin can do nothing with an event that it could not do on an invoke.
+
+### Not in 4a
+
+- Telling a plugin when a key appears or disappears (a page switch, a profile stop). That belongs with key images, in 4c.
+- Events for gestures bound to other actions, or for keys that run a plugin action only as a step.
+- Coalescing knob turns into one event with a step count.
+
+### Work
+
+1. **Service:** decide which inputs produce a `plugin_event` and write it (flat bindings, keypad pages with held keys, dial functions), and add `input` to `plugin_invoke`. Unit tests for each routing case.
+2. **App:** forward events behind the checks above, apply the rate limit, add `events` to the manifest parser, and add `input` to invoke.
+3. **Frontend:** the dialog line, and the manifest type.
+4. **Example:** a "Hold" action in `com.example.notify` that reports how long the key was held.
+5. **Docs:** the author guide (manifest field, `event` message, `input`, ignoring unknown fields) and this section marked as built.
+
+## Input events as built
+
+Built on 12 November 2026 as proposed above, with these differences:
+
+- **Who owns a control is decided when the input is planned**, before routing moves a held key or the dial function on (`ProfileSession::plugin_event_targets`), from the bindings that apply to that module's serial (an exact serial's binding hides a wildcard's for the same gesture, as in routing). A gesture is an event only when it has no binding of its own there. When several plugin actions are bound directly on one control, each hears it, listed once. The service does not read manifests, so it writes the event for every such action and the app drops those whose manifest action lacks `events`.
+- **`input` carries the control as well**: `{"gesture":…,"control":{"module":…,"index":…}}`, and `position` for a fader, on `plugin_invoke` and `plugin_event` records and in the `invoke` message. The `event` message puts the same fields at its top level. The app rebuilds `input` from these known fields, so nothing else a record carries reaches the plugin.
+- **The app checks an event** like an invoke, against the manifest current when it arrives: the run still executes with the plugin, `min_version`, the action has `events`, every parameter is declared and fits, only parameters that allow it take variables, and the profile holds no secret's value. Required parameters may be missing, since secrets are never added.
+- **Live coalescing.** When the module service falls behind, it merges unbound knob, roller and dial steps on one control into the latest. Steps a plugin hears are not merged, so it hears each, until the pending backlog is half full (128 events): then they merge like the rest, so one long turn does not push out what comes after it, such as the plugin's own release. Steps that alternate (two knobs turned together, or both directions) do not merge, as for any knob, and can still fill the backlog. The service cannot see `events`, so this also applies to a knob whose plugin action does not take events; the app then drops those events.
+- **Faders.** A fader takes only fader actions, so a plugin never owns one. `input` can carry `position`, but nothing sends it yet.
+- **A release with no press.** The service records a held key when it plans the press. If the live backlog then drops that press, the release still goes to the plugin, with no invoke before it. The author guide says so.
+- **Dial functions.** With `dial_functions`, the dial's raw `pressed` and `released` are never events: they are the parts of the click that becomes `short_press` (a function switch) or `long_press`.
+- **Nothing waits for the plugin.** Every line to a plugin (welcome, invokes, events, pings, replies) goes into its connection's outbox and is written whole and in order by the connection's writer thread. A slow reader therefore never splits a line, holds up the module run, or reorders an event and an invoke sent after it. A write that blocks is not a failure: the writer retries it for as long as the connection stands, and a plugin that reads nothing is found by its pings, as before. While lines wait, at most 64 events are queued; more are dropped and counted. Past 1 MiB waiting, events are dropped and any other line ends the connection. An invoke whose deadline passes while it waits is not written (the module has given up on it), and one that is written carries in `timeout_ms` what is left of its time.
+- **A dropped count.** Events dropped by the 50 a second limit or a full outbox are added to the plugin's log, as one line, with the next event queued. The window and count start again with each plugin process.
+- **Known gap.** The app counts an invoke's deadline from when its record arrived, a moment after the service started counting. A press that waits for a Keychain read and times out in the service just before the app's deadline can still be sent after the release event the service then writes.
+- **Not built:** the frontend shows nothing new beyond the enable dialog's line; the editor does not mark keys whose other input a plugin hears.
+
 ## Plugin protocol as built
 
 Built on 6 November 2026 as proposed above, with these differences:

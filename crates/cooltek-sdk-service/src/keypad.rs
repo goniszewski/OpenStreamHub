@@ -524,6 +524,72 @@ impl ProfileSession {
         self.held.clear();
     }
 
+    /// The plugin actions that hear `event` as a plugin event: those bound directly on its control, as the key's own
+    /// action, when `event`'s gesture has no binding of its own there. Ask before [`ProfileSession::route`], which
+    /// changes held keys and the dial function.
+    ///
+    /// A keypad key belongs to the tile on the page shown at the press, and its release to the tile that took the
+    /// press (a duplicate press or an unmatched release goes to nobody). The dial belongs to the current function;
+    /// a short press, which switches functions, and the raw pressed / released of a click are never events there. An exact serial's binding hides a wildcard's
+    /// for the same gesture, as when routing. A plugin action inside a `multi_action` or a `conditional` owns
+    /// nothing. Each distinct action is listed once; whether its manifest takes events is the app's to check.
+    pub fn plugin_event_targets(&self, device: &DeviceContext, event: &InputEvent) -> Vec<Action> {
+        let Ok(device) = device.normalized() else {
+            return Vec::new();
+        };
+        if event.validate_for(device.module).is_err() {
+            return Vec::new();
+        }
+        if device.module == ServiceModule::M131E
+            && let Some(functions) = &self.profile().dial_functions
+        {
+            // A short press switches functions, and raw pressed / released are the parts of a short or long press.
+            if matches!(
+                event.gesture,
+                Gesture::ShortPress | Gesture::Pressed | Gesture::Released
+            ) {
+                return Vec::new();
+            }
+            let bindings = functions[self.dial_function]
+                .bindings
+                .iter()
+                .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+            return owning_plugin_actions(bindings, &device, event.gesture);
+        }
+        if device.module == ServiceModule::M4315
+            && let Some(layout) = &self.profile().keypad
+        {
+            let index = event.control as usize;
+            let key = (device.serial_number.clone(), index);
+            let page_id = match event.gesture {
+                Gesture::Pressed if !self.held.contains_key(&key) => self.path.last(),
+                Gesture::Released => self
+                    .held
+                    .get(&key)
+                    .filter(|held| held.action_tile)
+                    .map(|held| &held.page_id),
+                _ => None,
+            };
+            let Some(KeypadTile::Action { bindings, .. }) = page_id
+                .and_then(|page_id| layout.page(page_id))
+                .and_then(|page| page.slots.get(index)?.as_ref())
+            else {
+                return Vec::new();
+            };
+            let bindings = bindings
+                .iter()
+                .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+            return owning_plugin_actions(bindings, &device, event.gesture);
+        }
+        let bindings = self
+            .profile()
+            .bindings
+            .iter()
+            .filter(|b| b.module == device.module && b.control == event.control)
+            .map(|b| (b.gesture, b.serial_number.as_deref(), &b.action));
+        owning_plugin_actions(bindings, &device, event.gesture)
+    }
+
     /// Resolves one normalized input without hardware or operating-system I/O.
     ///
     /// This is the compatibility view of [`ProfileSession::route`]: a dial
@@ -677,6 +743,35 @@ impl ProfileSession {
             _ => unreachable!("keypad selector validation accepts only button transitions"),
         }
     }
+}
+
+/// The plugin actions that own a control whose `bindings` (gesture, serial, action) are given, for an input of
+/// `gesture` (see [`ProfileSession::plugin_event_targets`]).
+fn owning_plugin_actions<'a>(
+    bindings: impl Iterator<Item = (Gesture, Option<&'a str>, &'a Action)> + Clone,
+    device: &DeviceContext,
+    gesture: Gesture,
+) -> Vec<Action> {
+    let serial = device.serial_number.as_deref();
+    // The bindings that apply to this device: an exact serial's, or a wildcard's for a gesture without one.
+    let applies = |(bound, selector, _): &(Gesture, Option<&str>, &Action)| match selector {
+        Some(_) => *selector == serial,
+        None => !bindings.clone().any(|(other, other_serial, _)| {
+            other == *bound && other_serial.is_some() && other_serial == serial
+        }),
+    };
+    let applying: Vec<_> = bindings.clone().filter(applies).collect();
+    // The gesture runs a binding of its own, and no plugin hears it.
+    if applying.iter().any(|(bound, ..)| *bound == gesture) {
+        return Vec::new();
+    }
+    let mut owners: Vec<Action> = Vec::new();
+    for (_, _, action) in applying {
+        if matches!(action, Action::Plugin { .. }) && !owners.contains(action) {
+            owners.push(action.clone());
+        }
+    }
+    owners
 }
 
 fn select_action(
@@ -1153,5 +1248,171 @@ mod tests {
             !Condition::All(vec![is("live", Bool(true)), Condition::OutputMuted(true)])
                 .is_variable_only()
         );
+    }
+
+    fn plugin(action: &str, channel: &str) -> Value {
+        json!({"type": "plugin", "plugin": "com.x.talk", "min_version": "1.0.0", "action": action,
+            "params": {"channel": channel}})
+    }
+
+    fn plugin_profile() -> ProfileSession {
+        let mut root: Vec<Value> = vec![Value::Null; 15];
+        // Key 0: Talk on press; its release is the plugin's.
+        root[0] = json!({"type": "action", "label": "Talk",
+            "bindings": [{"gesture": "pressed", "action": plugin("talk", "team")}]});
+        // Key 1: Talk on press, an ordinary action on release: nothing is the plugin's.
+        root[1] = json!({"type": "action", "label": "Talk and mute", "bindings": [
+            {"gesture": "pressed", "action": plugin("talk", "all")},
+            {"gesture": "released", "action": {"type": "toggle_mute"}}]});
+        // Key 2: the plugin action only as a step of a multi_action: owns nothing.
+        root[2] = json!({"type": "action", "label": "Several", "bindings": [{"gesture": "pressed",
+            "action": {"type": "multi_action", "actions": [plugin("talk", "team"), {"type": "toggle_mute"}]}}]});
+        root[3] = json!({"type": "folder", "page_id": "more"});
+        // Key 4: bound on release only, so the press is the plugin's.
+        root[4] = json!({"type": "action", "label": "On release",
+            "bindings": [{"gesture": "released", "action": plugin("talk", "late")}]});
+        let mut more: Vec<Value> = vec![Value::Null; 15];
+        more[5] = json!({"type": "action", "label": "Other", "bindings": [{"gesture": "pressed", "action": {"type": "toggle_mute"}}]});
+        let profile = json!({"schema_version": 2, "name": "Plugins",
+        "bindings": [
+            {"module": "m003k", "control": 1, "gesture": "clockwise", "action": plugin("volume", "a")},
+            {"module": "m003k", "control": 2, "gesture": "clockwise", "action": plugin("volume", "any")},
+            {"module": "m003k", "control": 2, "gesture": "clockwise", "serial_number": "desk", "action": {"type": "volume", "delta": 5}},
+            {"module": "m003k", "control": 2, "gesture": "pressed", "action": plugin("press", "any")}
+        ],
+        "keypad": {"pages": [{"id": "root", "name": "Keys", "slots": root},
+            {"id": "more", "name": "More", "slots": more}]},
+        "dial_functions": [
+            {"name": "Lights", "bindings": [{"gesture": "right", "action": plugin("dim", "desk")}]},
+            {"name": "Volume", "bindings": [{"gesture": "right", "action": {"type": "volume", "delta": 5}}]}
+        ]});
+        ProfileSession::new(Profile::from_json(profile.to_string().as_bytes()).unwrap()).unwrap()
+    }
+
+    fn channels(actions: Vec<Action>) -> Vec<String> {
+        actions
+            .into_iter()
+            .map(|action| match action {
+                Action::Plugin { action, params, .. } => {
+                    let channel = match &params["channel"] {
+                        crate::PluginValue::Text(text) => text.clone(),
+                        other => panic!("{other:?}"),
+                    };
+                    format!("{action}:{channel}")
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_keys_unbound_gestures_go_to_the_plugin_action_it_runs_directly() {
+        let mut session = plugin_profile();
+        let keypad = device();
+        let targets = |session: &ProfileSession, control, gesture| {
+            channels(session.plugin_event_targets(&keypad, &event(control, gesture)))
+        };
+        // The press runs the action itself: an invoke, not an event.
+        assert!(targets(&session, 0, Gesture::Pressed).is_empty());
+        session.route(&keypad, &event(0, Gesture::Pressed)).unwrap();
+        assert_eq!(targets(&session, 0, Gesture::Released), ["talk:team"]);
+        // A second press while held is a duplicate and goes to nobody.
+        assert!(targets(&session, 0, Gesture::Pressed).is_empty());
+        session
+            .route(&keypad, &event(0, Gesture::Released))
+            .unwrap();
+        // An unmatched release goes to nobody.
+        assert!(targets(&session, 0, Gesture::Released).is_empty());
+        // A release bound to another action runs it; the plugin is not told.
+        session.route(&keypad, &event(1, Gesture::Pressed)).unwrap();
+        assert!(targets(&session, 1, Gesture::Released).is_empty());
+        // A plugin action as a step owns nothing.
+        session.route(&keypad, &event(2, Gesture::Pressed)).unwrap();
+        assert!(targets(&session, 2, Gesture::Released).is_empty());
+        // Bound on release only: the press is an event, the release an invoke.
+        assert_eq!(targets(&session, 4, Gesture::Pressed), ["talk:late"]);
+        session.route(&keypad, &event(4, Gesture::Pressed)).unwrap();
+        assert!(targets(&session, 4, Gesture::Released).is_empty());
+        // Folder keys belong to no plugin.
+        assert!(targets(&session, 3, Gesture::Pressed).is_empty());
+    }
+
+    #[test]
+    fn a_release_goes_to_the_tile_that_took_the_press_even_after_a_page_change() {
+        let mut session = plugin_profile();
+        let keypad = device();
+        session.route(&keypad, &event(0, Gesture::Pressed)).unwrap();
+        // Another key opens the folder while Talk is held.
+        session.route(&keypad, &event(3, Gesture::Pressed)).unwrap();
+        assert_eq!(session.current_page().unwrap().id, "more");
+        assert_eq!(
+            channels(session.plugin_event_targets(&keypad, &event(0, Gesture::Released))),
+            ["talk:team"]
+        );
+        // A key pressed on the new page is that page's: key 0 is Back there, and key 4 is empty.
+        assert!(
+            session
+                .plugin_event_targets(&keypad, &event(4, Gesture::Pressed))
+                .is_empty()
+        );
+        // Another keypad's release of the same slot is not the held key's.
+        let other = DeviceContext {
+            module: ServiceModule::M4315,
+            serial_number: Some("other".into()),
+        };
+        assert!(
+            session
+                .plugin_event_targets(&other, &event(0, Gesture::Released))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn flat_controls_follow_serial_precedence() {
+        let session = plugin_profile();
+        let knobs = |serial: Option<&str>| DeviceContext {
+            module: ServiceModule::M003K,
+            serial_number: serial.map(str::to_owned),
+        };
+        let targets = |serial, control, gesture| {
+            channels(session.plugin_event_targets(&knobs(serial), &event(control, gesture)))
+        };
+        assert_eq!(targets(None, 1, Gesture::CounterClockwise), ["volume:a"]);
+        assert_eq!(targets(None, 1, Gesture::Pressed), ["volume:a"]);
+        assert!(targets(None, 1, Gesture::Clockwise).is_empty());
+        assert!(targets(None, 0, Gesture::Clockwise).is_empty());
+        // Control 2 has two plugin actions for any serial; listed once each.
+        assert_eq!(
+            targets(None, 2, Gesture::CounterClockwise),
+            ["volume:any", "press:any"]
+        );
+        // On the desk unit the exact serial's volume hides the wildcard's plugin turn.
+        assert_eq!(
+            targets(Some("desk"), 2, Gesture::CounterClockwise),
+            ["press:any"]
+        );
+        assert!(targets(Some("desk"), 2, Gesture::Clockwise).is_empty());
+    }
+
+    #[test]
+    fn the_dial_is_the_current_functions_and_a_short_press_is_never_an_event() {
+        let mut session = plugin_profile();
+        let dial = DeviceContext {
+            module: ServiceModule::M131E,
+            serial_number: None,
+        };
+        let targets = |session: &ProfileSession, gesture| {
+            channels(session.plugin_event_targets(&dial, &event(0, gesture)))
+        };
+        assert_eq!(targets(&session, Gesture::Left), ["dim:desk"]);
+        assert!(targets(&session, Gesture::Pressed).is_empty());
+        assert!(targets(&session, Gesture::Released).is_empty());
+        assert_eq!(targets(&session, Gesture::LongPress), ["dim:desk"]);
+        assert!(targets(&session, Gesture::Right).is_empty());
+        assert!(targets(&session, Gesture::ShortPress).is_empty());
+        session
+            .route(&dial, &event(0, Gesture::ShortPress))
+            .unwrap();
+        assert!(targets(&session, Gesture::Left).is_empty());
     }
 }

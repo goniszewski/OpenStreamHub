@@ -701,6 +701,7 @@ mod tests {
                 "toggle",
                 &Default::default(),
                 &[],
+                None,
                 std::time::Duration::from_secs(5),
                 None,
             )

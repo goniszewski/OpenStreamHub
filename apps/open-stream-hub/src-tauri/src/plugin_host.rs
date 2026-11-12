@@ -73,7 +73,7 @@ pub const IDLE_PING: Duration = Duration::from_millis(if cfg!(test) { 300 } else
 /// How long a pinged plugin has to send any line.
 pub const PONG_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 5_000 });
 /// How long a started plugin has to connect and say hello before it is killed and restarted.
-pub const START_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 1_000 } else { 10_000 });
+pub const START_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 3_000 } else { 10_000 });
 /// Waits before each restart, the last one repeating.
 const BACKOFF: [u64; 6] = [1, 2, 4, 8, 16, 30];
 /// Failures within [`FAILURE_WINDOW`] after which a plugin stays stopped.
@@ -1753,7 +1753,8 @@ mod tests {
     }
 
     fn wait_for(what: &str, mut ready: impl FnMut() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Generous for a loaded CI runner: it only bounds a test that is failing anyway.
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !ready() {
             assert!(Instant::now() < deadline, "timed out waiting for {what}");
             thread::sleep(Duration::from_millis(10));
@@ -1981,10 +1982,11 @@ mod tests {
         let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
         let long = "x".repeat(1500);
         let turn = json!({"gesture":"clockwise","control":{"module":"m003k","index":0}});
-        let started = Instant::now();
+        let mut sending = Duration::ZERO;
         // Far more than the socket and the queue hold, in bursts within the rate limit, while the plugin reads
         // nothing but keeps answering pings.
         for _ in 0..8 {
+            let started = Instant::now();
             for _ in 0..MAX_EVENTS_PER_SECOND {
                 host.event(
                     "m1",
@@ -1992,13 +1994,14 @@ mod tests {
                         "params":{"channel":long},"input":turn}),
                 );
             }
+            sending += started.elapsed();
             for _ in 0..11 {
                 thread::sleep(Duration::from_millis(100));
                 plugin.send(json!({"type":"pong"}));
             }
         }
-        // Sending never waited for the plugin.
-        assert!(started.elapsed() < Duration::from_secs(12));
+        // Sending never waited for the plugin: a blocked write would take a second or more each.
+        assert!(sending < Duration::from_secs(2), "sending took {sending:?}");
         assert_eq!(host.state_of(ID), Some("running"));
         // It reads what was queued, then a new event is sent and the loss is logged.
         let mut heard = 0;

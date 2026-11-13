@@ -945,6 +945,7 @@ export const en = {
   'plugins.dialog.flag.variables': 'takes variables',
   'plugins.dialog.flag.required': 'required',
   'plugins.dialog.noParams': 'no parameters',
+  'plugins.dialog.events': 'It also hears the other input on keys and controls bound to this action, such as a key being released or a knob turned.',
   'plugins.dialog.cancel': 'Cancel',
   'plugins.dialog.enable': 'Enable',
   'plugins.log': { one: 'Recent log ({count} line)', other: 'Recent log ({count} lines)' },

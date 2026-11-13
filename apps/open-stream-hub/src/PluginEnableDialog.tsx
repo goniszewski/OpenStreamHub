@@ -52,6 +52,7 @@ export function PluginEnableDialog({ open, manifest, folder, stored = [], busy =
         {action.params?.length
           ? <ul>{action.params.map(param => <li key={param.id}>{paramText(param, t)}</li>)}</ul>
           : <span className="fine-print"> ({t('plugins.dialog.noParams')})</span>}
+        {action.events && <p className="plugin-enable-events">{t('plugins.dialog.events')}</p>}
       </li>)}</ul>
       <h3>{t('plugins.dialog.permissions')}</h3>
       <ul className="plugin-enable-permissions">

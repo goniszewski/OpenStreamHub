@@ -145,6 +145,8 @@ pub struct ServiceState {
     /// that fills in variables refuses to start when another profile was swapped in after it
     /// ([`crate::SharedVariables::swapped_away_from`]).
     pub profile: u64,
+    /// The input that ran the action, which a `plugin` action passes on to its plugin; `None` when unknown.
+    pub input: Option<crate::plugin::PluginInput>,
 }
 
 /// The host boundary for explicitly dispatching a matched action.
@@ -170,6 +172,12 @@ pub trait ActionDispatcher {
     fn unavailable(&self, _action: &Action) -> Option<&'static str> {
         None
     }
+
+    /// Tells the plugin of `action` (a `plugin` action that owns the control, see
+    /// [`crate::ProfileSession::plugin_event_targets`]) about `input`, which has no binding of its own. Nothing waits
+    /// for it and nothing is logged; an event that cannot be sent is dropped. The default, for dispatchers that
+    /// never run plugins, does nothing, and so must a dispatcher that is not executing (a Test run).
+    fn plugin_event(&mut self, _action: &Action, _input: &crate::plugin::PluginInput) {}
 
     /// Shows the end of an expired `timer` countdown (notification and sound).
     ///

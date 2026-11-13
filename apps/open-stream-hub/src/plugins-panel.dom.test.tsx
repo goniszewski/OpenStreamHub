@@ -18,6 +18,7 @@ beforeAll(() => {
 });
 
 const hall: PluginManifest = { ...lights, id: 'com.example.hall', name: 'Hall', command: ['/usr/bin/python3', 'plugin.py', '--quiet'],
+  actions: [{ ...lights.actions[0], events: true }, ...lights.actions.slice(1)],
   permissions: { network: ['homeassistant.local:8123'], variables: ['room'], programs: true } };
 const desk: PluginManifest = { ...lights, id: 'com.example.desk', name: 'Desk', actions: [lights.actions[0]] };
 
@@ -106,6 +107,11 @@ describe('Settings > Plugins in the DOM', () => {
       'Light: text, takes variables, required', 'Level: number', 'Fade: on or off', 'Mode: choice', 'Token: text, secret',
     ]) expect(text).toContain(expected);
     expect(text).toContain('Toggle (no parameters)');
+    // Only the action that takes events says it hears the other input.
+    const events = view.$$('.plugin-enable-events');
+    expect(events).toHaveLength(1);
+    expect(events[0].closest('li')?.textContent).toContain('Toggle');
+    expect(events[0].textContent).toContain('hears the other input on keys and controls bound to this action');
     // Hall's secret is not set, so none is named as one that will be sent.
     expect(text).not.toContain('Stored secrets');
     view.click(button(dialog, 'Enable'));

@@ -7,6 +7,10 @@ Actions:
 - notify: shows a macOS notification with `title` and `message` (the message may use {{variables}}).
 - count: adds one to a counter and writes it to the profile variable `plugin_presses`, which the profile must
   declare as a number.
+- hold: bind it to a key's press. Its manifest sets "events": true, so the app also sends the key's release as an
+  `event`, and the plugin logs how long the key was held (Settings > Plugins shows the log).
+
+Fields it does not know, in any message, are ignored: newer apps may add some.
 """
 
 import json
@@ -14,6 +18,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 
 # Text arrives in argv, never inside the script, so a message cannot inject AppleScript.
 NOTIFY = 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run'
@@ -36,6 +41,12 @@ def main():
 
     presses = 0
     next_id = 1
+    # When each held control was pressed, by (module, index).
+    held = {}
+
+    def control_of(input):
+        control = (input or {}).get("control") or {}
+        return control.get("module"), control.get("index")
     for line in lines:
         message = json.loads(line)
         kind = message.get("type")
@@ -56,11 +67,19 @@ def main():
                     presses += 1
                     send({"type": "set_variable", "id": next_id, "name": "plugin_presses", "value": presses})
                     next_id += 1
+                elif action == "hold":
+                    held[control_of(message.get("input"))] = time.monotonic()
                 else:
                     raise ValueError("unknown action " + action)
             except Exception as error:  # Any failure fails the press, with a short reason.
                 result = {"type": "result", "request": message["request"], "ok": False, "error": str(error)[:200]}
             send(result)
+        elif kind == "event":
+            # No answer: an event is only told. Here, the release of a key whose press ran "hold".
+            if message.get("action") == "hold" and message.get("gesture") == "released":
+                pressed = held.pop(control_of(message), None)
+                if pressed is not None:
+                    send({"type": "log", "message": "held for %.1f s" % (time.monotonic() - pressed)})
         elif kind == "reply" and not message.get("ok"):
             send({"type": "log", "message": "a variable write was refused: " + message.get("error", "")})
     return 0

@@ -13,7 +13,8 @@
         { "id": "message", "label": "Message", "type": "text", "variables": true, "required": true }
       ]
     },
-    { "id": "count", "label": "Count presses" }
+    { "id": "count", "label": "Count presses" },
+    { "id": "hold", "label": "Report how long a key is held", "events": true }
   ],
   "permissions": { "variables": ["plugin_presses"], "programs": true }
 }

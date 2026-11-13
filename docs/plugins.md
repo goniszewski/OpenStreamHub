@@ -1,6 +1,6 @@
 # Writing a plugin
 
-Status (9 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
+Status (12 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5) and input events (step 4a). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
 
 A plugin adds actions a key can run, such as switching smart lights. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
 
@@ -51,7 +51,7 @@ Put the plugin's folder in the plugins folder, `~/Library/Application Support/<a
   "version": "1.2.0",
   "command": ["/usr/bin/python3", "plugin.py"],
   "actions": [
-    { "id": "toggle", "label": "Toggle a light", "params": [
+    { "id": "toggle", "label": "Toggle a light", "events": true, "params": [
       { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true }
     ] },
     { "id": "set", "label": "Set brightness", "params": [
@@ -76,6 +76,7 @@ Unknown fields are refused, so a misspelt field is an error, not silently ignore
 | `version` | `MAJOR.MINOR.PATCH`, compared numerically |
 | `command` | 1 to 16 items: the program, then its arguments, passed as they are (no shell). The program is a path inside the folder without `..`, or an absolute path |
 | `actions` | 1 to 64, ids unique: 1 to 64 of `a-z`, `0-9`, `_`, `-` and `.`, starting with a letter. `label` 1 to 64 bytes |
+| `events` | Optional, `true` or `false` (the default). With `true` the plugin also hears the other input on keys and controls bound to this action (see [Input events](#input-events)) |
 | `params` | Up to 32 per action, ids unique, with the variable name rules (1 to 32 of `a-z`, `0-9` and `_`, starting with a letter) |
 | `type` | `text`, `number`, `bool` or `choice` |
 | `required` | The press fails, and the editor shows an error, when the parameter is missing |
@@ -93,12 +94,32 @@ Unknown fields are refused, so a misspelt field is an error, not silently ignore
 The plugin connects to `OSH_PLUGIN_SOCKET` (a Unix socket in a 0700 folder). Each message is one JSON object on one line, at most 64 KiB, in both directions. A longer line from the plugin closes the connection.
 
 1. Within 2 seconds the plugin sends `{"type":"hello","id":"<OSH_PLUGIN_ID>","token":"<OSH_PLUGIN_TOKEN>"}`. The app answers `{"type":"welcome"}`, or `{"type":"error","error":"…"}` and closes. The token is new at every start and valid only for this plugin; a second connection is refused while one is open.
-2. For each press, the app sends `{"type":"invoke","request":7,"action":"set","params":{"entity":"light.desk","level":40},"timeout_ms":15000}`. Parameters with variables arrive with them filled in. The plugin answers each invoke once, in any order: `{"type":"result","request":7,"ok":true}` or `{"type":"result","request":7,"ok":false,"error":"the light is offline"}`. The error, cut to 512 bytes, is what the activity log shows.
+2. For each press, the app sends `{"type":"invoke","request":7,"action":"set","params":{"entity":"light.desk","level":40},"timeout_ms":15000,"input":{"gesture":"pressed","control":{"module":"m4315","index":3}}}`. Parameters with variables arrive with them filled in. `timeout_ms` is what is left of the press's time when the line is written; a press whose time ran out before it could be written is not sent. `input` is the input that ran the action (see [Input events](#input-events) for its fields); it is missing when the app was not told. The plugin answers each invoke once, in any order: `{"type":"result","request":7,"ok":true}` or `{"type":"result","request":7,"ok":false,"error":"the light is offline"}`. The error, cut to 512 bytes, is what the activity log shows.
 3. At any time the plugin may send:
    - `{"type":"set_variable","id":1,"name":"light_state","value":"on"}`: sets a variable in every running module that declares it, as `osh` does. At most 10 a second, only names in `permissions.variables`, never `agent_decision` other than `none`. The app answers `{"type":"reply","id":1,"ok":true}` or `…"ok":false,"error":"…"}`.
    - `{"type":"log","message":"…"}`: kept in Settings > Plugins. At most 1 KiB each and 20 a second; more are counted and dropped.
    - `{"type":"ping"}`: the app answers `{"type":"pong"}`.
 4. After 10 seconds without a line from the plugin, the app sends `{"type":"ping"}`. The plugin must send any line (`{"type":"pong"}`) within 5 seconds, or it is killed and restarted.
+5. For an action with `"events": true`, the app also sends `event` messages, which are not answered (see [Input events](#input-events)).
+
+**Ignore what you do not know.** A newer app may add fields to any message, and new message types. A plugin must ignore both, never fail on them.
+
+## Input events
+
+An invoke tells a plugin about the one gesture its action is bound to. With `"events": true` on the action, it also hears the rest of the input on the keys and controls bound to it, for example to hold a key (push to talk) or tell a knob's turn direction. Faders take only fader actions, so a plugin never hears one.
+
+```json
+{"type":"event","action":"talk","params":{"channel":"team"},"gesture":"released","control":{"module":"m4315","index":3}}
+{"type":"event","action":"volume","params":{},"gesture":"counter_clockwise","control":{"module":"m003k","index":1}}
+```
+
+- **Which input.** A key or control is the action's while one of its bindings runs that action directly, as its own action (not as a step of a multi-action or an if / else). A gesture with no binding of its own there is sent as an `event`. A gesture bound to the action stays an `invoke`; one bound to anything else runs that, and the plugin is not told. So a key whose **Press** runs "Talk" sends its release as an event, but a release bound to an OBS action stays the OBS action's. When several of a plugin's actions are bound on one control, each that takes events hears it: once per distinct action and parameters, so the same action bound twice with different parameters hears it twice.
+- **Keypad pages and dial functions.** A key is the action's only while its page is shown, and a release goes to the key that took the press even if the page changed meanwhile. The dial is the action's only while the function holding it is selected; a short press, which switches functions, is never an event there, and neither are the raw `pressed` and `released` that make up a click. Without dial functions the dial reports `pressed` and `released`, then `short_press` or `long_press` once the click ends, so an action bound to `long_press` hears the release before its invoke.
+- **Fields.** `gesture` uses the profile's names: `pressed`, `released`, `clockwise`, `counter_clockwise`, `right`, `left`, `short_press`, `long_press`, `up`, `down`. `control` names the module (`m003k`, `m131e`, `m4315`, `m032le`) and the control's zero-based index. `params` are the bound action's parameters with variables filled in, so two keys bound to the same action can be told apart, but **without its secrets**.
+- **Delivery.** In input order with the plugin's invokes, and after the invoke of the press that came before, since a release is handled once its press is answered. Only while the plugin is enabled, running and connected, and only from Live runs. Nothing is answered and nothing goes in the activity log. At most 50 a second per plugin: more are dropped, and the next one queued adds to the plugin's log how many were. Up to 64 events wait for a plugin that is busy and not reading its socket; more are dropped and counted. A slow reader is not disconnected for being slow, but it must still answer pings in time, and once more than 1 MiB is waiting for it, anything other than an event ends the connection. When the module falls far behind, a plugin's steps on one knob are merged into the latest. Treat each event as one step and do not count on hearing every one of a fast knob turn.
+- **A press may have no release, and a release may have no press.** The plugin is not told when a key goes away (a page switch, a profile stop, a switch to Test, a reconnect), so a held key may never send its release. A release may come for a press made in a Test run, or for a press the module dropped because it had fallen far behind. Do not keep a key "on" forever waiting for one.
+
+The example plugin's **Hold** action logs how long a key was held.
 
 ## How a press reaches the plugin
 
@@ -121,6 +142,6 @@ The Execute confirmation names each plugin action with its parameters and the va
 
 ## Not built yet
 
-- Events for the plugin's own controls, condition providers and plugin-supplied key images (design step 4).
+- Condition providers and plugin-supplied key images (design step 4), and telling a plugin when its key appears or disappears (a page switch, a profile stop).
 - An installer or registry (step 6), and an optional `"background": true` plugin that runs without a Live profile (later).
 - Plugins on Windows or Linux.

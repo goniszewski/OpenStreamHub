@@ -843,6 +843,23 @@ impl ActionDispatcher for Dispatcher {
         }
     }
 
+    // Only an executing (Live) run sends events: a Test run never starts a plugin.
+    fn plugin_event(
+        &mut self,
+        action: &cooltek_sdk_service::Action,
+        input: &cooltek_sdk_service::PluginInput,
+    ) {
+        match self {
+            Self::Switchable { execute, macos, .. } => {
+                if execute.load(Ordering::SeqCst) {
+                    macos.plugin_event(action, input);
+                }
+            }
+            Self::MacOs(dispatcher) => dispatcher.plugin_event(action, input),
+            Self::Preview { .. } => {}
+        }
+    }
+
     fn unavailable(&self, action: &cooltek_sdk_service::Action) -> Option<&'static str> {
         match self {
             Self::Switchable {
@@ -1834,6 +1851,7 @@ mod control_regressions {
                 },
                 dial_function: None,
                 coalesced: 1,
+                plugin_events: Vec::new(),
             }],
             report_count: 1,
             coalesced_parse_error_count: 0,
@@ -1842,6 +1860,7 @@ mod control_regressions {
             merge_barrier: false,
             variables: Vec::new(),
             profile: 0,
+            module: cooltek_sdk_service::ServiceModule::M4315,
         };
         let mut output = Vec::new();
         process_work(

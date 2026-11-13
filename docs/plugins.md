@@ -1,6 +1,6 @@
 # Writing a plugin
 
-Status (13 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5), input events (step 4a) and plugin conditions (step 4b). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
+Status (13 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5), input events (step 4a), plugin conditions (step 4b) and installing from Settings (step 6a). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
 
 A plugin adds actions a key can run, such as switching smart lights, and conditions an if / else can test, such as whether a light is on. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
 
@@ -31,7 +31,17 @@ A press whose secret has not been read yet waits for that read on a thread the a
 
 ## Installing
 
-Put the plugin's folder in the plugins folder, `~/Library/Application Support/<app id>/plugins/`; Settings > Plugins has a button that opens it. The folder's name must be the plugin's id, such as `com.example.notify`. The folder and `plugin.json` must belong to you and must not be writable by other users (`chmod go-w`). Settings > Plugins lists every folder with its manifest, or the reason it cannot be used.
+In Settings > Plugins, **Install…** asks for the plugin's folder, wherever it is (such as Downloads); its name does not matter. A `.zip` is not accepted: unzip it first (Safari does by default, the Finder with a double click). The app reads the folder's `plugin.json` and shows the same review as **Enable…**, plus where the folder is, how many files it holds and how large it is, and, when the id is installed already, the version it replaces (with a warning when the new one is older) and whether its approval ends. Nothing is copied before you confirm. **Install** copies the folder and leaves the plugin not enabled, unless the copy installed now has an identical `plugin.json` and is enabled (the review says which); **Install and enable** also enables exactly the `plugin.json` shown. If `plugin.json` changed after the review opened, nothing is installed and you review it again.
+
+The copy goes into the plugins folder, `~/Library/Application Support/<app id>/plugins/<id>/`, named by the plugin's id, through a hidden staging folder, so the plugins folder never holds half a plugin. It holds only regular files and folders: a symbolic link, a device or another special file anywhere in the folder refuses the install, naming it; so does a hard link (a file with other names, as pnpm makes in `node_modules`). `.git` folders are skipped; other hidden files are copied. At most 5,000 files and folders and 256 MiB. A plugin's id cannot be `plugins.sock`, and something other than a folder at `plugins/<id>` (a link, a file) refuses the install. The copy belongs to you and is not writable by other users (execute bits are kept). The folder you picked is never changed.
+
+**Updating** is installing again: the plugin stops (presses waiting for it fail) and the app waits until its processes are gone, then the old copy is replaced whole and, if the new copy is enabled, a Live profile that uses it starts it. If its processes are not gone within 4 seconds, nothing changes and the error says to try again. An identical `plugin.json` stays enabled; any other needs enabling again (or **Install and enable**). Installing the copy that is in the plugins folder is refused. **Remove…** stops the plugin and deletes its folder, its approval, the Keychain secrets its `plugin.json` declares and its data folder; profiles that use it keep their keys, which then fail with "not installed".
+
+**Keep state in `OSH_PLUGIN_DATA`**, never in the plugin's own folder, which an update replaces: it is `<app data>/plugin-data/<id>`, made (0700) before each start, kept across updates and deleted on remove.
+
+**Quarantine.** A folder downloaded from the web carries macOS's quarantine flag, and the copy keeps it. An unsigned native program may then be stopped by Gatekeeper when the plugin starts, with the error shown in Settings > Plugins. Sign native programs, or use an interpreter such as `/usr/bin/python3` with a script.
+
+Copying a folder in by hand still works: the folder's name must be the plugin's id, such as `com.example.notify`, and the folder and `plugin.json` must belong to you and must not be writable by other users (`chmod go-w`). Settings > Plugins has a button that opens the plugins folder, and lists every folder with its manifest, or the reason it cannot be used.
 
 ## When it runs
 
@@ -39,7 +49,7 @@ Put the plugin's folder in the plugins folder, `~/Library/Application Support/<a
 - It stops the plugin 5 seconds after the last Live run that uses it stops, so a module that restarts (a large profile change, a replug) keeps the same plugin process. On quit, every plugin stops.
 - A plugin that exits, closes its connection, misses a ping or has not said hello 10 seconds after it started is restarted after 1, 2, 4, 8, 16, then 30 seconds. After 5 failures within 5 minutes it stays stopped until a profile that uses it is executed again.
 - Stopping sends SIGTERM to the plugin's process group, then SIGKILL after 1 second, so helpers it started stop with it.
-- The plugin starts in its folder with the app's environment plus `OSH_PLUGIN_SOCKET`, `OSH_PLUGIN_ID` and `OSH_PLUGIN_TOKEN`. Started from the Finder, `PATH` holds only the system folders, so name interpreters by their full path in `command`. Its stdout is discarded and its stderr is kept, with its log, in Settings > Plugins.
+- The plugin starts in its folder with the app's environment plus `OSH_PLUGIN_SOCKET`, `OSH_PLUGIN_ID`, `OSH_PLUGIN_TOKEN` and `OSH_PLUGIN_DATA` (its own data folder, see [Installing](#installing)). Started from the Finder, `PATH` holds only the system folders, so name interpreters by their full path in `command`. Its stdout is discarded and its stderr is kept, with its log, in Settings > Plugins.
 
 ## Manifest: `plugin.json`
 
@@ -183,5 +193,5 @@ The Execute confirmation names each plugin action and plugin condition with its 
 
 - Plugin-supplied key images (design step 4c), and telling a plugin when its key appears or disappears (a page switch, a profile stop).
 - Plugin conditions on key faces, caching of a plugin's answers, and conditions that answer anything other than true or false.
-- An installer or registry (step 6), and an optional `"background": true` plugin that runs without a Live profile (later).
+- `.zip` archives, drag and drop onto Settings > Plugins, a registry and update checks (step 6b), signature checks of a plugin's author, and an optional `"background": true` plugin that runs without a Live profile (later).
 - Plugins on Windows or Linux.

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { PluginAction } from './contracts';
 import { pluginIssue, pluginReferences } from './action-model';
-import { pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
+import { formatSize, pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
 import { lights, listing } from './plugins-test-data';
 import { capabilityLines, profileCapabilities, stepLabel } from './profile-capabilities';
 import { actionVariableNames, renameVariable } from './variable-model';
@@ -125,5 +125,15 @@ describe('plugin actions in the Execute confirmation and the variables panel', (
     expect(actionVariableNames(set)).toEqual(['room']);
     const renamed = renameVariable(flat(set), 'room', 'area');
     expect(renamed.bindings[0].action).toEqual({ ...set, params: { entity: 'light.{{area}}', level: 40 } });
+  });
+});
+
+describe('formatSize', () => {
+  it('shows bytes, then KiB, MiB and GiB with one decimal below 10', () => {
+    expect([0, 1023, 1024, 1536, 10 * 1024, 3.5 * 1024 * 1024, 256 * 1024 * 1024, 2 * 1024 ** 3].map(formatSize))
+      .toEqual(['0 B', '1023 B', '1.0 KiB', '1.5 KiB', '10 KiB', '3.5 MiB', '256 MiB', '2.0 GiB']);
+  });
+  it('steps up a unit instead of showing 1024 of the smaller one', () => {
+    expect([1024 * 1024 - 1, 1023.4 * 1024].map(formatSize)).toEqual(['1.0 MiB', '1023 KiB']);
   });
 });

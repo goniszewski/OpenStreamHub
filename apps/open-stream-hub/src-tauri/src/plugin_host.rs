@@ -3,7 +3,8 @@
 //! The app starts one instance of each plugin that an executing (Live) module run uses, and stops it when no
 //! executing run uses it, and on quit. Test runs never start a plugin: they only log what would run. A plugin gets
 //! the socket path, its id and a token that is new at every start in its environment (`OSH_PLUGIN_SOCKET`,
-//! `OSH_PLUGIN_ID`, `OSH_PLUGIN_TOKEN`), connects to `<app data>/plugins/plugins.sock` (0700 directory) and sends
+//! `OSH_PLUGIN_ID`, `OSH_PLUGIN_TOKEN`), and the folder it keeps its state in (`OSH_PLUGIN_DATA`,
+//! `<app data>/plugin-data/<id>`, made 0700 at each start), connects to `<app data>/plugins/plugins.sock` (0700 directory) and sends
 //! `hello`. It runs in its own process group, which is killed when it stops, so helpers it started do not outlive it.
 //!
 //! One JSON object per line, in both directions, each line at most [`MAX_LINE`] bytes:
@@ -104,6 +105,10 @@ const MAX_ERROR_BYTES: usize = 512;
 const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a stopping plugin has after SIGTERM before SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(1);
+/// How long [`PluginHost::pause`] waits for a plugin's processes to be gone, and a stop for its helpers after SIGKILL.
+const STOP_WAIT: Duration = Duration::from_secs(3);
+/// How much longer a group that outlived [`STOP_WAIT`] keeps blocking an install or remove of its plugin.
+const STUCK_WAIT: Duration = Duration::from_secs(60);
 const TICK: Duration = Duration::from_millis(100);
 /// How long a plugin keeps running after the last run that used it stopped executing, so a module run that restarts
 /// (a large profile change, a replug) does not restart its plugins.
@@ -400,6 +405,8 @@ pub type Forward = crate::ingress::Forward;
 
 struct Inner {
     dir: PathBuf,
+    /// `<app data>/plugin-data`, the plugins folder's sibling.
+    data: PathBuf,
     socket: PathBuf,
     forward: Forward,
     secrets: PluginSecrets,
@@ -410,6 +417,11 @@ struct Inner {
     /// the plugins that run with a manifest, since only their presses can need a read.
     workers: Mutex<HashMap<String, mpsc::Sender<Queued>>>,
     unnamed: AtomicUsize,
+    /// Plugins whose folder is being installed or removed: none of them starts until it is resumed.
+    paused: Mutex<BTreeSet<String>>,
+    /// The plugin id and process group of each process being stopped in the background, until no process of the
+    /// group is left (or [`STOP_WAIT`] passed).
+    stopping: Mutex<Vec<(String, i32)>>,
 }
 
 /// What Settings shows about one running or wanted plugin.
@@ -534,11 +546,22 @@ fn kill_group(child: &mut Child) {
     let _ = child.wait();
 }
 
-/// Stops a process in the background, so no caller waits for its grace period.
-fn stop_child(mut child: Child) {
-    let _ = thread::Builder::new()
-        .name("plugin-stop".into())
-        .spawn(move || kill_group(&mut child));
+/// Waits (at most `limit`) until no process of the group `pid` led is left; whether none is.
+fn group_gone(pid: i32, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        // SAFETY: signal 0 only asks whether any process of the group exists. Only ESRCH means none is left: EPERM
+        // means one exists that may not be signalled (a set-id helper), which is not gone.
+        if unsafe { libc::killpg(pid, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 impl PluginHost {
@@ -564,8 +587,12 @@ impl PluginHost {
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not protect the plugin socket: {error}"))?;
         let (answers, answered) = mpsc::channel::<(Reply, Answer)>();
+        let data = plugins_dir
+            .parent()
+            .map_or_else(|| plugins_dir.join("plugin-data"), plugins::data_dir);
         let host = Self(Arc::new(Inner {
             dir: plugins_dir.to_path_buf(),
+            data,
             socket,
             forward,
             secrets,
@@ -577,6 +604,8 @@ impl PluginHost {
             answers: Mutex::new(answers),
             workers: Mutex::new(HashMap::new()),
             unnamed: AtomicUsize::new(0),
+            paused: Mutex::new(BTreeSet::new()),
+            stopping: Mutex::new(Vec::new()),
         }));
         let spawn = |name: &str, run: Box<dyn FnOnce() + Send>| {
             thread::Builder::new()
@@ -692,7 +721,7 @@ impl PluginHost {
         };
         match fingerprint {
             None => {
-                self.halt(instance, "it was disabled in Settings > Plugins");
+                self.halt(id, instance, "it was disabled in Settings > Plugins");
                 instance.manifest = None;
                 instance.fingerprint = None;
                 instance.restart_at = None;
@@ -706,7 +735,7 @@ impl PluginHost {
                 {
                     return;
                 }
-                self.halt(instance, "its plugin.json was enabled again");
+                self.halt(id, instance, "its plugin.json was enabled again");
                 instance.gave_up = false;
                 instance.failures.clear();
                 instance.restart_at = None;
@@ -717,10 +746,72 @@ impl PluginHost {
         }
     }
 
+    fn paused(&self) -> MutexGuard<'_, BTreeSet<String>> {
+        self.0
+            .paused
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Stops `id` (pending presses fail, as on disable) while its folder is replaced or removed, and keeps it from
+    /// starting until [`Self::resume`], whatever else asks for it meanwhile. Returns once no process of it is left,
+    /// helpers included (SIGTERM, SIGKILL after [`STOP_GRACE`]), or fails after [`STOP_WAIT`] more, so nothing of the
+    /// old copy runs while its folder and data folder change. Call [`Self::resume`] either way.
+    pub fn pause(&self, id: &str) -> Result<(), String> {
+        self.paused().insert(id.to_string());
+        if let Some(instance) = self.lock().instances.get_mut(id) {
+            self.halt(id, instance, "it is being installed or removed");
+            instance.manifest = None;
+            instance.fingerprint = None;
+            instance.restart_at = None;
+        }
+        let deadline = Instant::now() + STOP_GRACE + STOP_WAIT;
+        while self.stopping().iter().any(|(stopping, _)| stopping == id) {
+            if Instant::now() >= deadline {
+                let error = format!(
+                    "{id} did not stop within {} s; nothing was changed, try again",
+                    (STOP_GRACE + STOP_WAIT).as_secs()
+                );
+                if let Some(instance) = self.lock().instances.get_mut(id) {
+                    instance.last_error = Some(error.clone());
+                }
+                return Err(error);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+
+    /// Lets `id` start again after [`Self::pause`]: a Live run that uses it starts what its folder holds now (when it is
+    /// enabled), fresh, as if that run had just started using it.
+    pub fn resume(&self, id: &str) {
+        self.paused().remove(id);
+        if self.0.stopped.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut guard = self.lock();
+        let state = &mut *guard;
+        if let Some(instance) = state.instances.get_mut(id)
+            && instance.unused_since.is_none()
+        {
+            self.halt(id, instance, "its folder changed");
+            instance.gave_up = false;
+            instance.failures.clear();
+            self.launch(id, instance, &state.approved);
+        }
+    }
+
+    /// Ends a [`Self::pause`] that failed, without starting anything: a process of the old copy may still run, so a
+    /// new one starts only at the next ordinary start (a run that starts using it, an enable, a restart that is due),
+    /// not at once beside it.
+    pub fn unpause(&self, id: &str) {
+        self.paused().remove(id);
+    }
+
     /// Stops an instance's process and connection and fails what it still owed.
-    fn halt(&self, instance: &mut Instance, why: &str) {
+    fn halt(&self, id: &str, instance: &mut Instance, why: &str) {
         if let Some(child) = instance.child.take() {
-            stop_child(child);
+            self.stop_child(id, child);
         }
         if let Some(conn) = instance.conn.take() {
             conn.close("the plugin was stopped");
@@ -731,8 +822,49 @@ impl PluginHost {
     }
 
     /// Stops an instance that is no longer wanted and fails what it still owed.
-    fn retire(&self, mut instance: Instance, why: &str) {
-        self.halt(&mut instance, why);
+    fn retire(&self, id: &str, mut instance: Instance, why: &str) {
+        self.halt(id, &mut instance, why);
+    }
+
+    fn stopping(&self) -> MutexGuard<'_, Vec<(String, i32)>> {
+        self.0
+            .stopping
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Stops a process in the background, so no caller waits for its grace period; [`Self::pause`] can still wait
+    /// for it to be gone.
+    fn stop_child(&self, id: &str, mut child: Child) {
+        let pid = child.id() as i32;
+        self.stopping().push((id.to_string(), pid));
+        // The child is handed over only once the thread runs, so a failed spawn still has it to stop here.
+        let (give, take) = mpsc::channel::<Child>();
+        let host = self.clone();
+        let spawned = thread::Builder::new()
+            .name("plugin-stop".into())
+            .spawn(move || {
+                if let Ok(mut child) = take.recv() {
+                    kill_group(&mut child);
+                    // A group still there keeps its entry a while longer, so `pause` fails rather than replace the
+                    // folder under a process of the old copy.
+                    if !group_gone(pid, STOP_WAIT) {
+                        group_gone(pid, STUCK_WAIT);
+                    }
+                }
+                host.stopping().retain(|(_, stopped)| *stopped != pid);
+            });
+        match spawned {
+            Ok(_) => {
+                let _ = give.send(child);
+            }
+            Err(_) => {
+                // No thread: stop it here, waiting for its grace period (rare; the system is out of threads).
+                kill_group(&mut child);
+                group_gone(pid, STOP_WAIT);
+                self.stopping().retain(|(_, stopped)| *stopped != pid);
+            }
+        }
     }
 
     /// Starts the plugin's process with a fresh token, reading its manifest again first. A manifest whose
@@ -740,6 +872,12 @@ impl PluginHost {
     fn launch(&self, id: &str, instance: &mut Instance, approved: &Approved) {
         instance.restart_at = None;
         instance.not_enabled = false;
+        if self.paused().contains(id) {
+            instance.manifest = None;
+            instance.fingerprint = None;
+            instance.last_error = Some(format!("{id} is being installed or removed"));
+            return;
+        }
         let (manifest, fingerprint) = match plugins::load(&instance.folder) {
             Ok(loaded) => loaded,
             Err(error) => {
@@ -767,6 +905,21 @@ impl PluginHost {
                 return;
             }
         };
+        // Its own state lives outside its folder, which an update replaces whole.
+        let data = self.0.data.join(id);
+        if let Err(error) =
+            crate::ingress::prepare_private_dir(&self.0.data, "plugin data", "plugins cannot run")
+                .and_then(|()| {
+                    crate::ingress::prepare_private_dir(
+                        &data,
+                        "plugin data",
+                        "the plugin cannot run",
+                    )
+                })
+        {
+            self.failed(id, instance, error);
+            return;
+        }
         let (program, args) = manifest.command_in(&instance.folder);
         let mut command = Command::new(&program);
         command
@@ -775,6 +928,7 @@ impl PluginHost {
             .env("OSH_PLUGIN_SOCKET", &self.0.socket)
             .env("OSH_PLUGIN_ID", id)
             .env("OSH_PLUGIN_TOKEN", &token)
+            .env("OSH_PLUGIN_DATA", &data)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
@@ -834,7 +988,7 @@ impl PluginHost {
     /// Notes a failure of a wanted plugin and plans its restart, or gives up after too many.
     fn failed(&self, id: &str, instance: &mut Instance, error: String) {
         if let Some(child) = instance.child.take() {
-            stop_child(child);
+            self.stop_child(id, child);
         }
         instance.conn = None;
         for (_, pending) in instance.pending.drain() {
@@ -880,7 +1034,7 @@ impl PluginHost {
                     .is_some_and(|since| now.duration_since(since) >= LINGER)
                 {
                     if let Some(instance) = state.instances.remove(&id) {
-                        self.retire(instance, "no executing profile uses it any more");
+                        self.retire(&id, instance, "no executing profile uses it any more");
                     }
                     continue;
                 }
@@ -2452,6 +2606,106 @@ mod tests {
                 .contains("say hello")
         );
         wait_for("the restart", || host.state_of(ID) == Some("starting"));
+    }
+
+    #[test]
+    fn a_plugin_gets_a_private_data_folder_outside_its_own() {
+        let rig = rig(&[
+            "/bin/sh",
+            "-c",
+            "echo \"$OSH_PLUGIN_DATA\" > \"$OSH_PLUGIN_DATA/where\"; exec sleep 30",
+        ]);
+        let host = &rig.host;
+        let data = rig._root.path().join("plugin-data");
+        // Made 0700 even when it was there already with a looser mode.
+        fs::create_dir_all(data.join(ID)).unwrap();
+        fs::set_permissions(data.join(ID), fs::Permissions::from_mode(0o755)).unwrap();
+        host.set_usage("m1", used());
+        let file = data.join(ID).join("where");
+        wait_for("the plugin to write its data folder", || {
+            fs::read_to_string(&file).is_ok_and(|text| text.ends_with('\n'))
+        });
+        assert_eq!(
+            fs::read_to_string(&file).unwrap().trim(),
+            data.join(ID).display().to_string()
+        );
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&data.join(ID)), 0o700);
+    }
+
+    #[test]
+    fn a_paused_plugin_is_stopped_and_not_started_until_it_is_resumed() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let pressed = invoke(host, json!({"entity":"a"}));
+        plugin.receive();
+        host.pause(ID).unwrap();
+        let error = answer(&pressed).unwrap_err();
+        assert!(error.contains("being installed or removed"), "{error}");
+        assert!(host.lock().instances[ID].child.is_none());
+        // Nothing starts it meanwhile: another run, an enable.
+        host.set_usage("m2", used());
+        host.set_approval(ID, Some(rig.fingerprint.clone()));
+        assert!(host.lock().instances[ID].child.is_none());
+        host.resume(ID);
+        assert_eq!(host.state_of(ID), Some("starting"));
+    }
+
+    #[test]
+    fn pausing_waits_until_the_plugin_and_its_helpers_are_gone() {
+        // Ignores SIGTERM (its helper inherits that), so only the SIGKILL after the grace period stops them.
+        let rig = rig(&[
+            "/bin/sh",
+            "-c",
+            "trap '' TERM; sleep 30 & echo $! > helper.pid; echo $$ > plugin.pid; wait",
+        ]);
+        let host = &rig.host;
+        let folder = rig._root.path().join("plugins").join(ID);
+        let pid_of = |file: &str| -> i32 {
+            fs::read_to_string(folder.join(file))
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        host.set_usage("m1", used());
+        wait_for("the pids", || {
+            pid_of("plugin.pid") > 0 && pid_of("helper.pid") > 0
+        });
+        let started = Instant::now();
+        host.pause(ID).unwrap();
+        assert!(started.elapsed() >= STOP_GRACE);
+        // SAFETY: signal 0 only asks whether the process exists.
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) == 0 };
+        assert!(!alive(pid_of("plugin.pid")));
+        assert!(!alive(pid_of("helper.pid")));
+        host.resume(ID);
+    }
+
+    #[test]
+    fn a_pause_that_times_out_starts_nothing_when_it_ends() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        // A process of the plugin that never goes away (an invented group no thread stops).
+        host.stopping().push((ID.to_string(), i32::MAX));
+        let error = host.pause(ID).unwrap_err();
+        assert!(error.contains("did not stop"), "{error}");
+        host.unpause(ID);
+        assert!(host.lock().instances[ID].child.is_none());
+        assert!(
+            host.statuses()[0]
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("did not stop")
+        );
+        host.stopping().clear();
+        // The next ordinary start starts it.
+        host.set_usage("m2", used());
+        assert_eq!(host.state_of(ID), Some("starting"));
     }
 
     #[test]

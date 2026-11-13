@@ -1,6 +1,6 @@
 # Plugins: research and proposed design
 
-Status (9 November 2026): **steps 1 to 3 and 5 built**: preset packs, the `run_program` action, the plugin protocol with action providers, and community readiness (manifest schema 1, the first-enable dialog, Keychain secrets; author guide: [writing a plugin](plugins.md)). Steps 4 and 6 are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
+Status (13 November 2026): **steps 1 to 3 and 5 built**: preset packs, the `run_program` action, the plugin protocol with action providers, and community readiness (manifest schema 1, the first-enable dialog, Keychain secrets; author guide: [writing a plugin](plugins.md)). Of steps 4 and 6, input events ([4a](#step-4a-input-events)), plugin conditions ([4b](#step-4b-plugin-conditions)) and installing from Settings ([6a](#step-6a-installing-a-plugin)) are built; plugin-supplied key images and a registry are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
 
 ## What exists today
 
@@ -122,9 +122,9 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 1. **Data-only packs.** Built: the app preset packs, and packs dropped into `packs/` in the app data folder, checked by the same rules (see `apps/open-stream-hub/presets/README.md`).
 2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
 3. **Plugin protocol and action providers.** Built: manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`, the editor form and Settings > Plugins ([writing a plugin](plugins.md)). How it differs from this proposal is listed under [as built](#plugin-protocol-as-built).
-4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images.
+4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images. Events and conditions are built ([4a](#input-events-as-built), [4b](#plugin-conditions-as-built)); images are not.
 5. **Community readiness.** Built: a versioned manifest schema, author docs and the trust UI ([as built](#trust-ui-as-built)).
-6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand.
+6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand. Installing, updating and removing from Settings is built ([6a](#installing-a-plugin-as-built)); no registry.
 
 ## The "run program" action
 
@@ -379,6 +379,74 @@ Built on 13 November 2026 as proposed above, with these differences:
 - **Keychain reads count against a check's time.** The first check needing a secret not read yet waits for the Keychain within its 3 seconds, so a Keychain prompt can fail it; once read, the secret is held. Such a check waits on the plugin's invoke thread, so it keeps its order within its module, but another module's check or press whose secrets are held can overtake it.
 - **Diagnostics.** A plugin condition's text parameters are replaced with their length in a diagnostics bundle's profile, as a plugin action's are.
 - **The example's `count` is required**, so a check without it fails at once instead of in the plugin.
+
+## Step 6a: installing a plugin
+
+Status: built 13 November 2026 ([as built](#installing-a-plugin-as-built)).
+
+Today a plugin is installed by hand: open the plugins folder from Settings > Plugins, copy the plugin's folder in, rename it to the plugin's id if needed, and fix its permissions if it is writable by others. Updating means deleting the old folder first, and a plugin that is running at the time keeps running from files that are being replaced. Removing it leaves its approval and Keychain secrets behind. Step 6a makes install, update and remove one action each in Settings > Plugins, with the review the first-enable dialog already gives.
+
+### Install
+
+- **Install…** in Settings > Plugins opens the macOS folder picker (`choose folder`, through `osascript`, as the app picker does). The user picks the plugin's folder wherever it is, such as Downloads. Its name does not matter: a download is often `com.example.notify-1.2.0` or `notify-main`.
+- **A `.zip` is not accepted in 6a.** Safari unzips downloads by default, and Finder unzips one with a double click; refusing archives keeps the app out of archive formats (paths outside the folder, links, size bombs). The picker says to unzip first.
+- The app reads the chosen folder's `plugin.json` by the usual rules (schema, size, strict fields), except the folder-name rule. A folder with no usable manifest is refused with the reason, before anything is copied.
+- **One review, then the copy.** The dialog is the first-enable dialog's review (name, id, version, program, actions, conditions, permissions, secrets, "a plugin runs as you"), plus what installing does:
+  - where it comes from, how many files and how large;
+  - when the id is installed already: the version it replaces (and a warning when the new one is older), and that its approval ends because `plugin.json` changed (unless the bytes are identical);
+  - **Install** copies it and leaves it not enabled; **Install and enable** also enables exactly the `plugin.json` shown (the same fingerprint rule as **Enable…**, checked again against the copy).
+- If the chosen folder's `plugin.json` changes while the dialog is open, nothing is installed and the dialog says to review it again, as for enabling.
+
+### The copy
+
+- **Into a hidden staging folder** in the plugins folder (`.install-<random>`, which the catalog skips because it starts with a dot), then renamed into place as `<id>`. A failure at any point removes the staging folder, so the plugins folder never holds half a plugin.
+- **Only regular files and folders.** A symbolic link, a device or another special file anywhere in the tree refuses the install and names it. Hidden files are copied (a plugin may need them); `.git` folders are skipped.
+- **Limits:** at most 5,000 files and 256 MiB, so a picked home folder is refused, not copied.
+- **Permissions:** everything belongs to the user (it is a new copy) and nothing is writable by others (`go-w`, keeping execute bits), so the folder passes the owner check that `load` makes.
+- **Quarantine is kept.** Files downloaded from the web carry macOS's quarantine flag, and the copy keeps it; the app does not clear it. An unsigned program in a plugin may then be stopped by Gatekeeper when the plugin starts, and its error shows in Settings > Plugins. The author guide says to sign native programs, or to use an interpreter such as `/usr/bin/python3` with a script.
+- **The copy is checked again** with `load` (now including the folder name) before it is renamed into place.
+- The source folder is never changed or deleted.
+
+### Update
+
+- Installing an id that is installed already replaces it. The host first stops that plugin (pending presses fail, as on disable), the old folder is renamed aside (`.old-<id>-<random>`), the new one renamed into place, and the old one deleted. If the rename fails, the old folder is put back.
+- **The approval follows the bytes.** A `plugin.json` that changed needs enabling again (or **Install and enable**); an identical one stays enabled, and a Live run that uses it starts the new copy.
+- **Plugin data.** The folder is replaced whole, so a plugin must not keep its own state there. 6a gives every plugin `OSH_PLUGIN_DATA`: `<app data>/plugin-data/<id>/`, made 0700 on start, kept across updates and deleted on remove. The author guide says to keep state there.
+- Installing the folder that is installed already (the source is inside the plugins folder) is refused.
+
+### Remove
+
+- **Remove…** on a plugin, with a confirmation naming it and saying that profiles using it keep their keys, which then fail with "not installed".
+- It stops the plugin, removes its approval, forgets its Keychain secrets, deletes its folder and its `plugin-data` folder. A folder that cannot be used (a broken manifest) can be removed too.
+- Profiles are not changed.
+
+### Not in 6a
+
+- `.zip` archives, drag and drop onto Settings > Plugins, and a registry or update checks (step 6b, if there is demand).
+- Signature checks of a plugin's author. The review and the fingerprint approval stay the trust model.
+
+### Work
+
+1. **App:** `choose_plugin_folder` (osascript picker), `review_plugin_install(path)` (manifest, counts, size, the installed version, the fingerprint), `install_plugin(path, fingerprint, enable)` (staging copy with the checks above, stop, swap, approval), `remove_plugin(id)` (stop, approval, secrets, folders), `OSH_PLUGIN_DATA` in the host. Tests for each refusal (link, special file, limits, manifest changed, source inside the plugins folder), the older-version warning, update keeping or ending the approval, a failed swap restoring the old folder, and remove.
+2. **Frontend:** **Install…** and the install review (reusing the enable dialog's sections), **Remove…** with its confirmation.
+3. **Docs:** the author guide's "Installing" (the button, unzip first, quarantine and signing, `OSH_PLUGIN_DATA`) and this section marked as built.
+
+## Installing a plugin as built
+
+Built on 13 November 2026 as proposed above, with these differences:
+
+- **Staging is `.install-<random>/<id>`**, a folder named by the id inside the hidden staging folder, so the copy is checked with `load` folder name included before the rename into place; the rename moves `<id>` out of it. Installs and removes run one at a time. At app start and before each install or remove, leftovers of an interrupted one are tidied: an installed copy moved aside by an update (`.old-<id>-<random>`) is renamed back to `<id>` when `<id>` is missing (the newest by change time, when there are several), and deleted when `<id>` exists; `.install-*` and `.removed-*` (a remove renames the folder to `.removed-<name>-<random>` before deleting it, so an interrupted remove is never restored) are deleted. Only names ending in the 12 hex digits these steps make are touched, so a backup named `.old-<id>-mine` by hand is left alone. An interrupted remove leaves the plugin's data folder and Keychain secrets (only its folder is tidied); installing it again and removing it clears them. Nothing is tidied in a plugins folder that is a symbolic link.
+- **Only a real folder at `plugins/<id>` is replaced.** A symbolic link or a file there (the socket, say) refuses the review and the install, and the id `plugins.sock`, the socket's name, is refused by the manifest check itself, so the catalog, enable and install all refuse it.
+- **The limit is 5,000 files and folders together** (`.git` not counted), so a tree of empty folders is bounded too; the review's count is of files only.
+- **Copied permissions are `mode & 0755`**: execute bits are kept, set-id and sticky bits are dropped, and folders always keep `u+rwx` so the copy can be deleted. File data is read and written (each file only up to what is left of 256 MiB plus one byte, so a file that grows while it is copied refuses the copy instead of passing the limit) and extended attributes are copied (`fcopyfile` with `COPYFILE_XATTR`), so the quarantine flag stays; ACLs are not copied, so none can let others write. While copying, every folder and file is opened from its parent folder's descriptor (`openat` with `O_NOFOLLOW`, folders with `O_DIRECTORY`), so a folder or file swapped for a symbolic link after the scan is refused (naming the link), never followed, and a folder swapped for a file says it "was replaced since it was read". The picked folder itself is opened with `O_NOFOLLOW` and must be the folder (device and inode) that was scanned, or the copy is refused ("review it again"). **A hard link is refused**, naming it ("bin/x is a hard link; a plugin may hold only its own files"): a regular file with more than one name (checked at the scan and again on the open file at copy time) may be a name for a file the user does not own. A folder made with tools that hard-link files (pnpm's `node_modules`) is refused for that reason.
+- **The picked folder's `plugin.json` is read without the owner check** as well as the folder-name rule (a download may be writable by others; the copy is not). A folder that holds the plugins folder is refused too, not only one inside it.
+- **A plain Install keeps the plugin enabled only when the copy installed now has identical `plugin.json` bytes and is enabled.** In every other case it removes the plugin's approval before the swap (if that fails, nothing is installed; if the swap then fails, the approval is put back), rather than leaving it to show as `changed`: an approval of other bytes, and also one of these very bytes left behind by a folder deleted by hand or held while the installed copy shows `changed`, so nothing approved before the review enables what is installed. The review's `plugin.approval` is what a plain Install leaves (`enabled` or `not_enabled`); **Install and enable** always enables. If enabling fails after the copy is in place, the error starts with exactly `installed: ` and reads on its own after it ("installed: Lights could not be enabled: …"; "installed: the earlier approval of Lights could not be removed: …" only when an enable lands during the install), so the dialog can say the plugin was installed; every error raised before or at the swap is plain text and means nothing was installed. Deleting the old copy after the swap and resuming the host report no error (a copy that could not be deleted is logged and deleted as a leftover later).
+- **The host pauses the plugin** for the swap and the approval change: it is stopped (pending presses fail with "it is being installed or removed"), and the install or remove waits until none of its processes is left, helpers included (SIGTERM, SIGKILL after 1 s, then up to 3 s for the process group to be gone; a group that is still there, or holds a process that cannot be signalled, keeps blocking an install or remove for another 60 s), so the old copy never runs while its folder or data folder changes. If they are not gone in time, nothing is changed, the error says to try again, and the plugin is not started again at once (a process of the old copy may still run): it starts at the next ordinary start (a run that starts using it, an enable, a due restart). Nothing starts the plugin until the install or remove is done; then a Live run that uses it starts what is installed, as if it had just started using it.
+- **A folder is used only under its exact name.** On a case-insensitive volume `plugins/<id>` also opens a folder named in other case; `load` checks the parent holds an entry of exactly the id, so such a folder is unusable ("rename the folder to its id") for the host too. Install replaces it (it is moved aside like any installed copy), and Remove by the listed name deletes it.
+- **Remove forgets the secrets the folder's `plugin.json` declares**, read without the owner and name checks, so an unusable folder with a parseable manifest still has them forgotten. When `plugin.json` cannot be parsed at all, its Keychain items are left (the Keychain cannot be listed by account prefix through the same vault); they are inert, and installing the plugin again and removing it clears them. Remove of an id with nothing installed succeeds. Its approval is removed before its folder is moved aside, and put back if the move fails. A failure after the plugin's folder is gone (its data folder could not be deleted, the Keychain kept a secret) does not stop the other steps and is reported once at the end, starting with exactly `removed: ` and reading on its own after it ("removed: the Keychain kept its secret token (…)"); every error before is plain text and means nothing was removed.
+- **Remove takes the listed folder name**, so a folder not named by a plugin id (an unusable one such as `notify-main`) can be removed too: the name must be one visible entry directly in the plugins folder (not empty, no `/`, not `.` or `..`, not starting with `.`, so staging and set-aside folders cannot be named) and a real folder, not a symbolic link; only that folder is deleted, since no approval, secret or data folder can belong to a name that is not an id. A symbolic link, under any name, is refused and never followed. Remove changes nothing when the plugins folder or `plugin-data` is a symbolic link; a link as `plugin-data/<id>` is removed itself, never followed.
+- **A refused install closes the dialog** and the reason shows in Settings > Plugins (the dialog does not stay to say to review it again), as a refused enable does: what the dialog showed may be stale. While an install runs the dialog cannot be closed, since closing it would not stop the install.
+- **`OSH_PLUGIN_DATA` is the folder's path without a trailing slash.** `<app data>/plugin-data` and the plugin's folder in it are made 0700 before each start; when that fails, the start counts as a failure.
 
 ## Plugin protocol as built
 

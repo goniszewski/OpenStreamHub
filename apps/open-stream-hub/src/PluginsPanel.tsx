@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
-import { FolderOpen, RotateCcw } from 'lucide-react';
+import { FolderOpen, PackagePlus, RotateCcw } from 'lucide-react';
 import { useT } from './i18n-react';
 import type { MessageKey } from './locales/en';
-import { PluginEnableDialog } from './PluginEnableDialog';
+import { ModalDialog } from './controls';
+import { PluginEnableDialog, PluginInstallDialog } from './PluginEnableDialog';
 import { usePluginListing } from './plugins-context';
-import type { ListedPlugin, PluginManifest, PluginSecretStatus } from './plugins-model';
+import type { InstallReview, ListedPlugin, PluginManifest, PluginSecretStatus } from './plugins-model';
 import type { Invoke } from './profile-session';
 import { codeList, richText } from './rich-text';
 
@@ -48,22 +49,70 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
       })
       .finally(() => setBusy(false));
   };
+  // Install…: the folder picker (null when cancelled), then the review of the chosen folder; a refused review is shown
+  // here. Installing closes the dialog either way, since a refusal (plugin.json changed) makes what it shows stale.
+  const [install, setInstall] = useState<InstallReview | null>(null);
+  const [manageError, setManageError] = useState<string | null>(null);
+  const [choosing, setChoosing] = useState(false);
+  const [removing, setRemoving] = useState<ListedPlugin | null>(null);
+  // The plugin being removed right now (stopping it can take a few seconds); its Remove… is disabled meanwhile.
+  const [removingNow, setRemovingNow] = useState<string | null>(null);
+  const chooseInstall = () => {
+    setChoosing(true);
+    setManageError(null);
+    setEnableError(null);
+    invoke<string | null>('choose_plugin_folder')
+      .then(path => path === null ? null : invoke<InstallReview>('review_plugin_install', { path }).then(setInstall))
+      .catch((reason: unknown) => setManageError(t('plugins.installFailed', { error: String(reason) })))
+      .finally(() => setChoosing(false));
+  };
+  const runInstall = (enable: boolean) => {
+    if (!install?.plugin.fingerprint || busy) return;
+    setBusy(true);
+    // A failure after the copy was swapped in (such as enabling it) comes as "installed: <reason>": it is installed.
+    invoke('install_plugin', { path: install.path, fingerprint: install.plugin.fingerprint, enable })
+      .catch((reason: unknown) => {
+        const error = String(reason);
+        setManageError(error.startsWith('installed: ')
+          ? t('plugins.installedBut', { error: error.slice('installed: '.length) }) : t('plugins.installFailed', { error }));
+      })
+      .finally(() => { setInstall(null); setBusy(false); refresh(); });
+  };
+  const remove = () => {
+    if (!removing) return;
+    const plugin = removing;
+    setRemoving(null);
+    setManageError(null);
+    setRemovingNow(plugin.folder);
+    invoke('remove_plugin', { id: plugin.folder })
+      // A failure after the folder was deleted (such as the Keychain keeping a secret) comes as "removed: <reason>".
+      .catch((reason: unknown) => {
+        const name = plugin.manifest?.name ?? plugin.folder;
+        const error = String(reason);
+        setManageError(error.startsWith('removed: ')
+          ? t('plugins.removedBut', { name, error: error.slice('removed: '.length) }) : t('plugins.removeFailed', { name, error }));
+      })
+      .finally(() => { setRemovingNow(null); refresh(); });
+  };
   const enabled = listing?.plugins.filter(plugin => plugin.approval === 'enabled') ?? [];
   const disabled = listing?.plugins.filter(plugin => plugin.approval !== 'enabled') ?? [];
   const toReview = disabled.filter(plugin => plugin.approval === 'changed').length;
   const items = (plugins: ListedPlugin[]) => <ul className="plugin-list">{plugins.map(plugin =>
-    <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} />)}</ul>;
+    <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} removeDisabled={removingNow !== null}
+      onRemove={() => { setManageError(null); setRemoving(plugin); }} />)}</ul>;
   return <section className="panel plugins-panel">
     <h2>{t('plugins.title')}</h2>
     <p className="fine-print">{richText(t('plugins.intro'))}</p>
     {!desktop ? <p className="fine-print">{t('plugins.notDesktop')}</p> : <>
       {listing && <><label>{t('plugins.folder')}</label><code className="storage-path">{listing.folder}</code></>}
       <div className="settings-actions">
+        <button type="button" className="button" disabled={choosing || busy} onClick={chooseInstall}><PackagePlus size={16} />{t('plugins.installButton')}</button>
         <button type="button" className="button" onClick={() => { void invoke('open_plugins_folder').catch(() => {}); }}><FolderOpen size={16} />{t('plugins.open')}</button>
         <button type="button" className="button" onClick={refresh}><RotateCcw size={16} />{t('plugins.refresh')}</button>
       </div>
       {error && <p className="field-error" role="alert">{t('plugins.listFailed', { error })}</p>}
       {enableError && <p className="field-error plugin-enable-error" role="alert">{enableError}</p>}
+      {manageError && <p className="field-error plugin-manage-error" role="alert">{manageError}</p>}
       {listing && listing.plugins.length === 0 && <p className="fine-print" role="status">{t('plugins.none')}</p>}
       {listing && listing.plugins.length > 0 && <>
         <PluginGroup id="enabled" initiallyOpen title={t('plugins.group.enabled', { count: enabled.length })}>
@@ -77,6 +126,16 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
     </>}
     {review && <PluginEnableDialog open manifest={review.manifest} folder={review.folder} stored={review.secrets} busy={busy} error={reviewError}
       onCancel={() => setReview(null)} onEnable={enable} t={t} />}
+    {install?.plugin.manifest && <PluginInstallDialog review={install} folder={listing ? `${listing.folder}/${install.plugin.folder}` : install.plugin.folder} busy={busy}
+      onCancel={() => setInstall(null)} onInstall={runInstall} t={t} />}
+    {removing && <ModalDialog open role="alertdialog" labelledBy="plugin-remove-title" describedBy="plugin-remove-message" onCancel={() => setRemoving(null)}>
+      <h2 id="plugin-remove-title">{t('plugins.remove.title', { name: removing.manifest?.name ?? removing.folder })}</h2>
+      <p id="plugin-remove-message">{t('plugins.remove.message')}</p>
+      <div className="dialog-actions">
+        <button type="button" className="button" autoFocus onClick={() => setRemoving(null)}>{t('plugins.dialog.cancel')}</button>
+        <button type="button" className="button danger" onClick={remove}>{t('plugins.remove.confirm')}</button>
+      </div>
+    </ModalDialog>}
   </section>;
 }
 
@@ -89,7 +148,9 @@ function PluginGroup({ id, title, note, initiallyOpen, children }: { id: string;
   </details>;
 }
 
-function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugin; invoke: Invoke; refresh(): void; onReview(): void }) {
+function PluginItem({ plugin, invoke, refresh, onReview, onRemove, removeDisabled = false }: {
+  plugin: ListedPlugin; invoke: Invoke; refresh(): void; onReview(): void; onRemove(): void; removeDisabled?: boolean;
+}) {
   const t = useT();
   const [error, setError] = useState<string | null>(null);
   const { manifest, status, approval } = plugin;
@@ -139,6 +200,9 @@ function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugi
       <p className="fine-print">{t('plugins.secretsNote')}</p>
       <ul>{plugin.secrets!.map(secret => <SecretRow key={secret.id} plugin={manifest.id} secret={secret} run={run} />)}</ul>
     </div>}
+    <div className="plugin-manage">
+      <button type="button" className="button compact" disabled={removeDisabled} onClick={onRemove}>{t('plugins.remove')}</button>
+    </div>
     {status && status.logs.length > 0 && <details className="advanced"><summary>{t('plugins.log', { count: status.logs.length })}</summary>
       <pre className="plugin-log">{status.logs.join('\n')}</pre>
       {status.dropped_logs > 0 && <p className="fine-print">{t('plugins.dropped', { count: status.dropped_logs })}</p>}

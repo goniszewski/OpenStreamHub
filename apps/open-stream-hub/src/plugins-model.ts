@@ -35,6 +35,27 @@ export interface ListedPlugin {
 }
 export interface PluginListing { folder: string; plugins: ListedPlugin[] }
 
+// What `review_plugin_install` returns: the chosen folder, the plugin as `list_plugins` would list it once installed
+// (its folder is the id it installs as), how many files and bytes it copies, the plugin installed under that id now
+// (version null when its manifest cannot be read; same_manifest when its plugin.json bytes are identical), and whether
+// the new version is older than the installed one.
+export interface InstallReview {
+  path: string; plugin: ListedPlugin; files: number; bytes: number;
+  installed: null | { version: string | null; approval: PluginApproval | null; same_manifest: boolean };
+  older: boolean;
+}
+
+// A size in bytes as short text: bytes, then KiB, MiB and GiB with one decimal below 10.
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  // Step up on what is shown, so 1023.6 KiB reads 1.0 MiB rather than 1024 KiB.
+  while (Math.round(value) >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+  return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+}
+
 // The plugins with a usable manifest that declares at least one action, by name.
 export function usablePlugins(listing: PluginListing | null): PluginManifest[] {
   return (listing?.plugins ?? []).flatMap(plugin => plugin.manifest?.actions?.length ? [plugin.manifest] : [])

@@ -24,6 +24,7 @@ mod migration;
 mod obs;
 mod pack_folder;
 mod plugin_host;
+mod plugin_install;
 mod plugin_secrets;
 mod plugins;
 mod power;
@@ -921,6 +922,68 @@ fn forget_plugin_secret(
         return Err(format!("{} has no secret parameter {param}", manifest.name));
     }
     secrets.forget(&plugin, &param)
+}
+
+// The system's folder dialog, to pick a plugin's folder to install. `None` when the user cancels.
+#[tauri::command(async)]
+fn choose_plugin_folder() -> Result<Option<String>, String> {
+    plugin_install::choose_folder()
+}
+
+// What installing the folder at `path` would do, for the install review: the plugin as it would be listed (its
+// approval and secrets as installing gives them), its files and size, and the installed copy it replaces.
+#[tauri::command(async)]
+fn review_plugin_install(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<plugin_install::InstallReview, String> {
+    let approved = plugin_approvals(&app)?.read();
+    let secrets = app.state::<plugin_secrets::PluginSecrets>();
+    plugin_install::review(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &path,
+        &approved,
+        &|plugin, param| secrets.is_set(plugin, param).ok(),
+    )
+}
+
+// Installs (or updates) the plugin in the folder at `path` after the review. `fingerprint` is the reviewed
+// plugin.json's: when it changed since, nothing is installed. With `enable`, that plugin.json is also enabled.
+#[tauri::command(async)]
+fn install_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+    fingerprint: String,
+    enable: bool,
+) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    plugin_install::install(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &*plugin_approvals(&app)?,
+        host.as_deref(),
+        &path,
+        &fingerprint,
+        enable,
+    )
+}
+
+// Removes a plugin: stops it, removes its approval and Keychain secrets, deletes its folder and its data folder.
+#[tauri::command(async)]
+fn remove_plugin(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let host = app.try_state::<plugin_host::PluginHost>();
+    plugin_install::remove(
+        state.app_data.as_deref().map_err(Clone::clone)?,
+        &*plugin_approvals(&app)?,
+        host.as_deref(),
+        &app.state::<plugin_secrets::PluginSecrets>(),
+        &id,
+    )
 }
 
 // Opens `<app data>/plugins/` in the Finder, creating it when missing.
@@ -2256,6 +2319,9 @@ pub fn run() {
             app.manage(menubar::MenubarState::open(app_data.as_deref().ok()));
             app.manage(turns::ModuleTurns::open(app_data.as_deref().ok()));
             let plugins_dir = app_data.as_deref().ok().map(plugins::dir);
+            if let Some(plugins_dir) = &plugins_dir {
+                plugin_install::clean_leftovers(plugins_dir);
+            }
             if let Ok(app_data) = app_data.as_deref() {
                 app.manage(plugins::Approvals::new(app_data));
             }
@@ -2364,6 +2430,10 @@ pub fn run() {
             disable_plugin,
             set_plugin_secret,
             forget_plugin_secret,
+            choose_plugin_folder,
+            review_plugin_install,
+            install_plugin,
+            remove_plugin,
             import_profile,
             allow_imported_profile_execution,
             mark_all_profiles_for_review,

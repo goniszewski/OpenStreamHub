@@ -36,7 +36,7 @@ pub use keypad::{
     KeypadTile, ProfileResolution, ProfileSession,
 };
 pub use macos::{MacOsDispatcher, kill_running_programs};
-pub use plugin::{PluginBridge, PluginInput, PluginValue};
+pub use plugin::{PluginBridge, PluginInput, PluginUse, PluginUseKind, PluginValue};
 pub use profile::{
     Action, Binding, Condition, Gesture, MacroStep, MediaCommand, Modifier, ObsConfirm, ObsMediaOp,
     ObsMuteOp, ObsOutputOp, ObsRecordOp, ObsReplayBufferOp, ObsSwitchOp, Profile, ProfileDirection,

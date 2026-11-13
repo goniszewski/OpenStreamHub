@@ -276,6 +276,110 @@ Built on 12 November 2026 as proposed above, with these differences:
 - **Known gap.** The app counts an invoke's deadline from when its record arrived, a moment after the service started counting. A press that waits for a Keychain read and times out in the service just before the app's deadline can still be sent after the release event the service then writes.
 - **Not built:** the frontend shows nothing new beyond the enable dialog's line; the editor does not mark keys whose other input a plugin hears.
 
+## Step 4b: plugin conditions
+
+Status: proposed 13 November 2026, built 13 November 2026 ([as built](#plugin-conditions-as-built)).
+
+Today an if / else tests only what the service reads itself: OBS outputs, the default output's mute and volume, timers, the frontmost app and declared variables (`Condition` in `profile.rs`). A plugin can already feed a test through a variable it sets, but only by pushing state ahead of time, and the profile must declare that variable. Step 4b lets a plugin offer checks of its own ("the desk light is on", "a meeting is running"), which are asked when the key is pressed, as OBS conditions are.
+
+### What the user sees
+
+- In the if / else editor, each enabled plugin's conditions are listed with the built-in tests, under the plugin's name. Picking one shows its parameters with the same form plugin actions use, and a **Holds** / **Does not hold** choice.
+- A condition is a test like any other: it goes in AND and OR groups, nests, and counts toward the existing limits (8 per group, 3 levels deep, 16 tests in all).
+- A missing plugin, an older version or an unknown condition still loads, as for a plugin action, and is shown in the editor as such; pressing that key fails with the reason.
+
+### Manifest
+
+```json
+"conditions": [
+  { "id": "is_on", "label": "Light is on", "params": [
+    { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true },
+    { "id": "token", "label": "Access token", "type": "text", "secret": true }
+  ] }
+]
+```
+
+- Optional, up to 64, ids unique among conditions (they may repeat an action's id). The id, label and `params` follow the action rules exactly, `secret` and `variables` included. There is no `events`.
+- A manifest may now have no `actions` when it has `conditions`; it must have at least one of the two.
+- Schema stays 1: an older app refuses the unknown field, it does not misread it.
+- The first-enable dialog lists the conditions with their parameters, under the actions, and says the plugin is asked each time an if / else using one runs.
+
+### Profile format
+
+```json
+{"type":"conditional","when":{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on",
+  "params":{"entity":"light.{{room}}"},"variables":["entity"],"value":true}},"then":[…],"else":[…]}
+```
+
+- A new leaf `Condition::Plugin`, written as the single key `plugin`, with the fields of a plugin action plus `value`: the answer it holds for, `true` or `false`, as `obs_streaming` takes one. That gives "does not hold" inside an AND or OR group, where swapping the branches cannot.
+- Parameters, `variables`, `min_version` and the text limits are checked as for a plugin action, by the same code. A `secret` value in the profile is refused as there.
+- Key faces cannot use it: they take only variable-only conditions (`is_variable_only`), and asking a plugin at every redraw would be wrong. A face can follow a variable the plugin sets.
+
+### Messages
+
+App to plugin:
+
+```json
+{"type":"check","request":9,"condition":"is_on","params":{"entity":"light.desk"},"timeout_ms":3000,"input":{"gesture":"pressed","control":{"module":"m4315","index":3}}}
+```
+
+Plugin to app, the existing `result` with a `value`:
+
+```json
+{"type":"result","request":9,"ok":true,"value":true}
+{"type":"result","request":9,"ok":false,"error":"the light is offline"}
+```
+
+- `check` is its own message type, not an `invoke` with a flag, so a plugin that has no conditions never mistakes a check for a press, and each message's fields mean one thing. Request numbers are shared with invokes; the answer is matched by number as today.
+- An `ok: true` answer without a boolean `value` fails the press ("answered a check without true or false"). `value` on an invoke's result is ignored.
+- Parameters arrive as an invoke's do: variables filled in, secrets added from the Keychain, `timeout_ms` what is left when the line is written. `input` is the press that ran the if / else.
+- A check should only read. Nothing can enforce that, so the author guide says so: it may be asked at every press, in Live runs only, and should answer quickly.
+
+### When it is asked
+
+- **Live only.** A Test run records an if / else without reading its condition, so it never asks a plugin, as now.
+- When the if / else runs, in the order its tests are read today: every member of a group is read, without stopping early. A check gets what is left of the sequence's 15 s deadline, and at most **3 s**, the OBS client's limit.
+- The service writes a `plugin_check` record and waits, as for `plugin_invoke`; the app answers on the control channel with `plugin_result`, which gains `value`. The bridge's answer becomes a value, so `invoke` and `check` share one waiting path.
+- On the app side a check goes through the invoke path: the manifest check (against `conditions`, not `actions`), Keychain secrets on the plugin's invoke thread, the 8-waiting limit, the outbox, the deadline drop. A module's checks and presses stay in one order.
+- **Any failure fails the press, and neither branch runs**: not enabled, not running or starting, a required secret missing, too many waiting, no answer in time, `ok: false`, or no `value`. The message names the plugin and the condition (`conditional could not read com.example.lights is_on: the light is offline; neither branch ran`). Taking the else branch when a plugin is down would make a key do the other thing silently. The editor already tells users that a test that cannot be read fails the press.
+- The activity log records it like a plugin action: ids, numbers and bools shown, text parameters by length.
+
+### Where a plugin use is counted
+
+Everything that walks a profile's plugin actions must see plugin conditions too. They walk one list of plugin uses (action or condition: plugin, version, id, params, variables), not `Action::Plugin` alone:
+
+- **Starting plugins.** `plugins_used` includes a plugin that is only ever asked a check, so a Live run starts it.
+- **Execute confirmation.** Each plugin condition is named with its parameters, like an action, and makes the profile high risk. A Live run whose saved profile adds or changes one pauses for a new confirmation.
+- **Imports, packs and starters.** A JSON import holding a plugin condition runs as a dry run until allowed; preset packs and starters cannot hold one.
+- **Secrets.** Export drops secret values from plugin conditions too, and the editor offers **Move to the Keychain** for them.
+- **Variables.** A reference in a condition's parameters must name a declared variable, and counts as a use of it.
+
+### Not in 4b
+
+- Conditions on key faces, and any caching or subscription of a plugin's state. A plugin that wants to drive a face sets a variable.
+- Conditions that take a non-boolean answer (a number to compare). A plugin can expose "level at least" as a condition with a number parameter.
+- Telling a plugin which keys use its conditions.
+
+### Work
+
+1. **Service:** `Condition::Plugin` (parse, validate with the plugin action rules, variables), `PluginBridge::check` returning a bool on a shared waiting path, `plugin_check` records, `value` on `plugin_result`, evaluation under the deadline and the 3 s cap, activity logging. Unit tests for the answers, failures and deadline.
+2. **App:** `conditions` in the manifest parser and checks, `check` messages through the invoke path, `value` in results, and the walk over plugin uses for starting, confirmation, imports, secrets and export.
+3. **Frontend:** condition types, the plugin conditions in the if / else picker with the parameter form and **Holds** / **Does not hold**, the enable dialog's list, and the confirmation lines.
+4. **Example:** a "Pressed at least" condition in `com.example.notify`, true when its counter has reached a number.
+5. **Docs:** the author guide (manifest, `check`, `value`, read only) and this section marked as built.
+
+## Plugin conditions as built
+
+Built on 13 November 2026 as proposed above, with these differences:
+
+- **Both sides refuse a check answered without a value.** The app's host already knows a request is a check, so a plugin's `ok: true` without a boolean `value` fails there with the service's text ("the plugin answered a check without true or false"), and the service fails the same way if a `plugin_result` for a check comes without one. The app relays `value` only for a check; on an invoke's result it is dropped.
+- **One secret per id across actions and conditions.** A secret parameter of a condition with the same id as an action's secret shares its Keychain item, as two actions' do. `list_plugins` lists such a secret once, as the first action (or, after the actions, condition) declaring it names it, and `set_plugin_secret` / `forget_plugin_secret` take a secret only conditions declare.
+- **`list_plugins`.** A manifest's `conditions` is left out when there are none; `actions` is always there, `[]` for a plugin that offers only conditions.
+- **Re-confirmation also follows `min_version` and `value`.** A plugin condition is a confirmation item of its own (plugin, condition, parameters, variables, without `min_version`, as for an action), but the if / else around it is one too, and that item is the whole test. So, unlike a plugin action's, a changed `min_version` of a condition still pauses a Live run for a new confirmation, as does a changed **Holds** / **Does not hold**. The confirmation's line for a condition names both (`com.example.lights: check is_on (holds; needs 1.2.0 or later) with …`), so such a pause shows the change as a new line. Variables filled into a condition's parameters feed it as they feed an action's.
+- **Keychain reads count against a check's time.** The first check needing a secret not read yet waits for the Keychain within its 3 seconds, so a Keychain prompt can fail it; once read, the secret is held. Such a check waits on the plugin's invoke thread, so it keeps its order within its module, but another module's check or press whose secrets are held can overtake it.
+- **Diagnostics.** A plugin condition's text parameters are replaced with their length in a diagnostics bundle's profile, as a plugin action's are.
+- **The example's `count` is required**, so a check without it fails at once instead of in the plugin.
+
 ## Plugin protocol as built
 
 Built on 6 November 2026 as proposed above, with these differences:

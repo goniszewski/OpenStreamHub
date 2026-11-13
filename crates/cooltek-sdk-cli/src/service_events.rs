@@ -7,13 +7,15 @@
 
 use crate::{capture::encode_hex, live_runtime::LiveSummary};
 use cooltek_sdk_service::{
-    Action, ActionDispatcher, Binding, Confirmation, DeviceContext, InputEvent, InputSession,
-    InputUpdate, PluginInput, PluginValue, ProfileResolution, ProfileSession, RunningTimer,
-    ServiceModule, ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle, Variable,
+    Action, ActionDispatcher, Binding, Condition, Confirmation, DeviceContext, InputEvent,
+    InputSession, InputUpdate, PluginInput, PluginValue, ProfileResolution, ProfileSession,
+    RunningTimer, ServiceModule, ServiceState, TimerAlert, TimerKey, TimerTable, TimerToggle,
+    Variable,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Write,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -472,6 +474,51 @@ pub fn process_work<D: ActionDispatcher, W: Write>(
     Ok(())
 }
 
+/// A plugin's parameters for the activity log: text by its length only, since the service cannot tell which ones the
+/// manifest marks secret; numbers and bools as they are.
+fn loggable_plugin_params(params: &BTreeMap<String, PluginValue>) -> Value {
+    params
+        .iter()
+        .map(|(name, value)| {
+            let logged = match value {
+                PluginValue::Text(text) => json!({"chars": text.chars().count()}),
+                other => json!(other),
+            };
+            (name.clone(), logged)
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+}
+
+/// A condition for the activity log: as written, except a plugin condition's text parameters, which are logged like a
+/// plugin action's.
+fn loggable_condition(condition: &Condition) -> Value {
+    match condition {
+        Condition::Plugin {
+            plugin,
+            min_version,
+            condition,
+            params,
+            variables,
+            value,
+        } => {
+            let mut logged = json!({"plugin":plugin, "min_version":min_version, "condition":condition,
+                "params":loggable_plugin_params(params), "value":value});
+            if !variables.is_empty() {
+                logged["variables"] = json!(variables);
+            }
+            json!({"plugin": logged})
+        }
+        Condition::All(items) => {
+            json!({"all": items.iter().map(loggable_condition).collect::<Vec<_>>()})
+        }
+        Condition::Any(items) => {
+            json!({"any": items.iter().map(loggable_condition).collect::<Vec<_>>()})
+        }
+        other => json!(other),
+    }
+}
+
 /// Redacts an action for a log record: snippet text and URL paths, queries and
 /// user information (often passwords or tokens), terminal command lines, program paths and arguments, timer labels and OBS scene
 /// names are never written. Every other action serializes unchanged.
@@ -521,17 +568,7 @@ pub fn loggable(action: &Action) -> Value {
             params,
             variables,
         } => {
-            let params: serde_json::Map<String, Value> = params
-                .iter()
-                .map(|(name, value)| {
-                    let logged = match value {
-                        PluginValue::Text(text) => json!({"chars": text.chars().count()}),
-                        other => json!(other),
-                    };
-                    (name.clone(), logged)
-                })
-                .collect();
-            let mut value = json!({"type":"plugin", "plugin":plugin, "min_version":min_version, "action":action, "params":params});
+            let mut value = json!({"type":"plugin", "plugin":plugin, "min_version":min_version, "action":action, "params":loggable_plugin_params(params)});
             if !variables.is_empty() {
                 value["variables"] = json!(variables);
             }
@@ -547,7 +584,7 @@ pub fn loggable(action: &Action) -> Value {
             otherwise,
         } => json!({
             "type":"conditional",
-            "when":when,
+            "when":loggable_condition(when),
             "then":then.iter().map(loggable).collect::<Vec<_>>(),
             "else":otherwise.iter().map(loggable).collect::<Vec<_>>(),
         }),
@@ -859,6 +896,36 @@ mod tests {
             .filter(|line| !line.is_empty())
             .map(|line| serde_json::from_slice(line).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn a_plugin_condition_is_logged_like_a_plugin_action() {
+        let action: Action = serde_json::from_value(json!({
+            "type": "conditional",
+            "when": {"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "is_on",
+                    "params": {"token": "s3cr3t", "entity": "light.{{room}}", "level": 40, "fade": true},
+                    "variables": ["entity"], "value": false}},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "ready",
+                    "value": true}}
+            ]},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        let logged = loggable(&action);
+        assert_eq!(
+            logged["when"],
+            json!({"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "is_on",
+                    "params": {"token": {"chars": 6}, "entity": {"chars": 14}, "level": 40, "fade": true},
+                    "variables": ["entity"], "value": false}},
+                {"plugin": {"plugin": "com.example.lights", "min_version": "1.2.0", "condition": "ready",
+                    "params": {}, "value": true}}
+            ]})
+        );
+        assert!(!logged.to_string().contains("s3cr3t"), "{logged}");
     }
 
     #[test]

@@ -21,6 +21,11 @@ function paramText(param: PluginParam, t: Translate): string {
   return t('plugins.dialog.param', { label: param.label, type: [type, ...flags].join(', ') });
 }
 
+// An action's or condition's parameters, or that it has none.
+const params = (list: PluginParam[] | undefined, t: Translate) => list?.length
+  ? <ul>{list.map(param => <li key={param.id}>{paramText(param, t)}</li>)}</ul>
+  : <span className="fine-print"> ({t('plugins.dialog.noParams')})</span>;
+
 // `stored` are the plugin's secrets as the listing reports them: those already set are named, since enabling sends
 // them to this manifest's program.
 export function PluginEnableDialog({ open, manifest, folder, stored = [], busy = false, error = null, onCancel, onEnable, t = english }: {
@@ -30,9 +35,11 @@ export function PluginEnableDialog({ open, manifest, folder, stored = [], busy =
   const storedLabels = stored.filter(secret => secret.set === true).map(secret => secret.label);
   const [program, ...args] = manifest.command;
   const permissions = manifest.permissions;
-  // Each secret once by id, named as the first action that declares it names it (secret_params in plugins.rs).
+  const actions = manifest.actions ?? [];
+  const conditions = manifest.conditions ?? [];
+  // Each secret once by id, named as the first action (then condition) that declares it names it (secret_params in plugins.rs).
   const seen = new Set<string>();
-  const secrets = manifest.actions.flatMap(action => action.params ?? [])
+  const secrets = [...actions, ...conditions].flatMap(item => item.params ?? [])
     .filter(param => isSecretParam(param) && !seen.has(param.id) && seen.add(param.id) !== undefined)
     .map(param => param.label);
   return <ModalDialog open={open} role="alertdialog" labelledBy="plugin-enable-title" describedBy="plugin-enable-warning plugin-enable-intro" onCancel={onCancel} className="execute-dialog plugin-enable-dialog">
@@ -47,13 +54,18 @@ export function PluginEnableDialog({ open, manifest, folder, stored = [], busy =
         <li className="plugin-enable-command">{richText(t('plugins.dialog.program'), { program: <code>{program}</code> })}{' '}
           {args.length ? richText(t('plugins.dialog.arguments'), { arguments: <code>{args.map(arg => JSON.stringify(arg)).join(' ')}</code> }) : t('plugins.dialog.noArguments')}</li>
       </ul>
-      <h3>{t('plugins.dialog.actions')}</h3>
-      <ul className="plugin-enable-actions">{manifest.actions.map(action => <li key={action.id}>{action.label}
-        {action.params?.length
-          ? <ul>{action.params.map(param => <li key={param.id}>{paramText(param, t)}</li>)}</ul>
-          : <span className="fine-print"> ({t('plugins.dialog.noParams')})</span>}
-        {action.events && <p className="plugin-enable-events">{t('plugins.dialog.events')}</p>}
-      </li>)}</ul>
+      {actions.length > 0 && <>
+        <h3>{t('plugins.dialog.actions')}</h3>
+        <ul className="plugin-enable-actions">{actions.map(action => <li key={action.id}>{action.label}
+          {params(action.params, t)}
+          {action.events && <p className="plugin-enable-events">{t('plugins.dialog.events')}</p>}
+        </li>)}</ul>
+      </>}
+      {conditions.length > 0 && <>
+        <h3>{t('plugins.dialog.conditions')}</h3>
+        <p className="plugin-enable-checks">{t('plugins.dialog.conditionsNote')}</p>
+        <ul className="plugin-enable-conditions">{conditions.map(condition => <li key={condition.id}>{condition.label}{params(condition.params, t)}</li>)}</ul>
+      </>}
       <h3>{t('plugins.dialog.permissions')}</h3>
       <ul className="plugin-enable-permissions">
         <li>{permissions?.network?.length ? richText(t('plugins.permissions.network'), { hosts: codeList(permissions.network) }) : t('plugins.permissions.noNetwork')}</li>

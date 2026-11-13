@@ -402,7 +402,7 @@ const flowUsesStreamlabs = (action: ConditionalAction): boolean =>
 // may be if / else blocks themselves. The tree, its drag-and-drop and its limits live in FlowEditor.
 function ConditionalFields({ action, selectorKey, onChange, onSetUpObs, catalog, streamlabs, invoke }: { action: ConditionalAction; selectorKey: string; onChange: Change; onSetUpObs?: () => void; catalog?: ObsCatalogView; streamlabs?: StreamlabsCatalogView; invoke?: Invoke }) {
   const t = useT();
-  return <FlowEditor action={action} selectorKey={selectorKey} onChange={(next, field) => onChange(next, field)}
+  return <FlowEditor action={action} selectorKey={selectorKey} onChange={(next, field) => onChange(next, field)} invoke={invoke}
     render={{
       step: ({ prefix, step, inputKey, onChange: change }) => <StepFields prefix={prefix} action={step} inputKey={inputKey} onChange={change} onSetUpObs={onSetUpObs} catalog={catalog} streamlabs={streamlabs} invoke={invoke} />,
       app: ({ inputId, bundleId, onChange: change }) => <LaunchAppFields inputId={inputId} bundleId={bundleId} invoke={invoke} onChange={change} label={t('actions.flow.frontApp')} inline hint={t('actions.flow.frontAppHint')} />,

@@ -9,13 +9,17 @@
 //! One JSON object per line, in both directions, each line at most [`MAX_LINE`] bytes:
 //!
 //! - plugin → app: `{"type":"hello","id":"com.example.x","token":"…"}` first, within [`HELLO_TIMEOUT`]; then
-//!   `{"type":"result","request":7,"ok":true}` or `…"ok":false,"error":"…"}`, `{"type":"set_variable","id":1,
+//!   `{"type":"result","request":7,"ok":true}` (for a check, with `"value":true` or `false`) or
+//!   `…"ok":false,"error":"…"}`, `{"type":"set_variable","id":1,
 //!   "name":"room","value":"desk"}` (only variables its manifest lists, at most 10 a second), `{"type":"log",
 //!   "message":"…"}` (at most 1 KiB and 20 a second; more are counted and dropped), `{"type":"pong"}`.
 //! - app → plugin: `{"type":"welcome"}`, `{"type":"invoke","request":7,"action":"set","params":{…},"timeout_ms":
-//!   15000}`, `{"type":"ping"}`, and `{"type":"reply","id":1,"ok":…}` for each `set_variable`.
+//!   15000}`, `{"type":"check","request":8,"condition":"is_on","params":{…},"timeout_ms":3000}` (asked when an if /
+//!   else using one of its conditions runs), `{"type":"ping"}`, and `{"type":"reply","id":1,"ok":…}` for each `set_variable`.
 //!
-//! An invoke is answered with the plugin's `result`, or fails when the plugin is not running, has 8 invokes in
+//! A check goes the same way as an invoke, from a module's `plugin_check` record, against the manifest's
+//! `conditions`: the same secrets, limits and order, and its answer must carry a boolean `value`, which goes back to
+//! the module. An invoke is answered with the plugin's `result`, or fails when the plugin is not running, has 8 invokes in
 //! flight, stops before answering, or (on the module's side) answers too late. After [`IDLE_PING`] without a line the
 //! app sends `ping`, and a plugin silent for [`PONG_TIMEOUT`] more is killed and restarted, as is one that exits or
 //! closes its connection, or one that has not said hello [`START_TIMEOUT`] after it started: after 1, 2, 4, 8, 16,
@@ -38,7 +42,7 @@ use crate::{
     plugin_secrets::PluginSecrets,
     plugins::{self, Approval, Approved, Manifest},
 };
-use cooltek_sdk_service::PluginValue;
+use cooltek_sdk_service::{PluginUse, PluginUseKind, PluginValue};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -105,8 +109,14 @@ const TICK: Duration = Duration::from_millis(100);
 /// (a large profile change, a replug) does not restart its plugins.
 pub const LINGER: Duration = Duration::from_millis(if cfg!(test) { 300 } else { 5_000 });
 
-/// Answers one invoke; called once, on the host's answer thread.
-pub type Reply = Box<dyn FnOnce(Result<(), String>) + Send>;
+/// What one invoke or check is answered with: for a check, `Some` of the plugin's `value`; for an invoke, `None`.
+pub type Answer = Result<Option<bool>, String>;
+
+/// Answers one invoke or check; called once, on the host's answer thread.
+pub type Reply = Box<dyn FnOnce(Answer) + Send>;
+
+/// The error for a check the plugin answered `ok` without a boolean `value`.
+pub const CHECK_WITHOUT_VALUE: &str = "the plugin answered a check without true or false";
 
 /// An invoke handed to an invoke thread: the run it came from, the record, its answer and when it arrived.
 type Queued = (String, Value, Reply, Instant);
@@ -117,6 +127,8 @@ type Filled = (BTreeMap<String, PluginValue>, BTreeMap<String, PluginValue>);
 struct Pending {
     deadline: Instant,
     reply: Reply,
+    /// A check, whose answer must carry a boolean `value`.
+    check: bool,
 }
 
 /// One line waiting for a connection's writer.
@@ -393,7 +405,7 @@ struct Inner {
     secrets: PluginSecrets,
     state: Mutex<State>,
     stopped: AtomicBool,
-    answers: Mutex<mpsc::Sender<(Reply, Result<(), String>)>>,
+    answers: Mutex<mpsc::Sender<(Reply, Answer)>>,
     /// One invoke thread per plugin that needed a Keychain read, fed the presses waiting for one, in order. Bounded by
     /// the plugins that run with a manifest, since only their presses can need a read.
     workers: Mutex<HashMap<String, mpsc::Sender<Queued>>>,
@@ -415,7 +427,17 @@ pub struct Status {
 #[derive(Clone)]
 pub struct PluginHost(Arc<Inner>);
 
-/// The `input` of a module's `plugin_invoke` or `plugin_event` record, rebuilt from its known fields so nothing else
+/// Whether a module's record asks for an action (`plugin_invoke`) or a condition (`plugin_check`), and the id of
+/// the one it names, from its `action` or `condition` field.
+fn use_of(record: &Value) -> (PluginUseKind, Option<&str>) {
+    if record["type"] == "plugin_check" {
+        (PluginUseKind::Condition, record["condition"].as_str())
+    } else {
+        (PluginUseKind::Action, record["action"].as_str())
+    }
+}
+
+/// The `input` of a module's `plugin_invoke`, `plugin_check` or `plugin_event` record, rebuilt from its known fields so nothing else
 /// passes to the plugin: `{"gesture":…,"control":{"module":…,"index":…}}`, with `"position":{"raw":…,"maximum":…}`
 /// for a fader. `None` when it is missing or malformed.
 fn input_of(record: &Value) -> Option<Value> {
@@ -541,7 +563,7 @@ impl PluginHost {
             .map_err(|error| format!("could not bind the plugin socket: {error}"))?;
         fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
             .map_err(|error| format!("could not protect the plugin socket: {error}"))?;
-        let (answers, answered) = mpsc::channel::<(Reply, Result<(), String>)>();
+        let (answers, answered) = mpsc::channel::<(Reply, Answer)>();
         let host = Self(Arc::new(Inner {
             dir: plugins_dir.to_path_buf(),
             socket,
@@ -596,7 +618,7 @@ impl PluginHost {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    fn answer(&self, reply: Reply, result: Result<(), String>) {
+    fn answer(&self, reply: Reply, result: Answer) {
         let _ = self
             .0
             .answers
@@ -1118,8 +1140,21 @@ impl PluginHost {
                 let Some(request) = message["request"].as_u64() else {
                     return;
                 };
+                let pending = self
+                    .lock()
+                    .instances
+                    .get_mut(id)
+                    .and_then(|instance| instance.pending.remove(&request));
+                let Some(pending) = pending else {
+                    return;
+                };
                 let result = if message["ok"] == true {
-                    Ok(())
+                    // A check needs the answer; an invoke's `value`, if any, is ignored.
+                    match (pending.check, message["value"].as_bool()) {
+                        (true, Some(value)) => Ok(Some(value)),
+                        (true, None) => Err(CHECK_WITHOUT_VALUE.to_string()),
+                        (false, _) => Ok(None),
+                    }
                 } else {
                     let error = message["error"]
                         .as_str()
@@ -1127,14 +1162,7 @@ impl PluginHost {
                     let error = self.0.secrets.redact(id, error);
                     Err(truncate(&error, MAX_ERROR_BYTES))
                 };
-                let pending = self
-                    .lock()
-                    .instances
-                    .get_mut(id)
-                    .and_then(|instance| instance.pending.remove(&request));
-                if let Some(pending) = pending {
-                    self.answer(pending.reply, result);
-                }
+                self.answer(pending.reply, result);
             }
             Some("set_variable") => {
                 let allowed = {
@@ -1190,8 +1218,8 @@ impl PluginHost {
         }
     }
 
-    /// Carries one `plugin_invoke` record from a module run to its plugin; `reply` gets the plugin's answer, or the
-    /// reason it was not asked. Never waits: a press whose secrets are not held in memory yet is handed to the invoke
+    /// Carries one `plugin_invoke` record (or `plugin_check`, which is sent as a `check` and answered with its
+    /// `value`) from a module run to its plugin; `reply` gets the plugin's answer, or the reason it was not asked. Never waits: a press whose secrets are not held in memory yet is handed to the invoke
     /// thread, since reading one may wait for the Keychain.
     ///
     /// `service_id` is the module run the press came from: it is sent only while that run still executes with this
@@ -1454,8 +1482,8 @@ impl PluginHost {
         let given: BTreeMap<String, PluginValue> = serde_json::from_value(record["params"].clone())
             .map_err(|_| "the invoke's parameters are not plugin values".to_string())?;
         let mut params = given.clone();
-        let (Some(id), Some(action)) = (record["plugin"].as_str(), record["action"].as_str())
-        else {
+        let (kind, named) = use_of(record);
+        let (Some(id), Some(named)) = (record["plugin"].as_str(), named) else {
             return Ok(Some((given, params)));
         };
         let manifest = self
@@ -1467,7 +1495,7 @@ impl PluginHost {
             return Ok(Some((given, params)));
         };
         let mut needs_read = false;
-        let filled = plugins::fill_secrets(&manifest, action, &mut params, |param| {
+        let filled = plugins::fill_secrets(&manifest, kind, named, &mut params, |param| {
             if read {
                 return self.0.secrets.get(id, &param.id);
             }
@@ -1498,14 +1526,14 @@ impl PluginHost {
         let mut state = self.lock();
         state.next_request += 1;
         let request = state.next_request;
+        let (kind, named) = use_of(record);
+        let noun = kind.noun();
         let checked = (|| {
             let id = record["plugin"]
                 .as_str()
                 .ok_or("the invoke names no plugin")?
                 .to_string();
-            let action = record["action"]
-                .as_str()
-                .ok_or("the invoke names no action")?;
+            let named = named.ok_or_else(|| format!("the request names no {noun}"))?;
             let min_version = record["min_version"].as_str().unwrap_or("0.0.0");
             // Absent means no variables were filled in; anything else must be a list of names, so a
             // malformed record cannot skip the manifest's check.
@@ -1535,12 +1563,20 @@ impl PluginHost {
             }
             // The manifest may have changed since the secrets were filled in; what the profile gave is checked against
             // the current one.
-            plugins::refuse_profile_secrets(manifest, action, given)?;
-            plugins::check_invoke(manifest, action, &params, &variables)?;
+            plugins::refuse_profile_secrets(manifest, kind, named, given)?;
+            plugins::check_invoke(manifest, kind, named, &params, &variables)?;
             // The service checked the profile's own text; with the secrets filled in, the whole map must still fit the
             // same limits. The SDK's errors name parameters, never values.
-            cooltek_sdk_service::plugin::validate_plugin_action(&id, "0.0.0", action, &params, &[])
-                .map_err(|error| format!("{id}: with its secrets filled in, {error}"))?;
+            PluginUse {
+                kind,
+                plugin: &id,
+                min_version: "0.0.0",
+                id: named,
+                params: &params,
+                variables: &[],
+            }
+            .validate()
+            .map_err(|error| format!("{id}: with its secrets filled in, {error}"))?;
             let conn = match (&instance.child, &instance.conn) {
                 (Some(_), Some(conn)) => Arc::clone(conn),
                 (Some(_), None) => {
@@ -1568,12 +1604,12 @@ impl PluginHost {
                 ));
             }
             let mut message = json!({
-                "type": "invoke",
+                "type": if kind == PluginUseKind::Condition { "check" } else { "invoke" },
                 "request": request,
-                "action": action,
                 "params": params,
                 "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
             });
+            message[noun] = json!(named);
             if let Some(input) = input_of(record) {
                 message["input"] = input;
             }
@@ -1588,9 +1624,14 @@ impl PluginHost {
         match checked {
             Ok((conn, message, id)) => {
                 if let Some(instance) = state.instances.get_mut(&id) {
-                    instance
-                        .pending
-                        .insert(request, Pending { deadline, reply });
+                    instance.pending.insert(
+                        request,
+                        Pending {
+                            deadline,
+                            reply,
+                            check: kind == PluginUseKind::Condition,
+                        },
+                    );
                 }
                 Ok((conn, message, id))
             }
@@ -1703,6 +1744,12 @@ mod tests {
                     { "id": "s5", "label": "S5", "type": "text", "secret": true }
                 ] }
             ],
+            "conditions": [
+                { "id": "is_on", "label": "Light is on", "params": [
+                    { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true },
+                    { "id": "token", "label": "Token", "type": "text", "secret": true }
+                ] }
+            ],
             "permissions": { "variables": ["room"] }
         })
         .to_string();
@@ -1813,15 +1860,11 @@ mod tests {
         }
     }
 
-    fn invoke(host: &PluginHost, params: Value) -> mpsc::Receiver<Result<(), String>> {
+    fn invoke(host: &PluginHost, params: Value) -> mpsc::Receiver<Answer> {
         invoke_action(host, "set", params)
     }
 
-    fn invoke_action(
-        host: &PluginHost,
-        action: &str,
-        params: Value,
-    ) -> mpsc::Receiver<Result<(), String>> {
+    fn invoke_action(host: &PluginHost, action: &str, params: Value) -> mpsc::Receiver<Answer> {
         invoke_within(host, action, params, 5000)
     }
 
@@ -1830,7 +1873,7 @@ mod tests {
         action: &str,
         params: Value,
         timeout_ms: u64,
-    ) -> mpsc::Receiver<Result<(), String>> {
+    ) -> mpsc::Receiver<Answer> {
         let (sender, receiver) = mpsc::channel();
         host.invoke(
             "m1",
@@ -1843,8 +1886,204 @@ mod tests {
         receiver
     }
 
-    fn answer(receiver: &mpsc::Receiver<Result<(), String>>) -> Result<(), String> {
-        receiver.recv_timeout(Duration::from_secs(5)).unwrap()
+    /// Asks the rig's plugin the check `condition`, as a module's `plugin_check` record would, with `extra` fields
+    /// added to the record.
+    fn check(
+        host: &PluginHost,
+        condition: &str,
+        params: Value,
+        extra: Value,
+    ) -> mpsc::Receiver<Answer> {
+        let (sender, receiver) = mpsc::channel();
+        let mut record = json!({"type":"plugin_check","request":1,"plugin":ID,"min_version":"1.0.0",
+            "condition":condition,"params":params,"timeout_ms":3000});
+        for (field, value) in extra.as_object().into_iter().flatten() {
+            record[field] = value.clone();
+        }
+        host.invoke(
+            "m1",
+            &record,
+            Box::new(move |result| {
+                let _ = sender.send(result);
+            }),
+        );
+        receiver
+    }
+
+    /// An invoke's answer, which never carries a value.
+    fn answer(receiver: &mpsc::Receiver<Answer>) -> Result<(), String> {
+        let answer = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(
+            !matches!(answer, Ok(Some(_))),
+            "an invoke answered with a value"
+        );
+        answer.map(drop)
+    }
+
+    #[test]
+    fn a_check_reaches_the_plugin_and_its_value_comes_back() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let recv = |receiver: &mpsc::Receiver<Answer>| {
+            receiver.recv_timeout(Duration::from_secs(5)).unwrap()
+        };
+        let key = json!({"gesture":"pressed","control":{"module":"m4315","index":3}});
+        for value in [true, false] {
+            let asked = check(
+                host,
+                "is_on",
+                json!({"entity":"light.{{room}}"}),
+                json!({"variables":["entity"],"input":key}),
+            );
+            let message = plugin.receive_message();
+            assert_eq!(message["type"], "check");
+            assert_eq!(message["condition"], "is_on");
+            assert_eq!(message["params"], json!({"entity":"light.{{room}}"}));
+            assert_eq!(message["input"], key);
+            assert!(message.get("action").is_none(), "{message}");
+            assert!(message["timeout_ms"].as_u64().unwrap() <= 3000);
+            plugin.send(
+                json!({"type":"result","request":message["request"],"ok":true,"value":value}),
+            );
+            assert_eq!(recv(&asked), Ok(Some(value)));
+        }
+        // An answer without true or false fails the check.
+        for answer in [json!({"ok":true}), json!({"ok":true,"value":"yes"})] {
+            let asked = check(host, "is_on", json!({"entity":"a"}), json!({}));
+            let message = plugin.receive_message();
+            let mut result = json!({"type":"result","request":message["request"]});
+            for (field, value) in answer.as_object().unwrap() {
+                result[field] = value.clone();
+            }
+            plugin.send(result);
+            assert_eq!(
+                recv(&asked),
+                Err("the plugin answered a check without true or false".into())
+            );
+        }
+        let asked = check(host, "is_on", json!({"entity":"a"}), json!({}));
+        let message = plugin.receive_message();
+        plugin.send(json!({"type":"result","request":message["request"],"ok":false,"error":"the light is offline"}));
+        assert_eq!(recv(&asked), Err("the light is offline".into()));
+        // A value on an invoke's answer is ignored.
+        let pressed = invoke(host, json!({"entity":"a"}));
+        let message = plugin.receive_message();
+        assert_eq!(message["type"], "invoke");
+        plugin.send(json!({"type":"result","request":message["request"],"ok":true,"value":false}));
+        assert_eq!(recv(&pressed), Ok(None));
+        // Checked against the manifest's conditions before the plugin hears of it.
+        let refused = |condition: &str, params: Value, extra: Value| {
+            recv(&check(host, condition, params, extra)).unwrap_err()
+        };
+        assert_eq!(
+            refused("set", json!({"entity":"a"}), json!({})),
+            "Lights 1.2.0 has no condition set"
+        );
+        assert!(refused("is_on", json!({}), json!({})).contains("needs parameter entity"));
+        assert!(
+            refused(
+                "is_on",
+                json!({"entity":"a"}),
+                json!({"min_version":"2.0.0"})
+            )
+            .contains("older than 2.0.0")
+        );
+        assert!(
+            refused("is_on", json!({"entity":"a","x":1}), json!({})).contains("no parameter x")
+        );
+        assert_eq!(
+            refused("is_on", json!({"entity":"a"}), json!({"condition":null})),
+            "the request names no condition"
+        );
+        // A check is not an action: an invoke cannot name the condition.
+        assert!(
+            answer(&invoke_action(host, "is_on", json!({"entity":"a"})))
+                .unwrap_err()
+                .contains("has no action is_on")
+        );
+    }
+
+    #[test]
+    fn a_check_gets_its_secret_from_the_keychain_and_never_from_the_profile() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        rig.vault
+            .values
+            .lock()
+            .unwrap()
+            .insert(format!("{ID}:token"), "s3cret".into());
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        let asked = check(host, "is_on", json!({"entity":"a"}), json!({}));
+        let message = plugin.receive_message();
+        assert_eq!(message["type"], "check");
+        assert_eq!(message["params"], json!({"entity":"a","token":"s3cret"}));
+        // The secret it was sent is taken out of what it sends back.
+        plugin.send(json!({"type":"result","request":message["request"],"ok":false,"error":"s3cret was refused"}));
+        assert_eq!(
+            asked.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Err("[secret] was refused".into())
+        );
+        let error = check(
+            host,
+            "is_on",
+            json!({"entity":"a","token":"old"}),
+            json!({}),
+        )
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            "Token is a secret and is kept in the Keychain, not the profile; open the key and save it again"
+        );
+    }
+
+    #[test]
+    fn checks_and_presses_share_the_limit_of_waiting_requests() {
+        let rig = rig(&["/bin/sleep", "30"]);
+        let host = &rig.host;
+        host.set_usage("m1", used());
+        let (mut plugin, _) = Plugin::hello(host, &host.token(ID));
+        // The first check reads its optional secret on the invoke thread; once it is held, every request below is
+        // sent at once, in the order it came.
+        let primed = check(host, "is_on", json!({"entity":"a"}), json!({}));
+        let message = plugin.receive_message();
+        plugin.send(json!({"type":"result","request":message["request"],"ok":true,"value":true}));
+        assert_eq!(
+            primed.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Ok(Some(true))
+        );
+        let mut waiting = Vec::new();
+        for index in 0..MAX_IN_FLIGHT {
+            waiting.push(if index % 2 == 0 {
+                check(host, "is_on", json!({"entity":"a"}), json!({}))
+            } else {
+                invoke(host, json!({"entity":"a"}))
+            });
+        }
+        let error = check(host, "is_on", json!({"entity":"a"}), json!({}))
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap_err();
+        assert!(error.contains("is busy"), "{error}");
+        // They reach the plugin in the order they came.
+        for index in 0..MAX_IN_FLIGHT {
+            let message = plugin.receive_message();
+            let kind = if index % 2 == 0 { "check" } else { "invoke" };
+            assert_eq!(message["type"], kind);
+            plugin
+                .send(json!({"type":"result","request":message["request"],"ok":true,"value":true}));
+        }
+        for (index, receiver) in waiting.iter().enumerate() {
+            let expected = if index % 2 == 0 { Some(true) } else { None };
+            assert_eq!(
+                receiver.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Ok(expected)
+            );
+        }
     }
 
     #[test]
@@ -2304,7 +2543,7 @@ mod tests {
 
     /// The example plugin in `examples/plugins`, run for real by the system Python.
     #[test]
-    fn the_example_plugin_answers_a_press_and_sets_its_variable() {
+    fn the_example_plugin_answers_a_press_and_a_check_and_sets_its_variable() {
         if !Path::new("/usr/bin/python3").is_file() {
             eprintln!("skipped: no /usr/bin/python3");
             return;
@@ -2358,6 +2597,23 @@ mod tests {
             json!({"type":"set_variable","name":"plugin_presses","value":1})
         );
         assert_eq!(host.statuses()[0].logs[0], "connected");
+        // Pressed at least: the counter is at 1 now.
+        for (count, holds) in [(0, true), (1, true), (2, false)] {
+            let (sender, asked) = mpsc::channel();
+            host.invoke(
+                "m1",
+                &json!({"type":"plugin_check","plugin":"com.example.notify","min_version":"1.0.0",
+                    "condition":"pressed_at_least","params":{"count":count},"timeout_ms":3000}),
+                Box::new(move |result| {
+                    let _ = sender.send(result);
+                }),
+            );
+            assert_eq!(
+                asked.recv_timeout(Duration::from_secs(5)).unwrap(),
+                Ok(Some(holds)),
+                "pressed at least {count}"
+            );
+        }
         // Hold: the press is an invoke, the release an event, and the plugin logs how long the key was held.
         let key = json!({"gesture":"pressed","control":{"module":"m4315","index":3}});
         let (sender, pressed) = mpsc::channel();

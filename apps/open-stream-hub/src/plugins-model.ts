@@ -1,4 +1,4 @@
-import type { PluginAction, PluginValue } from './contracts';
+import type { PluginAction, PluginCondition, PluginValue } from './contracts';
 import { invisibleTextCharacter, variableReferences } from './action-model';
 
 // What `list_plugins` returns (plugins.rs): the plugins folder and each folder in it, with its manifest or why it
@@ -15,8 +15,12 @@ export interface PluginParam {
 }
 // events: the plugin hears the other input on controls bound to this action.
 export interface PluginManifestAction { id: string; label: string; params?: PluginParam[]; events?: boolean }
+// A check an if / else can ask the plugin when pressed: params exactly as an action's, no events.
+export interface PluginManifestCondition { id: string; label: string; params?: PluginParam[] }
+// A manifest has actions, conditions or both, so either list may be absent or empty.
 export interface PluginManifest {
-  schema: number; id: string; name: string; version: string; command: string[]; actions: PluginManifestAction[];
+  schema: number; id: string; name: string; version: string; command: string[]; actions?: PluginManifestAction[];
+  conditions?: PluginManifestCondition[];
   permissions?: { network?: string[]; variables?: string[]; programs?: boolean };
 }
 export type PluginState = 'running' | 'starting' | 'restarting' | 'stopped' | 'unusable' | 'not_enabled';
@@ -31,9 +35,15 @@ export interface ListedPlugin {
 }
 export interface PluginListing { folder: string; plugins: ListedPlugin[] }
 
-// The plugins with a usable manifest, by name.
+// The plugins with a usable manifest that declares at least one action, by name.
 export function usablePlugins(listing: PluginListing | null): PluginManifest[] {
-  return (listing?.plugins ?? []).flatMap(plugin => plugin.manifest ? [plugin.manifest] : [])
+  return (listing?.plugins ?? []).flatMap(plugin => plugin.manifest?.actions?.length ? [plugin.manifest] : [])
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// The enabled plugins that declare at least one condition, by name: the ones an if / else can offer.
+export function conditionPlugins(listing: PluginListing | null): PluginManifest[] {
+  return (listing?.plugins ?? []).flatMap(plugin => plugin.approval === 'enabled' && plugin.manifest?.conditions?.length ? [plugin.manifest] : [])
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
@@ -59,11 +69,29 @@ export function resolvePluginAction(listing: PluginListing | null, action: Plugi
   if (!listed) return { problem: `${action.plugin} is not installed. Put its folder in the plugins folder (Settings > Plugins).` };
   const manifest = listed.manifest;
   if (!manifest) return { problem: `${action.plugin} cannot be used: ${listed.error ?? 'its manifest is not valid'}.` };
-  const declared = manifest.actions.find(item => item.id === action.action);
+  const declared = manifest.actions?.find(item => item.id === action.action);
   if (!declared) return { manifest, problem: `${manifest.name} ${manifest.version} has no action ${action.action}.` };
   if (!versionAtLeast(manifest.version, action.min_version)) {
     return { manifest, declared, problem: `${manifest.name} ${manifest.version} is older than ${action.min_version}, which this key needs. Update the plugin.` };
   }
+  return { manifest, declared };
+}
+
+// The same for a plugin condition an if / else tests, which also says when the plugin is not enabled: the editor
+// offers only enabled plugins' conditions, and a press asks only an enabled plugin.
+export function resolvePluginCondition(listing: PluginListing | null, condition: PluginCondition):
+  { manifest?: PluginManifest; declared?: PluginManifestCondition; problem?: string } {
+  if (!listing) return {};
+  const listed = listing.plugins.find(plugin => plugin.folder === condition.plugin);
+  if (!listed) return { problem: `${condition.plugin} is not installed. Put its folder in the plugins folder (Settings > Plugins).` };
+  const manifest = listed.manifest;
+  if (!manifest) return { problem: `${condition.plugin} cannot be used: ${listed.error ?? 'its manifest is not valid'}.` };
+  const declared = manifest.conditions?.find(item => item.id === condition.condition);
+  if (!declared) return { manifest, problem: `${manifest.name} ${manifest.version} has no condition ${condition.condition}.` };
+  if (!versionAtLeast(manifest.version, condition.min_version)) {
+    return { manifest, declared, problem: `${manifest.name} ${manifest.version} is older than ${condition.min_version}, which this test needs. Update the plugin.` };
+  }
+  if (listed.approval !== 'enabled') return { manifest, declared, problem: `${manifest.name} is not enabled, so pressing this key fails. Enable it in Settings > Plugins.` };
   return { manifest, declared };
 }
 
@@ -105,11 +133,26 @@ export function pluginParamIssue(param: PluginParam, value: PluginValue | undefi
 }
 
 // A plugin action for `actionId` of `manifest`, starting from the manifest's defaults, keeping the values of
-// `previous` that still fit. min_version is the installed version, so an older plugin is caught when it runs.
+// `previous` that still fit. min_version is the installed version, so an older plugin is caught when it runs. A manifest
+// with no actions (one that offers only conditions) leaves `previous` as it is, or names the plugin with no action.
 export function pluginActionWith(manifest: PluginManifest, actionId: string, previous?: PluginAction): PluginAction {
-  const declared = manifest.actions.find(item => item.id === actionId) ?? manifest.actions[0];
-  let next: PluginAction = { type: 'plugin', plugin: manifest.id, min_version: manifest.version, action: declared.id };
-  for (const param of (declared.params ?? []).filter(param => !isSecretParam(param))) {
+  const actions = manifest.actions ?? [];
+  const declared = actions.find(item => item.id === actionId) ?? actions[0];
+  if (!declared) return previous ?? { type: 'plugin', plugin: manifest.id, min_version: manifest.version, action: actionId };
+  return withDefaults<PluginAction>({ type: 'plugin', plugin: manifest.id, min_version: manifest.version, action: declared.id }, manifest, declared.params, previous);
+}
+
+// A plugin condition for `conditionId` of `manifest` the same way, holding for `value` (true unless `previous` says).
+export function pluginConditionWith(manifest: PluginManifest, conditionId: string, previous?: PluginCondition): PluginCondition {
+  const conditions = manifest.conditions ?? [];
+  const declared = conditions.find(item => item.id === conditionId) ?? conditions[0];
+  return withDefaults<PluginCondition>({ plugin: manifest.id, min_version: manifest.version, condition: declared.id, value: previous?.value ?? true }, manifest, declared.params, previous);
+}
+
+type PluginUseFields = { plugin: string; params?: Record<string, PluginValue>; variables?: string[] };
+function withDefaults<T extends PluginUseFields>(start: T, manifest: PluginManifest, params: PluginParam[] | undefined, previous?: PluginUseFields): T {
+  let next = start;
+  for (const param of (params ?? []).filter(param => !isSecretParam(param))) {
     const kept = previous?.plugin === manifest.id ? previous.params?.[param.id] : undefined;
     // Kept when it fits the parameter; whether its variables are declared is the form's to say, not a reason to drop it.
     const value = kept !== undefined && pluginParamIssue({ ...param, variables: false }, kept) === null ? kept : param.default;
@@ -120,7 +163,7 @@ export function pluginActionWith(manifest: PluginManifest, actionId: string, pre
 
 // Sets (or, with undefined, removes) one parameter. A text parameter the manifest lets take variables is filled in
 // exactly when it holds {{, so variables lists it then and only then. Empty params and variables are omitted.
-export function withPluginParam(action: PluginAction, param: PluginParam, value: PluginValue | undefined): PluginAction {
+export function withPluginParam<T extends { params?: Record<string, PluginValue>; variables?: string[] }>(action: T, param: PluginParam, value: PluginValue | undefined): T {
   const params = { ...(action.params ?? {}) };
   if (value === undefined) delete params[param.id]; else params[param.id] = value;
   const variables = new Set(action.variables ?? []);
@@ -131,12 +174,12 @@ export function withPluginParam(action: PluginAction, param: PluginParam, value:
     ...rest,
     ...(Object.keys(params).length ? { params } : {}),
     ...(variables.size ? { variables: [...variables].sort() } : {}),
-  };
+  } as T;
 }
 
-// Every problem a bound plugin action has against the installed manifest, one per parameter at most, plus ones the
-// manifest does not declare.
-export function pluginActionIssues(declared: PluginManifestAction, action: PluginAction, variables: ReadonlyArray<string>): string[] {
+// Every problem a bound plugin action (or plugin condition) has against the installed manifest, one per parameter at
+// most, plus ones the manifest does not declare.
+export function pluginActionIssues<T extends { params?: Record<string, PluginValue> }>(declared: { params?: PluginParam[] }, action: T, variables: ReadonlyArray<string>): string[] {
   const params = declared.params ?? [];
   const issues = params.flatMap(param => {
     const issue = pluginParamIssue(param, action.params?.[param.id], variables);

@@ -42,8 +42,9 @@
 //! Plugins, for a run started with `--plugin-host`:
 //!
 //! - `{"id":9,"type":"plugin_result","request":12,"ok":false,"error":"the light is offline"}` answers the
-//!   `plugin_invoke` record the run wrote with `"request":12`; the press waiting for it fails with `error` unless `ok`.
-//!   A request nobody waits for any more (it timed out) is refused.
+//!   `plugin_invoke` or `plugin_check` record the run wrote with `"request":12`; the press waiting for it fails with
+//!   `error` unless `ok`. A check's answer carries `"value":true` or `false`; without a boolean `value` the check
+//!   fails, and an invoke ignores it. A request nobody waits for any more (it timed out) is refused.
 //!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
@@ -134,6 +135,10 @@ enum Request {
         ok: bool,
         #[serde(default)]
         error: Option<String>,
+        // Read as a plain value, so a value that is not a boolean fails the check that waits for it instead of
+        // leaving the line unread.
+        #[serde(default)]
+        value: Option<Value>,
     },
 }
 
@@ -240,10 +245,18 @@ pub fn answer<T: ReportTransport + ?Sized>(
             })),
             None => Err("this run has no variables".to_string()),
         },
-        (Request::PluginResult { request, ok, error }, _) => match &hooks.plugins {
+        (
+            Request::PluginResult {
+                request,
+                ok,
+                error,
+                value,
+            },
+            _,
+        ) => match &hooks.plugins {
             Some(plugins) => {
                 let answer = if ok {
-                    Ok(())
+                    Ok(value.as_ref().and_then(Value::as_bool))
                 } else {
                     Err(error.unwrap_or_else(|| "the plugin reported a failure".into()))
                 };
@@ -715,6 +728,57 @@ mod tests {
         let late = answer(&fake, None, &hooks, &line);
         assert_eq!(late["ok"], false);
         assert_eq!(late["id"], 2);
+    }
+
+    #[test]
+    fn a_plugin_results_value_answers_the_check_waiting_for_it() {
+        let fake = fake();
+        let (sent_tx, sent_rx) = std::sync::mpsc::channel::<Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = cooltek_sdk_service::PluginBridge::new(Box::new(move |record| {
+            sent_tx.lock().unwrap().send(record.clone()).unwrap();
+            Ok(())
+        }));
+        let hooks = Hooks {
+            plugins: Some(bridge.clone()),
+            ..Default::default()
+        };
+        for (fields, expected) in [
+            (r#""ok":true,"value":true"#, Ok(true)),
+            (r#""ok":true,"value":false"#, Ok(false)),
+            (
+                r#""ok":true"#,
+                Err("the plugin answered a check without true or false".to_string()),
+            ),
+            (
+                r#""ok":true,"value":"yes""#,
+                Err("the plugin answered a check without true or false".to_string()),
+            ),
+            (
+                r#""ok":false,"value":true,"error":"offline""#,
+                Err("offline".to_string()),
+            ),
+        ] {
+            let checking = bridge.clone();
+            let press = std::thread::spawn(move || {
+                checking.check(
+                    "com.x.y",
+                    "1.0.0",
+                    "is_on",
+                    &Default::default(),
+                    &[],
+                    None,
+                    std::time::Duration::from_secs(5),
+                    None,
+                )
+            });
+            let record = sent_rx.recv().unwrap();
+            assert_eq!(record["type"], "plugin_check");
+            let request = record["request"].as_u64().unwrap();
+            let line = format!(r#"{{"id":3,"type":"plugin_result","request":{request},{fields}}}"#);
+            assert_eq!(answer(&fake, None, &hooks, &line)["ok"], true, "{fields}");
+            assert_eq!(press.join().unwrap(), expected, "{fields}");
+        }
     }
 
     #[test]

@@ -685,6 +685,7 @@ export class ProfileSession {
     const reviewed = capabilities.terminalCommands.length > 0 ? 'It opens a terminal and runs a command'
       : capabilities.programs.length > 0 ? 'It runs a program'
       : capabilities.plugins.length > 0 ? 'It asks a plugin to act'
+      : capabilities.pluginChecks.length > 0 ? 'It asks a plugin to check something'
       : capabilities.answersAgentPrompts ? 'It answers AI agent permission prompts' : null;
     this.guard('import this profile', () => {
       void this.createProfile(() => profile, 'Importing profile', importName,

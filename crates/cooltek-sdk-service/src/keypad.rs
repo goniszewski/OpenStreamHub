@@ -1248,6 +1248,17 @@ mod tests {
             !Condition::All(vec![is("live", Bool(true)), Condition::OutputMuted(true)])
                 .is_variable_only()
         );
+        // A key face never asks a plugin: it would be asked at every redraw.
+        let face: KeyFace = serde_json::from_value(json!({
+            "when": {"plugin": {"plugin": "com.x.y", "min_version": "1.0.0", "condition": "on", "value": true}},
+            "label": "On"
+        }))
+        .unwrap();
+        assert_eq!(
+            face.validate().unwrap_err(),
+            "a key face condition can only test variables"
+        );
+        assert_eq!(face.when.holds_with(values), None);
     }
 
     fn plugin(action: &str, channel: &str) -> Value {

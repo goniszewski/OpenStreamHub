@@ -176,9 +176,10 @@ enum Command {
         /// --exit-on-stdin-eof, whose end-of-file stop is unchanged.
         #[arg(long, requires = "exit_on_stdin_eof")]
         control: bool,
-        /// Run `plugin` actions through the supervising OpenStreamHub app:
-        /// each press writes a `plugin_invoke` record with a request number,
-        /// and the app answers with a `plugin_result` control request (see
+        /// Run `plugin` actions and plugin conditions through the supervising
+        /// OpenStreamHub app: each press writes a `plugin_invoke` (or, for a
+        /// condition, `plugin_check`) record with a request number, and the
+        /// app answers with a `plugin_result` control request (see
         /// `cooltek_sdk_service::plugin`). Without it a `plugin` action is
         /// logged as `action_unavailable` and does nothing. Requires --control.
         #[arg(long, requires = "control")]
@@ -1793,6 +1794,45 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_test_run_plans_a_plugin_conditional_without_asking_the_plugin() {
+        let action: cooltek_sdk_service::Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"plugin": {"plugin": "com.x.y", "min_version": "1.0.0", "condition": "on", "value": true}},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        let abort = Arc::new(AtomicBool::new(false));
+        let without = Dispatcher::new(
+            false,
+            None,
+            Arc::clone(&abort),
+            None,
+            None,
+            Default::default(),
+            None,
+        );
+        assert_eq!(without.unavailable(&action), Some(PLUGIN_UNAVAILABLE));
+        let asked = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&asked);
+        let bridge = PluginBridge::new(Box::new(move |_| {
+            flag.store(true, Ordering::SeqCst);
+            Ok(())
+        }));
+        let mut with = Dispatcher::new(
+            false,
+            None,
+            abort,
+            None,
+            None,
+            Default::default(),
+            Some(bridge),
+        );
+        assert_eq!(with.unavailable(&action), None);
+        assert_eq!(with.dispatch_with_execution(&action, false), Ok(false));
+        assert!(!asked.load(Ordering::SeqCst), "a Test run asked a plugin");
     }
 
     #[test]

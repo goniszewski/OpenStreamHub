@@ -1,14 +1,14 @@
 # Writing a plugin
 
-Status (12 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5) and input events (step 4a). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
+Status (13 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5), input events (step 4a) and plugin conditions (step 4b). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
 
-A plugin adds actions a key can run, such as switching smart lights. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
+A plugin adds actions a key can run, such as switching smart lights, and conditions an if / else can test, such as whether a light is on. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
 
 **A plugin runs as you.** It can do anything you could do. The permissions a manifest lists are shown to the user but nothing enforces them, apart from the variables it may set.
 
 ## Enabling
 
-A plugin does not run until you enable it. In Settings > Plugins a plugin shows **Enable…**, which opens a dialog listing what its manifest declares: name, id, version, folder, the program and arguments it starts, its actions with their parameters, its permissions and the secrets it uses, naming those already stored, which it will be sent. **Enable** approves exactly that `plugin.json`: the app keeps its SHA-256 in `plugin-approvals.json` in the app data folder (outside the plugins folder). If the file changed while the dialog was open, nothing is enabled, the dialog closes with the reason, and you review it again. A damaged approvals file enables nothing; it is kept as `plugin-approvals.json.damaged` at the next change.
+A plugin does not run until you enable it. In Settings > Plugins a plugin shows **Enable…**, which opens a dialog listing what its manifest declares: name, id, version, folder, the program and arguments it starts, its actions and conditions with their parameters, its permissions and the secrets it uses, naming those already stored, which it will be sent. **Enable** approves exactly that `plugin.json`: the app keeps its SHA-256 in `plugin-approvals.json` in the app data folder (outside the plugins folder). If the file changed while the dialog was open, nothing is enabled, the dialog closes with the reason, and you review it again. A damaged approvals file enables nothing; it is kept as `plugin-approvals.json.damaged` at the next change.
 
 Any change to `plugin.json`, even a space, needs a new approval: the plugin shows that its manifest changed and **Review…**, and it does not start until you enable it again. An update to the plugin's program alone does not. **Disable** removes the approval and stops the plugin at once.
 
@@ -16,9 +16,9 @@ A plugin that is not enabled is not a failure: it is not restarted, and a press 
 
 ## Secrets
 
-A text parameter with `"secret": true`, such as an access token, is never saved in a profile. Its value is kept in the macOS Keychain, one item per plugin id and parameter id (account `plugin-secret:<plugin id>:<param id>`), shared by every key and action of that plugin with a secret of that id. Set, change or forget it in Settings > Plugins; the value is never shown again. Settings and the editor show only whether it is set, which the app asks the Keychain without reading the value (or that the Keychain could not tell).
+A text parameter with `"secret": true`, such as an access token, is never saved in a profile. Its value is kept in the macOS Keychain, one item per plugin id and parameter id (account `plugin-secret:<plugin id>:<param id>`), shared by every key, action and condition of that plugin with a secret of that id. Set, change or forget it in Settings > Plugins; the value is never shown again. Settings and the editor show only whether it is set, which the app asks the Keychain without reading the value (or that the Keychain could not tell).
 
-An export leaves out every value of a parameter that the installed manifest marks secret, and says which it left out. A plugin that is not installed when you export cannot be checked, so a value saved for one of its parameters stays in the file.
+An export leaves out every value of a parameter that the installed manifest marks secret, in plugin actions and plugin conditions, and says which it left out. A plugin that is not installed when you export cannot be checked, so a value saved for one of its parameters stays in the file.
 
 When a key is pressed, the app reads the value (the first time only; a read that fails is reported for a minute before the Keychain is asked again) and adds it to the parameters sent to the plugin. A required secret that is not set fails the press at once. Where the plugin's log, stderr or error texts contain a secret value the app has sent it this session (also one changed or forgotten since, up to 16 per plugin) or holds for it now, it is kept as `[secret]`, so a plugin that echoes one does not leak it into Settings or the activity log. This is a safety net, not a guarantee; the plugin chooses what it prints:
 
@@ -62,6 +62,12 @@ Put the plugin's folder in the plugins folder, `~/Library/Application Support/<a
       { "id": "token", "label": "Access token", "type": "text", "secret": true }
     ] }
   ],
+  "conditions": [
+    { "id": "is_on", "label": "Light is on", "params": [
+      { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true },
+      { "id": "token", "label": "Access token", "type": "text", "secret": true }
+    ] }
+  ],
   "permissions": { "network": ["homeassistant.local:8123"], "variables": ["light_state"], "programs": false }
 }
 ```
@@ -75,9 +81,10 @@ Unknown fields are refused, so a misspelt field is an error, not silently ignore
 | `name` | 1 to 64 bytes, one line |
 | `version` | `MAJOR.MINOR.PATCH`, compared numerically |
 | `command` | 1 to 16 items: the program, then its arguments, passed as they are (no shell). The program is a path inside the folder without `..`, or an absolute path |
-| `actions` | 1 to 64, ids unique: 1 to 64 of `a-z`, `0-9`, `_`, `-` and `.`, starting with a letter. `label` 1 to 64 bytes |
+| `actions` | Up to 64, ids unique: 1 to 64 of `a-z`, `0-9`, `_`, `-` and `.`, starting with a letter. `label` 1 to 64 bytes. May be left out, or empty, when the plugin has `conditions`: a manifest needs at least one action or condition |
+| `conditions` | Optional, up to 64, ids unique among conditions (one may repeat an action's id). Each has an `id`, `label` and `params` with exactly the action rules, `secret` and `variables` included, but no `events` (see [Conditions](#conditions)) |
 | `events` | Optional, `true` or `false` (the default). With `true` the plugin also hears the other input on keys and controls bound to this action (see [Input events](#input-events)) |
-| `params` | Up to 32 per action, ids unique, with the variable name rules (1 to 32 of `a-z`, `0-9` and `_`, starting with a letter) |
+| `params` | Up to 32 per action or condition, ids unique, with the variable name rules (1 to 32 of `a-z`, `0-9` and `_`, starting with a letter) |
 | `type` | `text`, `number`, `bool` or `choice` |
 | `required` | The press fails, and the editor shows an error, when the parameter is missing |
 | `variables` | Text only: `{{name}}` references to variables the profile declares are filled in when the key is pressed |
@@ -101,6 +108,7 @@ The plugin connects to `OSH_PLUGIN_SOCKET` (a Unix socket in a 0700 folder). Eac
    - `{"type":"ping"}`: the app answers `{"type":"pong"}`.
 4. After 10 seconds without a line from the plugin, the app sends `{"type":"ping"}`. The plugin must send any line (`{"type":"pong"}`) within 5 seconds, or it is killed and restarted.
 5. For an action with `"events": true`, the app also sends `event` messages, which are not answered (see [Input events](#input-events)).
+6. When an if / else that tests one of its conditions runs, the app sends `{"type":"check","request":9,"condition":"is_on","params":{"entity":"light.desk"},"timeout_ms":3000,"input":{…}}`, answered with the same `result` plus `"value":true` or `false` (see [Conditions](#conditions)). Request numbers are shared with invokes.
 
 **Ignore what you do not know.** A newer app may add fields to any message, and new message types. A plugin must ignore both, never fail on them.
 
@@ -121,10 +129,30 @@ An invoke tells a plugin about the one gesture its action is bound to. With `"ev
 
 The example plugin's **Hold** action logs how long a key was held.
 
+## Conditions
+
+A condition is a check an if / else asks the plugin when its key is pressed, as it reads OBS's state: "the desk light is on", "a meeting is running". In the editor, each enabled plugin's conditions are listed with the built-in tests under the plugin's name, with **Holds** or **Does not hold**. A condition goes in AND and OR groups and counts toward their limits like any other test.
+
+```json
+{"type":"check","request":9,"condition":"is_on","params":{"entity":"light.desk"},"timeout_ms":3000,"input":{"gesture":"pressed","control":{"module":"m4315","index":3}}}
+```
+
+- **Answer with `value`.** `{"type":"result","request":9,"ok":true,"value":true}` (or `false`) says whether the condition holds; the if / else compares it with the **Holds** / **Does not hold** the profile chose. `{"type":"result","request":9,"ok":false,"error":"the light is offline"}` says it could not be read. An `ok: true` answer without a boolean `value` fails with "the plugin answered a check without true or false". `value` on an invoke's result is ignored.
+- **`check` is its own message.** A plugin with no conditions never gets one, and a plugin that does not know the type must ignore it, as any other. `condition` is the manifest condition's id; there is no `action`.
+- **Parameters** arrive as an invoke's do: variables filled in, secrets added from the Keychain, `timeout_ms` what is left when the line is written. `input` is the press that ran the if / else.
+- **A failure fails the press, and neither branch runs**: the plugin not enabled, not running or still starting, a required secret not set, 8 requests already waiting, no answer in time, `ok: false`, or no `value`. The activity log says which (`conditional could not read com.example.lights is_on: the light is offline; neither branch ran`). The else branch is never taken because a plugin is down.
+- **Live only.** A Test run records the if / else without reading its test, so it never asks a plugin.
+- **Time.** A check gets at most 3 seconds, or what is left of the sequence's 15 seconds when that is less. The module's other input waits meanwhile, as for an invoke. The first check that needs a secret the app has not read yet waits for the Keychain within those 3 seconds, so a Keychain prompt (macOS asking whether the app may use the item) can fail it; once read, the secret is held and later checks do not wait for it.
+- **Only read, and answer fast.** A check may be asked at every press of a key. Nothing stops a check from changing things, but it should not: do that in an action. Answer from what the plugin already knows where it can.
+- **Not on key faces.** A key face takes only variable tests, since asking a plugin at every redraw would be wrong. A plugin that wants to drive a face sets a variable with `set_variable` and the face tests that.
+- **Order.** A module's checks and invokes reach the plugin in the order they were made, through the same path: the same manifest checks (against `conditions`), the same secrets, the 8-waiting limit. Across modules there is one exception: a request waiting for a Keychain read can be overtaken by another module's request whose secrets are already held.
+
+The example plugin's **Pressed at least** condition holds once its **Count presses** action has counted to a number.
+
 ## How a press reaches the plugin
 
 1. The module service runs the `plugin` action. With variables listed, it fills them in; a filled-in text that breaks the rules (one line, no control or invisible characters, at most 2048 bytes, 8192 for all text) fails the press before anything is sent.
-2. The service writes a `plugin_invoke` record on its stdout. The app fills in the action's secrets from the Keychain, checks the invoke against the installed manifest (installed, at least `min_version`, the action exists, every parameter is declared and fits, required ones are present, only parameters that allow it take variables) and sends `invoke`.
+2. The service writes a `plugin_invoke` record on its stdout (`plugin_check` for a condition, which the app sends as `check` and checks against `conditions`). The app fills in the action's secrets from the Keychain, checks the invoke against the installed manifest (installed, at least `min_version`, the action exists, every parameter is declared and fits, required ones are present, only parameters that allow it take variables) and sends `invoke`.
 3. The plugin's `result` goes back to the service as a `plugin_result` control request. A press fails when the plugin is not enabled, not running or still starting, a required secret is not set, has 8 invokes waiting, stops before answering, or answers later than 15 seconds (as a step of a multi-action or if / else, what is left of the sequence's 15 seconds).
 
 While a press waits, other presses on the same module wait behind it, as for `run_program`.
@@ -136,12 +164,24 @@ While a press waits, other presses on the same module wait behind it, as for `ru
   "params": { "entity": "light.{{room}}" }, "variables": ["entity"] }
 ```
 
+A plugin condition is a test of an if / else, written as the single key `plugin`, with the fields of a plugin action, `condition` for `action`, and `value`, the answer it holds for:
+
+```json
+{ "type": "conditional",
+  "when": { "plugin": { "plugin": "com.example.lights", "min_version": "1.2.0", "condition": "is_on",
+    "params": { "entity": "light.{{room}}" }, "variables": ["entity"], "value": true } },
+  "then": [ … ], "else": [ … ] }
+```
+
 `variables` lists the text parameters whose references are filled in; the editor manages it (a parameter that allows variables is listed exactly when it holds `{{`). Every reference must name a declared variable, or the profile is refused when it loads. A profile that uses a missing plugin, or one older than `min_version`, still loads; that key's press fails with the reason.
 
-The Execute confirmation names each plugin action with its parameters and the variables that feed it, and rates the profile high risk. A Live run whose saved profile adds a plugin action, or changes one's plugin, action, parameters or variables, pauses for a new confirmation. A JSON import holding a plugin action runs as a dry run until it is reviewed and allowed. Preset packs and starters cannot hold one.
+The same holds for a plugin condition. A Live run starts a plugin that a profile only ever asks a check.
+
+The Execute confirmation names each plugin action and plugin condition with its parameters and the variables that feed it (a condition also with the answer it holds for and its minimum version), and rates the profile high risk. A Live run whose saved profile adds a plugin action or condition, or changes one's plugin, action or condition, parameters, variables or (for a condition) the answer it holds for or its minimum version, pauses for a new confirmation. A JSON import holding a plugin action or condition runs as a dry run until it is reviewed and allowed. Preset packs and starters cannot hold one.
 
 ## Not built yet
 
-- Condition providers and plugin-supplied key images (design step 4), and telling a plugin when its key appears or disappears (a page switch, a profile stop).
+- Plugin-supplied key images (design step 4c), and telling a plugin when its key appears or disappears (a page switch, a profile stop).
+- Plugin conditions on key faces, caching of a plugin's answers, and conditions that answer anything other than true or false.
 - An installer or registry (step 6), and an optional `"background": true` plugin that runs without a Live profile (later).
 - Plugins on Windows or Linux.

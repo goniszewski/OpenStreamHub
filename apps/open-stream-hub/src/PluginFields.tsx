@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { FolderOpen, RotateCcw } from 'lucide-react';
-import type { PluginAction, PluginValue, StepAction } from './contracts';
+import type { PluginAction, PluginCondition, PluginValue, StepAction } from './contracts';
 import { SelectField } from './controls';
 import { useT } from './i18n-react';
 import { pluginIssue } from './action-model';
-import { isSecretParam, pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, withPluginParam } from './plugins-model';
+import { isSecretParam, pluginActionIssues, withPluginParam, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins } from './plugins-model';
 import type { PluginParam } from './plugins-model';
 import { usePlugins } from './plugins-context';
 import { useVariables } from './variables-context';
@@ -22,12 +22,11 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
   const id = (name: string) => `${prefix}${name}`;
   const { listing, error, refresh } = usePlugins();
   const installed = usablePlugins(listing);
-  const declared = useVariables().map(variable => variable.name);
   const resolved = resolvePluginAction(listing, action);
   // A fresh pick has no plugin yet: take the first installed one, so the form shows at once.
   const first = installed[0];
   useEffect(() => {
-    if (action.plugin === '' && first) onChange(pluginActionWith(first, first.actions[0].id), 'plugin-id');
+    if (action.plugin === '' && first) onChange(pluginActionWith(first, ''), 'plugin-id');
   }, [action.plugin, first, onChange]);
 
   const openFolder = invoke ? () => { void invoke('open_plugins_folder').catch(() => {}); } : undefined;
@@ -38,8 +37,6 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
   </p>;
 
   const shapeIssue = action.plugin === '' ? null : pluginIssue(action);
-  const issues = resolved.declared ? pluginActionIssues(resolved.declared, action, declared) : [];
-  const extra = issues.filter(issue => issue.startsWith('The plugin has no parameter'));
   return <div className="action-fields plugin-fields">
     <label htmlFor={id('plugin-id')}>{t('actions.plugin.plugin')}</label>
     {installed.length === 0 && action.plugin === ''
@@ -48,7 +45,7 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
         aria-describedby={resolved.problem ? id('plugin-problem') : undefined}
         onChange={event => {
           const manifest = installed.find(item => item.id === event.target.value);
-          if (manifest) onChange(pluginActionWith(manifest, manifest.actions[0].id), 'plugin-id');
+          if (manifest) onChange(pluginActionWith(manifest, ''), 'plugin-id');
         }}>
         {installed.map(manifest => <option key={manifest.id} value={manifest.id}>{`${manifest.name} ${manifest.version}`}</option>)}
         {action.plugin !== '' && !installed.some(manifest => manifest.id === action.plugin) &&
@@ -58,23 +55,38 @@ export function PluginFields({ prefix, action, onChange, invoke, hint }: {
       <label className="spaced-label" htmlFor={id('plugin-action')}>{t('actions.plugin.action')}</label>
       <SelectField id={id('plugin-action')} value={action.action}
         onChange={event => onChange(pluginActionWith(resolved.manifest!, String(event.target.value), action), 'plugin-action')}>
-        {resolved.manifest.actions.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+        {(resolved.manifest.actions ?? []).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
         {!resolved.declared && <option value={action.action}>{t('actions.plugin.missingOption', { id: action.action })}</option>}
       </SelectField>
     </>}
     {resolved.problem && <p id={id('plugin-problem')} className="field-error" role="alert">{resolved.problem}</p>}
     {!resolved.problem && shapeIssue && <p className="field-error" role="alert">{shapeIssue}</p>}
-    {resolved.declared?.params?.map(param => isSecretParam(param)
-      ? <SecretParamNote key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
-        plugin={action.plugin} set={pluginSecretSet(listing, action.plugin, param.id)} value={action.params?.[param.id]} invoke={invoke}
-        onDrop={() => onChange(withPluginParam(action, param, undefined), `plugin-param-${param.id}`)} onStored={refresh} />
-      : <PluginParamField key={`${action.plugin}:${action.action}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
-        value={action.params?.[param.id]} issue={pluginParamIssue(param, action.params?.[param.id], declared)}
-        onChange={value => onChange(withPluginParam(action, param, value), `plugin-param-${param.id}`)} />)}
-    {extra.map(issue => <p key={issue} className="field-error" role="alert">{issue}</p>)}
+    {resolved.declared && <PluginParamsForm id={id} use={action} useKey={`${action.plugin}:${action.action}`} params={resolved.declared.params}
+      invoke={invoke} onChange={(next, field) => onChange(next, field)} />}
     {folderNote}
     {hint(t('actions.plugin.hint'), t('actions.plugin.more'))}
   </div>;
+}
+
+// The parameter form of a plugin action or plugin condition, generated from the manifest's parameter types: one field per
+// parameter (a secret only says whether it is set and where), and the values the manifest does not declare. Changes go
+// through withPluginParam, so `variables` stays in step with the text that holds {{.
+export function PluginParamsForm<T extends PluginAction | PluginCondition>({ id, use, useKey, params, invoke, onChange }: {
+  id(name: string): string; use: T; useKey: string; params: PluginParam[] | undefined; invoke?: Invoke; onChange(next: T, field: string): void;
+}) {
+  const { listing, refresh } = usePlugins();
+  const declared = useVariables().map(variable => variable.name);
+  const extra = pluginActionIssues({ params }, use, declared).filter(issue => issue.startsWith('The plugin has no parameter'));
+  return <>
+    {params?.map(param => isSecretParam(param)
+      ? <SecretParamNote key={`${useKey}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
+        plugin={use.plugin} set={pluginSecretSet(listing, use.plugin, param.id)} value={use.params?.[param.id]} invoke={invoke}
+        onDrop={() => onChange(withPluginParam(use, param, undefined), `plugin-param-${param.id}`)} onStored={refresh} />
+      : <PluginParamField key={`${useKey}:${param.id}`} id={id(`plugin-param-${param.id}`)} param={param}
+        value={use.params?.[param.id]} issue={pluginParamIssue(param, use.params?.[param.id], declared)}
+        onChange={value => onChange(withPluginParam(use, param, value), `plugin-param-${param.id}`)} />)}
+    {extra.map(issue => <p key={issue} className="field-error" role="alert">{issue}</p>)}
+  </>;
 }
 
 // A secret: whether the Keychain holds it and where to set it. A value the profile still carries (saved before secrets

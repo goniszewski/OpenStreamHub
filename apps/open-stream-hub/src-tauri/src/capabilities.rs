@@ -68,8 +68,8 @@ fn walk<'a>(action: &'a Action, each: &mut impl FnMut(&'a Action)) {
     }
 }
 
-/// A variable a `run_program` fills into its arguments, or a `plugin` into its
-/// text parameters, decides what runs, so
+/// A variable a `run_program` fills into its arguments, or a `plugin` action
+/// or plugin condition into its text parameters, decides what runs, so
 /// what the profile itself can make it (its declared value and every write of
 /// it) is an item too: a changed starting value, or a key that sets it to a
 /// new value, needs a new confirmation. Other programs on this Mac can still
@@ -94,12 +94,13 @@ fn feeding_values(profile: &Profile, actions: &[&Action], set: &mut BTreeSet<Str
                     );
                 }
             }
-            if let Action::Plugin {
-                params, variables, ..
-            } = step
-            {
-                for name in variables {
-                    if let Some(cooltek_sdk_service::PluginValue::Text(text)) = params.get(name) {
+            // Every plugin action and condition in this step (and in the
+            // steps inside it, which the walk reaches again: a set).
+            for found in step.plugin_uses() {
+                for name in found.variables {
+                    if let Some(cooltek_sdk_service::PluginValue::Text(text)) =
+                        found.params.get(name)
+                    {
                         filled_in.extend(
                             cooltek_sdk_service::variable_references(text)
                                 .unwrap_or_default()
@@ -241,6 +242,17 @@ fn visit(action: &Action, set: &mut BTreeSet<String>) {
                 Ok(identity) => set.insert(format!("conditional\0{identity}")),
                 Err(_) => set.insert("conditional\0unnameable".into()),
             };
+            // Each plugin condition asks its plugin, which the confirmation
+            // names like a plugin action: the plugin, the condition, every
+            // parameter and which ones take variables are the item.
+            let mut asked = Vec::new();
+            when.plugin_uses(&mut asked);
+            for found in asked {
+                let identity =
+                    serde_json::to_string(&(found.plugin, found.id, found.params, found.variables))
+                        .unwrap_or_else(|_| "unnameable".into());
+                set.insert(format!("plugin_condition\0{identity}"));
+            }
             for step in then.iter().chain(otherwise) {
                 visit(step, set);
             }
@@ -683,6 +695,53 @@ mod tests {
         ] {
             assert!(adds_capabilities(&held, &profile(vec![plugin(next)])));
         }
+    }
+
+    #[test]
+    fn a_plugin_condition_with_its_parameters_is_an_item_and_feeds_its_variables() {
+        use cooltek_sdk_service::{Variable, VariableValue};
+        let asking = |condition: serde_json::Value| -> Action {
+            serde_json::from_value(serde_json::json!({
+                "type":"conditional","when":{"any":[{"output_muted":true},{"plugin":condition}]},
+                "then":[{"type":"toggle_mute"}]
+            }))
+            .unwrap()
+        };
+        let base = serde_json::json!({"plugin":"com.example.lights","min_version":"1.0.0",
+            "condition":"is_on","params":{"entity":"light.{{room}}"},"variables":["entity"],"value":true});
+        let held = profile(vec![asking(base.clone())]);
+        assert!(!adds_capabilities(&held, &held.clone()));
+        // The conditional's own item already changes with its test; the plugin condition is an item of its own,
+        // so the same condition moved under another if / else is still known.
+        assert!(
+            items(&held)
+                .iter()
+                .any(|item| item.starts_with("plugin_condition\0"))
+        );
+        for change in [
+            serde_json::json!({"plugin":"com.example.other"}),
+            serde_json::json!({"condition":"is_off"}),
+            serde_json::json!({"params":{"entity":"light.hall"},"variables":[]}),
+            serde_json::json!({"value":false}),
+        ] {
+            let mut next = base.clone();
+            for (field, value) in change.as_object().unwrap() {
+                next[field] = value.clone();
+            }
+            assert!(
+                adds_capabilities(&held, &profile(vec![asking(next)])),
+                "{change}"
+            );
+        }
+        // A variable it fills in is fed by the profile's own writes.
+        let mut fed = profile(vec![asking(base)]);
+        fed.variables = vec![Variable {
+            name: "room".into(),
+            value: VariableValue::Text("desk".into()),
+        }];
+        let mut changed = fed.clone();
+        changed.variables[0].value = VariableValue::Text("hall".into());
+        assert!(adds_capabilities(&fed, &changed));
     }
 
     #[test]

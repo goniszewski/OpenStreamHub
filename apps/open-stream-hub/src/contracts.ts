@@ -24,6 +24,13 @@ export interface PluginAction {
   type: 'plugin'; plugin: string; min_version: string; action: string;
   params?: Record<string, PluginValue>; variables?: string[];
 }
+// A check one of a plugin's manifest conditions answers when an if / else runs (Condition::Plugin in profile.rs): the
+// fields of a plugin action, the condition's id for the action's, and the answer it holds for. params and variables
+// follow the plugin action rules (omitted when empty). Never a key-face test: faces take variable-only conditions.
+export interface PluginCondition {
+  plugin: string; min_version: string; condition: string;
+  params?: Record<string, PluginValue>; variables?: string[]; value: boolean;
+}
 // One step of a multi_action: any executable action except another multi_action.
 export type StepAction =
   | { type: 'volume'; delta: number }
@@ -122,7 +129,9 @@ export type LeafCondition =
   // The frontmost application has this bundle identifier (read on this Mac when the key is pressed).
   | { focused_app: string }
   | { variable_is: { name: string; value: VariableValue } }
-  | { variable_at_least: { name: string; value: number } };
+  | { variable_at_least: { name: string; value: number } }
+  // Asks an enabled plugin when the key is pressed (Live only); a failed check fails the press.
+  | { plugin: PluginCondition };
 export type BranchStep = StepAction | ConditionalAction;
 export interface ConditionalAction { type: 'conditional'; when: Condition; then: BranchStep[]; else?: BranchStep[] }
 export type BindingAction =

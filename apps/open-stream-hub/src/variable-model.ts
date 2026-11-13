@@ -1,4 +1,4 @@
-import type { BindingAction, BranchStep, Condition, KeypadSlot, Profile, Variable, VariableKind } from './contracts';
+import type { BindingAction, BranchStep, Condition, KeypadSlot, PluginValue, Profile, Variable, VariableKind } from './contracts';
 import type { BindingEntry } from './binding-model';
 import { listBindings } from './binding-model';
 import { groupItems, groupMode, isGroup, variableKind } from './flow-model';
@@ -12,8 +12,15 @@ const conditionNames = (when: Condition, into: string[]): string[] => {
   if (isGroup(when)) { groupItems(when).forEach(item => conditionNames(item, into)); return into; }
   if ('variable_is' in when) into.push(when.variable_is.name);
   else if ('variable_at_least' in when) into.push(when.variable_at_least.name);
+  // Each {{name}} in a text parameter a plugin condition fills in is a use, as for a plugin action.
+  else if ('plugin' in when) into.push(...pluginReferences(when.plugin).names);
   return into;
 };
+
+// Every text parameter renamed, as for a plugin action (renameAction).
+const renameParams = <T extends { params?: Record<string, PluginValue> }>(use: T, from: string, to: string): T =>
+  (use.params ? { ...use, params: Object.fromEntries(Object.entries(use.params).map(([name, value]) =>
+    [name, typeof value === 'string' ? value.split(`{{${from}}}`).join(`{{${to}}}`) : value])) } : use);
 
 // Every variable name an action (and everything inside it) refers to, once per use.
 export function actionVariableNames(action: AnyAction | null | undefined, into: string[] = []): string[] {
@@ -75,6 +82,7 @@ const renameCondition = (when: Condition, from: string, to: string): Condition =
   }
   if ('variable_is' in when && when.variable_is.name === from) return { variable_is: { ...when.variable_is, name: to } };
   if ('variable_at_least' in when && when.variable_at_least.name === from) return { variable_at_least: { ...when.variable_at_least, name: to } };
+  if ('plugin' in when) return { plugin: renameParams(when.plugin, from, to) };
   return when;
 };
 
@@ -93,9 +101,7 @@ function renameAction<A extends AnyAction>(action: A, from: string, to: string):
     case 'run_program':
       return (step.args ? { ...step, args: step.args.map(arg => arg.split(`{{${from}}}`).join(`{{${to}}}`)) } : step) as A;
     // Every text parameter, so a parameter that does not take variables keeps reading the same once it does.
-    case 'plugin':
-      return (step.params ? { ...step, params: Object.fromEntries(Object.entries(step.params).map(([name, value]) =>
-        [name, typeof value === 'string' ? value.split(`{{${from}}}`).join(`{{${to}}}`) : value])) } : step) as A;
+    case 'plugin': return renameParams(step, from, to) as A;
     default: return action;
   }
 }

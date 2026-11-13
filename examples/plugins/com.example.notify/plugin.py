@@ -1,7 +1,7 @@
 """An example OpenStreamHub plugin, using only the Python standard library.
 
 The app starts it with OSH_PLUGIN_SOCKET, OSH_PLUGIN_ID and OSH_PLUGIN_TOKEN in the environment. It connects,
-says hello, then answers each invoke with one result. See docs/plugins.md for the protocol.
+says hello, then answers each invoke and each check with one result. See docs/plugins.md for the protocol.
 
 Actions:
 - notify: shows a macOS notification with `title` and `message` (the message may use {{variables}}).
@@ -9,6 +9,10 @@ Actions:
   declare as a number.
 - hold: bind it to a key's press. Its manifest sets "events": true, so the app also sends the key's release as an
   `event`, and the plugin logs how long the key was held (Settings > Plugins shows the log).
+
+Conditions (an if / else asks them as a `check` when its key is pressed, and the answer carries `value`):
+- pressed_at_least: true once the `count` action's counter has reached the number `count`. It only reads the
+  counter and answers at once, as a check should.
 
 Fields it does not know, in any message, are ignored: newer apps may add some.
 """
@@ -72,6 +76,16 @@ def main():
                 else:
                     raise ValueError("unknown action " + action)
             except Exception as error:  # Any failure fails the press, with a short reason.
+                result = {"type": "result", "request": message["request"], "ok": False, "error": str(error)[:200]}
+            send(result)
+        elif kind == "check":
+            condition, params = message["condition"], message.get("params", {})
+            try:
+                if condition != "pressed_at_least":
+                    raise ValueError("unknown condition " + condition)
+                result = {"type": "result", "request": message["request"], "ok": True,
+                          "value": presses >= params["count"]}
+            except Exception as error:  # A failed check fails the press, and neither branch runs.
                 result = {"type": "result", "request": message["request"], "ok": False, "error": str(error)[:200]}
             send(result)
         elif kind == "event":

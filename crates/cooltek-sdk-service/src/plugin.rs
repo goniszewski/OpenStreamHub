@@ -1,10 +1,12 @@
-//! Plugin actions: the parameter values of an [`Action::Plugin`](crate::Action::Plugin), their checks, and the
-//! bridge through which a module service asks the app that supervises it to run one.
+//! Plugin actions and conditions: the parameter values of an [`Action::Plugin`](crate::Action::Plugin) or a
+//! [`Condition::Plugin`](crate::Condition::Plugin), their checks, and the bridge through which a module service asks
+//! the app that supervises it to run an action or answer a check.
 //!
 //! A plugin is a separate process the OpenStreamHub app starts and talks to (see `docs/plugins-design.md`). A module
 //! service never reaches a plugin itself: when a key runs a plugin action it writes a `plugin_invoke` record to its
 //! stdout with a request number, and waits for the app to write the plugin's answer back on its control channel as
-//! `plugin_result` with the same number. Only the service decides that a press runs, as for every other action.
+//! `plugin_result` with the same number. A plugin condition writes `plugin_check` the same way, and its answer
+//! carries `value`. Only the service decides that a press runs, as for every other action.
 
 use crate::{
     InputEvent, InputValue,
@@ -72,8 +74,12 @@ pub fn validate_plugin_id(id: &str) -> Result<(), String> {
 }
 
 /// Checks a plugin action id: 1 to [`MAX_PLUGIN_ACTION_BYTES`] of `a-z`, `0-9`, `_`, `-` and `.`, starting with a
-/// letter.
+/// letter. A condition id follows the same rules.
 pub fn validate_plugin_action_id(id: &str) -> Result<(), String> {
+    check_use_id(PluginUseKind::Action, id)
+}
+
+fn check_use_id(kind: PluginUseKind, id: &str) -> Result<(), String> {
     if id.is_empty()
         || id.len() > MAX_PLUGIN_ACTION_BYTES
         || !id.starts_with(|c: char| c.is_ascii_lowercase())
@@ -82,7 +88,8 @@ pub fn validate_plugin_action_id(id: &str) -> Result<(), String> {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '_' | '-' | '.'))
     {
         return Err(format!(
-            "plugin action must be 1 to {MAX_PLUGIN_ACTION_BYTES} of a-z, 0-9, _, - and ., starting with a letter"
+            "plugin {} must be 1 to {MAX_PLUGIN_ACTION_BYTES} of a-z, 0-9, _, - and ., starting with a letter",
+            kind.noun()
         ));
     }
     Ok(())
@@ -125,42 +132,140 @@ pub fn validate_plugin_action(
     params: &BTreeMap<String, PluginValue>,
     variables: &[String],
 ) -> Result<(), String> {
-    validate_plugin_id(plugin)?;
-    parse_version(min_version)
-        .ok_or("plugin min_version must be MAJOR.MINOR.PATCH, such as 1.0.0")?;
-    validate_plugin_action_id(action)?;
-    if params.len() > MAX_PLUGIN_PARAMS {
-        return Err(format!(
-            "a plugin action takes at most {MAX_PLUGIN_PARAMS} parameters"
-        ));
+    PluginUse {
+        kind: PluginUseKind::Action,
+        plugin,
+        min_version,
+        id: action,
+        params,
+        variables,
     }
-    let mut total = 0;
-    for (name, value) in params {
-        validate_variable_name(name).map_err(|_| {
+    .validate()
+}
+
+/// Checks the parts of a plugin condition that do not depend on its manifest, with the plugin action rules.
+pub fn validate_plugin_condition(
+    plugin: &str,
+    min_version: &str,
+    condition: &str,
+    params: &BTreeMap<String, PluginValue>,
+    variables: &[String],
+) -> Result<(), String> {
+    PluginUse {
+        kind: PluginUseKind::Condition,
+        plugin,
+        min_version,
+        id: condition,
+        params,
+        variables,
+    }
+    .validate()
+}
+
+/// Whether a plugin use runs one of the plugin's actions or asks one of its conditions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PluginUseKind {
+    /// An [`Action::Plugin`](crate::Action::Plugin).
+    Action,
+    /// A [`Condition::Plugin`](crate::Condition::Plugin).
+    Condition,
+}
+
+impl PluginUseKind {
+    /// `action` or `condition`, for messages.
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Action => "action",
+            Self::Condition => "condition",
+        }
+    }
+}
+
+/// One use of a plugin in a profile: an action it runs or a condition it is asked. Everything that walks a
+/// profile's plugins (starting them, confirmations, imports, secrets) walks these, from
+/// [`Action::plugin_uses`](crate::Action::plugin_uses).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PluginUse<'a> {
+    /// An action or a condition.
+    pub kind: PluginUseKind,
+    /// The plugin's reverse-DNS id.
+    pub plugin: &'a str,
+    /// The oldest plugin version this use works with.
+    pub min_version: &'a str,
+    /// The id of the action or condition in the plugin's manifest.
+    pub id: &'a str,
+    /// Parameter values by name, as written in the profile.
+    pub params: &'a BTreeMap<String, PluginValue>,
+    /// The text parameters whose variables are filled in.
+    pub variables: &'a [String],
+}
+
+impl PluginUse<'_> {
+    /// Checks the parts that do not depend on the manifest: the ids, the version, the parameter names, values and
+    /// sizes, and that `variables` names text parameters whose references are well formed.
+    pub fn validate(&self) -> Result<(), String> {
+        let Self {
+            kind,
+            plugin,
+            min_version,
+            id,
+            params,
+            variables,
+        } = *self;
+        let noun = kind.noun();
+        validate_plugin_id(plugin)?;
+        parse_version(min_version)
+            .ok_or("plugin min_version must be MAJOR.MINOR.PATCH, such as 1.0.0")?;
+        check_use_id(kind, id)?;
+        if params.len() > MAX_PLUGIN_PARAMS {
+            return Err(format!(
+                "a plugin {noun} takes at most {MAX_PLUGIN_PARAMS} parameters"
+            ));
+        }
+        let mut total = 0;
+        for (name, value) in params {
+            validate_variable_name(name).map_err(|_| {
             format!("plugin parameter name {name:?} must be 1 to 32 of a-z, 0-9 and _, starting with a letter")
         })?;
-        if let PluginValue::Text(text) = value {
-            check_text(name, text)?;
-            total += text.len();
+            if let PluginValue::Text(text) = value {
+                check_text(name, text)?;
+                total += text.len();
+            }
         }
-    }
-    if total > MAX_PLUGIN_PARAMS_BYTES {
-        return Err(format!(
-            "plugin text parameters must total at most {MAX_PLUGIN_PARAMS_BYTES} bytes"
-        ));
-    }
-    for (index, name) in variables.iter().enumerate() {
-        if variables[..index].contains(name) {
-            return Err(format!("plugin variables lists parameter {name} twice"));
-        }
-        let Some(PluginValue::Text(text)) = params.get(name) else {
+        if total > MAX_PLUGIN_PARAMS_BYTES {
             return Err(format!(
-                "plugin variables names {name}, which is not a text parameter of this action"
+                "plugin text parameters must total at most {MAX_PLUGIN_PARAMS_BYTES} bytes"
             ));
-        };
-        variable_references(text).map_err(|error| format!("plugin parameter {name}: {error}"))?;
+        }
+        for (index, name) in variables.iter().enumerate() {
+            if variables[..index].contains(name) {
+                return Err(format!("plugin variables lists parameter {name} twice"));
+            }
+            let Some(PluginValue::Text(text)) = params.get(name) else {
+                return Err(format!(
+                    "plugin variables names {name}, which is not a text parameter of this {noun}"
+                ));
+            };
+            variable_references(text)
+                .map_err(|error| format!("plugin parameter {name}: {error}"))?;
+        }
+        Ok(())
     }
-    Ok(())
+
+    /// Checks that every variable the listed text parameters refer to is declared.
+    pub fn check_variables(&self, declared: &[crate::profile::Variable]) -> Result<(), String> {
+        plugin_variable_references(self.params, self.variables)?
+            .into_iter()
+            .try_for_each(|(parameter, name)| {
+                if declared.iter().any(|variable| variable.name == name) {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "plugin parameter {parameter}: variable {name} is not declared"
+                    ))
+                }
+            })
+    }
 }
 
 /// The variable names the text parameters listed in `variables` refer to.
@@ -256,8 +361,8 @@ impl PluginInput {
 /// Writes one JSON record to the service's stdout, in the same stream as its other records.
 pub type RecordSink = Box<dyn Fn(&Value) -> io::Result<()> + Send + Sync>;
 
-/// The answer the app gives for one invoke.
-type Answer = Result<(), String>;
+/// The answer the app gives for one request: `value` when it carried a boolean one, or the error.
+type Answer = Result<Option<bool>, String>;
 
 struct BridgeState {
     send: RecordSink,
@@ -265,8 +370,9 @@ struct BridgeState {
     pending: Mutex<HashMap<u64, mpsc::Sender<Answer>>>,
 }
 
-/// A module service's side of plugin invokes: it writes `plugin_invoke` records and waits for the matching
-/// `plugin_result`, which the control channel hands to [`PluginBridge::complete`]. Cloning shares the state.
+/// A module service's side of plugin invokes and checks: it writes `plugin_invoke` and `plugin_check` records and
+/// waits for the matching `plugin_result`, which the control channel hands to [`PluginBridge::complete`]. Cloning
+/// shares the state.
 #[derive(Clone)]
 pub struct PluginBridge(Arc<BridgeState>);
 
@@ -306,19 +412,75 @@ impl PluginBridge {
         timeout: Duration,
         cancellation: Option<&AtomicBool>,
     ) -> Result<(), String> {
-        let request = self.0.next.fetch_add(1, Ordering::SeqCst);
-        let (sender, receiver) = mpsc::channel();
-        self.pending().insert(request, sender);
-        let mut record = json!({
+        let record = json!({
             "type": "plugin_invoke",
-            "request": request,
             "plugin": plugin,
             "min_version": min_version,
             "action": action,
-            "params": params,
-            "variables": variables,
-            "timeout_ms": u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
         });
+        self.ask(
+            record,
+            plugin,
+            params,
+            variables,
+            input,
+            timeout,
+            cancellation,
+        )
+        .map(drop)
+    }
+
+    /// Asks the app whether `condition` of `plugin` holds, and waits up to `timeout` for its `true` or `false`, as
+    /// [`PluginBridge::invoke`] waits. An answer without a boolean `value` fails.
+    #[allow(clippy::too_many_arguments)]
+    pub fn check(
+        &self,
+        plugin: &str,
+        min_version: &str,
+        condition: &str,
+        params: &BTreeMap<String, PluginValue>,
+        variables: &[String],
+        input: Option<&PluginInput>,
+        timeout: Duration,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<bool, String> {
+        let record = json!({
+            "type": "plugin_check",
+            "plugin": plugin,
+            "min_version": min_version,
+            "condition": condition,
+        });
+        self.ask(
+            record,
+            plugin,
+            params,
+            variables,
+            input,
+            timeout,
+            cancellation,
+        )?
+        .ok_or_else(|| "the plugin answered a check without true or false".into())
+    }
+
+    /// Writes `record` with a request number, the parameters, the timeout and the input, and waits for its answer.
+    #[allow(clippy::too_many_arguments)]
+    fn ask(
+        &self,
+        mut record: Value,
+        plugin: &str,
+        params: &BTreeMap<String, PluginValue>,
+        variables: &[String],
+        input: Option<&PluginInput>,
+        timeout: Duration,
+        cancellation: Option<&AtomicBool>,
+    ) -> Answer {
+        let request = self.0.next.fetch_add(1, Ordering::SeqCst);
+        let (sender, receiver) = mpsc::channel();
+        self.pending().insert(request, sender);
+        record["request"] = json!(request);
+        record["params"] = json!(params);
+        record["variables"] = json!(variables);
+        record["timeout_ms"] = json!(u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX));
         if let Some(input) = input {
             record["input"] = input.to_json();
         }
@@ -375,9 +537,14 @@ impl PluginBridge {
         }))
     }
 
-    /// Hands the app's answer to the invoke waiting for `request`. An unknown or late request is an error, so the
-    /// control channel can say so.
-    pub fn complete(&self, request: u64, answer: Result<(), String>) -> Result<(), String> {
+    /// Hands the app's answer to the invoke or check waiting for `request`: `Ok` with the answer's boolean `value`,
+    /// when it had one, or the error. An invoke ignores the value; a check fails without one. An unknown or late
+    /// request is an error, so the control channel can say so.
+    pub fn complete(
+        &self,
+        request: u64,
+        answer: Result<Option<bool>, String>,
+    ) -> Result<(), String> {
         let waiter = self
             .pending()
             .remove(&request)
@@ -545,11 +712,11 @@ mod tests {
                     "position": {"raw": 512, "maximum": 1023}})
             );
             let request = record["request"].as_u64().unwrap();
-            assert!(app.complete(request + 100, Ok(())).is_err());
+            assert!(app.complete(request + 100, Ok(None)).is_err());
             app.complete(request, Err("light is offline".into()))
                 .unwrap();
             // The second answer finds nobody waiting.
-            assert!(app.complete(request, Ok(())).is_err());
+            assert!(app.complete(request, Ok(None)).is_err());
         });
         let result = bridge.invoke(
             "com.x.y",
@@ -664,5 +831,130 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.contains("pipe closed"), "{error}");
+    }
+
+    #[test]
+    fn a_check_shares_the_request_numbers_and_answers_with_its_value() {
+        let (sent_tx, sent_rx) = mpsc::channel::<Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            sent_tx.lock().unwrap().send(record.clone()).unwrap();
+            Ok(())
+        }));
+        let app = bridge.clone();
+        let answers = [
+            Ok(None),
+            Ok(Some(true)),
+            Ok(Some(false)),
+            Ok(None),
+            Err("offline".to_string()),
+        ];
+        let answering = thread::spawn(move || {
+            let mut records = Vec::new();
+            for answer in answers {
+                let record = sent_rx.recv().unwrap();
+                app.complete(record["request"].as_u64().unwrap(), answer)
+                    .unwrap();
+                records.push(record);
+            }
+            records
+        });
+        let input = PluginInput {
+            module: ServiceModule::M4315,
+            control: 3,
+            gesture: Gesture::Pressed,
+            value: None,
+        };
+        let entity = params(&[("entity", PluginValue::Text("light.desk".into()))]);
+        let check = || {
+            bridge.check(
+                "com.x.y",
+                "1.2.0",
+                "is_on",
+                &entity,
+                &["entity".into()],
+                Some(&input),
+                Duration::from_millis(3000),
+                None,
+            )
+        };
+        // An invoke needs no value. Invokes and checks take numbers from one counter.
+        bridge
+            .invoke(
+                "com.x.y",
+                "1.2.0",
+                "toggle",
+                &BTreeMap::new(),
+                &[],
+                None,
+                Duration::from_secs(5),
+                None,
+            )
+            .unwrap();
+        assert_eq!(check(), Ok(true));
+        assert_eq!(check(), Ok(false));
+        assert_eq!(
+            check(),
+            Err("the plugin answered a check without true or false".into())
+        );
+        assert_eq!(check(), Err("offline".into()));
+        let records = answering.join().unwrap();
+        let numbers: Vec<u64> = records
+            .iter()
+            .map(|record| record["request"].as_u64().unwrap())
+            .collect();
+        assert_eq!(numbers, [1, 2, 3, 4, 5]);
+        assert_eq!(records[0]["type"], "plugin_invoke");
+        assert_eq!(
+            records[1],
+            json!({"type": "plugin_check", "request": 2, "plugin": "com.x.y", "min_version": "1.2.0",
+                "condition": "is_on", "params": {"entity": "light.desk"}, "variables": ["entity"],
+                "timeout_ms": 3000,
+                "input": {"gesture": "pressed", "control": {"module": "m4315", "index": 3}}})
+        );
+        assert!(bridge.pending().is_empty());
+    }
+
+    #[test]
+    fn a_value_on_an_invokes_answer_is_ignored_and_an_unanswered_check_fails() {
+        let (sent_tx, sent_rx) = mpsc::channel::<Value>();
+        let sent_tx = Mutex::new(sent_tx);
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            // Nobody reads the check's record once the invoke is answered.
+            let _ = sent_tx.lock().unwrap().send(record.clone());
+            Ok(())
+        }));
+        let app = bridge.clone();
+        let answering = thread::spawn(move || {
+            let record = sent_rx.recv().unwrap();
+            app.complete(record["request"].as_u64().unwrap(), Ok(Some(false)))
+                .unwrap();
+        });
+        let invoked = bridge.invoke(
+            "com.x.y",
+            "1.0.0",
+            "toggle",
+            &BTreeMap::new(),
+            &[],
+            None,
+            Duration::from_secs(5),
+            None,
+        );
+        answering.join().unwrap();
+        assert_eq!(invoked, Ok(()));
+        let error = bridge
+            .check(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                &BTreeMap::new(),
+                &[],
+                None,
+                Duration::from_millis(100),
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(error, "com.x.y did not answer within 0.1 s");
+        assert!(bridge.pending().is_empty());
     }
 }

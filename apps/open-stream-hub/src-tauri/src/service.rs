@@ -485,7 +485,8 @@ fn kill_group(pid: u32) {
 
 /// Tells the plugin host which plugins a run uses while it executes its actions; `None` once it does not.
 pub type PluginUsage = Arc<dyn Fn(&str, Option<BTreeSet<String>>) + Send + Sync>;
-/// Carries one `plugin_invoke` record of the run `service_id` to its plugin; the reply goes back to the run.
+/// Carries one `plugin_invoke` or `plugin_check` record of the run `service_id` to its plugin; the reply goes back to
+/// the run.
 pub type PluginInvoke = Arc<dyn Fn(&str, &Value, crate::plugin_host::Reply) + Send + Sync>;
 /// Carries one `plugin_event` record of the run `service_id` to its plugin; nothing comes back.
 pub type PluginEvent = Arc<dyn Fn(&str, &Value) + Send + Sync>;
@@ -1278,8 +1279,12 @@ fn relay_records(
                 }
                 continue;
             }
-            // A press asking a plugin: the host answers on the run's control channel. Not a log record.
-            if record.record.get("type").and_then(Value::as_str) == Some("plugin_invoke") {
+            // A press asking a plugin to act or to answer a check: the host answers on the run's control channel.
+            // Not a log record.
+            if matches!(
+                record.record.get("type").and_then(Value::as_str),
+                Some("plugin_invoke" | "plugin_check")
+            ) {
                 if let (Some(plugins), Some(request)) = (
                     plugins,
                     record.record.get("request").and_then(Value::as_u64),
@@ -1289,14 +1294,8 @@ fn relay_records(
                         service_id,
                         &record.record,
                         Box::new(move |result| {
-                            let (ok, error) = match result {
-                                Ok(()) => (true, Value::Null),
-                                Err(error) => (false, Value::String(error)),
-                            };
-                            let _ = control.request(
-                                serde_json::json!({"type":"plugin_result","request":request,"ok":ok,"error":error}),
-                                CONTROL_TIMEOUT,
-                            );
+                            let _ =
+                                control.request(plugin_result(request, result), CONTROL_TIMEOUT);
                         }),
                     );
                 }
@@ -1305,6 +1304,19 @@ fn relay_records(
             emit(ServiceMessage::Record(record));
         }
     }
+}
+
+/// The control request that answers the run's `plugin_invoke` or `plugin_check` record `request`: `value` only for a
+/// check's answer, `error` only for a failure.
+fn plugin_result(request: u64, result: crate::plugin_host::Answer) -> Value {
+    let mut message =
+        serde_json::json!({"type":"plugin_result","request":request,"ok":result.is_ok()});
+    match result {
+        Ok(None) => {}
+        Ok(Some(value)) => message["value"] = Value::Bool(value),
+        Err(error) => message["error"] = Value::String(error),
+    }
+    message
 }
 
 fn keep_tail(mut stderr: impl Read, tail: &Mutex<Vec<u8>>) {
@@ -1565,6 +1577,8 @@ mod tests {
             "\n",
             r#"{"type":"plugin_event","plugin":"com.x.y","action":"a","params":{}}"#,
             "\n",
+            r#"{"type":"plugin_check","request":4,"plugin":"com.x.y","condition":"c","params":{}}"#,
+            "\n",
             r#"{"type":"action_executed"}"#,
             "\n",
         );
@@ -1580,13 +1594,31 @@ mod tests {
                 }
             },
         );
-        assert_eq!(invoked.lock().unwrap().len(), 1);
+        assert_eq!(invoked.lock().unwrap().len(), 2);
         assert_eq!(invoked.lock().unwrap()[0]["request"], 3);
+        assert_eq!(invoked.lock().unwrap()[1]["type"], "plugin_check");
+        assert_eq!(invoked.lock().unwrap()[1]["request"], 4);
         assert_eq!(heard.lock().unwrap().len(), 1);
         assert_eq!(heard.lock().unwrap()[0].0, "service:41");
         assert_eq!(
             *emitted.lock().unwrap(),
             [serde_json::json!({"type":"action_executed"})]
+        );
+    }
+
+    #[test]
+    fn a_plugin_result_carries_a_checks_value_and_a_failures_error() {
+        assert_eq!(
+            plugin_result(3, Ok(None)),
+            serde_json::json!({"type":"plugin_result","request":3,"ok":true})
+        );
+        assert_eq!(
+            plugin_result(4, Ok(Some(false))),
+            serde_json::json!({"type":"plugin_result","request":4,"ok":true,"value":false})
+        );
+        assert_eq!(
+            plugin_result(5, Err("offline".into())),
+            serde_json::json!({"type":"plugin_result","request":5,"ok":false,"error":"offline"})
         );
     }
 
@@ -1607,6 +1639,19 @@ mod tests {
                 .into_iter()
                 .collect::<Vec<_>>(),
             ["com.x.y"]
+        );
+        // A plugin only ever asked a check counts too.
+        profile.bindings[0].action = serde_json::from_value(serde_json::json!({
+            "type":"conditional",
+            "when":{"plugin":{"plugin":"com.x.z","min_version":"1.0.0","condition":"c","value":true}},
+            "then":[{"type":"toggle_mute"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::plugins::plugins_used(&profile)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["com.x.z"]
         );
     }
 

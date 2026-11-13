@@ -1,10 +1,10 @@
 import { ArrowDown, ArrowUp, GripVertical, Plus, Trash2 } from 'lucide-react';
 import { Fragment, useState } from 'react';
 import type { DragEvent, ReactNode } from 'react';
-import type { BranchStep, Condition, ConditionalAction, LeafCondition, StepAction, VariableValue } from './contracts';
+import type { BranchStep, Condition, ConditionalAction, LeafCondition, PluginCondition, StepAction, VariableValue } from './contracts';
 import { ActionPickerField } from './ActionPicker';
 import { IntegerField, SelectField } from './controls';
-import { conditionKey, conditionKeys, conditionLabel, conditionValue, conditionalSteps, defaultCondition, defaultStepAction } from './action-model';
+import { conditionKey, conditionKeys, conditionLabel, conditionValue, conditionalSteps, defaultCondition, defaultStepAction, pluginIssue } from './action-model';
 import type { ConditionKey } from './action-model';
 import { defaultBindingAction } from './action-picker-model';
 import {
@@ -14,6 +14,11 @@ import {
 import type { Branch, CombineMode, ConditionGroup, ConditionPath, ListAddress, StepAddress } from './flow-model';
 import { VariableSelect, VariableValueField } from './VariableFields';
 import { useVariables } from './variables-context';
+import { useT } from './i18n-react';
+import { conditionPlugins, pluginConditionWith, resolvePluginCondition } from './plugins-model';
+import { usePlugins } from './plugins-context';
+import { PluginParamsForm } from './PluginFields';
+import type { Invoke } from './profile-session';
 
 // The if / else editor: a tree of conditions (AND and OR groups that nest) and, below, the Then and Otherwise lists, whose
 // steps may be if / else blocks of their own. Every block can be dragged by its grip to another place in the same tree, or
@@ -43,6 +48,7 @@ interface Context {
   dragging: Dragging;
   setDragging(next: Dragging): void;
   apply(next: ConditionalAction | null, field?: string): void;
+  invoke?: Invoke;
 }
 
 // The thin target between two blocks: it lights up while a block that may go there is dragged over it.
@@ -75,11 +81,12 @@ function Grip({ label }: { label: string }) {
   return <span className="flow-grip" title={label} aria-label={label} role="img"><GripVertical size={16} aria-hidden="true" /></span>;
 }
 
-export function FlowEditor({ action, selectorKey, onChange, render, obsNote }: {
+export function FlowEditor({ action, selectorKey, onChange, render, obsNote, invoke }: {
   action: ConditionalAction; selectorKey: string; onChange(next: ConditionalAction, field?: string): void; render: FlowRenderers; obsNote?: ReactNode;
+  invoke?: Invoke;
 }) {
   const [dragging, setDragging] = useState<Dragging>(null);
-  const context: Context = { root: action, selectorKey, render, dragging, setDragging, apply: (next, field) => { if (next) onChange(next, field); } };
+  const context: Context = { root: action, selectorKey, render, dragging, setDragging, invoke, apply: (next, field) => { if (next) onChange(next, field); } };
   const issue = flowIssue(action);
   return <div className={`action-fields flow-editor${dragging ? ' flow-dragging' : ''}`}>
     <FlowBlock context={context} via={[]} depth={1} />
@@ -118,8 +125,22 @@ function blockAt(root: ConditionalAction, via: Via): ConditionalAction | undefin
 // ---------------------------------------------------------------------------------------------------------------------
 // Conditions
 
+// The picker value of a plugin condition: its plugin's and condition's ids, neither of which can hold a colon.
+const pluginChoice = (plugin: string, condition: string) => `plugin:${plugin}:${condition}`;
+
 function ConditionTree({ context, via, owner, base, when }: { context: Context; via: Via; owner: string; base: string; when: Condition }) {
+  const t = useT();
   const variables = useVariables();
+  const { listing } = usePlugins();
+  // Each enabled plugin's conditions follow the built-in tests, under the plugin's name.
+  const offered = conditionPlugins(listing);
+  const pick = (choice: string, current: LeafCondition): LeafCondition => {
+    if (!choice.startsWith('plugin:')) return defaultCondition(choice as ConditionKey, variables);
+    const [, plugin, condition] = choice.split(':');
+    const manifest = offered.find(item => item.id === plugin);
+    const previous = 'plugin' in current ? current.plugin : undefined;
+    return manifest ? { plugin: pluginConditionWith(manifest, condition, previous) } : current;
+  };
   const { apply, root, dragging, setDragging } = context;
   const edit = (next: Condition | null, field?: string) => apply(next ? setWhen(root, via, next) : null, field);
   const dragCondition = dragging?.kind === 'condition' && dragging.owner === owner ? dragging : null;
@@ -136,6 +157,8 @@ function ConditionTree({ context, via, owner, base, when }: { context: Context; 
   const leaf = (node: LeafCondition, path: ConditionPath, parent: ConditionPath, label: string) => {
     const key = conditionKey(node);
     const value = conditionValue(node);
+    const check = 'plugin' in node ? node.plugin : null;
+    const choice = check ? pluginChoice(check.plugin, check.condition) : key;
     const suffix = pathSuffix(path);
     const id = (name: string) => `${base}conditional-${name}${suffix}`;
     const replace = (next: LeafCondition, field: string) => edit(replaceCondition(when, path, next), id(field));
@@ -148,12 +171,20 @@ function ConditionTree({ context, via, owner, base, when }: { context: Context; 
       </div>
       {/* The front-app test reads as one sentence: "[The front app is ▾] [Finder ▾]". */}
       <div className={typeof value === 'string' ? 'flow-test-line' : undefined}>
-        <SelectField id={id('when')} value={key} onChange={event => replace(defaultCondition(event.target.value as ConditionKey, variables), 'when')}>
+        <SelectField id={id('when')} value={choice} onChange={event => replace(pick(String(event.target.value), node), 'when')}>
           {conditionKeys.map(([kind, text]) => <option key={kind} value={kind}>{text}</option>)}
+          {offered.map(manifest => <Fragment key={manifest.id}>
+            <option value={`heading:${manifest.id}`} disabled>{manifest.name}</option>
+            {(manifest.conditions ?? []).map(item => <option key={item.id} value={pluginChoice(manifest.id, item.id)}>{item.label}</option>)}
+          </Fragment>)}
+          {check && !offered.some(manifest => manifest.id === check.plugin && manifest.conditions?.some(item => item.id === check.condition)) &&
+            <option value={choice}>{t('actions.flow.pluginMissing', { id: `${check.plugin || '?'}: ${check.condition || '?'}` })}</option>}
         </SelectField>
         {typeof value === 'string' && context.render.app({ inputId: id('app'), bundleId: value, onChange: bundleId => replace({ focused_app: bundleId }, 'app') })}
       </div>
-      {typeof value === 'object'
+      {check
+        ? <PluginTest id={id} check={check} invoke={context.invoke} onChange={(next, field) => replace({ plugin: next }, field)} />
+        : typeof value === 'object'
         ? <VariableTest idBase={id('variable')} node={node as VariableLeaf} onChange={next => replace(next, 'variable')} />
         : typeof value === 'string'
         ? null
@@ -232,6 +263,29 @@ function ConditionButtons({ when, path, index, parent, edit, what }: {
     <button type="button" className="button compact flow-icon" disabled={!down} aria-label={`Move this ${what} down`} title="Move down" onClick={() => edit(down)}><ArrowDown size={15} /></button>
     <button type="button" className="button compact flow-icon" disabled={!removed} aria-label={`Remove this ${what}`} title="Remove" onClick={() => edit(removed)}><Trash2 size={15} /></button>
   </span>;
+}
+
+// A plugin's condition: what is wrong with it against the installed plugins (missing, older, unknown condition, not
+// enabled; the test keeps its settings, so fixing the plugin makes it work again), its parameters in the same form a
+// plugin action uses, and whether the step lists run when it holds or when it does not.
+function PluginTest({ id, check, invoke, onChange }: {
+  id(name: string): string; check: PluginCondition; invoke?: Invoke; onChange(next: PluginCondition, field: string): void;
+}) {
+  const t = useT();
+  const { listing } = usePlugins();
+  const resolved = resolvePluginCondition(listing, check);
+  const shapeIssue = check.plugin === '' ? null : pluginIssue({ ...check, action: check.condition }, 'condition');
+  return <>
+    {resolved.problem && <p id={id('plugin-problem')} className="field-error" role="alert">{resolved.problem}</p>}
+    {!resolved.problem && shapeIssue && <p className="field-error" role="alert">{shapeIssue}</p>}
+    {resolved.declared && <PluginParamsForm id={id} use={check} useKey={`${check.plugin}:${check.condition}`} params={resolved.declared.params}
+      invoke={invoke} onChange={onChange} />}
+    <label className="spaced-label" htmlFor={id('holds')}>{t('actions.flow.pluginHolds')}</label>
+    <SelectField id={id('holds')} value={check.value ? 'true' : 'false'} onChange={event => onChange({ ...check, value: event.target.value === 'true' }, 'holds')}>
+      <option value="true">{t('actions.flow.holds')}</option><option value="false">{t('actions.flow.doesNotHold')}</option>
+    </SelectField>
+    {resolved.manifest && <p className="fine-print">{t('actions.flow.pluginAsks', { name: resolved.manifest.name, version: resolved.manifest.version })}</p>}
+  </>;
 }
 
 // "A variable is …" and "A number variable is at least …": the variable, and the value it is compared with.

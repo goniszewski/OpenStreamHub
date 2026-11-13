@@ -8,7 +8,7 @@ import { currentSchema, usesKeypadPages } from './contracts';
 import { diffDevices } from './device-feed';
 import { keyFaceIssue, maximumKeyFaces } from './draft-model';
 import { flowIssue, groupItems, isGroup, variableKind, variableNameIssue, variableValueIssue, variablesIssue } from './flow-model';
-import { pluginReferences, programVariableIssue, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
+import { pluginReferences, pluginUses, programVariableIssue, terminalAppLabels, terminalCommandIssue, terminalDirectoryIssue } from './action-model';
 import { controlCounts, gestures } from './ui-model';
 
 export interface StarterTemplate {
@@ -287,6 +287,13 @@ export function starterIssue(profile: Profile, check: ActionCheck = actionIssue)
     if (issue) return issue;
     flat.add(`${binding.module}/${binding.control}/${binding.gesture}`);
   }
+  // A pack's profile is saved as it is, dial functions included, so their actions get the same checks.
+  for (const dialFunction of profile.dial_functions ?? []) {
+    for (const dialBinding of dialFunction.bindings) {
+      const issue = check(dialBinding.action) ?? pluginUseIssue(dialBinding.action) ?? variableUseIssue(dialBinding.action, variables);
+      if (issue) return issue;
+    }
+  }
   const pages = profile.keypad?.pages ?? [];
   if (pages.length !== 1) return 'A starter has exactly one keypad page.';
   const [page] = pages;
@@ -304,7 +311,7 @@ export function starterIssue(profile: Profile, check: ActionCheck = actionIssue)
     }
     for (const keypadBinding of slot.bindings) {
       if (keypadBinding.gesture !== 'pressed') return 'Starter tiles bind press only.';
-      const issue = check(keypadBinding.action) ?? variableUseIssue(keypadBinding.action, variables);
+      const issue = check(keypadBinding.action) ?? pluginUseIssue(keypadBinding.action) ?? variableUseIssue(keypadBinding.action, variables);
       if (issue) return issue;
     }
   }
@@ -316,7 +323,14 @@ function bindingIssue(binding: Binding, check: ActionCheck, variables: ReadonlyA
   if (binding.module === 'm4315') return 'The 15-key module is bound through the keypad pages, not flat bindings.';
   if (binding.control < 0 || binding.control >= controlCounts[binding.module]) return `Control ${binding.control} is out of range for ${binding.module}.`;
   if (!gestures[binding.module].includes(binding.gesture)) return `Gesture ${binding.gesture} is unsupported for ${binding.module}.`;
-  return check(binding.action) ?? variableUseIssue(binding.action, variables);
+  return check(binding.action) ?? pluginUseIssue(binding.action) ?? variableUseIssue(binding.action, variables);
+}
+
+// A starter or preset pack never asks a plugin: neither an action nor an if / else test may name one, whatever the
+// action check allows.
+function pluginUseIssue(action: BindingAction): string | null {
+  const [use] = pluginUses(action);
+  return use ? `A starter cannot use a plugin (${use.kind === 'condition' ? 'an if / else tests' : 'a key asks'} ${use.plugin}).` : null;
 }
 
 // Every variable an action sets or tests, nested steps included, is declared with the kind it uses

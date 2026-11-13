@@ -101,8 +101,8 @@ pub enum TimerToggle {
         /// Running timers including this one.
         running: usize,
     },
-    /// The binding's running countdown was cancelled.
-    Cancelled(RunningTimer),
+    /// The binding's running countdown was cancelled (boxed: it holds the whole action).
+    Cancelled(Box<RunningTimer>),
     /// The table is full; nothing started.
     Full,
 }
@@ -144,7 +144,7 @@ impl TimerTable {
             return Err(format!("{} is not a timer action", action.type_name()));
         };
         if let Some(index) = self.running.iter().position(|timer| timer.key == key) {
-            return Ok(TimerToggle::Cancelled(self.running.remove(index)));
+            return Ok(TimerToggle::Cancelled(Box::new(self.running.remove(index))));
         }
         if self.running.len() >= Self::MAX_RUNNING {
             return Ok(TimerToggle::Full);

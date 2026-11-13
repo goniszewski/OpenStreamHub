@@ -339,6 +339,7 @@ impl ObsClient {
             | Condition::FocusedApp(_)
             | Condition::VariableIs { .. }
             | Condition::VariableAtLeast { .. }
+            | Condition::Plugin { .. }
             | Condition::All(_)
             | Condition::Any(_) => {
                 return Err("this condition is not read from OBS".into());

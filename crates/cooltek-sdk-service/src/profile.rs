@@ -758,6 +758,28 @@ pub enum Condition {
         /// The lowest accepted number.
         value: i32,
     },
+    /// A plugin answers this condition of its own `true` or `false` when the
+    /// key is pressed, and the test holds when the answer is `value`. Written
+    /// with the fields of an [`Action::Plugin`], `condition` for `action`.
+    /// Asked in Live runs only; an answer that cannot be had fails the press.
+    Plugin {
+        /// The plugin's reverse-DNS id, such as `com.example.lights`.
+        plugin: String,
+        /// The oldest plugin version this condition works with, `MAJOR.MINOR.PATCH`.
+        min_version: String,
+        /// The id of the condition in the plugin's manifest.
+        condition: String,
+        /// Parameter values by name; the app checks them against the manifest.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, PluginValue>,
+        /// The text parameters whose `{{name}}` references to declared
+        /// variables are filled in when the key is pressed, as for a plugin
+        /// action.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        variables: Vec<String>,
+        /// The answer the test holds for.
+        value: bool,
+    },
     /// Every listed condition holds (AND). All of them are read, in order.
     All(Vec<Condition>),
     /// At least one listed condition holds (OR). All of them are read, in
@@ -788,6 +810,7 @@ impl Condition {
             Self::FocusedApp(_) => "focused_app",
             Self::VariableIs { .. } => "variable_is",
             Self::VariableAtLeast { .. } => "variable_at_least",
+            Self::Plugin { .. } => "plugin",
             Self::All(_) => "all",
             Self::Any(_) => "any",
         }
@@ -806,7 +829,42 @@ impl Condition {
             | Self::TimerRunning(_)
             | Self::FocusedApp(_)
             | Self::VariableIs { .. }
-            | Self::VariableAtLeast { .. } => false,
+            | Self::VariableAtLeast { .. }
+            | Self::Plugin { .. } => false,
+        }
+    }
+
+    /// Adds the plugin conditions in this condition, in reading order, to `uses`.
+    pub fn plugin_uses<'a>(&'a self, uses: &mut Vec<crate::plugin::PluginUse<'a>>) {
+        match self {
+            Self::Plugin {
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+                ..
+            } => uses.push(crate::plugin::PluginUse {
+                kind: crate::plugin::PluginUseKind::Condition,
+                plugin,
+                min_version,
+                id: condition,
+                params,
+                variables,
+            }),
+            Self::All(items) | Self::Any(items) => {
+                items.iter().for_each(|item| item.plugin_uses(uses));
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether a plugin is asked for this condition or one inside it.
+    pub fn uses_plugins(&self) -> bool {
+        match self {
+            Self::Plugin { .. } => true,
+            Self::All(items) | Self::Any(items) => items.iter().any(Self::uses_plugins),
+            _ => false,
         }
     }
 
@@ -824,6 +882,7 @@ impl Condition {
             | Self::FocusedApp(_)
             | Self::VariableIs { .. }
             | Self::VariableAtLeast { .. }
+            | Self::Plugin { .. }
             | Self::All(_)
             | Self::Any(_) => None,
         }
@@ -858,6 +917,12 @@ impl Condition {
                 } else {
                     Err(format!("variable {name} is {}, not number", kind.name()))
                 }
+            }
+            Self::Plugin { .. } => {
+                let mut uses = Vec::new();
+                self.plugin_uses(&mut uses);
+                uses.iter()
+                    .try_for_each(|used| used.check_variables(declared))
             }
             Self::All(items) | Self::Any(items) => items
                 .iter()
@@ -941,6 +1006,20 @@ impl Condition {
                 validate_variable_name(name)?;
                 validate_variable_number(*value)
             }
+            Self::Plugin {
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+                ..
+            } => crate::plugin::validate_plugin_condition(
+                plugin,
+                min_version,
+                condition,
+                params,
+                variables,
+            ),
             Self::All(items) | Self::Any(items) => {
                 let name = self.name();
                 if depth >= Self::MAX_DEPTH {
@@ -2042,15 +2121,61 @@ impl Action {
     }
 
     /// True for a `plugin` action, or a `multi_action` or `conditional` with
-    /// a plugin step.
+    /// a plugin step, or a `conditional` that asks a plugin condition.
     pub fn uses_plugins(&self) -> bool {
         match self {
             Self::Plugin { .. } => true,
             Self::Conditional {
-                then, otherwise, ..
-            } => then.iter().chain(otherwise).any(Self::uses_plugins),
+                when,
+                then,
+                otherwise,
+            } => when.uses_plugins() || then.iter().chain(otherwise).any(Self::uses_plugins),
             Self::MultiAction { actions } => actions.iter().any(Self::uses_plugins),
             _ => false,
+        }
+    }
+
+    /// Every plugin action and plugin condition in this action, its steps and
+    /// its conditions, in the order they appear: a `conditional`'s condition,
+    /// then its `then` steps, then its `else` steps.
+    pub fn plugin_uses(&self) -> Vec<crate::plugin::PluginUse<'_>> {
+        let mut uses = Vec::new();
+        self.collect_plugin_uses(&mut uses);
+        uses
+    }
+
+    fn collect_plugin_uses<'a>(&'a self, uses: &mut Vec<crate::plugin::PluginUse<'a>>) {
+        match self {
+            Self::Plugin {
+                plugin,
+                min_version,
+                action,
+                params,
+                variables,
+            } => uses.push(crate::plugin::PluginUse {
+                kind: crate::plugin::PluginUseKind::Action,
+                plugin,
+                min_version,
+                id: action,
+                params,
+                variables,
+            }),
+            Self::Conditional {
+                when,
+                then,
+                otherwise,
+            } => {
+                when.plugin_uses(uses);
+                for step in then.iter().chain(otherwise) {
+                    step.collect_plugin_uses(uses);
+                }
+            }
+            Self::MultiAction { actions } => {
+                for step in actions {
+                    step.collect_plugin_uses(uses);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2429,15 +2554,10 @@ impl Action {
                     })
                     .map_err(|error| format!("run_program argument {}: {error}", index + 1))
             }),
-            Self::Plugin {
-                params, variables, ..
-            } => crate::plugin::plugin_variable_references(params, variables)?
-                .into_iter()
-                .try_for_each(|(parameter, name)| {
-                    kind_of(name)
-                        .map(drop)
-                        .map_err(|error| format!("plugin parameter {parameter}: {error}"))
-                }),
+            Self::Plugin { .. } => self
+                .plugin_uses()
+                .iter()
+                .try_for_each(|used| used.check_variables(declared)),
             Self::MultiAction { actions } => actions
                 .iter()
                 .try_for_each(|step| step.check_variables(declared)),
@@ -5995,5 +6115,242 @@ mod tests {
             otherwise: vec![Action::StreamlabsTransition],
         };
         assert!(conditional.uses_streamlabs() && conditional.uses_obs());
+    }
+
+    #[test]
+    fn a_plugin_condition_parses_strictly_and_round_trips() {
+        let parse = |json: &str| serde_json::from_str::<Condition>(json);
+        let full = parse(
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","params":{"entity":"light.{{room}}","level":3,"fade":true},"variables":["entity"],"value":true}}"#,
+        )
+        .unwrap();
+        let Condition::Plugin {
+            plugin,
+            condition,
+            params,
+            variables,
+            value,
+            ..
+        } = &full
+        else {
+            panic!("{full:?}");
+        };
+        assert_eq!(
+            (plugin.as_str(), condition.as_str()),
+            ("com.example.lights", "is_on")
+        );
+        assert_eq!(params.len(), 3);
+        assert_eq!(variables, &["entity".to_string()]);
+        assert!(*value);
+        assert_eq!(full.name(), "plugin");
+        full.validate().unwrap();
+        assert_eq!(parse(&serde_json::to_string(&full).unwrap()).unwrap(), full);
+        // Without params or variables they are not written.
+        let bare = parse(
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","value":false}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_string(&bare).unwrap(),
+            r#"{"plugin":{"plugin":"com.example.lights","min_version":"1.2.0","condition":"is_on","value":false}}"#
+        );
+        for broken in [
+            // value is required, and boolean.
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on"}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":"yes"}}"#,
+            // Unknown fields, an action instead of a condition, a second key.
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true,"extra":1}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","action":"on","value":true}}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true},"output_muted":true}"#,
+            r#"{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","params":{"a":null},"value":true}}"#,
+        ] {
+            assert!(parse(broken).is_err(), "{broken}");
+        }
+        // Inside a conditional, and in groups.
+        let action: Action = serde_json::from_str(
+            r#"{"type":"conditional","when":{"any":[{"plugin":{"plugin":"com.x.y","min_version":"1.0.0","condition":"on","value":true}},{"output_muted":true}]},"then":[{"type":"toggle_mute"}]}"#,
+        )
+        .unwrap();
+        action.validate().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Action>(&serde_json::to_string(&action).unwrap()).unwrap(),
+            action
+        );
+    }
+
+    #[test]
+    fn a_plugin_condition_is_checked_by_the_plugin_action_rules() {
+        let condition = |plugin: &str, version: &str, id: &str, params: &str, variables: &str| {
+            serde_json::from_str::<Condition>(&format!(
+                r#"{{"plugin":{{"plugin":"{plugin}","min_version":"{version}","condition":"{id}","params":{params},"variables":{variables},"value":true}}}}"#
+            ))
+            .unwrap()
+        };
+        let error = |condition: Condition| condition.validate().unwrap_err();
+        condition(
+            "com.x.y",
+            "1.0.0",
+            "is_on",
+            r#"{"e":"a {{room}}"}"#,
+            r#"["e"]"#,
+        )
+        .validate()
+        .unwrap();
+        assert!(error(condition("tool", "1.0.0", "is_on", "{}", "[]")).contains("reverse-DNS"));
+        assert!(error(condition("com.x.y", "1.0", "is_on", "{}", "[]")).contains("min_version"));
+        assert!(
+            error(condition("com.x.y", "1.0.0", "On", "{}", "[]"))
+                .starts_with("plugin condition must be 1 to 64")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":7}"#,
+                r#"["e"]"#
+            ))
+            .contains("not a text parameter of this condition")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"a"}"#,
+                r#"["e","e"]"#
+            ))
+            .contains("twice")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"{{ room }}"}"#,
+                r#"["e"]"#
+            ))
+            .starts_with("plugin parameter e: every {{")
+        );
+        assert!(
+            error(condition(
+                "com.x.y",
+                "1.0.0",
+                "is_on",
+                r#"{"e":"a\nb"}"#,
+                "[]"
+            ))
+            .contains("one line")
+        );
+        // Without variables, {{ is plain text.
+        condition("com.x.y", "1.0.0", "is_on", r#"{"e":"{{ room }}"}"#, "[]")
+            .validate()
+            .unwrap();
+        // Nested in a group, the conditional names the failure.
+        let action = Action::Conditional {
+            when: Condition::All(vec![
+                Condition::OutputMuted(true),
+                condition("com.x.y", "1.0.0", "On", "{}", "[]"),
+            ]),
+            then: vec![Action::ToggleMute],
+            otherwise: vec![],
+        };
+        assert!(
+            action
+                .validate()
+                .unwrap_err()
+                .contains("plugin condition must be")
+        );
+        // A plugin condition counts toward the tests in all.
+        let many = Condition::Any(
+            (0..8)
+                .map(|_| {
+                    Condition::All(vec![
+                        condition("com.x.y", "1.0.0", "a", "{}", "[]"),
+                        condition("com.x.y", "1.0.0", "b", "{}", "[]"),
+                        condition("com.x.y", "1.0.0", "c", "{}", "[]"),
+                    ])
+                })
+                .collect(),
+        );
+        assert!(many.validate().unwrap_err().contains("at most 16 tests"));
+    }
+
+    #[test]
+    fn a_plugin_condition_must_name_declared_variables_and_is_not_for_key_faces() {
+        let mut profile = sample();
+        profile.variables =
+            serde_json::from_str(r#"[{"name":"room","value":"desk"},{"name":"n","value":1}]"#)
+                .unwrap();
+        let with = |entity: &str| -> Action {
+            serde_json::from_str(&format!(
+                r#"{{"type":"conditional","when":{{"all":[{{"output_muted":true}},{{"plugin":{{"plugin":"com.x.y","min_version":"1.0.0","condition":"is_on","params":{{"entity":"{entity}"}},"variables":["entity"],"value":true}}}}]}},"then":[{{"type":"toggle_mute"}}]}}"#
+            ))
+            .unwrap()
+        };
+        profile.bindings[0].action = with("light.{{room}}-{{n}}");
+        profile.validate().unwrap();
+        profile.bindings[0].action = with("light.{{gone}}");
+        let error = profile.validate().unwrap_err();
+        assert!(
+            error.contains("plugin parameter entity: variable gone is not declared"),
+            "{error}"
+        );
+        let Action::Conditional { when, .. } = with("x") else {
+            unreachable!();
+        };
+        assert!(!when.is_variable_only());
+        assert!(!when.uses_obs());
+        assert_eq!(when.expected(), None);
+    }
+
+    #[test]
+    fn plugin_uses_list_actions_and_conditions_in_the_order_they_appear() {
+        let action: Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"any": [
+                {"output_muted": true},
+                {"plugin": {"plugin": "com.a.b", "min_version": "1.0.0", "condition": "first", "value": true}},
+                {"all": [
+                    {"timer_running": true},
+                    {"plugin": {"plugin": "com.c.d", "min_version": "2.0.0", "condition": "second",
+                        "params": {"t": "{{x}}"}, "variables": ["t"], "value": false}}
+                ]}
+            ]},
+            "then": [{"type": "plugin", "plugin": "com.a.b", "min_version": "1.0.0", "action": "third"}],
+            "else": [{"type": "conditional",
+                "when": {"plugin": {"plugin": "com.e.f", "min_version": "1.0.0", "condition": "fourth", "value": true}},
+                "then": [{"type": "toggle_mute"}]}]
+        }))
+        .unwrap();
+        action.validate().unwrap();
+        let uses = action.plugin_uses();
+        let listed: Vec<_> = uses
+            .iter()
+            .map(|used| (used.kind, used.plugin, used.id))
+            .collect();
+        use crate::plugin::PluginUseKind::{Action as Act, Condition as Cond};
+        assert_eq!(
+            listed,
+            [
+                (Cond, "com.a.b", "first"),
+                (Cond, "com.c.d", "second"),
+                (Act, "com.a.b", "third"),
+                (Cond, "com.e.f", "fourth"),
+            ]
+        );
+        assert_eq!(uses[1].min_version, "2.0.0");
+        assert_eq!(uses[1].variables, ["t".to_string()]);
+        assert!(action.uses_plugins());
+        // A conditional whose only plugin use is its condition still uses plugins.
+        let only_condition: Action = serde_json::from_value(serde_json::json!({
+            "type": "conditional",
+            "when": {"plugin": {"plugin": "com.a.b", "min_version": "1.0.0", "condition": "on", "value": true}},
+            "then": [{"type": "toggle_mute"}]
+        }))
+        .unwrap();
+        assert!(only_condition.uses_plugins() && !only_condition.uses_obs());
+        assert!(!Action::ToggleMute.uses_plugins());
+        assert!(Action::ToggleMute.plugin_uses().is_empty());
     }
 }

@@ -123,7 +123,8 @@ function PluginItem({ plugin, invoke, refresh, onReview }: { plugin: ListedPlugi
     {error && <p className="field-error" role="alert">{t('plugins.actionFailed', { error })}</p>}
     {manifest && <>
       <dl className="plugin-facts">
-        <dt>{t('plugins.actions')}</dt><dd>{manifest.actions.map(action => action.label).join(', ')}</dd>
+        {manifest.actions?.length ? <><dt>{t('plugins.actions')}</dt><dd>{manifest.actions.map(action => action.label).join(', ')}</dd></> : null}
+        {manifest.conditions?.length ? <><dt>{t('plugins.conditions')}</dt><dd>{manifest.conditions.map(condition => condition.label).join(', ')}</dd></> : null}
         <dt>{t('plugins.command')}</dt><dd><code>{manifest.command.join(' ')}</code></dd>
         <dt>{t('plugins.declares')}</dt><dd>
           {permissions?.network?.length ? richText(t('plugins.permissions.network'), { hosts: codeList(permissions.network) }) : t('plugins.permissions.noNetwork')}{' '}

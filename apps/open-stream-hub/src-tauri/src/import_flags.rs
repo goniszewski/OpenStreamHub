@@ -256,8 +256,9 @@ impl ImportedProfiles {
 /// action anywhere in it (flat bindings, every keypad page, dial functions,
 /// and the steps of a sequence or an if / else, although validation keeps a
 /// terminal command out of steps) opens a terminal and runs a command line,
-/// runs a program (`run_program`), asks a plugin to act (`plugin`, a program
-/// the app starts that runs as the user), or writes `agent_decision` (sets, toggles or adds to it), which answers an
+/// runs a program (`run_program`), asks a plugin to act or to answer a check
+/// (a `plugin` action or a plugin condition of an if / else: a program the app
+/// starts that runs as the user), or writes `agent_decision` (sets, toggles or adds to it), which answers an
 /// AI agent's permission prompt through `osh agent ask`. Other JSON imports
 /// stay ordinary profiles that the Execute confirmation discloses in full.
 ///
@@ -275,8 +276,10 @@ pub fn needs_review(profile: &Profile) -> bool {
             | Action::AddToVariable { name, .. } => name == osh::AGENT_DECISION,
             Action::MultiAction { actions } => actions.iter().any(reviewed_action),
             Action::Conditional {
-                then, otherwise, ..
-            } => then.iter().chain(otherwise).any(reviewed_action),
+                when,
+                then,
+                otherwise,
+            } => when.uses_plugins() || then.iter().chain(otherwise).any(reviewed_action),
             _ => false,
         }
     }
@@ -772,7 +775,22 @@ mod tests {
             "type":"plugin","plugin":"com.example.lights","min_version":"1.0.0","action":"toggle"
         }))
         .unwrap();
+        // A plugin asked only for a check, in a test or a nested branch's test.
+        let checked: Action = serde_json::from_value(serde_json::json!({
+            "type":"conditional",
+            "when":{"all":[{"output_muted":true},
+                {"plugin":{"plugin":"com.example.lights","min_version":"1.0.0","condition":"is_on","value":true}}]},
+            "then":[{"type":"toggle_mute"}]
+        }))
+        .unwrap();
+        let nested = Action::Conditional {
+            when: cooltek_sdk_service::Condition::OutputMuted(true),
+            then: vec![],
+            otherwise: vec![checked.clone()],
+        };
         for action in [
+            checked,
+            nested,
             program.clone(),
             plugin.clone(),
             Action::MultiAction {

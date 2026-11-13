@@ -14,12 +14,17 @@
 //!     { "id": "fade", "label": "Fade", "type": "bool" },
 //!     { "id": "mode", "label": "Mode", "type": "choice", "choices": [{ "id": "warm", "label": "Warm" }], "default": "warm" }
 //!   ] }],
+//!   "conditions": [{ "id": "is_on", "label": "Light is on", "params": [
+//!     { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true }
+//!   ] }],
 //!   "permissions": { "network": ["homeassistant.local:8123"], "variables": ["room"], "programs": false }
 //! }
 //! ```
 //!
 //! `command[0]` is a path inside the folder (no `..`) or an absolute path such as `/usr/local/bin/node`; the rest are
-//! its arguments, passed as they are. Permissions are what the plugin says it needs, shown to the user: a plugin runs
+//! its arguments, passed as they are. `conditions` are checks an if / else asks the plugin when the key is pressed; a
+//! condition's id, label and `params` follow the action rules (ids are unique among conditions, and may repeat an
+//! action's), without `events`. A manifest has actions, conditions or both. Permissions are what the plugin says it needs, shown to the user: a plugin runs
 //! as the user, so they are consent information, not enforcement.
 //!
 //! `schema` is the manifest format's version. This app reads [`SCHEMA`] only; a change that would make an older app
@@ -30,7 +35,7 @@
 //! (outside the plugins folder, so a plugin cannot approve itself), and any change to the file needs a new approval.
 
 use cooltek_sdk_service::{
-    Action, PluginValue,
+    Action, Condition, PluginUse, PluginUseKind, PluginValue,
     plugin::{parse_version, validate_plugin_action_id, validate_plugin_id},
     validate_variable_name,
 };
@@ -55,6 +60,8 @@ const MAX_APPROVALS_BYTES: usize = 256 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 /// Most actions one plugin offers.
 const MAX_ACTIONS: usize = 64;
+/// Most conditions one plugin offers.
+const MAX_CONDITIONS: usize = 64;
 /// Most items in the start command.
 const MAX_COMMAND_ITEMS: usize = 16;
 /// Most choices of one choice parameter.
@@ -82,7 +89,12 @@ pub struct Manifest {
     pub name: String,
     pub version: String,
     pub command: Vec<String>,
+    /// Absent or empty only when the plugin offers conditions.
+    #[serde(default)]
     pub actions: Vec<ManifestAction>,
+    /// Checks an if / else can ask when the key is pressed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<ManifestCondition>,
     #[serde(default)]
     pub permissions: Permissions,
 }
@@ -99,7 +111,17 @@ pub struct ManifestAction {
     pub events: bool,
 }
 
-/// One parameter of a plugin action. `type` decides which of the other fields apply: `variables` and `secret` only to
+/// A check a plugin offers: its id, label and parameters follow the action rules; it takes no events.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestCondition {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub params: Vec<Param>,
+}
+
+/// One parameter of a plugin action or condition. `type` decides which of the other fields apply: `variables` and `secret` only to
 /// text, `min` and `max` only to a number, `choices` only (and always) to a choice.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -318,33 +340,61 @@ impl Manifest {
                 "command must start with a program inside the plugin folder (no ..) or an absolute path".into(),
             );
         }
-        if self.actions.is_empty() || self.actions.len() > MAX_ACTIONS {
-            return Err(format!("a plugin offers 1 to {MAX_ACTIONS} actions"));
+        if self.actions.len() > MAX_ACTIONS {
+            return Err(format!("a plugin offers at most {MAX_ACTIONS} actions"));
         }
-        let mut action_ids = BTreeSet::new();
-        for action in &self.actions {
-            validate_plugin_action_id(&action.id)
-                .map_err(|error| format!("action {:?}: {error}", action.id))?;
-            if !action_ids.insert(&action.id) {
-                return Err(format!("action {} is listed twice", action.id));
+        if self.conditions.len() > MAX_CONDITIONS {
+            return Err(format!(
+                "a plugin offers at most {MAX_CONDITIONS} conditions"
+            ));
+        }
+        if self.actions.is_empty() && self.conditions.is_empty() {
+            return Err("a plugin offers at least one action or condition".into());
+        }
+        let actions = self.actions.iter().map(|action| {
+            (
+                PluginUseKind::Action,
+                &action.id,
+                &action.label,
+                &action.params,
+            )
+        });
+        let conditions = self.conditions.iter().map(|condition| {
+            (
+                PluginUseKind::Condition,
+                &condition.id,
+                &condition.label,
+                &condition.params,
+            )
+        });
+        let mut ids = BTreeSet::new();
+        for (kind, id, label, params) in actions.chain(conditions) {
+            let noun = kind.noun();
+            validate_plugin_action_id(id).map_err(|_| {
+                format!(
+                    "{noun} {id:?}: plugin {noun} must be 1 to {} of a-z, 0-9, _, - and ., starting with a letter",
+                    cooltek_sdk_service::plugin::MAX_PLUGIN_ACTION_BYTES
+                )
+            })?;
+            if !ids.insert((noun, id)) {
+                return Err(format!("{noun} {id} is listed twice"));
             }
-            check_label(&format!("action {} label", action.id), &action.label)?;
-            if action.params.len() > cooltek_sdk_service::plugin::MAX_PLUGIN_PARAMS {
+            check_label(&format!("{noun} {id} label"), label)?;
+            if params.len() > cooltek_sdk_service::plugin::MAX_PLUGIN_PARAMS {
                 return Err(format!(
-                    "action {} has more than {} parameters",
-                    action.id,
+                    "{noun} {id} has more than {} parameters",
                     cooltek_sdk_service::plugin::MAX_PLUGIN_PARAMS
                 ));
             }
             let mut param_ids = BTreeSet::new();
-            for param in &action.params {
+            for param in params {
                 param
                     .validate()
-                    .map_err(|error| format!("action {}: {error}", action.id))?;
+                    .map_err(|error| format!("{noun} {id}: {error}"))?;
                 if !param_ids.insert(&param.id) {
                     return Err(format!(
-                        "action {}: parameter {} is listed twice",
-                        action.id, param.id
+                        "{noun} {id}: parameter {} is listed twice",
+                        param.id
                     ));
                 }
             }
@@ -378,18 +428,35 @@ impl Manifest {
         self.actions.iter().find(|action| action.id == id)
     }
 
-    /// Each secret parameter once by id, as the first action that declares it names it. Every action with a secret
-    /// of that id shares one stored value.
+    /// The parameters of the action or condition `id`, when the manifest declares it.
+    pub fn params_of(&self, kind: PluginUseKind, id: &str) -> Option<&[Param]> {
+        match kind {
+            PluginUseKind::Action => self.action(id).map(|action| action.params.as_slice()),
+            PluginUseKind::Condition => self
+                .conditions
+                .iter()
+                .find(|condition| condition.id == id)
+                .map(|condition| condition.params.as_slice()),
+        }
+    }
+
+    /// Each secret parameter once by id, as the first action (or, after the actions, condition) that declares it
+    /// names it. Every action and condition with a secret of that id shares one stored value.
     pub fn secret_params(&self) -> Vec<&Param> {
         let mut seen = BTreeSet::new();
         self.actions
             .iter()
             .flat_map(|action| &action.params)
+            .chain(
+                self.conditions
+                    .iter()
+                    .flat_map(|condition| &condition.params),
+            )
             .filter(|param| param.is_secret() && seen.insert(param.id.as_str()))
             .collect()
     }
 
-    /// Checks a value to store for the secret parameter `param`: it must be one some action declares, and the value
+    /// Checks a value to store for the secret parameter `param`: it must be one some action or condition declares, and the value
     /// must follow the rules of every text parameter. The error never contains the value.
     pub fn check_secret(&self, param: &str, value: &str) -> Result<(), String> {
         let declared = self
@@ -431,18 +498,18 @@ impl Manifest {
     }
 }
 
-/// Refuses parameters from a profile that hold a value for one of `action`'s secrets: those come only from the
-/// Keychain.
+/// Refuses parameters from a profile that hold a value for one of the secrets of the action or condition `id`: those
+/// come only from the Keychain.
 pub fn refuse_profile_secrets(
     manifest: &Manifest,
-    action: &str,
+    kind: PluginUseKind,
+    id: &str,
     params: &BTreeMap<String, PluginValue>,
 ) -> Result<(), String> {
-    let Some(declared) = manifest.action(action) else {
+    let Some(declared) = manifest.params_of(kind, id) else {
         return Ok(());
     };
     match declared
-        .params
         .iter()
         .find(|param| param.is_secret() && params.contains_key(&param.id))
     {
@@ -454,59 +521,94 @@ pub fn refuse_profile_secrets(
     }
 }
 
-/// Removes from `profile` every value of a parameter the installed manifest marks secret (a profile saved before
-/// secrets moved to the Keychain may hold one), so an export never carries one, and names what was removed. A plugin
-/// that is not installed cannot be checked, so its parameters stay as they are.
+/// Removes from `profile` every value of a parameter the installed manifest marks secret, in plugin actions and
+/// plugin conditions (a profile saved before secrets moved to the Keychain may hold one), so an export never carries
+/// one, and names what was removed. A plugin that is not installed cannot be checked, so its parameters stay as they
+/// are.
 pub fn strip_secrets(profile: &mut cooltek_sdk_service::Profile, app_data: &Path) -> Vec<String> {
     let mut manifests: BTreeMap<String, Option<Manifest>> = BTreeMap::new();
     let mut dropped = BTreeSet::new();
-    each_action_mut(profile, &mut |action| {
-        let Action::Plugin {
-            plugin,
-            action,
-            params,
-            variables,
-            ..
-        } = action
-        else {
-            return;
-        };
-        let manifest = manifests.entry(plugin.clone()).or_insert_with(|| {
+    let mut strip = |kind: PluginUseKind,
+                     plugin: &str,
+                     id: &str,
+                     params: &mut BTreeMap<String, PluginValue>,
+                     variables: &mut Vec<String>| {
+        let manifest = manifests.entry(plugin.to_string()).or_insert_with(|| {
             installed(app_data, plugin)
                 .ok()
                 .map(|(manifest, _)| manifest)
         });
         let Some(declared) = manifest
             .as_ref()
-            .and_then(|manifest| manifest.action(action))
+            .and_then(|manifest| manifest.params_of(kind, id))
         else {
             return;
         };
-        for param in declared.params.iter().filter(|param| param.is_secret()) {
+        for param in declared.iter().filter(|param| param.is_secret()) {
             if params.remove(&param.id).is_some() {
                 variables.retain(|name| name != &param.id);
                 dropped.insert(format!("{} ({plugin})", param.label));
             }
         }
+    };
+    each_action_mut(profile, &mut |action| match action {
+        Action::Plugin {
+            plugin,
+            action,
+            params,
+            variables,
+            ..
+        } => strip(PluginUseKind::Action, plugin, action, params, variables),
+        Action::Conditional { when, .. } => each_plugin_condition_mut(when, &mut |condition| {
+            if let Condition::Plugin {
+                plugin,
+                condition,
+                params,
+                variables,
+                ..
+            } = condition
+            {
+                strip(
+                    PluginUseKind::Condition,
+                    plugin,
+                    condition,
+                    params,
+                    variables,
+                );
+            }
+        }),
+        _ => {}
     });
     dropped.into_iter().collect()
 }
 
-/// Fills the stored secrets into an invoke's parameters, before [`check_invoke`]: for each secret parameter of
-/// `action`, `stored` gives its value from the Keychain. A profile that carries a value for a secret is refused, so a
-/// secret saved before secrets moved to the Keychain is not sent from the profile. An unknown action is left to
-/// [`check_invoke`] to report.
+/// Calls `each` on every plugin condition in `condition`, inside AND and OR groups too, able to change it.
+fn each_plugin_condition_mut(condition: &mut Condition, each: &mut impl FnMut(&mut Condition)) {
+    match condition {
+        Condition::All(items) | Condition::Any(items) => items
+            .iter_mut()
+            .for_each(|item| each_plugin_condition_mut(item, each)),
+        Condition::Plugin { .. } => each(condition),
+        _ => {}
+    }
+}
+
+/// Fills the stored secrets into the parameters of an invoke (or, for a condition, a check), before [`check_invoke`]:
+/// for each secret parameter of the action or condition `id`, `stored` gives its value from the Keychain. A profile
+/// that carries a value for a secret is refused, so a secret saved before secrets moved to the Keychain is not sent
+/// from the profile. An unknown action or condition is left to [`check_invoke`] to report.
 pub fn fill_secrets(
     manifest: &Manifest,
-    action: &str,
+    kind: PluginUseKind,
+    id: &str,
     params: &mut BTreeMap<String, PluginValue>,
     mut stored: impl FnMut(&Param) -> Result<Option<String>, String>,
 ) -> Result<(), String> {
-    refuse_profile_secrets(manifest, action, params)?;
-    let Some(declared) = manifest.action(action) else {
+    refuse_profile_secrets(manifest, kind, id, params)?;
+    let Some(declared) = manifest.params_of(kind, id) else {
         return Ok(());
     };
-    for param in declared.params.iter().filter(|param| param.is_secret()) {
+    for param in declared.iter().filter(|param| param.is_secret()) {
         let value = stored(param).map_err(|error| {
             format!(
                 "{} for {} could not be read: {error}",
@@ -529,16 +631,17 @@ pub fn fill_secrets(
     Ok(())
 }
 
-/// Checks an invoke against the manifest: the action exists, every parameter is one it declares and of its type
-/// (and in range or among its choices), every required one is given, and only parameters that allow it take
-/// variables. `variables` are the parameter names the profile fills in.
+/// Checks an invoke (or, for a condition, a check) against the manifest: the action or condition `id` exists, every
+/// parameter is one it declares and of its type (and in range or among its choices), every required one is given,
+/// and only parameters that allow it take variables. `variables` are the parameter names the profile fills in.
 pub fn check_invoke(
     manifest: &Manifest,
-    action: &str,
+    kind: PluginUseKind,
+    id: &str,
     params: &BTreeMap<String, PluginValue>,
     variables: &[String],
 ) -> Result<(), String> {
-    check_params(manifest, action, params, variables, true)
+    check_params(manifest, kind, id, params, variables, true)
 }
 
 /// Checks a `plugin_event` record against the manifest, as [`check_invoke`] does a press, except that required
@@ -555,52 +658,57 @@ pub fn check_event(
     {
         return Err(format!("{action} does not take events"));
     }
-    refuse_profile_secrets(manifest, action, params)?;
-    check_params(manifest, action, params, variables, false)
+    refuse_profile_secrets(manifest, PluginUseKind::Action, action, params)?;
+    check_params(
+        manifest,
+        PluginUseKind::Action,
+        action,
+        params,
+        variables,
+        false,
+    )
 }
 
 fn check_params(
     manifest: &Manifest,
-    action: &str,
+    kind: PluginUseKind,
+    id: &str,
     params: &BTreeMap<String, PluginValue>,
     variables: &[String],
     require: bool,
 ) -> Result<(), String> {
-    let declared = manifest.action(action).ok_or_else(|| {
+    let declared = manifest.params_of(kind, id).ok_or_else(|| {
         format!(
-            "{} {} has no action {action}",
-            manifest.name, manifest.version
+            "{} {} has no {} {id}",
+            manifest.name,
+            manifest.version,
+            kind.noun()
         )
     })?;
     for (name, value) in params {
         let param = declared
-            .params
             .iter()
             .find(|param| &param.id == name)
-            .ok_or_else(|| format!("{action} has no parameter {name}"))?;
+            .ok_or_else(|| format!("{id} has no parameter {name}"))?;
         let fits = param.accepts(value);
         if !fits {
             return Err(format!(
-                "parameter {name} of {action} is not a value the plugin accepts"
+                "parameter {name} of {id} is not a value the plugin accepts"
             ));
         }
     }
     if let Some(missing) = declared
-        .params
         .iter()
         .find(|param| require && param.required && !params.contains_key(&param.id))
     {
-        return Err(format!("{action} needs parameter {}", missing.id));
+        return Err(format!("{id} needs parameter {}", missing.id));
     }
     for name in variables {
         let allowed = declared
-            .params
             .iter()
             .any(|param| &param.id == name && param.takes_variables());
         if !allowed {
-            return Err(format!(
-                "parameter {name} of {action} does not take variables"
-            ));
+            return Err(format!("parameter {name} of {id} does not take variables"));
         }
     }
     Ok(())
@@ -1080,13 +1188,29 @@ pub fn each_action_mut(
     }
 }
 
-/// The ids of the plugins `profile` uses anywhere.
+/// Calls `each` on every plugin use of `profile`: each plugin action, and each plugin condition an if / else asks,
+/// wherever they are.
+pub fn each_plugin_use<'a>(
+    profile: &'a cooltek_sdk_service::Profile,
+    each: &mut impl FnMut(PluginUse<'a>),
+) {
+    each_action(profile, &mut |action| {
+        let mut uses = Vec::new();
+        match action {
+            // Only the action's own use: each_action reaches the steps inside it.
+            Action::Plugin { .. } => uses = action.plugin_uses(),
+            Action::Conditional { when, .. } => when.plugin_uses(&mut uses),
+            _ => {}
+        }
+        uses.into_iter().for_each(&mut *each);
+    });
+}
+
+/// The ids of the plugins `profile` uses anywhere, for an action or a condition.
 pub fn plugins_used(profile: &cooltek_sdk_service::Profile) -> BTreeSet<String> {
     let mut used = BTreeSet::new();
-    each_action(profile, &mut |action| {
-        if let Action::Plugin { plugin, .. } = action {
-            used.insert(plugin.clone());
-        }
+    each_plugin_use(profile, &mut |found| {
+        used.insert(found.plugin.to_string());
     });
     used
 }
@@ -1166,11 +1290,32 @@ mod tests {
             serde_json::from_value(value).unwrap()
         };
         let ok = params(json!({"entity":"light.{{room}}","level":40,"fade":true,"mode":"cold"}));
-        check_invoke(&manifest, "set", &ok, &["entity".into()]).unwrap();
-        check_invoke(&manifest, "toggle", &BTreeMap::new(), &[]).unwrap();
+        check_invoke(
+            &manifest,
+            PluginUseKind::Action,
+            "set",
+            &ok,
+            &["entity".into()],
+        )
+        .unwrap();
+        check_invoke(
+            &manifest,
+            PluginUseKind::Action,
+            "toggle",
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         let refused = |action: &str, value: serde_json::Value, variables: &[&str]| {
             let variables: Vec<String> = variables.iter().map(|name| name.to_string()).collect();
-            check_invoke(&manifest, action, &params(value), &variables).unwrap_err()
+            check_invoke(
+                &manifest,
+                PluginUseKind::Action,
+                action,
+                &params(value),
+                &variables,
+            )
+            .unwrap_err()
         };
         assert!(refused("dim", json!({}), &[]).contains("no action dim"));
         assert!(refused("set", json!({"level":4}), &[]).contains("needs parameter entity"));
@@ -1272,29 +1417,45 @@ mod tests {
 
         let mut params: BTreeMap<String, PluginValue> =
             serde_json::from_value(json!({"entity":"a"})).unwrap();
-        fill_secrets(&manifest, "set", &mut params, |_| Ok(Some("s3cret".into()))).unwrap();
+        fill_secrets(&manifest, PluginUseKind::Action, "set", &mut params, |_| {
+            Ok(Some("s3cret".into()))
+        })
+        .unwrap();
         assert_eq!(params["token"], PluginValue::Text("s3cret".into()));
         // The required secret is in once filled in, so check_invoke does not call it missing.
-        check_invoke(&manifest, "set", &params, &[]).unwrap();
+        check_invoke(&manifest, PluginUseKind::Action, "set", &params, &[]).unwrap();
 
         let mut params: BTreeMap<String, PluginValue> =
             serde_json::from_value(json!({"entity":"a"})).unwrap();
         assert_eq!(
-            fill_secrets(&manifest, "set", &mut params, |_| Ok(None)).unwrap_err(),
+            fill_secrets(
+                &manifest,
+                PluginUseKind::Action,
+                "set",
+                &mut params,
+                |_| Ok(None)
+            )
+            .unwrap_err(),
             "Token for Lights is not set; set it in Settings > Plugins"
         );
         let mut params: BTreeMap<String, PluginValue> =
             serde_json::from_value(json!({"entity":"a","token":"old"})).unwrap();
-        let error =
-            fill_secrets(&manifest, "set", &mut params, |_| Ok(Some("s3cret".into()))).unwrap_err();
+        let error = fill_secrets(&manifest, PluginUseKind::Action, "set", &mut params, |_| {
+            Ok(Some("s3cret".into()))
+        })
+        .unwrap_err();
         assert!(
             error.contains("kept in the Keychain, not the profile"),
             "{error}"
         );
         assert!(!error.contains("old") && !error.contains("s3cret"));
-        let error = fill_secrets(&manifest, "set", &mut BTreeMap::new(), |_| {
-            Err("could not read it".into())
-        })
+        let error = fill_secrets(
+            &manifest,
+            PluginUseKind::Action,
+            "set",
+            &mut BTreeMap::new(),
+            |_| Err("could not read it".into()),
+        )
         .unwrap_err();
         assert_eq!(
             error,
@@ -1550,5 +1711,227 @@ mod tests {
             plugins_used(&profile).into_iter().collect::<Vec<_>>(),
             ["com.example.a"]
         );
+    }
+
+    /// The test manifest with a condition, `is_on`, whose `token` is a secret.
+    fn with_conditions() -> serde_json::Value {
+        let mut value = manifest_json();
+        value["conditions"] = json!([
+            { "id": "is_on", "label": "Light is on", "params": [
+                { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true },
+                { "id": "token", "label": "Access token", "type": "text", "secret": true },
+                { "id": "level", "label": "Level", "type": "number", "min": 0 }
+            ] },
+            // A condition may repeat an action's id.
+            { "id": "set", "label": "Is set" }
+        ]);
+        value
+    }
+
+    #[test]
+    fn a_manifest_may_offer_conditions_with_or_without_actions_but_not_neither() {
+        let checked = |change: &dyn Fn(&mut serde_json::Value)| {
+            let mut value = with_conditions();
+            change(&mut value);
+            serde_json::from_value::<Manifest>(value)
+                .map_err(|error| error.to_string())?
+                .validate()
+        };
+        checked(&|_| {}).unwrap();
+        // Conditions only: actions absent or empty.
+        checked(&|m| m["actions"] = json!([])).unwrap();
+        checked(&|m| {
+            m.as_object_mut().unwrap().remove("actions");
+        })
+        .unwrap();
+        let only: Manifest = serde_json::from_value({
+            let mut value = with_conditions();
+            value.as_object_mut().unwrap().remove("actions");
+            value
+        })
+        .unwrap();
+        assert!(only.actions.is_empty());
+        assert_eq!(only.conditions.len(), 2);
+        // Neither.
+        let error = checked(&|m| {
+            m["actions"] = json!([]);
+            m["conditions"] = json!([]);
+        })
+        .unwrap_err();
+        assert_eq!(error, "a plugin offers at least one action or condition");
+        assert!(with(|m| m["actions"] = json!([])).is_err());
+        // Ids are unique among conditions.
+        let error = checked(&|m| m["conditions"][1]["id"] = json!("is_on")).unwrap_err();
+        assert_eq!(error, "condition is_on is listed twice");
+        // The action rules, and no events.
+        assert!(checked(&|m| m["conditions"][0]["id"] = json!("Is On")).is_err());
+        assert!(checked(&|m| m["conditions"][0]["label"] = json!("")).is_err());
+        assert!(checked(&|m| m["conditions"][0]["params"][1]["default"] = json!("x")).is_err());
+        assert!(checked(&|m| m["conditions"][0]["params"][2]["variables"] = json!(true)).is_err());
+        assert!(checked(&|m| m["conditions"][0]["params"][1]["id"] = json!("entity")).is_err());
+        let error = checked(&|m| m["conditions"][0]["events"] = json!(true)).unwrap_err();
+        assert!(error.contains("unknown field `events`"), "{error}");
+        assert!(checked(&|m| m["conditions"][0]["what"] = json!(1)).is_err());
+        let many: Vec<_> = (0..65)
+            .map(|index| json!({"id": format!("c{index}"), "label": "C"}))
+            .collect();
+        assert!(checked(&|m| m["conditions"] = json!(many)).is_err());
+        // An action-only manifest is listed without the field.
+        assert!(
+            !serde_json::to_string(&manifest())
+                .unwrap()
+                .contains("conditions")
+        );
+    }
+
+    #[test]
+    fn a_check_must_fit_the_manifests_condition() {
+        let manifest: Manifest = serde_json::from_value(with_conditions()).unwrap();
+        let params = |value: serde_json::Value| -> BTreeMap<String, PluginValue> {
+            serde_json::from_value(value).unwrap()
+        };
+        let check = |id: &str, value: serde_json::Value, variables: &[&str]| {
+            let variables: Vec<String> = variables.iter().map(|name| name.to_string()).collect();
+            check_invoke(
+                &manifest,
+                PluginUseKind::Condition,
+                id,
+                &params(value),
+                &variables,
+            )
+        };
+        check(
+            "is_on",
+            json!({"entity":"light.{{room}}","level":3}),
+            &["entity"],
+        )
+        .unwrap();
+        check("set", json!({}), &[]).unwrap();
+        // Against the conditions, not the actions.
+        assert_eq!(
+            check("toggle", json!({}), &[]).unwrap_err(),
+            "Lights 1.2.0 has no condition toggle"
+        );
+        assert!(
+            check("is_on", json!({}), &[])
+                .unwrap_err()
+                .contains("needs parameter entity")
+        );
+        assert!(
+            check("is_on", json!({"entity":"a","level":-1}), &[])
+                .unwrap_err()
+                .contains("level")
+        );
+        assert!(
+            check("is_on", json!({"entity":"a","bogus":1}), &[])
+                .unwrap_err()
+                .contains("no parameter bogus")
+        );
+        assert!(
+            check("is_on", json!({"entity":"a","token":"{{x}}"}), &["token"])
+                .unwrap_err()
+                .contains("does not take variables")
+        );
+        // A condition's secret is filled in from the Keychain and refused from the profile.
+        let mut filled = params(json!({"entity":"a"}));
+        fill_secrets(
+            &manifest,
+            PluginUseKind::Condition,
+            "is_on",
+            &mut filled,
+            |param| Ok((param.id == "token").then(|| "s3cret".to_string())),
+        )
+        .unwrap();
+        assert_eq!(filled["token"], PluginValue::Text("s3cret".into()));
+        let error = fill_secrets(
+            &manifest,
+            PluginUseKind::Condition,
+            "is_on",
+            &mut params(json!({"entity":"a","token":"old"})),
+            |_| Ok(None),
+        )
+        .unwrap_err();
+        assert!(error.starts_with("Access token is a secret"), "{error}");
+        // The listing's secrets and the commands that set them include a condition's.
+        assert_eq!(
+            manifest
+                .secret_params()
+                .iter()
+                .map(|param| param.id.as_str())
+                .collect::<Vec<_>>(),
+            ["token"]
+        );
+        let mut only = with_conditions();
+        only["actions"] = json!([]);
+        let only: Manifest = serde_json::from_value(only).unwrap();
+        only.check_secret("token", "abc").unwrap();
+        assert_eq!(only.secret_params()[0].label, "Access token");
+    }
+
+    #[test]
+    fn a_plugin_only_ever_asked_a_check_is_used() {
+        let profile: cooltek_sdk_service::Profile = serde_json::from_value(json!({
+            "schema_version": 5,
+            "name": "p",
+            "bindings": [{ "module":"m003k", "control":0, "gesture":"pressed", "action": {
+                "type":"conditional",
+                "when": {"all": [
+                    {"output_muted": true},
+                    {"plugin": {"plugin":"com.example.b","min_version":"1.0.0","condition":"on","value":false}}
+                ]},
+                "then": [{"type":"toggle_mute"}],
+                "else": [{"type":"conditional",
+                    "when": {"plugin": {"plugin":"com.example.c","min_version":"1.0.0","condition":"on","value":true}},
+                    "then": [{"type":"plugin","plugin":"com.example.a","min_version":"1.0.0","action":"x"}]}]
+            }}],
+        }))
+        .unwrap();
+        assert_eq!(
+            plugins_used(&profile).into_iter().collect::<Vec<_>>(),
+            ["com.example.a", "com.example.b", "com.example.c"]
+        );
+        let mut uses = Vec::new();
+        each_plugin_use(&profile, &mut |found| {
+            uses.push((found.kind, found.plugin.to_string()))
+        });
+        // Each once, though the conditionals nest.
+        assert_eq!(
+            uses,
+            [
+                (PluginUseKind::Condition, "com.example.b".to_string()),
+                (PluginUseKind::Condition, "com.example.c".to_string()),
+                (PluginUseKind::Action, "com.example.a".to_string()),
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_export_drops_a_plugin_conditions_secret() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = dir(root.path()).join("com.example.lights");
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(MANIFEST_FILE), with_conditions().to_string()).unwrap();
+        let mut profile: cooltek_sdk_service::Profile = serde_json::from_value(json!({
+            "schema_version": 5,
+            "name": "p",
+            "bindings": [{ "module":"m003k", "control":0, "gesture":"pressed", "action": {
+                "type":"conditional",
+                "when": {"any": [
+                    {"output_muted": true},
+                    {"plugin": {"plugin":"com.example.lights","min_version":"1.0.0","condition":"is_on",
+                        "params":{"entity":"a","token":"old-token"},"value":true}}
+                ]},
+                "then": [{"type":"toggle_mute"}]
+            }}],
+        }))
+        .unwrap();
+        assert_eq!(
+            strip_secrets(&mut profile, root.path()),
+            ["Access token (com.example.lights)"]
+        );
+        let text = serde_json::to_string(&profile).unwrap();
+        assert!(!text.contains("old-token"), "{text}");
+        assert!(text.contains("\"entity\":\"a\""), "{text}");
     }
 }

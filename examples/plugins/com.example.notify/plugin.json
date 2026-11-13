@@ -16,5 +16,12 @@
     { "id": "count", "label": "Count presses" },
     { "id": "hold", "label": "Report how long a key is held", "events": true }
   ],
+  "conditions": [
+    {
+      "id": "pressed_at_least",
+      "label": "Pressed at least",
+      "params": [{ "id": "count", "label": "Presses", "type": "number", "min": 0, "required": true }]
+    }
+  ],
   "permissions": { "variables": ["plugin_presses"], "programs": true }
 }

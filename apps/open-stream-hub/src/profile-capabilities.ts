@@ -1,5 +1,6 @@
 import type { BindingAction, MacroStep, Profile, StepAction } from './contracts';
-import { keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, pluginReferences, programReferences, systemLabels, urlOrigin } from './action-model';
+import { conditionPluginUses, keyLabel, macroDurationLabel, macroDurationMs, maxRunProgramArgs, maxRunProgramArgsBytes, mediaLabels, multiActionSteps, pluginReferences, programReferences, systemLabels, urlOrigin } from './action-model';
+import type { PluginUse } from './action-model';
 
 // What a profile can really do on this Mac once Execute runs it. Built for the Execute confirmation, which must
 // disclose every capability: the whole profile is walked (flat bindings, every keypad page and tile, dial functions
@@ -28,6 +29,9 @@ export interface ProfileCapabilities {
   // Every distinct plugin action, one entry each with the plugin, the action and every parameter made visible, in
   // profile order. A plugin is a program that runs as you, so any raises the risk to high.
   plugins: string[];
+  // Every distinct plugin condition an if / else tests, named the same way as a check. The plugin is asked when the
+  // if / else runs, so any raises the risk to high too.
+  pluginChecks: string[];
   screenshot: boolean;
   // Undo or redo is sent to the focused app.
   undoRedo: boolean;
@@ -192,12 +196,16 @@ const programLine = (action: Record<string, unknown>, feeds: Feeds = new Map()) 
 };
 // A plugin action as the confirmation names it: the plugin's id, the action and every parameter as JSON (so two
 // different sets never read the same), and the variables that feed its text parameters.
-const pluginLine = (action: Record<string, unknown>, feeds: Feeds = new Map()) => {
+// A plugin condition reads the same with "check" before its id, and after it the answer it holds for and the minimum
+// version (both part of what a Live run's re-confirmation pauses on, so a changed one reads as a new line).
+const pluginLine = (action: Record<string, unknown>, feeds: Feeds = new Map(), check = false) => {
   const params = isRecord(action.params) ? action.params : {};
   const shown = Object.keys(params).length ? ` with ${snippetPreview(JSON.stringify(params), maxShownArgsChars).text}` : '';
   const variables = list(action.variables).length ? variablesNote(pluginReferences(action), feeds) : '';
-  return `${clipped(String(action.plugin), 128)}: ${clipped(String(action.action), 64)}${shown}${variables}`;
+  const answer = check ? ` (${action.value === false ? 'does not hold' : 'holds'}; needs ${clipped(String(action.min_version), 32)} or later)` : '';
+  return `${clipped(String(action.plugin), 128)}: ${check ? 'check ' : ''}${clipped(String(check ? action.id : action.action), 64)}${answer}${shown}${variables}`;
 };
+const pluginCheckLine = (use: PluginUse, feeds: Feeds) => pluginLine(use as unknown as Record<string, unknown>, feeds, true);
 // What the profile makes each variable a run_program fills in, read from every action and step (see programVariablesNote).
 function programFeeds(profile: Profile): Feeds {
   const steps: Record<string, unknown>[] = [];
@@ -209,7 +217,8 @@ function programFeeds(profile: Profile): Feeds {
   for (const action of profileActions(profile)) walk(action, 0);
   const feeds: Feeds = new Map();
   for (const step of steps) {
-    const names = step.type === 'run_program' ? programReferences(step).names : step.type === 'plugin' ? pluginReferences(step).names : [];
+    const names = step.type === 'run_program' ? programReferences(step).names : step.type === 'plugin' ? pluginReferences(step).names
+      : step.type === 'conditional' ? conditionPluginUses(step.when).flatMap(use => pluginReferences(use).names) : [];
     for (const name of names) feeds.set(name, { sets: new Set(), adds: new Set(), flips: false });
   }
   for (const variable of list(profile.variables)) {
@@ -267,6 +276,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   // Keyed by the exact action, as capabilities.rs identifies it, so two programs never merge into one entry.
   const programs = new Map<string, string>();
   const plugins = new Map<string, string>();
+  const pluginChecks = new Map<string, string>();
   const feeds = programFeeds(profile);
   const obsScenes = new Set<string>();
   const obsOutputs = new Set<string>();
@@ -380,6 +390,12 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
         break;
       case 'system': if (action.command === 'screenshot') screenshot = true; else undoRedo = true; break;
       case 'conditional': {
+        // A plugin condition asks the plugin when the if / else runs: named like a plugin action, and high risk.
+        for (const use of conditionPluginUses(action.when)) {
+          pluginChecks.set(JSON.stringify([use.plugin, use.min_version, use.id, use.value, use.params ?? {}, list(use.variables)]), pluginCheckLine(use, feeds));
+          reasons.add('A key asks a plugin to check something before an if / else chooses what to do. A plugin is a program on this Mac that runs as you.');
+          if (JSON.stringify(use.params ?? {}).length > maxShownArgsChars) reasons.add(tooLongReason);
+        }
         // Both branches are walked and disclosed like multi-action steps, since either can run. Which one depends on
         // a state read at press time (OBS or the output), so the profile can do whatever either branch can.
         for (const steps of [list(action.then), list(action.else)]) {
@@ -425,7 +441,7 @@ export function profileCapabilities(profile: Profile): ProfileCapabilities {
   return {
     counts, texts: snippets,
     textPressesEnter: snippets.some(snippet => snippet.pressEnter), textHasNewline: snippets.some(snippet => snippet.hasNewline),
-    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], programs: [...programs.values()], plugins: [...plugins.values()], screenshot, undoRedo, submitKey: submits,
+    urlOrigins: [...origins], apps: [...apps], terminalCommands: [...terminalCommands], programs: [...programs.values()], plugins: [...plugins.values()], pluginChecks: [...pluginChecks.values()], screenshot, undoRedo, submitKey: submits,
     launchApp: (counts.launch_app ?? 0) > 0, shortcut: (counts.shortcut ?? 0) > 0, multiAction: (counts.multi_action ?? 0) > 0,
     switchesProfile: (counts.profile ?? 0) > 0,
     answersAgentPrompts,
@@ -552,6 +568,7 @@ export function capabilityLines(capabilities: ProfileCapabilities): string[] {
   if (capabilities.terminalCommands.length) lines.push(`Opens a new terminal window and runs a command line in your shell, which can do anything you could type there: ${capabilities.terminalCommands.join('; ')}.`);
   if (capabilities.programs.length) lines.push(`Runs programs on this Mac as you, which can do anything you could do: ${capabilities.programs.join('; ')}.`);
   if (capabilities.plugins.length) lines.push(`Asks plugins to act. A plugin is a program on this Mac that runs as you and can do anything you could do; it starts while this profile is executed: ${capabilities.plugins.join('; ')}.`);
+  if (capabilities.pluginChecks.length) lines.push(`Asks plugins to check something each time an if / else using one runs. A plugin is a program on this Mac that runs as you and can do anything you could do; it starts while this profile is executed: ${capabilities.pluginChecks.join('; ')}.`);
   if (capabilities.answersAgentPrompts) lines.push('Answers AI agent permission prompts: a key sets agent_decision, which osh agent ask passes to Claude Code or Codex as Allow or Deny.');
   if (capabilities.apps.length) lines.push(`Opens applications: ${capabilities.apps.join(', ')}.`);
   if (capabilities.shortcut) lines.push(`Sends ${plural(counts.shortcut ?? 0, 'keyboard shortcut')} to the focused app.`);

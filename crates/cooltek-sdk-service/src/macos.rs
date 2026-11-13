@@ -210,6 +210,9 @@ const RUN_PROGRAM_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long a `plugin` action waits for the plugin's answer as a key's own
 /// action; as a step it gets what is left of the sequence's deadline.
 const PLUGIN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Most a plugin condition waits for its answer, the OBS client's limit; it
+/// never gets more than what is left of the sequence's deadline.
+const PLUGIN_CHECK_TIMEOUT: Duration = Duration::from_secs(3);
 /// The name a `run_program` request carries in errors and logs, in place of
 /// the profile's path (which can name the user).
 const RUN_PROGRAM: &str = "run_program";
@@ -1007,6 +1010,20 @@ impl MacOsDispatcher {
                     results.iter().any(|holds| *holds)
                 })
             }
+            leaf @ Condition::Plugin {
+                plugin,
+                condition: id,
+                ..
+            } => self
+                .plugin_condition_holds(leaf, deadline)
+                .map_err(|error| {
+                    // The parameter errors (plugin_params) already start with the plugin's id, which this names.
+                    let error = error
+                        .strip_prefix(plugin.as_str())
+                        .and_then(|rest| rest.strip_prefix(": "))
+                        .unwrap_or(&error);
+                    format!("conditional could not read {plugin} {id}: {error}; neither branch ran")
+                }),
             leaf => if leaf.uses_obs() {
                 self.condition_holds(leaf, deadline)
             } else {
@@ -1186,6 +1203,48 @@ impl MacOsDispatcher {
             timeout,
             self.cancellation.as_deref(),
         )
+    }
+
+    /// Asks the app's plugin host whether a plugin condition holds, with the
+    /// variables of its listed text parameters filled in, within
+    /// [`PLUGIN_CHECK_TIMEOUT`] or what is left of `deadline`, and compares the
+    /// answer with the condition's `value`.
+    fn plugin_condition_holds(
+        &self,
+        condition: &crate::profile::Condition,
+        deadline: std::time::Instant,
+    ) -> Result<bool, String> {
+        let crate::profile::Condition::Plugin {
+            plugin,
+            min_version,
+            condition: name,
+            params,
+            variables,
+            value,
+        } = condition
+        else {
+            return Err("not a plugin condition".into());
+        };
+        let bridge = self.plugins.as_ref().ok_or(PLUGIN_UNAVAILABLE)?;
+        let params = self.plugin_params(plugin, params, variables)?;
+        let remaining = deadline.saturating_duration_since(self.sleeper.now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "the sequence's {} s overall deadline has passed; the plugin was not asked",
+                MULTI_ACTION_DEADLINE.as_secs()
+            ));
+        }
+        let holds = bridge.check(
+            plugin,
+            min_version,
+            name,
+            &params,
+            variables,
+            self.service_state.input.as_ref(),
+            remaining.min(PLUGIN_CHECK_TIMEOUT),
+            self.cancellation.as_deref(),
+        )?;
+        Ok(holds == *value)
     }
 
     /// The parameters of `plugin` with the variables listed in `variables` filled in, refused when the profile that
@@ -2572,7 +2631,7 @@ mod tests {
         let app = std::thread::spawn(move || {
             let record = sent_rx.recv().unwrap();
             bridge
-                .complete(record["request"].as_u64().unwrap(), Ok(()))
+                .complete(record["request"].as_u64().unwrap(), Ok(None))
                 .unwrap();
             record
         });
@@ -5669,5 +5728,248 @@ mod tests {
             .dispatch(&Action::ToggleMute)
             .unwrap_err();
         assert!(error.contains("unsupported on this platform"));
+    }
+
+    /// A bridge whose app answers each record in turn with the next of `answers`, and the records it was sent.
+    fn answering_bridge(
+        answers: Vec<Result<Option<bool>, String>>,
+    ) -> (PluginBridge, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let answers = Arc::new(Mutex::new(VecDeque::from(answers)));
+        let bridge_slot: Arc<Mutex<Option<PluginBridge>>> = Arc::default();
+        let (log, slot) = (Arc::clone(&sent), Arc::clone(&bridge_slot));
+        let bridge = PluginBridge::new(Box::new(move |record| {
+            log.lock().unwrap().push(record.clone());
+            let request = record["request"].as_u64().unwrap();
+            if let Some(answer) = answers.lock().unwrap().pop_front() {
+                let bridge = slot.lock().unwrap().clone().unwrap();
+                // Answered from another thread, as the control channel does. The waiter is registered before the
+                // record is sent, so one completion is enough; a press that stopped waiting ignores it.
+                std::thread::spawn(move || {
+                    let _ = bridge.complete(request, answer);
+                });
+            }
+            Ok(())
+        }));
+        *bridge_slot.lock().unwrap() = Some(bridge.clone());
+        (bridge, sent)
+    }
+
+    fn plugin_condition(condition: &str, value: bool) -> crate::profile::Condition {
+        serde_json::from_value(serde_json::json!({"plugin": {"plugin": "com.example.lights",
+            "min_version": "1.2.0", "condition": condition, "params": {"entity": "light.{{room}}", "level": 2},
+            "variables": ["entity"], "value": value}}))
+        .unwrap()
+    }
+
+    fn with_room(dispatcher: &mut MacOsDispatcher) {
+        dispatcher.set_service_state(ServiceState {
+            variables: vec![crate::profile::Variable {
+                name: "room".into(),
+                value: VariableValue::Text("desk".into()),
+            }],
+            input: Some(crate::PluginInput {
+                module: crate::ServiceModule::M4315,
+                control: 3,
+                gesture: crate::Gesture::Pressed,
+                value: None,
+            }),
+            ..Default::default()
+        });
+    }
+
+    #[test]
+    fn a_plugin_condition_runs_the_branch_its_answer_picks() {
+        for (answer, value, expected_key) in [
+            (true, true, "a"),
+            (false, true, "b"),
+            (false, false, "a"),
+            (true, false, "b"),
+        ] {
+            let (bridge, sent) = answering_bridge(vec![Ok(Some(answer))]);
+            let (dispatcher, state) = fake(vec![success("")]);
+            let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+            with_room(&mut dispatcher);
+            let action = conditional(plugin_condition("is_on", value));
+            assert_eq!(dispatcher.unavailable(&action), None);
+            dispatcher.dispatch(&action).unwrap();
+            let state = state.lock().unwrap();
+            assert_eq!(state.requests.len(), 1, "exactly one branch step ran");
+            assert!(
+                state.requests[0].args[1].contains(&format!("keystroke \"{expected_key}\"")),
+                "answer {answer}, value {value}"
+            );
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(
+                sent[0],
+                serde_json::json!({"type": "plugin_check", "request": 1, "plugin": "com.example.lights",
+                    "min_version": "1.2.0", "condition": "is_on", "params": {"entity": "light.desk", "level": 2},
+                    "variables": ["entity"], "timeout_ms": 3000,
+                    "input": {"gesture": "pressed", "control": {"module": "m4315", "index": 3}}})
+            );
+        }
+    }
+
+    #[test]
+    fn a_plugin_condition_that_cannot_be_read_runs_neither_branch() {
+        for (answer, reason) in [
+            (
+                Err("the light is offline".to_string()),
+                "the light is offline",
+            ),
+            (
+                Ok(None),
+                "the plugin answered a check without true or false",
+            ),
+        ] {
+            let (bridge, _) = answering_bridge(vec![answer]);
+            let (dispatcher, state) = fake(vec![]);
+            let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+            with_room(&mut dispatcher);
+            let error = dispatcher
+                .dispatch(&conditional(plugin_condition("is_on", true)))
+                .unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "conditional could not read com.example.lights is_on: {reason}; neither branch ran"
+                )
+            );
+            assert!(state.lock().unwrap().requests.is_empty());
+        }
+        // Without a bridge it is unavailable, and asks nothing when dispatched anyway.
+        let (mut dispatcher, state) = fake(vec![]);
+        with_room(&mut dispatcher);
+        let action = conditional(plugin_condition("is_on", true));
+        assert_eq!(dispatcher.unavailable(&action), Some(PLUGIN_UNAVAILABLE));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert_eq!(
+            error,
+            format!(
+                "conditional could not read com.example.lights is_on: {PLUGIN_UNAVAILABLE}; neither branch ran"
+            )
+        );
+        assert!(state.lock().unwrap().requests.is_empty());
+        // A variable that cannot be filled in asks nothing.
+        let (bridge, sent) = answering_bridge(vec![]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        let error = dispatcher.dispatch(&action).unwrap_err();
+        assert!(error.contains("variable room is not declared"), "{error}");
+        assert!(error.ends_with("neither branch ran"), "{error}");
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_plugin_condition_gets_what_is_left_of_the_deadline_and_at_most_3_s() {
+        let (bridge, sent) = answering_bridge(vec![Ok(Some(true)), Ok(Some(true))]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        let condition = plugin_condition("is_on", true);
+        let now = dispatcher.sleeper.now();
+        assert!(
+            dispatcher
+                .evaluate_condition(&condition, now + Duration::from_secs(15))
+                .unwrap()
+        );
+        assert!(
+            dispatcher
+                .evaluate_condition(&condition, now + Duration::from_millis(1200))
+                .unwrap()
+        );
+        let error = dispatcher.evaluate_condition(&condition, now).unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights is_on: the sequence's 15 s overall deadline has passed; the plugin was not asked; neither branch ran"
+        );
+        let timeouts: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record["timeout_ms"].clone())
+            .collect();
+        assert_eq!(timeouts, [3000, 1200]);
+    }
+
+    #[test]
+    fn a_group_asks_every_plugin_condition_in_order_without_stopping_early() {
+        use crate::profile::Condition;
+        // The first member already decides the `any`, and the second is still asked; its failure fails the press.
+        let (bridge, sent) = answering_bridge(vec![
+            Ok(Some(true)),
+            Err("the meeting app is closed".into()),
+        ]);
+        let (dispatcher, state) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        let error = dispatcher
+            .dispatch(&conditional(Condition::Any(vec![
+                plugin_condition("is_on", true),
+                plugin_condition("in_meeting", true),
+            ])))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights in_meeting: the meeting app is closed; neither branch ran"
+        );
+        let asked: Vec<_> = sent
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| record["condition"].clone())
+            .collect();
+        assert_eq!(asked, ["is_on", "in_meeting"]);
+        assert!(state.lock().unwrap().requests.is_empty());
+        // Both answered: `all` of true and false is false, so `else` runs.
+        let (bridge, sent) = answering_bridge(vec![Ok(Some(true)), Ok(Some(false))]);
+        let (dispatcher, state) = fake(vec![success("")]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        with_room(&mut dispatcher);
+        dispatcher
+            .dispatch(&conditional(Condition::All(vec![
+                plugin_condition("is_on", true),
+                plugin_condition("in_meeting", true),
+            ])))
+            .unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 2);
+        assert!(state.lock().unwrap().requests[0].args[1].contains("keystroke \"b\""));
+    }
+
+    #[test]
+    fn a_plugin_condition_from_a_swapped_out_profile_asks_nothing() {
+        let (bridge, sent) = answering_bridge(vec![]);
+        let (dispatcher, _) = fake(vec![]);
+        let mut dispatcher = dispatcher.with_plugins(Some(bridge));
+        let declared = vec![crate::profile::Variable {
+            name: "room".into(),
+            value: VariableValue::Text("desk".into()),
+        }];
+        dispatcher.variables.swap(&declared, 7);
+        dispatcher.variables.swap(&declared, 8);
+        dispatcher.set_service_state(ServiceState {
+            variables: declared,
+            profile: 7,
+            ..Default::default()
+        });
+        let error = dispatcher
+            .dispatch(&conditional(plugin_condition("is_on", true)))
+            .unwrap_err();
+        assert_eq!(
+            error,
+            "conditional could not read com.example.lights is_on: the profile changed after this key was pressed; the plugin was not asked; neither branch ran"
+        );
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_dry_run_records_a_plugin_conditional_without_asking() {
+        use crate::{ActionDispatcher, DryRunDispatcher};
+        let mut dispatcher = DryRunDispatcher::default();
+        let action = conditional(plugin_condition("is_on", true));
+        assert_eq!(dispatcher.unavailable(&action), None);
+        dispatcher.dispatch(&action).unwrap();
+        assert_eq!(dispatcher.actions, [action]);
     }
 }

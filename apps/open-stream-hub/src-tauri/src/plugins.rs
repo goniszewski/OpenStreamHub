@@ -57,7 +57,7 @@ pub const APPROVALS_FILE: &str = "plugin-approvals.json";
 /// The largest approvals file read.
 const MAX_APPROVALS_BYTES: usize = 256 * 1024;
 /// The largest manifest read.
-const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 /// Most actions one plugin offers.
 const MAX_ACTIONS: usize = 64;
 /// Most conditions one plugin offers.
@@ -78,6 +78,12 @@ const MAX_HOST_BYTES: usize = 255;
 /// The folder plugins live in: `<app data>/plugins`.
 pub fn dir(app_data: &Path) -> PathBuf {
     app_data.join("plugins")
+}
+
+/// The folder each plugin keeps its own state in, `<app data>/plugin-data/<id>/` (`OSH_PLUGIN_DATA`): outside its
+/// plugin folder, so an update, which replaces that folder whole, keeps it.
+pub fn data_dir(app_data: &Path) -> PathBuf {
+    app_data.join("plugin-data")
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -320,6 +326,12 @@ impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         check_schema(Some(self.schema))?;
         validate_plugin_id(&self.id)?;
+        if self.id == crate::plugin_host::SOCKET_FILE {
+            return Err(format!(
+                "the id {} is the plugin socket's name in the plugins folder; choose another id",
+                self.id
+            ));
+        }
         check_label("name", &self.name)?;
         parse_version(&self.version).ok_or("version must be MAJOR.MINOR.PATCH, such as 1.0.0")?;
         if self.command.is_empty() || self.command.len() > MAX_COMMAND_ITEMS {
@@ -818,13 +830,36 @@ pub fn load(folder: &Path) -> Result<(Manifest, String), String> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("");
-    if name != manifest.id {
+    if name != manifest.id || !named_exactly(folder) {
         return Err(format!(
-            "the folder is named {name}, but the manifest's id is {}; rename the folder to its id",
+            "the folder is named {}, but the manifest's id is {}; rename the folder to its id",
+            on_disk_name(folder).unwrap_or_else(|| name.to_string()),
             manifest.id
         ));
     }
     Ok((manifest, fingerprint(&bytes)))
+}
+
+/// The name `folder`'s entry has in its parent folder, which on a case-insensitive volume may differ in case from the
+/// name it was opened by.
+fn on_disk_name(folder: &Path) -> Option<String> {
+    let name = folder.file_name()?;
+    fs::read_dir(folder.parent()?)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.file_name())
+        .find(|entry| entry.eq_ignore_ascii_case(name))
+        .and_then(|entry| entry.into_string().ok())
+}
+
+/// Whether `folder`'s parent holds an entry of exactly its name, so `plugins/<id>` opened through a case-insensitive
+/// volume is not a folder named `<ID>` in other case.
+fn named_exactly(folder: &Path) -> bool {
+    let (Some(name), Some(parent)) = (folder.file_name(), folder.parent()) else {
+        return false;
+    };
+    fs::read_dir(parent)
+        .is_ok_and(|entries| entries.flatten().any(|entry| entry.file_name() == name))
 }
 
 /// The installed plugin `id` in `<app data>/plugins`, with its fingerprint, or why it cannot be used. The id is
@@ -1567,6 +1602,26 @@ mod tests {
                 .contains("rename the folder")
         );
         assert!(catalog(&plugins.join("missing")).is_empty());
+    }
+
+    #[test]
+    fn a_folder_is_used_only_under_its_exact_name() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("COM.EXAMPLE.LIGHTS");
+        fs::create_dir(&folder).unwrap();
+        fs::write(folder.join(MANIFEST_FILE), manifest_json().to_string()).unwrap();
+        // On a case-insensitive volume this path opens the folder above, but it is not named by the id.
+        let error = load(&root.path().join("com.example.lights")).unwrap_err();
+        if fs::metadata(root.path().join("com.example.lights")).is_ok() {
+            assert!(error.contains("named COM.EXAMPLE.LIGHTS"), "{error}");
+        }
+        let mut socket = manifest_json();
+        socket["id"] = json!(crate::plugin_host::SOCKET_FILE);
+        assert!(
+            parse(socket.to_string().as_bytes())
+                .unwrap_err()
+                .contains("socket")
+        );
     }
 
     #[cfg(unix)]

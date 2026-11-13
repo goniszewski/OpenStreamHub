@@ -1095,6 +1095,7 @@ html[data-mod-held] [data-shortcut]:disabled::before { display:none; }
 .plugin-item[data-state="restarting"] .plugin-state,.plugin-item[data-state="stopped"] .plugin-state,.plugin-item[data-state="unusable"] .plugin-state { color:var(--red); background:var(--soft-red); border-color:transparent; }
 .plugin-approval { display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px; margin-top:12px; }
 .plugin-approval .fine-print,.plugin-approval .field-error { margin:0; }
+.plugin-manage { display:flex; justify-content:flex-end; margin-top:10px; }
 .plugin-facts { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 14px; margin:14px 0 0; font-size:12px; line-height:1.5; }
 .plugin-facts dt { color:var(--muted); }
 .plugin-facts dd { margin:0; min-width:0; }

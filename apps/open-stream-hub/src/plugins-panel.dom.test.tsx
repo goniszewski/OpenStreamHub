@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act } from 'react';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { createPluginManageStore } from './plugin-manage-store';
 import { PluginsPanel } from './PluginsPanel';
 import { render } from './dom-test';
 import type { Rendered } from './dom-test';
@@ -286,7 +287,7 @@ describe('Installing and removing plugins in the DOM', () => {
     expect(view.$('#plugin-remove-title').textContent).toBe('Remove Lights?');
     expect(view.$('dialog').getAttribute('role')).toBe('alertdialog');
     expect(view.$('#plugin-remove-message').textContent).toContain('keep their keys, which then fail with "not installed"');
-    expect(view.$('#plugin-remove-message').textContent).toContain('its approval, its secrets in the Keychain and its data');
+    expect(view.$('#plugin-remove-message').textContent).toContain('its approval, the secrets its plugin.json declares in the Keychain, and its data');
     view.click(button(view.$('dialog'), 'Cancel'));
     expect(view.container.querySelector('dialog')).toBeNull();
     expect(commands(calls)).not.toContain('remove_plugin');
@@ -389,6 +390,35 @@ describe('Installing and removing plugins in the DOM', () => {
     await settle();
     expect(view.container.querySelector('dialog')).not.toBeNull();
     finish();
+    await settle();
+    expect(view.container.querySelector('dialog')).toBeNull();
+    expect(button(view.$('.settings-actions'), 'Install…').disabled).toBe(false);
+  });
+
+  it('keeps a folder picked after leaving the page, and opens no second picker meanwhile', async () => {
+    let pick!: (path: string) => void;
+    const fake = fakeInvoke({}, { review_plugin_install: fresh });
+    const invoke = (async (command: string, args?: unknown) => command === 'choose_plugin_folder'
+      ? new Promise<string>(resolve => { pick = resolve; }) : fake.invoke(command, args as Record<string, unknown> | undefined)) as typeof fake.invoke;
+    const store = createPluginManageStore();
+    view = render(<PluginsPanel desktop invoke={invoke} manageStore={store} />);
+    await settle();
+    view.click(button(view.$('.settings-actions'), 'Install…'));
+    await settle();
+    // The picker does not block the app: the user goes to another page and back while it is open.
+    view.unmount();
+    view = render(<PluginsPanel desktop invoke={invoke} manageStore={store} />);
+    await settle();
+    expect(button(view.$('.settings-actions'), 'Install…').disabled).toBe(true);
+    view.unmount();
+    pick(fresh.path);
+    await settle();
+    view = render(<PluginsPanel desktop invoke={invoke} manageStore={store} />);
+    await settle();
+    expect(view.$('#plugin-install-title').textContent).toBe('Install Notify?');
+    expect(fake.calls.filter(([command]) => command === 'choose_plugin_folder')).toHaveLength(0);
+    expect(fake.calls).toContainEqual(['review_plugin_install', { path: fresh.path }]);
+    view.click(button(view.$('dialog'), 'Cancel'));
     await settle();
     expect(view.container.querySelector('dialog')).toBeNull();
     expect(button(view.$('.settings-actions'), 'Install…').disabled).toBe(false);

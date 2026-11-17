@@ -1286,6 +1286,36 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// Every plugin the repository ships, the example and the official ones, is a manifest this app accepts, in a
+    /// folder named by its id, so a user can install it as it is.
+    #[test]
+    fn the_plugins_in_the_repository_are_valid_manifests() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let mut checked = Vec::new();
+        for parent in ["examples/plugins", "plugins"] {
+            for entry in fs::read_dir(root.join(parent)).unwrap() {
+                let folder = entry.unwrap().path();
+                if !folder.join(MANIFEST_FILE).is_file() {
+                    continue;
+                }
+                let bytes = fs::read(folder.join(MANIFEST_FILE)).unwrap();
+                let manifest =
+                    parse(&bytes).unwrap_or_else(|error| panic!("{}: {error}", folder.display()));
+                assert_eq!(
+                    folder.file_name().and_then(|name| name.to_str()),
+                    Some(manifest.id.as_str()),
+                    "the folder must be named by the plugin's id"
+                );
+                checked.push(manifest.id);
+            }
+        }
+        checked.sort();
+        assert_eq!(
+            checked,
+            ["com.example.notify", "com.github.goniszewski.nowplaying"]
+        );
+    }
+
     pub fn manifest_json() -> serde_json::Value {
         json!({
             "schema": 1, "id": "com.example.lights", "name": "Lights", "version": "1.2.0",

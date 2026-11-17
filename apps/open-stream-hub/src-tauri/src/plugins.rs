@@ -24,7 +24,7 @@
 //! `command[0]` is a path inside the folder (no `..`) or an absolute path such as `/usr/local/bin/node`; the rest are
 //! its arguments, passed as they are. `conditions` are checks an if / else asks the plugin when the key is pressed; a
 //! condition's id, label and `params` follow the action rules (ids are unique among conditions, and may repeat an
-//! action's), without `events`. A manifest has actions, conditions or both. Permissions are what the plugin says it needs, shown to the user: a plugin runs
+//! action's), without `events` or `image`. An action with `"image": true` draws the keys bound to it (step 4c). A manifest has actions, conditions or both. Permissions are what the plugin says it needs, shown to the user: a plugin runs
 //! as the user, so they are consent information, not enforcement.
 //!
 //! `schema` is the manifest format's version. This app reads [`SCHEMA`] only; a change that would make an older app
@@ -115,6 +115,9 @@ pub struct ManifestAction {
     /// The plugin hears the other input on controls bound to this action, as `event` messages.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub events: bool,
+    /// The plugin draws the keys whose first binding runs this action, and hears when they are on screen.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub image: bool,
 }
 
 /// A check a plugin offers: its id, label and parameters follow the action rules; it takes no events.
@@ -670,6 +673,34 @@ pub fn check_event(
     {
         return Err(format!("{action} does not take events"));
     }
+    check_told(manifest, action, params, variables)
+}
+
+/// Checks a `plugin_key` record against the manifest, as [`check_event`] does an event, except that the action must
+/// draw its keys (`"image": true`) instead of taking events.
+pub fn check_key(
+    manifest: &Manifest,
+    action: &str,
+    params: &BTreeMap<String, PluginValue>,
+    variables: &[String],
+) -> Result<(), String> {
+    if !manifest
+        .action(action)
+        .is_some_and(|declared| declared.image)
+    {
+        return Err(format!("{action} does not draw its keys"));
+    }
+    check_told(manifest, action, params, variables)
+}
+
+/// What a plugin is told without being asked (an event, a key): the action's parameters without its secrets, and not
+/// all required ones.
+fn check_told(
+    manifest: &Manifest,
+    action: &str,
+    params: &BTreeMap<String, PluginValue>,
+    variables: &[String],
+) -> Result<(), String> {
     refuse_profile_secrets(manifest, PluginUseKind::Action, action, params)?;
     check_params(
         manifest,
@@ -1826,6 +1857,8 @@ mod tests {
         assert!(checked(&|m| m["conditions"][0]["params"][1]["id"] = json!("entity")).is_err());
         let error = checked(&|m| m["conditions"][0]["events"] = json!(true)).unwrap_err();
         assert!(error.contains("unknown field `events`"), "{error}");
+        let error = checked(&|m| m["conditions"][0]["image"] = json!(true)).unwrap_err();
+        assert!(error.contains("unknown field `image`"), "{error}");
         assert!(checked(&|m| m["conditions"][0]["what"] = json!(1)).is_err());
         let many: Vec<_> = (0..65)
             .map(|index| json!({"id": format!("c{index}"), "label": "C"}))
@@ -1988,5 +2021,47 @@ mod tests {
         let text = serde_json::to_string(&profile).unwrap();
         assert!(!text.contains("old-token"), "{text}");
         assert!(text.contains("\"entity\":\"a\""), "{text}");
+    }
+
+    #[test]
+    fn an_action_may_draw_its_keys_and_only_its_keys_are_told() {
+        let mut value = manifest_json();
+        value["actions"][1]["image"] = json!(true);
+        let manifest: Manifest = serde_json::from_value(value).unwrap();
+        manifest.validate().unwrap();
+        assert!(manifest.actions[1].image && !manifest.actions[0].image);
+        // Listed as it is set, and left out where it is not.
+        let listed = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(listed["actions"][1]["image"], true);
+        assert!(listed["actions"][0].get("image").is_none());
+        assert!(with(|m| m["actions"][0]["image"] = json!("yes")).is_err());
+        let params = |value: serde_json::Value| -> BTreeMap<String, PluginValue> {
+            serde_json::from_value(value).unwrap()
+        };
+        // Required parameters may be missing, as for an event; secrets and undeclared ones may not.
+        check_key(&manifest, "set", &params(json!({"level": 3})), &[]).unwrap();
+        check_key(
+            &manifest,
+            "set",
+            &params(json!({"entity": "{{room}}"})),
+            &["entity".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            check_key(&manifest, "toggle", &params(json!({})), &[]).unwrap_err(),
+            "toggle does not draw its keys"
+        );
+        assert!(check_key(&manifest, "set", &params(json!({"token": "x"})), &[]).is_err());
+        assert!(check_key(&manifest, "set", &params(json!({"x": 1})), &[]).is_err());
+        assert!(
+            check_key(
+                &manifest,
+                "set",
+                &params(json!({"level": 3})),
+                &["level".into()]
+            )
+            .is_err()
+        );
+        assert!(check_event(&manifest, "set", &params(json!({})), &[]).is_err());
     }
 }

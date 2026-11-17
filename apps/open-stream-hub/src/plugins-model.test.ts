@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { PluginAction } from './contracts';
 import { pluginIssue, pluginReferences } from './action-model';
-import { formatSize, pluginActionIssues, pluginActionWith, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
+import { formatSize, pluginActionIssues, pluginActionWith, pluginDrawsKey, pluginParamIssue, pluginSecretSet, resolvePluginAction, usablePlugins, versionAtLeast, withPluginParam } from './plugins-model';
+import type { PluginListing } from './plugins-model';
 import { lights, listing } from './plugins-test-data';
 import { capabilityLines, profileCapabilities, stepLabel } from './profile-capabilities';
 import { actionVariableNames, renameVariable } from './variable-model';
@@ -49,6 +50,21 @@ describe('plugins model', () => {
     expect(resolvePluginAction(listing, action({ action: 'dim' })).problem).toContain('has no action dim');
     expect(resolvePluginAction(listing, action({ min_version: '2.0.0' })).problem).toContain('older than 2.0.0');
     expect(resolvePluginAction(null, action({ plugin: 'com.example.gone' }))).toEqual({});
+  });
+
+  it('says a plugin draws a key only for a direct action whose manifest marks image', () => {
+    const drawing: PluginListing = { ...listing, plugins: listing.plugins.map(plugin => plugin.manifest
+      ? { ...plugin, manifest: { ...plugin.manifest, actions: [{ ...lights.actions[0], image: true }, lights.actions[1]] } } : plugin) };
+    const action = (patch: Partial<PluginAction>): PluginAction => ({ type: 'plugin', plugin: 'com.example.lights', min_version: '1.0.0', action: 'toggle', ...patch });
+    expect(pluginDrawsKey(drawing, action({}))).toBe(true);
+    expect(pluginDrawsKey(drawing, action({ action: 'set' }))).toBe(false);
+    expect(pluginDrawsKey(listing, action({}))).toBe(false);
+    // A key that cannot run it, a step of a multi-action, no binding, or no listing: not drawn.
+    expect(pluginDrawsKey(drawing, action({ min_version: '2.0.0' }))).toBe(false);
+    expect(pluginDrawsKey(drawing, action({ plugin: 'com.example.gone' }))).toBe(false);
+    expect(pluginDrawsKey(drawing, { type: 'multi_action', actions: [action({})] })).toBe(false);
+    expect(pluginDrawsKey(drawing, undefined)).toBe(false);
+    expect(pluginDrawsKey(null, action({}))).toBe(false);
   });
 
   it('starts from the defaults and keeps values that still fit when the action changes', () => {

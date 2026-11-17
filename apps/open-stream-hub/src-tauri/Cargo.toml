@@ -19,7 +19,8 @@ custom-protocol = ["tauri/custom-protocol"]
 tauri-build = { version = "2.5", features = [] }
 
 [dependencies]
-image = { version = "=0.25.10", default-features = false, features = ["jpeg"] }
+# png: plugin key images (src/plugin_host.rs) are read as PNG or JPEG; already built for cooltek-sdk-cli.
+image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }
 tauri = { version = "2.12", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2.5"
 serde = { version = "1", features = ["derive"] }
@@ -61,4 +62,3 @@ drag = "2.1.1"
 
 [dev-dependencies]
 tempfile = "3"
-image = { version = "=0.25.10", default-features = false, features = ["jpeg", "png"] }

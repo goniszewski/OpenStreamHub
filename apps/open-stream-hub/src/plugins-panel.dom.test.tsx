@@ -19,7 +19,7 @@ beforeAll(() => {
 });
 
 const hall: PluginManifest = { ...lights, id: 'com.example.hall', name: 'Hall', command: ['/usr/bin/python3', 'plugin.py', '--quiet'],
-  actions: [{ ...lights.actions[0], events: true }, ...lights.actions.slice(1)],
+  actions: [{ ...lights.actions[0], events: true }, { ...lights.actions[1], image: true }],
   permissions: { network: ['homeassistant.local:8123'], variables: ['room'], programs: true } };
 const desk: PluginManifest = { ...lights, id: 'com.example.desk', name: 'Desk', actions: [lights.actions[0]] };
 
@@ -114,6 +114,11 @@ describe('Settings > Plugins in the DOM', () => {
     expect(events).toHaveLength(1);
     expect(events[0].closest('li')?.textContent).toContain('Toggle');
     expect(events[0].textContent).toContain('hears the other input on keys and controls bound to this action');
+    // Only the action that draws its keys says so.
+    const images = view.$$('.plugin-enable-image');
+    expect(images).toHaveLength(1);
+    expect(images[0].closest('li')?.textContent).toContain('Set a light');
+    expect(images[0].textContent).toBe('It draws the keys bound to this action, and learns when they are on screen.');
     // Hall's secret is not set, so none is named as one that will be sent.
     expect(text).not.toContain('Stored secrets');
     view.click(button(dialog, 'Enable'));

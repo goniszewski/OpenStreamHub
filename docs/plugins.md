@@ -1,8 +1,8 @@
 # Writing a plugin
 
-Status (13 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5), input events (step 4a), plugin conditions (step 4b) and installing from Settings (step 6a). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
+Status (16 November 2026): **manifest schema 1**, with the first-enable dialog and Keychain secrets ([design](plugins-design.md), step 5), input events (step 4a), plugin conditions (step 4b), key images (step 4c) and installing from Settings (step 6a). Schema 1 is stable: a change that would make an older app misread a manifest gets a new schema number. Built on macOS only.
 
-A plugin adds actions a key can run, such as switching smart lights, and conditions an if / else can test, such as whether a light is on. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
+A plugin adds actions a key can run, such as switching smart lights, conditions an if / else can test, such as whether a light is on, and pictures on the keys that run its actions. It is a separate program that the OpenStreamHub app starts and talks to over a local socket. It can be written in any language. A working example in Python, using only the standard library, is in [`examples/plugins/com.example.notify`](../examples/plugins/com.example.notify).
 
 **A plugin runs as you.** It can do anything you could do. The permissions a manifest lists are shown to the user but nothing enforces them, apart from the variables it may set.
 
@@ -64,7 +64,7 @@ Copying a folder in by hand still works: the folder's name must be the plugin's 
     { "id": "toggle", "label": "Toggle a light", "events": true, "params": [
       { "id": "entity", "label": "Light", "type": "text", "variables": true, "required": true }
     ] },
-    { "id": "set", "label": "Set brightness", "params": [
+    { "id": "set", "label": "Set brightness", "image": true, "params": [
       { "id": "entity", "label": "Light", "type": "text", "required": true },
       { "id": "level", "label": "Level", "type": "number", "min": 0, "max": 100, "default": 50 },
       { "id": "fade", "label": "Fade", "type": "bool" },
@@ -92,8 +92,9 @@ Unknown fields are refused, so a misspelt field is an error, not silently ignore
 | `version` | `MAJOR.MINOR.PATCH`, compared numerically |
 | `command` | 1 to 16 items: the program, then its arguments, passed as they are (no shell). The program is a path inside the folder without `..`, or an absolute path |
 | `actions` | Up to 64, ids unique: 1 to 64 of `a-z`, `0-9`, `_`, `-` and `.`, starting with a letter. `label` 1 to 64 bytes. May be left out, or empty, when the plugin has `conditions`: a manifest needs at least one action or condition |
-| `conditions` | Optional, up to 64, ids unique among conditions (one may repeat an action's id). Each has an `id`, `label` and `params` with exactly the action rules, `secret` and `variables` included, but no `events` (see [Conditions](#conditions)) |
+| `conditions` | Optional, up to 64, ids unique among conditions (one may repeat an action's id). Each has an `id`, `label` and `params` with exactly the action rules, `secret` and `variables` included, but no `events` or `image` (see [Conditions](#conditions)) |
 | `events` | Optional, `true` or `false` (the default). With `true` the plugin also hears the other input on keys and controls bound to this action (see [Input events](#input-events)) |
+| `image` | Optional, `true` or `false` (the default). With `true` the plugin draws the keys that run this action and hears when they are on screen (see [Key images](#key-images)) |
 | `params` | Up to 32 per action or condition, ids unique, with the variable name rules (1 to 32 of `a-z`, `0-9` and `_`, starting with a letter) |
 | `type` | `text`, `number`, `bool` or `choice` |
 | `required` | The press fails, and the editor shows an error, when the parameter is missing |
@@ -119,6 +120,7 @@ The plugin connects to `OSH_PLUGIN_SOCKET` (a Unix socket in a 0700 folder). Eac
 4. After 10 seconds without a line from the plugin, the app sends `{"type":"ping"}`. The plugin must send any line (`{"type":"pong"}`) within 5 seconds, or it is killed and restarted.
 5. For an action with `"events": true`, the app also sends `event` messages, which are not answered (see [Input events](#input-events)).
 6. When an if / else that tests one of its conditions runs, the app sends `{"type":"check","request":9,"condition":"is_on","params":{"entity":"light.desk"},"timeout_ms":3000,"input":{…}}`, answered with the same `result` plus `"value":true` or `false` (see [Conditions](#conditions)). Request numbers are shared with invokes.
+7. For an action with `"image": true`, the app sends `appear` and `disappear`, which are not answered, and the plugin may send `set_image` and `clear_image`, answered with a `reply` (see [Key images](#key-images)).
 
 **Ignore what you do not know.** A newer app may add fields to any message, and new message types. A plugin must ignore both, never fail on them.
 
@@ -135,7 +137,7 @@ An invoke tells a plugin about the one gesture its action is bound to. With `"ev
 - **Keypad pages and dial functions.** A key is the action's only while its page is shown, and a release goes to the key that took the press even if the page changed meanwhile. The dial is the action's only while the function holding it is selected; a short press, which switches functions, is never an event there, and neither are the raw `pressed` and `released` that make up a click. Without dial functions the dial reports `pressed` and `released`, then `short_press` or `long_press` once the click ends, so an action bound to `long_press` hears the release before its invoke.
 - **Fields.** `gesture` uses the profile's names: `pressed`, `released`, `clockwise`, `counter_clockwise`, `right`, `left`, `short_press`, `long_press`, `up`, `down`. `control` names the module (`m003k`, `m131e`, `m4315`, `m032le`) and the control's zero-based index. `params` are the bound action's parameters with variables filled in, so two keys bound to the same action can be told apart, but **without its secrets**.
 - **Delivery.** In input order with the plugin's invokes, and after the invoke of the press that came before, since a release is handled once its press is answered. Only while the plugin is enabled, running and connected, and only from Live runs. Nothing is answered and nothing goes in the activity log. At most 50 a second per plugin: more are dropped, and the next one queued adds to the plugin's log how many were. Up to 64 events wait for a plugin that is busy and not reading its socket; more are dropped and counted. A slow reader is not disconnected for being slow, but it must still answer pings in time, and once more than 1 MiB is waiting for it, anything other than an event ends the connection. When the module falls far behind, a plugin's steps on one knob are merged into the latest. Treat each event as one step and do not count on hearing every one of a fast knob turn.
-- **A press may have no release, and a release may have no press.** The plugin is not told when a key goes away (a page switch, a profile stop, a switch to Test, a reconnect), so a held key may never send its release. A release may come for a press made in a Test run, or for a press the module dropped because it had fallen far behind. Do not keep a key "on" forever waiting for one.
+- **A press may have no release, and a release may have no press.** Only a key the action draws (see [Key images](#key-images)) is told when it goes away (a page switch, a profile stop, a switch to Test, a reconnect); other keys and controls are not, so a held key may never send its release. A release may come for a press made in a Test run, or for a press the module dropped because it had fallen far behind. Do not keep a key "on" forever waiting for one.
 
 The example plugin's **Hold** action logs how long a key was held.
 
@@ -158,6 +160,29 @@ A condition is a check an if / else asks the plugin when its key is pressed, as 
 - **Order.** A module's checks and invokes reach the plugin in the order they were made, through the same path: the same manifest checks (against `conditions`), the same secrets, the 8-waiting limit. Across modules there is one exception: a request waiting for a Keychain read can be overtaken by another module's request whose secrets are already held.
 
 The example plugin's **Pressed at least** condition holds once its **Count presses** action has counted to a number.
+
+## Key images
+
+An action with `"image": true` draws the keys bound to it: an album cover, a light's colour, a count.
+
+```json
+{"type":"appear","key":"k12","action":"set","params":{"entity":"light.desk"},"control":{"module":"m4315","index":3}}
+{"type":"disappear","key":"k12"}
+{"type":"set_image","id":3,"key":"k12","image":"<base64 PNG or JPEG>"}
+{"type":"clear_image","id":4,"key":"k12"}
+```
+
+- **Which keys.** An M4315 key is the action's while its first binding that applies to the unit runs the action directly, not as a step of a multi-action or an if / else. A binding for one serial counts only on that unit, so on other units the next binding that applies decides. Not the dial screen. Only while Settings > Module control lets the app drive the displays (not **Built-in animation**), and only in Live runs: a Test run never starts a plugin, so its keys show their own face.
+- **`appear` and `disappear`** are not answered. `appear` comes when a key comes on screen (the run starts executing, its page opens) and, for every key of the plugin on screen, just after `welcome`, so a restarted plugin learns them again. Its `params` are those when the key was shown: a variable that changes while the key is on screen sends no new `appear`. `disappear` comes when the key leaves the screen: another page, the run stops or switches to Test, the key is bound to something else. Only while the plugin is enabled, running and connected, and only for what the manifest accepts, as for an event.
+- **Fields.** `key` is an id the app gives one key of one module run, kept while the run lasts and new for the next one; it says nothing else, so keep it only to answer with. `params` are as in an event: variables filled in, **no secrets**. `control` names the module and the key's index.
+- **`set_image`** sets the key's picture: standard base64 of a 72×72 PNG or JPEG of at most 32 KiB. The app checks the size before decoding and the dimensions before the pixels, then re-encodes it as the module's baseline JPEG, so a plugin needs no JPEG encoder and the module never sees the plugin's bytes. A key of a Live run that is not on screen takes one too; the module shows it when its page opens. **`clear_image`** puts the key's own face back.
+- **Replies.** Each is answered `{"type":"reply","id":3,"ok":true}` once the module took it, or `ok: false` with why: an unknown or stale key (its run ended, or a key the plugin was never sent an `appear` for, which includes another plugin's keys), a key of an action that no longer has `image`, a key that needs a newer version of the plugin, a run that is not Live, a bad picture, a message without a `key`, too many, the plugin stopping while its picture was prepared, or the module's own refusal.
+- **Limits.** At most 20 `set_image` and `clear_image` a second per plugin, the two counted together; more are refused, and the next one taken adds to the plugin's log how many were. At most 32 of a plugin's requests wait for one module run; more of its own are refused until the run catches up. Each plugin's requests wait in a line of their own, taken in turn, so one plugin's backlog does not hold up another's. Send a picture when it changes, not on a timer.
+- **What wins on a key**, from the top: the pressed dim, a running timer's countdown, a key face whose condition holds, the plugin's image, the key's own artwork, the generated icon and label. So a face the user set still overrides the plugin, and a press still dims its picture. The image is turned with the module like any other.
+- **Images last only for the run.** They are never saved in the profile. When the plugin stops or restarts, for any reason, its images are cleared from every run it drew on, and the new process draws only the keys it is sent an `appear` for; when the run stops or switches to Test, they are gone. Draw again after the next `appear`.
+- **In the editor** the key shows its own face, which is also what shows in Test, before the plugin's first image and after it stops. The inspector says the plugin draws the key while a Live run uses it, and the first-enable dialog says which actions draw their keys.
+
+The example plugin's **Counter** action draws its press count on its keys, as a PNG made with the standard library.
 
 ## How a press reaches the plugin
 
@@ -191,7 +216,7 @@ The Execute confirmation names each plugin action and plugin condition with its 
 
 ## Not built yet
 
-- Plugin-supplied key images (design step 4c), and telling a plugin when its key appears or disappears (a page switch, a profile stop).
+- Images on the dial screen, and on keys that run a plugin action only as a step; keeping a plugin's images across runs or restarts.
 - Plugin conditions on key faces, caching of a plugin's answers, and conditions that answer anything other than true or false.
 - `.zip` archives, drag and drop onto Settings > Plugins, a registry and update checks (step 6b), signature checks of a plugin's author, and an optional `"background": true` plugin that runs without a Live profile (later).
 - Plugins on Windows or Linux.

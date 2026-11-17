@@ -1,6 +1,6 @@
 # Plugins: research and proposed design
 
-Status (13 November 2026): **steps 1 to 3 and 5 built**: preset packs, the `run_program` action, the plugin protocol with action providers, and community readiness (manifest schema 1, the first-enable dialog, Keychain secrets; author guide: [writing a plugin](plugins.md)). Of steps 4 and 6, input events ([4a](#step-4a-input-events)), plugin conditions ([4b](#step-4b-plugin-conditions)) and installing from Settings ([6a](#step-6a-installing-a-plugin)) are built; plugin-supplied key images and a registry are not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
+Status (16 November 2026): **steps 1 to 5 built**: preset packs, the `run_program` action, the plugin protocol with action providers, input events ([4a](#step-4a-input-events)), plugin conditions ([4b](#step-4b-plugin-conditions)) and key images ([4c](#step-4c-key-images)), and community readiness (manifest schema 1, the first-enable dialog, Keychain secrets; author guide: [writing a plugin](plugins.md)). Of step 6, installing from Settings ([6a](#step-6a-installing-a-plugin)) is built; a registry is not started. Plugins are not in the official MasterHUB 1.0.0.113 either: there "plugin" means built-in integrations (OBS, Twitch, Discord, Streamlabs), and a plugin SDK is absent ([app features](research/masterhub-1.0.0.113-app-features.md)). So plugins would be our own extension, not a parity item, and need no change to the device protocol.
 
 ## What exists today
 
@@ -122,7 +122,7 @@ Generate the form from the manifest's parameter types. Do not allow plugin-suppl
 1. **Data-only packs.** Built: the app preset packs, and packs dropped into `packs/` in the app data folder, checked by the same rules (see `apps/open-stream-hub/presets/README.md`).
 2. **A "run program" action** (see below). A small change that covers much of what people would want a plugin for, and it settles the step, deadline and confirmation rules before the protocol exists.
 3. **Plugin protocol and action providers.** Built: manifest, plugin socket, lifecycle, routing through the service, `Action::Plugin`, the editor form and Settings > Plugins ([writing a plugin](plugins.md)). How it differs from this proposal is listed under [as built](#plugin-protocol-as-built).
-4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images. Events and conditions are built ([4a](#input-events-as-built), [4b](#plugin-conditions-as-built)); images are not.
+4. **Events, conditions and key images.** Events for a plugin's own controls, condition providers, plugin-supplied images. Events, conditions and key images are built ([4a](#input-events-as-built), [4b](#plugin-conditions-as-built), [4c](#key-images-as-built)).
 5. **Community readiness.** Built: a versioned manifest schema, author docs and the trust UI ([as built](#trust-ui-as-built)).
 6. **Distribution.** Install by dropping a folder in first; a registry only if there is demand. Installing, updating and removing from Settings is built ([6a](#installing-a-plugin-as-built)); no registry.
 
@@ -379,6 +379,94 @@ Built on 13 November 2026 as proposed above, with these differences:
 - **Keychain reads count against a check's time.** The first check needing a secret not read yet waits for the Keychain within its 3 seconds, so a Keychain prompt can fail it; once read, the secret is held. Such a check waits on the plugin's invoke thread, so it keeps its order within its module, but another module's check or press whose secrets are held can overtake it.
 - **Diagnostics.** A plugin condition's text parameters are replaced with their length in a diagnostics bundle's profile, as a plugin action's are.
 - **The example's `count` is required**, so a check without it fails at once instead of in the plugin.
+
+## Step 4c: key images
+
+Status: proposed 16 November 2026, built 16 November 2026 ([as built](#key-images-as-built)).
+
+Today a plugin can change a key only through a variable it sets, which picks one of the key faces the user drew in advance (label and background). It cannot show a picture it makes itself: an album cover, a light's colour, a graph, a meeting's time left. Step 4c lets a plugin draw the keys that run its actions, and tells it which of those keys are on screen.
+
+### Which keys a plugin draws
+
+- **A key is the plugin's to draw** while the tile's first binding (the one that already picks the tile's icon, `TileIcon`; as built, read per serial, see below) runs one of the plugin's actions directly, and the manifest marks that action `"image": true`. As for events, an action inside a `multi_action` or an if / else does not count, and an exact serial's binding hides a wildcard's.
+- **Keys only, on the M4315.** The dial screen is shared by every dial function and already has its own content setting; dial images are not in 4c.
+- **Only while the app drives the displays.** With Settings > Module control set to **Built-in animation** the service draws nothing, so no key is the plugin's and it is told of none.
+- **Live only.** A Test run never starts a plugin, so its keys show their own face.
+
+### What wins on a key
+
+From the top: the pressed dim, a running timer's countdown, a key face whose condition holds, **the plugin's image**, the key's own artwork, the generated icon and label. So a face the user set still overrides the plugin, a timer still shows its time, and a press still dims the plugin's picture. The image is turned with the module (`--display-turn`) like any other.
+
+### Messages
+
+App to plugin, not answered:
+
+```json
+{"type":"appear","key":"k12","action":"now_playing","params":{"player":"spotify"},"control":{"module":"m4315","index":3}}
+{"type":"disappear","key":"k12"}
+```
+
+- `key` is an id the app gives one tile of one module run (module, page and slot), new for each run. It says nothing else; a plugin keeps it only to answer with.
+- `appear` is sent when the key comes on screen (the run starts, a page with it opens) and for every key on screen just after `welcome`, so a restarted plugin learns them again. `disappear` when it leaves (another page, the run stops, the profile changes it). `params` are as in an event: variables filled in, **no secrets**.
+
+Plugin to app:
+
+```json
+{"type":"set_image","id":3,"key":"k12","image":"<base64 PNG or JPEG>"}
+{"type":"clear_image","id":4,"key":"k12"}
+```
+
+- The image is a 72×72 PNG or JPEG of at most 32 KiB. The app checks the size before decoding, decodes it, and re-encodes it as the module's baseline JPEG (`image_prep::prepare_keypad_image`), so a plugin needs no JPEG encoder and the device never sees a plugin's bytes. Anything else is refused in the `reply`.
+- The app answers each with `{"type":"reply","id":3,"ok":true}` or an error, as for `set_variable`: an unknown or stale key, a key that is not the plugin's, an action without `image`, a bad picture, too many.
+- `clear_image` puts the key's own face back.
+
+### Delivery
+
+- **At most 20 images a second per plugin**, and per key the newest replaces one not drawn yet, so a plugin that redraws too often loses frames, never order. More than 20 are refused in the reply. (As built, `clear_image` counts too, and the app also caps what waits; see [as built](#key-images-as-built).)
+- The app sends the prepared image to the module run on its control channel (`plugin_image {page, slot, jpeg}`, `plugin_image_clear`). The service keeps it in a small table shared with the display thread, as `TimerFaces` is, and the display thread redraws through the usual `DisplaySync` diff (trigger `plugin`). It is not the existing `key_image` request, which writes past `DisplaySync` and would leave it believing another picture is drawn.
+- **Images live only for the run.** They are never written to the profile, and a page switch back shows the kept image at once. The table is emptied when the plugin stops or restarts, when the run stops, and for a key whose binding changes in a saved profile, so a stale picture never stays on a key.
+- The service writes `plugin_key` records (`shown` / `hidden`, page, slot, plugin, action, params) as pages change; the app turns them into `appear` and `disappear`. The service does not read manifests, so it writes them for every direct plugin action and the app drops those whose action lacks `image`.
+- Image writes do not go in the activity log. The plugin's log counts refused images, as it counts dropped events.
+
+### Manifest and consent
+
+- An action may set `"image": true`. Schema stays 1, as for `events`.
+- The first-enable dialog says, for each such action, that the plugin draws the keys bound to it and learns when they are on screen.
+- The Execute confirmation does not change: drawing a key runs nothing.
+
+### Editor
+
+The editor cannot know what a plugin will draw, so it shows the key's own face and, in the inspector, a line saying the plugin draws this key while a Live run uses it. The key's own face is what shows in Test, before the plugin's first image, and after it stops.
+
+### Not in 4c
+
+- Dial images, and images for keys that run a plugin action only as a step.
+- Text or title updates without a picture: a plugin can set a variable that a key face follows.
+- Animations as one message. A plugin can send frames, within the rate limit.
+- Keeping a plugin's last image across runs or restarts.
+
+### Work
+
+1. **Service:** decide which tiles are a plugin's from their first binding, write `plugin_key` records as the shown page changes, take `plugin_image` and `plugin_image_clear` on the control channel into a shared table, and a `PluginImages` provider in the display chain below the faces and above the artwork. Unit tests for ownership, the order of what wins, page switches and clearing.
+2. **App:** `image` in the manifest parser, key ids per run, `appear` / `disappear` (and again after `welcome`), `set_image` and `clear_image` with the checks, the decode and re-encode and the rate limit, and clearing on plugin stop.
+3. **Frontend:** the enable dialog's line, the manifest type, and the inspector's line.
+4. **Example:** a "Counter" action in `com.example.notify` that draws its press count on its key.
+5. **Docs:** the author guide (manifest field, `appear`, `disappear`, `set_image`, `clear_image`, the order of what wins) and this section marked as built.
+
+## Key images as built
+
+Built on 16 November 2026 as proposed above, with these differences:
+
+- **Only with the plugin host.** The service reports keys and takes images only in a run that has both key display sync and `--plugin-host`; otherwise `plugin_image` and `plugin_image_clear` are refused.
+- **A first binding is read per serial.** A tile is the plugin's when its first binding that applies to the module's serial is the plugin's action (an exact serial hides a wildcard, as in routing). `TileIcon` takes the first binding regardless of serial, so the two differ only when that binding is for another unit. The inspector's note reads the first binding and says "may draw" when the tile has serial selectors.
+- **Where shown and hidden come from.** The display thread writes them just before it draws a page other than the last one: `hidden` for the old page's keys, then `shown` for the new one's. A page replaced by a newer request before it is drawn is never reported. At run end, after the display thread has stopped and before `service_end`, every shown key is reported `hidden` and the table is emptied. A key whose parameters cannot be filled in when it would be shown is not reported.
+- **No in-place profile change.** A run that draws keys already refuses the `profile` control request and restarts, so a saved profile shows as the old run's keys disappearing and the new run's appearing; nothing diffs keys within one run.
+- **Parameters are those at the time the key was shown.** A variable change while the key is on screen does not send a new `appear`.
+- **What wins, as built.** From the top: the pressed dim, a timer's countdown, the module turn and the brightness setting (which therefore apply to plugin images too, stored upright), a key face that holds, the plugin's image, the key's own artwork, the generated tile.
+- **Keys in the app.** Ids are `k<n>` from one counter, one per run, page and slot, kept while the key is hidden and for as long as the run lasts; a slot whose plugin or action changes gets a new id, and the old one a `disappear`. A run that stops executing with the plugin (a switch to Test) sends `disappear` for its keys and clears the plugin's images on that run; the keys are remembered and appear again when the run is Live again or after the next `welcome`.
+- **Replies wait for the module, not the plugin's reader.** Each run has an image thread, started on first use, that sends `plugin_image` or `plugin_image_clear` and then queues the reply with the module's own error. At most 32 of one plugin's requests wait for one run, counted per run and per plugin; more of its own are refused at once. They wait in one line per plugin, in order, and the thread takes the lines in turn, so one plugin's backlog does not hold up another's; the app's own clear of a plugin goes at the end of that plugin's line, after the images it still has queued. Per key, only the service's table keeps the newest; the app does not merge requests.
+- **Limits.** `set_image` and `clear_image` count together towards the 20 a second, and refused ones go in the plugin's log as one line when the next one is taken. The app's own clears (a plugin stopping, a run leaving Live) count towards neither limit. `set_image` and `clear_image` are refused for a key whose run is not Live with the plugin now, or that needs a newer version than the one installed. A key takes images only once the plugin's running process has been sent an `appear` for it in this run (it may be hidden since; a restarted process must be told again); any other id, another plugin's included, is answered as an unknown key, so a guessed id learns nothing. A plugin that stops, for any reason, has `plugin_image_clear` sent to every run it drew on since it started, and an image still being prepared when it stops is dropped.
+- **Redraws.** A plugin image change waits, as a variable change does, until 100 ms after the last sync (`ANIMATION_MIN_INTERVAL`), then one sync draws the newest images, so busy plugins cannot crowd out page changes and press feedback. A clean redraw for a plugin image is not logged, as for animation frames; a failed one is logged with trigger `plugin` and retried after the variable path's retry interval (1 s).
 
 ## Step 6a: installing a plugin
 

@@ -358,6 +358,45 @@ impl PluginInput {
     }
 }
 
+/// One M4315 key a plugin draws, as the `plugin_key` records that say it is shown or hidden describe it: the page
+/// and wire slot that identify it in the run, and the action that draws it with its parameters as they were filled
+/// in when it was shown.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PluginKey {
+    /// The keypad page the key is on.
+    pub page: String,
+    /// Wire index of the key, 0 through 14.
+    pub slot: u8,
+    /// The plugin's reverse-DNS id.
+    pub plugin: String,
+    /// The oldest plugin version the action works with.
+    pub min_version: String,
+    /// The action's id in the plugin's manifest.
+    pub action: String,
+    /// The parameters with the variables of `variables` filled in.
+    pub params: BTreeMap<String, PluginValue>,
+    /// The text parameters whose variables were filled in.
+    pub variables: Vec<String>,
+}
+
+impl PluginKey {
+    /// The `plugin_key` record: `state` is `shown` or `hidden`, `control` as in a `plugin_event`'s input.
+    pub fn to_record(&self, shown: bool) -> Value {
+        json!({
+            "type": "plugin_key",
+            "state": if shown { "shown" } else { "hidden" },
+            "page": self.page,
+            "slot": self.slot,
+            "plugin": self.plugin,
+            "min_version": self.min_version,
+            "action": self.action,
+            "params": self.params,
+            "variables": self.variables,
+            "control": {"module": ServiceModule::M4315, "index": self.slot},
+        })
+    }
+}
+
 /// Writes one JSON record to the service's stdout, in the same stream as its other records.
 pub type RecordSink = Box<dyn Fn(&Value) -> io::Result<()> + Send + Sync>;
 
@@ -535,6 +574,11 @@ impl PluginBridge {
             "variables": variables,
             "input": input.to_json(),
         }))
+    }
+
+    /// Tells the app that `key` came on screen (`shown`) or left it. Nothing waits and nothing comes back.
+    pub fn key(&self, key: &PluginKey, shown: bool) -> io::Result<()> {
+        (self.0.send)(&key.to_record(shown))
     }
 
     /// Hands the app's answer to the invoke or check waiting for `request`: `Ok` with the answer's boolean `value`,
@@ -782,6 +826,25 @@ mod tests {
             None,
         );
         assert!(sent.lock().unwrap()[1].get("input").is_none());
+        let key = PluginKey {
+            page: "root".into(),
+            slot: 3,
+            plugin: "com.x.y".into(),
+            min_version: "1.0.0".into(),
+            action: "now_playing".into(),
+            params: params(&[("player", PluginValue::Text("spotify".into()))]),
+            variables: vec!["player".into()],
+        };
+        bridge.key(&key, true).unwrap();
+        bridge.key(&key, false).unwrap();
+        let sent = sent.lock().unwrap();
+        assert_eq!(
+            sent[2],
+            json!({"type": "plugin_key", "state": "shown", "page": "root", "slot": 3, "plugin": "com.x.y",
+                "min_version": "1.0.0", "action": "now_playing", "params": {"player": "spotify"},
+                "variables": ["player"], "control": {"module": "m4315", "index": 3}})
+        );
+        assert_eq!(sent[3]["state"], "hidden");
     }
 
     #[test]

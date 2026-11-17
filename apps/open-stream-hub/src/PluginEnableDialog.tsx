@@ -58,6 +58,7 @@ export function PluginReviewBody({ manifest, folder, stored = [], warningId, int
         <ul className="plugin-enable-actions">{actions.map(action => <li key={action.id}>{action.label}
           {params(action.params, t)}
           {action.events && <p className="plugin-enable-events">{t('plugins.dialog.events')}</p>}
+          {action.image && <p className="plugin-enable-image">{t('plugins.dialog.image')}</p>}
         </li>)}</ul>
       </>}
       {conditions.length > 0 && <>

@@ -26,6 +26,7 @@
 
 use crate::dial_artwork::DialArtwork;
 use crate::display_artwork::PressedKey;
+use crate::plugin_image::PluginKeys;
 use crate::service_events::{
     PlannedEvent, TimerCancelReason, Work, cancel_timers, dial_function_details, emit, end_record,
     log_alert_outcome, plan_report, process_due_timers, process_work,
@@ -225,6 +226,8 @@ pub struct LiveDisplay {
     timer_faces: TimerFaces,
     /// The run's variables; a change redraws the page so key faces follow it (keys display).
     variables: Option<SharedVariables>,
+    /// The keys plugins draw: told which page is drawn, and a new image redraws the page (keys display).
+    plugin_keys: Option<PluginKeys>,
 }
 
 /// What a [`LiveDisplay`] draws.
@@ -260,6 +263,7 @@ impl LiveDisplay {
             press_feedback: false,
             timer_faces: TimerFaces::default(),
             variables: None,
+            plugin_keys: None,
         }
     }
 
@@ -278,6 +282,14 @@ impl LiveDisplay {
     /// Pass the store the key artwork's `VariableFaces` reads. Keys displays only.
     pub fn with_variables(mut self, variables: SharedVariables) -> Self {
         self.variables = Some(variables);
+        self
+    }
+
+    /// Writes `plugin_key` records as the drawn page changes, and redraws the page whenever a plugin's image
+    /// changes; only keys whose picture changed are written. Pass the keys whose table the key artwork's
+    /// `PluginImages` reads. At run end every shown key is reported hidden before `service_end`. Keys displays only.
+    pub fn with_plugin_keys(mut self, keys: PluginKeys) -> Self {
+        self.plugin_keys = Some(keys);
         self
     }
 
@@ -300,6 +312,7 @@ impl LiveDisplay {
             press_feedback: false,
             timer_faces: TimerFaces::default(),
             variables: None,
+            plugin_keys: None,
         }
     }
 
@@ -383,6 +396,9 @@ struct DisplayCounts {
     failures: AtomicU64,
     coalesced: AtomicU64,
     dropped_records: AtomicU64,
+    /// Wakes for a change outside the request slot, so tests can tell a waiting thread from a spinning one.
+    #[cfg(test)]
+    changed_wakes: AtomicU64,
 }
 
 /// The input owner's handle to the display thread.
@@ -417,6 +433,7 @@ impl DisplayThread {
                     press_feedback,
                     timer_faces,
                     variables,
+                    plugin_keys,
                 } = display;
                 let mut press_feedback = press_feedback;
                 let gate_closed = Arc::clone(&gate);
@@ -449,6 +466,13 @@ impl DisplayThread {
                         let mut animate = true;
                         let mut last_sync: Option<Instant> = None;
                         let faces_seen = std::cell::Cell::new(timer_faces.version());
+                        let plugin_images = plugin_keys.as_ref().map(|keys| keys.table().clone());
+                        // The plugin image version the keys last showed in full; it moves as
+                        // `variables_seen` does, so a failed plugin redraw is retried too.
+                        let plugin_seen = std::cell::Cell::new(
+                            plugin_images.as_ref().map(|table| table.version()),
+                        );
+                        let plugin_retry_at = std::cell::Cell::new(None::<Instant>);
                         // The variable version the keys last showed in full. It moves only after a
                         // sync that did not fail, so a failed redraw is tried again: at once on the
                         // next sync, and by itself after `VARIABLE_RETRY`.
@@ -499,12 +523,23 @@ impl DisplayThread {
                                 if version != faces_seen.replace(version) {
                                     return Some(ANIMATION_TRIGGER);
                                 }
+                                // A plugin change waits for the same gap as a variable change, so plugins
+                                // sending many images never hold navigation and presses up; it stays
+                                // unseen meanwhile and the newest images are drawn once the gap is over.
+                                let rested_since_sync = last_sync
+                                    .is_none_or(|last| last.elapsed() >= ANIMATION_MIN_INTERVAL);
+                                let version = plugin_images.as_ref().map(|table| table.version());
+                                if rested_since_sync
+                                    && version != plugin_seen.get()
+                                    && plugin_retry_at.get().is_none_or(|at| Instant::now() >= at)
+                                {
+                                    return Some(PLUGIN_TRIGGER);
+                                }
                                 // A variable change is taken only once the minimum gap since the last
                                 // sync has passed; until then it stays unseen, so a burst of changes
                                 // becomes one redraw of the newest values.
                                 let version = variables.as_ref().map(SharedVariables::version);
-                                let rested = last_sync
-                                    .is_none_or(|last| last.elapsed() >= ANIMATION_MIN_INTERVAL)
+                                let rested = rested_since_sync
                                     && variables_retry_at
                                         .get()
                                         .is_none_or(|at| Instant::now() >= at);
@@ -521,8 +556,20 @@ impl DisplayThread {
                                     }
                                 }
                                 Wake::Changed(trigger) => {
+                                    #[cfg(test)]
+                                    thread_counts.changed_wakes.fetch_add(1, Ordering::SeqCst);
                                     if let Some(request) = current.as_mut() {
                                         request.trigger = trigger;
+                                    } else if trigger == PLUGIN_TRIGGER {
+                                        // No page drawn yet: the first one shows the images anyway.
+                                        plugin_seen.set(
+                                            plugin_images.as_ref().map(|table| table.version()),
+                                        );
+                                    } else if trigger == VARIABLE_TRIGGER {
+                                        // Nor the faces: left unseen, the change would wake the
+                                        // thread again at once until the first request.
+                                        variables_seen
+                                            .set(variables.as_ref().map(SharedVariables::version));
                                     }
                                 }
                             }
@@ -540,9 +587,16 @@ impl DisplayThread {
                             // Read before the sync, which reads the values: a change during it
                             // stays unseen and is drawn next.
                             let drawing = variables.as_ref().map(SharedVariables::version);
+                            let drawing_plugins =
+                                plugin_images.as_ref().map(|table| table.version());
                             let began = Instant::now();
                             let record =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    // Before the page is drawn, so the app hears of its keys first;
+                                    // inside the guard, so a panic disables the display as a sync's does.
+                                    if let Some(keys) = &plugin_keys {
+                                        keys.show_page(page_of(request));
+                                    }
                                     artwork.advance(page_of(request), started.elapsed());
                                     let countdowns = timer_faces.snapshot();
                                     let counted = CountdownKey {
@@ -604,12 +658,20 @@ impl DisplayThread {
                             if record.is_ok() && !failed_write {
                                 variables_seen.set(drawing);
                                 variables_retry_at.set(None);
-                            } else if drawing != variables_seen.get() {
-                                variables_retry_at.set(Some(Instant::now() + VARIABLE_RETRY));
+                                plugin_seen.set(drawing_plugins);
+                                plugin_retry_at.set(None);
+                            } else {
+                                if drawing != variables_seen.get() {
+                                    variables_retry_at.set(Some(Instant::now() + VARIABLE_RETRY));
+                                }
+                                if drawing_plugins != plugin_seen.get() {
+                                    plugin_retry_at.set(Some(Instant::now() + VARIABLE_RETRY));
+                                }
                             }
-                            // A variable redraw leaves animation as it was either way.
+                            // A variable or plugin redraw leaves animation as it was either way.
                             let variable = request.trigger == VARIABLE_TRIGGER;
-                            if !variable {
+                            let plugin = request.trigger == PLUGIN_TRIGGER;
+                            if !variable && !plugin {
                                 if failed_write || (timed && !clean) {
                                     animate = false;
                                 } else if !timed && clean {
@@ -619,13 +681,14 @@ impl DisplayThread {
                             // Clean animation frames are counted in `syncs` but not logged:
                             // at up to ten a second they would flood the run log. A clean
                             // variable redraw that wrote nothing (no face changed) is not logged
-                            // either.
+                            // either. A clean plugin redraw is not logged, as an animation frame is not:
+                            // a plugin may send several images a second.
                             let wrote_nothing = record.as_ref().is_ok_and(|record| {
                                 record["written"]
                                     .as_array()
                                     .is_none_or(|written| written.is_empty())
                             });
-                            if clean && (timed || variable && wrote_nothing) {
+                            if clean && (timed || plugin || variable && wrote_nothing) {
                                 continue;
                             }
                             let failed = display_record(request, None, &[], Some(DISPLAY_PANIC));
@@ -811,6 +874,9 @@ const ANIMATION_TRIGGER: &str = "animation";
 
 /// Trigger of a key sync started by a change of a variable value (key faces).
 const VARIABLE_TRIGGER: &str = "variable";
+
+/// Trigger of a key sync started by a plugin's new or cleared key image.
+const PLUGIN_TRIGGER: &str = "plugin";
 
 /// Least time from a failed key sync to the retry of a variable redraw, so a display that keeps failing is
 /// retried (and logged) about once a second, not at every animation interval.
@@ -1435,6 +1501,10 @@ where
         .as_ref()
         .filter(|display| !display.is_dial())
         .map(|display| display.timer_faces.clone());
+    // The keys plugins draw, reported hidden at the end.
+    let plugin_keys = display
+        .as_ref()
+        .and_then(|display| display.plugin_keys.clone());
     // Started before the worker, so a failed spawn leaves nothing to clean up.
     // Fail closed: folder navigation must not run live without its display.
     let (display_records, display_thread) = match display {
@@ -1741,6 +1811,10 @@ where
     if let Some(display) = &display_thread {
         summary.display_sync_count = display.counts.syncs.load(Ordering::SeqCst);
         summary.display_failure_count = display.counts.failures.load(Ordering::SeqCst);
+    }
+    // After the display thread stopped showing pages, and before `service_end`.
+    if let Some(keys) = &plugin_keys {
+        keys.end();
     }
     if let Some(mut output) = output {
         let mut record = end_record(&counts.reason, counts.error.as_deref(), &summary, execute);
@@ -5289,6 +5363,438 @@ mod tests {
             Arc::default(),
         );
         run.result.unwrap();
+    }
+
+    #[test]
+    fn plugin_keys_are_shown_and_hidden_with_their_pages_and_their_images_redraw_the_keys() {
+        use crate::plugin_image::{PluginImageTable, PluginImages, PluginKeys};
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let plugin = json!({"type":"plugin","plugin":"com.x.now","min_version":"1.0.0","action":"now","params":{}});
+        let mut root = vec![Value::Null; 15];
+        root[1] = json!({"type":"folder","page_id":"more"});
+        root[3] = json!({"type":"action","label":"Now","bindings":[{"gesture":"pressed","action":plugin}]});
+        let mut more = vec![Value::Null; 15];
+        more[3] = json!({"type":"action","label":"Also","bindings":[{"gesture":"pressed","action":plugin}]});
+        let profile = Profile::from_json(
+            json!({"schema_version":2,"name":"draw","bindings":[],
+                "keypad":{"pages":[{"id":"root","name":"Keys","slots":root},
+                    {"id":"more","name":"More","slots":more}]}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let output = Output::default();
+        // One stream for both, whole lines at a time, as the service's stdout.
+        let lines = crate::control::SharedRecords::new(output.clone());
+        let records = Mutex::new(lines.clone());
+        let bridge = cooltek_sdk_service::PluginBridge::new(Box::new(move |record| {
+            writeln!(records.lock().unwrap(), "{record}")
+        }));
+        let table = PluginImageTable::default();
+        let drawn = PluginKeys::new(
+            &profile,
+            keypad_device(),
+            table.clone(),
+            bridge,
+            SharedVariables::new(),
+        )
+        .unwrap();
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            PluginImages {
+                inner: PreparedKeyArtwork::prepare().unwrap(),
+                table,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_plugin_keys(drawn.clone());
+        let plain = |colour| {
+            crate::display_artwork::encode(&image::RgbImage::from_pixel(72, 72, image::Rgb(colour)))
+                .unwrap()
+        };
+        let (red, green) = (plain([200, 0, 0]), plain([0, 200, 0]));
+        let drew = |fake: &Arc<Mutex<FakeDisplaySink>>, jpeg: &[u8]| {
+            fake.lock().unwrap().writes.iter().any(|write| {
+                write.target == DisplayTarget::Key(3) && write.jpeg == jpeg && write.fault.is_none()
+            })
+        };
+        let worker_output = lines;
+        let steps = vec![
+            wait_for_writes(&fake, 15),
+            Step::Run(Box::new({
+                let (fake, drawn_keys, red, green) =
+                    (Arc::clone(&fake), drawn.clone(), red.clone(), green.clone());
+                move || {
+                    // The shown key's picture is drawn at once, alone.
+                    drawn_keys
+                        .set_image("root", 3, &STANDARD.encode(&red))
+                        .unwrap();
+                    assert!(wait_until(|| drew(&fake, &red)), "the plugin's picture");
+                    assert_eq!(written(&fake), 16);
+                    // A key of a page not on screen is kept, and nothing is written for it.
+                    drawn_keys
+                        .set_image("more", 3, &STANDARD.encode(&green))
+                        .unwrap();
+                    thread::sleep(Duration::from_millis(150));
+                    assert_eq!(written(&fake), 16);
+                }
+            })),
+            keys(&[1], 10),
+            Step::Run(Box::new({
+                let (fake, drawn_keys, green) = (Arc::clone(&fake), drawn.clone(), green.clone());
+                move || {
+                    // The kept picture shows as its page opens.
+                    assert!(wait_until(|| drew(&fake, &green)), "the kept picture");
+                    let before = written(&fake);
+                    // Clearing redraws the key's own face; this write fails, so it is logged.
+                    fake.lock().unwrap().fail_next(
+                        DisplayTarget::Key(3),
+                        SinkError::ShortWrite {
+                            written: 10,
+                            expected: 65,
+                        },
+                    );
+                    drawn_keys.clear(Some("more"), Some(3), None).unwrap();
+                    assert!(wait_until(|| written(&fake) > before), "the cleared key");
+                    thread::sleep(Duration::from_millis(50));
+                }
+            })),
+            keys(&[], 20),
+        ];
+        let transport = Transport::new(steps);
+        let clock = Arc::clone(&transport.clock);
+        run_inner(
+            &mut InputReader::new(transport),
+            ProfileSession::new(profile).unwrap(),
+            keypad_device(),
+            false,
+            json!({"source":"synthetic"}),
+            keypad_options(2),
+            Arc::new(AtomicBool::new(false)),
+            Some(display),
+            move |stop| Ok((simple_actions(stop, Arc::default()), worker_output)),
+            move || clock.load(Ordering::SeqCst),
+        )
+        .unwrap();
+        let rows = output.rows();
+        let shown: Vec<String> = rows
+            .iter()
+            .filter(|row| row["type"] == "plugin_key")
+            .map(|row| {
+                format!(
+                    "{} {}/{}",
+                    row["state"].as_str().unwrap(),
+                    row["page"].as_str().unwrap(),
+                    row["slot"]
+                )
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "shown root/3",
+                "hidden root/3",
+                "shown more/3",
+                "hidden more/3"
+            ]
+        );
+        // The last key is hidden just before the end.
+        assert_eq!(rows[rows.len() - 2]["type"], "plugin_key");
+        assert_eq!(rows.last().unwrap()["type"], "service_end");
+        // Clean plugin redraws are not logged; the failed one is, under its trigger.
+        let records = display_rows(&rows);
+        let triggers: Vec<_> = records
+            .iter()
+            .map(|record| record["trigger"].as_str().unwrap())
+            .collect();
+        assert_eq!(triggers, ["software_mode", "navigation", "plugin"]);
+        assert_eq!(records[2]["page_id"], "more");
+        assert_eq!(records[2]["failed"][0]["key_index"], 3);
+    }
+
+    #[test]
+    fn a_failed_plugin_redraw_is_retried_by_itself_on_a_static_page() {
+        use crate::plugin_image::{PluginImageTable, PluginImages, PluginKeys};
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let mut root = vec![Value::Null; 15];
+        root[3] = json!({"type":"action","label":"Now","bindings":[{"gesture":"pressed","action":
+            {"type":"plugin","plugin":"com.x.now","min_version":"1.0.0","action":"now","params":{}}}]});
+        let profile = Profile::from_json(
+            json!({"schema_version":2,"name":"draw","bindings":[],
+                "keypad":{"pages":[{"id":"root","name":"Keys","slots":root}]}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let table = PluginImageTable::default();
+        let drawn = PluginKeys::new(
+            &profile,
+            keypad_device(),
+            table.clone(),
+            cooltek_sdk_service::PluginBridge::new(Box::new(|_| Ok(()))),
+            SharedVariables::new(),
+        )
+        .unwrap();
+        let artwork = PreparedKeyArtwork::prepare().unwrap();
+        let own = artwork.action().to_vec();
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            PluginImages {
+                inner: artwork,
+                table,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_plugin_keys(drawn.clone());
+        let red = crate::display_artwork::encode(&image::RgbImage::from_pixel(
+            72,
+            72,
+            image::Rgb([200, 0, 0]),
+        ))
+        .unwrap();
+        let drew = |fake: &Arc<Mutex<FakeDisplaySink>>, jpeg: &[u8], after: usize| {
+            fake.lock().unwrap().writes[after..].iter().any(|write| {
+                write.target == DisplayTarget::Key(3) && write.jpeg == jpeg && write.fault.is_none()
+            })
+        };
+        let steps = vec![
+            wait_for_writes(&fake, 15),
+            Step::Run(Box::new({
+                let fake = Arc::clone(&fake);
+                move || {
+                    drawn.set_image("root", 3, &STANDARD.encode(&red)).unwrap();
+                    assert!(wait_until(|| drew(&fake, &red, 15)), "the plugin's picture");
+                    let before = written(&fake);
+                    fake.lock().unwrap().fail_next(
+                        DisplayTarget::Key(3),
+                        SinkError::ShortWrite {
+                            written: 10,
+                            expected: 65,
+                        },
+                    );
+                    drawn.clear(None, None, None).unwrap();
+                    // Nothing else asks for a redraw: the failed one is tried again by itself.
+                    let deadline = Instant::now() + Duration::from_secs(4);
+                    while !drew(&fake, &own, before) && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    assert!(drew(&fake, &own, before), "the key's own face is back");
+                    let attempts: Vec<_> = fake.lock().unwrap().writes[before..]
+                        .iter()
+                        .map(|write| write.fault.is_some())
+                        .collect();
+                    assert_eq!(attempts, [true, false]);
+                }
+            })),
+            keys(&[], 10),
+        ];
+        let run = run_display_with(
+            ProfileSession::new(profile).unwrap(),
+            steps,
+            keypad_options(1),
+            Arc::new(AtomicBool::new(false)),
+            Some(display),
+            Arc::default(),
+        );
+        run.result.unwrap();
+        let triggers: Vec<_> = display_rows(&run.rows)
+            .iter()
+            .map(|record| record["trigger"].as_str().unwrap().to_owned())
+            .collect();
+        // The failed redraw is logged; the clean retry is not.
+        assert_eq!(triggers, ["software_mode", "plugin"]);
+    }
+
+    #[test]
+    fn plugin_redraws_keep_the_animation_gap_and_draw_the_newest_image() {
+        use crate::plugin_image::{PluginImageTable, PluginImages, PluginKeys};
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let mut root = vec![Value::Null; 15];
+        root[3] = json!({"type":"action","label":"Now","bindings":[{"gesture":"pressed","action":
+            {"type":"plugin","plugin":"com.x.now","min_version":"1.0.0","action":"now","params":{}}}]});
+        let profile = Profile::from_json(
+            json!({"schema_version":2,"name":"draw","bindings":[],
+                "keypad":{"pages":[{"id":"root","name":"Keys","slots":root}]}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let table = PluginImageTable::default();
+        let drawn = PluginKeys::new(
+            &profile,
+            keypad_device(),
+            table.clone(),
+            cooltek_sdk_service::PluginBridge::new(Box::new(|_| Ok(()))),
+            SharedVariables::new(),
+        )
+        .unwrap();
+        // When each write began.
+        let began: Arc<Mutex<Vec<Instant>>> = Arc::default();
+        let stamps = Arc::clone(&began);
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: Some(Box::new(move |_| {
+                    stamps.lock().unwrap().push(Instant::now())
+                })),
+            },
+            PluginImages {
+                inner: PreparedKeyArtwork::prepare().unwrap(),
+                table,
+            },
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_plugin_keys(drawn.clone());
+        let images: Vec<Vec<u8>> = (0..12u8)
+            .map(|shade| {
+                crate::display_artwork::encode(&image::RgbImage::from_pixel(
+                    72,
+                    72,
+                    image::Rgb([40 + shade * 15, 0, 0]),
+                ))
+                .unwrap()
+            })
+            .collect();
+        let newest = images.last().unwrap().clone();
+        let steps = vec![
+            wait_for_writes(&fake, 15),
+            Step::Run(Box::new({
+                let fake = Arc::clone(&fake);
+                let newest = newest.clone();
+                move || {
+                    // A burst of about sixty images a second.
+                    for image in &images {
+                        drawn.set_image("root", 3, &STANDARD.encode(image)).unwrap();
+                        thread::sleep(Duration::from_millis(15));
+                    }
+                    // The last image is drawn once the gap allows: no update is lost.
+                    assert!(
+                        wait_until(|| fake
+                            .lock()
+                            .unwrap()
+                            .writes
+                            .last()
+                            .is_some_and(|write| write.jpeg == newest)),
+                        "the newest image"
+                    );
+                    // Idle for a while: nothing more should be written.
+                    thread::sleep(Duration::from_millis(250));
+                }
+            })),
+            keys(&[], 10),
+        ];
+        let run = run_display_with(
+            ProfileSession::new(profile).unwrap(),
+            steps,
+            keypad_options(1),
+            Arc::new(AtomicBool::new(false)),
+            Some(display),
+            Arc::default(),
+        );
+        run.result.unwrap();
+        let writes = fake.lock().unwrap().writes.clone();
+        let began = began.lock().unwrap().clone();
+        // Each plugin redraw writes key 3 alone, and at most one starts per interval.
+        let redraws: Vec<Instant> = writes
+            .iter()
+            .zip(&began)
+            .skip(15)
+            .map(|(write, at)| {
+                assert_eq!(write.target, DisplayTarget::Key(3));
+                *at
+            })
+            .collect();
+        assert!(
+            redraws.len() >= 2 && redraws.len() < 12,
+            "{} redraws",
+            redraws.len()
+        );
+        for pair in redraws.windows(2) {
+            assert!(
+                pair[1] - pair[0] >= ANIMATION_MIN_INTERVAL - Duration::from_millis(5),
+                "{:?}",
+                pair[1] - pair[0]
+            );
+        }
+        // The newest image was the last write: no redraw repeated it while idle.
+        assert_eq!(writes.last().unwrap().jpeg, newest);
+        assert_eq!(
+            writes.iter().filter(|write| write.jpeg == newest).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_variable_change_before_the_first_page_waits_and_the_first_page_draws_the_face() {
+        use crate::display_artwork::VariableFaces;
+        use cooltek_sdk_service::display_sync::KeyImageRequest;
+        let mut root = vec![Value::Null; 15];
+        root[2] = json!({"type":"action","label":"Mic","bindings":[{"gesture":"pressed","action":{"type":"toggle_mute"}}],
+            "faces":[{"when":{"variable_is":{"name":"live","value":true}},"label":"Live"}]});
+        let profile = Profile::from_json(
+            json!({"schema_version":2,"name":"faces","bindings":[],
+                "variables":[{"name":"live","value":false}],
+                "keypad":{"pages":[{"id":"root","name":"Keys","slots":root}]}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let variables = SharedVariables::new();
+        variables.declare(&profile.variables);
+        let faces = || {
+            VariableFaces::prepare(
+                &profile,
+                PreparedKeyArtwork::prepare().unwrap(),
+                variables.clone(),
+            )
+            .unwrap()
+        };
+        let fake = Arc::new(Mutex::new(FakeDisplaySink::default()));
+        let display = LiveDisplay::new(
+            SharedSink {
+                fake: Arc::clone(&fake),
+                before_write: None,
+            },
+            faces(),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .with_variables(variables.clone());
+        let session = ProfileSession::new(profile.clone()).unwrap();
+        let (records, _received) = mpsc::sync_channel(DISPLAY_RECORD_QUEUE);
+        let mut thread =
+            DisplayThread::spawn(display, session.clone(), Arc::default(), records).unwrap();
+        // Let the thread start and read the versions it has seen.
+        thread::sleep(Duration::from_millis(100));
+        variables
+            .set("live", cooltek_sdk_service::VariableValue::Bool(true))
+            .unwrap();
+        thread::sleep(Duration::from_millis(200));
+        // One wake for the change, then the thread waits: a spinning loop would count far more.
+        assert_eq!(thread.counts.changed_wakes.load(Ordering::SeqCst), 1);
+        assert_eq!(written(&fake), 0);
+        thread.request(&session, "software_mode");
+        assert!(wait_until(|| written(&fake) == 15), "the first page");
+        let face = faces()
+            .key_image(&KeyImageRequest {
+                key_index: 2,
+                content: cooltek_sdk_service::display_sync::KeyContent::Action {
+                    page_id: "root".into(),
+                    label: "Mic".into(),
+                    icon: cooltek_sdk_service::display_sync::TileIcon::Mute,
+                },
+            })
+            .unwrap();
+        assert_eq!(fake.lock().unwrap().writes[2].jpeg, face);
+        assert!(thread.finish(Duration::from_secs(2)));
     }
 
     #[test]

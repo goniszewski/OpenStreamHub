@@ -1,4 +1,4 @@
-import type { PluginAction, PluginCondition, PluginValue } from './contracts';
+import type { BindingAction, PluginAction, PluginCondition, PluginValue } from './contracts';
 import { invisibleTextCharacter, variableReferences } from './action-model';
 
 // What `list_plugins` returns (plugins.rs): the plugins folder and each folder in it, with its manifest or why it
@@ -13,8 +13,9 @@ export interface PluginParam {
   variables?: boolean; secret?: boolean;
   min?: number; max?: number; choices?: PluginChoice[]; default?: PluginValue;
 }
-// events: the plugin hears the other input on controls bound to this action.
-export interface PluginManifestAction { id: string; label: string; params?: PluginParam[]; events?: boolean }
+// events: the plugin hears the other input on controls bound to this action. image: it draws the keys whose first
+// binding runs this action, while a Live run uses them, and hears when they are on screen.
+export interface PluginManifestAction { id: string; label: string; params?: PluginParam[]; events?: boolean; image?: boolean }
 // A check an if / else can ask the plugin when pressed: params exactly as an action's, no events.
 export interface PluginManifestCondition { id: string; label: string; params?: PluginParam[] }
 // A manifest has actions, conditions or both, so either list may be absent or empty.
@@ -96,6 +97,14 @@ export function resolvePluginAction(listing: PluginListing | null, action: Plugi
     return { manifest, declared, problem: `${manifest.name} ${manifest.version} is older than ${action.min_version}, which this key needs. Update the plugin.` };
   }
   return { manifest, declared };
+}
+
+// Whether the plugin draws a key whose first binding runs `action` (design step 4c): a plugin action run directly, not
+// as a step, that the installed manifest marks image and the key can run (installed, new enough).
+export function pluginDrawsKey(listing: PluginListing | null, action: BindingAction | null | undefined): boolean {
+  if (action?.type !== 'plugin') return false;
+  const resolved = resolvePluginAction(listing, action);
+  return !resolved.problem && !!resolved.declared?.image;
 }
 
 // The same for a plugin condition an if / else tests, which also says when the plugin is not enabled: the editor

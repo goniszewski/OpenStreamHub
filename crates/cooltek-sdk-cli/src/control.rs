@@ -46,6 +46,15 @@
 //!   `error` unless `ok`. A check's answer carries `"value":true` or `false`; without a boolean `value` the check
 //!   fails, and an invoke ignores it. A request nobody waits for any more (it timed out) is refused.
 //!
+//! Plugin key images, for a run started with `--plugin-host` that draws an M4315 keypad's pages (display sync):
+//!
+//! - `{"id":10,"type":"plugin_image","page":"root","slot":3,"jpeg":"<base64>"}` keeps one 72×72 baseline JPEG (at most
+//!   32 KiB) as the picture of the key in `slot` of `page`, for the rest of the run, and redraws it if its page is on
+//!   screen. Refused for a key whose first binding that applies to this unit's serial does not run a plugin
+//!   action directly, for a bad picture, and once the run is ending.
+//! - `{"id":11,"type":"plugin_image_clear","page":"root","slot":3}` forgets one key's picture, `"plugin":"com.x.y"`
+//!   every picture of one plugin, and neither every picture. The keys show their own face again.
+//!
 //! A line that is not a valid request is answered with `ok: false` and no `id`. End of stdin still ends the run.
 
 use cooltek_sdk_masterhub::{
@@ -80,6 +89,8 @@ pub struct Hooks {
     pub variables: Option<cooltek_sdk_service::SharedVariables>,
     /// The run's plugin bridge, which `plugin_result` answers.
     pub plugins: Option<cooltek_sdk_service::PluginBridge>,
+    /// The keys plugins draw, for `plugin_image` and `plugin_image_clear`: a keypad run that draws its pages.
+    pub plugin_images: Option<crate::plugin_image::PluginKeys>,
     /// The key report length, read from the module's descriptor with the first key image only.
     #[doc(hidden)]
     pub key_report_length: OnceLock<usize>,
@@ -130,6 +141,19 @@ enum Request {
         value: Value,
     },
     GetVariables,
+    PluginImage {
+        page: String,
+        slot: u8,
+        jpeg: String,
+    },
+    PluginImageClear {
+        #[serde(default)]
+        page: Option<String>,
+        #[serde(default)]
+        slot: Option<u8>,
+        #[serde(default)]
+        plugin: Option<String>,
+    },
     PluginResult {
         request: u64,
         ok: bool,
@@ -141,6 +165,9 @@ enum Request {
         value: Option<Value>,
     },
 }
+
+/// Why a run refuses plugin images: it does not draw an M4315 keypad's pages, or hosts no plugins.
+const NO_PLUGIN_IMAGES: &str = "this run does not draw its keys for plugins (it needs display sync of an M4315 keypad page profile and a plugin host)";
 
 /// The largest key image accepted, well under the 64 KiB a control line may carry once encoded.
 const MAX_KEY_IMAGE: usize = 40 * 1024;
@@ -244,6 +271,16 @@ pub fn answer<T: ReportTransport + ?Sized>(
                 "version": variables.version(),
             })),
             None => Err("this run has no variables".to_string()),
+        },
+        (Request::PluginImage { page, slot, jpeg }, _) => match &hooks.plugin_images {
+            Some(keys) => keys.set_image(&page, slot, &jpeg).map(|()| json!({})),
+            None => Err(NO_PLUGIN_IMAGES.to_string()),
+        },
+        (Request::PluginImageClear { page, slot, plugin }, _) => match &hooks.plugin_images {
+            Some(keys) => keys
+                .clear(page.as_deref(), slot, plugin.as_deref())
+                .map(|()| json!({})),
+            None => Err(NO_PLUGIN_IMAGES.to_string()),
         },
         (
             Request::PluginResult {
@@ -883,5 +920,124 @@ mod tests {
             assert_eq!(answer(&device, None, &hooks, &line)["ok"], false, "{line}");
         }
         assert!(device.writes.borrow().is_empty());
+    }
+
+    #[test]
+    fn plugin_images_are_kept_for_a_plugins_keys_and_cleared_on_request() {
+        let device = fake();
+        let refused = answer(
+            &device,
+            None,
+            &Hooks::default(),
+            &format!(
+                r#"{{"id":1,"type":"plugin_image","page":"root","slot":3,"jpeg":"{}"}}"#,
+                key_jpeg(72)
+            ),
+        );
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["error"], NO_PLUGIN_IMAGES);
+        let cleared = answer(
+            &device,
+            None,
+            &Hooks::default(),
+            r#"{"id":2,"type":"plugin_image_clear"}"#,
+        );
+        assert_eq!(cleared["error"], NO_PLUGIN_IMAGES);
+
+        let mut root = vec![Value::Null; 15];
+        root[3] = json!({"type": "action", "label": "Now", "bindings": [{"gesture": "pressed", "action":
+            {"type": "plugin", "plugin": "com.x.y", "min_version": "1.0.0", "action": "now", "params": {}}}]});
+        root[4] = json!({"type": "action", "label": "Mute", "bindings": [{"gesture": "pressed", "action": {"type": "toggle_mute"}}]});
+        let profile = cooltek_sdk_service::Profile::from_json(
+            json!({"schema_version": 2, "name": "P", "bindings": [],
+                "keypad": {"pages": [{"id": "root", "name": "Keys", "slots": root}]}})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+        let table = crate::plugin_image::PluginImageTable::default();
+        let keys = crate::plugin_image::PluginKeys::new(
+            &profile,
+            cooltek_sdk_service::DeviceContext {
+                module: cooltek_sdk_service::ServiceModule::M4315,
+                serial_number: None,
+            },
+            table.clone(),
+            cooltek_sdk_service::PluginBridge::new(Box::new(|_| Ok(()))),
+            cooltek_sdk_service::SharedVariables::new(),
+        )
+        .unwrap();
+        let hooks = Hooks {
+            plugin_images: Some(keys),
+            ..Hooks::default()
+        };
+        let ask = |line: &str| answer(&device, None, &hooks, line);
+        let image = |id: u64, page: &str, slot: u8, jpeg: &str| {
+            ask(&format!(
+                r#"{{"id":{id},"type":"plugin_image","page":"{page}","slot":{slot},"jpeg":"{jpeg}"}}"#
+            ))
+        };
+        let ok = image(3, "root", 3, &key_jpeg(72));
+        assert_eq!(ok, json!({"type": "control_result", "id": 3, "ok": true}));
+        assert!(table.get("root", 3).is_some());
+        for (id, page, slot, jpeg, error) in [
+            (
+                4,
+                "gone",
+                3,
+                key_jpeg(72),
+                "the profile has no keypad page \"gone\"",
+            ),
+            (
+                5,
+                "root",
+                15,
+                key_jpeg(72),
+                "slot 15 is not a key: keys are 0 to 14",
+            ),
+            (
+                6,
+                "root",
+                4,
+                key_jpeg(72),
+                "key 4 on page \"root\" is not drawn by a plugin",
+            ),
+            (
+                7,
+                "root",
+                3,
+                key_jpeg(64),
+                "the plugin image is not a key image",
+            ),
+            (
+                8,
+                "root",
+                3,
+                "not base64!".into(),
+                "the plugin image is not valid base64",
+            ),
+        ] {
+            let refused = image(id, page, slot, &jpeg);
+            assert_eq!(refused["ok"], false);
+            assert_eq!(refused["id"], id);
+            assert!(
+                refused["error"].as_str().unwrap().starts_with(error),
+                "{refused}"
+            );
+        }
+        // Nothing the plugin drew was written past the display: the device saw no report.
+        assert!(device.writes.borrow().is_empty());
+        for line in [
+            r#"{"id":9,"type":"plugin_image_clear","page":"root","slot":3}"#,
+            r#"{"id":10,"type":"plugin_image_clear","plugin":"com.x.y"}"#,
+            r#"{"id":11,"type":"plugin_image_clear"}"#,
+        ] {
+            image(3, "root", 3, &key_jpeg(72));
+            assert_eq!(ask(line)["ok"], true, "{line}");
+            assert!(table.get("root", 3).is_none(), "{line}");
+        }
+        let half = ask(r#"{"id":12,"type":"plugin_image_clear","page":"root"}"#);
+        assert_eq!(half["ok"], false);
+        assert_eq!(half["id"], 12);
     }
 }

@@ -22,6 +22,8 @@ export type HookState = 'configured' | 'not_configured' | 'unreadable';
 // answer count covers prompts the deck answered since the app started and is not stored.
 export interface AgentSignalsReply {
   claude: HookState;
+  // The Claude Code settings file the app read (CLAUDE_CONFIG_DIR's when the app was started with it set).
+  claude_file?: string;
   codex: HookState;
   answered: number;
   last_answer_ms: number | null;
@@ -40,6 +42,10 @@ export const runAgentTool = (invoke: Invoke, command: AgentToolCommand) => invok
 
 // The line that puts ~/.local/bin on a zsh or bash PATH. Fixed text: no path from the app goes into it.
 export const PATH_EXPORT = 'export PATH="$HOME/.local/bin:$PATH"';
+
+// Where an agent's hooks go: the file the app last read for it, or the usual one before it has reported.
+export const agentFile = (agent: 'claude' | 'codex', signals: AgentSignalsReply | null) =>
+  (agent === 'claude' ? signals?.claude_file : undefined) ?? agentTargets.find(target => target.agent === agent)!.file;
 
 export const agentTargets = [
   { agent: 'claude', file: '~/.claude/settings.json', config: (status: AgentToolStatus) => status.claude_config },

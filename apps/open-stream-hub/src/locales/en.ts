@@ -1022,7 +1022,7 @@ export const en = {
   'agents.target': 'Add to {file}',
   'agents.manual': 'OpenStreamHub never edits these files: copy the configuration and paste it yourself.',
   'agents.claude.title': 'Claude Code',
-  'agents.claude.merge': 'Merge the "hooks" object into the file (or into a project’s .claude/settings.json). Where the file already has hooks for UserPromptSubmit, PermissionRequest or Stop, add these entries to those arrays.',
+  'agents.claude.merge': 'Merge the "hooks" object into the file (or into a project’s .claude/settings.json). Where the file already has hooks for UserPromptSubmit, PostToolUse, PermissionRequest, Stop or SessionEnd, add these entries to those arrays.',
   'agents.codex.title': 'Codex',
   'agents.codex.merge': 'Add these lines to the file, next to any [[hooks.*]] tables already there.',
   'agents.codex.trust': 'Codex runs new hooks only after you review and trust them: run /hooks in Codex once after adding them.',

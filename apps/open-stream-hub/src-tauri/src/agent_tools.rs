@@ -259,6 +259,8 @@ pub enum HookState {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct AgentSignals {
     pub claude: HookState,
+    /// The Claude Code settings file that was read, as the checklist names it (`~/…` under the home folder).
+    pub claude_file: String,
     pub codex: HookState,
     /// Prompts the deck answered with Accept or Deny since the app started. Never stored.
     pub answered: u32,
@@ -405,9 +407,34 @@ pub fn note_decision_cleared() {
     }
 }
 
-fn signals_for(home: &Path, log: &AnswerLog) -> AgentSignals {
+/// The settings file Claude Code reads: `settings.json` in `CLAUDE_CONFIG_DIR` when that is set (a leading `~`
+/// component is the home folder; `~user` is not expanded), otherwise `~/.claude/settings.json`. The app sees the
+/// variable only when its own process has it: opened from the Finder, the Dock or with `open`, it gets the login
+/// session's variables (`launchctl setenv`), not a shell profile's.
+fn claude_settings(home: &Path, config_dir: Option<&OsStr>) -> PathBuf {
+    match config_dir.filter(|dir| !dir.is_empty()).map(Path::new) {
+        Some(dir) => match dir.strip_prefix("~") {
+            Ok(rest) => home.join(rest),
+            Err(_) => dir.to_path_buf(),
+        }
+        .join("settings.json"),
+        None => home.join(".claude").join("settings.json"),
+    }
+}
+
+/// A path as the checklist shows it: under the home folder as `~/…`.
+fn shown(path: &Path, home: &Path) -> String {
+    match path.strip_prefix(home) {
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.display().to_string(),
+    }
+}
+
+fn signals_for(home: &Path, log: &AnswerLog, claude_config_dir: Option<&OsStr>) -> AgentSignals {
+    let claude_file = claude_settings(home, claude_config_dir);
     AgentSignals {
-        claude: claude_hooks(&home.join(".claude").join("settings.json")),
+        claude: claude_hooks(&claude_file),
+        claude_file: shown(&claude_file, home),
         codex: codex_hooks(&home.join(".codex").join("config.toml")),
         answered: log.count,
         last_answer_ms: log.last_ms,
@@ -419,7 +446,11 @@ pub fn signals() -> Result<AgentSignals, String> {
     let log = ANSWERS
         .lock()
         .map_err(|_| "the answer record is unavailable".to_string())?;
-    Ok(signals_for(&home, &log))
+    Ok(signals_for(
+        &home,
+        &log,
+        std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
+    ))
 }
 
 #[cfg(all(test, unix))]
@@ -624,7 +655,9 @@ mod tests {
         let dir = home.join(".claude");
         let file = dir.join("settings.json");
         let log = AnswerLog::new();
-        assert_eq!(signals_for(&home, &log).claude, HookState::NotConfigured);
+        let signals = signals_for(&home, &log, None);
+        assert_eq!(signals.claude, HookState::NotConfigured);
+        assert_eq!(signals.claude_file, "~/.claude/settings.json");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             &file,
@@ -649,6 +682,45 @@ mod tests {
         assert_eq!(claude_hooks(&file), HookState::NotConfigured);
         // Read only: the file is as written.
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}");
+    }
+
+    #[test]
+    fn reads_claude_settings_from_claude_config_dir_when_it_is_set() {
+        let (_root, _macos, home) = setup();
+        let log = AnswerLog::new();
+        let dir = home.join(".claude-work");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ours = osh::setup(
+            osh::Agent::Claude,
+            "/Applications/OpenStreamHub.app/Contents/MacOS/osh",
+        );
+        std::fs::write(dir.join("settings.json"), &ours).unwrap();
+        for value in [dir.as_os_str(), OsStr::new("~/.claude-work")] {
+            let signals = signals_for(&home, &log, Some(value));
+            assert_eq!(signals.claude, HookState::Configured);
+            assert_eq!(signals.claude_file, "~/.claude-work/settings.json");
+        }
+        assert_eq!(
+            signals_for(&home, &log, Some(OsStr::new("~"))).claude_file,
+            "~/settings.json"
+        );
+        std::fs::write(dir.join("settings.json"), "{ not json").unwrap();
+        assert_eq!(
+            signals_for(&home, &log, Some(dir.as_os_str())).claude,
+            HookState::Unreadable
+        );
+        // Empty counts as not set.
+        let signals = signals_for(&home, &log, Some(OsStr::new("")));
+        assert_eq!(signals.claude, HookState::NotConfigured);
+        assert_eq!(signals.claude_file, "~/.claude/settings.json");
+        assert_eq!(
+            claude_settings(&home, Some(OsStr::new("/elsewhere/claude"))),
+            Path::new("/elsewhere/claude/settings.json")
+        );
+        assert_eq!(
+            shown(Path::new("/elsewhere/claude/settings.json"), &home),
+            "/elsewhere/claude/settings.json"
+        );
     }
 
     #[test]
@@ -691,7 +763,7 @@ mod tests {
         log.seen(&serde_json::json!("deny"), 9);
         assert_eq!((log.count, log.last_ms), (2, Some(9)));
         let (_root, _macos, home) = setup();
-        let signals = signals_for(&home, &log);
+        let signals = signals_for(&home, &log, None);
         assert_eq!((signals.answered, signals.last_answer_ms), (2, Some(9)));
     }
 }

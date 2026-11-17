@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, Circle, Copy, LoaderCircle, RefreshCw } from 'lucide-react';
-import { PATH_EXPORT, agentChecklist, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
+import { PATH_EXPORT, agentChecklist, agentFile, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
 import type { AgentSignalsReply, AgentToolCommand, AgentToolStatus } from './agent-tools-model';
 import { useT } from './i18n-react';
 import type { Invoke } from './profile-session';
@@ -31,7 +31,7 @@ function SetupChecklist({ status, signals, copy }: { status: AgentToolStatus; si
   if (ready) return <p className="fine-print agent-tools-ready" role="status"><Check size={14} /> {t('agents.check.ready')}</p>;
   const hookHint = (step: 'claude' | 'codex') => {
     if (!signals) return t('agents.check.notChecked');
-    const file = agentTargets.find(target => target.agent === step)!.file;
+    const file = agentFile(step, signals);
     return t(signals[step] === 'unreadable' ? 'agents.check.hook.unreadable' : 'agents.check.hook.missing', { file });
   };
   return <div className="agent-tools-checklist">
@@ -120,7 +120,7 @@ export function AgentToolsPanel({ desktop, invoke, copy = copyText }: { desktop:
         const name = t(target.agent === 'claude' ? 'agents.claude.title' : 'agents.codex.title');
         return <div key={target.agent} className={`agent-tools-target agent-tools-${target.agent}`}>
           <h3>{name}</h3>
-          <p className="fine-print">{t('agents.target', { file: target.file })}</p>
+          <p className="fine-print">{t('agents.target', { file: agentFile(target.agent, signals) })}</p>
           <pre className="storage-path agent-tools-config" tabIndex={0}>{target.config(status)}</pre>
           <div className="settings-actions"><CopyButton text={target.config(status)} label={t('agents.copyConfig', { name })} copy={copy} /></div>
           <p className="fine-print">{t(target.agent === 'claude' ? 'agents.claude.merge' : 'agents.codex.merge')}</p>

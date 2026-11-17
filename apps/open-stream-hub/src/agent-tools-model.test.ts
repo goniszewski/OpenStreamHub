@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it, vi } from 'vitest';
-import { PATH_EXPORT, agentChecklist, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
+import { PATH_EXPORT, agentChecklist, agentFile, agentTargets, copyText, oshState, readAgentSignals, runAgentTool, showPathHint, signalsSeen } from './agent-tools-model';
 import type { AgentToolStatus } from './agent-tools-model';
 import type { Invoke } from './profile-session';
 
@@ -29,6 +29,14 @@ describe('the AI agents panel model', () => {
       ['claude', '~/.claude/settings.json', '{"hooks":{}}'],
       ['codex', '~/.codex/config.toml', '[[hooks.Stop]]'],
     ]);
+  });
+
+  it('names the Claude Code file the app read, and the usual files otherwise', () => {
+    const reply = { claude: 'not_configured', claude_file: '~/.claude-work/settings.json', codex: 'not_configured', answered: 0, last_answer_ms: null } as const;
+    expect(agentFile('claude', reply)).toBe('~/.claude-work/settings.json');
+    expect(agentFile('codex', reply)).toBe('~/.codex/config.toml');
+    expect(agentFile('claude', null)).toBe('~/.claude/settings.json');
+    expect(agentFile('claude', { ...reply, claude_file: undefined })).toBe('~/.claude/settings.json');
   });
 
   it('calls the named command with no arguments', async () => {

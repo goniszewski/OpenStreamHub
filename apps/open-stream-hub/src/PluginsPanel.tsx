@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { ReactNode } from 'react';
 import { FolderOpen, PackagePlus, RotateCcw } from 'lucide-react';
 import { useT } from './i18n-react';
@@ -6,6 +6,8 @@ import type { MessageKey } from './locales/en';
 import { ModalDialog } from './controls';
 import { PluginEnableDialog, PluginInstallDialog } from './PluginEnableDialog';
 import { usePluginListing } from './plugins-context';
+import { createPluginManageStore } from './plugin-manage-store';
+import type { PluginManageStore } from './plugin-manage-store';
 import type { InstallReview, ListedPlugin, PluginManifest, PluginSecretStatus } from './plugins-model';
 import type { Invoke } from './profile-session';
 import { codeList, richText } from './rich-text';
@@ -22,7 +24,7 @@ interface Review { manifest: PluginManifest; fingerprint: string; folder: string
 // is enabled, its secrets and, while a Live profile uses it, its state, last error and recent log. A plugin runs only
 // after the user enabled the exact plugin.json the first-enable dialog showed. A plugin runs as you; the permissions
 // it lists are what it says it needs, which nothing enforces, so the panel and the dialog say so.
-export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: Invoke }) {
+export function PluginsPanel({ desktop, invoke, manageStore }: { desktop: boolean; invoke: Invoke; manageStore?: PluginManageStore }) {
   const t = useT();
   const { listing, error, refresh } = usePluginListing(desktop ? invoke : undefined);
   const [review, setReview] = useState<Review | null>(null);
@@ -51,62 +53,60 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
   };
   // Install…: the folder picker (null when cancelled), then the review of the chosen folder; a refused review is shown
   // here. Installing closes the dialog either way, since a refusal (plugin.json changed) makes what it shows stale.
-  const [install, setInstall] = useState<InstallReview | null>(null);
-  const [manageError, setManageError] = useState<string | null>(null);
-  const [choosing, setChoosing] = useState(false);
+  // What Install… and Remove… are doing lives in `manage`, which outlives this panel (see plugin-manage-store.ts).
+  const [ownStore] = useState(createPluginManageStore);
+  const store = manageStore ?? ownStore;
+  const { choosing, install, installing, removing: removingNow, error: manageError } = useSyncExternalStore(store.subscribe, store.get);
   const [removing, setRemoving] = useState<ListedPlugin | null>(null);
-  // The plugin being removed right now (stopping it can take a few seconds); its Remove… is disabled meanwhile.
-  const [removingNow, setRemovingNow] = useState<string | null>(null);
   const chooseInstall = () => {
-    setChoosing(true);
-    setManageError(null);
+    if (store.get().choosing || store.get().installing) return;
+    store.set({ choosing: true, error: null });
     setEnableError(null);
     invoke<string | null>('choose_plugin_folder')
-      .then(path => path === null ? null : invoke<InstallReview>('review_plugin_install', { path }).then(setInstall))
-      .catch((reason: unknown) => setManageError(t('plugins.installFailed', { error: String(reason) })))
-      .finally(() => setChoosing(false));
+      .then(path => path === null ? null : invoke<InstallReview>('review_plugin_install', { path }).then(install => store.set({ install })))
+      .catch((reason: unknown) => store.set({ error: t('plugins.installFailed', { error: String(reason) }) }))
+      .finally(() => store.set({ choosing: false }));
   };
   const runInstall = (enable: boolean) => {
-    if (!install?.plugin.fingerprint || busy) return;
-    setBusy(true);
+    if (!install?.plugin.fingerprint || store.get().installing) return;
+    store.set({ installing: true });
     // A failure after the copy was swapped in (such as enabling it) comes as "installed: <reason>": it is installed.
     invoke('install_plugin', { path: install.path, fingerprint: install.plugin.fingerprint, enable })
       .catch((reason: unknown) => {
         const error = String(reason);
-        setManageError(error.startsWith('installed: ')
-          ? t('plugins.installedBut', { error: error.slice('installed: '.length) }) : t('plugins.installFailed', { error }));
+        store.set({ error: error.startsWith('installed: ')
+          ? t('plugins.installedBut', { error: error.slice('installed: '.length) }) : t('plugins.installFailed', { error }) });
       })
-      .finally(() => { setInstall(null); setBusy(false); refresh(); });
+      .finally(() => { store.set({ install: null, installing: false }); refresh(); });
   };
   const remove = () => {
-    if (!removing) return;
+    if (!removing || store.get().removing !== null) return;
     const plugin = removing;
     setRemoving(null);
-    setManageError(null);
-    setRemovingNow(plugin.folder);
+    store.set({ error: null, removing: plugin.folder });
     invoke('remove_plugin', { id: plugin.folder })
       // A failure after the folder was deleted (such as the Keychain keeping a secret) comes as "removed: <reason>".
       .catch((reason: unknown) => {
         const name = plugin.manifest?.name ?? plugin.folder;
         const error = String(reason);
-        setManageError(error.startsWith('removed: ')
-          ? t('plugins.removedBut', { name, error: error.slice('removed: '.length) }) : t('plugins.removeFailed', { name, error }));
+        store.set({ error: error.startsWith('removed: ')
+          ? t('plugins.removedBut', { name, error: error.slice('removed: '.length) }) : t('plugins.removeFailed', { name, error }) });
       })
-      .finally(() => { setRemovingNow(null); refresh(); });
+      .finally(() => { store.set({ removing: null }); refresh(); });
   };
   const enabled = listing?.plugins.filter(plugin => plugin.approval === 'enabled') ?? [];
   const disabled = listing?.plugins.filter(plugin => plugin.approval !== 'enabled') ?? [];
   const toReview = disabled.filter(plugin => plugin.approval === 'changed').length;
   const items = (plugins: ListedPlugin[]) => <ul className="plugin-list">{plugins.map(plugin =>
     <PluginItem key={plugin.folder} plugin={plugin} invoke={invoke} refresh={refresh} onReview={() => open(plugin)} removeDisabled={removingNow !== null}
-      onRemove={() => { setManageError(null); setRemoving(plugin); }} />)}</ul>;
+      onRemove={() => { store.set({ error: null }); setRemoving(plugin); }} />)}</ul>;
   return <section className="panel plugins-panel">
     <h2>{t('plugins.title')}</h2>
     <p className="fine-print">{richText(t('plugins.intro'))}</p>
     {!desktop ? <p className="fine-print">{t('plugins.notDesktop')}</p> : <>
       {listing && <><label>{t('plugins.folder')}</label><code className="storage-path">{listing.folder}</code></>}
       <div className="settings-actions">
-        <button type="button" className="button" disabled={choosing || busy} onClick={chooseInstall}><PackagePlus size={16} />{t('plugins.installButton')}</button>
+        <button type="button" className="button" disabled={choosing || installing || busy} onClick={chooseInstall}><PackagePlus size={16} />{t('plugins.installButton')}</button>
         <button type="button" className="button" onClick={() => { void invoke('open_plugins_folder').catch(() => {}); }}><FolderOpen size={16} />{t('plugins.open')}</button>
         <button type="button" className="button" onClick={refresh}><RotateCcw size={16} />{t('plugins.refresh')}</button>
       </div>
@@ -126,8 +126,8 @@ export function PluginsPanel({ desktop, invoke }: { desktop: boolean; invoke: In
     </>}
     {review && <PluginEnableDialog open manifest={review.manifest} folder={review.folder} stored={review.secrets} busy={busy} error={reviewError}
       onCancel={() => setReview(null)} onEnable={enable} t={t} />}
-    {install?.plugin.manifest && <PluginInstallDialog review={install} folder={listing ? `${listing.folder}/${install.plugin.folder}` : install.plugin.folder} busy={busy}
-      onCancel={() => setInstall(null)} onInstall={runInstall} t={t} />}
+    {install?.plugin.manifest && <PluginInstallDialog review={install} folder={listing ? `${listing.folder}/${install.plugin.folder}` : install.plugin.folder} busy={installing}
+      onCancel={() => store.set({ install: null })} onInstall={runInstall} t={t} />}
     {removing && <ModalDialog open role="alertdialog" labelledBy="plugin-remove-title" describedBy="plugin-remove-message" onCancel={() => setRemoving(null)}>
       <h2 id="plugin-remove-title">{t('plugins.remove.title', { name: removing.manifest?.name ?? removing.folder })}</h2>
       <p id="plugin-remove-message">{t('plugins.remove.message')}</p>

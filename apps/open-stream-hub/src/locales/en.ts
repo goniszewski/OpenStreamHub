@@ -972,7 +972,7 @@ export const en = {
   'plugins.install.installAndEnable': 'Install and enable',
   'plugins.remove': 'Remove…',
   'plugins.remove.title': 'Remove {name}?',
-  'plugins.remove.message': 'This deletes its folder, its approval, its secrets in the Keychain and its data. Profiles that use it keep their keys, which then fail with "not installed".',
+  'plugins.remove.message': 'This deletes its folder, its approval, the secrets its plugin.json declares in the Keychain, and its data. Profiles that use it keep their keys, which then fail with "not installed".',
   'plugins.remove.confirm': 'Remove',
   'plugins.removeFailed': '{name} was not removed: {error}',
   'plugins.removedBut': '{name} was removed, but: {error}',

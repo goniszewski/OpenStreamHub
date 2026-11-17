@@ -13,6 +13,7 @@ import { StreamlabsSettingsStore } from './streamlabs-settings';
 import { StreamlabsSettingsPanel } from './StreamlabsSettingsPanel';
 import { PermissionsPanel, missingPermissions } from './PermissionsPanel';
 import { AgentToolsPanel } from './AgentToolsPanel';
+import { createPluginManageStore } from './plugin-manage-store';
 import { PluginsPanel } from './PluginsPanel';
 import { PermissionsPrompt } from './PermissionsPrompt';
 import { SquareEye } from './SquareEye';
@@ -361,6 +362,9 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const [testWhileEditing, setTestWhileEditing] = useState(() => readTestWhileEditingSetting(webStorage()));
+  // Install… and Remove… in Settings > Plugins, kept here so leaving Settings neither loses a picked folder nor lets a
+  // second folder picker open.
+  const [pluginManage] = useState(createPluginManageStore);
   const switcherRef = useRef<HTMLDivElement>(null);
   const { draft, busy, error, notice, noticeAction, pendingIntent, bootstrapError } = state;
   const { profile, profileId, contentHash } = draft;
@@ -717,7 +721,7 @@ export default function App() {
         {page === 'demos' && <DemosPage desktop={desktop} devices={pickableModules} runtime={desktop ? demoRuntime : undefined} />}
         {page === 'compatibility' && <CompatibilityPage />}
         {page === 'about' && <AboutPage invoke={desktop ? ((command, args) => invoke(command, args)) : undefined} />}
-        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} plugins={<PluginsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
+        {page === 'settings' && <SettingsPage mac={mac} desktop={desktop} noticesEnabled={noticesEnabled} onNoticesEnabled={on => notices.setEnabled(on)} onShowGuide={() => setGuide({ open: true, step: 0 })} storagePath={state.storagePath} themePicker={themePicker} autosave={state.autosave} onAutosave={on => { writeAutosaveSetting(webStorage(), on); session.setAutosave(on); }} display={<DisplaySettingsPanel store={displaySettings} runner={runner} profiles={state.profiles} testWhileEditing={testWhileEditing} onTestWhileEditing={on => { writeTestWhileEditingSetting(webStorage(), on); setTestWhileEditing(on); }} />} obs={<ObsSettingsPanel store={obsSettings} runner={runner} />} streamlabs={<StreamlabsSettingsPanel store={streamlabsSettings} runner={runner} />} builtIn={<BuiltInProfiles saved={state.profiles} />} startup={<StartupPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} checkPermissions={checkPermissions} onCheckPermissions={on => { writePermissionCheckSetting(webStorage(), on); setCheckPermissions(on); }} />} updates={<UpdatesPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} version={appVersion} daily={dailyUpdateCheck} onDaily={on => { writeUpdateCheckSetting(webStorage(), on); setDailyUpdateCheck(on); }} />} permissions={<PermissionsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} agents={<AgentToolsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} />} plugins={<PluginsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} manageStore={pluginManage} />} runDetails={<ServicePanel run={runSession} />} diagnostics={<DiagnosticsPanel desktop={desktop} invoke={(command, args) => invoke(command, args)} profile={profile} runner={runner} feed={feed} />} />}
       </main>
     </div>
     <NoticeRegion store={notices} onReview={() => { setPage('workspace'); focusWhenRendered(() => document.getElementById(serviceResumeId)); }} />

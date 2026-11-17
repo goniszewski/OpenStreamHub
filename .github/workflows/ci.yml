@@ -79,6 +79,8 @@ jobs:
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.nowplaying/tests
       - name: Claude Code plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.claudecode/tests
+      - name: Twofold plugin tests
+        run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.twofold/tests
 
       # --- Desktop app Rust (needs the sidecar file to exist) ---
       - name: Prepare sidecar

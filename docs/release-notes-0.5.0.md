@@ -29,11 +29,11 @@ Plugins: add your own actions, if / else tests and pictures on keys and the dial
 
 ## Checked on hardware
 
-Nothing in this release was newly checked on hardware. Plugins were tested with a fake app socket and fakes in the app's tests, the example plugin run for real by the system Python, Now Playing against the real Music app by hand on 17 November 2026 (state and covers), Claude Code with a real Claude Code session in iTerm2 the same day, answering real permission prompts from a key. The Twofold demo was tested in the app's tests only.
+On 17 November 2026, on a real M4315, M131E and M003K: Claude Code's Session status key, its Context and cost dial face and answering real permission prompts from a key; Now Playing's cover on the dial; and the Twofold demo on the keys and with the knobs. Plugins were also tested with a fake app socket and fakes in the app's tests, the example plugin run for real by the system Python, and Now Playing against the real Music app (state and covers).
 
 ## Known limits
 
-- **Plugin key images** are not yet checked on a real M4315, nor **dial images** on a real M131E, **Now Playing** not yet with Spotify, and **Claude Code** not yet in Terminal.
+- **Now Playing** is not yet checked on a key of a real M4315 or with Spotify, **Claude Code** not yet in Terminal, and the Twofold demo not yet with a roller module.
 - **A plugin runs as you.** It can do anything you can, including using the network; the permissions it lists are shown, not enforced, apart from the variables it may set. Install plugins only from authors you trust.
 - **Plugins** run only while a Live profile uses them, need their folder unzipped before installing (a `.zip` is not taken), and have no registry or update checks. A plugin draws on the dial only while the profile's dial screen is not set to Off.
 - **Intel build:** cross-compiled on an Apple Silicon Mac, ad-hoc signed, and not launched on Intel hardware or under Rosetta.

@@ -16,7 +16,7 @@ The action also works on other controls: turning a knob or the dial right (a rol
 
 The condition **Music is playing** lets an if / else test whether the chosen player, or either, is playing.
 
-Requires OpenStreamHub 0.5.0 or later, macOS, and `/usr/bin/python3`, which macOS installs with the Xcode command-line tools (it offers to the first time something asks for it). Status: unit-tested with fakes; on 17 November 2026 it read the real Music app's state and cover and drew the key end to end through a fake app socket, by hand. Not yet checked on a real M4315 or M131E, or with Spotify.
+Requires OpenStreamHub 0.5.0 or later, macOS, and `/usr/bin/python3`, which macOS installs with the Xcode command-line tools (it offers to the first time something asks for it). Status: unit-tested with fakes; on 17 November 2026 it read the real Music app's state and cover and drew the key end to end through a fake app socket, by hand. The same day its cover showed on a real M131E dial. Not yet checked on a key of a real M4315, or with Spotify.
 
 ## Install
 

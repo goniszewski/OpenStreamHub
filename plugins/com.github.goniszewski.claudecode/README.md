@@ -22,7 +22,7 @@ The condition **A Claude Code session is…** lets an if / else test whether a s
 
 **Bind it to the key's own Press, and leave its Release unbound**: a long press is told apart only on a key the app draws for this action. Anywhere else a press acts at once.
 
-Requires OpenStreamHub 0.5.0 or later, macOS, `/usr/bin/python3` (it comes with the Xcode command-line tools), and Claude Code with hooks. Status: unit-tested with fakes; on 17 November 2026, by hand, through a fake app socket, with a real Claude Code session in iTerm2 (behind a wrapper with a terminal of its own): its hooks, the status line, the keys, and answering real Bash permission prompts, Yes with a short press and No with a long one. Not yet checked on a real M4315 or M131E, or in Terminal.
+Requires OpenStreamHub 0.5.0 or later, macOS, `/usr/bin/python3` (it comes with the Xcode command-line tools), and Claude Code with hooks. Status: unit-tested with fakes; on 17 November 2026, by hand, through a fake app socket, with a real Claude Code session in iTerm2 (behind a wrapper with a terminal of its own): its hooks, the status line, the keys, and answering real Bash permission prompts, Yes with a short press and No with a long one. On a real M4315 and M131E the same day: the Session status key, the Context and cost dial face, and answering a permission prompt from a key. Not yet checked in Terminal.
 
 ## Answering permission prompts
 

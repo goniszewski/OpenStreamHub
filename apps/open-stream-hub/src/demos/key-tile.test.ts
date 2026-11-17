@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { drawTile, tilePng, tileSize } from './key-tile';
+import { drawTile, inkOn, numberFont, tilePng, tileSize } from './key-tile';
 import type { Drawing } from './key-tile';
 
 function recorder() {
@@ -28,6 +28,31 @@ describe('key tiles', () => {
     const score = recorder();
     drawTile(score.ctx, { tone: 'score', mark: 'X', text: '3' });
     expect(score.calls.filter(call => call.startsWith('fillText')).map(call => call.split(',')[0])).toEqual(['fillText(X', 'fillText(3']);
+  });
+
+  it('fills a numbered tile with its colour, its number in the ink that reads on it, smaller for more digits', () => {
+    const tile = recorder();
+    drawTile(tile.ctx, { tone: 'value', text: '2048', colour: '#ececec' });
+    expect(tile.calls).toContain(`fillRect(6,6,${tileSize - 12},${tileSize - 12})`);
+    expect(tile.calls.filter(call => call.startsWith('fillText(2048'))).toHaveLength(1);
+    expect(tile.ctx.fillStyle).toBe('#181820');
+    expect(inkOn('#2e808c')).toBe('#fafafc');
+    expect(numberFont('2', 72)).toBe('bold 72px sans-serif');
+    expect(numberFont('2048', 72)).toBe('bold 50px sans-serif');
+    expect(numberFont('131072', 72)).toBe('bold 33px sans-serif');
+    const pointed = recorder();
+    drawTile(pointed.ctx, { tone: 'value', text: '8', colour: '#2e808c', arrow: 'left' });
+    expect(pointed.calls.slice(-5)).toEqual(['beginPath()', 'moveTo(35,20)', 'lineTo(25,30)', 'lineTo(35,40)', 'stroke()']);
+    const empty = recorder();
+    drawTile(empty.ctx, { tone: 'empty', arrow: 'down' });
+    expect(empty.ctx.strokeStyle).toBe('#6a6a7c');
+    const plain = recorder();
+    drawTile(plain.ctx, { tone: 'label', text: 'over' });
+    expect(plain.calls.filter(call => call.startsWith('fillText'))).toHaveLength(1);
+    expect(plain.ctx.strokeStyle).toBe('#000000');
+    const score = recorder();
+    drawTile(score.ctx, { tone: 'label', label: 'Best', text: '40' });
+    expect(score.calls.filter(call => call.startsWith('fillText')).map(call => call.split(',')[0])).toEqual(['fillText(Best', 'fillText(40']);
   });
 
   it('draws a mole with eyes and nose, and a tick or a cross for the verdict', () => {

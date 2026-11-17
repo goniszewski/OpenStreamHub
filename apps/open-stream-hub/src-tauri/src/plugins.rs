@@ -1315,8 +1315,7 @@ mod tests {
             [
                 "com.example.notify",
                 "com.github.goniszewski.claudecode",
-                "com.github.goniszewski.nowplaying",
-                "com.github.goniszewski.twofold"
+                "com.github.goniszewski.nowplaying"
             ]
         );
     }

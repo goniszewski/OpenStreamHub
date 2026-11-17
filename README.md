@@ -85,7 +85,6 @@ A plugin adds actions, if / else tests and key pictures of its own: a separate p
 
 - **[Now Playing](plugins/com.github.goniszewski.nowplaying)** (official): Apple Music and Spotify on one key, with the cover as its picture. Short press plays or pauses, long press goes back, double press skips.
 - **[Claude Code](plugins/com.github.goniszewski.claudecode)** (official): your Claude Code sessions on keys, working, waiting for you or done, and a context and cost meter. A press brings the session's terminal to the front and, if you turn it on, answers its permission prompt once you can see it.
-- **[Twofold](plugins/com.github.goniszewski.twofold)** (official): a sliding number game on the 15 keys, played with the rollers. Merge equal tiles, reach 2048, keep going.
 - **[Notify example](examples/plugins/com.example.notify)**: a small plugin to learn from, showing actions, input events, a condition and a drawn key.
 - **[Writing a plugin](docs/plugins.md)**: the manifest, the protocol and the limits.
 

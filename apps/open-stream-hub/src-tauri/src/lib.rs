@@ -1189,15 +1189,18 @@ fn set_led_lighting(
     Ok(written)
 }
 
-// A demo owns one 15-key module for as long as it plays. The module's own session, if it has one, lets go of it and
-// waits (`Reason::Demo`); the demo is an unmanaged run with no bindings, in software mode and in Test mode, so no key
-// press does anything on the Mac and no profile display is drawn over it. It draws on the keys through the run's
-// control channel (`demo_key_image`). `demo_end` stops it and the session starts again.
+// A demo owns the modules it plays on (the 15-key module, and for some a knob or roller module beside it) for as long
+// as it plays. Each module's own session, if it has one, lets go of it and waits (`Reason::Demo`); the demo is an
+// unmanaged run with no bindings in Test mode, so nothing a control does reaches the Mac. A module the demo draws on
+// (`drawn`, the default) runs in software mode, so no profile display is drawn over it, and is drawn through the run's
+// control channel (`demo_key_image`); one it only reads, such as knobs or rollers, which have no software mode, runs in
+// hardware mode. `demo_end` stops it and the session starts again.
 #[tauri::command(async)]
 fn demo_start(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     path_hex: String,
+    drawn: Option<bool>,
 ) -> Result<String, String> {
     if state.sessions.is_closed() || state.services.is_closed() {
         return Err(service::SHUTTING_DOWN.into());
@@ -1213,7 +1216,7 @@ fn demo_start(
         profile: demo::blank_profile()?,
         path_hex: path_hex.clone(),
         execute: false,
-        software_mode: true,
+        software_mode: drawn.unwrap_or(true),
         profile_id: None,
         source_profile_id: None,
         display: None,

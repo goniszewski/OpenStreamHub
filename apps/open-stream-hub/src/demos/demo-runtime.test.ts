@@ -12,7 +12,7 @@ function setup(options: { failStart?: boolean; neverReady?: boolean } = {}) {
       calls.push({ command, args });
       if (command === 'demo_start') {
         if (options.failStart) throw new Error('the module is busy');
-        if (!options.neverReady) queueMicrotask(() => handlers['demo://record']({ payload: { service_id: 'service:ab', record: { type: 'service_start' } } }));
+        if (!options.neverReady) queueMicrotask(() => handlers['demo://record']({ payload: { service_id: `service:${String(args?.pathHex).toLowerCase()}`, record: { type: 'service_start' } } }));
       }
       return undefined;
     }) as never,
@@ -34,6 +34,30 @@ describe('DemoRuntime', () => {
     expect(commands()).toEqual(['demo_start']);
     press(4); press(5, 'released'); press(6, 'pressed', 'service:other');
     expect(keys).toEqual([4]);
+  });
+
+  it('passes turns on beside presses, and drops other gestures', async () => {
+    const { runtime, press } = setup();
+    const keys: number[] = [];
+    const turned: string[] = [];
+    await runtime.start('AB', key => keys.push(key), () => {}, (control, turn) => turned.push(`${control}:${turn}`));
+    press(0, 'clockwise'); press(1, 'up'); press(0, 'left'); press(2, 'position_changed'); press(1, 'pressed'); press(0, 'down', 'service:other');
+    expect(turned).toEqual(['0:clockwise', '1:up', '0:left']);
+    expect(keys).toEqual([1]);
+  });
+
+  it('makes another runtime for a second module, with its own run', async () => {
+    const { runtime, commands, calls } = setup();
+    const second = runtime.another();
+    expect(second).not.toBe(runtime);
+    expect(runtime.another()).toBe(second);
+    expect(second.getPhase()).toBe('idle');
+    await runtime.start('AB', () => {}, () => {});
+    expect(runtime.getPhase()).toBe('running');
+    expect(commands()).toEqual(['demo_start']);
+    expect(calls[0].args).toEqual({ pathHex: 'AB' });
+    await second.start('CD', () => {}, () => {}, () => {}, false);
+    expect(calls[1]).toEqual({ command: 'demo_start', args: { pathHex: 'CD', drawn: false } });
   });
 
   it('draws only the tiles that changed since they were last drawn', async () => {
@@ -62,7 +86,7 @@ describe('DemoRuntime', () => {
     const { runtime, commands, ends, handlers, begin } = setup();
     await begin();
     handlers['demo://status']({ payload: { service_id: 'service:ab', state: 'exited' } });
-    await Promise.resolve(); await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
     expect(commands()).toEqual(['demo_start', 'demo_end']);
     expect(ends).toEqual([{ reason: 'module-stopped', error: 'The module stopped answering.' }]);
     expect(runtime.getPhase()).toBe('idle');
@@ -81,6 +105,17 @@ describe('DemoRuntime', () => {
     slow.timeouts[0]();
     await expect(starting).rejects.toThrow('did not get ready');
     expect(slow.commands()).toEqual(['demo_start', 'demo_end']);
+  });
+
+  it('lets a start made while the module is still being handed back wait for it', async () => {
+    const { runtime, commands, begin } = setup();
+    await begin();
+    const ending = runtime.end();
+    const again = begin();
+    await ending;
+    await again;
+    expect(runtime.getPhase()).toBe('running');
+    expect(commands()).toEqual(['demo_start', 'demo_end', 'demo_start']);
   });
 
   it('survives a page that mounts, cleans up and mounts again at once', async () => {

@@ -74,9 +74,11 @@ jobs:
         working-directory: apps/open-stream-hub
         run: npm test
 
-      # --- Official plugins (the system Python they run with; players are faked) ---
+      # --- Official plugins (the system Python they run with; players and terminals are faked) ---
       - name: Now Playing plugin tests
         run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.nowplaying/tests
+      - name: Claude Code plugin tests
+        run: /usr/bin/python3 -B -m unittest discover -s plugins/com.github.goniszewski.claudecode/tests
 
       # --- Desktop app Rust (needs the sidecar file to exist) ---
       - name: Prepare sidecar

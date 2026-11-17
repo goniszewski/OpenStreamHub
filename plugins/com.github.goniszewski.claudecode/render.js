@@ -1,12 +1,16 @@
-// Draws one 72x72 key for the Claude Code plugin with AppKit and writes it as a PNG.
-// Run as: osascript -l JavaScript render.js <out.png> <face...>, where face is one of
+// Draws one 72x72 key, or the 240x240 round M131E dial screen, for the Claude Code plugin with AppKit and writes it
+// as a PNG.
+// Run as: osascript -l JavaScript render.js <out.png> [dial] <face...>, where face is one of
 // - waiting|done|working|idle <project> <detail> <others>: a session. Others, when set, is how many other sessions
 //   need you (waiting or done), shown as a badge.
 // - none: no session.
 // - meter <percent> <cost> <project>: a ring of how full the context window is, with the cost below.
+// With "dial" the face is drawn for the dial: the meter fills the round screen, and the other faces are drawn as on a
+// key, enlarged into the square that fits inside the circle.
 ObjC.import('AppKit');
 
 var SIDE = 72;
+var DIAL = 240;
 
 function colour(r, g, b, a) {
   return $.NSColor.colorWithSRGBRedGreenBlueAlpha(r, g, b, a);
@@ -17,19 +21,25 @@ function rect(x, y, w, h) {
 }
 
 // Draws one line centred in the box, shrinking it down to two points smaller to fit, then cutting it with an ellipsis.
+// It is centred by measuring it, not with NSTextAlignmentCenter: the scripting bridge gives Intel's value, which is
+// right alignment on Apple silicon.
 function text(value, x, y, w, h, size, bold, fill) {
   if (!value) return;
   var style = $.NSMutableParagraphStyle.alloc.init;
-  style.alignment = $.NSTextAlignmentCenter;
   style.lineBreakMode = $.NSLineBreakByTruncatingTail;
   var string = $.NSString.alloc.initWithUTF8String(value);
-  var attributes;
+  var attributes, width;
   for (var fit = size; fit >= size - 2; fit--) {
     var font = bold ? $.NSFont.boldSystemFontOfSize(fit) : $.NSFont.systemFontOfSize(fit);
     attributes = $.NSDictionary.dictionaryWithObjectsForKeys(
       $([font, fill, style]),
       $([$.NSFontAttributeName, $.NSForegroundColorAttributeName, $.NSParagraphStyleAttributeName]));
-    if (string.sizeWithAttributes(attributes).width <= w) break;
+    width = string.sizeWithAttributes(attributes).width;
+    if (width <= w) break;
+  }
+  if (width < w) {
+    x += (w - width) / 2;
+    w = Math.ceil(width) + 1;
   }
   string.drawInRectWithAttributes(rect(x, y, w, h), attributes);
 }
@@ -84,7 +94,7 @@ function session(state, project, detail, others) {
     dim = colour(1, 1, 1, 0.5);
   }
   background.setFill;
-  $.NSRectFill(rect(0, 0, SIDE, SIDE));
+  $.NSRectFill(rect(-SIDE, -SIDE, SIDE * 3, SIDE * 3));  // past the key's edges: on the dial, the whole screen
   text(project || 'Claude', 3, 53, others ? 52 : 66, 16, 11, true, ink);
   if (state === 'waiting') {
     text('?', 0, 18, SIDE, 36, 30, true, ink);
@@ -104,14 +114,14 @@ function session(state, project, detail, others) {
 
 function nothing() {
   colour(0.07, 0.07, 0.09, 1).setFill;
-  $.NSRectFill(rect(0, 0, SIDE, SIDE));
+  $.NSRectFill(rect(-SIDE, -SIDE, SIDE * 3, SIDE * 3));
   text('Claude', 2, 38, 68, 16, 11, true, colour(1, 1, 1, 0.45));
   text('no session', 2, 20, 68, 15, 10, false, colour(1, 1, 1, 0.35));
 }
 
 function meter(percent, cost, project) {
   colour(0.07, 0.07, 0.09, 1).setFill;
-  $.NSRectFill(rect(0, 0, SIDE, SIDE));
+  $.NSRectFill(rect(-SIDE, -SIDE, SIDE * 3, SIDE * 3));
   var centre = $.NSMakePoint(36, 42);
   var ring = $.NSBezierPath.bezierPath;
   ring.lineWidth = 6;
@@ -137,19 +147,66 @@ function meter(percent, cost, project) {
   text(cost || project, 2, 2, 68, 15, 10, false, colour(1, 1, 1, 0.7));
 }
 
+// The meter on the round dial screen: a large ring near its edge, the percentage inside, the project above and the
+// cost below.
+function dialMeter(percent, cost, project) {
+  colour(0.07, 0.07, 0.09, 1).setFill;
+  $.NSRectFill(rect(0, 0, DIAL, DIAL));
+  var centre = $.NSMakePoint(120, 120);
+  var ring = $.NSBezierPath.bezierPath;
+  ring.lineWidth = 16;
+  ring.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngle(centre, 96, 0, 360);
+  colour(1, 1, 1, 0.12).setStroke;
+  ring.stroke;
+  if (percent !== '') {
+    var share = Math.max(0, Math.min(100, Number(percent))) / 100;
+    var fill = share < 0.6 ? colour(0.3, 0.75, 0.45, 1) : share < 0.85 ? colour(0.95, 0.65, 0.2, 1) :
+      colour(0.95, 0.3, 0.25, 1);
+    if (share > 0) {
+      var arc = $.NSBezierPath.bezierPath;
+      arc.lineWidth = 16;
+      arc.lineCapStyle = $.NSLineCapStyleRound;
+      arc.appendBezierPathWithArcWithCenterRadiusStartAngleEndAngleClockwise(centre, 96, 90, 90 - 360 * share, true);
+      fill.setStroke;
+      arc.stroke;
+    }
+    text(percent + '%', 50, 92, 140, 60, 50, true, colour(1, 1, 1, 0.95));
+    text('context', 60, 76, 120, 22, 15, false, colour(1, 1, 1, 0.55));
+  } else {
+    text(project ? '–' : 'no session', 50, 100, 140, 40, project ? 40 : 22, false, colour(1, 1, 1, 0.5));
+  }
+  text(project, 52, 150, 136, 26, 17, true, colour(1, 1, 1, 0.8));
+  text(cost, 62, 46, 116, 28, 22, false, colour(1, 1, 1, 0.75));
+}
+
 function run(argv) {
   var out = argv[0];
-  var face = argv[1];
+  var dial = argv[1] === 'dial';
+  var args = dial ? argv.slice(2) : argv.slice(1);
+  var face = args[0];
+  var side = dial ? DIAL : SIDE;
   var rep = $.NSBitmapImageRep.alloc.initWithBitmapDataPlanesPixelsWidePixelsHighBitsPerSampleSamplesPerPixelHasAlphaIsPlanarColorSpaceNameBytesPerRowBitsPerPixel(
-    null, SIDE, SIDE, 8, 4, true, false, $.NSDeviceRGBColorSpace, 0, 0);
+    null, side, side, 8, 4, true, false, $.NSDeviceRGBColorSpace, 0, 0);
   var context = $.NSGraphicsContext.graphicsContextWithBitmapImageRep(rep);
   $.NSGraphicsContext.saveGraphicsState;
   $.NSGraphicsContext.setCurrentContext(context);
   context.setImageInterpolation($.NSImageInterpolationHigh);
 
-  if (face === 'meter') meter(argv[2] || '', argv[3] || '', argv[4] || '');
-  else if (face === 'none') nothing();
-  else session(face, argv[2] || '', argv[3] || '', argv[4] || '');
+  if (dial && face === 'meter') {
+    dialMeter(args[1] || '', args[2] || '', args[3] || '');
+  } else {
+    if (dial) {
+      // The key's square, enlarged to the one that fits inside the round screen.
+      var inside = DIAL / Math.SQRT2;
+      var transform = $.NSAffineTransform.transform;
+      transform.translateXByYBy((DIAL - inside) / 2, (DIAL - inside) / 2);
+      transform.scaleBy(inside / SIDE);
+      transform.concat;
+    }
+    if (face === 'meter') meter(args[1] || '', args[2] || '', args[3] || '');
+    else if (face === 'none') nothing();
+    else session(face, args[1] || '', args[2] || '', args[3] || '');
+  }
 
   context.flushGraphics;
   $.NSGraphicsContext.restoreGraphicsState;

@@ -48,6 +48,8 @@ PLAYERS = {"music": ("Music", "music.applescript"), "spotify": ("Spotify", "spot
 CHOICES = ("auto", "music", "spotify")
 PLAYING = ("playing", "fast forwarding", "rewinding")  # Music reports seeking as its own states
 MAX_IMAGE = 32 * 1024  # the app refuses a larger set_image
+MAX_DIAL_IMAGE = 40 * 1024  # the same on the dial screen
+DIAL_MODULE = "m131e"
 MAX_COVER = 4 * 1024 * 1024
 COVER_HOST = "https://i.scdn.co/"  # the only host the manifest declares
 POLL_SECONDS = 2.0
@@ -250,16 +252,18 @@ class Artist:
                 self.log("could not get the %s cover: %s" % (now.player, str(error)[:300]))
         return path if entry["found"] else ""
 
-    def image(self, now):
-        """The key's (signature, base64 PNG). The signature changes whenever the picture would."""
+    def image(self, now, dial=False):
+        """The key's (signature, base64 PNG), or on the dial screen (`dial`) its 240x240 JPEG. The signature changes
+        whenever the picture would."""
         cover = self.cover(now) if now.state != "stopped" and now.track else ""
-        signature = (now.player, now.state, now.track, bool(cover))
+        signature = (now.player, now.state, now.track, bool(cover)) + (("dial",) if dial else ())
         if signature in self.cache:
             self.cache.move_to_end(signature)
             return signature, self.cache[signature]
-        out = os.path.join(self.folder, "key.png")
+        out = os.path.join(self.folder, "dial.jpg" if dial else "key.png")
         done = self.run(
-            [OSASCRIPT, "-l", "JavaScript", os.path.join(HERE, "render.js"), out, now.state, cover],
+            [OSASCRIPT, "-l", "JavaScript", os.path.join(HERE, "render.js"), out, now.state, cover]
+            + (["dial"] if dial else []),
             capture_output=True,
             text=True,
             timeout=READ_SECONDS,
@@ -268,8 +272,9 @@ class Artist:
             raise PlayerError("drawing the key failed: " + " ".join(done.stderr.split())[-300:])
         with open(out, "rb") as file:
             data = file.read()
-        if len(data) > MAX_IMAGE:
-            raise PlayerError("the key image is %d bytes, more than %d" % (len(data), MAX_IMAGE))
+        limit = MAX_DIAL_IMAGE if dial else MAX_IMAGE
+        if len(data) > limit:
+            raise PlayerError("the key image is %d bytes, more than %d" % (len(data), limit))
         image = base64.b64encode(data).decode("ascii")
         self.cache[signature] = image
         while len(self.cache) > 8:
@@ -599,20 +604,30 @@ class Plugin:
                 now = self.players.resolve(choice, skipped=skipped)
                 with self.lock:
                     self.latest[choice] = (self.clock(), now)
-                signature, image = self.artist.image(now)
+                    surfaces = sorted({entry["control"][0] == DIAL_MODULE for entry in self.keys.values()
+                                       if entry["choice"] == choice})
             except Exception as error:
                 self.log("could not read the player: %s" % error, once=True)
                 continue
+            pictures = {}
+            for dial in surfaces:  # one surface that cannot be drawn leaves the other's keys drawn
+                try:
+                    pictures[dial] = self.artist.image(now, dial=dial)
+                except Exception as error:
+                    self.log("could not draw the %s: %s" % ("dial" if dial else "key", error), once=True)
             for reason in skipped:
                 self.log("left out of Whichever is playing: %s" % reason, once=True)
             with self.lock:
-                due = [key for key, entry in self.keys.items()
-                       if entry["choice"] == choice and entry["shown"] != signature]
-                for key in due:
-                    if self.keys[key]["shown"] is not None:  # a new picture, not a retry of a refused one
-                        self.keys[key]["retries"] = 0
-                    self.keys[key]["shown"] = signature
-            for key in due:
+                due = []
+                for key, entry in self.keys.items():
+                    picture = pictures.get(entry["control"][0] == DIAL_MODULE)
+                    if entry["choice"] != choice or picture is None or entry["shown"] == picture[0]:
+                        continue
+                    if entry["shown"] is not None:  # a new picture, not a retry of a refused one
+                        entry["retries"] = 0
+                    entry["shown"] = picture[0]
+                    due.append((key, picture))
+            for key, (signature, image) in due:
                 self.request({"type": "set_image", "key": key, "image": image}, signature)
 
     def poll_loop(self):

@@ -279,7 +279,7 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
             // faces can follow them.
             let variables = cooltek_sdk_service::SharedVariables::new();
             variables.declare(&profile.variables);
-            // The pictures plugins draw on keys, shared by the control channel and the display thread.
+            // The pictures plugins draw on keys or the dial, shared by the control channel and the display thread.
             let plugin_images = PluginImageTable::default();
             let artwork = match (display_sync, dial_content) {
                 (false, _) => None,
@@ -312,9 +312,12 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                         })
                     })))
                 }
+                // A plugin's picture replaces the dial's face while the current function is the plugin's, and is
+                // turned with it.
                 (true, content) => Some(Artwork::Dial(
                     DialArtwork::prepare(content, &profile, Box::new(SystemClock))?
-                        .with_turn(undo_turn),
+                        .with_turn(undo_turn)
+                        .with_plugin_images(plugin_images.clone()),
                 )),
             };
             // Reject unsupported stdout (such as a regular file) before any HID access.
@@ -403,7 +406,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                 }))
             });
             let dispatcher_plugins = plugins.clone();
-            // A run that draws keypad pages tells the app which keys plugins draw, and takes their images.
+            // A run that draws keypad pages or the dial tells the app which keys plugins draw, and takes their
+            // images.
             let plugin_keys = match (&plugins, &artwork) {
                 (Some(bridge), Some(Artwork::Keys(_))) => PluginKeys::new(
                     engine.profile(),
@@ -412,6 +416,13 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                     bridge.clone(),
                     variables.clone(),
                 ),
+                (Some(bridge), Some(Artwork::Dial(_))) => Some(PluginKeys::dial(
+                    engine.profile(),
+                    device.clone(),
+                    plugin_images,
+                    bridge.clone(),
+                    variables.clone(),
+                )),
                 _ => None,
             };
             // The run's mode lives in one flag the dispatcher reads for every action, so a supervisor can switch it
@@ -534,7 +545,11 @@ fn run(cli: Cli) -> Result<(), Box<dyn Error>> {
                             }
                         }
                         Artwork::Dial(artwork) => {
-                            live_dial_display(&shared, selected.module, artwork)?
+                            let display = live_dial_display(&shared, selected.module, artwork)?;
+                            match plugin_keys {
+                                Some(keys) => display.with_plugin_keys(keys),
+                                None => display,
+                            }
                         }
                     });
                     run_live_with_display(

@@ -7,6 +7,8 @@ An OpenStreamHub plugin that puts your [Claude Code](https://code.claude.com) se
 | **Session status** | One session: its project, and **?** with the tool's name while it waits for you (amber), a check when it is done (green), dots while it works, a dash while idle. A red badge counts the other sessions that wait for you or are done. |
 | **Context and cost** | A ring of how full the session's context window is (green, then amber from 60 %, red from 85 %), with what the session has cost below. |
 
+On the M131E dial, an action drawn on a dial function shows while that function is current: **Context and cost** as a large ring around the screen with the percentage, the project and the cost inside, and **Session status** as on a key, enlarged. Bind it to the function's turn (turning then shows the next or previous session), and leave the dial screen on anything but Off in the profile's dial settings. The dial is one control, so a session chosen by turning it shows on every dial function of this plugin.
+
 Which session a key shows: the one that most needs you (waiting for you, then done, then working, then idle, the latest first), of the key's **Project** when it is set (the project folder's name, such as `OpenStreamHub`). A done session you bring to the front from the key counts as seen and shows idle.
 
 | On a key | Does |
@@ -20,7 +22,7 @@ The condition **A Claude Code session is…** lets an if / else test whether a s
 
 **Bind it to the key's own Press, and leave its Release unbound**: a long press is told apart only on a key the app draws for this action. Anywhere else a press acts at once.
 
-Requires OpenStreamHub 0.5.0 or later, macOS, `/usr/bin/python3` (it comes with the Xcode command-line tools), and Claude Code with hooks. Status: unit-tested with fakes; on 17 November 2026, by hand, through a fake app socket, with a real Claude Code session in iTerm2 (behind a wrapper with a terminal of its own): its hooks, the status line, the keys, and answering real Bash permission prompts, Yes with a short press and No with a long one. Not yet checked on a real M4315 or in Terminal.
+Requires OpenStreamHub 0.5.0 or later, macOS, `/usr/bin/python3` (it comes with the Xcode command-line tools), and Claude Code with hooks. Status: unit-tested with fakes; on 17 November 2026, by hand, through a fake app socket, with a real Claude Code session in iTerm2 (behind a wrapper with a terminal of its own): its hooks, the status line, the keys, and answering real Bash permission prompts, Yes with a short press and No with a long one. Not yet checked on a real M4315 or M131E, or in Terminal.
 
 ## Answering permission prompts
 

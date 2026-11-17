@@ -17,9 +17,14 @@
 //! once per [`CPU_SAMPLE_INTERVAL`] and only while building a request, which
 //! the live runtime does on its display thread.
 //!
+//! A plugin may draw the dial while the current dial function is its
+//! ([`DialArtwork::with_plugin_images`]); its picture then replaces whatever
+//! the content would show, as `plugin:<generation>`.
+//!
 //! The provider performs no device I/O. Requests are opaque strings built by
 //! [`DialArtwork::request`]: `profile`, `function:<index>`, `clock:HH:MM`,
-//! `analog:HH:MM`, `cpu:<0-100>`, or `cpu:--`; anything else returns `None`.
+//! `analog:HH:MM`, `cpu:<0-100>`, `cpu:--`, or `plugin:<generation>`; anything
+//! else returns `None`.
 //! Hardware acceptance of the images is unverified; see
 //! `docs/masterhub-display-sync.md`.
 
@@ -42,6 +47,7 @@ use image::{ImageFormat, Rgb, RgbImage};
 use crate::{
     cpu_usage::MacCpuStat,
     image_prep::{PrepareOptions, prepare_image},
+    plugin_image::{PluginImageTable, dial_page},
 };
 
 /// Dial image side in pixels.
@@ -367,6 +373,15 @@ pub struct DialArtwork {
     cached: RefCell<Option<(String, Vec<u8>)>>,
     /// Quarter turns clockwise applied to every face served, so a dial sitting turned on the base reads upright.
     quarter_turns: u8,
+    /// The pictures plugins draw on the dial. Boxed for the same reason as `cpu`.
+    plugin: Option<Box<PluginFaces>>,
+}
+
+/// The pictures plugins draw on the dial, per dial function, and the one last looked up.
+struct PluginFaces {
+    table: PluginImageTable,
+    /// Its generation and bytes, turned with the dial (`None` when they could not be).
+    kept: RefCell<Option<(u64, Option<Vec<u8>>)>>,
 }
 
 /// The frames of an animated dial picture and the clock they play against.
@@ -545,6 +560,7 @@ impl DialArtwork {
                 .then(|| Box::new(RefCell::new(CpuGauge::new(Box::new(MacCpuStat::new()))))),
             cached: RefCell::new(None),
             quarter_turns: 0,
+            plugin: None,
         };
         // A clock or CPU face cannot be prepared in advance; prove the path works.
         match content {
@@ -588,6 +604,32 @@ impl DialArtwork {
         self
     }
 
+    /// Shows the picture a plugin drew in `table` for the current dial function ([`dial_page`], slot 0) instead of
+    /// the content's face, for as long as there is one.
+    pub fn with_plugin_images(mut self, table: PluginImageTable) -> Self {
+        self.plugin = Some(Box::new(PluginFaces {
+            table,
+            kept: RefCell::new(None),
+        }));
+        self
+    }
+
+    /// `plugin:<generation>` while a plugin's picture is kept for the dial function at `dial_function`, keeping its
+    /// bytes to serve.
+    fn plugin_request(&self, dial_function: Option<usize>) -> Option<String> {
+        let plugin = self.plugin.as_ref()?;
+        let page = dial_page(dial_function);
+        let mut kept = plugin.kept.borrow_mut();
+        let known = kept.as_ref().map(|(generation, _)| *generation);
+        let (generation, jpeg) = plugin.table.entry(&page, 0, known)?;
+        if let Some(jpeg) = jpeg {
+            // Turned once, as kept, so serving it never decodes it again. A picture that cannot be turned is not
+            // shown sideways: it is served as missing.
+            *kept = Some((generation, turned(&jpeg, self.quarter_turns)));
+        }
+        Some(format!("plugin:{generation}"))
+    }
+
     /// The configured content.
     pub fn content(&self) -> DialContent {
         self.content
@@ -600,6 +642,16 @@ impl DialArtwork {
     /// [`CPU_SAMPLE_INTERVAL`]. Two requests are equal exactly when they
     /// describe the same face.
     pub fn request(&self, dial_function: Option<usize>) -> DialImageRequest {
+        if let Some(face) = self.plugin_request(dial_function) {
+            // Sampled still, so the gauge is current the moment the picture goes.
+            if self.content == DialContent::Cpu {
+                self.cpu_percent(Instant::now());
+            }
+            return DialImageRequest {
+                profile: self.profile_name.clone(),
+                function: Some(face),
+            };
+        }
         let function = match self.content {
             DialContent::Off => None,
             DialContent::Function => {
@@ -756,6 +808,15 @@ fn parse_time(text: &str) -> Option<WallTime> {
 
 impl DialImageProvider for DialArtwork {
     fn dial_image(&self, request: &DialImageRequest) -> Option<Vec<u8>> {
+        if let Some(face) = request.function.as_deref()
+            && face.starts_with("plugin:")
+        {
+            let kept = self.plugin.as_ref()?.kept.borrow();
+            let (generation, jpeg) = kept.as_ref()?;
+            return (face == format!("plugin:{generation}"))
+                .then(|| jpeg.clone())
+                .flatten();
+        }
         let face = self.face(request)?;
         if self.content == DialContent::Image {
             // The stored picture was turned when the turn was set.
@@ -871,7 +932,7 @@ pub(crate) fn animated_test_profile(delays_ms: &[u32], loop_count: u32) -> Profi
 }
 
 /// Encodes through the shared preparation path, then validates explicitly.
-fn encode(image: &RgbImage) -> Result<Vec<u8>, String> {
+pub(crate) fn encode(image: &RgbImage) -> Result<Vec<u8>, String> {
     let mut png = Vec::new();
     image
         .write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
@@ -1297,6 +1358,46 @@ mod tests {
         }
         // More than three turns wrap around.
         assert_eq!(face(4), face(0));
+    }
+
+    #[test]
+    fn a_plugins_picture_replaces_the_face_while_its_function_is_current() {
+        let table = PluginImageTable::default();
+        let clock = clock(9, 5);
+        let art = artwork(DialContent::Clock, &clock)
+            .with_turn(2)
+            .with_plugin_images(table.clone());
+        assert_eq!(
+            art.request(Some(1)).function.as_deref(),
+            Some("clock:09:05")
+        );
+        let mut picture = canvas();
+        fill(&mut picture, 0, 0, 120, 240, WHITE);
+        table.set("function:1", 0, "com.x.y", encode(&picture).unwrap());
+        let first = art.request(Some(1));
+        let face = first.function.clone().unwrap();
+        assert!(face.starts_with("plugin:"), "{face}");
+        // Another function, or none, keeps the content's face.
+        assert_eq!(
+            art.request(Some(0)).function.as_deref(),
+            Some("clock:09:05")
+        );
+        assert_eq!(art.request(None).function.as_deref(), Some("clock:09:05"));
+        // Served turned with the dial: the white left half is now on the right.
+        let served = decoded(&art.dial_image(&first).unwrap());
+        assert!(served.get_pixel(200, 120).0[0] > 200 && served.get_pixel(40, 120).0[0] < 50);
+        // A new picture is a new face; the old face is no longer served.
+        table.set("function:1", 0, "com.x.y", encode(&canvas()).unwrap());
+        let second = art.request(Some(1));
+        assert_ne!(second.function, first.function);
+        assert!(art.dial_image(&first).is_none());
+        assert!(art.dial_image(&second).is_some());
+        // Once cleared, the clock is back.
+        table.clear(|_, _, _| true);
+        assert_eq!(
+            art.request(Some(1)).function.as_deref(),
+            Some("clock:09:05")
+        );
     }
 
     #[test]

@@ -42,6 +42,8 @@ ACTIONS = ("session", "context")
 STATES = ("waiting", "done", "working", "idle")
 RANK = {state: rank for rank, state in enumerate(STATES)}
 MAX_IMAGE = 32 * 1024
+MAX_DIAL_IMAGE = 40 * 1024
+DIAL_MODULE = "m131e"
 POLL_SECONDS = 1.0
 LONG_SECONDS = 0.6
 PIN_SECONDS = 30.0
@@ -365,7 +367,8 @@ class Artist:
         self.cache = collections.OrderedDict()
 
     def image(self, face):
-        """(signature, base64 PNG) for a face: a tuple of strings that render.js takes as its arguments."""
+        """(signature, base64 PNG) for a face: a tuple of strings that render.js takes as its arguments (first "dial"
+        for the dial screen)."""
         if face in self.cache:
             self.cache.move_to_end(face)
             return face, self.cache[face]
@@ -376,8 +379,9 @@ class Artist:
             raise TerminalError("drawing the key failed: " + " ".join(done.stderr.split())[-300:])
         with open(out, "rb") as file:
             data = file.read()
-        if len(data) > MAX_IMAGE:
-            raise TerminalError("the key image is %d bytes, more than %d" % (len(data), MAX_IMAGE))
+        limit = MAX_DIAL_IMAGE if face[:1] == ("dial",) else MAX_IMAGE
+        if len(data) > limit:
+            raise TerminalError("the key image is %d bytes, more than %d" % (len(data), limit))
         image = base64.b64encode(data).decode("ascii")
         self.cache[face] = image
         while len(self.cache) > 32:
@@ -385,8 +389,10 @@ class Artist:
         return face, image
 
 
-def face_of(action, session, others):
-    """What a key shows, as render.js's arguments."""
+def face_of(action, session, others, dial=False):
+    """What a key shows, as render.js's arguments; on the dial screen (`dial`), the same after "dial"."""
+    if dial:
+        return ("dial",) + face_of(action, session, others)
     if session is None:
         return ("none",) if action == "session" else ("meter", "", "", "")
     if action == "context":
@@ -804,7 +810,8 @@ class Plugin:
         for key, entry in keys:
             session, others = self.chosen(sessions, entry["control"], entry["params"])
             try:
-                signature, image = self.artist.image(face_of(entry["action"], session, others))
+                signature, image = self.artist.image(face_of(entry["action"], session, others,
+                                                             dial=entry["control"][0] == DIAL_MODULE))
             except Exception as error:
                 self.log("could not draw a key: %s" % error, once=True)
                 continue

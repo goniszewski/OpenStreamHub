@@ -118,7 +118,7 @@ describe('Settings > Plugins in the DOM', () => {
     const images = view.$$('.plugin-enable-image');
     expect(images).toHaveLength(1);
     expect(images[0].closest('li')?.textContent).toContain('Set a light');
-    expect(images[0].textContent).toBe('It draws the keys bound to this action, and learns when they are on screen.');
+    expect(images[0].textContent).toBe('It draws the keys and the dial screen bound to this action, and learns when they are on screen.');
     // Hall's secret is not set, so none is named as one that will be sent.
     expect(text).not.toContain('Stored secrets');
     view.click(button(dialog, 'Enable'));

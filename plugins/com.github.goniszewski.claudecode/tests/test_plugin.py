@@ -524,6 +524,13 @@ class PluginTests(unittest.TestCase):
         self.plugin.poll_once()
         self.assertIn(("meter", "63", "$0.50", "repo"), self.artist.faces)
 
+    def test_on_the_dial_the_context_key_shows_the_round_meter(self):
+        self.store.list = [session("a", "working", used=63.4, cost=0.5)]
+        self.plugin.handle({"type": "appear", "key": "k3", "action": "context", "params": {},
+                            "control": {"module": "m131e", "index": 0}})
+        self.plugin.poll_once()
+        self.assertIn(("dial", "meter", "63", "$0.50", "repo"), self.artist.faces)
+
     def test_the_condition(self):
         self.plugin.handle({"type": "check", "request": 7, "condition": "state", "params": {"state": "done"}})
         self.plugin.handle({"type": "check", "request": 8, "condition": "state",
@@ -681,6 +688,12 @@ class RenderTests(unittest.TestCase):
             self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n", face)
             self.assertEqual(int.from_bytes(data[16:20], "big"), 72)
             self.assertLessEqual(len(data), plugin.MAX_IMAGE)
+        for face in [("dial", "meter", "72", "$3.41", "OpenStreamHub"), ("dial", "meter", "", "", ""),
+                     ("dial", "waiting", "repo", "Bash", "2"), ("dial", "none")]:
+            _, image = artist.image(face)
+            data = base64.b64decode(image)
+            self.assertEqual(int.from_bytes(data[16:20], "big"), 240, face)
+            self.assertLessEqual(len(data), plugin.MAX_DIAL_IMAGE, face)
 
 
 if __name__ == "__main__":

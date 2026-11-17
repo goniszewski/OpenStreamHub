@@ -12,11 +12,11 @@ The key shows the cover while playing, the cover dimmed with a pause sign while 
 
 **Bind it to the key's own Press, and leave its Release unbound.** Short, long and double presses are told apart only on a key the app draws for this action, since only such a key is sure to send its release. If the key's Release runs something else, its first press goes back a track (no release comes, so it looks held) and later presses play or pause at once. Anywhere else a press plays or pauses at once: as a step of a multi-action or an if / else, while Settings > Let OpenStreamHub drive the display is **Built-in animation**, or on a knob's press.
 
-The action also works on other controls: turning a knob or the dial right (a roller down) goes to the next track and left (a roller up) to the previous. Without dial functions, a dial click plays or pauses, a double click goes next, and a long click goes back. A key draws its picture only on the M4315.
+The action also works on other controls: turning a knob or the dial right (a roller down) goes to the next track and left (a roller up) to the previous. Without dial functions, a dial click plays or pauses, a double click goes next, and a long click goes back. A key draws its picture on the M4315, and the dial on its screen while a dial function bound to this action is current (the whole round screen, at 240×240): bind it to the function's turn, for example, so turning skips tracks while the dial shows the cover. A knob or roller shows nothing.
 
 The condition **Music is playing** lets an if / else test whether the chosen player, or either, is playing.
 
-Requires OpenStreamHub 0.5.0 or later, macOS, and `/usr/bin/python3`, which macOS installs with the Xcode command-line tools (it offers to the first time something asks for it). Status: unit-tested with fakes; on 17 November 2026 it read the real Music app's state and cover and drew the key end to end through a fake app socket, by hand. Not yet checked on a real M4315 or with Spotify.
+Requires OpenStreamHub 0.5.0 or later, macOS, and `/usr/bin/python3`, which macOS installs with the Xcode command-line tools (it offers to the first time something asks for it). Status: unit-tested with fakes; on 17 November 2026 it read the real Music app's state and cover and drew the key end to end through a fake app socket, by hand. Not yet checked on a real M4315 or M131E, or with Spotify.
 
 ## Install
 

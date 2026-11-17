@@ -157,7 +157,9 @@ class FakePlayers:
 
 
 class FakeArtist:
-    def image(self, state):
+    def image(self, state, dial=False):
+        if dial:
+            return (state.state, state.track, "dial"), "dial-%s-%s" % (state.state, state.track)
         return (state.state, state.track), "%s-%s" % (state.state, state.track)
 
 
@@ -310,6 +312,16 @@ class PluginTests(unittest.TestCase):
         self.plugin.poll_once()
         self.assertEqual(self.players.reads, 2)
         self.assertEqual(sorted(key for key, _ in self.images()), ["k1", "k2"])
+
+    def test_a_dial_showing_the_same_player_gets_the_dial_picture(self):
+        self.appear("k1", 0)
+        self.plugin.handle({"type": "appear", "key": "k2", "action": "control", "params": {},
+                            "control": {"module": "m131e", "index": 0}})
+        self.plugin.poll_once()
+        self.assertEqual(self.players.reads, 1, "one read for both")
+        self.assertEqual(sorted(self.images()), [("k1", "playing-T1"), ("k2", "dial-playing-T1")])
+        self.plugin.poll_once()
+        self.assertEqual(len(self.images()), 2, "unchanged: not sent again")
 
     def test_a_check_answers_whether_music_is_playing(self):
         self.plugin.check({"type": "check", "request": 9, "condition": "is_playing", "params": {}})
@@ -488,6 +500,13 @@ class RenderTests(unittest.TestCase):
                 self.assertLessEqual(len(data), plugin.MAX_IMAGE)
                 pictures.add(image)
             self.assertEqual(len(pictures), 2)
+            # On the dial screen: a 240x240 JPEG, which the app takes as well as a PNG.
+            signature, image = artist.image(now("playing", track="T1"), dial=True)
+            self.assertEqual(signature[-1], "dial")
+            data = base64.b64decode(image)
+            self.assertEqual(data[:2], b"\xff\xd8")
+            self.assertIn(b"\xff\xc0\x00\x11\x08\x00\xf0\x00\xf0", data)  # baseline, 240x240
+            self.assertLessEqual(len(data), plugin.MAX_DIAL_IMAGE)
 
 
 if __name__ == "__main__":

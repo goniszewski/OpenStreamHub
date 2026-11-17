@@ -7,7 +7,8 @@ Run it from the installed plugin's folder, so the hooks point at the copy that s
 Options:
     --remove           take the hooks and the status line out again (your own status line is put back)
     --no-statusline    leave the status line alone (the Context and cost key then shows nothing)
-    --settings PATH    another settings file than ~/.claude/settings.json
+    --settings PATH    another settings file than Claude Code's own: settings.json in $CLAUDE_CONFIG_DIR when that
+                       is set, as Claude Code reads it, otherwise ~/.claude/settings.json
     --dry-run          print the settings it would write, and write nothing
 
 Before it adds the hooks to settings that do not have them, the settings file is copied next to itself
@@ -35,6 +36,12 @@ INSTALLED = os.path.expanduser("~/Library/Application Support/dev.openstreamhub/
 MARK = "com.github.goniszewski.claudecode/hook.py"  # how the plugin's commands are told apart from yours
 EVENTS = ("SessionStart", "SessionEnd", "UserPromptSubmit", "PreToolUse", "PostToolUse",
           "PermissionRequest", "Notification", "Stop")
+
+
+def default_settings(environ=os.environ):
+    """The settings file Claude Code reads: in CLAUDE_CONFIG_DIR when that is set, otherwise in ~/.claude."""
+    folder = environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"
+    return os.path.join(os.path.expanduser(folder), "settings.json")
 
 
 def hook_command():
@@ -136,7 +143,7 @@ def main(argv):
     parser = argparse.ArgumentParser(description="Add the Claude Code plugin's hooks to Claude Code's settings.")
     parser.add_argument("--remove", action="store_true")
     parser.add_argument("--no-statusline", action="store_true")
-    parser.add_argument("--settings", default=os.path.expanduser("~/.claude/settings.json"))
+    parser.add_argument("--settings", default=default_settings())
     parser.add_argument("--dry-run", action="store_true")
     options = parser.parse_args(argv)
 

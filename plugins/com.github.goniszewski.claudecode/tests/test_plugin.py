@@ -641,6 +641,15 @@ class InstallTests(unittest.TestCase):
         with self.assertRaises(install_hooks.SettingsError):
             install_hooks.install({"hooks": {"Stop": {"oops": 1}}})
 
+    def test_the_default_settings_file_follows_claude_config_dir(self):
+        home = os.path.expanduser("~")
+        self.assertEqual(install_hooks.default_settings({}), os.path.join(home, ".claude", "settings.json"))
+        self.assertEqual(install_hooks.default_settings({"CLAUDE_CONFIG_DIR": ""}),
+                         os.path.join(home, ".claude", "settings.json"), "an empty one is not set")
+        self.assertEqual(install_hooks.default_settings({"CLAUDE_CONFIG_DIR": "~/.claude-work"}),
+                         os.path.join(home, ".claude-work", "settings.json"))
+        self.assertEqual(install_hooks.default_settings({"CLAUDE_CONFIG_DIR": "/tmp/cc"}), "/tmp/cc/settings.json")
+
     def test_a_linked_settings_file_is_changed_where_it_points_and_backed_up_once(self):
         with tempfile.TemporaryDirectory() as folder:
             real = os.path.join(folder, "dotfiles-settings.json")

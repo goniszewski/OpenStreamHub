@@ -3160,7 +3160,9 @@ mod tests {
                     "params":{"channel":long},"input":turn}),
             );
         }
-        let pressed = invoke(host, json!({"entity": "y".repeat(2000)}));
+        // The longest deadline a press gets, so a slow drain on a loaded machine does not outlast it: a press past its
+        // deadline is dropped, which is the next test's case.
+        let pressed = invoke_within(host, "set", json!({"entity": "y".repeat(2000)}), 15_000);
         // It keeps answering pings, as a plugin busy on another thread would.
         for _ in 0..25 {
             thread::sleep(Duration::from_millis(100));
@@ -3172,6 +3174,10 @@ mod tests {
         }
         let press = plugin.receive_message_alive();
         assert_eq!(press["type"], "invoke");
+        assert!(
+            press["timeout_ms"].as_u64().unwrap() < 15_000,
+            "the wait is counted"
+        );
         plugin.send(json!({"type":"result","request":press["request"],"ok":true}));
         assert_eq!(answer(&pressed), Ok(()));
         assert_eq!(host.state_of(ID), Some("running"));
@@ -3193,7 +3199,8 @@ mod tests {
             );
         }
         let late = invoke_within(host, "set", json!({"entity":"late"}), 300);
-        let kept = invoke(host, json!({"entity":"kept"}));
+        // The longest deadline, so only `late` runs out while the plugin is busy, however slow the machine.
+        let kept = invoke_within(host, "set", json!({"entity":"kept"}), 15_000);
         for _ in 0..10 {
             thread::sleep(Duration::from_millis(100));
             plugin.send(json!({"type":"pong"}));
@@ -3204,7 +3211,7 @@ mod tests {
         }
         let press = plugin.receive_message_alive();
         assert_eq!(press["params"]["entity"], "kept");
-        assert!(press["timeout_ms"].as_u64().unwrap() < 4500);
+        assert!(press["timeout_ms"].as_u64().unwrap() < 14_500);
         plugin.send(json!({"type":"result","request":press["request"],"ok":true}));
         assert_eq!(answer(&kept), Ok(()));
     }

@@ -24,6 +24,7 @@ Plugins: add your own actions, if / else tests and pictures on keys and the dial
 
 ## Fixes
 
+- A module on any of the base's 27 connectors is now placed on the base layout. Before, some connectors showed "Position not detected" for some modules, and on one connector each, the roller and the dial were drawn about two cells away from it.
 - On the two-column layout the workspace and the inspector scroll on their own, so scrolling one no longer moves the other.
 - The Settings section that shows the current run is called **Run diagnostics** and is listed in the Settings contents.
 

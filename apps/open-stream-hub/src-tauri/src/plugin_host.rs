@@ -61,13 +61,12 @@ use cooltek_sdk_cli::image_prep::{
     PrepareOptions, prepare_image, prepare_keypad_image, within_budget, within_frame_budget,
 };
 use cooltek_sdk_service::{PluginUse, PluginUseKind, PluginValue};
+use local_ipc::{Listener, Stream};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    fs,
     io::{self, BufRead, BufReader, Cursor, Read, Write},
-    os::unix::{fs::PermissionsExt, net::UnixListener, net::UnixStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -345,7 +344,7 @@ struct Outbox {
 /// read, and an event is never written between the halves of another line.
 struct Conn {
     /// Only shut down from here, which ends the writer and the reader.
-    stream: UnixStream,
+    stream: Stream,
     /// Why this side shut the connection down, if it did, for the reader to report.
     closed: Mutex<Option<&'static str>>,
     outbox: Mutex<Outbox>,
@@ -355,7 +354,7 @@ struct Conn {
 }
 
 impl Conn {
-    fn new(stream: UnixStream) -> Self {
+    fn new(stream: Stream) -> Self {
         Self {
             stream,
             closed: Mutex::new(None),
@@ -448,7 +447,7 @@ impl Conn {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_or_insert(why);
-        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        let _ = self.stream.shutdown();
     }
 
     /// Why this side closed the connection, if it did.
@@ -899,15 +898,15 @@ impl PluginHost {
     ) -> Result<Self, String> {
         crate::ingress::prepare_private_dir(plugins_dir, "plugins", "plugins cannot run")?;
         let socket = plugins_dir.join(SOCKET_FILE);
-        match fs::remove_file(&socket) {
+        match local_ipc::remove(&socket) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => {
                 return Err(format!("could not remove the old plugin socket: {error}"));
             }
             _ => {}
         }
-        let listener = UnixListener::bind(&socket)
+        let listener = Listener::bind(&socket)
             .map_err(|error| format!("could not bind the plugin socket: {error}"))?;
-        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+        local_ipc::protect(&socket)
             .map_err(|error| format!("could not protect the plugin socket: {error}"))?;
         let (answers, answered) = mpsc::channel::<(Reply, Answer)>();
         let data = plugins_dir
@@ -1788,7 +1787,7 @@ impl PluginHost {
         }
     }
 
-    fn accept(&self, listener: UnixListener) {
+    fn accept(&self, listener: Listener) {
         for stream in listener.incoming() {
             if self.0.stopped.load(Ordering::SeqCst) {
                 return;
@@ -1812,7 +1811,7 @@ impl PluginHost {
     }
 
     /// One plugin connection: `hello` first, then messages until it closes.
-    fn serve(&self, stream: UnixStream) {
+    fn serve(&self, stream: Stream) {
         let hello = self.hello(&stream);
         self.0.unnamed.fetch_sub(1, Ordering::SeqCst);
         let Some((id, conn, reader)) = hello else {
@@ -1882,7 +1881,7 @@ impl PluginHost {
     }
 
     /// Reads `hello` within [`HELLO_TIMEOUT`] and attaches the connection to its instance.
-    fn hello(&self, stream: &UnixStream) -> Option<(String, Arc<Conn>, BufReader<UnixStream>)> {
+    fn hello(&self, stream: &Stream) -> Option<(String, Arc<Conn>, BufReader<Stream>)> {
         let refuse = |error: &str| {
             let _ = stream.set_write_timeout(Some(WRITE_TIMEOUT));
             let mut writer = stream;
@@ -2198,7 +2197,7 @@ impl PluginHost {
     /// A connection's writer: writes each queued line whole and in order, however long the plugin takes to read it,
     /// until the connection is retired (no longer held), shut down or broken. A plugin that reads nothing for long is
     /// found by its pings, which wait in the same line; its input events are dropped meanwhile.
-    fn write_lines(&self, id: &str, conn: &Weak<Conn>, mut stream: UnixStream) {
+    fn write_lines(&self, id: &str, conn: &Weak<Conn>, mut stream: Stream) {
         let gone = || conn.upgrade().is_none() || self.0.stopped.load(Ordering::SeqCst);
         loop {
             // The connection is held only while it is asked for a line, so a retired one is dropped and this ends.
@@ -2529,16 +2528,16 @@ impl PluginHost {
                 self.answer(pending.reply, Err(crate::service::SHUTTING_DOWN.into()));
             }
         }
-        let _ = fs::remove_file(&self.0.socket);
+        let _ = local_ipc::remove(&self.0.socket);
         // Wakes the accept loop so its thread ends.
-        let _ = UnixStream::connect(&self.0.socket);
+        let _ = Stream::connect(&self.0.socket);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use std::{fs, os::unix::fs::PermissionsExt};
 
     const ID: &str = "com.example.lights";
 
@@ -2666,13 +2665,13 @@ mod tests {
 
     /// The test's side of a plugin connection.
     struct Plugin {
-        reader: BufReader<UnixStream>,
-        writer: UnixStream,
+        reader: BufReader<Stream>,
+        writer: Stream,
     }
 
     impl Plugin {
         fn connect(host: &PluginHost) -> Self {
-            let stream = UnixStream::connect(&host.0.socket).unwrap();
+            let stream = Stream::connect(&host.0.socket).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
@@ -3775,7 +3774,7 @@ mod tests {
             Ok(())
         });
         let mut run = KeyRun::default();
-        let (ours, theirs) = UnixStream::pair().unwrap();
+        let (ours, theirs) = Stream::pair().unwrap();
         let conn = Arc::new(Conn::new(ours));
         let queue = |run: &mut KeyRun, plugin: &str| {
             PluginHost::queue_image(

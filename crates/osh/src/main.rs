@@ -205,12 +205,18 @@ fn not_running() -> Failure {
 }
 
 /// Sends one request line with the token and returns the answer's `result`.
-#[cfg(unix)]
 fn request(socket: &Path, token_file: &Path, mut body: Value) -> Result<Value, Failure> {
     use std::io::Read;
+    let stream = local_ipc::Stream::connect(socket).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::Unsupported {
+            Failure(3, "osh: only macOS and Linux are supported".to_string())
+        } else {
+            not_running()
+        }
+    })?;
+    // After the connection, so a platform without one says so rather than "not running".
     let token = std::fs::read_to_string(token_file).map_err(|_| not_running())?;
     body["token"] = json!(token.trim());
-    let stream = std::os::unix::net::UnixStream::connect(socket).map_err(|_| not_running())?;
     let io = |error: std::io::Error| Failure(3, format!("osh: the app did not answer: {error}"));
     stream.set_read_timeout(Some(TIMEOUT)).map_err(io)?;
     stream.set_write_timeout(Some(TIMEOUT)).map_err(io)?;
@@ -231,14 +237,6 @@ fn request(socket: &Path, token_file: &Path, mut body: Value) -> Result<Value, F
             .unwrap_or("the request was refused");
         Err(Failure(1, format!("osh: {error}")))
     }
-}
-
-#[cfg(not(unix))]
-fn request(_: &Path, _: &Path, _: Value) -> Result<Value, Failure> {
-    Err(Failure(
-        3,
-        "osh: only macOS and Linux are supported".to_string(),
-    ))
 }
 
 /// Text as it is, everything else as JSON.
@@ -668,7 +666,7 @@ fn main() -> ExitCode {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixListener;
+    use local_ipc::Listener;
 
     fn args(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_string).collect()
@@ -709,10 +707,10 @@ mod tests {
 
     /// A one-shot fake app: answers the first line with `answer`, and returns the request it read.
     fn fake_app(dir: &std::path::Path, answer: Value) -> std::thread::JoinHandle<Value> {
-        let listener = UnixListener::bind(dir.join("s")).unwrap();
+        let listener = Listener::bind(dir.join("s")).unwrap();
         std::fs::write(dir.join("t"), "abc\n").unwrap();
         std::thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
+            let stream = listener.accept().unwrap();
             let mut line = String::new();
             BufReader::new(&stream).read_line(&mut line).unwrap();
             (&stream)
@@ -766,6 +764,14 @@ mod tests {
         std::fs::write(dir.join("t"), "abc").unwrap();
         let stale = request(&dir.join("s"), &dir.join("t"), json!({"type":"ping"})).unwrap_err();
         assert_eq!(stale, not_running());
+        // A listener without its token yet (the app is starting) is too, and nothing is sent to it.
+        std::fs::remove_file(dir.join("t")).unwrap();
+        let listener = Listener::bind(dir.join("s")).unwrap();
+        let starting = request(&dir.join("s"), &dir.join("t"), json!({"type":"ping"})).unwrap_err();
+        assert_eq!(starting, not_running());
+        let mut sent = Vec::new();
+        std::io::Read::read_to_end(&mut listener.accept().unwrap(), &mut sent).unwrap();
+        assert!(sent.is_empty(), "{sent:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -853,7 +859,7 @@ mod tests {
         declared: &[(&str, &str)],
         deck: Deck,
     ) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
-        let listener = UnixListener::bind(dir.join("s")).unwrap();
+        let listener = Listener::bind(dir.join("s")).unwrap();
         std::fs::write(dir.join("t"), "abc\n").unwrap();
         let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = log.clone();

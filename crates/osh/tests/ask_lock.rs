@@ -2,10 +2,10 @@
 //! its turn on, so the next session's prompt reaches the deck.
 #![cfg(unix)]
 
+use local_ipc::Listener;
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
-    os::unix::net::UnixListener,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -14,7 +14,7 @@ use std::{
 
 /// A fake app that declares both agent variables, never answers on the deck, and logs every set as `name=value`.
 fn fake_app(dir: &Path) -> Arc<Mutex<Vec<String>>> {
-    let listener = UnixListener::bind(dir.join("s")).unwrap();
+    let listener = Listener::bind(dir.join("s")).unwrap();
     std::fs::write(dir.join("t"), "abc\n").unwrap();
     let log = Arc::new(Mutex::new(Vec::new()));
     let seen = log.clone();

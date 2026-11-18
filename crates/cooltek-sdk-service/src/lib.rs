@@ -17,6 +17,7 @@ mod timer;
 mod variables;
 
 pub mod display_sync;
+pub mod host;
 pub mod macos;
 pub mod obs;
 pub mod plugin;

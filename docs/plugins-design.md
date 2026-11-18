@@ -4,7 +4,7 @@ Status (16 November 2026): **steps 1 to 5 built**: preset packs, the `run_progra
 
 ## What exists today
 
-- **Actions are a closed Rust enum.** `Action` in `crates/cooltek-sdk-service/src/profile.rs` is tagged by `type` and uses `deny_unknown_fields`. It is executed in `macos.rs` and validated when a profile loads (schema 5 today). Nothing outside the app can add an action.
+- **Actions are a closed Rust enum.** `Action` in `crates/cooltek-sdk-service/src/profile.rs` is tagged by `type` and uses `deny_unknown_fields`. It is dispatched in `host/mod.rs` (the platform steps in `macos.rs`) and validated when a profile loads (schema 5 today). Nothing outside the app can add an action.
 - **Only the module service processes execute actions.** Each module runs as its own `masterhub-service` child process (`apps/open-stream-hub/src-tauri/src/service.rs`). The app writes a profile snapshot, starts the process, relays its JSONL stdout and writes control messages to its stdin. It never runs an action itself. Live / Test mode is applied by restarting that process.
 - **A local socket exists** (`apps/open-stream-hub/src-tauri/src/ingress.rs`): JSON lines, a 0700 directory, one token that is new at every launch. `osh` is its client. It supports `ping`, `set_variable` and `get_variables`, and refuses outside writes to `agent_decision` other than `none`. It is built for short requests: each line must arrive within 2 s, lines are at most 8 KB, and at most 8 connections are served at once.
 - **Variables feed the UI.** Key faces can follow a variable and if / else conditions can read one. `set_variable` is sent to every running module and succeeds only when a module declares the variable, so a profile must declare the variables an outside tool sets.

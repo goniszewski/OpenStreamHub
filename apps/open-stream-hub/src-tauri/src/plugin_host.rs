@@ -2694,6 +2694,14 @@ mod tests {
             serde_json::from_str(&line).unwrap_or(Value::Null)
         }
 
+        /// The next line that is not a ping or a pong, saying `pong` first, as a plugin busy on another thread would
+        /// while it works through a backlog: otherwise a slow drain on a loaded machine outlasts
+        /// [`IDLE_PING`] + [`PONG_TIMEOUT`] and the plugin is killed before its last line arrives.
+        fn receive_message_alive(&mut self) -> Value {
+            self.send(json!({"type":"pong"}));
+            self.receive_message()
+        }
+
         /// The next line that is not a ping or a pong.
         fn receive_message(&mut self) -> Value {
             loop {
@@ -3109,8 +3117,11 @@ mod tests {
             let mut line = String::new();
             match plugin.reader.read_line(&mut line) {
                 Ok(n) if n > 0 => {
-                    if serde_json::from_str::<Value>(&line).unwrap()["type"] == "event" {
-                        heard += 1;
+                    match serde_json::from_str::<Value>(&line).unwrap()["type"].as_str() {
+                        Some("event") => heard += 1,
+                        // Answered, or the drain's last 300 ms wait would end past the host's ping deadline.
+                        Some("ping") => plugin.send(json!({"type":"pong"})),
+                        _ => {}
                     }
                 }
                 _ => break,
@@ -3158,9 +3169,9 @@ mod tests {
         }
         assert_eq!(host.state_of(ID), Some("running"));
         for _ in 0..20 {
-            assert_eq!(plugin.receive_message()["type"], "event");
+            assert_eq!(plugin.receive_message_alive()["type"], "event");
         }
-        let press = plugin.receive_message();
+        let press = plugin.receive_message_alive();
         assert_eq!(press["type"], "invoke");
         plugin.send(json!({"type":"result","request":press["request"],"ok":true}));
         assert_eq!(answer(&pressed), Ok(()));
@@ -3190,9 +3201,9 @@ mod tests {
         }
         drop(late);
         for _ in 0..20 {
-            assert_eq!(plugin.receive_message()["type"], "event");
+            assert_eq!(plugin.receive_message_alive()["type"], "event");
         }
-        let press = plugin.receive_message();
+        let press = plugin.receive_message_alive();
         assert_eq!(press["params"]["entity"], "kept");
         assert!(press["timeout_ms"].as_u64().unwrap() < 4500);
         plugin.send(json!({"type":"result","request":press["request"],"ok":true}));

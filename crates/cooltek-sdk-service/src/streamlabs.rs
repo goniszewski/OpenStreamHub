@@ -917,8 +917,17 @@ mod tests {
     }
 
     fn run(action: Action, replies: Vec<Reply>) -> (Result<(), String>, Seen) {
+        run_within(action, replies, FAST)
+    }
+
+    /// [`run`] with another action deadline, for a test that waits on purpose and must not race [`FAST`].
+    fn run_within(
+        action: Action,
+        replies: Vec<Reply>,
+        timeout: Duration,
+    ) -> (Result<(), String>, Seen) {
         let (endpoint, server) = serve(replies);
-        let result = client(endpoint).run(&action);
+        let result = client(endpoint).with_timeout(timeout).run(&action);
         (result, server.join().unwrap())
     }
 
@@ -1092,7 +1101,9 @@ mod tests {
     fn a_scene_in_another_collection_loads_it_then_polls_until_it_is_active() {
         let a = json!({"id":"col-a","name":"Main"});
         let b = json!({"id":"col-b","name":"Podcast"});
-        let (result, seen) = run(
+        // Three polls of the collection, 100 ms apart, plus the other calls: on a loaded runner that can pass FAST, so this success
+        // path gets the real deadline (timing out is tested on its own below).
+        let (result, seen) = run_within(
             Action::StreamlabsScene {
                 scene: "Live".into(),
                 collection: Some("Podcast".into()),
@@ -1108,6 +1119,7 @@ mod tests {
                 ok(scenes()),
                 ok(json!(true)),
             ],
+            DEFAULT_TIMEOUT,
         );
         result.unwrap();
         let active = call("SceneCollectionsService", "activeCollection", json!([]));

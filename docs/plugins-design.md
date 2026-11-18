@@ -488,7 +488,7 @@ Today a plugin is installed by hand: open the plugins folder from Settings > Plu
 ### The copy
 
 - **Into a hidden staging folder** in the plugins folder (`.install-<random>`, which the catalog skips because it starts with a dot), then renamed into place as `<id>`. A failure at any point removes the staging folder, so the plugins folder never holds half a plugin.
-- **Only regular files and folders.** A symbolic link, a device or another special file anywhere in the tree refuses the install and names it. Hidden files are copied (a plugin may need them); `.git` folders are skipped.
+- **Only regular files and folders.** A symbolic link, a device or another special file anywhere in the tree refuses the install and names it. Hidden files are copied (a plugin may need them); `.git` and `.omc` folders (version control and coding-agent state) are skipped.
 - **Limits:** at most 5,000 files and 256 MiB, so a picked home folder is refused, not copied.
 - **Permissions:** everything belongs to the user (it is a new copy) and nothing is writable by others (`go-w`, keeping execute bits), so the folder passes the owner check that `load` makes.
 - **Quarantine is kept.** Files downloaded from the web carry macOS's quarantine flag, and the copy keeps it; the app does not clear it. An unsigned program in a plugin may then be stopped by Gatekeeper when the plugin starts, and its error shows in Settings > Plugins. The author guide says to sign native programs, or to use an interpreter such as `/usr/bin/python3` with a script.

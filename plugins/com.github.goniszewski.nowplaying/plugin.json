@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "com.github.goniszewski.nowplaying",
+  "name": "Now Playing",
+  "version": "1.0.0",
+  "command": ["/usr/bin/python3", "plugin.py"],
+  "actions": [
+    {
+      "id": "control",
+      "label": "Play/pause, previous, next",
+      "events": true,
+      "image": true,
+      "params": [
+        {
+          "id": "player",
+          "label": "Player",
+          "type": "choice",
+          "default": "auto",
+          "choices": [
+            { "id": "auto", "label": "Whichever is playing" },
+            { "id": "music", "label": "Apple Music" },
+            { "id": "spotify", "label": "Spotify" }
+          ]
+        },
+        { "id": "double_ms", "label": "Double press window (ms)", "type": "number", "min": 0, "max": 1000, "default": 300 },
+        { "id": "long_ms", "label": "Long press (ms)", "type": "number", "min": 200, "max": 3000, "default": 500 }
+      ]
+    }
+  ],
+  "conditions": [
+    {
+      "id": "is_playing",
+      "label": "Music is playing",
+      "params": [
+        {
+          "id": "player",
+          "label": "Player",
+          "type": "choice",
+          "default": "auto",
+          "choices": [
+            { "id": "auto", "label": "Any player" },
+            { "id": "music", "label": "Apple Music" },
+            { "id": "spotify", "label": "Spotify" }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": { "network": ["i.scdn.co"], "programs": true }
+}

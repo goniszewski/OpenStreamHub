@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "com.example.notify",
   "name": "Notify example",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "command": ["/usr/bin/python3", "plugin.py"],
   "actions": [
     {

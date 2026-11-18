@@ -12,7 +12,7 @@
 //! the one scanned (device and inode). A hard link (a regular file with other names) is refused, naming it, since it
 //! may be a name for a file the user does not own. An error after the copy is in place (the approval could not be
 //! written) starts with `installed: ` and reads on its own after it; any other error means nothing was installed.
-//! `.git` folders are skipped; other hidden files are copied. At most [`MAX_ENTRIES`] files and folders and [`MAX_BYTES`] are copied, counted before copying and again while copying (a file is read
+//! `.git` and `.omc` folders (version control and coding-agent state) are skipped; other hidden files are copied. At most [`MAX_ENTRIES`] files and folders and [`MAX_BYTES`] are copied, counted before copying and again while copying (a file is read
 //! only up to what is left of the limit, so one growing meanwhile cannot pass it). Every copy belongs to the user and
 //! is writable by nobody else (`mode & 0o755`, so execute bits stay and set-id bits go; folders also keep `u+rwx`).
 //! File data and extended attributes are copied, so macOS's quarantine flag stays; ACLs are not. The source folder is
@@ -186,7 +186,10 @@ fn hard_link(path: &Path) -> String {
     )
 }
 
-/// Walks `root` without following links, refusing special files and the limits, skipping `.git` folders.
+/// Folders never copied, at any depth: version control and coding-agent state, which a plugin never needs.
+const SKIPPED_FOLDERS: [&str; 2] = [".git", ".omc"];
+
+/// Walks `root` without following links, refusing special files and the limits, skipping [`SKIPPED_FOLDERS`].
 fn scan(root: &Path) -> Result<Scan, String> {
     let mut scan = Scan::default();
     let mut folders = vec![PathBuf::new()];
@@ -208,7 +211,7 @@ fn scan(root: &Path) -> Result<Scan, String> {
             let kind = fs::symlink_metadata(root.join(&path))
                 .map_err(|error| format!("could not read {}: {error}", path.display()))?;
             if kind.is_dir() {
-                if name == ".git" {
+                if SKIPPED_FOLDERS.iter().any(|skipped| name == *skipped) {
                     continue;
                 }
                 folders.push(path.clone());
@@ -1087,9 +1090,11 @@ mod tests {
             rig.download("notify-main", &manifest("1.2.0", json!(["bin/lights"])));
         fs::create_dir_all(Path::new(&path).join(".git/objects")).unwrap();
         fs::write(Path::new(&path).join(".git/objects/blob"), vec![0; 4000]).unwrap();
+        fs::create_dir_all(Path::new(&path).join("bin/.omc/state")).unwrap();
+        fs::write(Path::new(&path).join("bin/.omc/state/session.json"), "{}").unwrap();
         fs::write(Path::new(&path).join(".env"), "A=1").unwrap();
         let review = rig.review(&path).unwrap();
-        // plugin.json, bin/lights and .env; .git is not counted.
+        // plugin.json, bin/lights and .env; .git and .omc, at any depth, are not counted.
         assert_eq!(review.files, 3);
         assert_eq!(
             review.bytes,
@@ -1257,13 +1262,15 @@ mod tests {
     }
 
     #[test]
-    fn a_copy_is_installed_as_its_id_without_git_and_writable_only_by_the_user() {
+    fn a_copy_is_installed_as_its_id_without_git_or_omc_and_writable_only_by_the_user() {
         let rig = Rig::new();
         let (path, fingerprint) =
             rig.download("lights-1.2.0", &manifest("1.2.0", json!(["bin/lights"])));
         let source = Path::new(&path);
         fs::create_dir(source.join(".git")).unwrap();
         fs::write(source.join(".git/HEAD"), "ref").unwrap();
+        fs::create_dir_all(source.join(".omc/state")).unwrap();
+        fs::write(source.join(".omc/state/checkpoint.json"), "{}").unwrap();
         fs::write(source.join(".env"), "A=1").unwrap();
         fs::set_permissions(
             source.join(MANIFEST_FILE),
@@ -1277,6 +1284,7 @@ mod tests {
         rig.install(&path, &fingerprint, false).unwrap();
         let installed = rig.plugins().join(ID);
         assert!(!installed.join(".git").exists());
+        assert!(!installed.join(".omc").exists());
         assert_eq!(fs::read_to_string(installed.join(".env")).unwrap(), "A=1");
         assert_eq!(mode(&installed), 0o755);
         assert_eq!(mode(&installed.join(MANIFEST_FILE)), 0o644);
@@ -1285,6 +1293,7 @@ mod tests {
         plugins::load(&installed).unwrap();
         // The source is left as it was.
         assert!(source.join(".git/HEAD").exists());
+        assert!(source.join(".omc/state/checkpoint.json").exists());
         assert_eq!(mode(source), 0o777);
         assert!(rig.approvals.read().is_empty());
         assert!(rig.hidden_leftovers().is_empty());

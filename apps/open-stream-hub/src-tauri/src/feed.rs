@@ -197,7 +197,7 @@ fn live_devices_with_chains(
 
 /// The slot-table entry (`base_slots`) for a module on USB port `chain`, given the chain of the base's hub. The chain
 /// leaves out the host bus, so it is stable across bus-number changes. Without a hub chain (the base is not visible)
-/// or for a connector the table does not know, the slot stays unknown (the caller keeps the chain for diagnostics).
+/// or for a chain that is none of the base's connectors, the slot stays unknown (the caller keeps the chain for diagnostics).
 fn base_slot(module: ServiceModule, chain: &[u8], hub: Option<&[u8]>) -> Option<base_slots::Slot> {
     let slot = base_slots::slot_name(chain, hub?)?;
     base_slots::lookup(module, &slot)
